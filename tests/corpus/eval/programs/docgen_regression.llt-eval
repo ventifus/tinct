@@ -124,7 +124,7 @@ extract-from-doc: [fn [let doc]
   [if [null? last-dict]
     []
     [collect [filter
-      [fn@Bool [let e] [has? "name" e]]
+      [fn@Boolean [let e] [has? "name" e]]
       [map parse-entry last-dict.entries]]]]]
 
 extract-from-program: [fn [let program]

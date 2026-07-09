@@ -117,7 +117,7 @@ The macro generates these instances. `type-register` is the only type-stage prim
 # - A resolver registration (so [= x y] finds the right instance)
 # - Standard tinct dict-passing glue
 
-# [instance Equatable [let a@Int]: [=: [fn [let x y] [builtin-eq x y]]]]
+# [instance Equatable [let a@Integer]: [=: [fn [let x y] [builtin-eq x y]]]]
 # expands to:
 # - A dict value with the method implementations
 # - Registration in the instance dispatch table

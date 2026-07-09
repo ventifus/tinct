@@ -31,7 +31,7 @@ Two structural gaps remain.
   [list 'if cond then else]]
 ```
 
-**Call-semantics erase structure before the macro runs.** A bracket like `[x@Int y@Float]` is parsed as `Call(Annotated("x", Int), [Annotated("y", Float)])` before any macro runs. The flat element sequence the macro might need to work with — `[x@Int, y@Float]` as a list — is unrecoverable from the Call node. This blocks entire classes of structural transformation.
+**Call-semantics erase structure before the macro runs.** A bracket like `[x@Integer y@Float]` is parsed as `Call(Annotated("x", Int), [Annotated("y", Float)])` before any macro runs. The flat element sequence the macro might need to work with — `[x@Integer, y@Float]` as a list — is unrecoverable from the Call node. This blocks entire classes of structural transformation.
 
 ### What's Missing
 
@@ -39,7 +39,7 @@ Two structural gaps remain.
 2. A way to receive bracket content before call-semantics are applied — enabling macros to inspect and reshape bracket elements that the parser would otherwise consume.
 3. A way to produce multiple top-level definitions from one macro invocation.
 4. A way for macro bodies to signal structured compile-time errors with source spans.
-5. A way for annotated expressions (`n@Int`) to serve as distinct dict keys within macro-defined forms, bypassing the parser's bare-name duplicate detection.
+5. A way for annotated expressions (`n@Integer`) to serve as distinct dict keys within macro-defined forms, bypassing the parser's bare-name duplicate detection.
 
 ## Why This Matters for tinct
 
@@ -83,7 +83,7 @@ Macros receive and return values of type `Expr` — a nominal variant type defin
   [UnkeyedEntry value: Expr]]
 
 [type Annotation
-  [Simple   name: Str]           # @Int, @Bool
+  [Simple   name: Str]           # @Integer, @Bool
   [PropDict entries: [Seq Entry]]  # @[return: T  constraint: ...]
   Null]                          # no annotation
 
@@ -304,7 +304,7 @@ When the parser processes `[fn [x y] body]`, the inner bracket `[x y]` becomes `
 
 `stdlib/syntax.llt` is not a privileged file. It is ordinary tinct code that happens to ship with the language. A user's own macro that does the same thing is indistinguishable from the stdlib version — `flatten-args` is available to everyone from `stdlib/ast.llt`. A user who wants softer syntax for their own DSL form writes exactly the same pattern, right in their own file.
 
-A user who loads `stdlib/syntax.llt` can write `[fn [x@Int y@Float] body]`. A user who does not gets a type error from the type checker. The language's position is strict; the macro system makes it extensible.
+A user who loads `stdlib/syntax.llt` can write `[fn [x@Integer y@Float] body]`. A user who does not gets a type error from the type checker. The language's position is strict; the macro system makes it extensible.
 
 **Pre-scan for registration.** `macro` declarations are scanned from the parsed AST before the transformation pass begins its first walk. This gives the pass a complete registry of registered form names before it processes any of them. Any form with a `macro` declaration automatically gets neutral key handling from the parser — no duplicate-key enforcement — since the macro body handles structural validation.
 
@@ -382,14 +382,14 @@ Macro bodies inspect AST nodes using tinct predicates — the equivalent of Rack
 [first-or xs default]    # first element, or default if empty
 
 # Gensym and error
-[gensym prefix@Str]         # returns String ":prefix:N" — structurally unforgeable fresh name; wrap with do-var-node for VarRef
+[gensym prefix@String]         # returns String ":prefix:N" — structurally unforgeable fresh name; wrap with do-var-node for VarRef
 [macro-error msg]           # terminate with MacroError at call site (expansion-time, not type-check-time)
 [macro-error msg node]      # terminate with MacroError at node's span
 
 # Stdlib helpers
 [wrap-in-let elems]      # produce Let(bindings: elems) AST node
 [let-decl-elems decl]    # extract bindings [Seq Expr] from a Let node
-[ident str@Str]          # construct VarRef(name: str) from a string — the counterpart to
+[ident str@String]          # construct VarRef(name: str) from a string — the counterpart to
                          # gensym for EXISTING names (str must already be a valid identifier)
 ```
 
@@ -438,7 +438,7 @@ Named syntax classes can be reused across multiple macros. The `pattern:` field 
 ```tinct
 [syntax-class var-with-type
   pattern: [let _ : Annotated]
-  message: "annotated expression (e.g., x@Int)"]
+  message: "annotated expression (e.g., x@Integer)"]
 
 [macro log-type [let arg@var-with-type]
   # arg is the full Annotated Expr node; access fields by actual name
@@ -618,7 +618,7 @@ The pass runs to fixpoint. The depth limit (100) guards against infinite recursi
 **Case 1 — already has `[let ...]`:** Idempotent; pass through unchanged.
 
 ```tinct
-[fn [let x@Int y@Float] [+ x y]]
+[fn [let x@Integer y@Float] [+ x y]]
 # params = Let(bindings: [Annotated(x,Int)  Annotated(y,Float)])
 # flatten-args(Let(...)) → Let's bindings → [Annotated(x,Int) Annotated(y,Float)]
 # first → Annotated → but wait: params itself is a Let → first-or flat = Annotated(x,Int)
@@ -649,9 +649,9 @@ This is the correct form. Match on `params` first; call `flatten-args` only in t
 **Case 1 — already has `[let ...]`:** Idempotent; pass through unchanged.
 
 ```tinct
-[fn [let x@Int y@Float] [+ x y]]
+[fn [let x@Integer y@Float] [+ x y]]
 # params = Let(bindings: [...])  →  [case [let _ : Let]] matches  →  pass through
-# → [fn [let x@Int y@Float] [+ x y]]  (unchanged)
+# → [fn [let x@Integer y@Float] [+ x y]]  (unchanged)
 ```
 
 **Case 2 — bare params, no annotations:**
@@ -666,10 +666,10 @@ This is the correct form. Match on `params` first; call `flatten-args` only in t
 **Case 3 — annotated params:**
 
 ```tinct
-[fn [x@Int y@Float] [+ x y]]
+[fn [x@Integer y@Float] [+ x y]]
 # params = Call(Annotated(x,Int), [Annotated(y,Float)])  →  wildcard arm
 # flatten-args(Call) → [Annotated(x,Int)  Annotated(y,Float)]
-# → [fn [let x@Int y@Float] [+ x y]]
+# → [fn [let x@Integer y@Float] [+ x y]]
 ```
 
 **Case 4 — empty params (`[fn [] body]`):**
@@ -928,7 +928,7 @@ Validation failure raises `MacroError` at the call-site span.
 
 Defines `Entry`, `Annotation`, and `Expr` nominal types plus `flatten-args`, `ident`. This file must be explicitly imported by macro-writing code: `[include %libdir "ast.llt"]`. Macro bodies that use `Expr` variant names (`Let`, `VarRef`, `Call`, etc.) without importing this file will get undefined-variable errors.
 
-`[ident str@Str] -> VarRef` — constructs `VarRef(name: str)` from any string. For reconstructing existing identifiers from extracted name fields; not for generating fresh names (use `gensym` for that).
+`[ident str@String] -> VarRef` — constructs `VarRef(name: str)` from any string. For reconstructing existing identifiers from extracted name fields; not for generating fresh names (use `gensym` for that).
 **Impact:** New file, ~70 lines.
 
 ### `ast_to_dict` — Typed Expr Variant Migration

@@ -71,7 +71,7 @@ Used as a value in dict entries, exactly like `[fn ...]`:
 [
   Result: [type [ok: a] [err: Str]]
 
-  parse: [fn@Result [input@Str]
+  parse: [fn@Result [input@String]
     [try [parse-int input]]]
 
   handle: [fn [res@Result]

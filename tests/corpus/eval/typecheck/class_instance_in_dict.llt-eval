@@ -8,7 +8,7 @@
     my-method: [Fn@a [a]]]
 
   # Define an instance as a dict value
-  MyClassInt: [instance MyClass [pattern [a@Int]]:
+  MyClassInt: [instance MyClass [pattern [a@Integer]]:
     my-method: [fn [let x] [+ x 1]]]
 
   # Use the class in a constrained function

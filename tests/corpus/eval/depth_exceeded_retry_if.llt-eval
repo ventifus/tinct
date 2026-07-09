@@ -4,7 +4,7 @@
 # rebuilds the call from the original CoreExpr, and already-materialized sub-thunks
 # hit the try_get_materialized() fast path on retry.
 [
-  fact: [fn@Int [let n@Int]
+  fact: [fn@Integer [let n@Integer]
     [if [call $<= n 1]
       1
       [call $* n [call fact [call $- n 1]]]

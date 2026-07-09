@@ -1,8 +1,8 @@
 # Lambda return type annotation mismatch: fn@String return annotation, but body infers Int.
-# @[Fn@String [Int]] means a function (Int) -> String. The body x has type Int (from @Int param).
+# @[Fn@String [Int]] means a function (Int) -> String. The body x has type Int (from @Integer param).
 # Type checker warns: return type mismatch.
 # At runtime the function value is returned successfully (type errors are advisory).
-[@[Fn@String [Int]] [fn [let x@Int] x]]
+[@[Fn@String [Int]] [fn [let x@Integer] x]]
 === out
 Function(x)
 

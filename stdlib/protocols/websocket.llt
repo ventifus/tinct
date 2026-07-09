@@ -48,25 +48,25 @@
 # Integer arithmetic helpers (self-contained copies of quot, mod, pow2)
 # --------------------------------------------------------------------------
 
-ws-quot: [fn@Int [let a@Int b@Int]
+ws-quot: [fn@Integer [let a@Integer b@Integer]
     [if [= b 0]
         [error "ws-quot: division by zero"]
         [ws-quot-impl a b]]]
 
-ws-quot-impl: [fn@Int [let a@Int b@Int]
+ws-quot-impl: [fn@Integer [let a@Integer b@Integer]
     [if [< a 0]
         [error "ws-quot: negative dividend not supported"]
         [if [< a b]
             0
             [+ 1 [ws-quot-impl [- a b] b]]]]]
 
-ws-mod: [fn@Int [let a@Int b@Int]
+ws-mod: [fn@Integer [let a@Integer b@Integer]
     [- a [* [ws-quot a b] b]]]
 
-ws-pow2: [fn@Int [let n@Int]
+ws-pow2: [fn@Integer [let n@Integer]
     [ws-pow2-impl n 1]]
 
-ws-pow2-impl: [fn@Int [let n@Int acc@Int]
+ws-pow2-impl: [fn@Integer [let n@Integer acc@Integer]
     [if [< 0 n]
         [ws-pow2-impl [- n 1] [* acc 2]]
         acc]]
@@ -75,13 +75,13 @@ ws-pow2-impl: [fn@Int [let n@Int acc@Int]
 # Bitwise XOR (byte-level, pure LLT)
 # --------------------------------------------------------------------------
 
-ws-xor-bit: [fn@Int [let a@Int b@Int]
+ws-xor-bit: [fn@Integer [let a@Integer b@Integer]
     [if [= a b] 0 1]]
 
-ws-xor: [fn@Int [let a@Int b@Int]
+ws-xor: [fn@Integer [let a@Integer b@Integer]
     [ws-xor-impl a b 0 0]]
 
-ws-xor-impl: [fn@Int [let a@Int b@Int acc@Int bit@Int]
+ws-xor-impl: [fn@Integer [let a@Integer b@Integer acc@Integer bit@Integer]
     [if [< bit 8]
         [ws-xor-impl a b
             [+ acc
@@ -98,7 +98,7 @@ ws-xor-impl: [fn@Int [let a@Int b@Int acc@Int bit@Int]
 # --------------------------------------------------------------------------
 
 # Mask a payload string with a 4-byte repeating XOR mask.
-ws-mask-payload-impl: [fn@String [let data@String mask-key@String i@Int len@Int acc@String]
+ws-mask-payload-impl: [fn@String [let data@String mask-key@String i@Integer len@Integer acc@String]
     [if [< i len]
         [ws-mask-payload-impl data mask-key [+ i 1] len
             [str acc
@@ -109,7 +109,7 @@ ws-mask-payload-impl: [fn@String [let data@String mask-key@String i@Int len@Int 
 
 # Build the 2-byte base frame header.
 # byte0 = FIN(0x80) | opcode; byte1 = MASK(0x80) | payload-len (for len < 126)
-ws-build-base-header: [fn@String [let opcode@Int payload-len@Int masked@Bool]
+ws-build-base-header: [fn@String [let opcode@Integer payload-len@Integer masked@Boolean]
     [str
         [chr [+ 128 opcode]]
         [chr [if masked
@@ -117,12 +117,12 @@ ws-build-base-header: [fn@String [let opcode@Int payload-len@Int masked@Bool]
             payload-len]]]]
 
 # Build a 2-byte big-endian 16-bit extended length field.
-ws-build-ext16: [fn@String [let n@Int]
+ws-build-ext16: [fn@String [let n@Integer]
     [str [chr [ws-quot n 256]] [chr [ws-mod n 256]]]]
 
 # Build an 8-byte big-endian 64-bit extended length field (RFC 6455 §5.2).
 # The most significant bit MUST be 0 (n < 2^63).
-ws-build-ext64: [fn@String [let n@Int]
+ws-build-ext64: [fn@String [let n@Integer]
     [ws-build-ext64-impl n 7 ""]]
 
 # Recursive helper: accumulates bytes left-to-right (MSB to LSB) by threading
@@ -133,7 +133,7 @@ ws-build-ext64: [fn@String [let n@Int]
 # This avoids the O(n) repeated-subtraction trap: ws-quot remaining shift where
 # shift = 2^(8*level) converges in at most (remaining / shift) steps, which for
 # large levels is 0 steps (byte is 0) and for level=1 is at most 255 steps.
-ws-build-ext64-impl: [fn@String [let remaining@Int level@Int acc@String]
+ws-build-ext64-impl: [fn@String [let remaining@Integer level@Integer acc@String]
     [if [= level 0]
         [str acc [chr remaining]]
         [ws-build-ext64-impl
@@ -142,7 +142,7 @@ ws-build-ext64-impl: [fn@String [let remaining@Int level@Int acc@String]
             [str acc [chr [ws-quot remaining [ws-pow2 [* level 8]]]]]]]]
 
 # Dispatch on payload length to choose header format.
-ws-build-frame-dispatch: [fn@Dict [let opcode@Int data@String mask-key@String data-len@Int]
+ws-build-frame-dispatch: [fn@Dict [let opcode@Integer data@String mask-key@String data-len@Integer]
     [if [< data-len 126]
         [ws-build-frame-short  opcode data mask-key data-len]
         [if [< data-len 65536]
@@ -151,21 +151,21 @@ ws-build-frame-dispatch: [fn@Dict [let opcode@Int data@String mask-key@String da
 
 # Build a short-payload frame (payload-len < 126).
 # header = base-header(2 bytes) + mask-key(4 bytes)
-ws-build-frame-short: [fn@Dict [let opcode@Int data@String mask-key@String data-len@Int]
+ws-build-frame-short: [fn@Dict [let opcode@Integer data@String mask-key@String data-len@Integer]
     [ws-build-frame-result
         [str [ws-build-base-header opcode data-len true] mask-key]
         [ws-mask-payload-impl data mask-key 0 data-len ""]]]
 
 # Build a medium-payload frame (126 <= payload-len < 65536).
 # header = base-header(2 bytes) + ext16(2 bytes) + mask-key(4 bytes)
-ws-build-frame-medium: [fn@Dict [let opcode@Int data@String mask-key@String data-len@Int]
+ws-build-frame-medium: [fn@Dict [let opcode@Integer data@String mask-key@String data-len@Integer]
     [ws-build-frame-result
         [str [ws-build-base-header opcode 126 true] [ws-build-ext16 data-len] mask-key]
         [ws-mask-payload-impl data mask-key 0 data-len ""]]]
 
 # Build a long-payload frame (payload-len >= 65536).
 # header = base-header(2 bytes) + ext64(8 bytes) + mask-key(4 bytes)
-ws-build-frame-long: [fn@Dict [let opcode@Int data@String mask-key@String data-len@Int]
+ws-build-frame-long: [fn@Dict [let opcode@Integer data@String mask-key@String data-len@Integer]
     [ws-build-frame-result
         [str [ws-build-base-header opcode 127 true] [ws-build-ext64 data-len] mask-key]
         [ws-mask-payload-impl data mask-key 0 data-len ""]]]
@@ -181,13 +181,13 @@ ws-build-frame-result: [fn@Dict [let header@String payload@String]
 # Frame parsing helpers
 # --------------------------------------------------------------------------
 
-ws-payload-len7: [fn@Int [let byte1@Int]
+ws-payload-len7: [fn@Integer [let byte1@Integer]
     [ws-mod byte1 128]]
 
-ws-parse-ext16: [fn@Int [let hi@Int lo@Int]
+ws-parse-ext16: [fn@Integer [let hi@Integer lo@Integer]
     [+ [* hi 256] lo]]
 
-ws-parse-ext64-impl: [fn@Int [let bytes@String start@Int i@Int acc@Int]
+ws-parse-ext64-impl: [fn@Integer [let bytes@String start@Integer i@Integer acc@Integer]
     [if [< i 8]
         [ws-parse-ext64-impl bytes start [+ i 1]
             [+ [* acc 256]
@@ -198,7 +198,7 @@ ws-parse-ext64-impl: [fn@Int [let bytes@String start@Int i@Int acc@Int]
         acc]]
 
 # Build the header result dict from fully-computed fields.
-ws-parse-header-result: [fn@Dict [let fin rsv opcode@Int masked payload-len@Int header-len@Int]
+ws-parse-header-result: [fn@Dict [let fin rsv opcode@Integer masked payload-len@Integer header-len@Integer]
     [set []
         fin:         fin
         rsv:         rsv
@@ -208,7 +208,7 @@ ws-parse-header-result: [fn@Dict [let fin rsv opcode@Int masked payload-len@Int 
         header-len:  header-len]]
 
 # Dispatch on len7 to handle normal / 16-bit / 64-bit payload lengths.
-ws-parse-header-extended: [fn@Dict [let bytes@String fin rsv opcode@Int masked len7@Int]
+ws-parse-header-extended: [fn@Dict [let bytes@String fin rsv opcode@Integer masked len7@Integer]
     [if [= len7 126]
         [if [< [length bytes] 4]
             [error "parse-ws-frame-header: too short for 16-bit extended length"]
@@ -227,7 +227,7 @@ ws-parse-header-extended: [fn@Dict [let bytes@String fin rsv opcode@Int masked l
                 [if masked 6 2]]]]]
 
 # Decode byte0/byte1 fields and pass computed values to ws-parse-header-extended.
-ws-parse-header-bytes: [fn@Dict [let bytes@String byte0@Int byte1@Int]
+ws-parse-header-bytes: [fn@Dict [let bytes@String byte0@Integer byte1@Integer]
     [ws-parse-header-bytes-step bytes byte0 byte1
         [= [ws-mod [ws-quot byte0 128] 2] 1]
         [ws-mod [ws-quot byte0 16] 8]
@@ -235,7 +235,7 @@ ws-parse-header-bytes: [fn@Dict [let bytes@String byte0@Int byte1@Int]
         [= [ws-mod [ws-quot byte1 128] 2] 1]
         [ws-payload-len7 byte1]]]
 
-ws-parse-header-bytes-step: [fn@Dict [let bytes@String byte0@Int byte1@Int fin rsv opcode@Int masked len7@Int]
+ws-parse-header-bytes-step: [fn@Dict [let bytes@String byte0@Integer byte1@Integer fin rsv opcode@Integer masked len7@Integer]
     [ws-parse-header-extended bytes fin rsv opcode masked len7]]
 
 ]
@@ -269,7 +269,7 @@ Pong:         10
 # Supports all payload sizes via 7-bit (<126), 16-bit (126-65535), and 64-bit (>=65536) encodings.
 # Type: (Int -> String -> String -> Dict)
 build-ws-frame@[doc: "Build a masked WebSocket frame (client→server, RFC 6455)"]:
-    [fn@Dict [let opcode@Int data@String mask-key@String]
+    [fn@Dict [let opcode@Integer data@String mask-key@String]
         [if [= [length mask-key] 4]
             [ws-build-frame-dispatch opcode data mask-key [length data]]
             [error "build-ws-frame: mask-key must be exactly 4 bytes"]]]

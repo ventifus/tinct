@@ -285,21 +285,21 @@ The `|` operator threads a value left-to-right through a sequence of functions. 
   # Parameter and return types
   add:    [fn@Number [let x@Number y@Number] [+ x y]]
 
-  # Union return type — fn@[A B] means "returns A or B"
-  zero-or-null: [fn@[Int Null] [let n@Int] n]
+  # Union return type
+  zero-or-null: [fn@[or Int Null] [let n@Integer] n]
 
   # Parameterized type
   first:  [fn@a [let xs@[Seq a]] [head xs]]
 
   # Inline record type
-  show:   [fn@String [let p@[name: String  age: Int]]
+  show:   [fn@String [let p@[name: String  age: Integer]]
             [str p.name " is " [str p.age]]]
 
   # TypeVar (polymorphic)
   identity: [fn@a [let x@a] x]
 
   # Runtime type assertion
-  n:      [@Int 42]   # errors if not Int at runtime
+  n:      [@Integer 42]   # errors if not Int at runtime
 ]
 ```
 
@@ -453,11 +453,11 @@ Patterns compose: a constructor pattern's binding can itself be a dict pattern, 
 
 ```tinct
 [
-  # n@Int: bind scrutinee to n, arm fires only when type is Int
+  # n@Integer: bind scrutinee to n, arm fires only when type is Int
   describe: [fn [let x]
     [match x
-      n@Int:  [str "int: " [str n]]
-      n@Str:  [str "str: " n]
+      n@Integer:  [str "int: " [str n]]
+      n@String:  [str "str: " n]
       _:      "other"]]
 
   r1: [describe 42]       # → "int: 42"
@@ -506,7 +506,7 @@ Non-binding arms (no `[let ...]` needed) remain keyed:
   Printable:    [class [let a]]
 
   PrintableStr: [instance Printable [let a@String]: [print: [fn [let x] [str "str:" x]]]]
-  PrintableInt: [instance Printable [let a@Int]:    [print: [fn [let x] [str "int:" [str x]]]]]
+  PrintableInt: [instance Printable [let a@Integer]:    [print: [fn [let x] [str "int:" [str x]]]]]
 
   # Named instances are regular dict values — pass them to generic functions
   format: [fn [let inst x] [inst.print x]]
@@ -555,7 +555,7 @@ Errors propagate automatically through the thunk graph. Unused values never erro
   Result: [type [let a] [Ok value: a] [Error msg: String]]
 
   # raise — always errors, never returns
-  validated: [fn [let port@Int]
+  validated: [fn [let port@Integer]
     [if [and [>= port 1] [<= port 9999]]
       port
       [raise [str "invalid port: " [str port]]]]]

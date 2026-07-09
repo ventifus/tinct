@@ -3,7 +3,7 @@
 # After T-1049 (FnAnnotation.extra) + T-1051 (annotation-of Rust builtin), annotation-of
 # returns the extra dict directly. The `doc:` field goes through FnAnnotation.doc (a dedicated
 # STANDARD_ANN_KEY path); non-standard fields (like `version:`) go through FnAnnotation.extra.
-[f: [fn@[doc: "adds one"  version: "1.0"] [let x@Int] [+ x 1]]]
+[f: [fn@[doc: "adds one"  version: "1.0"] [let x@Integer] [+ x 1]]]
 [ann: [annotation-of f]]
 [result-doc: [= ann.doc "adds one"]
  result-ver: [= ann.version "1.0"]]

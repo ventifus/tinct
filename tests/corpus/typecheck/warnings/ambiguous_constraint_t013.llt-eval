@@ -4,7 +4,7 @@
 # When generalize_with_doc runs there are no generalizable TypeVars, so 'a'
 # is ambiguous — the constraint will be silently dropped and T013 is emitted.
 # Eval succeeds because type errors/warnings are advisory only.
-[my_fn: [fn@[constraint: [a: Comparable] return: Int] [let x@Int] x]]
+[my_fn: [fn@[constraint: [a: Comparable] return: Int] [let x@Integer] x]]
 === out
 Dict({"my_fn": Function(x)})
 

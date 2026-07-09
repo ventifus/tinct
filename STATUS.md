@@ -35,7 +35,7 @@ Every sprint from TODO.md has been implemented and moved to DONE.md. Summary of 
 | Record/Map type split | ✓ Complete — `Record` (known-field structural) vs `Map[K V]` (homogeneous); `Dict = Record ∨ Map` BAS union; `get?` (returns `V | Null`); `record?`/`map?` predicates; order-insensitive structural dict equality with cycle detection |
 | Macros | ✓ Complete — `[defmacro]`, quasiquoting `[quote]`/`[unquote]`, string interpolation `i"..."` via `[defmacro tmpl]`, macro hygiene |
 | Constraint annotations | ✓ Complete — `fn@[return: T  constraint: [a: Comparable]  doc: "..."  bind: [a]  kinds: [a: Operator]]` named-key metadata dict; `fn@Type` shorthand permanent |
-| Parameterized annotations | ✓ Complete — `@Seq@Int`, `@Map@[K: V]`, `@Map@[key: K  value: V]`, `@Record@[field: Type ...]`, `@Record` (bare); chained `@` via `Annotation::Annotated` AST node |
+| Parameterized annotations | ✓ Complete — `@Seq@Integer`, `@Map@[K: V]`, `@Map@[key: K  value: V]`, `@Record@[field: Type ...]`, `@Record` (bare); chained `@` via `Annotation::Annotated` AST node |
 | Inference completeness | ✓ Complete — SCC-based DICT-GEN (Tarjan + topo sort); nested dict polymorphism via `TypeScheme.inner_schemes`; variadic params typed as `Seq(T)` with call-site unification |
 | Row-level constraint propagation | ✓ Complete — `[CONSTRAIN-FIELD]`/`[CONSTRAIN-INTER]`/`[CONSTRAIN-UNION]`/`[CONSTRAIN-NEVER]`/`[CONSTRAIN-TOP]` in `satisfies_constraint`; `Unknown` already done |
 | Multi-parameter type classes | ✓ Complete — `Add a b c \| (a,b)→c` MPTCs with functional dependencies; `Add`/`Sub`/`Mul`/`Div` class hierarchy; arithmetic builtins re-typed; coherence check on duplicate instances |

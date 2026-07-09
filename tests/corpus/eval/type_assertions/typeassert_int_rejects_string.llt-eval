@@ -1,4 +1,4 @@
 # Structural TypeAssert: Int annotation with String value fails
-[@Int "hello"]
+[@Integer "hello"]
 === out
 String("hello")

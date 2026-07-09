@@ -11,7 +11,7 @@
 
 [
   # Minimal reproducer: type with payload constructor before Boolean, then instance references Boolean.True
-  src: "[\n  ErrorType: [type [Error span: Any]]\n  Boolean: [type True False]\n  MyClass: [class [let a]]\n  [instance MyClass\n    [let a@Int]: [method: [fn [let x] Boolean.True]]]\n]\n[Boolean.True]\n"
+  src: "[\n  ErrorType: [type [Error span: Any]]\n  Boolean: [type True False]\n  MyClass: [class [let a]]\n  [instance MyClass\n    [let a@Integer]: [method: [fn [let x] Boolean.True]]]\n]\n[Boolean.True]\n"
 
   parse:  [builtin-parse [builtin-str-bytes src] "repro.llt"]
   result: [builtin-resolve parse.program]

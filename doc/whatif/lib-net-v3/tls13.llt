@@ -30,7 +30,7 @@
         [bytes ByteOrder.Network len]   # TlsLength (ByteOrder.Network)
         r.payload]]]
 
-  tls-nonce: [fn [let iv@[Bytes 12] seq@Int]
+  tls-nonce: [fn [let iv@[Bytes 12] seq@Integer]
     [bytes-xor iv [concat [0x00 0x00 0x00 0x00] [bytes ByteOrder.Network [@UInt64 seq]]]]]
 
   # aad: RFC 8446 §5.2 additional data = 5-byte TLSCiphertext header.
@@ -84,14 +84,14 @@
   strip-inner-ct: [fn [let plain@Bytes]
     [find-last-nonzero plain [- [length plain] 1]]]
 
-  find-last-nonzero: [fn [let b@Bytes i@Int]
+  find-last-nonzero: [fn [let b@Bytes i@Integer]
     [if [< i 0]
       [error "TLS: all-zero decrypted record"]
       [if [= [get b i] 0]
         [find-last-nonzero b [- i 1]]
         [slice 0 i b]]]]
 
-  tls-read-acc: [fn [let conn@TlsConnection remaining@Int acc@[Seq Bytes]]
+  tls-read-acc: [fn [let conn@TlsConnection remaining@Integer acc@[Seq Bytes]]
     [if [= remaining 0]
       [reduce concat [] acc]
       [block
@@ -115,7 +115,7 @@
        sni:       sni
        negotiated-alpn: alpn]]]
 
-  encode-hs: [fn [let type@Int body@Bytes]
+  encode-hs: [fn [let type@Integer body@Bytes]
     [len: [length body]]
     [concat [bytes ByteOrder.Network [@UInt8 type]]
             [bytes ByteOrder.Network [@UInt24 len]]
@@ -243,7 +243,7 @@
       [CipherSuite.Aes256GcmSha384]:        [hash: Sha384.Sha384  key-len: 32  iv-len: 12]
       [CipherSuite.Chacha20Poly1305Sha256]: [hash: Sha256.Sha256  key-len: 32  iv-len: 12]]]
 
-  bytes-repeat: [fn [let val@Int n@Int]
+  bytes-repeat: [fn [let val@Integer n@Integer]
     [reduce [fn [let acc _] [concat acc [bytes val]]] [] [range 0 n]]]
 
   # HMAC dispatch per cipher suite hash (RFC 2104).
@@ -266,7 +266,7 @@
                                               payload: [tls-decrypt-conn-record conn record]]
       [Result.Error _]:   Closed.Closed]]
 
-  tls-read-bytes: [fn [let conn@TlsConnection n@Int]
+  tls-read-bytes: [fn [let conn@TlsConnection n@Integer]
     [tls-read-acc conn n []]]
 
   tls-write-bytes: [fn [let conn@TlsConnection data@Bytes]
@@ -278,7 +278,7 @@
 
   # ── TLS 1.3 key schedule (internal — RFC 8446 §7.1) ──
 
-  hkdf-expand-label: [fn [let secret@Bytes label@String context@Bytes len@Int hash@HkdfHash]
+  hkdf-expand-label: [fn [let secret@Bytes label@String context@Bytes len@Integer hash@HkdfHash]
     [label-str: [str "tls13 " label]]
     [info: [concat [bytes ByteOrder.Network [@UInt16 len]]
                    [bytes ByteOrder.Network [@UInt8 [length [str-bytes label-str]]]] [str-bytes label-str]

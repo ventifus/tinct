@@ -56,7 +56,7 @@ write-lines@[doc: "Write a sequence of lines to a file handle"]: [fn [let handle
 
 # has-cap? removed — Handle/WriteHandle capability dict is gone.
 # Protocol dict handles (from `open`) use has? to check for method existence.
-has-cap?@[doc: "Check if a method key exists on a protocol dict handle."]: [fn@Bool [let h cap@String]
+has-cap?@[doc: "Check if a method key exists on a protocol dict handle."]: [fn@Boolean [let h cap@String]
   [has? cap h]]
 
 # Copy a file from src to dst.

@@ -2,6 +2,6 @@
 # First stage produces a string, second stage expects Int
 "not-a-number"
 ---
-[@Int %]
+[@Integer %]
 === out
 String("not-a-number")

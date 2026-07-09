@@ -1,5 +1,5 @@
 [
-  parse-headers: [fn [let i@Int n@Int acc@Dict]
+  parse-headers: [fn [let i@Integer n@Integer acc@Dict]
     [if [= i n]
       acc
       [parse-headers [+ i 1] n [merge acc [header-num: i]]]]]

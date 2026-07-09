@@ -309,6 +309,7 @@ pub(crate) async fn typecheck_case_arm(
                                     state,
                                     Some(constructor_name.as_str()),
                                     Some(binding.span.clone()),
+                                    &binding.span,
                                 );
                                 // If the constructor is a single-param function, extract the param type
                                 match ctor_ty {
@@ -485,13 +486,13 @@ pub(crate) async fn typecheck_case_arm(
 
             // Type-check body with extended environment (body is already Arc<SurfaceNode>)
             let arm_env_arc = Arc::new(RwLock::new(arm_env_inner));
-            infer_surface_expr(body, &arm_env_arc, state, type_map)
+            infer_surface_expr(body, &arm_env_arc, state, type_map).await
         }
 
         _ => {
             // Exact-value match: infer pattern expression type, then infer body.
             // Both pattern and body are already Arc<SurfaceNode> — no conversion needed.
-            let pattern_ty = infer_surface_expr(pattern, env, state, type_map)?;
+            let pattern_ty = infer_surface_expr(pattern, env, state, type_map).await?;
 
             // T020: Dead-arm warning — check if pattern type is disjoint from scrutinee type.
             // If types_are_disjoint(scrutinee_ty, pattern_ty) is true, the arm can never match
@@ -525,7 +526,7 @@ pub(crate) async fn typecheck_case_arm(
             }
 
             // Body is checked in the enclosing environment (no new bindings from exact-value match)
-            infer_surface_expr(body, env, state, type_map)
+            infer_surface_expr(body, env, state, type_map).await
         }
     }
 }
@@ -707,7 +708,7 @@ pub(crate) async fn infer_fn(
     let mut fn_env_inner = crate::env::Env::with_parent(Arc::clone(env));
     for (i, param) in params.iter().enumerate() {
         if param.node.variadic {
-            let elem_ty = state.fresh_type_var();
+            let elem_ty = state.fresh_type_var(&param.span);
             let variadic_ty = Type::Record(crate::type_def::Row {
                 fields: indexmap::IndexMap::new(),
                 tail: crate::type_def::RowTail::Uniform {
@@ -810,7 +811,7 @@ pub(crate) async fn infer_fn(
             // mode to actually BIND the TypeVars via constraint solving. See is_subtype_bas
             // docstring and B-446 for the full explanation.
             let result = if actual_ann.has_inference_vars() {
-                let body_ty = infer_surface_expr(body, &fn_env, state, type_map)?;
+                let body_ty = infer_surface_expr(body, &fn_env, state, type_map).await?;
                 let result = Box::pin(unify(
                     &body_ty,
                     &actual_ann,
@@ -827,7 +828,7 @@ pub(crate) async fn infer_fn(
                 state.apply(&actual_ann)
             } else {
                 // Use checking mode for concrete return types (no type variables)
-                check_surface_expr(body, &actual_ann, &fn_env, state, type_map)?;
+                check_surface_expr(body, &actual_ann, &fn_env, state, type_map).await?;
                 actual_ann
             };
 
@@ -835,7 +836,7 @@ pub(crate) async fn infer_fn(
             state.expected_return = prev_expected_return;
             result
         }
-        None => infer_surface_expr(body, &fn_env, state, type_map)?,
+        None => infer_surface_expr(body, &fn_env, state, type_map).await?,
     };
 
     // Check if any parameter is variadic

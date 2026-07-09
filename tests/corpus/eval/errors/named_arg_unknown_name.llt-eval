@@ -1,5 +1,5 @@
 # Named arg type checking: unknown param name — runtime error (type-check warning not yet implemented)
-[f: [fn [let x@Int y@Int] [call $+ $x $y]]
+[f: [fn [let x@Integer y@Integer] [call $+ $x $y]]
  result: [call $f 42 z: 999]]
 === error
 missing argument for required parameter 'y' (defined at 2:10-2:29)

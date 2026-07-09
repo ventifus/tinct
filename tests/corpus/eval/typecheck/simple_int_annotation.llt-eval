@@ -1,4 +1,4 @@
 # Simple type annotation: Int value passes Int assertion
-[@Int 42]
+[@Integer 42]
 === out
 Int(42)

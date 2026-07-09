@@ -29,25 +29,25 @@
     [AsnSeq      [Seq asnValue]]    # SEQUENCE — recursive
     [AsnSet      [Seq asnValue]]    # SET — recursive
     [AsnTime     String]            # UTCTime / GeneralizedTime as raw string
-    [AsnRaw      tag@Int  data@Bytes]]  # unknown/unsupported tag — raw bytes preserved
+    [AsnRaw      tag@Integer  data@Bytes]]  # unknown/unsupported tag — raw bytes preserved
 ]
 
 # ── Internal. ────────────────────────────────────────────────────────────────────────────────────
 
 [
   # Read a multi-byte big-endian unsigned integer from a byte slice.
-  decode-be-int: [fn [let b@Bytes offset@Int len@Int]
+  decode-be-int: [fn [let b@Bytes offset@Integer len@Integer]
     [reduce [fn [let acc i] [+ [* acc 256] [get b [+ offset i]]]] 0 [range 0 len]]]
 
   # ITU-T X.690 §8.1 OID arc decoding: high-bit continuation bytes, 7 bits per byte.
-  decode-oid-arc: [fn [let b@Bytes offset@Int acc@Int]
+  decode-oid-arc: [fn [let b@Bytes offset@Integer acc@Integer]
     [byte:    [get b offset]]
     [new-acc: [+ [* acc 128] [band byte 0x7F]]]
     [if [= [band byte 0x80] 0]
       [arc: new-acc  next: [+ offset 1]]
       [decode-oid-arc b [+ offset 1] new-acc]]]
 
-  decode-oid-arcs: [fn [let b@Bytes offset@Int acc@[Seq Int]]
+  decode-oid-arcs: [fn [let b@Bytes offset@Integer acc@[Seq Int]]
     [if [>= offset [length b]]
       acc
       [block
@@ -67,7 +67,7 @@
   # Parse one DER TLV (Tag-Length-Value) element from b starting at offset.
   # Returns {value: AsnValue  next: Int} where next is the offset after this element.
   # Supports: short-form (≤127 byte) and long-form (multi-byte) length encoding.
-  der-parse-one: [fn [let b@Bytes offset@Int]
+  der-parse-one: [fn [let b@Bytes offset@Integer]
     [tag-byte:    [get b offset]]
     [constructed: [= [band tag-byte 0x20] 0x20]]
     [tag-num:     [band tag-byte 0x1F]]
@@ -107,7 +107,7 @@
     [value: value  next: [+ len-result.value-offset len-result.len]]]
 
   # Parse a sequence of DER elements from b[offset..] into a [Seq AsnValue].
-  der-parse-seq: [fn [let b@Bytes offset@Int acc@[Seq asnValue]]
+  der-parse-seq: [fn [let b@Bytes offset@Integer acc@[Seq asnValue]]
     [if [>= offset [length b]]
       acc
       [[fn [let result]

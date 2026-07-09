@@ -178,12 +178,12 @@ Any pure-tinct function with this signature is a Layer. There is no Layer typecl
 
 # SOCKS5 proxy tunnel — pure tinct in protocols/socks5.llt
 # cap@NetCap is re-validated against the tunnel target to prevent SSRF
-[socks5-layer handle@Handle cap@NetCap host@String port@Int creds@[Dict Null]]
+[socks5-layer handle@Handle cap@NetCap host@String port@Integer creds@[Dict Null]]
   → Handle[... Stream]
 
 # HTTP CONNECT tunnel — pure tinct in net.llt
 # cap@NetCap is re-validated against the tunnel target to prevent SSRF
-[http-connect-layer handle@Handle cap@NetCap host@String port@Int headers@Dict]
+[http-connect-layer handle@Handle cap@NetCap host@String port@Integer headers@Dict]
   → Handle[... Stream]
 ```
 

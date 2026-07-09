@@ -16,14 +16,14 @@ csv-quote: [fn@String [let s@String]
   [str "\"" [replace "\"" "\"\"" s] "\""]]
 
 # Internal: format header row
-csv-header: [fn@String [let ks@Dict i@Int acc@String]
+csv-header: [fn@String [let ks@Dict i@Integer acc@String]
   [if [>= i [length ks]]
     [str acc "\n"]
     [csv-header ks [+ i 1]
       [str acc [if [> i 0] "," ""] [csv-quote [get i ks]]]]]]
 
 # Internal: format a single data row using pre-determined column order
-csv-row: [fn@String [let row@Dict ks@Dict i@Int acc@String]
+csv-row: [fn@String [let row@Dict ks@Dict i@Integer acc@String]
   [if [>= i [length ks]]
     [str acc "\n"]
     [csv-row row ks [+ i 1]

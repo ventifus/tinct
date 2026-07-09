@@ -27,11 +27,11 @@
 # Tinct's memoization ensures the connection is created exactly once.
 # addr is always visible, enabling tls to infer SNI from [Hostname h] before committing.
 [instance ByteStream
-  [let h@TcpHandle]: [read:  [fn [let h@TcpHandle n@Int]  [read  h.stream n]]
+  [let h@TcpHandle]: [read:  [fn [let h@TcpHandle n@Integer]  [read  h.stream n]]
                       write: [fn [let h@TcpHandle b@Bytes] [write h.stream b]]]]
 
 [instance ByteStream
-  [let h@FileHandle]: [read:  [fn [let h@FileHandle n@Int]  [read  h.file n]]
+  [let h@FileHandle]: [read:  [fn [let h@FileHandle n@Integer]  [read  h.file n]]
                        write: [fn [let h@FileHandle b@Bytes] [write h.file b]]]]
 
 [instance Seekable
@@ -58,7 +58,7 @@
   # tcp-connect returns [Result Handle NetError] — no try or string classification needed.
   # Failed attempts are recorded as ConnectionAttempt values in err-ch so that if all
   # fail, AllConnectionsFailed carries the full per-address failure detail.
-  happy-connect: [fn@[return: [or Handle NetError]] [let cap@NetCap port@Int addrs@[Seq IpAddress] host@Host]
+  happy-connect: [fn@[return: [or Handle NetError]] [let cap@NetCap port@Integer addrs@[Seq IpAddress] host@Host]
     [n:          [length addrs]
      result-ch:  [channel 1]
      err-ch:     [channel n]    # bounded by n — all failures fit without blocking
@@ -87,7 +87,7 @@
                                       attempts: [collect-channel err-ch]]]
 
   # Format a 16-bit integer as lowercase hex with no leading zeros (RFC 5952 §4.1).
-  hex16: [fn [let n@Int]
+  hex16: [fn [let n@Integer]
     [digits: "0123456789abcdef"]
     [if [= n 0]
       "0"

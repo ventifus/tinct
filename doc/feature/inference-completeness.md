@@ -28,7 +28,7 @@ Mutually recursive entries form a single group and are inferred together. Each e
 [
   even: [fn [n] [if [= n 0] true  [odd  [- n 1]]]]
   odd:  [fn [n] [if [= n 0] false [even [- n 1]]]]
-  # even : Fn@Bool [Int], odd : Fn@Bool [Int]
+  # even : Fn@Boolean [Int], odd : Fn@Boolean [Int]
   # correctly monomorphic — they call each other
 ]
 ```
@@ -40,7 +40,7 @@ Mutually recursive entries form a single group and are inferred together. Each e
 bad: [fn [x] [bad [bad x]]]
 
 # OK: annotation resolves the ambiguity
-good: [fn@Int [x@Int] [good [good x]]]
+good: [fn@Integer [x@Integer] [good [good x]]]
 ```
 
 ## Polymorphic Access Through Visible Nested Dicts
@@ -96,23 +96,23 @@ When argument types vary by position — the printf pattern — use a recursive 
 
 ```tinct
 [FormatResult: [class [r@*]
-  [apply-fmt: [fn@r [template@Str collected@[Seq Str]]]]]]
+  [apply-fmt: [fn@r [template@String collected@[Seq Str]]]]]]
 
 [FormatStr: [instance [FormatResult Str]
   [apply-fmt: [fn [t args] [str-format t args]]]]]
 
 [FormatFn: [instance [FormatResult r  constraint: [r: FormatResult]]
-               [FormatResult [fn@r [a@Str]]]
+               [FormatResult [fn@r [a@String]]]
   [apply-fmt: [fn [t args] [fn [x] [apply-fmt t [conj args x]]]]]]]
 
-format: [fn@[return: r  constraint: [r: FormatResult]] [template@Str]
+format: [fn@[return: r  constraint: [r: FormatResult]] [template@String]
   [apply-fmt template []]]
 ```
 
 Each argument application peels one layer from the chain:
 
 ```tinct
-[format "%d items"]         # : Fn@Str [Int]
-[format "%d items: %s"]     # : Fn@Str [Int Str]
+[format "%d items"]         # : Fn@String [Integer]
+[format "%d items: %s"]     # : Fn@String [Integer String]
 [[format "%d items" 42]]    # : Str → "42 items"
 ```

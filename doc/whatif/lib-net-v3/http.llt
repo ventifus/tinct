@@ -19,7 +19,7 @@
   # SvcParams fields are accessed directly: sm.params.alpn, sm.params.port, etc.
   # No helper functions needed — the record type encodes the structure.
 
-  http-protocol-race: [fn [let cap@NetCap host@String port@Int
+  http-protocol-race: [fn [let cap@NetCap host@String port@Integer
                             alpn@[Seq String] addrs@[Seq IpAddress] ech@Bytes]
     [result-ch: [channel 1]
      h3?:       [any? [fn [let p] [= p "h3"]] alpn]
@@ -48,7 +48,7 @@
         [par-map [fn [let t] [cancel-task t]] [append h3-tasks h2-tasks]]
         result]]
 
-  quic-h3-connect: [fn [let cap@NetCap sni@String addr@IpAddress port@Int ech@Bytes]
+  quic-h3-connect: [fn [let cap@NetCap sni@String addr@IpAddress port@Integer ech@Bytes]
     [quic-connect cap [addr: addr  port: [@Port port]]
                   [sni: sni  alpn: ["h3"]  ech: ech  trust-roots: SystemRoots]]]
 
@@ -59,7 +59,7 @@
   tls-with-sni: [fn [let sni@String alpn@[Seq String] ech@Bytes trust-roots h@TcpHandle]
     [TlsHandle [handle: h  sni: sni  alpn: alpn  ech: ech  trust-roots: trust-roots]]]
 
-  tcp-h2-connect: [fn [let cap@NetCap sni@String addr@IpAddress port@Int ech@Bytes]
+  tcp-h2-connect: [fn [let cap@NetCap sni@String addr@IpAddress port@Integer ech@Bytes]
     [tcp-connect cap [addr: addr  port: [@Port port]]]
       | [tls-with-sni sni ["h2"] ech SystemRoots]
       | tls-commit]
@@ -91,7 +91,7 @@
   # HTTP error type — callers distinguish application-level failures from transport failures.
   # Transport failures (TCP, TLS, DNS) surface as NetError or TlsError from the connect layer.
   HttpError: [type
-    [StatusError      status@Int  body@Bytes]   # 4xx/5xx response; body may contain error detail
+    [StatusError      status@Integer  body@Bytes]   # 4xx/5xx response; body may contain error detail
     [ProtocolError    reason@String]             # HTTP/2 or HTTP/3 framing violation
     [TooManyRedirects url@Url]                  # redirect loop or depth limit exceeded
     [InvalidResponse  reason@String]]            # unparseable response (truncated, corrupt, etc.)
@@ -99,7 +99,7 @@
   SvcbRecord: [type
     [AliasMode  target@String]           # SvcPriority=0 (RFC 9460 §3): redirect to target
     [ServiceMode                         # SvcPriority>0: connection hints
-      priority@Int                       # lower = more preferred when multiple records exist
+      priority@Integer                       # lower = more preferred when multiple records exist
       target@[or String Absent]          # Absent/"." = use original QNAME (RFC 9460 §2.5.2)
       params@SvcParams                   # fully-typed SvcParams — access via params.alpn etc.
       other@[Map Int Bytes]]]            # unknown SvcParamKeys not in the known set (1,3,4,5,6)
@@ -110,7 +110,7 @@
   https-channel: [fn [let cap@NetCap port@Port cert@TlsServerConfig]
     [http1-serve [[tcp-listen-port cap port] | [tls cert]]]]
 
-  svcb-lookup: [fn [let cap@NetCap host@String depth@Int]
+  svcb-lookup: [fn [let cap@NetCap host@String depth@Integer]
     [if [> depth 3]
       null
       [match [try [await [task [resolve cap DnsQtype.HTTPS host]]]]
@@ -149,7 +149,7 @@
                   null]]
         [Result.Error _]: null]]]
 
-  http-connect: [fn [let cap@NetCap host@String port@Int]
+  http-connect: [fn [let cap@NetCap host@String port@Integer]
     [svcb-task: [task [svcb-lookup cap host 0]]
      v6-task:   [task [lookup-ips cap DnsQtype.AAAA host]]
      v4-task:   [task [lookup-ips cap DnsQtype.A    host]]]
@@ -224,7 +224,7 @@
       [log [str req.method " " req.path " → " resp.status " (" [timestamp-diff [now %clock] t0] "ms)"]]
       resp]]
 
-  timeout: [fn [let ms@Int handler@[Fn [HttpRequest] HttpResponse]]
+  timeout: [fn [let ms@Integer handler@[Fn [HttpRequest] HttpResponse]]
     [fn [let req@HttpRequest]
       [match [try [await [async-timeout [millis ms] [task [handler req]]]]]
         [Result.Ok resp]:    resp

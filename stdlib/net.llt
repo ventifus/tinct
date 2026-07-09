@@ -16,7 +16,7 @@
 [
   # Recursively parse header lines into accumulator dict.
   # Each line "Name: value" — skips malformed lines.
-  parse-header-fields-impl: [fn@Dict [let lines@Dict i@Int n@Int acc@Dict]
+  parse-header-fields-impl: [fn@Dict [let lines@Dict i@Integer n@Integer acc@Dict]
     [if [= i n]
       acc
       [if [= [length [split ": " [get i lines]]] 1]

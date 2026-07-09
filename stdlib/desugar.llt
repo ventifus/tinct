@@ -55,7 +55,7 @@ wrap-in-lambda: [fn [let expr@Expression]
 # try-wrap: Check if an expression should be wrapped based on WRAP rules.
 #
 # Returns wrapped expression if wrapping occurred, or [] if no wrapping needed.
-try-wrap: [fn [let expr@Expression depth@Int]
+try-wrap: [fn [let expr@Expression depth@Integer]
   [if [> depth 0]
     []  # No wrapping at depth > 0
     [match expr
@@ -94,7 +94,7 @@ has-underscore-param: [fn [let params]
 # Then recurse into children at depth+1 (inside the lambda, `$_` is bound).
 #
 # At depth>0, only recurse into children (no wrapping).
-desugar-expr-impl: [fn [let expr@Expression depth@Int]
+desugar-expr-impl: [fn [let expr@Expression depth@Integer]
   # Try wrapping at depth 0
   [wrapped: [try-wrap expr depth]]
   [if [not [= wrapped []]]
@@ -109,7 +109,7 @@ desugar-expr-impl: [fn [let expr@Expression depth@Int]
 # desugar-children: Recurse into all children of an expression.
 #
 # For Fn nodes with `_` parameter, increment depth when recursing into the body.
-desugar-children: [fn [let expr@Expression depth@Int]
+desugar-children: [fn [let expr@Expression depth@Integer]
   [match expr
     # Literals: no children
     [case [let _] [IntLiteral value: _ span: _]   expr]
@@ -192,21 +192,21 @@ desugar-children: [fn [let expr@Expression depth@Int]
     _: expr]]
 
 # desugar-entry: Desugar a dict entry (key and value).
-desugar-entry: [fn [let e@Entry depth@Int]
+desugar-entry: [fn [let e@Entry depth@Integer]
   [Entry
     key: e.key  # Keys can be expressions but desugaring them is low priority
     value: [desugar-expr-impl e.value depth]
     span: e.span]]
 
 # desugar-named-arg: Desugar a named argument value.
-desugar-named-arg: [fn [let na@NamedArg depth@Int]
+desugar-named-arg: [fn [let na@NamedArg depth@Integer]
   [NamedArg
     name: na.name
     value: [desugar-expr-impl na.value depth]
     span: na.span]]
 
 # desugar-match-arm: Desugar a match arm (pattern guard not implemented yet).
-desugar-match-arm: [fn [let a@MatchArm depth@Int]
+desugar-match-arm: [fn [let a@MatchArm depth@Integer]
   [MatchArm
     pattern: a.pattern  # Patterns don't contain runtime expressions
     guard: a.guard  # Guard desugaring skipped for simplicity

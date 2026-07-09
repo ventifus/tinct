@@ -5,7 +5,7 @@
 Calculate days between two timestamps
 
 ```tinct
-fn@Int [let a@Timestamp b@Timestamp]
+fn@Integer [let a@Timestamp b@Timestamp]
 ```
 
 ### `timestamp-in-range?`
@@ -13,7 +13,7 @@ fn@Int [let a@Timestamp b@Timestamp]
 Check if a timestamp is within a range
 
 ```tinct
-fn@Bool [let t@Timestamp start@Timestamp end@Timestamp]
+fn@Boolean [let t@Timestamp start@Timestamp end@Timestamp]
 ```
 
 ### `format-date`

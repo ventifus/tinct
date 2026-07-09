@@ -18,7 +18,7 @@
 
 # Annotation type — type annotations in the AST
 [type Annotation
-  [Simple   name: String]                    # @Int, @Bool
+  [Simple   name: String]                    # @Integer, @Boolean
   [PropDict entries: [Seq Entry]]         # @[return: T  constraint: ...]
   Null]                                   # no annotation
 

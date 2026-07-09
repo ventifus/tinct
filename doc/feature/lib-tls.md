@@ -105,7 +105,7 @@ With `Handle@[Binary Readable Writable Stream]`, HTTP/1.0 is pure-tinct.
 
 ```tinct
 # stdlib/net.llt — HTTP/1.0 over any Readable Writable Stream Handle
-http-get: [fn [connector@Connector url@Url headers@Dict tls-opts@[TlsOpts Null]]
+http-get: [fn [connector@Connector url@Url headers@Dict tls-opts@[or TlsOpts Null]]
   [conn: [match url.scheme
     "https": [tls-connect connector Tcp url.host url.port [tls-opts or []]]
     "http":  [connect connector Tcp url.host url.port]
@@ -472,42 +472,42 @@ pins.
 [
   Uri: [type [
     scheme:   @String
-    username: @[String Null]
-    password: @[String Null]
-    host:     @[String Null]
-    port:     @[Int Null]
+    username: @[or String Null]
+    password: @[or String Null]
+    host:     @[or String Null]
+    port:     @[or Int Null]
     path:     @String
-    query:    @[String Null]
-    fragment: @[String Null]
+    query:    @[or String Null]
+    fragment: @[or String Null]
   ]]
 
   Url: [type [
     scheme:   @String
-    username: @[String Null]
-    password: @[String Null]
+    username: @[or String Null]
+    password: @[or String Null]
     host:     @String
     port:     @Int
     path:     @String
-    query:    @[String Null]
-    fragment: @[String Null]
+    query:    @[or String Null]
+    fragment: @[or String Null]
   ]]
 
   Urn: [type [
     nid:         @String
     nss:         @String
-    r-component: @[String Null]
-    q-component: @[String Null]
-    fragment:    @[String Null]
+    r-component: @[or String Null]
+    q-component: @[or String Null]
+    fragment:    @[or String Null]
   ]]
 
   TlsOpts: [type [
-    ca-bundle:       @[Handle Null]
-    no-system-roots: @[Bool Null]
-    mozilla-roots:   @[Bool Null]
-    client-cert:     @[Handle Null]
-    client-key:      @[Handle Null]
-    pins:            @[[Seq SpkiPin] Null]
-    alpn:            @[[Seq String] Null]
+    ca-bundle:       @[or Handle Null]
+    no-system-roots: @[or Bool Null]
+    mozilla-roots:   @[or Bool Null]
+    client-cert:     @[or Handle Null]
+    client-key:      @[or Handle Null]
+    pins:            @[or [Seq SpkiPin] Null]
+    alpn:            @[or [Seq String] Null]
   ]]
 
   PeerCert: [type [
@@ -520,26 +520,26 @@ pins.
   ]]
 
   Connector: [type [
-    connect: [fn@Handle [transport@Any  host@String  port@Int  opts@Any]]
+    connect: [fn@Handle [transport@Any  host@String  port@Integer  opts@Any]]
   ]]
 ]
 
 # Builtin signatures:
-connect     : [fn@Handle      [connector@Connector  transport@Any  host@String  port@Int]]
-tls-connect : [fn@Handle      [connector@Connector  transport@Any  host@String  port@Int  opts@TlsOpts]]
+connect     : [fn@Handle      [connector@Connector  transport@Any  host@String  port@Integer]]
+tls-connect : [fn@Handle      [connector@Connector  transport@Any  host@String  port@Integer  opts@TlsOpts]]
 tls-connect : [fn@Handle      [h@Handle  sni@String  opts@TlsOpts]]
 tls-peer-cert : [fn@PeerCert  [h@Handle]]
 http-connect  : [fn@HttpConn  [connector@Connector  uri@Uri  opts@Any]]
 http-connect  : [fn@HttpConn  [h@Handle  uri@Uri]]
-socks5-connect : [fn@Handle   [h@Handle  host@String  port@Int  creds@Any]]
-proxy-connect  : [fn@Handle   [h@Handle  host@String  port@Int]]
+socks5-connect : [fn@Handle   [h@Handle  host@String  port@Integer  creds@Any]]
+proxy-connect  : [fn@Handle   [h@Handle  host@String  port@Integer]]
 uri           : [fn@Uri     [s@String]]
 url           : [fn@Url     [s@String]]
 urn           : [fn@Urn     [s@String]]
-uri-params    : [fn@Dict    [u@[Uri Url]]]
+uri-params    : [fn@Dict    [u@[or Uri Url]]]
 uri-origin    : [fn@String  [u@Url]]
-uri->string   : [fn@String  [u@[Uri Url Urn]]]
-http-get      : [fn@Dict  [connector@Connector  uri@Uri  headers@Dict  tls-opts@[TlsOpts Null]]]
+uri->string   : [fn@String  [u@[or Uri Url Urn]]]
+http-get      : [fn@Dict  [connector@Connector  uri@Uri  headers@Dict  tls-opts@[or TlsOpts Null]]]
 fetch         : [fn@Dict  [connector@Connector  uri@Uri]]
 ```
 

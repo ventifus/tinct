@@ -1,10 +1,10 @@
 # Over-broad annotation on inner fn nested inside an unannotated outer fn
 # walk_for_functions must recurse into unannotated fn bodies so T012 is emitted
 # for the inner @Number annotation even though the outer fn has no return annotation.
-[outer: [fn [let x] [fn@Number [let y@Int] y]]]
+[outer: [fn [let x] [fn@Number [let y@Integer] y]]]
 === out
 Dict({"outer": Function(x)})
 
 === warn
 inferred type is Unknown — consider adding a type annotation
-annotation @Number is over-broad — inferred type is Int; consider using @Int
+annotation @Number is over-broad — inferred type is Int; consider using @Integer

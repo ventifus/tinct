@@ -311,7 +311,7 @@ pub(crate) async fn resolve_type_assert(
     .map_err(|e| vec![e])?;
 
     // Use checking mode for TypeAssert inner expression (doc/06 §Bidirectional Typing).
-    let check_result = check_surface_expr(inner, &expected, env, state, type_map);
+    let check_result = check_surface_expr(inner, &expected, env, state, type_map).await;
 
     // If checking fails, propagate errors (TypeAssert failures are hard type errors).
     if let Err(type_errors) = check_result {
@@ -323,7 +323,7 @@ pub(crate) async fn resolve_type_assert(
 
     // Validate the default value type — hard error if the default cannot satisfy the asserted type.
     if let Some(default_node) = annotation.node.get_property("default") {
-        match infer_surface_expr(default_node, env, state, type_map) {
+        match infer_surface_expr(default_node, env, state, type_map).await {
             Ok(default_ty) => {
                 // Apply type_vars bindings to both types before comparison — access-chain constraints
                 // may have bound TypeVars (e.g., $data.name generates row-variable
@@ -530,13 +530,14 @@ pub(crate) async fn resolve_fn_metadata(
                                         }
                                         // Create fresh TypeVar and register in ann_mapping
                                         let level = state.level;
-                                        let (fresh, _) = state.alloc_type_var_at_level(
-                                            level,
-                                            Some(name.as_str()),
-                                            None,
-                                            None,
-                                            crate::types::Kind::Type,
-                                        );
+                                        let fresh = state
+                                            .fresh_type_var_with(
+                                                Some(name.as_str()),
+                                                Some(level),
+                                                Kind::Type,
+                                                &bind_entry.node.value.span,
+                                            )
+                                            .0;
                                         // Register source name for better T013 diagnostics
                                         state
                                             .type_var_source_names
@@ -625,13 +626,14 @@ pub(crate) async fn resolve_fn_metadata(
                                     }));
                                 }
                                 let level = state.level;
-                                let (fresh, _) = state.alloc_type_var_at_level(
-                                    level,
-                                    Some(name),
-                                    None,
-                                    None,
-                                    crate::types::Kind::Type,
-                                );
+                                let fresh = state
+                                    .fresh_type_var_with(
+                                        Some(name),
+                                        Some(level),
+                                        Kind::Type,
+                                        &name_span,
+                                    )
+                                    .0;
                                 // Register source name for better T013 diagnostics
                                 state
                                     .type_var_source_names
@@ -803,13 +805,14 @@ pub(crate) async fn resolve_fn_metadata(
                                         existing_var.clone()
                                     } else {
                                         let level = state.level;
-                                        let (fresh, _) = state.alloc_type_var_at_level(
-                                            level,
-                                            Some(typevar_name.as_str()),
-                                            None,
-                                            None,
-                                            crate::types::Kind::Type,
-                                        );
+                                        let fresh = state
+                                            .fresh_type_var_with(
+                                                Some(typevar_name.as_str()),
+                                                Some(level),
+                                                Kind::Type,
+                                                &c_entry.span,
+                                            )
+                                            .0;
                                         // Register source name for better T013 diagnostics
                                         state
                                             .type_var_source_names
@@ -1431,6 +1434,7 @@ pub(crate) async fn resolve_annotation(
                             // @Map@T (single type) → Map[fresh_key: T]
                             // Use a fresh TypeVar for the key so callers can unify against
                             // concrete key types instead of being stuck with Unknown.
+                            let map_span = span.clone();
                             let value_type = Box::pin(resolve_annotation(
                                 inner,
                                 env,
@@ -1442,7 +1446,7 @@ pub(crate) async fn resolve_annotation(
                                 type_params_scope,
                             ))
                             .await?;
-                            Ok(Type::map(state.fresh_type_var(), value_type))
+                            Ok(Type::map(state.fresh_type_var(&map_span), value_type))
                         }
                         Annotation::PropertyDict(surface_entries) => {
                             // @Map@[key: K value: V] → Map(K, V)
@@ -1506,6 +1510,7 @@ pub(crate) async fn resolve_annotation(
                             // Other forms like @Map@Annotated — treat as single value type.
                             // Use a fresh TypeVar for the key so callers can unify against
                             // concrete key types instead of being stuck with Unknown.
+                            let map_span = span.clone();
                             let value_type = Box::pin(resolve_annotation(
                                 inner,
                                 env,
@@ -1517,7 +1522,7 @@ pub(crate) async fn resolve_annotation(
                                 type_params_scope,
                             ))
                             .await?;
-                            Ok(Type::map(state.fresh_type_var(), value_type))
+                            Ok(Type::map(state.fresh_type_var(&map_span), value_type))
                         }
                     }
                 }
@@ -1691,20 +1696,26 @@ pub(crate) async fn resolve_annotation(
                                     existing_var.clone()
                                 } else {
                                     let level = state.level;
-                                    let n = state.alloc_counter("", "label");
-                                    let v = format!("_label_{}", n);
-                                    state.set_level(v.clone(), level);
-                                    state.set_kind(v.clone(), Kind::Label);
+                                    let (v, _) = state.fresh_type_var_with(
+                                        Some("_label"),
+                                        Some(level),
+                                        Kind::Label,
+                                        &label_value_node.span,
+                                    );
+                                    state.kind_env.insert(v.clone(), Kind::Label);
                                     state.type_var_source_names.insert(v.clone(), name.clone());
                                     mapping.insert(name.clone(), v.clone());
                                     v
                                 }
                             } else {
                                 let level = state.level;
-                                let n = state.alloc_counter("", "label");
-                                let v = format!("_label_{}", n);
-                                state.set_level(v.clone(), level);
-                                state.set_kind(v.clone(), Kind::Label);
+                                let (v, _) = state.fresh_type_var_with(
+                                    Some("_label"),
+                                    Some(level),
+                                    Kind::Label,
+                                    &label_value_node.span,
+                                );
+                                state.kind_env.insert(v.clone(), Kind::Label);
                                 v
                             };
                             let current_level = state
@@ -2085,7 +2096,7 @@ pub(crate) async fn resolve_type_name_with_guard(
             // for this recursive position. This gives recursive positions a proper type that
             // can be unified with the alias body rather than silently widening to Unknown.
             // Callers see a TypeVar(_tN) that unifies with the alias's expanded type.
-            return Ok(state.fresh_type_var());
+            return Ok(state.fresh_type_var(&span));
         }
 
         // Check arity
@@ -2128,8 +2139,7 @@ pub(crate) async fn resolve_type_name_with_guard(
         // Mirrors the same logic in resolve_type_name so both lookup paths handle class
         // names consistently. See resolve_type_name for the full rationale.
         let level = state.level;
-        let (fresh, _) =
-            state.alloc_type_var_at_level(level, Some(name), None, None, crate::types::Kind::Type);
+        let (fresh, _) = state.fresh_type_var_with(Some(name), Some(level), Kind::Type, &span);
         // Construct the Constraint::Class that @C should produce in this guarded path.
         // resolve_type_name_with_guard does not carry a constraints parameter (unlike
         // resolve_type_name), so we cannot push it to the caller's constraint vec. A local
@@ -2172,12 +2182,22 @@ pub(crate) async fn resolve_type_name(
         "Label" => {
             // Anonymous Label-kinded TypeVar. Not a type — creates a fresh label-kinded TypeVar.
             let level = state.level;
-            let n = state.alloc_counter("", "label");
-            let fresh = format!("_label_{}", n);
-            state.set_level(fresh.clone(), level);
-            state.set_kind(fresh.clone(), crate::types::Kind::Label);
-            return Ok(Type::TypeVar(fresh, level));
+            let (fresh, fresh_ty) = state.fresh_type_var_with(Some("_label"), Some(level), Kind::Label, &span);
+            state.kind_env.insert(fresh.clone(), Kind::Label);
+            return Ok(fresh_ty);
         }
+        // Rust-protocol primitive types — resolved directly, bypassing type-stage eval.
+        // Only the canonical LONG-FORM names are listed here (no abbreviations).
+        // Short forms (Int, Str, Bool) must be migrated to the long form in source code.
+        // Boolean, Number, Null, Absent are tinct-defined — not Rust-side primitives.
+        "Integer" => return Ok(Type::Int),
+        "String" => return Ok(Type::Str),
+        "Float" => return Ok(Type::Float),
+        "Bytes" => return Ok(Type::Bytes),
+        "Never" => return Ok(Type::Never),
+        "Unknown" => return Ok(Type::Unknown),
+        "Any" => return Ok(Type::Any),
+        "Proxy" => return Ok(Type::Proxy),
         _ => {
             if name.starts_with(|c: char| c.is_lowercase()) {
                 // Type parameter scope enforcement (T-1100 / T-951).
@@ -2248,13 +2268,7 @@ pub(crate) async fn resolve_type_name(
                     } else {
                         // First time seeing this annotation: create fresh var and register level
                         let level = state.level;
-                        let (fresh, fresh_ty) = state.alloc_type_var_at_level(
-                            level,
-                            Some(name),
-                            None,
-                            None,
-                            crate::types::Kind::Type,
-                        );
+                        let (fresh, fresh_ty) = state.fresh_type_var_with(Some(name), Some(level), Kind::Type, &span);
                         // Register source name for better T013 diagnostics
                         state.type_var_source_names.insert(fresh.clone(), name.to_string());
                         mapping.insert(name.to_string(), fresh);
@@ -2270,7 +2284,7 @@ pub(crate) async fn resolve_type_name(
                     // Using `name` directly means every occurrence of `@a` at the top
                     // level is the same TypeVar, causing unintended unification between
                     // unrelated dict entries that both happen to use `@a`.
-                    Ok(state.fresh_type_var())
+                    Ok(state.fresh_type_var(&span))
                 }
             } else {
                 // Uppercase type name — check for type alias
@@ -2311,13 +2325,7 @@ pub(crate) async fn resolve_type_name(
                     // @a which are deduplicated via ann_mapping). Two parameters x@Comparable and
                     // y@Comparable get distinct TypeVars ?N and ?M, each independently constrained.
                     let level = state.level;
-                    let (fresh, fresh_ty) = state.alloc_type_var_at_level(
-                        level,
-                        Some(name),
-                        None,
-                        None,
-                        crate::types::Kind::Type,
-                    );
+                    let (fresh, fresh_ty) = state.fresh_type_var_with(Some(name), Some(level), Kind::Type, &span);
                     constraints.push(Constraint::Class {
                         class: Arc::new(class_decl),
                         vars: vec![ConstraintArg::Var(fresh)],
@@ -2326,52 +2334,44 @@ pub(crate) async fn resolve_type_name(
                     });
                     Ok(fresh_ty)
                 } else {
-                    // @Foo is identical to @[type: Foo] — look up Foo in the type-stage env.
-                    // This is the canonical path for all type names defined in prelude's
-                    // --- stage: type section (Int, Float, Null, Dict, Fn, Handle, etc.).
-                    let ts_env = match state.type_stage_env.clone() {
-                        Some(e) => e,
-                        None => match crate::imports::get_prelude_type_stage_env().await {
-                            Some(e) => e,
-                            None => return Err(TypeError::new(
-                                format!("undefined type: {} (type-stage env unavailable)", name),
-                                span,
-                            )),
-                        },
-                    };
-                    // Find the thunk for this name by iterating the type-stage env slots.
-                    let thunk_opt: Option<Arc<crate::value::Thunk>> = {
-                        let env_guard = ts_env.read().unwrap();
-                        let found = env_guard.iter_slots()
-                            .find(|(slot_name, _)| *slot_name == name)
-                            .and_then(|(_, slot)| slot.value.as_ref().map(Arc::clone));
-                        found
-                    };
-                    if let Some(thunk) = thunk_opt {
-                        // Build an EvalContext the same way eval_type_stage_expr does,
-                        // so typenode_value_to_type can materialize nested payload thunks.
-                        #[allow(clippy::disallowed_methods)]
-                        if let Ok(base_dir) = cap_std::fs::Dir::open_ambient_dir(
-                            ".", cap_std::ambient_authority()
-                        ) {
-                            let eval_env = if let Some(ref main_env) = state.main_env {
-                                let mut combined = crate::env::Env::with_parent(Arc::clone(main_env));
-                                {
-                                    let ts = ts_env.read().unwrap();
-                                    for (slot_name, slot) in ts.iter_slots() {
-                                        if let Some(ref t) = slot.value {
-                                            combined.insert_value(slot_name.to_string(), Arc::clone(t));
+                    // When state.type_stage_env is set, look up the name there.
+                    // Otherwise the type-stage env is unavailable — all primitives are
+                    // handled by the match arms above, so any name reaching here is undefined.
+                    if let Some(ts_env) = state.type_stage_env.clone() {
+                        // Find the thunk for this name by iterating the type-stage env slots.
+                        let thunk_opt: Option<Arc<crate::value::Thunk>> = {
+                            let env_guard = ts_env.read().unwrap();
+                            let found = env_guard.iter_slots()
+                                .find(|(slot_name, _)| *slot_name == name)
+                                .and_then(|(_, slot)| slot.value.as_ref().map(Arc::clone));
+                            found
+                        };
+                        if let Some(thunk) = thunk_opt {
+                            // Build an EvalContext the same way eval_type_stage_expr does,
+                            // so typenode_value_to_type can materialize nested payload thunks.
+                            #[allow(clippy::disallowed_methods)]
+                            if let Ok(base_dir) = cap_std::fs::Dir::open_ambient_dir(
+                                ".", cap_std::ambient_authority()
+                            ) {
+                                let eval_env = if let Some(ref main_env) = state.main_env {
+                                    let mut combined = crate::env::Env::with_parent(Arc::clone(main_env));
+                                    {
+                                        let ts = ts_env.read().unwrap();
+                                        for (slot_name, slot) in ts.iter_slots() {
+                                            if let Some(ref t) = slot.value {
+                                                combined.insert_value(slot_name.to_string(), Arc::clone(t));
+                                            }
                                         }
                                     }
-                                }
-                                Arc::new(std::sync::RwLock::new(combined))
-                            } else {
-                                Arc::clone(&ts_env)
-                            };
-                            let ctx = crate::eval::EvalContext::new_empty(base_dir, eval_env, false);
-                            if let Ok(val) = crate::eval::materialize(&thunk, None, &ctx).await {
-                                if let Some(ty) = typenode_value_to_type(&val, &ctx).await {
-                                    return Ok(ty);
+                                    Arc::new(std::sync::RwLock::new(combined))
+                                } else {
+                                    Arc::clone(&ts_env)
+                                };
+                                let ctx = crate::eval::EvalContext::new_empty(base_dir, eval_env, false);
+                                if let Ok(val) = crate::eval::materialize(&thunk, None, &ctx).await {
+                                    if let Some(ty) = typenode_value_to_type(&val, &ctx).await {
+                                        return Ok(ty);
+                                    }
                                 }
                             }
                         }
@@ -2648,90 +2648,7 @@ async fn resolve_type_dict_with_guard(
     depth: usize,
     type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
 ) -> Result<Type, TypeError> {
-    // Handle type-stage keywords ([or ...], [all ...], [without ...]) with guard propagation.
-    // Other dict forms (function types, parameterized aliases, record types, unions)
-    // are delegated to the normal resolver which has more complex logic.
     let all_positional = entries.iter().all(|e| e.node.key.is_none());
-
-    if all_positional && !entries.is_empty() {
-        if let SurfaceExpression::VarRef { name: kw, .. } = &entries[0].node.value.expr {
-            if kw == "or" {
-                // [or T1 T2 ...] → Union([T1, T2, ...])
-                if entries.len() < 2 {
-                    return Err(TypeError::new(
-                        "[or ...] requires at least one type argument",
-                        span,
-                    ));
-                }
-                let mut members = Vec::new();
-                for entry in &entries[1..] {
-                    let ty = Box::pin(resolve_type_expr_with_guard(
-                        &entry.node.value,
-                        env,
-                        state,
-                        constraints,
-                        ann_mapping,
-                        row_ann_mapping,
-                        recursion_guard,
-                        current_alias,
-                        depth,
-                        type_params_scope,
-                    ))
-                    .await?;
-                    members.push(ty);
-                }
-                return Ok(Type::normalize_union(members));
-            } else if kw == "all" {
-                // [all T1 T2 ...] → Intersection([T1, T2, ...])
-                if entries.len() < 2 {
-                    return Err(TypeError::new(
-                        "[all ...] requires at least one type argument",
-                        span,
-                    ));
-                }
-                let mut members = Vec::new();
-                for entry in &entries[1..] {
-                    let ty = Box::pin(resolve_type_expr_with_guard(
-                        &entry.node.value,
-                        env,
-                        state,
-                        constraints,
-                        ann_mapping,
-                        row_ann_mapping,
-                        recursion_guard,
-                        current_alias,
-                        depth,
-                        type_params_scope,
-                    ))
-                    .await?;
-                    members.push(ty);
-                }
-                return Ok(Type::normalize_intersection(members));
-            } else if kw == "without" {
-                // [without A] → Negation(A)
-                if entries.len() != 2 {
-                    return Err(TypeError::new(
-                        "[without A] requires exactly one type argument",
-                        span,
-                    ));
-                }
-                let inner = Box::pin(resolve_type_expr_with_guard(
-                    &entries[1].node.value,
-                    env,
-                    state,
-                    constraints,
-                    ann_mapping,
-                    row_ann_mapping,
-                    recursion_guard,
-                    current_alias,
-                    depth,
-                    type_params_scope,
-                ))
-                .await?;
-                return Ok(Type::Negation(Box::new(inner)));
-            }
-        }
-    }
 
     // Keyed record dict: `[value: Int  next: Node]` — the most common recursive alias body.
     // When all entries are keyed (or rest `...`), resolve each field value via
@@ -3104,82 +3021,6 @@ pub(crate) async fn resolve_type_expr(
                 }
             }
 
-            // Type-stage keywords in implied-call position: [or T1 T2], [all T1 T2], [without T].
-            //
-            // These parse as SurfaceExpression::Call { func: VarRef(kw), args: [...], implied: true }
-            // because the parser sees a bare identifier in head position followed by arguments.
-            //
-            // [or T1 T2 ...]  → Type::normalize_union([T1, T2, ...])
-            // [all T1 T2 ...] → Type::normalize_intersection([T1, T2, ...])
-            // [without T]     → Type::Negation(T)
-            if let SurfaceExpression::VarRef { name: kw, .. } = &func.expr {
-                if kw == "or" {
-                    // args contains the type arguments; func ("or") is the head, not a type.
-                    if args.is_empty() {
-                        return Err(TypeError::new(
-                            "[or ...] requires at least one type argument",
-                            node.span.clone(),
-                        ));
-                    }
-                    let mut members = Vec::new();
-                    for arg in args.iter() {
-                        let ty = Box::pin(resolve_type_expr(
-                            arg,
-                            env,
-                            state,
-                            constraints,
-                            ann_mapping,
-                            row_ann_mapping,
-                            type_params_scope,
-                        ))
-                        .await?;
-                        members.push(ty);
-                    }
-                    return Ok(Type::normalize_union(members));
-                } else if kw == "all" {
-                    // args contains the type arguments; func ("all") is the head, not a type.
-                    if args.is_empty() {
-                        return Err(TypeError::new(
-                            "[all ...] requires at least one type argument",
-                            node.span.clone(),
-                        ));
-                    }
-                    let mut members = Vec::new();
-                    for arg in args.iter() {
-                        let ty = Box::pin(resolve_type_expr(
-                            arg,
-                            env,
-                            state,
-                            constraints,
-                            ann_mapping,
-                            row_ann_mapping,
-                            type_params_scope,
-                        ))
-                        .await?;
-                        members.push(ty);
-                    }
-                    return Ok(Type::normalize_intersection(members));
-                } else if kw == "without" {
-                    if args.len() != 1 {
-                        return Err(TypeError::new(
-                            "[without A] requires exactly one type argument",
-                            node.span.clone(),
-                        ));
-                    }
-                    let inner = Box::pin(resolve_type_expr(
-                        &args[0],
-                        env,
-                        state,
-                        constraints,
-                        ann_mapping,
-                        row_ann_mapping,
-                        type_params_scope,
-                    ))
-                    .await?;
-                    return Ok(Type::Negation(Box::new(inner)));
-                }
-            }
-
             // TyConDef-based type constructor application (T-949) in implied-call position.
             // Primary path for user-defined type constructors in [TyCon Arg1 Arg2 ...] form.
             // Primary path: look up via TyConDef (covers user-defined types and builtin TyCons
@@ -3413,10 +3254,16 @@ pub(crate) async fn resolve_type_expr(
                 }
             }
 
-            // Lowercase VarRef in implied-call head position with args: treat as Union type.
+            // Lowercase VarRef in implied-call head position with args.
             //
-            // Pattern: [a T1 T2 ...] where `a` is lowercase (a type variable).
-            // Interpretation: Union([TypeVar(a), T1, T2, ...])
+            // Pattern: [a T1 T2 ...] where `a` is lowercase.
+            //
+            // Two sub-cases:
+            // 1. `a` is a type-stage function (e.g. `or`, `all`, `without`): try
+            //    eval_type_stage_expr first. If the call succeeds and returns a non-Unknown
+            //    type, use that result.
+            // 2. `a` is a TypeVar: eval_type_stage_expr fails (unknown name in type-stage env),
+            //    fall through to Union([TypeVar(a), T1, T2, ...]).
             //
             // This handles prelude annotations like `[return: [a Null]]` in:
             //   cond: [fn@[return: [a Null] doc: "..."] ...]
@@ -3426,14 +3273,27 @@ pub(crate) async fn resolve_type_expr(
             // In these annotations, `a` is a type variable and `Null` is the empty record.
             // The parser sees `[a Null]` as an implied call `Call(VarRef("a"), [VarRef("Null")])`
             // because `a` in head position without `:` or `@` is treated as a function name.
-            // The intended meaning is `Union([TypeVar(a), Null])` which we recover here.
+            // The intended meaning is `Union([TypeVar(a), Null])` which we recover via fallback.
             if let SurfaceExpression::VarRef {
                 name: func_name, ..
             } = &func.expr
             {
                 if func_name.starts_with(|c: char| c.is_lowercase()) && !args.is_empty() {
-                    // Treat func as a type variable and resolve all args as type members.
-                    // Form: Union([TypeVar(func_name), arg0_ty, arg1_ty, ...])
+                    // Try eval_type_stage_expr on the implied call node first.
+                    // This handles type-stage functions like `or`, `all`, `without`.
+                    let am_ref: Option<&HashMap<String, String>> = match &*ann_mapping {
+                        Some(m) => Some(&**m),
+                        None => None,
+                    };
+                    let stage_result = eval_type_stage_expr(node, env, state, am_ref).await;
+                    if let Ok(ty) = stage_result {
+                        if ty != Type::Unknown {
+                            return Ok(ty);
+                        }
+                    }
+
+                    // eval_type_stage_expr failed or returned Unknown — fall through to the
+                    // TypeVar Union interpretation: Union([TypeVar(func_name), arg0_ty, ...]).
                     let head_ty = resolve_type_name(
                         func_name,
                         env,
@@ -3499,6 +3359,75 @@ pub(crate) async fn resolve_type_dict(
     .await?
     {
         return Ok(fn_type);
+    }
+
+    // Hardcoded type-stage keywords: `or`, `all`, `without`.
+    //
+    // These keywords appear in type expressions as all-positional dicts where the first
+    // entry is a bare lowercase VarRef: `[or T1 T2]`, `[all T1 T2]`, `[without T]`.
+    // They are recognized as builtin type combinators without requiring the type-stage env.
+    //
+    //   [or T1 T2 ...]   → Union(T1, T2, ...)
+    //   [all T1 T2 ...]  → Intersection(T1, T2, ...)
+    //   [without T]      → Negation(T)
+    //
+    // This block MUST run before TyConDef lookup so that `or`/`all`/`without` are never
+    // misidentified as type constructor names.
+    if !entries.is_empty() {
+        if let Some(first) = entries.first() {
+            if first.node.key.is_none() {
+                if let SurfaceExpression::VarRef { name: kw, .. } = &first.node.value.expr {
+                    let kw = kw.as_str();
+                    if kw == "or" || kw == "all" || kw == "without" {
+                        let rest = &entries[1..];
+                        if kw == "without" {
+                            // `[without T]` — single-argument negation.
+                            if rest.len() != 1 {
+                                return Err(TypeError::new(
+                                    format!(
+                                        "`without` requires exactly 1 type argument, got {}",
+                                        rest.len()
+                                    ),
+                                    span,
+                                ));
+                            }
+                            let inner = Box::pin(resolve_type_expr(
+                                &rest[0].node.value,
+                                env,
+                                state,
+                                constraints,
+                                ann_mapping,
+                                row_ann_mapping,
+                                type_params_scope,
+                            ))
+                            .await?;
+                            return Ok(Type::Negation(Box::new(inner)));
+                        } else {
+                            // `[or T1 T2 ...]` or `[all T1 T2 ...]` — variadic union/intersection.
+                            let mut members = Vec::with_capacity(rest.len());
+                            for entry in rest {
+                                let ty = Box::pin(resolve_type_expr(
+                                    &entry.node.value,
+                                    env,
+                                    state,
+                                    constraints,
+                                    ann_mapping,
+                                    row_ann_mapping,
+                                    type_params_scope,
+                                ))
+                                .await?;
+                                members.push(ty);
+                            }
+                            return Ok(if kw == "or" {
+                                Type::normalize_union(members)
+                            } else {
+                                Type::normalize_intersection(members)
+                            });
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // TyConDef-based type constructor application (T-949).
@@ -3688,99 +3617,12 @@ pub(crate) async fn resolve_type_dict(
         }
     }
 
-    // BAS annotation keywords: [or A B] → Union(A, B), [all A B] → Intersection(A, B),
-    // [without A] → Negation(A).
-    //
-    // These correspond to type-stage function names that map directly to Type variants
-    // without needing runtime eval machinery. They must be checked BEFORE the general
-    // all-positional union path so `[all Int Str]` dispatches to Intersection (not Union)
-    // and `[or Int Str]` dispatches to Union via this explicit path (not the fallthrough
-    // union path which would error on "undefined type 'or'").
-    //
-    // [or A B C ...]  → Type::normalize_union([A, B, C, ...])
-    // [all A B C ...] → Type::normalize_intersection([A, B, C, ...])
-    // [without A]     → Type::Negation(A)
-    let all_positional = entries.iter().all(|e| e.node.key.is_none());
-    if all_positional && !entries.is_empty() {
-        if let SurfaceExpression::VarRef { name: kw, .. } = &entries[0].node.value.expr {
-            if kw == "or" {
-                // [or T1 T2 ...] → Union([T1, T2, ...])
-                if entries.len() < 2 {
-                    return Err(TypeError::new(
-                        "[or ...] requires at least one type argument",
-                        span,
-                    ));
-                }
-                let mut members = Vec::new();
-                for entry in &entries[1..] {
-                    let ty = resolve_type_expr(
-                        &entry.node.value,
-                        env,
-                        state,
-                        constraints,
-                        ann_mapping,
-                        row_ann_mapping,
-                        type_params_scope,
-                    )
-                    .await?;
-                    members.push(ty);
-                }
-                return Ok(Type::normalize_union(members));
-            } else if kw == "all" {
-                // [all T1 T2 ...] → Intersection([T1, T2, ...])
-                if entries.len() < 2 {
-                    return Err(TypeError::new(
-                        "[all ...] requires at least one type argument",
-                        span,
-                    ));
-                }
-                let mut members = Vec::new();
-                for entry in &entries[1..] {
-                    let ty = resolve_type_expr(
-                        &entry.node.value,
-                        env,
-                        state,
-                        constraints,
-                        ann_mapping,
-                        row_ann_mapping,
-                        type_params_scope,
-                    )
-                    .await?;
-                    members.push(ty);
-                }
-                return Ok(Type::normalize_intersection(members));
-            } else if kw == "without" {
-                // [without A] → Negation(A)
-                if entries.len() != 2 {
-                    return Err(TypeError::new(
-                        "[without A] requires exactly one type argument",
-                        span,
-                    ));
-                }
-                let inner = resolve_type_expr(
-                    &entries[1].node.value,
-                    env,
-                    state,
-                    constraints,
-                    ann_mapping,
-                    row_ann_mapping,
-                    type_params_scope,
-                )
-                .await?;
-                return Ok(Type::Negation(Box::new(inner)));
-            }
-        }
-    }
-
     // Nominal variant constructor: [Constructor payload-type] or [Constructor field: Type ...]
     // Matches either form:
     // - Pure positional with uppercase first entry (e.g., [Ok a], [None]):
     //   First entry is constructor tag, optional second entry is payload type
     // - Mixed positional+keyed with uppercase first entry (e.g., [MyOk n: Int]):
     //   First positional is constructor tag, keyed entries are named fields
-    //
-    // This must be checked BEFORE the multi-entry union path below so that individual
-    // constructor expressions like [Ok a] resolve to NominalVariant, not Union(Ok, a).
     if !entries.is_empty() {
         if let Some(first) = entries.first() {
             // Check if first entry is positional (auto-indexed)
@@ -3950,51 +3792,40 @@ pub(crate) async fn resolve_type_dict(
         }
     }
 
-    // Multi-entry all-positional union type: @[Int Null], @[String Int Bool], @[a Null], etc.
-    //
-    // When a PropertyDict annotation has 2+ positional entries and the entries did not match
-    // any of the special-case handlers above (BAS keywords, nominal variants, type constructor
-    // application), treat each positional entry as a union member.
-    //
-    // This handles annotations like `fn@[Int Null]` (Union(Int, Null)) and
-    // `x@[String Int]` (Union(String, Int)) in parameter/return type position.
-    //
-    // Note: single-entry positional cases are handled below; 3+ entries for nominal variants
-    // with positional payloads fall through to here. We must be careful not to catch genuine
-    // constructor patterns here — but those are caught by the nominal variant block above.
+    // All-positional entries where every member is a bare uppercase VarRef → union of unit
+    // constructors. This is the type-body case: `[type True False]` body is
+    // `Dict([VarRef("True"), VarRef("False")])` and must produce Union(NominalVariant("True"),
+    // NominalVariant("False")). We do NOT call resolve_type_expr on each entry here because
+    // the constructors are not yet registered in the environment (chicken-and-egg). Instead,
+    // create NominalVariants directly — the same as the single-entry and 2-entry constructor
+    // paths above. This path fires when the nominal variant block fell through (both entries
+    // are uppercase constructor names and there are 2+ such entries).
+    let all_positional = entries.iter().all(|e| e.node.key.is_none());
     if all_positional && entries.len() >= 2 {
-        let mut members = Vec::new();
-        let mut all_resolved = true;
-        for entry in entries {
-            match resolve_type_expr(
-                &entry.node.value,
-                env,
-                state,
-                constraints,
-                ann_mapping,
-                row_ann_mapping,
-                type_params_scope,
-            )
-            .await
-            {
-                Ok(ty) => members.push(ty),
-                Err(_) => {
-                    all_resolved = false;
-                    break;
-                }
-            }
-        }
-        if all_resolved && !members.is_empty() {
+        let all_uppercase_varref = entries.iter().all(|e| {
+            matches!(&e.node.value.expr, SurfaceExpression::VarRef { name, .. }
+                if crate::eval::is_constructor_name(name))
+        });
+        if all_uppercase_varref {
+            let members: Vec<Type> = entries
+                .iter()
+                .map(|e| {
+                    let name = match &e.node.value.expr {
+                        SurfaceExpression::VarRef { name, .. } => name.clone(),
+                        _ => unreachable!(),
+                    };
+                    Type::NominalVariant {
+                        tag: name,
+                        fields: Row {
+                            fields: indexmap::IndexMap::new(),
+                            tail: crate::type_def::RowTail::Empty,
+                        },
+                    }
+                })
+                .collect();
             return Ok(Type::normalize_union(members));
         }
-        // If resolution fails, fall through to the general path (which will error).
     }
-
-    // Single positional entry that is NOT a VarRef: delegate to resolve_type_expr.
-    // This handles complex type expressions like [all [x: Int ...] [y: String ...]], [or A B],
-    // and [Seq Int] when they appear as the sole positional entry in a type dict.
-    // resolve_type_expr handles SurfaceExpression::Call (implied calls) and
-    // SurfaceExpression::Dict forms which are not handled by the VarRef-specific paths above.
     if all_positional && entries.len() == 1 {
         if let Some(first) = entries.first() {
             if first.node.key.is_none()
@@ -4486,9 +4317,9 @@ fn typenode_value_to_type<'a>(
                         // (These arise when param-token TypeConstructors from parametric bodies
                         // are passed to typenode_value_to_type without being substituted first.)
                         match name.as_str() {
-                            "Int" => Some(Type::Int),
+                            "Int" | "Integer" => Some(Type::Int),
                             "Float" => Some(Type::Float),
-                            "String" => Some(Type::Str),
+                            "String" | "Str" => Some(Type::Str),
                             "Unknown" => Some(Type::Unknown),
                             "Never" => Some(Type::Never),
                             "Absent" => Some(Type::Record(Row {
@@ -4621,20 +4452,17 @@ pub(crate) async fn eval_type_stage_value(
     let origin_span = rust_span!();
 
     // Obtain the type-stage environment for building the EvalContext.
-    // Prefer state.type_stage_env (set when the source file has --- stage: type sections).
-    // Fall back to the prelude type-stage env when state.type_stage_env is None (e.g., for
-    // files that use built-in type annotations but declare no type-stage sections of their own).
-    let type_stage_env =
-        match state.type_stage_env.clone() {
-            Some(env) => env,
-            None => match crate::imports::get_prelude_type_stage_env().await {
-                Some(env) => env,
-                None => return Err(TypeError::new(
-                    "type-stage environment unavailable: prelude type-stage env could not be built",
-                    origin_span.clone(),
-                )),
-            },
-        };
+    // Only state.type_stage_env is consulted — the prelude type-stage env is no longer
+    // built on demand. Primitive types are resolved directly in resolve_type_name.
+    let type_stage_env = match state.type_stage_env.clone() {
+        Some(env) => env,
+        None => {
+            return Err(TypeError::new(
+                "type-stage environment unavailable",
+                origin_span.clone(),
+            ))
+        }
+    };
 
     // Build a minimal EvalContext backed by the type-stage environment.
     // AMBIENT-OK: type-stage evaluation performs no file I/O.
@@ -4777,20 +4605,17 @@ pub(crate) async fn eval_type_stage_expr(
     let node_span = node.span.clone();
 
     // Obtain the type-stage environment.
-    // Prefer state.type_stage_env (set when the source file has --- stage: type sections).
-    // Fall back to the prelude type-stage env when state.type_stage_env is None (e.g., for
-    // files that use built-in type annotations but declare no type-stage sections of their own).
-    let type_stage_env =
-        match state.type_stage_env.clone() {
-            Some(env) => env,
-            None => match crate::imports::get_prelude_type_stage_env().await {
-                Some(env) => env,
-                None => return Err(TypeError::new(
-                    "type-stage environment unavailable: prelude type-stage env could not be built",
-                    node_span.clone(),
-                )),
-            },
-        };
+    // Only state.type_stage_env is consulted — the prelude type-stage env is no longer
+    // built on demand. Primitive types are resolved directly in resolve_type_name.
+    let type_stage_env = match state.type_stage_env.clone() {
+        Some(env) => env,
+        None => {
+            return Err(TypeError::new(
+                "type-stage environment unavailable",
+                node_span.clone(),
+            ))
+        }
+    };
 
     // Build the evaluation environment: type-stage env on top of main env (when available).
     //

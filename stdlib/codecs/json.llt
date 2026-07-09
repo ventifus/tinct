@@ -67,15 +67,15 @@ to-json-seq: [fn [let s]
 
 # ---- Pretty-print helpers (indent tracking) ----
 
-make-indent-impl: [fn [let depth@Int acc@String]
+make-indent-impl: [fn [let depth@Integer acc@String]
   [if [= depth 0]
     acc
     [make-indent-impl [- depth 1] [str acc "  "]]]]
 
-make-indent: [fn [let depth@Int]
+make-indent: [fn [let depth@Integer]
   [make-indent-impl depth ""]]
 
-to-json-pretty-dict-nonempty: [fn [let d@Dict depth@Int]
+to-json-pretty-dict-nonempty: [fn [let d@Dict depth@Integer]
   [current-indent: [make-indent depth]]
   [next-indent:    [make-indent [+ depth 1]]]
   [pairs: [map [fn [let pair]
@@ -85,20 +85,20 @@ to-json-pretty-dict-nonempty: [fn [let d@Dict depth@Int]
                [entries d]]]
   [str "{" [join "," pairs] "\n" current-indent "}"]]
 
-to-json-pretty-array-like: [fn [let d@Dict depth@Int]
+to-json-pretty-array-like: [fn [let d@Dict depth@Integer]
   [sorted: [json-sort-entries-by-key d]]
   [if [= [length d] 0]
     "[]"
     [to-json-pretty-seq-nonempty [map [fn [let pair] pair.value] sorted] depth]]]
 
-to-json-pretty-dict: [fn [let d@Dict depth@Int]
+to-json-pretty-dict: [fn [let d@Dict depth@Integer]
   [if [json-array-like? d]
     [to-json-pretty-array-like d depth]
     [if [= [length d] 0]
       "{}"
       [to-json-pretty-dict-nonempty d depth]]]]
 
-to-json-pretty-seq-nonempty: [fn [let collected depth@Int]
+to-json-pretty-seq-nonempty: [fn [let collected depth@Integer]
   [current-indent: [make-indent depth]]
   [next-indent:    [make-indent [+ depth 1]]]
   [items: [map [fn [let item]
@@ -107,13 +107,13 @@ to-json-pretty-seq-nonempty: [fn [let collected depth@Int]
                [values collected]]]
   [str "[" [join "," items] "\n" current-indent "]"]]
 
-to-json-pretty-seq: [fn [let s depth@Int]
+to-json-pretty-seq: [fn [let s depth@Integer]
   [collected: [collect s]]
   [if [= [length collected] 0]
     "[]"
     [to-json-pretty-seq-nonempty collected depth]]]
 
-to-json-pretty-primitive: [fn [let v depth@Int]
+to-json-pretty-primitive: [fn [let v depth@Integer]
   [cond [
     [[= v []]      "null"]
     [[bool? v]     [if v "true" "false"]]
@@ -126,7 +126,7 @@ to-json-pretty-primitive: [fn [let v depth@Int]
     # Fn, Handle, Task, Channel, and other non-serializable types produce null.
     [true          "null"]]]]
 
-to-json-pretty-impl: [fn [let v depth@Int]
+to-json-pretty-impl: [fn [let v depth@Integer]
   [match v
     [case [let _] [Program]     [json-program v]]
     [case [let _] [Document]    [json-document v]]
@@ -274,7 +274,7 @@ to-json-primitive: [fn [let v]
 
 # json-char-at: extract the character at index n (0-based) from string s.
 # Uses str-slice directly (prelude builtin) to avoid dependency on strings.llt str-at.
-json-char-at: [fn [let n@Int s@String]
+json-char-at: [fn [let n@Integer s@String]
   [str-slice s n [+ n 1]]]
 
 json-ws?: [fn [let c@String]
@@ -288,7 +288,7 @@ json-skip-ws: [fn [let s@String]
 json-parsed: [fn [let parsed-value parsed-rest@String]
   [value: parsed-value  rest: parsed-rest]]
 
-json-rest: [fn [let s@String n@Int]
+json-rest: [fn [let s@String n@Integer]
   [str-slice s n [str-length s]]]
 
 json-starts-with: [fn [let prefix@String s@String]
@@ -319,7 +319,7 @@ json-num-char?: [fn [let c@String]
       [or [= c "."] [or [= c "e"] [or [= c "E"]
       [or [= c "-"] [= c "+"]]]]]]]
 
-json-scan-num: [fn [let s@String i@Int]
+json-scan-num: [fn [let s@String i@Integer]
   [if [or [>= i [str-length s]] [not [json-num-char? [json-char-at i s]]]]
     i
     [json-scan-num s [+ i 1]]]]
@@ -402,7 +402,7 @@ json-parse-string: [fn [let s@String]
   # s starts with "
   [json-parse-string-body [json-rest s 1] ""]]
 
-json-parse-array-items: [fn [let s@String i@Int bld]
+json-parse-array-items: [fn [let s@String i@Integer bld]
   # Uses builder-set for O(1) insertion with computed integer key.
   [item: [json-parse-value s]]
   [bld2: [builder-set i item.value bld]]
@@ -553,7 +553,7 @@ Empty dicts render as {}, empty arrays as [] (compact, no newlines)."]:
 from-json@[doc: "Parse a JSON string or Handle into a tinct value.
 
 Parameters:
-  input@[String Handle] — JSON string or Handle (e.g., stdin) to parse
+  input@[or String Handle] — JSON string or Handle (e.g., stdin) to parse
 
 Returns:
   Any — Parsed value (Dict, Seq, String, Int, Float, Bool, or [] for null)

@@ -14,10 +14,11 @@ use std::sync::{Arc, RwLock};
 use super::{check_surface_expr, contains_unknown_or_top, infer_surface_expr, TypeMap};
 use crate::ast::{DotKey, Span, Spanned, SurfaceExpression, SurfaceNamedArg, SurfaceNode};
 use crate::env::Env;
+use crate::rust_span;
 use crate::type_errors::{ArityMismatch, TypeErrorTyped, UnificationFailure};
 use crate::types::{
-    instantiate_at_level, instantiate_scheme, unify, Constraint, InferState, Row, Type, TypeError,
-    TypeScheme,
+    instantiate_at_level, instantiate_scheme, unify, Constraint, InferState, Kind, Row, Type,
+    TypeError, TypeScheme,
 };
 
 /// Widen literal types in a type, recursively through Record fields.
@@ -92,6 +93,7 @@ pub(crate) async fn check_dot_access(
                         state,
                         Some(origin_name.as_str()),
                         Some(span.clone()),
+                        &span,
                     );
                     return Ok(instantiated);
                 }
@@ -99,7 +101,7 @@ pub(crate) async fn check_dot_access(
         }
     }
 
-    let target_ty = infer_surface_expr(target, env, state, type_map)?;
+    let target_ty = infer_surface_expr(target, env, state, type_map).await?;
     // Apply the global accumulated substitution so that constraints from prior accesses
     // on the same target are visible (doc/07-type-extensions.md Part 5).
     let target_ty = state.apply(&target_ty);
@@ -135,7 +137,9 @@ pub(crate) async fn check_dot_access(
         // Under BAS, no row variable needed — empty record type covers the requirement.
         Type::TypeVar(ref alpha, alpha_level) => {
             // Create fresh β for the field type — named after the field for diagnostics
-            let beta = state.fresh_type_var_with_origin(Some(field_str), None, Some(span.clone()));
+            let beta = state
+                .fresh_type_var_with(Some(field_str), None, Kind::Type, &span)
+                .1;
 
             // Build the record type to unify α with (BAS: no RowVar tail)
             let mut fields = indexmap::IndexMap::new();
@@ -230,7 +234,7 @@ pub(crate) async fn check_dot_access_int(
     constraints: &mut Vec<Constraint>,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
-    let target_ty = infer_surface_expr(target, env, state, type_map)?;
+    let target_ty = infer_surface_expr(target, env, state, type_map).await?;
     let target_ty = state.apply(&target_ty);
 
     let field_name = index.to_string();
@@ -246,11 +250,9 @@ pub(crate) async fn check_dot_access_int(
         }
         Type::TypeVar(ref alpha, alpha_level) => {
             // Create fresh β named after the numeric field index for diagnostics
-            let beta = state.fresh_type_var_with_origin(
-                Some(field_name.as_str()),
-                None,
-                Some(span.clone()),
-            );
+            let beta = state
+                .fresh_type_var_with(Some(field_name.as_str()), None, Kind::Type, &span)
+                .1;
 
             let mut fields = indexmap::IndexMap::new();
             fields.insert(field_name, beta.clone());
@@ -345,6 +347,7 @@ pub(crate) async fn check_call_with_scheme(
         state,
         func_name,
         Some(func_span.clone()),
+        &func_span,
     );
 
     // Record the function expression's type in the type map for LSP hover.
@@ -367,11 +370,11 @@ pub(crate) async fn check_call_with_scheme(
     if matches!(func_ty, Type::Error(_)) {
         // Infer positional args for type map population and error propagation.
         for arg in args {
-            let _ = infer_surface_expr(arg, env, state, type_map);
+            let _ = infer_surface_expr(arg, env, state, type_map).await;
         }
         // Infer named args for type map population and error propagation.
         for na in named_args {
-            let _ = infer_surface_expr(&na.node.value, env, state, type_map);
+            let _ = infer_surface_expr(&na.node.value, env, state, type_map).await;
         }
         return Err(vec![TypeError::not_a_function(&func_ty, func_span.clone())]);
     }
@@ -420,7 +423,7 @@ pub(crate) async fn check_call_with_scheme(
             // state.subst.name_counter and state.subst a second time in violation of single-pass Algorithm W.
             // Cascade prevention: ignore arg errors (already recorded as Error in type_map).
             for arg in args {
-                let _ = infer_surface_expr(arg, env, state, type_map);
+                let _ = infer_surface_expr(arg, env, state, type_map).await;
             }
             // Infer named arg values exactly once here for type map population and error propagation.
             // Previously these were inferred in a pre-dispatch loop before `match &func_ty`, which
@@ -428,7 +431,9 @@ pub(crate) async fn check_call_with_scheme(
             // args again). Moving inference to each arm ensures single-pass Algorithm W.
             let mut named_arg_errors: Vec<TypeError> = Vec::new();
             for na in named_args {
-                if let Err(mut errs) = infer_surface_expr(&na.node.value, env, state, type_map) {
+                if let Err(mut errs) =
+                    infer_surface_expr(&na.node.value, env, state, type_map).await
+                {
                     named_arg_errors.append(&mut errs);
                 }
             }
@@ -462,7 +467,7 @@ pub(crate) async fn check_call_with_scheme(
             }
 
             // Infer the argument type
-            let arg_ty = infer_surface_expr(&args[0], env, state, type_map)?;
+            let arg_ty = infer_surface_expr(&args[0], env, state, type_map).await?;
 
             // Result type: NominalVariant with the arg type as payload.
             // Runtime stores payload as Some(payload_id), so we model it as a single-field
@@ -551,7 +556,7 @@ async fn check_call_args(
         // CALL-POLY: infer every arg, collect errors (don't stop on first failure).
         // Errors are stored inside the Error(errs) node for later extraction.
         for a in args {
-            match infer_surface_expr(a, env, state, type_map) {
+            match infer_surface_expr(a, env, state, type_map).await {
                 Ok(ty) => arg_types.push(ty),
                 Err(errs) => {
                     arg_types.push(Type::error_with(
@@ -582,7 +587,7 @@ async fn check_call_args(
                         SurfaceExpression::Fn { .. } => {
                             // Lambda: use check_surface_expr for bidirectional lambda checking.
                             if let Err(mut errs) =
-                                check_surface_expr(arg, param_ty, env, state, type_map)
+                                check_surface_expr(arg, param_ty, env, state, type_map).await
                             {
                                 arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
                             }
@@ -592,7 +597,7 @@ async fn check_call_args(
                         }
                         _ => {
                             // Non-lambda: infer once, apply subst, boundary-guard, subsume.
-                            match infer_surface_expr(arg, env, state, type_map) {
+                            match infer_surface_expr(arg, env, state, type_map).await {
                                 Ok(arg_ty) => {
                                     let arg_ty_resolved = if state.subst_is_empty() {
                                         arg_ty.clone()
@@ -649,7 +654,7 @@ async fn check_call_args(
                 }
                 None => {
                     // Extra arg beyond param range (or variadic handled below): just infer.
-                    match infer_surface_expr(arg, env, state, type_map) {
+                    match infer_surface_expr(arg, env, state, type_map).await {
                         Ok(ty) => arg_types.push(ty),
                         Err(errs) => {
                             arg_types.push(Type::error_with(
@@ -877,7 +882,7 @@ async fn check_call_args(
                         continue;
                     }
                     consumed_params.insert(param_idx);
-                    match infer_surface_expr(&na.node.value, env, state, type_map) {
+                    match infer_surface_expr(&na.node.value, env, state, type_map).await {
                         Ok(arg_ty) => {
                             if let Err(e) = Box::pin(unify(
                                 &arg_ty,
@@ -914,7 +919,7 @@ async fn check_call_args(
                         ));
                     } else {
                         if let Err(mut errs) =
-                            infer_surface_expr(&na.node.value, env, state, type_map)
+                            infer_surface_expr(&na.node.value, env, state, type_map).await
                         {
                             arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
                         }
@@ -1001,7 +1006,7 @@ async fn check_call_args(
                     }
                     consumed_params.insert(param_idx);
 
-                    match infer_surface_expr(&na.node.value, env, state, type_map) {
+                    match infer_surface_expr(&na.node.value, env, state, type_map).await {
                         Ok(arg_ty) => {
                             // Boundary guard check.
                             if is_concrete_type(param_ty) {
@@ -1049,7 +1054,7 @@ async fn check_call_args(
                         ));
                     } else {
                         if let Err(mut errs) =
-                            infer_surface_expr(&na.node.value, env, state, type_map)
+                            infer_surface_expr(&na.node.value, env, state, type_map).await
                         {
                             arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
                         }
@@ -1108,7 +1113,7 @@ pub(crate) async fn check_call(
         _ => None,
     };
 
-    let func_ty = infer_surface_expr(func, env, state, type_map)?;
+    let func_ty = infer_surface_expr(func, env, state, type_map).await?;
     // Apply state.subst to resolve any TypeVars bound during infer_expr (e.g., from infer_fn
     // with polymorphic return annotations). Without this, has_inference_vars() incorrectly returns
     // true for already-bound TypeVars, causing CALL-POLY to fire and double-instantiate.
@@ -1128,11 +1133,11 @@ pub(crate) async fn check_call(
     if matches!(func_ty, Type::Error(_)) {
         // Infer positional args for type map population and error propagation.
         for arg in args {
-            let _ = infer_surface_expr(arg, env, state, type_map);
+            let _ = infer_surface_expr(arg, env, state, type_map).await;
         }
         // Infer named args for type map population and error propagation.
         for na in named_args {
-            let _ = infer_surface_expr(&na.node.value, env, state, type_map);
+            let _ = infer_surface_expr(&na.node.value, env, state, type_map).await;
         }
         return Err(vec![TypeError::not_a_function(&func_ty, func.span.clone())]);
     }
@@ -1168,7 +1173,7 @@ pub(crate) async fn check_call(
 
             // CALL-POLY: function type has type variables.
             // Instantiate the function type at the current level, then delegate to check_call_args.
-            let inst_ty = instantiate_at_level(&func_ty, state);
+            let inst_ty = instantiate_at_level(&func_ty, state, &rust_span!());
             let constraints_start = constraints.len();
 
             let (inst_params, inst_ret, inst_variadic, inst_required_count) = match &inst_ty {
@@ -1206,7 +1211,7 @@ pub(crate) async fn check_call(
             // infer args for side effects and return Unknown.
             // Cascade prevention: ignore arg errors (already recorded as Error in type_map).
             for arg in args {
-                let _ = infer_surface_expr(arg, env, state, type_map);
+                let _ = infer_surface_expr(arg, env, state, type_map).await;
             }
             // Infer named arg values exactly once here for type map population and error propagation.
             // Previously these were inferred in a pre-dispatch loop before `match &func_ty`, which
@@ -1214,7 +1219,9 @@ pub(crate) async fn check_call(
             // infer named args again). Moving inference to each arm ensures single-pass Algorithm W.
             let mut named_arg_errors: Vec<TypeError> = Vec::new();
             for na in named_args {
-                if let Err(mut errs) = infer_surface_expr(&na.node.value, env, state, type_map) {
+                if let Err(mut errs) =
+                    infer_surface_expr(&na.node.value, env, state, type_map).await
+                {
                     named_arg_errors.append(&mut errs);
                 }
             }
@@ -1224,7 +1231,9 @@ pub(crate) async fn check_call(
             // TypeVar callee — create a fresh TypeVar for the return type to preserve inference.
             // This allows `[f x]` to unify later when `f`'s type becomes known, rather than
             // immediately going gradual with Unknown.
-            let ret_var = state.fresh_type_var_with_origin(Some("ret"), None, Some(span.clone()));
+            let ret_var = state
+                .fresh_type_var_with(Some("ret"), None, Kind::Type, &span)
+                .1;
             Ok(ret_var)
         }
         // Gradual: callee type is Unknown — infer args for LSP hover, return Unknown (check_call path)
@@ -1236,12 +1245,14 @@ pub(crate) async fn check_call(
             // state.subst.name_counter and state.subst a second time in violation of single-pass Algorithm W.
             // Cascade prevention: ignore arg errors (already recorded as Error in type_map).
             for arg in args {
-                let _ = infer_surface_expr(arg, env, state, type_map);
+                let _ = infer_surface_expr(arg, env, state, type_map).await;
             }
             // Infer named arg values exactly once here for type map population and error propagation.
             let mut named_arg_errors: Vec<TypeError> = Vec::new();
             for na in named_args {
-                if let Err(mut errs) = infer_surface_expr(&na.node.value, env, state, type_map) {
+                if let Err(mut errs) =
+                    infer_surface_expr(&na.node.value, env, state, type_map).await
+                {
                     named_arg_errors.append(&mut errs);
                 }
             }
@@ -1275,7 +1286,7 @@ pub(crate) async fn check_call(
             }
 
             // Infer the argument type
-            let arg_ty = infer_surface_expr(&args[0], env, state, type_map)?;
+            let arg_ty = infer_surface_expr(&args[0], env, state, type_map).await?;
 
             // Result type: NominalVariant with the arg type as payload.
             // Runtime stores payload as Some(payload_id), so we model it as a single-field

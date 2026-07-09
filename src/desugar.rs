@@ -835,8 +835,8 @@ mod tests {
         // lower.rs to emit all instance-binding-name-keyed dict entries (B-409).
         let mut program = parse_program(
             r#"[AddableInts: [instance Addable
-                [let a@Int b@Int c]:   [+: [fn [let x y] x]]
-                [let a@Int b@Float c]: [+: [fn [let x y] x]]]]"#,
+                [let a@Integer b@Integer c]:   [+: [fn [let x y] x]]
+                [let a@Integer b@Float c]: [+: [fn [let x y] x]]]]"#,
         );
         desugar_instance_decls_surface_program(&mut program);
 

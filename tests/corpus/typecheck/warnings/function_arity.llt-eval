@@ -2,7 +2,7 @@
 # (a 1-parameter function type). The type checker reports "arity mismatch".
 # At runtime, the TypeAssert only checks that the value is a Function (not the arity),
 # so eval returns the function successfully.
-[@[Fn@Int [Int]] [fn [let x y] x]]
+[@[Fn@Integer [Int]] [fn [let x y] x]]
 === out
 Function(x, y)
 

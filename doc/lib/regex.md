@@ -13,7 +13,7 @@ fn@Dict [let pattern@String]
 Test if string contains pattern anywhere
 
 ```tinct
-fn@Bool [let pattern@Unknown haystack@String]
+fn@Boolean [let pattern@Unknown haystack@String]
 ```
 
 ### `re-find`

@@ -232,21 +232,21 @@ Seq is entirely tinct-defined; no Rust dispatch on Seq tags occurs here.
     [fn [let s@[Seq a]] [seq-reverse-step Seq.End s]]
 
   take@[return: [Seq a]  doc: "First n elements of a Seq. Lazy."]:
-    [fn [let n@Int s@[Seq a]]
+    [fn [let n@Integer s@[Seq a]]
       [if [= n 0] Seq.End
         [match s
           [Seq.Cons p]: [Seq.Cons head: p.head  tail: [take [- n 1] p.tail]]
           Seq.End:      Seq.End]]]
 
   drop@[return: [Seq a]  doc: "Skip first n elements of a Seq. O(n) to skip."]:
-    [fn [let n@Int s@[Seq a]]
+    [fn [let n@Integer s@[Seq a]]
       [if [= n 0] s
         [match s
           [Seq.Cons p]: [drop [- n 1] p.tail]
           Seq.End:      Seq.End]]]
 
   range@[return: [Seq Int]  doc: "Lazy half-open integer range [start, end). Infinite if end omitted."]:
-    [fn [let start@Int end@Int]
+    [fn [let start@Integer end@Integer]
       [if [>= start end] Seq.End
         [Seq.Cons head: start  tail: [range [+ start 1] end]]]]
 
@@ -426,7 +426,7 @@ Invariant: FTDeep.size stores the total leaf count at every level. Outermost
 elements count as 1 leaf each; spine FNodes carry their precomputed leaf count.
 This invariant is maintained by push-left, push-right, and ft-concat.
 """]:
-    [fn [let i@Int t@[FingerTree a]]
+    [fn [let i@Integer t@[FingerTree a]]
       [ft-index-by-size i t [fn [let _] 1] [fn [let x _] x]]]
 
   ft-index-by-size@[doc: """
@@ -799,10 +799,10 @@ hash since there is no superclass delegation.
 Float is NOT Hashable: NaN != NaN violates reflexivity of =.
 """]:
     [class [let Hashable k]
-      hash: [Fn@Int [k]]]
+      hash: [Fn@Integer [k]]]
 
   [instance Hashable
-    [let k@Int]:
+    [let k@Integer]:
       [=:    [fn [let a b] [builtin-int-eq a b]]
        hash: [fn [let a] a]]   # Int is its own hash
 
@@ -829,7 +829,7 @@ avoids a soundness hole where = could be silently wrong on NaN values.
       <: [Fn@Boolean [k k]]]
 
   [instance Sortable
-    [let k@Int]:    [<: builtin-lt]
+    [let k@Integer]:    [<: builtin-lt]
     [let k@Float]:  [<: builtin-float-lt]   # NaN compares as unordered (IEEE 754); callers use nan? first
     [let k@String]: [<: builtin-str-lt]]
 
@@ -837,15 +837,15 @@ avoids a soundness hole where = could be silently wrong on NaN values.
   # Durations are Int nanoseconds. builtin-duration-nanos is the identity;
   # these wrappers are pure multiplication.
   duration-nanos@[return: Int  doc: "Duration: n nanoseconds."]:
-    [fn [let n@Int] n]
+    [fn [let n@Integer] n]
   duration-seconds@[return: Int  doc: "Duration: n seconds expressed as nanoseconds."]:
-    [fn [let n@Int] [builtin-int-mul n 1000000000]]
+    [fn [let n@Integer] [builtin-int-mul n 1000000000]]
   duration-minutes@[return: Int  doc: "Duration: n minutes expressed as nanoseconds."]:
-    [fn [let n@Int] [builtin-int-mul n 60000000000]]
+    [fn [let n@Integer] [builtin-int-mul n 60000000000]]
   duration-hours@[return: Int  doc: "Duration: n hours expressed as nanoseconds."]:
-    [fn [let n@Int] [builtin-int-mul n 3600000000000]]
+    [fn [let n@Integer] [builtin-int-mul n 3600000000000]]
   duration-days@[return: Int  doc: "Duration: n days expressed as nanoseconds."]:
-    [fn [let n@Int] [builtin-int-mul n 86400000000000]]
+    [fn [let n@Integer] [builtin-int-mul n 86400000000000]]
 
   Map@[doc: "Homogeneous collection keyed by any Hashable type. Resolves to Value::Dict at runtime — Rust knows nothing about the Map name."]:
     [type [let k@Hashable v] [builtin-map k v]]
@@ -867,9 +867,9 @@ The type error on [get i seq] tells the caller: "you must collect into a List fi
       [determines: [[[c k] v]]  resolver: IndexResult]
       get:    [Fn@v      [k c]]
       slice:  [Fn@c      [c Int Int]]
-      length: [Fn@Int    [c]]]
+      length: [Fn@Integer    [c]]]
 
-  [instance Indexable [let c@[List a] k@Int v@a]:
+  [instance Indexable [let c@[List a] k@Integer v@a]:
     [get:    [fn [let i t]            [ft-index i t]]
      slice:  [fn [let t start len]    [collect [take len [drop start [ft-to-seq t]]]]]
      length: [fn [let t]              [ft-size t]]]]
@@ -923,7 +923,7 @@ only a new instance here — no Rust changes. Replaces Type::Number in the Rust 
 """]:
     [class [let Number n]]
 
-  [instance Number [let n@Int]:   []]
+  [instance Number [let n@Integer]:   []]
   [instance Number [let n@Float]: []]
 
   # ============================================================================

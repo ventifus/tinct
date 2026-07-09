@@ -1189,7 +1189,7 @@ the match is dynamically correct but statically unverified. This is
 honest: coverage can only be verified when the scrutinee type is known
 to be a union. Consistent with Karachalias et al. (2015): opaque guards
 (`is:` predicates) never contribute to coverage; type-tag arms
-(`n@Int:`) do.
+(`n@Integer:`) do.
 
 - **Sprint slug:** `exhaustiveness`
 - **Estimated tasks:** 9
@@ -1281,7 +1281,7 @@ that require special care:
    the type checker's `infer_match()` narrows the scrutinee type
    directly per-arm — no need to reverse-engineer narrowing from
    desugared `if` chains. Each arm's pattern provides a narrowing
-   constraint (e.g., `n@Int` narrows `n : Int`), and the type checker
+   constraint (e.g., `n@Integer` narrows `n : Int`), and the type checker
    applies it to the arm body's environment. This is cleaner and more
    robust than narrowing on desugared `if`/`int?` chains.
 

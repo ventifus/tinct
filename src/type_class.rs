@@ -455,8 +455,10 @@ impl InstanceEnv {
                 // Freshen both instance types independently so that a type variable named
                 // `a` in `[F a]` and a type variable named `a` in another instance map
                 // to distinct fresh variables and do not accidentally unify.
-                let fresh_existing = instantiate_at_level(&existing.instance_type, state);
-                let fresh_candidate = instantiate_at_level(&candidate.instance_type, state);
+                let fresh_existing =
+                    instantiate_at_level(&existing.instance_type, state, &rust_span!());
+                let fresh_candidate =
+                    instantiate_at_level(&candidate.instance_type, state, &rust_span!());
 
                 let mut probe_constraints: Vec<Constraint> = Vec::new();
                 let overlaps = Box::pin(unify(
@@ -529,7 +531,8 @@ impl InstanceEnv {
             // (e.g. `K` in both `Map[K V]` and the standalone `K` position) map to the
             // same fresh name. Freshening each position independently would create
             // unrelated fresh vars, breaking determined-type resolution.
-            let freshened_instance_type = instantiate_at_level(&inst.instance_type, state);
+            let freshened_instance_type =
+                instantiate_at_level(&inst.instance_type, state, &rust_span!());
 
             // Extract the determining types from the freshened instance pattern.
             // For multi-param instances, instance_type is a Record with numbered fields.
@@ -650,7 +653,8 @@ impl InstanceEnv {
 
             // Freshen the entire instance type at once so shared type variables
             // across positions map to the same fresh names.
-            let freshened_instance_type = instantiate_at_level(&inst.instance_type, state);
+            let freshened_instance_type =
+                instantiate_at_level(&inst.instance_type, state, &rust_span!());
 
             // Extract the determined-position types from the freshened instance.
             // For multi-param instances, instance_type is a Record with numbered fields.
@@ -856,7 +860,8 @@ impl InstanceEnv {
             let saved_bounds = state.bounds.clone();
 
             // Freshen the instance type to prevent variable leakage across resolution attempts.
-            let freshened_instance_type = instantiate_at_level(&inst.instance_type, state);
+            let freshened_instance_type =
+                instantiate_at_level(&inst.instance_type, state, &rust_span!());
 
             // Probe directly into state.type_vars; snapshot/restore isolates the probe.
             let mut probe_constraints: Vec<Constraint> = Vec::new();
@@ -926,7 +931,8 @@ impl InstanceEnv {
         let saved_deferred = state.deferred_equalities.clone();
         let saved_bounds = state.bounds.clone();
 
-        let freshened_instance_type = instantiate_at_level(&winner.instance_type, state);
+        let freshened_instance_type =
+            instantiate_at_level(&winner.instance_type, state, &rust_span!());
 
         // This unification must succeed — we confirmed it in Pass 1.
         let mut winner_constraints: Vec<Constraint> = Vec::new();
@@ -944,7 +950,7 @@ impl InstanceEnv {
             .method_types
             .iter()
             .map(|(name, ty)| {
-                let freshened_ty = instantiate_at_level(ty, state);
+                let freshened_ty = instantiate_at_level(ty, state, &rust_span!());
                 (name.clone(), state.apply(&freshened_ty))
             })
             .collect();

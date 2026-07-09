@@ -3,7 +3,7 @@
 [
   # Define a test class with empty structural metadata bracket
   TestClass: [class [let TestClass a] []
-    test-method: [Fn@Bool [a a]]]
+    test-method: [Fn@Boolean [a a]]]
 
   # Return a simple value to verify the class declaration typechecks
   result: True

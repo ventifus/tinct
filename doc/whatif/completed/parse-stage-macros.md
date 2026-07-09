@@ -10,20 +10,20 @@ What would it take to let user-defined macros control how their argument positio
 Tinct's macro system (`doc/whatif/macros.md`) operates post-parse: macros receive fully-formed `Expr` AST dicts and return AST dicts. The parser always produces a complete AST before any macro runs, using fixed rules for every bracket it encounters:
 
 - **All brackets are parsed as expressions** — implied call, keyed dict, or type assertion based on content. `[x y]` in a macro arg position becomes `Call(VarRef("x"), [VarRef("y")])`, not the element list `[VarRef("x"), VarRef("y")]`.
-- **Duplicate key detection uses bare-name identity** — `n@Int` and `n@String` are both field `"n"` → parse-time duplicate error, before any macro runs.
+- **Duplicate key detection uses bare-name identity** — `n@Integer` and `n@String` are both field `"n"` → parse-time duplicate error, before any macro runs.
 - **No receive-mode control** — macros cannot declare how their argument positions should be delivered; they receive whatever the parser produces.
 
 These rules are correct for general-purpose dicts but make it impossible for user-defined macros to work with bracket forms that require different parse representations.
 
 ### The Core Problem
 
-Consider the fn let-softening use case from `doc/whatif/unified-bindings.md`: a user writes `[fn [x@Int y@Float] body]` and wants it equivalent to `[fn [let x@Int y@Float] body]`. A post-parse macro cannot do this because `[x@Int y@Float]` has already been parsed as the implied call `Call(x@Int, [y@Float])` — the flat element sequence `[x@Int, y@Float]` is gone.
+Consider the fn let-softening use case from `doc/whatif/unified-bindings.md`: a user writes `[fn [x@Integer y@Float] body]` and wants it equivalent to `[fn [let x@Integer y@Float] body]`. A post-parse macro cannot do this because `[x@Integer y@Float]` has already been parsed as the implied call `Call(x@Integer, [y@Float])` — the flat element sequence `[x@Integer, y@Float]` is gone.
 
 Or consider a dispatch macro with annotated keys:
 
 ```tinct
 [dispatch result
-  n@Int:    i"int: $n"
+  n@Integer:    i"int: $n"
   n@String: i"str: $n"   # PARSE ERROR — duplicate key "n" before any macro runs
   _:        "other"]
 ```
@@ -114,7 +114,7 @@ The macro body uses tinct code and AST construction primitives to inspect argume
     ...[map [fn [let arm]
               [if [contains-structural-test? arm]
                 arm                           # [let v: Ok]: body — don't touch
-                [wrap-in-let arm]]]           # [n@Int]: body — safe to wrap
+                [wrap-in-let arm]]]           # [n@Integer]: body — safe to wrap
            arms]]]
 ```
 
@@ -139,17 +139,17 @@ Key identity (what counts as a duplicate key) is NOT a transformation — it's a
 
 ```tinct
 [declare-key-identity dispatch  full-expression]
-# Under full-expression identity: n@Int ≠ n@String ≠ n
+# Under full-expression identity: n@Integer ≠ n@String ≠ n
 ```
 
 | Key identity | Behavior |
 |-------------|----------|
-| `bare-name` | Default: `n@Int` and `n@String` both have key `"n"` → duplicate error |
-| `full-expression` | `n@Int` and `n@String` are structurally distinct → both allowed |
+| `bare-name` | Default: `n@Integer` and `n@String` both have key `"n"` → duplicate error |
+| `full-expression` | `n@Integer` and `n@String` are structurally distinct → both allowed |
 
 `full-expression` identity means: duplicate detection compares the full parsed key node structurally, not just its extracted name. The macro then receives an arms list where each entry has a full-expression key — `Annotated("n", Simple("Int"))` vs `Annotated("n", Simple("String"))` are distinct.
 
-Two `n@Int` entries are still a duplicate. Two `_` entries are still a duplicate. Only the annotation distinguishes them.
+Two `n@Integer` entries are still a duplicate. Two `_` entries are still a duplicate. Only the annotation distinguishes them.
 
 ### Hygiene — Macro-Introduced Bindings
 

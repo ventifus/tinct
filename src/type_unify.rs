@@ -2202,7 +2202,7 @@ pub async fn unify(
         // `μ_t0.T[_t0]` where `_t0` is immediately the representative. Both approaches
         // produce the same principal type; the shared fresh var is more direct.
         (Type::Recursive { var: va, body: ba }, Type::Recursive { var: vb, body: bb }) => {
-            let fresh = state.fresh_type_var();
+            let fresh = state.fresh_type_var(&span);
             let opened_a = substitute_recvar(ba, va, &fresh);
             let opened_b = substitute_recvar(bb, vb, &fresh);
             Box::pin(unify(&opened_a, &opened_b, state, constraints, span)).await
@@ -2212,7 +2212,7 @@ pub async fn unify(
         // was caught by the U-VAR-LEVEL-SYM arm above; not Recursive — caught by Arm 3 above).
         // Open the left side with a fresh TypeVar and unify the opened body with the right.
         (Type::Recursive { var: va, body: ba }, _) => {
-            let fresh = state.fresh_type_var();
+            let fresh = state.fresh_type_var(&span);
             let opened_a = substitute_recvar(ba, va, &fresh);
             Box::pin(unify(&opened_a, &b, state, constraints, span)).await
         }
@@ -2221,7 +2221,7 @@ pub async fn unify(
         // above; not Recursive — caught by Arm 3 above).
         // Open the right side with a fresh TypeVar and unify with the left.
         (_, Type::Recursive { var: vb, body: bb }) => {
-            let fresh = state.fresh_type_var();
+            let fresh = state.fresh_type_var(&span);
             let opened_b = substitute_recvar(bb, vb, &fresh);
             Box::pin(unify(&a, &opened_b, state, constraints, span)).await
         }

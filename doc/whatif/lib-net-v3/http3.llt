@@ -22,7 +22,7 @@
       _: [error "unreachable"]]]
 
   # Encode n as QUIC variable-length integer. Chooses minimum-width encoding.
-  encode-varint: [fn [let n@Int]
+  encode-varint: [fn [let n@Integer]
     [if [<= n 63]
       [bytes ByteOrder.Network [@UInt8 n]]
       [if [<= n 16383]
@@ -32,7 +32,7 @@
           [bytes ByteOrder.Network [@UInt64 [bor 0xC000000000000000 n]]]]]]]
 
   # RFC 9204 §4: QPACK integer decode (same algorithm as HPACK RFC 7541 §5.1).
-  qpack-decode-int: [fn [let data@Bytes offset@Int prefix-bits@Int]
+  qpack-decode-int: [fn [let data@Bytes offset@Integer prefix-bits@Integer]
     [mask:  [- [shl 1 prefix-bits] 1]]
     [first: [band [get data offset] mask]]
     [if [< first mask]
@@ -47,7 +47,7 @@
         [read-multi 0 0]]]]
 
   # RFC 9204 §4: QPACK string decode (literal UTF-8; Huffman not required for static-only).
-  qpack-decode-str: [fn [let data@Bytes offset@Int]
+  qpack-decode-str: [fn [let data@Bytes offset@Integer]
     [b0:      [get data offset]]
     [huffman: [= [band b0 0x80] 0x80]]
     [len-res: [qpack-decode-int data offset 7]]
@@ -308,7 +308,7 @@
     ["user-agent" ""]                     ["x-forwarded-for" ""]            ["x-frame-options" "deny"]
     ["x-frame-options" "sameorigin"]]
 
-  qpack-decode: [fn [let data@Bytes offset@Int]
+  qpack-decode: [fn [let data@Bytes offset@Integer]
     # Slice from offset — internal loop operates on buf with buf-relative offsets.
     [buf: [slice data offset [length data]]]
     # RFC 9204 §3.2.1: skip Required Insert Count (varint) and S+DeltaBase (varint)
@@ -391,7 +391,7 @@
       [encode-varint frame.type.code]
       [encode-varint [length frame.payload]]
       frame.payload]]
-  decode: [fn [let _ data@Bytes offset@Int]
+  decode: [fn [let _ data@Bytes offset@Integer]
     [parse-varint-at: [fn [let b off]
       [b0:     [get b off]]
       [prefix: [shr [band b0 0xC0] 6]]

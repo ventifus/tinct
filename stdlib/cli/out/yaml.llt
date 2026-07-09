@@ -4,7 +4,7 @@
 # Private helpers
 [
 # Internal: check if string needs quoting
-yaml-needs-quote?: [fn@Bool [let s@String]
+yaml-needs-quote?: [fn@Boolean [let s@String]
   [or
     [= s ""]
     [or [= s "true"] [or [= s "false"] [or [= s "null"]
@@ -17,13 +17,13 @@ yaml-quote: [fn@String [let s@String]
     s]]
 
 # Internal: check if dict is list-shaped (integer keys only)
-yaml-list?: [fn@Bool [let d@Dict]
+yaml-list?: [fn@Boolean [let d@Dict]
   [if [empty? d]
     false
     [all? [fn [let k] [int? k]] [keys d]]]]
 
 # Internal: format a value at given indentation level
-yaml-value: [fn@String [let val@Any indent@Int]
+yaml-value: [fn@String [let val@Any indent@Integer]
   [cond [
     [[null? val] "null"]
     [[bool? val] [if val "true" "false"]]
@@ -36,23 +36,23 @@ yaml-value: [fn@String [let val@Any indent@Int]
   ]]]
 
 # Internal: format dict as YAML object or list
-yaml-object: [fn@String [let d@Dict indent@Int]
+yaml-object: [fn@String [let d@Dict indent@Integer]
   [if [yaml-list? d]
     [yaml-list d indent]
     [yaml-dict d indent]]]
 
 # Internal: format dict as YAML list
-yaml-list: [fn@String [let d@Dict indent@Int]
+yaml-list: [fn@String [let d@Dict indent@Integer]
   [if [empty? d]
     "[]"
     [str "\n" [yaml-list-items d indent 0]]]]
 
-yaml-list-items: [fn@String [let d@Dict indent@Int i@Int]
+yaml-list-items: [fn@String [let d@Dict indent@Integer i@Integer]
   [if [>= i [length d]]
     ""
     [yaml-list-item d indent i]]]
 
-yaml-list-item: [fn@String [let d@Dict indent@Int i@Int]
+yaml-list-item: [fn@String [let d@Dict indent@Integer i@Integer]
   [str
     [join "" [take indent [repeat " "]]]
     "- "
@@ -60,7 +60,7 @@ yaml-list-item: [fn@String [let d@Dict indent@Int i@Int]
     [if [< [+ i 1] [length d]] "\n" ""]
     [yaml-list-items d indent [+ i 1]]]]
 
-yaml-list-value: [fn@String [let val@Any indent@Int]
+yaml-list-value: [fn@String [let val@Any indent@Integer]
   [if [dict? val]
     [if [yaml-list? val]
       [yaml-list val indent]
@@ -68,23 +68,23 @@ yaml-list-value: [fn@String [let val@Any indent@Int]
     [yaml-value val indent]]]
 
 # Internal: format inline dict (after list item)
-yaml-dict-inline: [fn@String [let d@Dict indent@Int]
+yaml-dict-inline: [fn@String [let d@Dict indent@Integer]
   [if [empty? d]
     "{}"
     [yaml-dict-entries d indent [keys d] 0]]]
 
 # Internal: format dict as YAML mapping
-yaml-dict: [fn@String [let d@Dict indent@Int]
+yaml-dict: [fn@String [let d@Dict indent@Integer]
   [if [empty? d]
     "{}"
     [str "\n" [yaml-dict-entries d indent [keys d] 0]]]]
 
-yaml-dict-entries: [fn@String [let d@Dict indent@Int ks@Dict i@Int]
+yaml-dict-entries: [fn@String [let d@Dict indent@Integer ks@Dict i@Integer]
   [if [>= i [length ks]]
     ""
     [yaml-dict-entry d indent ks i]]]
 
-yaml-dict-entry: [fn@String [let d@Dict indent@Int ks@Dict i@Int]
+yaml-dict-entry: [fn@String [let d@Dict indent@Integer ks@Dict i@Integer]
   [str
     [join "" [take indent [repeat " "]]]
     [get i ks]
@@ -93,7 +93,7 @@ yaml-dict-entry: [fn@String [let d@Dict indent@Int ks@Dict i@Int]
     [if [< [+ i 1] [length ks]] "\n" ""]
     [yaml-dict-entries d indent ks [+ i 1]]]]
 
-yaml-dict-value: [fn@String [let val@Any indent@Int]
+yaml-dict-value: [fn@String [let val@Any indent@Integer]
   [if [dict? val]
     [if [yaml-list? val]
       [yaml-list val indent]

@@ -113,7 +113,7 @@ Absent: [type Absent]
 **Why `[let ...]` for type params?** Mirrors function declarations exactly:
 
 ```tinct
-[fn   [let x@Int y@String]  body]    # fn params bound with [let ...]
+[fn   [let x@Integer y@String]  body]    # fn params bound with [let ...]
 [type [let a@Covariant b]   ctors]   # type params bound with [let ...]
 ```
 
@@ -493,7 +493,7 @@ The handling of `unify(Row { fields, tail: Empty }, Row { fields: {}, tail: Unif
 
 ```tinct
 Absent: [type Absent]                         # prelude unit nominal type
-absent?: [fn@Bool [let x@Unknown] [match x Absent.Absent: true  _: false]]  # predicate
+absent?: [fn@Boolean [let x@Unknown] [match x Absent.Absent: true  _: false]]  # predicate
 ```
 
 No named `absent` binding. Test by pattern matching (`Absent.Absent: ... _: ...`) or via `[absent? x]`. `absent?` has type `Unknown → Bool` — it accepts any runtime value and checks if it is `Absent.Absent`. The `@Unknown` annotation on `x` is correct and intentional: `absent?` is a type-erasing runtime predicate, in the same category as `null?`. Both need `@Unknown` because their purpose is precisely to be called on values whose compile-time type is not known. Do NOT implement as `[= x Absent.Absent]` — that constrains `x` to `NominalVariant{"Absent.Absent"}` making it useless for mixed-type inputs.
@@ -1083,7 +1083,7 @@ Seq:    [type [let a@Covariant]  Nil  [Cons head: a  tail: [Seq a]]]
 Map:    [type [let k@Equatable v]  [_@k : v]]
 Handle: [type [let a] ...]
 Absent: [type Absent]
-absent?: [fn@Bool [let x@Unknown] [match x Absent.Absent: true  _: false]]
+absent?: [fn@Boolean [let x@Unknown] [match x Absent.Absent: true  _: false]]
 ```
 
 **`do-desugar-inferred` and `do-var-node` deleted.** These two prelude functions (`prelude.llt:3496-3498` and `prelude.llt:3398-3399`) power the current inferred-monad `[do ...]` path — `do-var-node` generates sentinel `VarRef` nodes (`ℊꜱʏᴍ⧼do-infer⧽N`), `do-desugar-inferred` assembles them into the `[do ...]` body. Once `[do ...]` desugaring produces a complete AST at typecheck time (with `bind_node` and `pure_node` embedded inline), no sentinel variables appear in the emitted AST and these prelude functions are unreachable. Delete both. The `[macro do ...]` declaration itself stays; only its inferred-monad branch is replaced by the typecheck-time elaboration path.
@@ -1115,7 +1115,7 @@ Ok: Result.Ok   Error: Result.Error   Some: Maybe.Some   None: Maybe.None
 **`null?` stays; `absent?` is added.** `null?` checks for `[]` (empty dict, meaning "empty collection"), which is still a valid value. The two predicates are NOT interchangeable:
 
 - `null?` — `[match x []: true  _: false]` — true iff the value is `[]`
-- `absent?` — `[fn@Bool [let x@Unknown] [match x Absent.Absent: true _: false]]` — true iff the value is `Absent.Absent`; `Unknown → Bool`
+- `absent?` — `[fn@Boolean [let x@Unknown] [match x Absent.Absent: true _: false]]` — true iff the value is `Absent.Absent`; `Unknown → Bool`
 
 After the migration, `[get? "missing-key" d]` returns `Absent.Absent`, not `[]`. Code that tests the result with `null?` will silently fail (get false instead of true). All such call sites in prelude must be migrated to `absent?`.
 
@@ -1227,7 +1227,7 @@ This eliminates the distinction between "monad dispatch" and "constraint solving
 
 ```tinct
 # Explicit — caller chooses; this is not typeclass dispatch, just function arguments
-f: [fn [x@Color y@Color eq@[Fn@Bool [Color Color]]] [eq x y]]
+f: [fn [x@Color y@Color eq@[Fn@Boolean [Color Color]]] [eq x y]]
 [f red blue Color.eq-by-rgb]
 [f red blue Color.eq-by-name]
 ```

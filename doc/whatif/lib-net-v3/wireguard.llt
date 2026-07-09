@@ -75,7 +75,7 @@
     [send ch 0]
     ch]
 
-  bytes-zero: [fn [let n@Int]
+  bytes-zero: [fn [let n@Integer]
     [reduce [fn [let acc _] [concat acc [bytes 0]]] [] [range 0 n]]]
 ]
 
@@ -355,7 +355,7 @@
         [ciphertext: [chacha20-poly1305-seal conn.tx-key [concat [0 0 0 0] nonce-bytes] data []]]
         [write conn.underlying [concat [bytes 4] [0 0 0 0] nonce-bytes ciphertext]]]]
 
-  wg-read-bytes: [fn [let conn@WireguardConnection n@Int]
+  wg-read-bytes: [fn [let conn@WireguardConnection n@Integer]
     [header:   [read conn.underlying 16]]
     [pkt-type: [get header 0]]
     [if [not [= pkt-type 4]] [error [str "WireGuard: unexpected packet type: " pkt-type]] null]

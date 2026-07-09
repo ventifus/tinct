@@ -3,17 +3,17 @@
 # Bodies are `...` (placeholder) — valid tinct, generator drops the body.
 
 [
-  builtin-gcb-property:          [fn@GcbProperty  [let cp@Int] ...]
+  builtin-gcb-property:          [fn@GcbProperty  [let cp@Integer] ...]
   builtin-gcb-boundary:          [fn@Boolean       [let prev@GcbProperty cur@GcbProperty state@GcbState] ...]
   builtin-gcb-next-state:        [fn@GcbState      [let prop@GcbProperty state@GcbState] ...]
   builtin-gcb-initial-state:     [fn@GcbState      [] ...]
   builtin-encode-utf8-graphemes: [fn@Bytes          [let gs@Graphemes] ...]
   builtin-grapheme-eq:           [fn@Boolean        [let a@Grapheme b@Grapheme] ...]
   builtin-graphemes-eq:          [fn@Boolean        [let a@Graphemes b@Graphemes] ...]
-  builtin-grapheme-hash:         [fn@Int            [let g@Grapheme] ...]
-  builtin-graphemes-hash:        [fn@Int            [let gs@Graphemes] ...]
+  builtin-grapheme-hash:         [fn@Integer            [let g@Grapheme] ...]
+  builtin-graphemes-hash:        [fn@Integer            [let gs@Graphemes] ...]
   builtin-graphemes-lt:          [fn@Boolean        [let a@Graphemes b@Graphemes] ...]
-  builtin-int-to-graphemes:      [fn@Graphemes      [let n@Int] ...]
+  builtin-int-to-graphemes:      [fn@Graphemes      [let n@Integer] ...]
   builtin-float-to-graphemes:    [fn@Graphemes      [let f@Float] ...]
   builtin-byte-to-hex:           [fn@Graphemes      [let b@UInt8] ...]
 ]

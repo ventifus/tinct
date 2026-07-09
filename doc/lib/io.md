@@ -85,7 +85,7 @@ fn@WriteHandle [let handle@WriteHandle lines@Seq]
 Check if a capability is present on a Handle or WriteHandle
 
 ```tinct
-fn@Bool [let h@[Handle  WriteHandle] cap@String]
+fn@Boolean [let h@[Handle  WriteHandle] cap@String]
 ```
 
 ### `copy`

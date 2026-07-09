@@ -9,7 +9,7 @@ What would it take to give every binding declaration in tinct a single self-anno
 Tinct binds names in several contexts, each with its own syntactic convention:
 
 ```tinct
-[fn  [x@Int y@Float]  body]           # param bracket — context makes it a binding list
+[fn  [x@Integer y@Float]  body]           # param bracket — context makes it a binding list
 [class  [a b c]  methods...]          # TypeVar bracket — context makes it a name list
 [type  [a b]  [or a b]]               # alias param bracket — context makes it a name list
 fn@[bind: [a b c]  return: c  ...]    # bind: value — treated as a name list
@@ -33,7 +33,7 @@ A reader unfamiliar with tinct sees `[fn [a b c] body]` and can reasonably parse
 
 **One parsing invariant.** Today: `[a b c]` is an implied call, *except* when it appears as the first bracket after `fn`, `class`, or `type`. With `[let ...]`: `[a b c]` is always an implied call. No exceptions. The invariant is complete.
 
-**Readable without foreknowledge.** `[fn [let x@Int y@Float] body]` is unambiguous to a reader who has never seen tinct: the `let` keyword signals binding declaration. `[fn [x@Int y@Float] body]` is not — it looks like calling `x@Int` as a function with arg `y@Float`.
+**Readable without foreknowledge.** `[fn [let x@Integer y@Float] body]` is unambiguous to a reader who has never seen tinct: the `let` keyword signals binding declaration. `[fn [x@Integer y@Float] body]` is not — it looks like calling `x@Integer` as a function with arg `y@Float`.
 
 **Uniform match arms.** The `[case ...]` form makes match arm scoping explicit: `[case [let v] [Result.Ok v] body]` has `v` clearly declared in `[let v]` and scoped to `body` — the same mechanism as `[fn [let x] body]`. Current match arms (`[Ok v]: body`) look like dict entries; the scoping of `v` to `body` is implicit.
 
@@ -56,7 +56,7 @@ Structural constructor tests (`name: Constructor`) are NOT part of the `[let ...
 ### Function Parameters
 
 ```tinct
-[fn [let x@Int y@Float] [+ x y]]
+[fn [let x@Integer y@Float] [+ x y]]
 
 [fn [let xs@[Seq a]  f@[Fn@b [a]]]
   [map f xs]]
@@ -65,11 +65,11 @@ Structural constructor tests (`name: Constructor`) are NOT part of the `[let ...
 [fn [let] 42]
 
 # Variadic
-[fn [let x@Int  ...rest@[Seq Int]]
+[fn [let x@Integer  ...rest@[Seq Int]]
   [+ x [sum rest]]]
 ```
 
-`[fn [x@Int y@Float] body]` is a **parse error**: the parser expects `[let ...]` as the first bracketed expression inside `fn`.
+`[fn [x@Integer y@Float] body]` is a **parse error**: the parser expects `[let ...]` as the first bracketed expression inside `fn`.
 
 ### Class TypeVar Declarations
 
@@ -78,7 +78,7 @@ Addable: [class [let a b c]  [determines: [[[a b] c]]  resolver: AddResult]
   +: [fn@c [let a b]]]
 
 Equatable: [class [let a]
-  eq?: [fn@Bool [let a a]]]
+  eq?: [fn@Boolean [let a a]]]
 ```
 
 `[class [a b c] ...]` is a parse error.
@@ -113,11 +113,11 @@ All type patterns in instance arms are binding lists. Instance arms use `[let ..
 
 ```tinct
 [instance Addable
-  [let a@Int   b@Int   c@Int  ]: [+: fn-int-add]
-  [let a@Int   b@Float c@Float]: [+: fn-int-float-add]]
+  [let a@Integer   b@Integer   c@Integer  ]: [+: fn-int-add]
+  [let a@Integer   b@Float c@Float]: [+: fn-int-float-add]]
 
 [instance Appendable
-  [let a@Str]:        [concat: impl  empty: impl]
+  [let a@String]:        [concat: impl  empty: impl]
   [let a@[Seq elem]]: [concat: impl  empty: impl]
   [let a@[Map k v]]:  [concat: impl  empty: impl]]
 
@@ -154,7 +154,7 @@ The scoping problem with current constructor patterns: `[Ok v]: body` uses `v` a
 [match status
   [case [let]   200              "ok"]        # exact value — empty [let], no new bindings
   [case [let]   404              "missing"]
-  [case [let n] n@Int            [str n]]]    # typed binding
+  [case [let n] n@Integer            [str n]]]    # typed binding
 
 [match value
   [case [let n]  [> n 0]  "positive"]        # guard: lowercase head → guard expression
@@ -228,7 +228,7 @@ Constructor narrowing is expressed through the `pattern` argument of `[case ...]
 
 Constructor types are looked up from the local TypeEnv (scope-aware). An undefined constructor name in the pattern is a type error.
 
-**`Unknown ∩ T` normalizes to `T`** (AGT, Garcia et al. 2016): intersection with the gradual type is identity. When the scrutinee type is `Unknown`, `[let n@Int]` gives `n : Int` (not `n : Int & ?`). `normalize_intersection` must implement this case alongside the existing `Top`-as-identity rule.
+**`Unknown ∩ T` normalizes to `T`** (AGT, Garcia et al. 2016): intersection with the gradual type is identity. When the scrutinee type is `Unknown`, `[let n@Integer]` gives `n : Int` (not `n : Int & ?`). `normalize_intersection` must implement this case alongside the existing `Top`-as-identity rule.
 
 **Unknown constructor warning** — if a constructor name in the `pattern` is looked up and not found in scope, it is a type error ("undefined variable: X"), same as any undefined name. If found in scope but not a constructor type, it is a type error ("X is not a constructor type"). There is no silent Unknown fallback for constructor names.
 
@@ -271,7 +271,7 @@ The context-sensitive rule within `[let ...]` — that `Token::OpenBracket` alwa
 ```tinct
 # Abstract class method body — the canonical use
 Equatable: [class [let a]
-  eq?: [fn@Bool [let a a] ...]]
+  eq?: [fn@Boolean [let a a] ...]]
 
 # Stub function — type-checks, fails at call time
 process: [fn@Result [let data@Input] ...]
@@ -322,7 +322,7 @@ The error kind is `ErrorKind::Unimplemented` — callers can distinguish `...` p
 | `...rest` | Param list | Variadic binding |
 | `[name: Str ...]` | Type annotation | Open record rest |
 | `...` | Value expression position (no following identifier) | Placeholder thunk |
-| `...` | Inside `[let ...]` | Placeholder binding — a binding that raises UnimplementedError when the bound name is forced. Used in `[fn [let x@Int ...] body]` to declare that some params are abstract/unimplemented. |
+| `...` | Inside `[let ...]` | Placeholder binding — a binding that raises UnimplementedError when the bound name is forced. Used in `[fn [let x@Integer ...] body]` to declare that some params are abstract/unimplemented. |
 
 The third form is unambiguous at the token level: `Token::Spread` not followed by `Token::Identifier` in value position → `Expr::Placeholder`.
 
@@ -379,7 +379,7 @@ Expr::Placeholder    // the ... expression; source span carried by Spanned<>
 - `StackFrame::ClassDecl`: first expression must be `Expr::LetDecl`
 - `StackFrame::TypeAlias`: if first expression is `Expr::LetDecl`, it is the param list; otherwise it is the body (no-param alias)
 - `StackFrame::InstanceDecl`: `Expr::LetDecl` followed by `:` = arm key
-- `StackFrame::Match`: `Expr::CaseArm` = 3-arg case arm; existing `pending_pattern_expr` path = shorthand keyed arms (`[Tag v]:`, `n@Int:`, `_:`) which remain valid for non-binding arms
+- `StackFrame::Match`: `Expr::CaseArm` = 3-arg case arm; existing `pending_pattern_expr` path = shorthand keyed arms (`[Tag v]:`, `n@Integer:`, `_:`) which remain valid for non-binding arms
 
 **`Expr::Placeholder` parsing**: `Token::Spread` not followed by `Token::Identifier` in value expression position → `Expr::Placeholder`. This is a content-based dispatch rule (same as other expression classifiers); no new StackFrame needed.
 
@@ -473,7 +473,7 @@ The source span (carried in `Spanned<Expr::Placeholder>`) is stored in the thunk
 
 ## Future: Parse-Stage Macro Softening
 
-This proposal requires `[let ...]` uniformly at all binding positions. A future parse-stage macro system could introduce syntactic elision where it is safe and unambiguous — for example, `[fn [x@Int y@Float] body]` expanding to `[fn [let x@Int y@Float] body]` when the binding bracket contains no structural tests.
+This proposal requires `[let ...]` uniformly at all binding positions. A future parse-stage macro system could introduce syntactic elision where it is safe and unambiguous — for example, `[fn [x@Integer y@Float] body]` expanding to `[fn [let x@Integer y@Float] body]` when the binding bracket contains no structural tests.
 
 Note that `[case [let v] [Result.Ok v] body]` (3-arg structural match with explicit binding declaration) differs fundamentally from shorthand `[Result.Ok v]: body` (keyed arm) in that the binding scope is stated explicitly — any parse-stage elision for case arms must preserve the scoping semantics. Parse-stage macros (which operate before AST construction) are the right mechanism for this, as they can inspect token streams and apply context-sensitive transformations before the parser assigns structure.
 

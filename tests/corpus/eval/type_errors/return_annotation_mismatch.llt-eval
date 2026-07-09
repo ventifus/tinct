@@ -1,6 +1,6 @@
 # Bidirectional typing: return annotation incompatible with param type.
-# A function with @String return annotation but @Int param — the body $x returns Int,
+# A function with @String return annotation but @Integer param — the body $x returns Int,
 # but the @String annotation declares it should return String. Type error.
-[[fn@String [let x@Int] x] 1]
+[[fn@String [let x@Integer] x] 1]
 === out
 [UnificationFailure] cannot unify String with Int

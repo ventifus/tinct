@@ -362,7 +362,7 @@ The coordinator-worker protocol is a sequence of tinct dicts over the cluster's 
 
 ```tinct
 # Task dispatch
-[task-id: <uuid>  payload: <Thunk>  term: <Int>  caps: <List>  requires: <List@Str>]
+[task-id: <uuid>  payload: <Thunk>  term: <Int>  caps: <List>  requires: <List@String>]
 [task-id: <uuid>  result: <TinctWire-value>]
 [task-id: <uuid>  error: <Error>]
 
@@ -371,7 +371,7 @@ The coordinator-worker protocol is a sequence of tinct dicts over the cluster's 
 [pong: <uuid>  load: <Int>  active: <Int>  queued: <Int>  uptime-ms: <Int>]
 
 # Membership — caps is list of capability name strings
-[worker-hello:  node-id: <Str>  addr: <Str>  cores: <Int>  caps: <List@Str>]
+[worker-hello:  node-id: <Str>  addr: <Str>  cores: <Int>  caps: <List@String>]
 [worker-join:   node-id: <Str>  addr: <Str>]
 [worker-leave:  node-id: <Str>]
 

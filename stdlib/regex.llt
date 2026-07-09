@@ -26,15 +26,15 @@ re-ensure-pattern: [fn@String [let pattern@Unknown]
             pattern]]]
 
 # Test if string contains pattern anywhere (recursive position scan)
-re-match-impl: [fn@Bool [let pat@String haystack@String i@Int len@Int]
+re-match-impl: [fn@Boolean [let pat@String haystack@String i@Integer len@Integer]
     [if [> i len]
         false
         [re-match-try pat haystack i len]]]
 
-re-match-try: [fn@Bool [let pat@String haystack@String i@Int len@Int]
+re-match-try: [fn@Boolean [let pat@String haystack@String i@Integer len@Integer]
     [re-match-check pat haystack i len [+ i [length pat]]]]
 
-re-match-check: [fn@Bool [let pat@String haystack@String i@Int len@Int end-pos@Int]
+re-match-check: [fn@Boolean [let pat@String haystack@String i@Integer len@Integer end-pos@Integer]
     [if [> end-pos len]
         [re-match-impl pat haystack [+ i 1] len]
         [if [= pat [str-slice haystack i end-pos]]
@@ -42,15 +42,15 @@ re-match-check: [fn@Bool [let pat@String haystack@String i@Int len@Int end-pos@I
             [re-match-impl pat haystack [+ i 1] len]]]]
 
 # Find first match — returns [] if no match
-re-find-impl: [fn@Dict [let pat@String haystack@String i@Int len@Int]
+re-find-impl: [fn@Dict [let pat@String haystack@String i@Integer len@Integer]
     [if [> i len]
         []
         [re-find-try pat haystack i len]]]
 
-re-find-try: [fn@Dict [let pat@String haystack@String i@Int len@Int]
+re-find-try: [fn@Dict [let pat@String haystack@String i@Integer len@Integer]
     [re-find-check pat haystack i len [+ i [length pat]]]]
 
-re-find-check: [fn@Dict [let pat@String haystack@String i@Int len@Int end-pos@Int]
+re-find-check: [fn@Dict [let pat@String haystack@String i@Integer len@Integer end-pos@Integer]
     [if [> end-pos len]
         [re-find-impl pat haystack [+ i 1] len]
         [if [= pat [str-slice haystack i end-pos]]
@@ -58,15 +58,15 @@ re-find-check: [fn@Dict [let pat@String haystack@String i@Int len@Int end-pos@In
             [re-find-impl pat haystack [+ i 1] len]]]]
 
 # Find all matches — returns dict of match result dicts
-re-findall-impl: [fn@Dict [let pat@String haystack@String i@Int len@Int acc@Dict]
+re-findall-impl: [fn@Dict [let pat@String haystack@String i@Integer len@Integer acc@Dict]
     [if [> i len]
         acc
         [re-findall-try pat haystack i len acc]]]
 
-re-findall-try: [fn@Dict [let pat@String haystack@String i@Int len@Int acc@Dict]
+re-findall-try: [fn@Dict [let pat@String haystack@String i@Integer len@Integer acc@Dict]
     [re-findall-check pat haystack i len acc [+ i [length pat]]]]
 
-re-findall-check: [fn@Dict [let pat@String haystack@String i@Int len@Int acc@Dict end-pos@Int]
+re-findall-check: [fn@Dict [let pat@String haystack@String i@Integer len@Integer acc@Dict end-pos@Integer]
     [if [> end-pos len]
         [re-findall-impl pat haystack [+ i 1] len acc]
         [if [= pat [str-slice haystack i end-pos]]
@@ -87,7 +87,7 @@ re-compile@[doc: "Compile a pattern (currently a no-op, just returns the pattern
     [pattern: pattern]]
 
 # Test if string contains pattern anywhere
-re-match@[doc: "Test if string contains pattern anywhere"]: [fn@Bool [let pattern@Unknown haystack@String]
+re-match@[doc: "Test if string contains pattern anywhere"]: [fn@Boolean [let pattern@Unknown haystack@String]
     [re-match-impl [re-ensure-pattern pattern] haystack 0 [length haystack]]]
 
 # Find first match (returns [match: String start: Int end: Int] or [])

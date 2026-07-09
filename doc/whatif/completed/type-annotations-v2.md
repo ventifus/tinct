@@ -34,7 +34,7 @@ The `@` annotation today resolves bracket contents through an ad-hoc resolver in
 **Parameter — single bracket, type under `type:` key when mixed with metadata:**
 
 ```tinct
-x@Int                                  # simple type (shorthand — unchanged)
+x@Integer                                  # simple type (shorthand — unchanged)
 x@[or Int Null]                        # union type (type-only, or combinator)
 x@[host: String  port: Int]            # Record type (all-keyed, no reserved keys)
 x@[type: Int  default: 10]             # type + metadata
@@ -169,7 +169,7 @@ Name resolution order in the type-stage Env: type-stage bindings → type alias 
 ```tinct
 [match value
   n@[is: positive?]: [str "positive: " n]  # positive? falsy → skip arm
-  n@Int:             [str "non-positive: " n]]
+  n@Integer:             [str "non-positive: " n]]
 ```
 
 - `pred(x)` truthy → arm matches, `x` bound in body

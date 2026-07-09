@@ -71,7 +71,7 @@
 
   # ── HPACK implementation internals ───────────────────────────────────────────
 
-  hpack-decode-int: [fn [let data@Bytes offset@Int prefix-bits@Int]
+  hpack-decode-int: [fn [let data@Bytes offset@Integer prefix-bits@Integer]
     [mask:    [- [shl 1 prefix-bits] 1]]
     [first:   [band [get data offset] mask]]
     [if [< first mask]
@@ -85,7 +85,7 @@
             [read-multi [+ i 1] new-acc]]]]
         [read-multi 0 0]]]]
 
-  hpack-decode-str: [fn [let data@Bytes offset@Int]
+  hpack-decode-str: [fn [let data@Bytes offset@Integer]
     [b0:       [get data offset]]
     [huffman:  [= [band b0 0x80] 0x80]]
     [len-res:  [hpack-decode-int data offset 7]]
@@ -253,7 +253,7 @@
   # RFC 7541 §6.3: dynamic table size update — 0x20 prefix, 5-bit new max-size.
   # Static table has 61 entries (RFC 7541 Appendix A). Dynamic table appended after.
   # Returns [Map String String] of decoded headers.
-  hpack-decode: [fn [let table@HpackTable data@Bytes offset@Int]
+  hpack-decode: [fn [let table@HpackTable data@Bytes offset@Integer]
     # Slice from offset — internal loop operates on buf with buf-relative offsets.
     [buf: [slice data offset [length data]]]
     [decode-loop: [fn [let off headers dyn-table]
@@ -404,7 +404,7 @@
       [bytes ByteOrder.Network [@H2StreamId [band frame.stream-id 0x7FFFFFFF]]]
       frame.payload]]
 
-  h2-frame-parse: [fn [let _ data@Bytes offset@Int]
+  h2-frame-parse: [fn [let _ data@Bytes offset@Integer]
     [frame-data: [slice data offset [length data]]]
     [payload-len: [@H2FrameLength [uint24 ByteOrder.Network [slice frame-data 0 3]]]]
     [value: [H2Frame
@@ -554,7 +554,7 @@
     [channel-map [fn [let conn] [h2-open-stream conn]] ch]]
 
   # RFC 7540 §8.2: server push — send PUSH_PROMISE on existing stream, then HEADERS+DATA on new even stream.
-  h2-push: [fn [let conn@Http2Connection stream-id@Int req@HttpRequest resp@HttpResponse]
+  h2-push: [fn [let conn@Http2Connection stream-id@Integer req@HttpRequest resp@HttpResponse]
     [push-id: [match [recv conn.next-stream] [Result.Ok n]: n  [Closed.Closed]: [error "H2: closed"]]]
     [send conn.next-stream [+ push-id 2]]
     # PUSH_PROMISE: reference stream-id + promised-stream-id + HPACK headers

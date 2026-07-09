@@ -1,6 +1,6 @@
 --- Test 1: Recursive function WITH annotation works normally
 [
-    factorial@Fn@Int [Int]: [fn [n@Int]
+    factorial@Fn@Integer [Int]: [fn [n@Integer]
         [if [< $n 2]
             1
             [* $n [$factorial [- $n 1]]]
@@ -14,7 +14,7 @@
 --- Test 2: Recursive function WITHOUT annotation → error
 [
     # This should produce a type error about polymorphic recursion
-    factorial: [fn [n@Int]
+    factorial: [fn [n@Integer]
         [if [< $n 2]
             1
             [* $n [$factorial [- $n 1]]]
@@ -30,7 +30,7 @@
     id@Fn@a [a]: [fn [x@a] $x]
 
     # Monomorphic function: concrete type (CALL-MONO path)
-    id_int@Fn@Int [Int]: [fn [x@Int] $x]
+    id_int@Fn@Integer [Int]: [fn [x@Integer] $x]
 
     # Both should accept IntLiteral(42) for Int parameter
     poly_result: [$id 42]

@@ -13,14 +13,14 @@ intersection types and pattern matching — proven sound and complete.
 
 BAS encodes extensible records *without row variables* using the same Boolean algebra
 that encodes union and intersection. Field *absence* is a Boolean property of a type.
-Width subtyping — `@[name: Str  age: Int]` satisfies `@[name: Str]` — falls directly
+Width subtyping — `@[name: String  age: Integer]` satisfies `@[name: Str]` — falls directly
 out of conjunction elimination: `{name: Str} ∧ {age: Int} <: {name: Str}` by
 definition of `∧` as the greatest lower bound. No row variable gymnastics.
 
 The key capabilities gained:
 
-- **Principal union types** for `if` and `[match]` — `[if cond [ok: v] [err: msg]]` infers `Ok@T | Err@Str`, not `Any`
-- **False-branch narrowing** — after `[if [int? x] ...]`, the false branch knows `x : ~Int`
+- **Principal union types** for `if` and `[match]` — `[if cond [ok: v] [err: msg]]` infers `Ok@T | Err@String`, not `Any`
+- **False-branch narrowing** — after `[if [int? x] ...]`, the false branch knows `x : ~Integer`
 - **Exhaustiveness without annotation** — pattern match arms checked without requiring `[@Result res]` TypeAssert
 - **Typed field removal** — `[remove dict "field"]` gets a precise return type
 - **Proven soundness** — D2's conjectured-soundness row-extension is replaced with a published proof
@@ -33,7 +33,7 @@ The type grammar is a distributive Boolean algebra:
 
 | Formal | tinct annotation | Notes |
 |--------|-----------------|-------|
-| `A \| B` | `@[A B]` | positional entries = union members — existing |
+| `A \| B` | `@[or A B]` | `or` is a type-stage function — explicit union syntax |
 | `A & B` | `@[[all A B]]` | `[all ...]` prefix bracket in annotation position |
 | `~A` | `@[[without A]]` | `[without A]` prefix bracket in annotation position |
 | `⊤` | `@Top` | true supertype |
@@ -48,12 +48,7 @@ means exactly this — a multi-field annotation is an intersection of single-fie
 constraints. The annotation syntax requires no change; what changes is the internal
 type representation.
 
-**Disambiguation from union annotation:** positional entries in `@[...]` are union
-members when there are multiple entries (`@[Int Str]` → `Int | Str`). When the
-single positional entry is itself a list whose first token is `all` or `without`, it
-is an intersection or negation type, not a union member. Examples:
-`@[[all Int Num]]` → `Int & Num`; `@[[without Int]]` → `~Int`;
-`@[[all Int Num] Str]` → `(Int & Num) | Str`.
+**Union annotation:** the `or` type-stage function produces union types: `@[or Integer String]` → `Int | Str`. Intersection uses `all`: `@[[all Integer Num]]` → `Int & Num`. Negation uses `without`: `@[[without Integer]]` → `~Integer`. These can be combined: `@[or [all Integer Num] String]` → `(Int & Num) | Str`.
 
 Subtyping: `A <: B` iff `A & ~B` is uninhabited. Subtyping is decidable and always
 terminates on well-formed inputs (Chau & Parreaux 2026, Theorem 7.6).
@@ -96,7 +91,7 @@ fields is a subtype of one with fewer, because intersection elimination gives `A
 {name: Str} & {age: Int}  <:  {name: Str}
 ```
 
-In tinct: any dict satisfying `@[name: Str  age: Int]` also satisfies `@[name: Str]`.
+In tinct: any dict satisfying `@[name: String  age: Integer]` also satisfies `@[name: Str]`.
 No row variable, no unification case, no `unify_remainders`.
 
 **All structural record annotations are open.** Under BAS, `{name: Str}` means "any
@@ -154,17 +149,17 @@ constructor pattern.
 
 ### False-Branch Narrowing
 
-After `[if [int? x] ...]`, the false branch knows `x : ~Int`. Combined with a union
+After `[if [int? x] ...]`, the false branch knows `x : ~Integer`. Combined with a union
 annotation, this is precise:
 
 ```tinct
-process: [fn [x@[Int Str]]
+process: [fn [x@[Integer String]]
     [if [int? x]
         [+ x 1]        # x : Int  (true branch — already works today)
-        [str-upper x]]]  # x : Str  (false branch — requires ~Int narrowing)
+        [str-upper x]]]  # x : Str  (false branch — requires ~Integer narrowing)
 ```
 
-With BAS, `(Int | Str) & ~Int = Str` — the precise type that makes the `str-upper`
+With BAS, `(Int | Str) & ~Integer = Str` — the precise type that makes the `str-upper`
 call statically verifiable.
 
 Field presence guard:
@@ -227,7 +222,7 @@ lazily and maintaining a cache of currently-processed subtyping relationships.
 # Before BAS: result type is Any
 result: [if cond [ok: v] [err: "failed"]]
 
-# With BAS: result type is Ok@T | Err@String
+# With BAS: result type is Ok@T | Err@Stringing
 result: [if cond [ok: v] [err: "failed"]]
 
 # Consequence: exhaustive match is type-checked without annotation
@@ -247,7 +242,7 @@ result: [Ok computed-value]      # type: Ok@T  — carries #Ok tag
 
 # JSON input is always structural; must be lifted explicitly:
 raw: [from-json input]           # type: {ok: Int}  — structural, not Ok@Int
-result: [Ok [get "ok" raw]]      # type: Ok@Int  — explicit lift
+result: [Ok [get "ok" raw]]      # type: Ok@Integer  — explicit lift
 ```
 
 ### Record Annotations Are Always Open
@@ -307,7 +302,7 @@ The Robinson unification + row-variable binding approach is replaced by the MLst
 constraint solver:
 
 - Each type variable carries `lower: Vec<Type>` and `upper: Vec<Type>` bounds, as in Simple-sub / D2
-- New: bounds can contain negated types (`lower: [~Int]` = "definitely not Int")
+- New: bounds can contain negated types (`lower: [~Integer]` = "definitely not Int")
 - **C-Var1/2 rewriting**: when a constraint has a union on the right or an intersection on the left involving a type variable, the constraint solver uses `¬τ` to move terms across the inequality, producing a constraint with the type variable isolated
 - Constraint normalization to RDNF (Reduced Disjunctive Normal Form) ensures the algorithm terminates and yields unique results without backtracking
 - `unify_remainders` is gone; field-set operations are just conjunction over single-field record types

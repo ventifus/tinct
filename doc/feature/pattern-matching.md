@@ -17,9 +17,9 @@ parser special form with dedicated type checker and evaluator support.
 
 **Context-sensitive key identity:** Inside `[match]`, the parser enters a dedicated
 match-arm parsing mode where the full annotated expression is the key identity —
-`n@Int` and `n@String` are distinct keys even though both have base name `n`. This
+`n@Integer` and `n@String` are distinct keys even though both have base name `n`. This
 is implemented in the parser directly (not via a syntax class in stdlib). Regular
-dicts are unchanged: `[n@Int: 1  n@String: "2"]` remains a duplicate-key error.
+dicts are unchanged: `[n@Integer: 1  n@String: "2"]` remains a duplicate-key error.
 
 **Pattern syntax** (the key position of each arm):
 
@@ -36,11 +36,11 @@ dicts are unchanged: `[n@Int: 1  n@String: "2"]` remains a duplicate-key error.
 
 # Type + binding — annotated bare word: bind AND type-constrain
 [match x
-    n@Int:  [+ n 1]
-    n@Str:  i"got: $n"
+    n@Integer:  [+ n 1]
+    n@String:  i"got: $n"
     _:      x]
 
-# **Note:** `n@Int:` is a compile-time type annotation that narrows the inferred type of `n`
+# **Note:** `n@Integer:` is a compile-time type annotation that narrows the inferred type of `n`
 # within the arm body. It does NOT perform a runtime type check — for runtime type checking,
 # use `[is: int?]` guard instead.
 
@@ -60,7 +60,7 @@ dicts are unchanged: `[n@Int: 1  n@String: "2"]` remains a duplicate-key error.
 # Type + guard combined
 [match x
     n@[type: Int  is: [> _ 0]]:   i"positive int: $n"
-    n@Int:                         i"non-positive int: $n"
+    n@Integer:                         i"non-positive int: $n"
     _:                             "not an int"]
 
 # Dict patterns — dict literal as key, destructures by key
@@ -92,7 +92,7 @@ dicts are unchanged: `[n@Int: 1  n@String: "2"]` remains a duplicate-key error.
 ```
 
 **`is:` predicate semantics:** The `is:` key in an annotation property dict
-is a `Fn@Bool [Any]` predicate. The match macro calls it with the bound value.
+is a `Fn@Boolean [Any]` predicate. The match macro calls it with the bound value.
 `true` = arm fires; `false` = fall through to next arm. Use `_` as the
 placeholder: `[> _ 0]` desugars to `[fn [_] [> _ 0]]`. For multiple
 predicates use `and` composition: `[is: [and [> _ 5] [< _ 10]]]`. Named
@@ -232,7 +232,7 @@ Pattern types:
 
 **Narrowing:** `infer_match()` narrows the scrutinee type per-arm directly:
 
-Type-predicate arms narrow statically. `n@Int:` narrows `n` to `Int`
+Type-predicate arms narrow statically. `n@Integer:` narrows `n` to `Int`
 in the arm body. Similarly `n@Str:` narrows to `Str`, dict patterns
 `[ok: v]:` narrow to `[ok: ...]`, etc. The type checker applies the
 narrowing constraint from the pattern directly — no desugaring to
@@ -240,11 +240,11 @@ narrowing constraint from the pattern directly — no desugaring to
 
 `is:` predicate arms do NOT narrow the type. `n@[is: [> _ 0]]:` proves a runtime
 condition (`n > 0`) but the type checker cannot derive a static type from an arbitrary
-`Fn@Bool [Any]` predicate. `n` retains whatever type the scrutinee had — `Int` if the
+`Fn@Boolean [Any]` predicate. `n` retains whatever type the scrutinee had — `Int` if the
 scrutinee was typed `Int`, `Any` if it was untyped. This is correct behavior: `is:`
 guards are value constraints, not type constraints.
 
-The distinction matters for arm body type safety: after `n@Int:` the type checker
+The distinction matters for arm body type safety: after `n@Integer:` the type checker
 knows `n` is an `Int` and can reject `n.field` as a type error; after `n@[is: [> _ 0]]:`,
 it cannot. Users who need both should compose: `n@[type: Int  is: [> _ 0]]:` gives
 type narrowing AND the value guard.
@@ -255,7 +255,7 @@ Exhaustiveness is checked in `infer_match()` when the scrutinee's type is a
 `Type::Union`. The type checker extracts the variant set from the scrutinee's
 union type and performs Maranget-style coverage analysis on the arm patterns:
 
-- Type-tag arms (`n@Int:`) cover the `Int` variant
+- Type-tag arms (`n@Integer:`) cover the `Int` variant
 - Dict pattern arms (`[ok: v]:`) cover the `[ok: a]` structural variant
 - Wildcard `_:` covers all remaining variants
 - Or-pattern arms (`p1 | p2:`) cover both sub-patterns
@@ -275,7 +275,7 @@ the match is dynamically correct but statically unverified. A runtime
   type constraint at all. This matches Karachalias et al. (2015) lazy bottom semantics:
   guards are opaque runtime predicates whose truthfulness cannot be statically determined,
   so the exhaustiveness checker conservatively assumes the arm might not match even when
-  its type constraint is satisfied. An unguarded `n@Int:` arm or wildcard `_:` arm is
+  its type constraint is satisfied. An unguarded `n@Integer:` arm or wildcard `_:` arm is
   still required to satisfy exhaustiveness for the `Int` variant.
 
 ### Lazy Evaluation

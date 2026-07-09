@@ -3,11 +3,11 @@
 [
   # Define a simple class
   TestEq: [class [let TestEq a]
-    test-eq: [Fn@Bool [a a]]]
+    test-eq: [Fn@Boolean [a a]]]
 
   # Define an instance using the new pattern syntax
   TestEqInt: [instance TestEq
-    [pattern [a@Int]]: test-eq: [fn [let x y] [= x y]]]
+    [pattern [a@Integer]]: test-eq: [fn [let x y] [= x y]]]
 
   # Use the instance
   result: True

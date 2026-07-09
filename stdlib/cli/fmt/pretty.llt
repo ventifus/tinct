@@ -19,7 +19,7 @@ indent-size:  2
 join-strings: [fn@[return: String  doc: """Join a 0-indexed dict of strings with sep."""] [let sep@String items@Dict]
   [join-strings-impl sep items 0 ""]]
 
-join-strings-impl: [fn@[return: String] [let sep@String items@Dict i@Int acc@String]
+join-strings-impl: [fn@[return: String] [let sep@String items@Dict i@Integer acc@String]
   [if [>= i [length items]]
     acc
     [join-strings-impl
@@ -31,7 +31,7 @@ join-strings-impl: [fn@[return: String] [let sep@String items@Dict i@Int acc@Str
 map-list: [fn@[return: Dict  doc: """Map f over a 0-indexed dict, returning a new 0-indexed dict."""] [let f@Fn xs@Dict]
   [map-list-impl f xs 0]]
 
-map-list-impl: [fn@[return: Dict] [let f@Fn xs@Dict i@Int]
+map-list-impl: [fn@[return: Dict] [let f@Fn xs@Dict i@Integer]
   [if [>= i [length xs]]
     []
     [merge
@@ -43,7 +43,7 @@ make-entry: [fn@[return: Dict] [let k v]
 
 field-has?: [
   fn@[
-    return: Bool
+    return: Boolean
     doc: """
       Check if a key exists in a dict (returns false on missing key).
       """
@@ -153,7 +153,7 @@ render-entry-inline: [fn@[return: String  doc: """Render a dict entry single-lin
 render-match-arms: [fn@[return: String  doc: """Render match arms inline for width measurement."""] [let arms@Dict]
   [render-match-arms-impl arms 0 ""]]
 
-render-match-arms-impl: [fn@[return: String] [let arms@Dict i@Int acc@String]
+render-match-arms-impl: [fn@[return: String] [let arms@Dict i@Integer acc@String]
   [if [>= i [length arms]]
     acc
     [render-match-arms-impl
@@ -167,14 +167,14 @@ render-match-arms-impl: [fn@[return: String] [let arms@Dict i@Int acc@String]
 
 # ---- Layout decision ----
 
-fits-inline?: [fn@[return: Bool  doc: """Check if a dict node fits on one line (within max-width and max-entries)."""] [let node indent@Int]
+fits-inline?: [fn@[return: Boolean  doc: """Check if a dict node fits on one line (within max-width and max-entries)."""] [let node indent@Integer]
   [and
     [<= [length [get "entries" node]] max-entries]
     [<= [+ indent [str-length [render-dict-inline node]]] max-width]]]
 
 # ---- Comment formatting ----
 
-emit-leading-comments: [fn@[return: String  doc: """Render leading comment lines with indentation."""] [let comments@Dict indent@Int]
+emit-leading-comments: [fn@[return: String  doc: """Render leading comment lines with indentation."""] [let comments@Dict indent@Integer]
   [join-strings "\n"
     [map-list
       [fn [let c] [str [str-repeat indent " "] "#" c]]
@@ -185,7 +185,7 @@ emit-trailing-comment: [fn@[return: String  doc: """Render a trailing comment.""
 
 # ---- Node formatters (with indentation) ----
 
-format-node: [fn@[return: String  doc: """Main dispatch: format any AST node with indentation."""] [let node indent@Int]
+format-node: [fn@[return: String  doc: """Main dispatch: format any AST node with indentation."""] [let node indent@Integer]
   [match [tag-of node]
     "Literal":        [format-literal node]
     "VarRef":         [get "name" node]
@@ -235,11 +235,11 @@ format-pipe: [fn@[return: String  doc: """Format pipe: lhs | rhs"""] [let node]
     " | "
     [format-node [get "rhs" node] 0]]]
 
-format-sequential: [fn@[return: String  doc: """Format sequential expressions separated by double newlines."""] [let node indent@Int]
+format-sequential: [fn@[return: String  doc: """Format sequential expressions separated by double newlines."""] [let node indent@Integer]
   [join-strings "\n\n"
     [map-list [fn [let e] [format-node e indent]] [get "exprs" node]]]]
 
-format-dict: [fn@[return: String  doc: """Format dict: inline if small enough, block otherwise."""] [let node indent@Int]
+format-dict: [fn@[return: String  doc: """Format dict: inline if small enough, block otherwise."""] [let node indent@Integer]
   [if [empty? [get "entries" node]]
     "[]"
     [if [fits-inline? node indent]
@@ -250,10 +250,10 @@ format-dict: [fn@[return: String  doc: """Format dict: inline if small enough, b
         [str-repeat indent " "]
         "]"]]]]
 
-format-entries-block: [fn@[return: String  doc: """Format entries in block mode, one per line."""] [let entries@Dict indent@Int]
+format-entries-block: [fn@[return: String  doc: """Format entries in block mode, one per line."""] [let entries@Dict indent@Integer]
   [format-entries-block-impl entries indent 0 ""]]
 
-format-entries-block-impl: [fn@[return: String] [let entries@Dict indent@Int i@Int acc@String]
+format-entries-block-impl: [fn@[return: String] [let entries@Dict indent@Integer i@Integer acc@String]
   [if [>= i [length entries]]
     acc
     [format-entries-block-impl
@@ -265,7 +265,7 @@ format-entries-block-impl: [fn@[return: String] [let entries@Dict indent@Int i@I
         [if [> i 0] "\n" ""]
         [format-entry-block [get i entries] indent]]]]]
 
-format-entry-block: [fn@[return: String  doc: """Format a single entry in block mode with comments."""] [let entry@Dict indent@Int]
+format-entry-block: [fn@[return: String  doc: """Format a single entry in block mode with comments."""] [let entry@Dict indent@Integer]
   [str
     [if [get "blank-before" entry] "\n" ""]
     [if [field-has? entry "leading-comments"]
@@ -282,7 +282,7 @@ format-entry-block: [fn@[return: String  doc: """Format a single entry in block 
       [emit-trailing-comment [get "trailing-comment" entry]]
       ""]]]
 
-format-call: [fn@[return: String  doc: """Format call: [fn args...] or [call fn args...]"""] [let node indent@Int]
+format-call: [fn@[return: String  doc: """Format call: [fn args...] or [call fn args...]"""] [let node indent@Integer]
   [str
     "["
     [if [not [get "implied" node]] "call " ""]
@@ -303,7 +303,7 @@ format-named-arg: [fn@[return: String  doc: """Format a named argument: name: va
     ": "
     [format-node [get "value" na] 0]]]
 
-format-fn: [fn@[return: String  doc: """Format function: [fn[@RetAnn] [let params] body]"""] [let node indent@Int]
+format-fn: [fn@[return: String  doc: """Format function: [fn[@RetAnn] [let params] body]"""] [let node indent@Integer]
   [str
     "[fn"
     [if [not [empty? [get "return-ann" node]]]
@@ -362,35 +362,35 @@ format-rest: [fn@[return: String  doc: """Format rest: ... or ...name"""] [let n
     "..."
     [str "..." [get "name" node]]]]
 
-format-quote: [fn@[return: String  doc: """Format quote: [quote expr]"""] [let node indent@Int]
+format-quote: [fn@[return: String  doc: """Format quote: [quote expr]"""] [let node indent@Integer]
   [str "[quote " [format-node [get "expr" node] indent] "]"]]
 
-format-unquote: [fn@[return: String  doc: """Format unquote: [unquote expr]"""] [let node indent@Int]
+format-unquote: [fn@[return: String  doc: """Format unquote: [unquote expr]"""] [let node indent@Integer]
   [str "[unquote " [format-node [get "expr" node] indent] "]"]]
 
-format-unquote-splice: [fn@[return: String  doc: """Format unquote-splice: [unquote-splice expr]"""] [let node indent@Int]
+format-unquote-splice: [fn@[return: String  doc: """Format unquote-splice: [unquote-splice expr]"""] [let node indent@Integer]
   [str "[unquote-splice " [format-node [get "expr" node] indent] "]"]]
 
-format-macrodecl: [fn@[return: String  doc: """Format macro declaration: [macro name params body]"""] [let node indent@Int]
+format-macrodecl: [fn@[return: String  doc: """Format macro declaration: [macro name params body]"""] [let node indent@Integer]
   [str "[macro " [get "name" node] " " [format-node [get "params" node] indent] " " [format-node [get "body" node] indent] "]"]]
 
-format-splice: [fn@[return: String  doc: """Format splice: [splice form ...]"""] [let node indent@Int]
+format-splice: [fn@[return: String  doc: """Format splice: [splice form ...]"""] [let node indent@Integer]
   [str "[splice " [join-strings " " [map-list [fn [let f] [format-node f indent]] [get "forms" node]]] "]"]]
 
 format-syntax-class: [fn@[return: String  doc: """Format syntax-class declaration: [syntax-class name pattern]"""] [let node]
   [str "[syntax-class " [get "name" node] " " [format-node [get "pattern" node] 0] "]"]]
 
-format-match: [fn@[return: String  doc: """Format match with one arm per line."""] [let node indent@Int]
+format-match: [fn@[return: String  doc: """Format match with one arm per line."""] [let node indent@Integer]
   [str
     "[match "
     [format-node [get "scrutinee" node] indent]
     [format-match-arms [get "arms" node] indent]
     "]"]]
 
-format-match-arms: [fn@[return: String] [let arms@Dict indent@Int]
+format-match-arms: [fn@[return: String] [let arms@Dict indent@Integer]
   [format-match-arms-impl arms indent 0 ""]]
 
-format-match-arms-impl: [fn@[return: String] [let arms@Dict indent@Int i@Int acc@String]
+format-match-arms-impl: [fn@[return: String] [let arms@Dict indent@Integer i@Integer acc@String]
   [if [>= i [length arms]]
     acc
     [format-match-arms-impl
@@ -455,7 +455,7 @@ format-document: [fn@[return: String  doc: """Format a document: expressions sep
 format-expressions: [fn@[return: String] [let exprs@Dict]
   [format-expressions-impl exprs 0 ""]]
 
-format-expressions-impl: [fn@[return: String] [let exprs@Dict i@Int acc@String]
+format-expressions-impl: [fn@[return: String] [let exprs@Dict i@Integer acc@String]
   [if [>= i [length exprs]]
     acc
     [format-expressions-impl
@@ -469,7 +469,7 @@ format-expressions-impl: [fn@[return: String] [let exprs@Dict i@Int acc@String]
 format-file: [fn@[return: String  doc: """Format a file: documents joined with '---' separators."""] [let file@Dict]
   [format-file-impl [get "documents" file] 0 ""]]
 
-format-file-impl: [fn@[return: String] [let docs@Dict i@Int acc@String]
+format-file-impl: [fn@[return: String] [let docs@Dict i@Integer acc@String]
   [if [>= i [length docs]]
     [str acc "\n"]
     [format-file-impl

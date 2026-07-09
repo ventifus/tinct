@@ -1,8 +1,8 @@
 # Test mutually recursive functions with TCO.
 # f and g call each other in tail position for 10,000 iterations total.
 [
-  f: [fn [let n@Int] [if [= n 0] "mutual-done" [g [- n 1]]]]
-  g: [fn [let n@Int] [f n]]
+  f: [fn [let n@Integer] [if [= n 0] "mutual-done" [g [- n 1]]]]
+  g: [fn [let n@Integer] [f n]]
 ]
 [f 10000]
 === out

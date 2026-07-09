@@ -11,7 +11,7 @@
 join-strings: [fn@[return: String  doc: """Join a 0-indexed dict of strings with sep."""] [let sep@String items@Dict]
   [join-strings-impl sep items 0 ""]]
 
-join-strings-impl: [fn@[return: String] [let sep@String items@Dict i@Int acc@String]
+join-strings-impl: [fn@[return: String] [let sep@String items@Dict i@Integer acc@String]
   [if [>= i [length items]]
     acc
     [join-strings-impl
@@ -23,7 +23,7 @@ join-strings-impl: [fn@[return: String] [let sep@String items@Dict i@Int acc@Str
 map-list: [fn@[return: Dict  doc: """Map f over a 0-indexed dict, returning a new 0-indexed dict."""] [let f@Fn xs@Dict]
   [map-list-impl f xs 0]]
 
-map-list-impl: [fn@[return: Dict] [let f@Fn xs@Dict i@Int]
+map-list-impl: [fn@[return: Dict] [let f@Fn xs@Dict i@Integer]
   [if [>= i [length xs]]
     []
     [merge
@@ -247,7 +247,7 @@ format-match: [fn@[return: String  doc: """Format match: [match scrutinee pat1: 
 format-match-arms: [fn@[return: String] [let arms@Dict]
   [format-match-arms-impl arms 0 ""]]
 
-format-match-arms-impl: [fn@[return: String] [let arms@Dict i@Int acc@String]
+format-match-arms-impl: [fn@[return: String] [let arms@Dict i@Integer acc@String]
   [if [>= i [length arms]]
     acc
     [format-match-arms-impl
@@ -286,7 +286,7 @@ format-document: [fn@[return: String  doc: """Format a document as semicolon-sep
 format-file: [fn@[return: String  doc: """Format a file: documents joined with '; ---' separators."""] [let file@Dict]
   [format-file-impl [get "documents" file] 0 ""]]
 
-format-file-impl: [fn@[return: String] [let docs@Dict i@Int acc@String]
+format-file-impl: [fn@[return: String] [let docs@Dict i@Integer acc@String]
   [if [>= i [length docs]]
     [str acc "\n"]
     [format-file-impl

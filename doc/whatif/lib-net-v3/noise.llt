@@ -61,7 +61,7 @@
 
   # noise-split: derive send/recv keys per Noise spec §5.2 HKDF(state.ck, empty, 2).
   # Single 64-byte expand per RFC 5869: T(1)||T(2); T(2) = HMAC(PRK, T(1)||0x02).
-  noise-split: [fn [let state@NoiseState initiator@Bool]
+  noise-split: [fn [let state@NoiseState initiator@Boolean]
     [both: [hkdf-expand [Sha256] state.ck [] 64]]
     [k1:   [slice 0  32 both]]
     [k2:   [slice 32 64 both]]
@@ -270,7 +270,7 @@
 
   # Accumulation loop for noise-read — reads whole Noise transport frames until
   # `remaining` bytes are collected. Noise frames may be shorter than `wanted`.
-  noise-read-acc: [fn [let conn@NoiseConnection remaining@Int acc@[Seq Bytes]]
+  noise-read-acc: [fn [let conn@NoiseConnection remaining@Integer acc@[Seq Bytes]]
     [if [= remaining 0]
       [reduce concat [] acc]
       [block
@@ -292,7 +292,7 @@
     [send ch 0]
     ch]
 
-  bytes-zero: [fn [let n@Int]
+  bytes-zero: [fn [let n@Integer]
     [reduce [fn [let acc _] [concat acc [bytes 0]]] [] [range 0 n]]]
 ]
 
@@ -382,7 +382,7 @@
         [ct: [chacha20-poly1305-seal conn.send-key [noise-nonce n] data []]]
         [write conn.underlying [concat [bytes ByteOrder.BigEndian [@UInt16 [length ct]]] ct]]]]
 
-  noise-read: [fn [let conn@NoiseConnection wanted@Int]
+  noise-read: [fn [let conn@NoiseConnection wanted@Integer]
     [noise-read-acc conn wanted []]]
 ]
 

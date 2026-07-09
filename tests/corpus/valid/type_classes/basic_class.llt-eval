@@ -1,3 +1,3 @@
-[Equatable: [class [let a] eq: [Fn@Bool [a a]]]]
+[Equatable: [class [let a] eq: [Fn@Boolean [a a]]]]
 === out
-["Equatable": [class [Equatable a] "eq": [Fn@Bool  [a a]]]]
+["Equatable": [class [Equatable a] "eq": [Fn@Boolean  [a a]]]]

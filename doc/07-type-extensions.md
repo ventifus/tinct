@@ -14,7 +14,7 @@ The type grammar is a Boolean algebra over atomic types:
 
 | Formal | tinct annotation | Notes |
 |--------|-----------------|-------|
-| `A \| B` | `@[A B]` | union — existing positional entries in `@[...]` |
+| `A \| B` | `@[or A B]` | union — `or` is a type-stage function |
 | `A & B` | `@[[all A B]]` | intersection — `[all ...]` prefix in annotation |
 | `~A` | `@[[without A]]` | negation — `[without A]` prefix in annotation |
 | `⊤` | `@Top` | true supertype |
@@ -286,7 +286,7 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 
 Note on type-level variables: `TypeVar(α)` and `RowVar(r)` are both "variables" but serve different purposes. A `TypeVar` in a field type position indicates unconstrained polymorphism — treated as `Any` at runtime. A `RowVar` in the row rest position indicates structural openness — treated as `Open` at runtime (allow extra fields). `TypeVar` values in `resolved_type` arise only from polymorphic type schemes where a variable was not constrained during inference. Unresolved type aliases produce a `TypeError` during elaboration — they never reach the evaluator as `TypeVar`.
 
-**Function and sequence types are opaque at runtime.** `[@[Fn@Int [String]] f]` verifies that `f` is callable but cannot verify parameter or return types without executing the function. `[@[Seq Int] s]` verifies that `s` is a sequence but cannot verify element types without consuming it (which may diverge for infinite sequences). Both degenerate to tag checks. Full higher-order contract monitoring (Findler & Felleisen 2002) — wrapping functions to check arguments on each call and return values on each return — is outside this design; tinct's proxy contracts apply at record field boundaries, not at function call boundaries.
+**Function and sequence types are opaque at runtime.** `[@[Fn@Integer [String]] f]` verifies that `f` is callable but cannot verify parameter or return types without executing the function. `[@[Seq Int] s]` verifies that `s` is a sequence but cannot verify element types without consuming it (which may diverge for infinite sequences). Both degenerate to tag checks. Full higher-order contract monitoring (Findler & Felleisen 2002) — wrapping functions to check arguments on each call and return values on each return — is outside this design; tinct's proxy contracts apply at record field boundaries, not at function call boundaries.
 
 **Proxy values and TypeAssert.** TypeAssert Record assertions require Dict values. Proxy values produce "expected Record, got Proxy" even though Proxy supports dot access operations. This is by design — TypeAssert validates structural type identity, not access protocol. A Proxy is a handler function wrapped in a value constructor; it does not have a static field set and cannot satisfy shape validation ([VM-RECORD-PROXY] requires enumerating `string_keys(entries)`). To validate a Proxy's output, assert the result of individual field accesses rather than the Proxy itself.
 
@@ -559,7 +559,7 @@ Users can call `mu` inline wherever a TypeNode is expected:
 
 ```tinct
 # Inline recursive type annotation
-depth: [fn@Int [tree@[mu [fn [let self]
+depth: [fn@Integer [tree@[mu [fn [let self]
     [or Absent [record value: Int  left: self  right: self]]]]]]
   [if [absent? tree] 0 [+ 1 [max [depth tree.left] [depth tree.right]]]]
 
@@ -660,14 +660,14 @@ Collection typeclasses enforce **complexity promises**: every typeclass method i
   [determines: [[[c k] v]]  resolver: IndexResult]
   get:    [Fn@v   [k c]]
   slice:  [Fn@c   [c Int Int]]
-  length: [Fn@Int [c]]]
+  length: [Fn@Integer [c]]]
 
 [class [let Iterable c a]
   [determines: [[[c] a]]  resolver: IterResult]
   each: [Fn@[Seq a] [c]]]   # O(1) to initiate; produces lazy Seq
 
 [class [let Hashable k]  [Equatable k]
-  hash: [Fn@Int [k]]]       # consistent with =: [= a b] → [= [hash a] [hash b]]
+  hash: [Fn@Integer [k]]]       # consistent with =: [= a b] → [= [hash a] [hash b]]
 
 [class [let Sortable k]
   <: [Fn@Boolean [k k]]]    # strict total order (NaN-free by design)
@@ -711,7 +711,7 @@ Random-access extension of `ByteStream`. Only file `Handle`s implement this — 
 
 ```tinct
 [class [let Seekable h] [ByteStream h]
-  seek: [Fn@Int [h SeekFrom]]]
+  seek: [Fn@Integer [h SeekFrom]]]
 
 SeekFrom: [type [Start pos: Int] [End pos: Int] [Current pos: Int]]
 ```

@@ -50,7 +50,7 @@ pub async fn hover_at(
         crate::desugar::desugar_surface_program(&mut program);
         let (seeded_env, _) = crate::imports::build_type_env(&program, None).await;
         let (_type_errors, block_type_map, block_doc_map, block_scheme_map, _diagnostics) =
-            crate::typecheck::typecheck_surface_program(&program, seeded_env);
+            crate::typecheck::typecheck_surface_program(&program, seeded_env).await;
 
         // Walk the block's Surface AST with block-local offset
         for document in &program.documents {
@@ -1373,7 +1373,7 @@ pub async fn diagnostics_for(
                     // Type check
                     let (seeded_env, _) = crate::imports::build_type_env(&program, None).await;
                     let (type_errors, _, _, _, _) =
-                        crate::typecheck::typecheck_surface_program(&program, seeded_env);
+                        crate::typecheck::typecheck_surface_program(&program, seeded_env).await;
 
                     for err in type_errors {
                         let mut diag = type_error_to_diagnostic(&err, &block.code, uri);
@@ -2086,21 +2086,21 @@ mod tests {
     async fn test_definition_at_annotated_key() {
         let env = test_env().await;
         let doc = DocumentState::new(
-            "[x@Int: 1  y: $x]".to_string(),
+            "[x@Integer: 1  y: $x]".to_string(),
             &env,
             &test_ctx().await,
             None,
         );
         let uri = test_uri();
-        // Offset 15 is on '$x' in the second entry.
-        // "[x@Int: 1  y: $x]"
-        //  01234567890123456
-        let def_result = definition_at(&doc, &uri, 15, &test_include_graph(), None);
+        // Offset 19 is on '$x' in the second entry.
+        // "[x@Integer: 1  y: $x]"
+        //  01234567890123456789
+        let def_result = definition_at(&doc, &uri, 19, &test_include_graph(), None);
         assert!(def_result.is_some(), "should find definition of $x");
         let (_url, span) = def_result.unwrap();
-        // Key "x@Int" starts at offset 1, ends at offset 6 (the annotated key).
+        // Key "x@Integer" starts at offset 1, ends at offset 10 (the annotated key).
         assert_eq!(span.start.offset, 1);
-        assert_eq!(span.end.offset, 6);
+        assert_eq!(span.end.offset, 10);
     }
 
     #[tokio::test]
@@ -2270,23 +2270,23 @@ mod tests {
     #[tokio::test]
     async fn test_hover_function_param_names_in_type() {
         // Task 1: parameter names should appear in function type display.
-        // A typed function [fn [x@Int y@Int] ...] stored in a dict key $f
-        // should show "x: Int y: Int" in the hover type.
+        // A typed function [fn [x@Integer y@Integer] ...] stored in a dict key $f
+        // should show "x: Integer y: Integer" in the hover type.
         let env = test_env().await;
         // Use two-document pipeline: define f, then reference it.
-        // "[f: [fn [let x@Int y@Int] 0]]" = 30 chars (0..29), \n at 30
-        // "[call $f 1 2]"  starts at 31
-        //  "$f" is at offset 37 ('$') and 38 ('f')
-        let source = "[f: [fn [let x@Int y@Int] 0]]\n[call $f 1 2]";
+        // "[f: [fn [let x@Integer y@Integer] 0]]" = 37 chars (0..36), \n at 37
+        // "[call $f 1 2]"  starts at 38
+        //  "$f" is at offset 44 ('$') and 45 ('f')
+        let source = "[f: [fn [let x@Integer y@Integer] 0]]\n[call $f 1 2]";
         let doc = DocumentState::new(source.to_string(), &env, &test_ctx().await, None);
-        // "[f: [fn [let x@Int y@Int] 0]]\n[call $f 1 2]"
-        //  0         1         2         3
+        // "[f: [fn [let x@Integer y@Integer] 0]]\n[call $f 1 2]"
+        //  0         1         2         3         4
         //  0123456789012345678901234567890123456789012345
-        //                                       ^ 37 = '$f'
+        //                                            ^ 44 = '$f'
         let hover = hover_at(
             &doc,
             &test_uri(),
-            37,
+            44,
             &test_include_graph(),
             &test_ctx().await,
         )
@@ -2353,7 +2353,7 @@ mod tests {
     #[tokio::test]
     async fn test_document_symbols_annotated_key() {
         let env = test_env().await;
-        let doc = DocumentState::new("[x@Int: 42]".to_string(), &env, &test_ctx().await, None);
+        let doc = DocumentState::new("[x@Integer: 42]".to_string(), &env, &test_ctx().await, None);
         let syms = document_symbols_at(&doc);
         assert_eq!(syms.len(), 1);
         assert_eq!(syms[0].name, "x");
@@ -2624,11 +2624,16 @@ mod tests {
     async fn test_inlay_hints_skips_annotated_bindings() {
         let env = test_env().await;
         // When a binding has a TypeAssert annotation, no inlay hint should be emitted.
-        let _doc = DocumentState::new("[x@Int: 42]".to_string(), &env, &test_ctx().await, None);
+        let _doc = DocumentState::new("[x@Integer: 42]".to_string(), &env, &test_ctx().await, None);
         // The key is annotated (x@Int), not the value; value is 42 (no TypeAssert)
         // so a hint IS expected here (annotation on key != TypeAssert on value).
-        // A TypeAssert on the value looks like: [x: @Int 42]
-        let doc2 = DocumentState::new("[x: @Int 42]".to_string(), &env, &test_ctx().await, None);
+        // A TypeAssert on the value looks like: [x: @Integer 42]
+        let doc2 = DocumentState::new(
+            "[x: @Integer 42]".to_string(),
+            &env,
+            &test_ctx().await,
+            None,
+        );
         let hints2 = inlay_hints_for(&doc2);
         // Value has TypeAssert — no hint expected.
         assert!(
@@ -2677,14 +2682,14 @@ mod tests {
     #[tokio::test]
     async fn test_signature_help_inside_call() {
         let env = test_env().await;
-        // "[f: [fn [let x@Int y@Int] 0]]\n[call $f 1 2]"
-        //  0         1         2         3
-        //  0123456789012345678901234567890123456789
-        // "$f" is at offset 33, "1" is at offset 36, "2" is at offset 38
-        let source = "[f: [fn [let x@Int y@Int] 0]]\n[call $f 1 2]";
+        // "[f: [fn [let x@Integer y@Integer] 0]]\n[call $f 1 2]"
+        //  0         1         2         3         4
+        //  01234567890123456789012345678901234567890123456789
+        // "$f" is at offset 44, "1" is at offset 47, "2" is at offset 49
+        let source = "[f: [fn [let x@Integer y@Integer] 0]]\n[call $f 1 2]";
         let doc = DocumentState::new(source.to_string(), &env, &test_ctx().await, None);
-        // Offset 37 is between "1" and "2" — on the second argument.
-        let help = signature_help_at(&doc, 37);
+        // Offset 48 is between "1" and "2" — on the second argument.
+        let help = signature_help_at(&doc, 48);
         // Should return some signature help when inside a call with a known typed function.
         // (May be None if type inference doesn't resolve $f at the call site — acceptable.)
         if let Some(h) = help {
@@ -2956,13 +2961,13 @@ mod tests {
         // Hovering on the method name inside an [instance ...] declaration should
         // delegate to hover_at_surface_node and return a non-None result.
         //
-        // Source: [instance Equatable [pattern [a@Int]]: eq: [fn [let x y] [= x y]]]
+        // Source: [instance Equatable [pattern [a@Integer]]: eq: [fn [let x y] [= x y]]]
         // Offsets:         0         1         2         3         4         5         6
         //                  0123456789012345678901234567890123456789012345678901234567890123456
-        //                  [instance Equatable [pattern [a@Int]]: eq: [fn [let x y] [= x y]]]
+        //                  [instance Equatable [pattern [a@Integer]]: eq: [fn [let x y] [= x y]]]
         //                                                          ^^ offset 39-40 is "eq" key
         let env = test_env().await;
-        let source = "[instance Equatable [pattern [a@Int]]: eq: [fn [let x y] [= x y]]]";
+        let source = "[instance Equatable [pattern [a@Integer]]: eq: [fn [let x y] [= x y]]]";
         let doc = DocumentState::new(source.to_string(), &env, &test_ctx().await, None);
         // Hover on the "eq" method key (offset 39 = 'e' of "eq")
         let hover = hover_at(

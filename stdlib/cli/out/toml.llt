@@ -8,7 +8,7 @@ toml-quote: [fn@String [let s@String]
   [str "\"" s "\""]]
 
 # Internal: check if dict is list-shaped (integer keys only)
-toml-list?: [fn@Bool [let d@Dict]
+toml-list?: [fn@Boolean [let d@Dict]
   [if [empty? d]
     false
     [all? [fn [let k] [int? k]] [keys d]]]]
@@ -31,7 +31,7 @@ toml-array: [fn@String [let d@Dict]
     "[]"
     [str "[" [toml-array-items d 0] "]"]]]
 
-toml-array-items: [fn@String [let d@Dict i@Int]
+toml-array-items: [fn@String [let d@Dict i@Integer]
   [if [>= i [length d]]
     ""
     [str
@@ -40,7 +40,7 @@ toml-array-items: [fn@String [let d@Dict i@Int]
       [toml-array-items d [+ i 1]]]]]
 
 # Internal: separate flat keys from table keys
-toml-partition: [fn@Dict [let d@Dict ks@Dict i@Int flat-keys@Dict table-keys@Dict]
+toml-partition: [fn@Dict [let d@Dict ks@Dict i@Integer flat-keys@Dict table-keys@Dict]
   [if [>= i [length ks]]
     [flat: flat-keys  tables: table-keys]
     [if [dict? [get [get i ks] d]]
@@ -48,14 +48,14 @@ toml-partition: [fn@Dict [let d@Dict ks@Dict i@Int flat-keys@Dict table-keys@Dic
       [toml-partition d ks [+ i 1] [append [get i ks] flat-keys] table-keys]]]]
 
 # Internal: format flat key-value pairs
-toml-flat: [fn@String [let d@Dict ks@Dict i@Int acc@String]
+toml-flat: [fn@String [let d@Dict ks@Dict i@Integer acc@String]
   [if [>= i [length ks]]
     acc
     [toml-flat d ks [+ i 1]
       [str acc [get i ks] " = " [toml-value [get [get i ks] d]] "\n"]]]]
 
 # Internal: format tables (nested dicts) — calls toml-rec for recursive sub-dicts
-toml-tables: [fn@String [let d@Dict ks@Dict i@Int acc@String]
+toml-tables: [fn@String [let d@Dict ks@Dict i@Integer acc@String]
   [if [>= i [length ks]]
     acc
     [toml-tables d ks [+ i 1]

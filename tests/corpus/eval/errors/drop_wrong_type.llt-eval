@@ -4,10 +4,10 @@
 drop: expected Int, got String (defined at stdlib/prelude.llt:2482:57-2482:76)
   --> stdlib/prelude.llt:2482:57-2482:76
    |
-  2482 | drop@[doc: "Drop first n elements"]: [fn [let n@Int xs] [builtin-drop n xs]]
+  2482 | drop@[doc: "Drop first n elements"]: [fn [let n@Integer xs] [builtin-drop n xs]]
        |                                                         ^^^^^^^^^^^^^^^^^^^
   in [builtin-drop ...] at stdlib/prelude.llt:2482:57-2482:76
    |
-  2482 | drop@[doc: "Drop first n elements"]: [fn [let n@Int xs] [builtin-drop n xs]]
+  2482 | drop@[doc: "Drop first n elements"]: [fn [let n@Integer xs] [builtin-drop n xs]]
        |                                                         ^^^^^^^^^^^^^^^^^^^
   in [drop ...] at 1:1-1:35

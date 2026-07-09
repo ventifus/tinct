@@ -609,8 +609,8 @@ process: [fn [hosts@T2] ...]   # alias resolves transitively
 |------|---------------|-----------|
 | `x@[a: Int  b: String]` | Dict literal | YES — becomes `Annotation::PropertyDict` with named entries |
 | `x@[Seq Int]` | Implied call with VarRef head | YES — func and args become auto-indexed PropertyDict entries (parameterized type form) |
-| `x@[Int Null]` | Implied call with VarRef head | YES — union type form (positional entries) |
-| `x@[a Null]` | Implied call with lowercase VarRef head | YES — union with type variable |
+| `x@[or Int Null]` | Implied call with VarRef head (`or`) | YES — union type form (`or` is a type-stage function) |
+| `x@[or a Null]` | Implied call with lowercase VarRef head (`or`) | YES — union with type variable |
 | `x@[call f x]` | Explicit call (implied: false) | NO — parse error |
 | `x@[fn [a] $a]` | Fn special form | NO — parse error |
 | `x@[type Number]` | TypeAlias declaration | NO — parse error |
@@ -655,7 +655,7 @@ Type expressions appear in annotations and `[type ...]` declarations. They use t
 
 ```tinct
 [Fn@b [a]]              # Function from a to b
-[Fn@Bool [a]]           # Predicate
+[Fn@Boolean [a]]           # Predicate
 [Fn@c [a b]]            # Two-arg function
 ```
 
@@ -666,7 +666,7 @@ Type expressions appear in annotations and `[type ...]` declarations. They use t
 Name: [type String]
 Age:  [type Number]
 User: [type [name: Name  age: Age]]
-Predicate: [type [Fn@Bool [a]]]
+Predicate: [type [Fn@Boolean [a]]]
 Transform:  [type [Fn@b [a]]]
 
 # Use in annotations
@@ -745,7 +745,7 @@ Note: `SurfaceExpression::TypeApp` has been removed from the AST. Type construct
 
 ```tinct
 [let x]             # bare binding
-[let x@Int]         # typed binding
+[let x@Integer]         # typed binding
 [let _]             # wildcard
 ```
 
@@ -779,7 +779,7 @@ This invariant is complete: `[a b c]` is always an implied call. A reader never 
 [match status
   [case [let]   200              "ok"]        # exact value — empty [let], no new bindings
   [case [let]   404              "missing"]
-  [case [let n] n@Int            [str n]]]    # typed binding
+  [case [let n] n@Integer            [str n]]]    # typed binding
 
 [match value
   [case [let n]  [> n 0]  "positive"]        # guard: lowercase head → guard expression
@@ -875,11 +875,11 @@ Type class declaration:
 
 ```tinct
 [class [Eq a]
-  eq: [Fn@Bool [a a]]]
+  eq: [Fn@Boolean [a a]]]
 
 [class [Ord a] [Eq a]
-  lt: [Fn@Bool [a a]]
-  gt: [Fn@Bool [a a]]]
+  lt: [Fn@Boolean [a a]]
+  gt: [Fn@Boolean [a a]]]
 ```
 
 Type class instance:

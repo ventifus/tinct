@@ -190,7 +190,7 @@ extract-from-doc: [fn [let doc]
   [if [null? last-dict]
     []
     [collect [filter
-      [fn@Bool [let e] [has? "name" e]]  # filter out [] (skipped entries)
+      [fn@Boolean [let e] [has? "name" e]]  # filter out [] (skipped entries)
       [map parse-entry last-dict.entries]]]]]
 
 # Extract documented bindings from a Program.

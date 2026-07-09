@@ -189,10 +189,6 @@ pub type SchemeMap = HashMap<(usize, usize), TypeScheme>;
 /// Inference state for levels-based let-generalization
 #[derive(Debug, Clone)]
 pub struct InferState {
-    /// Monotonic counter for fresh type/row variable names (_t0, _t1, ...).
-    /// Uses u32 instead of u64 — assumes no single inference run creates >4B type variables.
-    /// (In practice, programs with >1M type variables exhaust memory first via substitution map growth.)
-    pub name_counter: u32,
     pub level: u32,
     pub levels: HashMap<String, u32>,
     /// Global accumulated substitution: collects constraints from access-chain inference
@@ -344,7 +340,6 @@ impl InferState {
     /// environments via `Env::with_parent` chains).
     pub fn with_env(env: Arc<RwLock<crate::env::Env>>) -> Self {
         Self {
-            name_counter: 0,
             level: 0,
             levels: HashMap::new(),
             subst: Substitution::new(),
@@ -417,32 +412,100 @@ impl InferState {
             .push(Constraint::new(Arc::new(class_decl.clone()), var));
     }
 
-    /// Create a fresh type variable at the current level and register it in both
-    /// `state.levels` and `state.type_vars`.
-    pub fn fresh_type_var(&mut self) -> Type {
-        let name = format!("_t{}", self.name_counter);
-        self.name_counter = self.name_counter.saturating_add(1);
-        self.levels.insert(name.clone(), self.level);
-        self.type_vars
-            .entry(name.clone())
-            .or_insert_with(|| TypeVarEntry::blank(self.level, Kind::Type));
-        Type::TypeVar(name, self.level)
+    // ── TypeVar name generation ──────────────────────────────────────────────────
+
+    /// Generate a TypeVar name from a source name, kind, and source span.
+    ///
+    /// Format:
+    ///   Kind::Type:  `{source}⧼{file}:{line}:{col}⧽`   e.g. `a⧼main.llt:42:7⧽`
+    ///   Kind::Label: `ʟᴀʙᴇʟ∷{source}⧼{file}:{line}:{col}⧽`
+    ///
+    /// The span MUST always have file/line/col information — tinct source positions come from
+    /// the parsed AST; Rust-internal creation sites use `rust_span!()` to embed the Rust
+    /// source location. No 0:0 or empty-file spans are permitted.
+    pub fn typevar_name(source: &str, kind: &Kind, span: &Span) -> String {
+        let file = span
+            .file
+            .as_ref()
+            .map(|f| f.path.as_ref())
+            .unwrap_or("<unknown>");
+        let line = span.start.line;
+        let col = span.start.column;
+        match kind {
+            Kind::Label => format!("ʟᴀʙᴇʟ∷{}⧼{}:{}:{}⧽", source, file, line, col),
+            _ => format!("{}⧼{}:{}:{}⧽", source, file, line, col),
+        }
     }
 
-    /// Create a fresh type variable with an associated source name for better diagnostics.
-    /// The source_name is typically a function parameter name or let-binding name.
-    /// Used for T013 warnings to report "ambiguous type variable 'x'" (hiding the internal
-    /// _tN name which is noise for users).
-    pub fn fresh_type_var_with_source(&mut self, source_name: impl Into<String>) -> Type {
-        let internal_name = format!("_t{}", self.name_counter);
-        self.name_counter = self.name_counter.saturating_add(1);
-        self.levels.insert(internal_name.clone(), self.level);
-        self.type_var_source_names
-            .insert(internal_name.clone(), source_name.into());
+    /// Extract the user-visible display name from a TypeVar internal name.
+    ///
+    /// `a⧼main.llt:42:7⧽`     → `a`
+    /// `ʟᴀʙᴇʟ∷k⧼main.llt:5:3⧽` → `ʟᴀʙᴇʟ∷k`  (keep kind marker for labels)
+    /// anything else            → the name as-is
+    pub fn typevar_display(name: &str) -> &str {
+        if let Some(bracket) = name.find('⧼') {
+            &name[..bracket]
+        } else {
+            name
+        }
+    }
+
+    /// Extract only the raw source name from a TypeVar name, stripping both the kind prefix
+    /// and the position suffix. Used when deriving scheme variable names for instantiation.
+    ///
+    /// `a⧼main.llt:42:7⧽`          → `a`
+    /// `ʟᴀʙᴇʟ∷k⧼main.llt:5:3⧽`   → `k`  (strips kind prefix AND position suffix)
+    /// `a`                           → `a`  (already bare)
+    pub fn typevar_source_only(name: &str) -> &str {
+        // Strip position suffix first (everything from ⧼ onward)
+        let without_pos = if let Some(bracket) = name.find('⧼') {
+            &name[..bracket]
+        } else {
+            name
+        };
+        // Strip kind prefix (ʟᴀʙᴇʟ∷ for Label kind)
+        if let Some(rest) = without_pos.strip_prefix("ʟᴀʙᴇʟ∷") {
+            rest
+        } else {
+            without_pos
+        }
+    }
+
+    /// The single TypeVar creation entry point.
+    ///
+    /// Creates a fresh TypeVar at the given (or current) level with the specified kind.
+    /// The name is derived from `source_name` and the call site `span` — no monotonic
+    /// counter. Every call site must supply a real span: tinct-source sites pass the
+    /// AST node span; Rust-internal sites use `rust_span!()`.
+    ///
+    /// Returns `(name, Type::TypeVar(name, level))`.
+    pub fn fresh_type_var_with(
+        &mut self,
+        source_name: Option<&str>,
+        level: Option<u32>,
+        kind: Kind,
+        span: &Span,
+    ) -> (String, Type) {
+        let src = source_name.unwrap_or("?");
+        let lvl = level.unwrap_or(self.level);
+        let name = Self::typevar_name(src, &kind, span);
+        self.levels.insert(name.clone(), lvl);
         self.type_vars
-            .entry(internal_name.clone())
-            .or_insert_with(|| TypeVarEntry::blank(self.level, Kind::Type));
-        Type::TypeVar(internal_name, self.level)
+            .entry(name.clone())
+            .or_insert_with(|| TypeVarEntry::blank(lvl, kind));
+        let ty = Type::TypeVar(name.clone(), lvl);
+        (name, ty)
+    }
+
+    /// Convenience: fresh Kind::Type TypeVar using the current level. Pass a real span.
+    pub fn fresh_type_var(&mut self, span: &Span) -> Type {
+        self.fresh_type_var_with(None, None, Kind::Type, span).1
+    }
+
+    /// Convenience: fresh Kind::Type TypeVar with a source name. Pass a real span.
+    pub fn fresh_type_var_named(&mut self, source_name: &str, span: &Span) -> Type {
+        self.fresh_type_var_with(Some(source_name), None, Kind::Type, span)
+            .1
     }
 
     // fresh_row_var_name removed — BAS Step 4: no RowVar tails exist
@@ -604,14 +667,6 @@ impl InferState {
         Ok(())
     }
 
-    /// Allocate a monotonic counter value and increment it.
-    /// The `_prefix` and `_suffix` args are ignored (compatibility shim for new API).
-    pub fn alloc_counter(&mut self, _prefix: &str, _suffix: &str) -> u32 {
-        let n = self.name_counter;
-        self.name_counter = n.saturating_add(1);
-        n
-    }
-
     /// Set the level for a TypeVar name and ensure it exists in `type_vars`.
     ///
     /// Writes to `levels` (for backward-compatible callers) and also inserts a blank entry
@@ -630,52 +685,6 @@ impl InferState {
     /// Get the level of a TypeVar name (compatibility with new InferState API).
     pub fn get_level(&self, name: &str) -> Option<u32> {
         self.levels.get(name).copied()
-    }
-
-    /// Create a fresh type variable with an optional source name and origin span.
-    /// Compatibility shim for code expecting `fresh_type_var_with_origin`.
-    pub fn fresh_type_var_with_origin(
-        &mut self,
-        source_name: Option<&str>,
-        _origin_name: Option<&str>,
-        _span: Option<crate::ast::Span>,
-    ) -> Type {
-        let name = format!("_t{}", self.name_counter);
-        self.name_counter = self.name_counter.saturating_add(1);
-        self.levels.insert(name.clone(), self.level);
-        if let Some(src) = source_name {
-            self.type_var_source_names
-                .insert(name.clone(), src.to_string());
-        }
-        self.type_vars
-            .entry(name.clone())
-            .or_insert_with(|| TypeVarEntry::blank(self.level, Kind::Type));
-        Type::TypeVar(name, self.level)
-    }
-
-    /// Allocate a fresh TypeVar at the specified level.
-    /// Returns `(name, Type::TypeVar(name, level))`.
-    /// Compatible shim for code expecting the new InferState API.
-    pub fn alloc_type_var_at_level(
-        &mut self,
-        level: u32,
-        source_name: Option<&str>,
-        _unused1: Option<()>,
-        _unused2: Option<()>,
-        _kind: Kind,
-    ) -> (String, Type) {
-        let name = format!("_t{}", self.name_counter);
-        self.name_counter = self.name_counter.saturating_add(1);
-        self.levels.insert(name.clone(), level);
-        if let Some(src) = source_name {
-            self.type_var_source_names
-                .insert(name.clone(), src.to_string());
-        }
-        self.type_vars
-            .entry(name.clone())
-            .or_insert_with(|| TypeVarEntry::blank(level, Kind::Type));
-        let ty = Type::TypeVar(name.clone(), level);
-        (name, ty)
     }
 }
 
@@ -699,39 +708,51 @@ mod tests {
     /// `!state.levels.contains_key("_t0")` assertion.
     #[test]
     fn test_compact_levels_removes_unified_var() {
+        use crate::ast::Span;
         let mut state = InferState::new();
 
-        // Create two fresh TypeVars: _t0 and _t1.
-        let _tv0 = state.fresh_type_var(); // registers "_t0" in levels at level 0
-        let _tv1 = state.fresh_type_var(); // registers "_t1" in levels at level 0
+        // Create two fresh TypeVars using span-based names.
+        let span_a = Span::rust_source(file!(), line!());
+        let span_b = Span::rust_source(file!(), line!() + 1);
+        let tv0 = state.fresh_type_var(&span_a); // registers name in levels at level 0
+        let tv1 = state.fresh_type_var(&span_b); // registers name in levels at level 0
+
+        let name0 = match &tv0 {
+            Type::TypeVar(n, _) => n.clone(),
+            _ => panic!("not a TypeVar"),
+        };
+        let name1 = match &tv1 {
+            Type::TypeVar(n, _) => n.clone(),
+            _ => panic!("not a TypeVar"),
+        };
 
         assert!(
-            state.levels.contains_key("_t0"),
-            "_t0 should be in levels before compaction"
+            state.levels.contains_key(&name0),
+            "tv0 should be in levels before compaction"
         );
         assert!(
-            state.levels.contains_key("_t1"),
-            "_t1 should be in levels before compaction"
+            state.levels.contains_key(&name1),
+            "tv1 should be in levels before compaction"
         );
 
-        // Bind _t0 → Int by inserting it into the substitution's type_map.
+        // Bind tv0 → Int by inserting it into the substitution's type_map.
         // This simulates what unification does when it solves a TypeVar.
         state
             .subst
             .type_map
             .borrow_mut()
-            .insert("_t0".to_string(), Type::Int);
+            .insert(name0.clone(), Type::Int);
 
-        // compact_levels() should remove _t0 (now in type_map) but keep _t1 (unbound).
+        // compact_levels() should remove tv0 (now in type_map) but keep tv1 (unbound).
         state.compact_levels();
 
         assert!(
-            !state.levels.contains_key("_t0"),
-            "_t0 should be removed from levels after compaction (it is unified)"
+            !state.levels.contains_key(&name0),
+            "tv0 should be removed from levels after compaction (it is unified)"
         );
         assert!(
-            state.levels.contains_key("_t1"),
-            "_t1 should remain in levels after compaction (it is still unbound)"
+            state.levels.contains_key(&name1),
+            "tv1 should remain in levels after compaction (it is still unbound)"
         );
     }
 
@@ -739,9 +760,12 @@ mod tests {
     /// All registered TypeVars remain in `levels`.
     #[test]
     fn test_compact_levels_preserves_unbound_vars() {
+        use crate::ast::Span;
         let mut state = InferState::new();
-        let _tv0 = state.fresh_type_var();
-        let _tv1 = state.fresh_type_var();
+        let span_a = Span::rust_source(file!(), line!());
+        let span_b = Span::rust_source(file!(), line!() + 1);
+        let _tv0 = state.fresh_type_var(&span_a);
+        let _tv1 = state.fresh_type_var(&span_b);
 
         let count_before = state.levels.len();
         state.compact_levels();

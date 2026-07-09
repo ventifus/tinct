@@ -1,6 +1,6 @@
 # Annotated recursive function should succeed
 # A function with a return type annotation is allowed to be recursive.
 # This test verifies that the recursion check allows annotated functions.
-[f: [fn@Int [let x@Int] 42]]
+[f: [fn@Integer [let x@Integer] 42]]
 === out
 Dict({"f": Function(x)})

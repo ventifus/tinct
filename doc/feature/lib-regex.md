@@ -199,21 +199,21 @@ nfa-accepts: [fn [nfa s]
   NfaState: [type [
     transitions: @Dict
     epsilon:     @[Seq Int]
-    accept:      @Bool
+    accept:      @Boolean
     group-start: @[Seq Int]
     group-end:   @[Seq Int]
   ]]
 
   NfaDict: [type [
     states: @[Seq NfaState]
-    start:  @Int
+    start:  @Integer
     groups: @Dict
   ]]
 
   MatchResult: [type [
     match: @String   # matched substring
-    start: @Int      # character offset of match start in haystack
-    end:   @Int      # character offset of match end (exclusive)
+    start: @Integer      # character offset of match start in haystack
+    end:   @Integer      # character offset of match end (exclusive)
     # ... additional @String fields: one per named capture group
   ]]
 ]
@@ -234,7 +234,7 @@ nfa.states                  # → [Seq NfaState]
 [my-run: [fn [s] [my-nfa-sim nfa s]]]
 ```
 
-`re-match pattern@[String Pattern] ...` — the type checker accepts
+`re-match pattern@[or String Pattern] ...` — the type checker accepts
 either a `String` (compiles on the fly) or a `Pattern` variant
 (uses the pre-compiled NFA directly). Nominal wrapping prevents
 structural spoofing.
@@ -309,7 +309,7 @@ Use `re-escape-replacement` to make a replacement string safe:
 ```tinct
 # re-escape-replacement — escape a string so it is treated as a literal
 # replacement (no back-reference expansion)
-re-escape-replacement: [fn@String [s@String]
+re-escape-replacement: [fn@Stringing [s@String]
   [replace "\\" "\\\\" s]]   # escape backslashes; \1 becomes \\1
 ```
 
@@ -338,18 +338,18 @@ a name.
 ```tinct
 re-compile : [fn@Pattern              [pattern@String]]
 
-re-match   : [fn@Bool                 [pattern@[String Pattern]  s@String]]
+re-match   : [fn@Boolean                 [pattern@[or String Pattern]  s@String]]
 
-re-find    : [fn@[MatchResult Dict]   # Dict = [] (empty dict) on no match
-               [pattern@[String Pattern]  s@String]]
+re-find    : [fn@[or MatchResult Dict]   # Dict = [] (empty dict) on no match
+               [pattern@[or String Pattern]  s@String]]
 
-re-findall : [fn@[Seq MatchResult]    [pattern@[String Pattern]  s@String]]
+re-findall : [fn@[Seq MatchResult]    [pattern@[or String Pattern]  s@String]]
 
-re-replace : [fn@String               [pattern@[String Pattern]
+re-replace : [fn@Stringing               [pattern@[or String Pattern]
                                        replacement@String
                                        s@String]]
 
-re-split   : [fn@[Seq String]         [pattern@[String Pattern]  s@String]]
+re-split   : [fn@[Seq String]         [pattern@[or String Pattern]  s@String]]
 ```
 
 `Pattern` is the nominal variant type produced by `re-compile` —

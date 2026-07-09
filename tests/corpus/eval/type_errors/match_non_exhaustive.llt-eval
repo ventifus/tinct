@@ -1,4 +1,4 @@
-[match [@[Int String] 42]
+[match [@[or Int String] 42]
     Int: "int"]
 === out
 [TypeError] non-exhaustive match: missing coverage for String

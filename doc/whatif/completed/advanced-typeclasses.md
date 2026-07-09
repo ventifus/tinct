@@ -50,7 +50,7 @@ matched against a known set of primitive types. A user-defined nominal type
 if the user writes an Equatable or Showable instance.
 
 ```tinct
-[MyPoint: [type [x@Int y@Int]]]
+[MyPoint: [type [x@Integer y@Integer]]]
 
 [EquatableMyPoint: [instance [Equatable MyPoint]
   [=: [fn [a b] [and [= a.x b.x] [= a.y b.y]]]]]]
@@ -353,20 +353,20 @@ Together, the three extensions make the operator system fully open:
 budget-rate: [+ 1000 2.5]    # : Float (Add Int Float Float)
 
 # Record equality: automatic field propagation
-[type Config [host@Str port@Int debug@Bool]]
+[type Config [host@String port@Integer debug@Boolean]]
 config-a: [Config "localhost" 8080 true]
 config-b: [Config "localhost" 8080 true]
 [= config-a config-b]         # : Bool (Equatable propagates over Config's fields)
 
 # User type participates in str
-[type Color [r@Int g@Int b@Int]]
+[type Color [r@Integer g@Integer b@Integer]]
 [ShowableColor: [instance [Showable Color]
   [str: [fn [c] [str "rgb(" c.r "," c.g "," c.b ")"]]]]]
 red: [Color 255 0 0]
 [str red]                     # "rgb(255,0,0)"  ✓
 
 # User type in comparison
-[type Priority [level@Int]]
+[type Priority [level@Integer]]
 [ComparablePriority: [instance [Comparable Priority]
   [<: [fn [a b] [< a.level b.level]]]]]
 tasks: [[Priority 1] [Priority 3] [Priority 2]]

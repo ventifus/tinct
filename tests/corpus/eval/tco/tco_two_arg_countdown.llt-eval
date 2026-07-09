@@ -1,5 +1,5 @@
 [
-  countdown: [fn [let n@Int acc@Int]
+  countdown: [fn [let n@Integer acc@Integer]
     [if [= n 0]
       acc
       [countdown [- n 1] [+ acc 1]]]]

@@ -2,8 +2,8 @@
 # When a lambda is checked against a concrete function type via TypeAssert,
 # check_expr propagates expected parameter types into unannotated params
 # (Pierce & Turner 2000 lambda checking mode).
-# Here, [@[Fn@Int [Int]] [fn [x] $x]] checks the identity lambda against
+# Here, [@[Fn@Integer [Int]] [fn [x] $x]] checks the identity lambda against
 # Fn(Int -> Int), propagating Int to the unannotated param x.
-[@[Fn@Int [Int]] [fn [let x] x]]
+[@[Fn@Integer [Int]] [fn [let x] x]]
 === out
 Function(x)

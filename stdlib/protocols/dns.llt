@@ -46,19 +46,19 @@
 # Integer arithmetic helpers (self-contained copies of quot, mod)
 # --------------------------------------------------------------------------
 
-dns-quot: [fn@Int [let a@Int b@Int]
+dns-quot: [fn@Integer [let a@Integer b@Integer]
     [if [= b 0]
         [error "dns-quot: division by zero"]
         [dns-quot-impl a b]]]
 
-dns-quot-impl: [fn@Int [let a@Int b@Int]
+dns-quot-impl: [fn@Integer [let a@Integer b@Integer]
     [if [< a 0]
         [error "dns-quot: negative dividend not supported"]
         [if [< a b]
             0
             [+ 1 [dns-quot-impl [- a b] b]]]]]
 
-dns-mod: [fn@Int [let a@Int b@Int]
+dns-mod: [fn@Integer [let a@Integer b@Integer]
     [- a [* [dns-quot a b] b]]]
 
 # --------------------------------------------------------------------------
@@ -66,7 +66,7 @@ dns-mod: [fn@Int [let a@Int b@Int]
 # --------------------------------------------------------------------------
 
 # Encode a 16-bit unsigned integer as 2 big-endian bytes.
-dns-encode-u16-be: [fn@String [let n@Int]
+dns-encode-u16-be: [fn@String [let n@Integer]
     [str [chr [dns-quot n 256]] [chr [dns-mod n 256]]]]
 
 # --------------------------------------------------------------------------
@@ -81,7 +81,7 @@ dns-encode-label: [fn@String [let label@String]
 # Encode all labels in a Dict (produced by [split domain "."]) as a
 # sequence of length-prefixed label strings, terminated by \x00.
 # labels is a Dict with integer keys 0, 1, ... n-1.
-dns-encode-labels-impl: [fn@String [let labels@Dict ks@Dict i@Int n@Int acc@String]
+dns-encode-labels-impl: [fn@String [let labels@Dict ks@Dict i@Integer n@Integer acc@String]
     [if [< i n]
         [dns-encode-labels-impl labels ks [+ i 1] n
             [str acc [dns-encode-label [get [get i ks] labels]]]]
@@ -107,7 +107,7 @@ dns-encode-labels-step: [fn@String [let labels@Dict]
 # ancount  — answer count (0 in a query)
 # nscount  — authority count (0 in a query)
 # arcount  — additional count (0 in a query)
-dns-build-header: [fn@String [let id@Int flags@Int qdcount@Int ancount@Int nscount@Int arcount@Int]
+dns-build-header: [fn@String [let id@Integer flags@Integer qdcount@Integer ancount@Integer nscount@Integer arcount@Integer]
     [str
         [dns-encode-u16-be id]
         [dns-encode-u16-be flags]
@@ -121,7 +121,7 @@ dns-build-header: [fn@String [let id@Int flags@Int qdcount@Int ancount@Int nscou
 # --------------------------------------------------------------------------
 
 # Build the question section: QNAME + QTYPE(2) + QCLASS(2).
-dns-build-question: [fn@String [let domain@String qtype@Int]
+dns-build-question: [fn@String [let domain@String qtype@Integer]
     [str
         [dns-encode-name domain]
         [dns-encode-u16-be qtype]
@@ -183,7 +183,7 @@ encode-dns-name@[doc: "Encode domain name in DNS label format (RFC 1035 §3.1)"]
 #
 # Type: (Int -> String -> Int -> String)
 build-dns-query@[doc: "Build a DNS query message (RFC 1035 §4)"]:
-    [fn@String [let id@Int domain@String qtype@Int]
+    [fn@String [let id@Integer domain@String qtype@Integer]
         [str
             [dns-build-header id DNS-FLAGS-QUERY 1 0 0 0]
             [dns-build-question domain qtype]]]

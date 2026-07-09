@@ -2284,7 +2284,8 @@ pub(crate) fn builtin_typecheck(
                     parent_env,
                     false, // enable_scheme_map
                     resolver_seed_env,
-                );
+                )
+                .await;
 
                 // Write the final_env back into the TypeContext so subsequent calls accumulate.
                 {

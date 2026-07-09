@@ -1,6 +1,6 @@
 # Type error help suggestion: type mismatch shows conversion help
 # Define function with Int return annotation but String param - type checker catches mismatch
-[f: [fn@Int [let x@String] x]]
+[f: [fn@Integer [let x@String] x]]
 === out
 Dict({"f": Function(x)})
 

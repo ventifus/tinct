@@ -71,19 +71,19 @@
 # Integer arithmetic helpers (self-contained copies of quot, mod)
 # --------------------------------------------------------------------------
 
-s5-quot: [fn@Int [let a@Int b@Int]
+s5-quot: [fn@Integer [let a@Integer b@Integer]
     [if [= b 0]
         [error "s5-quot: division by zero"]
         [s5-quot-impl a b]]]
 
-s5-quot-impl: [fn@Int [let a@Int b@Int]
+s5-quot-impl: [fn@Integer [let a@Integer b@Integer]
     [if [< a 0]
         [error "s5-quot: negative dividend not supported"]
         [if [< a b]
             0
             [+ 1 [s5-quot-impl [- a b] b]]]]]
 
-s5-mod: [fn@Int [let a@Int b@Int]
+s5-mod: [fn@Integer [let a@Integer b@Integer]
     [- a [* [s5-quot a b] b]]]
 
 # --------------------------------------------------------------------------
@@ -95,11 +95,11 @@ s5-encode-domain: [fn@String [let host@String]
     [str [chr [length host]] host]]
 
 # Encode a 16-bit port as 2 big-endian bytes.
-s5-encode-port: [fn@String [let port@Int]
+s5-encode-port: [fn@String [let port@Integer]
     [str [chr [s5-quot port 256]] [chr [s5-mod port 256]]]]
 
 # Decode a 16-bit big-endian port from two byte values.
-s5-decode-port: [fn@Int [let hi@Int lo@Int]
+s5-decode-port: [fn@Integer [let hi@Integer lo@Integer]
     [+ [* hi 256] lo]]
 
 # --------------------------------------------------------------------------
@@ -109,7 +109,7 @@ s5-decode-port: [fn@Int [let hi@Int lo@Int]
 # Build a methods-bytes string from a Dict of method codes.
 # The dict values are the integer method codes; keys are iterated via [keys].
 # Example: {0: 0, 1: 2} -> chr(0) + chr(2)
-s5-build-methods-impl: [fn@String [let methods@Dict ks@Dict i@Int n@Int acc@String]
+s5-build-methods-impl: [fn@String [let methods@Dict ks@Dict i@Integer n@Integer acc@String]
     [if [< i n]
         [s5-build-methods-impl methods ks [+ i 1] n
             [str acc [chr [get [get i ks] methods]]]]
@@ -119,7 +119,7 @@ s5-build-methods-impl: [fn@String [let methods@Dict ks@Dict i@Int n@Int acc@Stri
 # REP code to string
 # --------------------------------------------------------------------------
 
-s5-rep-message: [fn@String [let rep@Int]
+s5-rep-message: [fn@String [let rep@Integer]
     [if [= rep 0] "succeeded"
     [if [= rep 1] "general SOCKS server failure"
     [if [= rep 2] "connection not allowed by ruleset"
@@ -136,7 +136,7 @@ s5-rep-message: [fn@String [let rep@Int]
 # --------------------------------------------------------------------------
 
 # Dispatch on ATYP to the appropriate address parser.
-s5-parse-bound-addr: [fn@Dict [let bytes@String offset@Int atyp@Int]
+s5-parse-bound-addr: [fn@Dict [let bytes@String offset@Integer atyp@Integer]
     [if [= atyp 1]
         [s5-parse-ipv4 bytes offset]
         [if [= atyp 3]
@@ -147,7 +147,7 @@ s5-parse-bound-addr: [fn@Dict [let bytes@String offset@Int atyp@Int]
 
 # Parse IPv4: 4 address bytes + 2 port bytes at offset.
 # Returns {addr: "a.b.c.d", port: N, addr-end: offset+6}.
-s5-parse-ipv4: [fn@Dict [let bytes@String offset@Int]
+s5-parse-ipv4: [fn@Dict [let bytes@String offset@Integer]
     [s5-parse-ipv4-step bytes offset
         [char-code [str-slice bytes offset             [+ offset 1]]]
         [char-code [str-slice bytes [+ offset 1] [+ offset 2]]]
@@ -156,7 +156,7 @@ s5-parse-ipv4: [fn@Dict [let bytes@String offset@Int]
         [char-code [str-slice bytes [+ offset 4] [+ offset 5]]]
         [char-code [str-slice bytes [+ offset 5] [+ offset 6]]]]]
 
-s5-parse-ipv4-step: [fn@Dict [let bytes@String offset@Int b0@Int b1@Int b2@Int b3@Int port-hi@Int port-lo@Int]
+s5-parse-ipv4-step: [fn@Dict [let bytes@String offset@Integer b0@Integer b1@Integer b2@Integer b3@Integer port-hi@Integer port-lo@Integer]
     [set []
         addr:     [str b0 "." b1 "." b2 "." b3]
         port:     [s5-decode-port port-hi port-lo]
@@ -164,16 +164,16 @@ s5-parse-ipv4-step: [fn@Dict [let bytes@String offset@Int b0@Int b1@Int b2@Int b
 
 # Parse domain: 1-byte length prefix + domain bytes + 2-byte port.
 # Returns {addr: <domain-string>, port: N, addr-end: ...}.
-s5-parse-domain: [fn@Dict [let bytes@String offset@Int]
+s5-parse-domain: [fn@Dict [let bytes@String offset@Integer]
     [s5-parse-domain-step bytes offset
         [char-code [str-slice bytes offset [+ offset 1]]]]]
 
-s5-parse-domain-step: [fn@Dict [let bytes@String offset@Int dom-len@Int]
+s5-parse-domain-step: [fn@Dict [let bytes@String offset@Integer dom-len@Integer]
     [s5-parse-domain-finish bytes offset dom-len
         [+ offset 1]
         [+ offset [+ 1 dom-len]]]]
 
-s5-parse-domain-finish: [fn@Dict [let bytes@String offset@Int dom-len@Int dom-start@Int dom-end@Int]
+s5-parse-domain-finish: [fn@Dict [let bytes@String offset@Integer dom-len@Integer dom-start@Integer dom-end@Integer]
     [set []
         addr:     [str-slice bytes dom-start dom-end]
         port:     [s5-decode-port
@@ -184,10 +184,10 @@ s5-parse-domain-finish: [fn@Dict [let bytes@String offset@Int dom-len@Int dom-st
 # Parse IPv6: 16 address bytes + 2 port bytes at offset.
 # Returns the raw 16-byte slice as addr (hex formatting needs encoding.llt).
 # Returns {addr: <raw-bytes-string>, port: N, addr-end: offset+18}.
-s5-parse-ipv6: [fn@Dict [let bytes@String offset@Int]
+s5-parse-ipv6: [fn@Dict [let bytes@String offset@Integer]
     [s5-parse-ipv6-step bytes offset [+ offset 16]]]
 
-s5-parse-ipv6-step: [fn@Dict [let bytes@String offset@Int port-offset@Int]
+s5-parse-ipv6-step: [fn@Dict [let bytes@String offset@Integer port-offset@Integer]
     [set []
         addr:     [str-slice bytes offset port-offset]
         port:     [s5-decode-port
@@ -200,16 +200,16 @@ s5-parse-ipv6-step: [fn@Dict [let bytes@String offset@Int port-offset@Int]
 # --------------------------------------------------------------------------
 
 # Parse the 4 fixed-position response bytes and build the result dict.
-s5-parse-response-fields: [fn@Dict [let bytes@String ver@Int rep@Int atyp@Int]
+s5-parse-response-fields: [fn@Dict [let bytes@String ver@Integer rep@Integer atyp@Integer]
     [if [= rep 0]
         [s5-parse-response-success bytes ver rep atyp]
         [s5-parse-response-failure ver rep atyp]]]
 
-s5-parse-response-success: [fn@Dict [let bytes@String ver@Int rep@Int atyp@Int]
+s5-parse-response-success: [fn@Dict [let bytes@String ver@Integer rep@Integer atyp@Integer]
     [s5-parse-response-success-step ver rep atyp
         [s5-parse-bound-addr bytes 4 atyp]]]
 
-s5-parse-response-success-step: [fn@Dict [let ver@Int rep@Int atyp@Int bound@Dict]
+s5-parse-response-success-step: [fn@Dict [let ver@Integer rep@Integer atyp@Integer bound@Dict]
     [set []
         version:  ver
         rep:      rep
@@ -219,7 +219,7 @@ s5-parse-response-success-step: [fn@Dict [let ver@Int rep@Int atyp@Int bound@Dic
         port:     [get "port" bound]
         success?: true]]
 
-s5-parse-response-failure: [fn@Dict [let ver@Int rep@Int atyp@Int]
+s5-parse-response-failure: [fn@Dict [let ver@Integer rep@Integer atyp@Integer]
     [set []
         version:  ver
         rep:      rep
@@ -279,7 +279,7 @@ build-socks5-greeting@[doc: "Build SOCKS5 initial client greeting (RFC 1928 §3)
 #
 # Type: (String -> Int -> String)
 build-socks5-connect@[doc: "Build SOCKS5 CONNECT request for host:port (RFC 1928 §4)"]:
-    [fn@String [let host@String port@Int]
+    [fn@String [let host@String port@Integer]
         [if [< 255 [length host]]
             [error "build-socks5-connect: hostname too long (max 255 bytes)"]
             [if [= [length host] 0]

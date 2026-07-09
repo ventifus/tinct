@@ -35,8 +35,8 @@ Comparison operators dispatch via `Equatable` and `Comparable` typeclass instanc
 
 | Builtin | Type | Description |
 |---------|------|-------------|
-| `=` | `[Fn@Bool [Any Any]]` | Equality — primitive types use built-in dispatch; user-defined types route through registered `Equatable` instance |
-| `<` | `[Fn@Bool [Any Any]]` | Less-than — primitive types (Int, Float, Str) use built-in dispatch; user-defined types route through registered `Comparable` instance |
+| `=` | `[Fn@Boolean [Any Any]]` | Equality — primitive types use built-in dispatch; user-defined types route through registered `Equatable` instance |
+| `<` | `[Fn@Boolean [Any Any]]` | Less-than — primitive types (Int, Float, Str) use built-in dispatch; user-defined types route through registered `Comparable` instance |
 
 **Error cases:**
 
@@ -60,7 +60,7 @@ Core operations on dicts. All materialize the dict structure (the IndexMap) to p
 | Builtin | Type | Description |
 |---------|------|-------------|
 | `keys` | `[Fn@Dict [Dict]]` | Return dict with same keys, values are the keys themselves (newly constructed Int/String/Float) |
-| `length` | `[Fn@Int [Dict]]` | Count entries (works on Dict or Seq — materializes structure, not values) |
+| `length` | `[Fn@Integer [Dict]]` | Count entries (works on Dict or Seq — materializes structure, not values) |
 | `merge` | `[Fn@Dict [Dict Dict]]` | Right-biased merge; materializes both dicts for key set, values are Rc::clone thunks |
 | `append` | `[Fn@Dict [Any Dict]]` | Add entry to dict; materializes dict for key computation, value passes through as thunk |
 
@@ -115,9 +115,9 @@ Numeric functions materialize their arguments and return computed values.
 
 | Builtin | Type | Description |
 |---------|------|-------------|
-| `floor` | `[Fn@Int [Number]]` | Round down to nearest integer |
-| `round` | `[Fn@Int [Number]]` | Round to nearest integer (half-up) |
-| `to-int` | `[Fn@Int [String]]` | Parse string to Int |
+| `floor` | `[Fn@Integer [Number]]` | Round down to nearest integer |
+| `round` | `[Fn@Integer [Number]]` | Round to nearest integer (half-up) |
+| `to-int` | `[Fn@Integer [String]]` | Parse string to Int |
 | `to-float` | `[Fn@Float [String]]` | Parse string to Float |
 
 **Error cases:**
@@ -151,18 +151,18 @@ Control over evaluation order and error handling.
 | Builtin | Type | Description |
 |---------|------|-------------|
 | `type-of` | `[Fn@String [Any]]` | Return type name: "Int", "Float", "String", "Bool", "Dict", "Seq", "Function", "Proxy" |
-| `int?` | `[Fn@Bool [Any]]` | Return true if arg is an Int |
-| `float?` | `[Fn@Bool [Any]]` | Return true if arg is a Float |
-| `num?` | `[Fn@Bool [Any]]` | Return true if arg is an Int or Float |
-| `str?` | `[Fn@Bool [Any]]` | Return true if arg is a String |
-| `bool?` | `[Fn@Bool [Any]]` | Return true if arg is a Bool |
-| `null?` | `[Fn@Bool [Any]]` | Return true if arg is Null (empty dict `[]` — tinct's null representation) |
-| `dict?` | `[Fn@Bool [Any]]` | Return true if arg is a Dict (includes lists, which are dicts with integer keys) |
-| `fn?` | `[Fn@Bool [Any]]` | Return true if arg is callable (Function or Builtin) |
-| `seq?` | `[Fn@Bool [Any]]` | Return true if arg is a Seq |
-| `record?` | `[Fn@Bool [Any]]` | Return true if arg is a Dict/Overlay (runtime has no key-type tracking; type-level distinction only) |
-| `map?` | `[Fn@Bool [Any]]` | Return true if arg is a Dict/Overlay (runtime has no key-type tracking; type-level distinction only) |
-| `bytes?` | `[Fn@Bool [Any]]` | Return true if arg is a Bytes value |
+| `int?` | `[Fn@Boolean [Any]]` | Return true if arg is an Int |
+| `float?` | `[Fn@Boolean [Any]]` | Return true if arg is a Float |
+| `num?` | `[Fn@Boolean [Any]]` | Return true if arg is an Int or Float |
+| `str?` | `[Fn@Boolean [Any]]` | Return true if arg is a String |
+| `bool?` | `[Fn@Boolean [Any]]` | Return true if arg is a Bool |
+| `null?` | `[Fn@Boolean [Any]]` | Return true if arg is Null (empty dict `[]` — tinct's null representation) |
+| `dict?` | `[Fn@Boolean [Any]]` | Return true if arg is a Dict (includes lists, which are dicts with integer keys) |
+| `fn?` | `[Fn@Boolean [Any]]` | Return true if arg is callable (Function or Builtin) |
+| `seq?` | `[Fn@Boolean [Any]]` | Return true if arg is a Seq |
+| `record?` | `[Fn@Boolean [Any]]` | Return true if arg is a Dict/Overlay (runtime has no key-type tracking; type-level distinction only) |
+| `map?` | `[Fn@Boolean [Any]]` | Return true if arg is a Dict/Overlay (runtime has no key-type tracking; type-level distinction only) |
+| `bytes?` | `[Fn@Boolean [Any]]` | Return true if arg is a Bytes value |
 
 Each predicate materializes its argument and checks the `Value` variant. `num?` checks both `Int` and `Float`, mirroring the `Number` supertype. `fn?` checks both `Function` and `Builtin`, since both are callable. `record?` and `map?` both return true for any `Dict` or `Overlay` value — the key-type distinction (string keys vs mixed keys) exists only at the type level. The runtime does not track key types, so both predicates behave identically and accept all dicts. No `list?` **builtin** exists because lists are dicts (Principle 1: Dicts Are Fundamental) — "list-ness" is a convention, not a type distinction — `list?` is available as a standard library function (see [Standard Library](11-stdlib.md) §Type Predicates).
 
@@ -227,7 +227,7 @@ Each predicate materializes its argument and checks the `Value` variant. `num?` 
 
 | Builtin | Type | Description |
 |---------|------|-------------|
-| `send-datagram` | `[Fn@Int [Any Any]]` | Send bytes to a datagram Handle; returns number of bytes sent |
+| `send-datagram` | `[Fn@Integer [Any Any]]` | Send bytes to a datagram Handle; returns number of bytes sent |
 | `recv-datagram` | `[Fn@String [Any]]` | Receive bytes from datagram Handle; optional max-size arg (default 65536) |
 
 **Error cases:**
@@ -352,7 +352,7 @@ open             [cap@[DirCap [Appendable ...]]          path@String Writable Ap
 list-dir         [cap@[DirCap [Listable ...]]            path@String]     → [Seq Dict]
 write            [cap@[DirCap [Writable ...]]            path@String content@String]
 symlink          [cap@[DirCap [Symlinkable ...]]         target@String link@String]
-set-permissions  [cap@[DirCap [PosixPermissions ...]]   path@String mode@Int]
+set-permissions  [cap@[DirCap [PosixPermissions ...]]   path@String mode@Integer]
 get-xattr        [cap@[DirCap [ExtendedAttributes ...]] path@String attr@String] → Bytes
 list-xattrs      [cap@[DirCap [ExtendedAttributes ...]] path@String]             → [Seq String]
 ```
@@ -370,7 +370,7 @@ Capability-based filesystem operations. All require a `DirCap` with appropriate 
 | Builtin | Type | Description |
 |---------|------|-------------|
 | `stat` | `[Fn@Dict [DirCap String]]` | Get file metadata (follows symlinks); returns dict with `name`, `type`, `size`, `mtime`, `mode`, `is-dir`, `is-file`, `is-symlink` |
-| `exists` | `[Fn@Bool [DirCap String]]` | Check if path exists; cheaper than `try`+`stat` for existence checks |
+| `exists` | `[Fn@Boolean [DirCap String]]` | Check if path exists; cheaper than `try`+`stat` for existence checks |
 | `stat-symlink` | `[Fn@Dict [DirCap String]]` | Get file metadata without following symlinks (lstat equivalent); same dict schema as `stat` |
 | `list-dir` | `[Fn@[Seq String] [DirCap String]]` | List directory contents; returns lazy Seq of filename Strings |
 | `make-dir` | `[Fn@Null [DirCap String]]` | Create directory and parent directories if needed; returns empty dict |
@@ -788,7 +788,7 @@ Read capability data from the Handle's capability row.
 | Builtin | Type | Description |
 |---------|------|-------------|
 | `cap-data` | `[Fn@Any [Any String]]` | Return the `Value` stored for capability `name` in Handle `h` |
-| `has-cap?` | `[Fn@Bool [Any String]]` | Return true if Handle `h` carries capability `name` |
+| `has-cap?` | `[Fn@Boolean [Any String]]` | Return true if Handle `h` carries capability `name` |
 
 ```tinct
 [has-cap? h "Tls"]        # → true if h was created by tls-connect
@@ -875,7 +875,7 @@ Send an ICMP echo request (ping) to a host and return the round-trip time.
 **Signature:**
 
 ```text
-icmp-ping : [fn [cap@NetCap  host@String  timeout-ms@Int]]
+icmp-ping : [fn [cap@NetCap  host@String  timeout-ms@Integer]]
             → {ok: {latency-ms: Int}} | {err: String}
 ```
 
@@ -1004,25 +1004,25 @@ Capability-gated time access and timestamp manipulation.
 | `parse-timestamp` | `[Fn@Any [String]]` | Parse an RFC 3339 string (e.g., `"2024-01-01T00:00:00Z"`) to a Timestamp |
 | `format-timestamp` | `[Fn@String [Any String]]` | Format a Timestamp as an RFC 3339 string; second arg is a timezone name (e.g., `"UTC"`, `"America/New_York"`) |
 | `timestamp-add` | `[Fn@Any [Any Int]]` | Add a duration (nanoseconds as Int) to a Timestamp |
-| `timestamp-diff` | `[Fn@Int [Any Any]]` | Difference between two Timestamps in nanoseconds: `b - a` |
-| `timestamp<?` | `[Fn@Bool [Any Any]]` | True if first Timestamp is before second |
-| `timestamp>?` | `[Fn@Bool [Any Any]]` | True if first Timestamp is after second |
-| `timestamp=?` | `[Fn@Bool [Any Any]]` | True if two Timestamps are equal |
-| `timestamp-year` | `[Fn@Int [Any]]` | Extract year component (UTC) |
-| `timestamp-month` | `[Fn@Int [Any]]` | Extract month component (1-12, UTC) |
-| `timestamp-day` | `[Fn@Int [Any]]` | Extract day-of-month component (1-31, UTC) |
-| `timestamp-hour` | `[Fn@Int [Any]]` | Extract hour component (0-23, UTC) |
-| `timestamp-minute` | `[Fn@Int [Any]]` | Extract minute component (0-59, UTC) |
-| `timestamp-second` | `[Fn@Int [Any]]` | Extract second component (0-60, UTC; 60 for leap seconds) |
+| `timestamp-diff` | `[Fn@Integer [Any Any]]` | Difference between two Timestamps in nanoseconds: `b - a` |
+| `timestamp<?` | `[Fn@Boolean [Any Any]]` | True if first Timestamp is before second |
+| `timestamp>?` | `[Fn@Boolean [Any Any]]` | True if first Timestamp is after second |
+| `timestamp=?` | `[Fn@Boolean [Any Any]]` | True if two Timestamps are equal |
+| `timestamp-year` | `[Fn@Integer [Any]]` | Extract year component (UTC) |
+| `timestamp-month` | `[Fn@Integer [Any]]` | Extract month component (1-12, UTC) |
+| `timestamp-day` | `[Fn@Integer [Any]]` | Extract day-of-month component (1-31, UTC) |
+| `timestamp-hour` | `[Fn@Integer [Any]]` | Extract hour component (0-23, UTC) |
+| `timestamp-minute` | `[Fn@Integer [Any]]` | Extract minute component (0-59, UTC) |
+| `timestamp-second` | `[Fn@Integer [Any]]` | Extract second component (0-60, UTC; 60 for leap seconds) |
 | `timestamp-parts` | `[Fn@Dict [Any String]]` | Decompose a Timestamp into a dict of all components in the given timezone: `year`, `month`, `day`, `hour`, `minute`, `second`, `nanosecond`, `tz-offset-seconds` |
-| `timestamp->unix` | `[Fn@Int [Any]]` | Convert Timestamp to Unix epoch seconds (integer, truncating nanoseconds) |
+| `timestamp->unix` | `[Fn@Integer [Any]]` | Convert Timestamp to Unix epoch seconds (integer, truncating nanoseconds) |
 | `unix->timestamp` | `[Fn@Any [Int]]` | Convert Unix epoch seconds (Int) to Timestamp |
 | `timestamp-nanos` | `[Fn@Any [Int]]` | Construct a Timestamp from a nanosecond epoch value (inverse of `timestamp->unix` at nanosecond precision) |
-| `duration-nanos` | `[Fn@Int [Int]]` | Return duration in nanoseconds (identity — durations are already nanoseconds) |
-| `duration-seconds` | `[Fn@Int [Int]]` | Convert seconds to nanosecond duration |
-| `duration-minutes` | `[Fn@Int [Int]]` | Convert minutes to nanosecond duration |
-| `duration-hours` | `[Fn@Int [Int]]` | Convert hours to nanosecond duration |
-| `duration-days` | `[Fn@Int [Int]]` | Convert days to nanosecond duration |
+| `duration-nanos` | `[Fn@Integer [Int]]` | Return duration in nanoseconds (identity — durations are already nanoseconds) |
+| `duration-seconds` | `[Fn@Integer [Int]]` | Convert seconds to nanosecond duration |
+| `duration-minutes` | `[Fn@Integer [Int]]` | Convert minutes to nanosecond duration |
+| `duration-hours` | `[Fn@Integer [Int]]` | Convert hours to nanosecond duration |
+| `duration-days` | `[Fn@Integer [Int]]` | Convert days to nanosecond duration |
 | `load-tz` | `[Fn@Any [String]]` | Load timezone data by IANA name (e.g., `"America/New_York"`); for use with `format-timestamp` and `timestamp-parts` |
 | `timestamp-in-tz` | `[Fn@Dict [Any String]]` | Decompose a Timestamp in the given timezone; alias for `timestamp-parts` with explicit tz |
 | `local->timestamp` | `[Fn@Any [Dict]]` | Convert a local-time dict (with `tz` field) to a UTC Timestamp |

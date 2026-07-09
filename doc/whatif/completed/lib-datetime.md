@@ -243,11 +243,11 @@ builtins.
 # stdlib/datetime.llt
 
 # Days between two timestamps (positive if t1 is later)
-days-between: [fn@Int [t1@Timestamp t2@Timestamp]
+days-between: [fn@Integer [t1@Timestamp t2@Timestamp]
   [/ [duration->seconds [timestamp-diff t1 t2]] 86400]]
 
 # Is a timestamp within a half-open interval [start, end)?
-timestamp-in-range?: [fn@Bool [start@Timestamp end@Timestamp t@Timestamp]
+timestamp-in-range?: [fn@Boolean [start@Timestamp end@Timestamp t@Timestamp]
   [and [not [timestamp<? t start]] [timestamp<? t end]]]
 
 # Format a timestamp as a date-only string "YYYY-MM-DD" (UTC)

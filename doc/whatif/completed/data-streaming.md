@@ -261,7 +261,7 @@ The codec provides two functions:
 **`bracket-count`** — net open bracket depth in a string, accounting for string literals and comments:
 
 ```tinct
-bracket-count: [fn@Int [let s@String]
+bracket-count: [fn@Integer [let s@String]
   [reduce
     [fn [let st ch]
       [if st.done  st

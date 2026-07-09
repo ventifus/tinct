@@ -88,7 +88,7 @@
   # A cert with no SAN extension is rejected outright — all public CAs have required SANs
   # since 2012 (CA/Browser Forum Baseline Requirements). RFC 9525 (2023) explicitly
   # prohibits CN fallback even when no SAN is present.
-  cert-valid-for-host?: [fn [let cert-der@Bytes hostname@String now-secs@Int]
+  cert-valid-for-host?: [fn [let cert-der@Bytes hostname@String now-secs@Integer]
     [cert: [parse-cert cert-der]]
     [tbs: [extract-tbs cert]]
     # 1. Validity period (RFC 5280 §4.1.2.5)

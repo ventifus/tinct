@@ -5,7 +5,7 @@
 Build a masked WebSocket frame (client→server, RFC 6455)
 
 ```tinct
-fn@Dict [let opcode@Int data@String mask-key@String]
+fn@Dict [let opcode@Integer data@String mask-key@String]
 ```
 
 ### `parse-ws-frame-header`

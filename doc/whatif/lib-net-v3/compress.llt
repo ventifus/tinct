@@ -23,7 +23,7 @@
 
 [instance Codec
   [let a@GzipCodec b@Bytes c@Bytes]: [encode: [fn [let _ b] [builtin-gzip-encode b]]
-                                       decode: [fn [let _ b@Bytes offset@Int]
+                                       decode: [fn [let _ b@Bytes offset@Integer]
                                          [buf: [slice b offset [length b]]]
                                          [value: [builtin-gzip-decode buf]  next: [length b]]]]]
 [instance CompressionCodec
@@ -31,7 +31,7 @@
 
 [instance Codec
   [let a@DeflateCodec b@Bytes c@Bytes]: [encode: [fn [let _ b] [builtin-deflate-encode b]]
-                                          decode: [fn [let _ b@Bytes offset@Int]
+                                          decode: [fn [let _ b@Bytes offset@Integer]
                                             [buf: [slice b offset [length b]]]
                                             [value: [builtin-deflate-decode buf]  next: [length b]]]]]
 [instance CompressionCodec
@@ -39,7 +39,7 @@
 
 [instance Codec
   [let a@BrotliCodec b@Bytes c@Bytes]: [encode: [fn [let _ b] [builtin-brotli-encode b]]
-                                         decode: [fn [let _ b@Bytes offset@Int]
+                                         decode: [fn [let _ b@Bytes offset@Integer]
                                            [buf: [slice b offset [length b]]]
                                            [value: [builtin-brotli-decode buf]  next: [length b]]]]]
 [instance CompressionCodec
@@ -47,7 +47,7 @@
 
 [instance Codec
   [let a@ZstdCodec b@Bytes c@Bytes]: [encode: [fn [let _ b] [builtin-zstd-encode b]]
-                                       decode: [fn [let _ b@Bytes offset@Int]
+                                       decode: [fn [let _ b@Bytes offset@Integer]
                                          [buf: [slice b offset [length b]]]
                                          [value: [builtin-zstd-decode buf]  next: [length b]]]]]
 [instance CompressionCodec
@@ -55,7 +55,7 @@
 
 [instance Codec
   [let a@IdentityCodec b@Bytes c@Bytes]: [encode: [fn [let _ b] b]
-                                           decode: [fn [let _ b@Bytes offset@Int]
+                                           decode: [fn [let _ b@Bytes offset@Integer]
                                              [value: [slice b offset [length b]]  next: [length b]]]]]
 [instance CompressionCodec
   [let h@IdentityCodec]: [codec-name: [fn [let _] "identity"]]]

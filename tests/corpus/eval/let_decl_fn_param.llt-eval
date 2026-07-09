@@ -1,5 +1,5 @@
 # Typed binding in case arm — 3-arg form: [case [let x] x body] binds x to scrutinee.
-# @Int annotation in [let x@Int] is a static constraint; x is bound by the pattern.
+# @Integer annotation in [let x@Integer] is a static constraint; x is bound by the pattern.
 [f: [fn [let n] [match n
   [case [let x] x [+ x 1]]
   [case [let _] _ 0]]]

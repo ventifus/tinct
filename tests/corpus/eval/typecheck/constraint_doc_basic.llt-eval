@@ -1,7 +1,7 @@
 # Doc string test
 # Verifies doc string is present in the TypeScheme
 [
-  add: [fn@[doc: "Adds two numbers"] [let x@Int y@Int] [+ x y]]
+  add: [fn@[doc: "Adds two numbers"] [let x@Integer y@Integer] [+ x y]]
   result: [add 2 3]
 ]
 

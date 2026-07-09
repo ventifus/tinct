@@ -47,7 +47,7 @@ Note: A `CheckerType` newtype wrapping tinct `Value` (making all types first-cla
     | α                          type variable  (Type::TypeVar(name, level) in the current implementation)
     | Unknown                    gradual typing escape hatch (don't know the type)
     | Top                        universal supertype ⊤ (supertype of everything)
-    | Union(τ₁...τₙ)             union type A | B (user-expressible via `@[A B]`)
+    | Union(τ₁...τₙ)             union type A | B (user-expressible via `@[or A B]`)
     | Intersection(τ₁...τₙ)      intersection type A & B (user-expressible via `@[[all A B]]`)
     | Negation(τ)                negation type ~A (user-expressible via `@[[without A]]`)
     | Never                      bottom type ⊥ (uninhabited, user-expressible via `@Never`)
@@ -1120,9 +1120,9 @@ TypeScheme {
 
 **Display format:** Constraints appear before the type body, separated by `=>`:
 
-- `Equatable a => Fn@Bool [a a]` — equality requires Equatable constraint
-- `Numeric a, Castable String b => Fn@Str [a b]` — multiple constraints comma-separated
-- `Fn@Int [Int Int]` — monomorphic schemes (no constraints) display as before
+- `Equatable a => Fn@Boolean [a a]` — equality requires Equatable constraint
+- `Numeric a, Castable String b => Fn@String [a b]` — multiple constraints comma-separated
+- `Fn@Integer [Integer Integer]` — monomorphic schemes (no constraints) display as before
 
 ### Primitive Built-in Constraints
 
@@ -1190,11 +1190,11 @@ When a constraint `C(τ)` is checked and τ is a compound BAS type, propagation 
            error "type τ does not satisfy constraint C"
    ```
 
-   Example: unifying `_t0` (with `Numeric _t0`) with `Fn@Int [Int]`:
+   Example: unifying `_t0` (with `Numeric _t0`) with `Fn@Integer [Integer]`:
 
    ```text
-   satisfies_constraint(Fn@Int [Int], "Numeric") → false
-   → TypeError: type Fn@Int [Int] does not satisfy constraint Numeric
+   satisfies_constraint(Fn@Integer [Integer], "Numeric") → false
+   → TypeError: type Fn@Integer [Integer] does not satisfy constraint Numeric
    ```
 
 4. **Generalization** (`generalize`): Constraints on generalized variables are included in the resulting TypeScheme:
@@ -1238,11 +1238,11 @@ result: [= [fn [] 1] [fn [] 2]]
 
 # Type inference
 1. Look up = → Equatable a => a → a → Bool
-2. Instantiate → Equatable _t0, Fn@Bool [_t0 _t0]
-3. Argument 1: infer([fn [] 1]) → Fn@Int []
-4. Unify _t0 with Fn@Int []:
-   - Check: satisfies_constraint(Fn@Int [], "Equatable") → false
-   - Error: "type Fn@Int [] does not satisfy constraint Equatable"
+2. Instantiate → Equatable _t0, Fn@Boolean [_t0 _t0]
+3. Argument 1: infer([fn [] 1]) → Fn@Integer []
+4. Unify _t0 with Fn@Integer []:
+   - Check: satisfies_constraint(Fn@Integer [], "Equatable") → false
+   - Error: "type Fn@Integer [] does not satisfy constraint Equatable"
 === error
 error: `:` can only appear in dict, call, class, instance, or match forms
  --> block 2:1:7
@@ -1280,8 +1280,8 @@ Addable: [class [a b c]  [determines: [[[a b] c]]  resolver: AddResult]
   +: [fn@c [a b]]]
 
 [instance Addable
-  [pattern [a@Int  b@Int   c@Int  ]]: [+: [fn@Int   [x@Int   y@Int  ] [builtin-add x y]]]
-  [pattern [a@Int  b@Float c@Float]]: [+: [fn@Float [x@Int   y@Float] [builtin-add x y]]]]
+  [pattern [a@Integer  b@Integer   c@Integer  ]]: [+: [fn@Integer   [x@Integer   y@Integer  ] [builtin-add x y]]]
+  [pattern [a@Integer  b@Float c@Float]]: [+: [fn@Float [x@Integer   y@Float] [builtin-add x y]]]]
 === error
 error: `:` can only appear in dict, call, class, instance, or match forms
  --> block 3:4:8
@@ -1369,7 +1369,7 @@ Functor: [class [f]  [kinds: [f: Operator]]
   fmap: [fn@[return: [f b]] [g@[Fn@b [a]]  xs@[f a]]]]
 
 Equatable: [class [a]
-  eq?: [fn@Bool [a a]]]
+  eq?: [fn@Boolean [a a]]]
 === error
 error: `:` can only appear in dict, call, class, instance, or match forms
  --> block 4:1:8
@@ -1395,7 +1395,7 @@ type errors:
 
 ```tinct
 Comparable: [class [a]  [superclasses: [Equatable]]
-  lt?: [fn@Bool [a a]]]
+  lt?: [fn@Boolean [a a]]]
 
 Monad: [class [m]  [kinds: [m: Operator]  superclasses: [Applicative]]
   bind: [fn@[return: [m b]] [ma@[m a]  k@[Fn@[return: [m b]] [a]]]]]
@@ -1467,7 +1467,7 @@ The `[do]` macro supports both an explicit monad argument and an inferred form. 
   [r.body]]
 
 # Inferred form — return annotation has ok+err fields → type checker resolves result monad
-[fn@[ok: Str  err: Str] [url@Str]
+[fn@[ok: String  err: String] [url@String]
   [do
     [r:    [Ok "hello"]]
     [Ok r.body]]]
@@ -1843,7 +1843,7 @@ The explicit `[do monad ...]` form always takes priority. Backward-compatible �
 ### Result Monad Example
 
 ```tinct
-fetch-and-parse: [fn@[ok: Str  err: Str] [url@Str]
+fetch-and-parse: [fn@[ok: String  err: String] [url@String]
   [do
     [r:    [fetch %nc url]]         # inferred: Result monad from return type
     [data: [from-json r.body]]
@@ -1855,7 +1855,7 @@ The return annotation `@[ok: Str  err: Str]` unifies with `App(Result, Str)`, so
 ### Maybe Monad Example
 
 ```tinct
-safe-lookup: [fn@[Maybe Str] [config@Dict key@Str]
+safe-lookup: [fn@[Maybe String] [config@Dict key@String]
   [do
     [section: [get? "section" config]]
     [value:   [get? key section]]

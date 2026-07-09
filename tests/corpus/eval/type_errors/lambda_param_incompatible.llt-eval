@@ -1,6 +1,6 @@
 # Bidirectional typing: lambda with annotated param that conflicts with the return annotation.
-# [fn@Int [x@String] $x]: the body $x has type String, but the return annotation says Int.
+# [fn@Integer [x@String] $x]: the body $x has type String, but the return annotation says Int.
 # String is not a subtype of Int — type error.
-[fn@Int [let x@String] x]
+[fn@Integer [let x@String] x]
 === out
 [UnificationFailure] cannot unify Int with String

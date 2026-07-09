@@ -27,7 +27,7 @@ Two problems persist that TypeConstructor references alone cannot address.
 ```tinct
 # Forced to name the type just to annotate one function parameter
 TreeShape: [type [or Absent [record val: Int  left: TreeShape  right: TreeShape]]]
-depth: [fn@Int [tree@TreeShape] ...]
+depth: [fn@Integer [tree@TreeShape] ...]
 ```
 
 **Structural subtype checking between distinct recursive TyCons.** Checking `A <: B` where both are structural recursive types with the same shape requires comparing expanded bodies. The expanded body of `A` contains `App(TyCon("A"), [])` and the expanded body of `B` contains `App(TyCon("B"), [])`. Without a coinductive visited-pairs algorithm, the type checker must unfold these again — and diverges. This matters when user code defines a type structurally equivalent to a library type and passes one where the other is expected.
@@ -191,7 +191,7 @@ JsonValue: [type [mu [fn [let self] [or Int String Bool Absent [Seq self] [Map S
 words: [fn [lst@[non-empty-list String]] ...]
 
 # In function annotations
-depth: [fn@Int [tree@[mu [fn [let self] [or Absent [record value: Int  left: self  right: self]]]]]]
+depth: [fn@Integer [tree@[mu [fn [let self] [or Absent [record value: Int  left: self  right: self]]]]]]
   [if [absent? tree] 0 [+ 1 [max [depth tree.left] [depth tree.right]]]]
 ```
 
@@ -432,7 +432,7 @@ subtype: [fn [let self other sigma]
 
 The resolver produces **normalized TypeNode values** — no `TypeNode.TypeApplication` or bare `TypeNode.TypeConstructor` references remain after resolution. The type checker receives only concrete forms: primitives, Record, Union, Intersect, Arrow, Recursive, RecursiveRef, TypeVar, and qualified TypeConstructor leaves.
 
-**Path 1 — Named annotation** (`@Int`, `@ListA`, `@Color`, `@Maybe Int`):
+**Path 1 — Named annotation** (`@Integer`, `@ListA`, `@Color`, `@Maybe Int`):
 
 **Data model: `TypeDecl`.** The current codebase has two separate stores in `TypeEnv`: `TypeAlias` (params + body `Type`) and `TyConDef` (variance + constructors + builtin_type). Both are registered for every `[type ...]` declaration — the split is an implementation accident. `TyConDef.constructors` is **currently dead storage** (never populated at any creation site); all constructor information lives in `TypeAlias.body` as `Type::Union([NominalVariant(...)])`. A unified `TypeDecl` view abstracts over both:
 
@@ -470,7 +470,7 @@ expand_named(name, args, stack, env):
   # typenode_tag == "TypeNode.TypeConstructor" AND name.contains('.') == false.
   # (Bare = transient = unexpanded reference. Qualified leaves are already normalized.)
   # No gensym, no stack push, no expand_all_tycon_apps needed — Arc::clone of body suffices.
-  # Covers @Int, @Float, @Bool, @Absent, @Unknown, @Never and simple zero-param aliases.
+  # Covers @Integer, @Float, @Boolean, @Absent, @Unknown, @Never and simple zero-param aliases.
   if decl.params.is_empty() and not body_contains_tycon_ref(decl.body):
     return CheckerType(Arc::clone(&decl.body))
 
@@ -629,7 +629,7 @@ transform: [fn [f@[fn [let x@JsonValue] JsonValue]]
   ...
 
 # A recursive function that counts all numeric values in a JSON tree
-count-numbers: [fn@Int [v@JsonValue]
+count-numbers: [fn@Integer [v@JsonValue]
   [match v
     Int:                  1
     Float:                1

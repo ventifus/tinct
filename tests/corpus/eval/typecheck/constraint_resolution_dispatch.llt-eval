@@ -16,15 +16,15 @@
 
   # Instance 1: Describable for Int
   DescribableInt: [instance Describable [pattern [Int]]:
-    describe: [fn [let x@Int] "integer"]]
+    describe: [fn [let x@Integer] "integer"]]
 
   # Instance 2: Describable for Str
-  DescribableStr: [instance Describable [pattern [Str]]:
-    describe: [fn [let x@Str] "text"]]
+  DescribableStr: [instance Describable [pattern [String]]:
+    describe: [fn [let x@String] "text"]]
 
   # Instance 3: Describable for Bool
   DescribableBool: [instance Describable [pattern [Bool]]:
-    describe: [fn [let x@Bool] "boolean"]]
+    describe: [fn [let x@Boolean] "boolean"]]
 
   # Polymorphic function with Describable constraint
   # The type checker must resolve the correct instance when this is called

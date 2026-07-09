@@ -23,7 +23,7 @@ But tinct conflates two fundamentally different dict shapes under a single `@Dic
 
 ### What's Missing
 
-1. **Typed homogeneous maps.** NFA `transitions: Map@[Int: Seq@Int]` (char code → successor state IDs) and regex `groups: Map@[Int: String]` (capture group → matched text) are integer-keyed uniform-value dicts. The type checker cannot reason about them; computation over them produces `Any`.
+1. **Typed homogeneous maps.** NFA `transitions: Map@[Int: Seq@Integer]` (char code → successor state IDs) and regex `groups: Map@[Int: String]` (capture group → matched text) are integer-keyed uniform-value dicts. The type checker cannot reason about them; computation over them produces `Any`.
 
 2. **Formal semantics for `@Dict`.** `@Dict` today means "some dict" with no information. It should denote the union of all structural records and all homogeneous maps.
 

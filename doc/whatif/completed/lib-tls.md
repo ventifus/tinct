@@ -596,7 +596,7 @@ available at runtime without recompilation.
     password: @[String Null]     # null if absent; splitting userinfo on ":" is a convention
                                  # not mandated by RFC 3986 §3.2.1; deprecated for HTTP (§7.5)
     host:     @String            # always present (validated at parse time); IPv6 without brackets
-    port:     @Int               # always present; scheme-defaulted if absent; empty port string
+    port:     @Integer               # always present; scheme-defaulted if absent; empty port string
                                  # ("http://host:/path") treated as absent → defaulted
     path:     @String            # always present per RFC 3986 §3.3; "/" if absent in string
     query:    @[String Null]     # raw query string without "?"; null if absent
@@ -640,17 +640,17 @@ available at runtime without recompilation.
 
   # Connector protocol type (structural)
   Connector: [type [
-    connect: [fn@Handle [transport@Any  host@String  port@Int  opts@Any]]
+    connect: [fn@Handle [transport@Any  host@String  port@Integer  opts@Any]]
   ]]
 ]
 
 # Builtin signatures:
-connect     : [fn@Handle      [connector@Connector  transport@Any  host@String  port@Int]]
+connect     : [fn@Handle      [connector@Connector  transport@Any  host@String  port@Integer]]
               # Tcp → Handle[Binary Readable Writable Stream]
               # Udp → Handle[Binary Readable Writable Datagram]
               # Transport omitted → Tcp implied
 
-tls-connect : [fn@Handle      [connector@Connector  transport@Any  host@String  port@Int  opts@TlsOpts]]
+tls-connect : [fn@Handle      [connector@Connector  transport@Any  host@String  port@Integer  opts@TlsOpts]]
 tls-connect : [fn@Handle      [h@Handle  sni@String  opts@TlsOpts]]
               # Either form → Handle[Binary Readable Writable Stream Tls]
 
@@ -659,8 +659,8 @@ tls-peer-cert : [fn@PeerCert  [h@Handle]]   # h must carry Tls capability
 http-connect  : [fn@HttpConn  [connector@Connector  uri@Uri  opts@Any]]
 http-connect  : [fn@HttpConn  [h@Handle  uri@Uri]]
 
-socks5-connect : [fn@Handle   [h@Handle  host@String  port@Int  creds@Any]]
-proxy-connect  : [fn@Handle   [h@Handle  host@String  port@Int]]
+socks5-connect : [fn@Handle   [h@Handle  host@String  port@Integer  creds@Any]]
+proxy-connect  : [fn@Handle   [h@Handle  host@String  port@Integer]]
 
 # Uri/Url/Urn builtins:
 uri           : [fn@Uri     [s@String]]    # parse any URI string → Uri (generic)
@@ -675,7 +675,7 @@ uri->string   : [fn@String  [u@[Uri Url Urn]]] # reconstruct full URI/URL/URN st
 # https-get does not exist — use http-get with an https:// Uri
 http-get      : [fn@Dict  [connector@Connector  uri@Uri  headers@Dict  tls-opts@[TlsOpts Null]]]
                 # dispatches on url.scheme; tls-opts ignored for http://, used for https://
-                # returns [status: @Int  headers: @Dict  body: @String]
+                # returns [status: @Integer  headers: @Dict  body: @String]
 fetch         : [fn@Dict  [connector@Connector  uri@Uri]]
                 # convenience: http-get with empty headers and null tls-opts
 ```

@@ -1,5 +1,5 @@
 # E024: range wrapper requires exactly 2 arguments (start and end)
-# After T-1380, range is pure tinct: [fn [let start@Int end@Int] ...]
+# After T-1380, range is pure tinct: [fn [let start@Integer end@Integer] ...]
 [range]
 === error
 missing argument for required parameter 'start'

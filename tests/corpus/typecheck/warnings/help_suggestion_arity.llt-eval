@@ -1,6 +1,6 @@
 # Type error help suggestion: arity mismatch shows helpful suggestion
 # TypeAssert checks lambda against function type with different arity
-[@[Fn@Int [Int Int]] [fn [let x] x]]
+[@[Fn@Integer [Int Int]] [fn [let x] x]]
 === out
 Function(x)
 

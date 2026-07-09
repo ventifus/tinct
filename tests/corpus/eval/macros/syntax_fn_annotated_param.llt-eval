@@ -1,7 +1,7 @@
-# fn with annotated params: [fn [let x@Int y@Int] body]
+# fn with annotated params: [fn [let x@Integer y@Integer] body]
 # The parser handles this directly (not via macro).
 # fn/class/type forms are handled directly by the parser; no include required.
-[mul: [fn [let x@Int y@Int] [* x y]]]
+[mul: [fn [let x@Integer y@Integer] [* x y]]]
 [mul 6 7]
 === out
 Int(42)

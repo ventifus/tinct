@@ -13,7 +13,7 @@ During HM unification, when a multi-parameter constraint's determining type vari
 
 ```tinct
 # This works — Addable a b c constraint with FD (a,b)→c
-[fn [x@Int y@Float] [+ x y]]   # infers Float — FD fires: Addable Int Float → Float
+[fn [x@Integer y@Float] [+ x y]]   # infers Float — FD fires: Addable Int Float → Float
 ```
 
 **Mechanism 2 — Type-stage functions (simplification).**  
@@ -216,10 +216,10 @@ result@[AddResult Int Float]
 # Explicit annotation, TypeVar args: produce TypeStageApp
 f: [fn@[bind: [a]  return: [AddResult a Int]]  [x@a] ...]
 # → return type = TypeStageApp("AddResult", [TypeVar("a"), Int])
-# → when f is called with x@Int, normalization fires: AddResult(Int, Int) → Type::Int
+# → when f is called with x@Integer, normalization fires: AddResult(Int, Int) → Type::Int
 
 # FD-driven (no annotation): FD elaboration produces TypeStageApp
-[fn [x@Int y@Float] [+ x y]]
+[fn [x@Integer y@Float] [+ x y]]
 # → [$Addable a b c] with a=Int, b=Float → c unified with TypeStageApp("AddResult", [Int, Float])
 # → normalization fires immediately → c = Float
 ```
@@ -235,9 +235,9 @@ Instance declarations use **match-arm syntax**: each arm pairs a `[pattern [...]
 For readability with complex method bodies, the recommended style is to name the implementation functions first and reference them by name in the instance arms:
 
 ```tinct
-int-add: [fn@Int [x@Int y@Int] [builtin-add x y]]
+int-add: [fn@Integer [x@Integer y@Integer] [builtin-add x y]]
 [instance Addable
-  [pattern [a@Int b@Int c@Int]]: [+: int-add]]
+  [pattern [a@Integer b@Integer c@Integer]]: [+: int-add]]
 ```
 
 A complete class + instance declaration:
@@ -264,8 +264,8 @@ Addable: [class [a b c]  [determines: [[[a b] c]]  resolver: AddResult]
 # Each arm is a [pattern [...]]: method-dict pair.
 # Multiple instances of the same class can be bundled in one [instance ...] form.
 [instance Addable
-  [pattern [a@Int b@Int   c@Int  ]]: [+: [fn@Int   [x@Int   y@Int]   [builtin-add x y]]]
-  [pattern [a@Int b@Float c@Float]]: [+: [fn@Float [x@Int   y@Float] [builtin-add x y]]]]
+  [pattern [a@Integer b@Integer   c@Integer  ]]: [+: [fn@Integer   [x@Integer   y@Integer]   [builtin-add x y]]]
+  [pattern [a@Integer b@Float c@Float]]: [+: [fn@Float [x@Integer   y@Float] [builtin-add x y]]]]
 ```
 
 ### `kinds:` — Explicit Kind Declarations
@@ -353,7 +353,7 @@ The `superclasses:` key in the structural metadata bracket declares that one cla
 
 ```tinct
 Comparable: [class [a]  [superclasses: [Equatable]]
-  lt?: [fn@Bool [a a]]]
+  lt?: [fn@Boolean [a a]]]
 
 Monad: [class [m]  [kinds: [m: Operator]  superclasses: [Applicative]]
   bind: [fn@[return: [m b]] [ma@[m a]  k@[Fn@[return: [m b]] [a]]]]]
@@ -363,7 +363,7 @@ Monad: [class [m]  [kinds: [m: Operator]  superclasses: [Applicative]]
 
 - **Constraint entailment**: `Comparable a` in the constraint context implies `Equatable a`. Functions constrained by `[a: Comparable]` can call `eq?` from `Equatable` without an additional `[a: Equatable]` constraint. The `entails()` function in `src/type_unify.rs` already implements transitive superclass lookup for constraint simplification.
 
-- **Instance requirement**: declaring `[instance Comparable [pattern [a@Int]]: [...]]` requires that `[instance Equatable [pattern [a@Int]]: [...]]` already exists. The instance checker verifies superclass instances are present at declaration time.
+- **Instance requirement**: declaring `[instance Comparable [pattern [a@Integer]]: [...]]` requires that `[instance Equatable [pattern [a@Integer]]: [...]]` already exists. The instance checker verifies superclass instances are present at declaration time.
 
 - **Dictionary passing**: at runtime, the instance dictionary for a subclass includes access to superclass method implementations via the superclass instance lookup.
 
@@ -422,7 +422,7 @@ Addable: [class [a b c]  [determines: [[[a b] c]]  resolver: AddResult]
 
 # Without — just params and methods
 Equatable: [class [a]
-  eq?: [fn@Bool [a a]]]
+  eq?: [fn@Boolean [a a]]]
 ```
 
 This eliminates reserved-word conflicts: `determines`, `resolver`, and `kinds` are only structural when they appear as keys in the second positional bracket. Any method name (including `determines` or `resolver`) is valid as a keyed entry after the structural bracket.
@@ -467,16 +467,16 @@ Instance declarations use a **match-arm syntax** pairing each type-parameter pat
 
 Each `paramName@TypePattern` declares a fresh TypeVar binding (`paramName`) constrained to match `TypePattern`. Uppercase names in `TypePattern` are type references; lowercase names are implicitly fresh TypeVars introduced in this arm's scope (available in method bodies).
 
-Type applications use bracket syntax: `a@[Seq elem]` declares class param `a` must be `Seq` applied to fresh TypeVar `elem`. Simple concrete types need no inner brackets: `a@Int`, `f@Seq` (bare constructor for HKT params).
+Type applications use bracket syntax: `a@[Seq elem]` declares class param `a` must be `Seq` applied to fresh TypeVar `elem`. Simple concrete types need no inner brackets: `a@Integer`, `f@Seq` (bare constructor for HKT params).
 
 After `:`, the method dict `[method-key: impl ...]` supplies the implementations for that particular type combination. Multiple instances of the same class are bundled as additional arms under the same `[instance ClassName ...]` form.
 
 ```tinct
 # Addable [a b c] — 3 class params, named a/b/c per class declaration:
 [instance Addable
-  [pattern [a@Int   b@Int   c@Int  ]]: [+: ...]
-  [pattern [a@Int   b@Float c@Float]]: [+: ...]
-  [pattern [a@Int   b@Int   c@[or Int Null]]]: [+: ...]]  # composite type in TypePattern
+  [pattern [a@Integer   b@Integer   c@Integer  ]]: [+: ...]
+  [pattern [a@Integer   b@Float c@Float]]: [+: ...]
+  [pattern [a@Integer   b@Integer   c@[or Int Null]]]: [+: ...]]  # composite type in TypePattern
 
 # Functor [f] — 1 HKT class param, named f per class declaration:
 [instance Functor
@@ -485,7 +485,7 @@ After `:`, the method dict `[method-key: impl ...]` supplies the implementations
 
 # Appendable [a] — concrete or parametric:
 [instance Appendable
-  [pattern [a@Str      ]]: [concat: ...  empty: ...]
+  [pattern [a@String      ]]: [concat: ...  empty: ...]
   [pattern [a@[Seq elem]]]: [concat: ...  empty: ...]   # a must be Seq of elem
   [pattern [a@[Map k v]]]: [concat: ...  empty: ...]]   # a must be Map k v
 ```
@@ -525,7 +525,7 @@ At instance declaration time, every instance arm for a class must satisfy three 
 
 - **Disjointness condition**: no two arms of the same class may match the same ground type tuple. If two arms' type-parameter lists can be simultaneously unified under some substitution θ (i.e., they overlap), the instance declaration is rejected at declaration time with a "overlapping instance arms" error. Instance dispatch is therefore **always unambiguous** — for any ground type tuple at most one arm matches. There is no first-match semantics and no ordering among arms.
 
-  Examples: `[pattern [a@Int b@Int c@Int]]` and `[pattern [a@Int b@Float c@Float]]` are disjoint (no θ unifies them). `[pattern [a@Int b@t1 c@t2]]` and `[pattern [a@Int b@Int c@t3]]` overlap (`θ = {t1=Int, t2=t3}`) and are rejected. `[pattern [a@Int b@t1 c@t2]]` and `[pattern [a@Float b@t1 c@t2]]` are disjoint.
+  Examples: `[pattern [a@Integer b@Integer c@Integer]]` and `[pattern [a@Integer b@Float c@Float]]` are disjoint (no θ unifies them). `[pattern [a@Integer b@t1 c@t2]]` and `[pattern [a@Integer b@Integer c@t3]]` overlap (`θ = {t1=Int, t2=t3}`) and are rejected. `[pattern [a@Integer b@t1 c@t2]]` and `[pattern [a@Float b@t1 c@t2]]` are disjoint.
 
   **Error message:** `"overlapping instance arms for class {ClassName}: arm [pattern [...]] at line {N} overlaps with arm [pattern [...]] at line {M} under substitution {θ}"` — the second arm's `[pattern ...]` span is primary; the first arm is secondary context.
 
@@ -533,7 +533,7 @@ At instance declaration time, every instance arm for a class must satisfy three 
 
   **Error message:** `"coverage violation in instance arm for class {ClassName}: variable {v} appears in determined position of FD ({determining}→{determined}) but not in any determining position"` — span on the offending arm's `[pattern ...]`.
 
-- **Consistency condition** (for classes with FDs, Jones 2000, Definitions 7–8): if two arms' determining positions unify under some substitution θ, their determined positions must also unify under θ. This guarantees improvement is confluent. Example: arms `[pattern [a@Int b@Int c@Int]]` and `[pattern [a@Int b@Int c@Float]]` violate consistency — both have determining positions `(Int, Int)` but different determined types `Int` vs `Float`. This is rejected at declaration time.
+- **Consistency condition** (for classes with FDs, Jones 2000, Definitions 7–8): if two arms' determining positions unify under some substitution θ, their determined positions must also unify under θ. This guarantees improvement is confluent. Example: arms `[pattern [a@Integer b@Integer c@Integer]]` and `[pattern [a@Integer b@Integer c@Float]]` violate consistency — both have determining positions `(Int, Int)` but different determined types `Int` vs `Float`. This is rejected at declaration time.
 
   Note: the consistency condition is independent of the disjointness condition. Two arms can be disjoint on their full type-parameter lists but their **determining** positions may still be unifiable — consistency checks only the determining positions.
 
@@ -683,12 +683,12 @@ Addable: [class [a b c]  [determines: [[[a b] c]]  resolver: AddResult]
 
 # Instances bundled in one form; each arm is a [pattern [...]]: method-dict pair.
 # For readability, name the implementation functions first:
-int-int-add:   [fn@Int   [x@Int   y@Int]   [builtin-add x y]]
-int-float-add: [fn@Float [x@Int   y@Float] [builtin-add x y]]
+int-int-add:   [fn@Integer   [x@Integer   y@Integer]   [builtin-add x y]]
+int-float-add: [fn@Float [x@Integer   y@Float] [builtin-add x y]]
 
 [instance Addable
-  [pattern [a@Int b@Int   c@Int  ]]: [+: int-int-add]
-  [pattern [a@Int b@Float c@Float]]: [+: int-float-add]]
+  [pattern [a@Integer b@Integer   c@Integer  ]]: [+: int-int-add]
+  [pattern [a@Integer b@Float c@Float]]: [+: int-float-add]]
 
 # Instances are anonymous — they register in the InstanceEnv and are selected
 # automatically by the constraint solver at every call site. The instance dictionary
@@ -766,8 +766,8 @@ Convert: [class [a b]  [determines: [[[a] b]  [[b] a]]  resolver: [ToStringResul
   parse: [fn@a [b]]]
 
 [instance Convert
-  [pattern [a@Int b@String]]: [show: [fn@String [x@Int] [int-to-str x]]
-                                parse: [fn@Int [s@String] [str-to-int s]]]]
+  [pattern [a@Integer b@String]]: [show: [fn@Stringing [x@Integer] [int-to-str x]]
+                                parse: [fn@Integer [s@String] [str-to-int s]]]]
 
 # Trivial: forward inference
 stringify: [fn@[bind: [a b]  return: b  constraint: [$Convert a b]]  [x@a]  [show x]]
@@ -805,7 +805,7 @@ DivMod: [class [a b q r]  [determines: [[[a b] [q r]]]  resolver: DivModResult]
   divmod: [fn@[record q: q  r: r] [a b]]]
 
 [instance DivMod
-  [pattern [a@Int b@Int q@Int r@Int]]: [divmod: [fn [x@Int y@Int]
+  [pattern [a@Integer b@Integer q@Integer r@Integer]]: [divmod: [fn [x@Integer y@Integer]
                         [quotient: [/ x y]  remainder: [% x y]]]]]
 
 # Trivial: both q and r inferred simultaneously
@@ -827,7 +827,7 @@ euclidean-gcd: [fn@[bind: [a]  return: a  constraint: [a: Numeric  [$DivMod a a 
 ```tinct
 # Trivial: union type in determining position
 # With distributes-over-union declared on Add class:
-[+ x@[or Int Float] y@Int]
+[+ x@[or Int Float] y@Integer]
 # distributes: Add(Int|Float, Int, c) →
 #   Add(Int, Int, Int) | Add(Float, Int, Float) → c = Int | Float
 
@@ -945,7 +945,7 @@ SafeAdd: [class [a b c]  [determines: [[[a b] c]]  resolver: NullableAddResult] 
   +?: [fn@c [a b]]]
 
 [instance SafeAdd
-  [pattern [a@Int b@Int c@[or Int Null]]]: [+?: [fn@[or Int Null] [x@Int y@Int]
+  [pattern [a@Integer b@Integer c@[or Int Null]]]: [+?: [fn@[or Int Null] [x@Integer y@Integer]
                               [if [> [+ x y] 1000000] [] [+ x y]]]]]
 
 result@[SafeAdd Int Int]   # → or(Int, Null)
@@ -964,7 +964,7 @@ Zip: [class [a b c]  [determines: [[[a b] c]]  resolver: ZipResult]
   zip: [fn@[Seq c] [[Seq a] [Seq b]]]]
 
 [instance Zip
-  [pattern [a@Int b@String c@[record left: Int  right: String]]]:
+  [pattern [a@Integer b@String c@[record left: Int  right: String]]]:
     [zip: [fn [xs@[Seq Int]  ys@[Seq String]]
             [map [fn [pair] [left: [first pair]  right: [second pair]]]
                  [zip-lists xs ys]]]]]
@@ -1051,7 +1051,7 @@ typed-sum: [fn@[bind: [a b c]  return: c
 # You cannot [describe AddIntInt] because AddIntInt doesn't exist as a binding
 
 # Check if a value's type satisfies an Add relationship
-check-addable: [fn@Bool [x y]
+check-addable: [fn@Boolean [x y]
   [and [int? x] [float? y]]]   # runtime predicate — type system cannot check at this level
 # Note: the Add class constraint is static; is: predicates provide runtime validation
 
@@ -1083,37 +1083,37 @@ All tinct typeclass infrastructure in final form. Resolver functions in `--- sta
 # ── Single-parameter classes ──────────────────────────────────────────────
 
 Equatable: [class [a]
-  eq?: [fn@Bool [a a]]]
+  eq?: [fn@Boolean [a a]]]
 
 [instance Equatable
-  [pattern [a@Int  ]]: [eq?: [fn@Bool [x@Int   y@Int  ] [builtin-eq x y]]]
-  [pattern [a@Float]]: [eq?: [fn@Bool [x@Float y@Float] [builtin-eq x y]]]
-  [pattern [a@Str  ]]: [eq?: [fn@Bool [x@Str   y@Str  ] [builtin-eq x y]]]
-  [pattern [a@Bool ]]: [eq?: [fn@Bool [x@Bool  y@Bool ] [builtin-eq x y]]]
-  [pattern [a@Null ]]: [eq?: [fn@Bool [x@Null  y@Null ] true]]]
+  [pattern [a@Integer  ]]: [eq?: [fn@Boolean [x@Integer   y@Integer  ] [builtin-eq x y]]]
+  [pattern [a@Float]]: [eq?: [fn@Boolean [x@Float y@Float] [builtin-eq x y]]]
+  [pattern [a@String  ]]: [eq?: [fn@Boolean [x@String   y@String  ] [builtin-eq x y]]]
+  [pattern [a@Boolean ]]: [eq?: [fn@Boolean [x@Boolean  y@Boolean ] [builtin-eq x y]]]
+  [pattern [a@Null ]]: [eq?: [fn@Boolean [x@Null  y@Null ] true]]]
 
 Comparable: [class [a]  [superclasses: [Equatable]]
-  lt?: [fn@Bool [a a]]]
+  lt?: [fn@Boolean [a a]]]
 
 [instance Comparable
-  [pattern [a@Int  ]]: [lt?: [fn@Bool [x@Int   y@Int  ] [builtin-lt x y]]]
-  [pattern [a@Float]]: [lt?: [fn@Bool [x@Float y@Float] [builtin-lt x y]]]
-  [pattern [a@Str  ]]: [lt?: [fn@Bool [x@Str   y@Str  ] [builtin-lt x y]]]]
+  [pattern [a@Integer  ]]: [lt?: [fn@Boolean [x@Integer   y@Integer  ] [builtin-lt x y]]]
+  [pattern [a@Float]]: [lt?: [fn@Boolean [x@Float y@Float] [builtin-lt x y]]]
+  [pattern [a@String  ]]: [lt?: [fn@Boolean [x@String   y@String  ] [builtin-lt x y]]]]
 
 Showable: [class [a]
-  str: [fn@String [a]]]
+  str: [fn@Stringing [a]]]
 
 [instance Showable
-  [pattern [a@Int  ]]: [str: [fn@String [x@Int  ] [builtin-int-to-str x]]]
-  [pattern [a@Float]]: [str: [fn@String [x@Float] [builtin-float-to-str x]]]
-  [pattern [a@Str  ]]: [str: [fn@String [x@Str  ] x]]
-  [pattern [a@Bool ]]: [str: [fn@String [x@Bool ] [if x "true" "false"]]]
-  [pattern [a@Null ]]: [str: [fn@String [_      ] "null"]]]
+  [pattern [a@Integer  ]]: [str: [fn@Stringing [x@Integer  ] [builtin-int-to-str x]]]
+  [pattern [a@Float]]: [str: [fn@Stringing [x@Float] [builtin-float-to-str x]]]
+  [pattern [a@String  ]]: [str: [fn@Stringing [x@String  ] x]]
+  [pattern [a@Boolean ]]: [str: [fn@Stringing [x@Boolean ] [if x "true" "false"]]]
+  [pattern [a@Null ]]: [str: [fn@Stringing [_      ] "null"]]]
 
 Numeric: [class [a]  [superclasses: [Comparable  Showable]]]
   # No additional methods — marks a type as numeric for arithmetic constraints
 
-[instance Numeric  [pattern [a@Int]]: []  [pattern [a@Float]]: []]
+[instance Numeric  [pattern [a@Integer]]: []  [pattern [a@Float]]: []]
 # Number is a BAS union alias (Int | Float), not a concrete type.
 # Class instances are for concrete types — Number participates via BAS
 # width subtyping when Int or Float resolves at the call site.
@@ -1124,8 +1124,8 @@ Appendable: [class [a]
   empty:  [fn@a []]]
 
 [instance Appendable
-  [pattern [a@Str      ]]: [concat: [fn@Str     [x@Str     y@Str    ] [builtin-str-concat x y]]
-                            empty:  [fn@Str     []                     ""]]
+  [pattern [a@String      ]]: [concat: [fn@String     [x@String     y@String    ] [builtin-str-concat x y]]
+                            empty:  [fn@String     []                     ""]]
   [pattern [a@[Seq elem]]]: [concat: [fn@[Seq elem] [xs@[Seq elem] ys@[Seq elem]] [builtin-seq-concat xs ys]]
                              empty:  [fn@[Seq elem] []                             []]]
   [pattern [a@[Map k v]]]: [concat: [fn@[Map k v] [x@[Map k v] y@[Map k v]] [merge x y]]
@@ -1137,37 +1137,37 @@ Addable: [class [a b c]  [determines: [[[a b] c]]  resolver: AddResult]
   +: [fn@c [a b]]]
 
 [instance Addable
-  [pattern [a@Int   b@Int   c@Int  ]]: [+: [fn@Int   [x@Int   y@Int  ] [builtin-add x y]]]
+  [pattern [a@Integer   b@Integer   c@Integer  ]]: [+: [fn@Integer   [x@Integer   y@Integer  ] [builtin-add x y]]]
   [pattern [a@Float b@Float c@Float]]: [+: [fn@Float [x@Float y@Float] [builtin-add x y]]]
-  [pattern [a@Int   b@Float c@Float]]: [+: [fn@Float [x@Int   y@Float] [builtin-add x y]]]
-  [pattern [a@Float b@Int   c@Float]]: [+: [fn@Float [x@Float y@Int  ] [builtin-add x y]]]]
+  [pattern [a@Integer   b@Float c@Float]]: [+: [fn@Float [x@Integer   y@Float] [builtin-add x y]]]
+  [pattern [a@Float b@Integer   c@Float]]: [+: [fn@Float [x@Float y@Integer  ] [builtin-add x y]]]]
 
 Subtractable: [class [a b c]  [determines: [[[a b] c]]  resolver: SubResult]
   -: [fn@c [a b]]]
 
 [instance Subtractable
-  [pattern [a@Int   b@Int   c@Int  ]]: [-: [fn@Int   [x@Int   y@Int  ] [builtin-sub x y]]]
+  [pattern [a@Integer   b@Integer   c@Integer  ]]: [-: [fn@Integer   [x@Integer   y@Integer  ] [builtin-sub x y]]]
   [pattern [a@Float b@Float c@Float]]: [-: [fn@Float [x@Float y@Float] [builtin-sub x y]]]
-  [pattern [a@Int   b@Float c@Float]]: [-: [fn@Float [x@Int   y@Float] [builtin-sub x y]]]
-  [pattern [a@Float b@Int   c@Float]]: [-: [fn@Float [x@Float y@Int  ] [builtin-sub x y]]]]
+  [pattern [a@Integer   b@Float c@Float]]: [-: [fn@Float [x@Integer   y@Float] [builtin-sub x y]]]
+  [pattern [a@Float b@Integer   c@Float]]: [-: [fn@Float [x@Float y@Integer  ] [builtin-sub x y]]]]
 
 Multipliable: [class [a b c]  [determines: [[[a b] c]]  resolver: MulResult]
   *: [fn@c [a b]]]
 
 [instance Multipliable
-  [pattern [a@Int   b@Int   c@Int  ]]: [*: [fn@Int   [x@Int   y@Int  ] [builtin-mul x y]]]
+  [pattern [a@Integer   b@Integer   c@Integer  ]]: [*: [fn@Integer   [x@Integer   y@Integer  ] [builtin-mul x y]]]
   [pattern [a@Float b@Float c@Float]]: [*: [fn@Float [x@Float y@Float] [builtin-mul x y]]]
-  [pattern [a@Int   b@Float c@Float]]: [*: [fn@Float [x@Int   y@Float] [builtin-mul x y]]]
-  [pattern [a@Float b@Int   c@Float]]: [*: [fn@Float [x@Float y@Int  ] [builtin-mul x y]]]]
+  [pattern [a@Integer   b@Float c@Float]]: [*: [fn@Float [x@Integer   y@Float] [builtin-mul x y]]]
+  [pattern [a@Float b@Integer   c@Float]]: [*: [fn@Float [x@Float y@Integer  ] [builtin-mul x y]]]]
 
 Divisible: [class [a b c]  [determines: [[[a b] c]]  resolver: DivResult]
   /: [fn@c [a b]]]
 
 [instance Divisible
-  [pattern [a@Int   b@Int   c@Float]]: [/: [fn@Float [x@Int   y@Int  ] [builtin-div x y]]]
+  [pattern [a@Integer   b@Integer   c@Float]]: [/: [fn@Float [x@Integer   y@Integer  ] [builtin-div x y]]]
   [pattern [a@Float b@Float c@Float]]: [/: [fn@Float [x@Float y@Float] [builtin-div x y]]]
-  [pattern [a@Int   b@Float c@Float]]: [/: [fn@Float [x@Int   y@Float] [builtin-div x y]]]
-  [pattern [a@Float b@Int   c@Float]]: [/: [fn@Float [x@Float y@Int  ] [builtin-div x y]]]]
+  [pattern [a@Integer   b@Float c@Float]]: [/: [fn@Float [x@Integer   y@Float] [builtin-div x y]]]
+  [pattern [a@Float b@Integer   c@Float]]: [/: [fn@Float [x@Float y@Integer  ] [builtin-div x y]]]]
 
 # ── Higher-kinded classes (f@Operator) ────────────────────────────────────
 
@@ -1360,7 +1360,7 @@ StackFrame::PatternDecl {
 **Parsing sequence:**
 
 1. `[pattern` → push `StackFrame::PatternDecl { bindings: [] }`
-2. The following `[...]` bracket opens a standard Dict frame producing `Expr::Annotated` nodes (via the existing `ImmediateAt` mechanism — `a@Int`, `a@[Seq elem]`, etc. are parsed as annotated identifiers). This is NOT the same path as `StackFrame::Fn` params, which uses the eager synchronous `parse_param_list()` function before the frame is pushed. `PatternDecl` uses the iterative frame protocol; `push_expr_to_parent` for the frame converts the `Expr::Annotated` nodes into `bindings: Vec<Spanned<Expr>>`.
+2. The following `[...]` bracket opens a standard Dict frame producing `Expr::Annotated` nodes (via the existing `ImmediateAt` mechanism — `a@Integer`, `a@[Seq elem]`, etc. are parsed as annotated identifiers). This is NOT the same path as `StackFrame::Fn` params, which uses the eager synchronous `parse_param_list()` function before the frame is pushed. `PatternDecl` uses the iterative frame protocol; `push_expr_to_parent` for the frame converts the `Expr::Annotated` nodes into `bindings: Vec<Spanned<Expr>>`.
 3. Inner brackets within annotations (`a@[Seq elem]`, `c@[or Int Null]`) are parsed recursively as composite type expressions using the same annotation bracket rules already implemented
 4. No body expression is collected (unlike `Fn`)
 5. `]` closes → `Expr::PatternDecl { bindings }` — a complete expression that can serve as a dict key

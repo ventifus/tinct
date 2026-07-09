@@ -13,7 +13,7 @@ tinct has simple type aliases via `[type ...]`:
 [
   Person: [type [name: String  age: Number]]
   Mapper: [type [Fn@b [a]]]
-  Predicate: [type [Fn@Bool [a]]]
+  Predicate: [type [Fn@Boolean [a]]]
 ]
 ```
 

@@ -23,7 +23,7 @@
 
   # state: 0=init 1=\r 2=\r\n 3=\r\n\r 4=done
   read-until-sep: [fn@[bind: [h]  constraint: [h: ByteStream]]
-                    [let h@h acc@[Seq Bytes] state@Int]
+                    [let h@h acc@[Seq Bytes] state@Integer]
     [b:    [read h 1]]
     [byte: [get b 0]]
     [next: [match [state byte]
@@ -60,7 +60,7 @@
            headers: headers
            body:    [if [> body-len 0] [read h body-len] []]]]]]
 
-  status->text: [fn [let n@Int]
+  status->text: [fn [let n@Integer]
     [match n
       200: "OK"           201: "Created"        204: "No Content"
       206: "Partial Content"

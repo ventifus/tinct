@@ -142,20 +142,20 @@
     [ARecord      addr@IpAddress.Ipv4  ttl@Duration]   # wire bytes ARE the Ipv4 address; no conversion
     [AAAARecord   addr@IpAddress.Ipv6  ttl@Duration]   # wire bytes ARE the Ipv6 address; no conversion
     [CNameRecord  name@dnsName     ttl@Duration]        # canonical name (FQDN, often trailing ".")
-    [MxRecord     pref@Int  name@dnsName  ttl@Duration] # mail exchange hostname
+    [MxRecord     pref@Integer  name@dnsName  ttl@Duration] # mail exchange hostname
     [NsRecord     name@dnsName  ttl@Duration]           # authoritative nameserver hostname
     [TxtRecord    strings@[Seq Bytes]  ttl@Duration]    # arbitrary bytes — NOT DnsName
     [PtrRecord    name@dnsName  ttl@Duration]           # reverse-DNS target hostname
-    [SrvRecord    prio@Int  weight@Int  port@Int  target@dnsName  ttl@Duration]  # service target
-    [HttpsRecord  prio@Int  target@dnsName  params@svcParams  ttl@Duration]      # HTTPS TargetName
+    [SrvRecord    prio@Integer  weight@Integer  port@Integer  target@dnsName  ttl@Duration]  # service target
+    [HttpsRecord  prio@Integer  target@dnsName  params@svcParams  ttl@Duration]      # HTTPS TargetName
     [SoaRecord    mname@dnsName  rname@dnsName  serial@UInt32   # rname = email as DNS name
                   refresh@Duration  retry@Duration  expire@Duration  minimum@Duration  ttl@Duration]
-    [OptRecord    payload-size@Int          # EDNS UDP payload size (from OPT CLASS field)
-                  edns-rcode@Int            # extended RCODE upper 8 bits (from OPT TTL bits 31-24)
-                  version@Int               # EDNS version (from OPT TTL bits 23-16; must be 0)
-                  do@Bool                   # DNSSEC OK bit (from OPT TTL bit 15)
+    [OptRecord    payload-size@Integer          # EDNS UDP payload size (from OPT CLASS field)
+                  edns-rcode@Integer            # extended RCODE upper 8 bits (from OPT TTL bits 31-24)
+                  version@Integer               # EDNS version (from OPT TTL bits 23-16; must be 0)
+                  do@Boolean                   # DNSSEC OK bit (from OPT TTL bit 15)
                   options@[Map Int Bytes]]  # EDNS option code → data; use EdnsOption.Cookie.code etc.
-    [UnknownRecord  qtype@Int  data@Bytes  ttl@Duration]]
+    [UnknownRecord  qtype@Integer  data@Bytes  ttl@Duration]]
 
   # DSO (DNS Stateless Operations) TLV Type Codes — RFC 8490 + RFC 8765.
   # Used in DSO messages; EdnsOption.Llq (code 1) negotiates the DSO session.
@@ -472,7 +472,7 @@
 
   # edns-opt-bytes: generic EDNS option encoder. Produces the 4-byte header + data.
   # Used by all EDNS option encoders (cookie, NSID, ECS, etc.).
-  edns-opt-bytes: [fn [let code@Int data@Bytes]
+  edns-opt-bytes: [fn [let code@Integer data@Bytes]
     [concat
       [bytes ByteOrder.Network [@UInt16 code]]
       [bytes ByteOrder.Network [@UInt16 [length data]]]
@@ -505,7 +505,7 @@
   # Cookie flow: read ns cookie state → inject into q → send → update state from response.
   # BADCOOKIE (rcode 23): clear server cookie, retry once with fresh client+no-server cookie.
   dns-try-servers: [fn [let cap@NetCap servers@[Seq nameserver]
-                         q@dnsQuery remaining@Int timeout@Duration]
+                         q@dnsQuery remaining@Integer timeout@Duration]
     [if [= remaining 0]
       dnsError.ServerFailure
       [match servers
@@ -555,7 +555,7 @@
                     resp]]
             [Result.Error _]: [dns-try-servers cap rest q [- remaining 1] timeout]]]]]
 
-  candidate-names: [fn [let host@String search@[Seq String] ndots@Int]
+  candidate-names: [fn [let host@String search@[Seq String] ndots@Integer]
     [if [ends-with? "." host]
       [list host]
       [block
@@ -567,7 +567,7 @@
           [append [list absolute] searched]]]]]
 
   dns-query-with-retry: [fn [let cap@NetCap nameservers@[Seq Nameserver]
-                              q@DnsQuery attempts@Int rotate@Bool timeout@Duration]
+                              q@DnsQuery attempts@Integer rotate@Boolean timeout@Duration]
     [dns-try-servers cap [if rotate [rotate-list nameservers] nameservers]
                      q attempts timeout]]
 
@@ -650,7 +650,7 @@
   # Only follows CNAME records when the answer contains NO IPs — recursive resolvers
   # include final A/AAAA records alongside any CNAMEs, so this path fires only when
   # talking to an authoritative server that returned a bare CNAME.
-  extract-ips: [fn [let records@[Seq dnsRecord] qtype@dnsQtype cap@NetCap depth@Int]
+  extract-ips: [fn [let records@[Seq dnsRecord] qtype@dnsQtype cap@NetCap depth@Integer]
     [if [>= depth 8]
       [error "DNS: CNAME chain too long (max 8)"]
       [has-ips?: [any? [fn [let r]
@@ -695,7 +695,7 @@
   # table: DnsName → Int (byte offset in message where that name begins).
   # offset: current write position in the message (for registering new names).
   # Returns {bytes: Bytes  table: [Map DnsName Int]} with the updated table.
-  encode-dns-name-compressed: [fn [let name@dnsName offset@Int table@[Map dnsName Int]]
+  encode-dns-name-compressed: [fn [let name@dnsName offset@Integer table@[Map dnsName Int]]
     [labels: [filter [fn [let x] [not [null? x]]] name]]
     # Try each suffix (longest first) to find a compression pointer.
     [try-suffix: [fn [let i prefix-bytes prefix-offset]
@@ -725,14 +725,14 @@
 
   # Encode a name and return {bytes: Bytes  table: [Map DnsName Int]}.
   # Wrapper that handles the empty/root name case.
-  enc-name: [fn [let name@DnsName offset@Int table@[Map DnsName Int]]
+  enc-name: [fn [let name@DnsName offset@Integer table@[Map DnsName Int]]
     [if [or [= name ""] [= name "."]]
       [bytes: [0x00]  table: table]
       [encode-dns-name-compressed name offset table]]]
 
   # Helper: build wire RR header + rdata, threading compression table.
   # Returns {bytes: Bytes  table: [Map DnsName Int]}.
-  rr-wire-compressed: [fn [let rtype@Int ttl@Duration rdata@Bytes offset@Int table@[Map DnsName Int]]
+  rr-wire-compressed: [fn [let rtype@Integer ttl@Duration rdata@Bytes offset@Integer table@[Map DnsName Int]]
     # Owner name is "." (root) — single zero byte, no compression.
     [owner:   [0x00]]
     [header:  [concat owner
@@ -746,7 +746,7 @@
   # dnsRecord → {bytes: Bytes  table: [Map DnsName Int]} with name compression.
   # offset: where this RR starts in the message (for registering name offsets).
   # table:  compression table built up from previous RRs in the same message.
-  encode-rr-compressed: [fn [let r@dnsRecord offset@Int table@[Map DnsName Int]]
+  encode-rr-compressed: [fn [let r@dnsRecord offset@Integer table@[Map DnsName Int]]
     # rdata-base: byte offset where rdata starts (after 1-byte owner + 10-byte fixed header).
     [rdata-base: [+ offset 11]]
     [match r
@@ -849,7 +849,7 @@
   DnsQuery:     dnsQuery
   DnsResponse:  dnsResponse
   DnsQueryOpts: dnsQueryOpts   # options for resolve: class, rd, do, cd, ad, tcp, edns, bufsize, ignore-tc, nsid, client-subnet
-  ClientSubnet: clientSubnet   # ECS subnet: addr@IpAddress + prefix-len@Int (0=privacy)
+  ClientSubnet: clientSubnet   # ECS subnet: addr@IpAddress + prefix-len@Integer (0=privacy)
   EdnsOption:   ednsOption    # EDNS option codes (IANA registry); use .code, .description, .doc
   DnsDsoType:   dnsDsoType   # DSO TLV type codes (RFC 8490 + RFC 8765)
   ZonemdHash:   zonemdHash   # ZONEMD hash algorithm codes (RFC 8976): Sha384=1, Sha512=2
@@ -946,7 +946,7 @@
   # Pointer compression: byte 0xC0 = pointer; next byte gives offset in message.
   # Label: length byte + that many ASCII chars; 0x00 = root (end).
   # ptr-depth: follow at most 5 pointers to prevent infinite loops.
-  parse-dns-name: [fn [let b@Bytes offset@Int ptr-depth@Int]
+  parse-dns-name: [fn [let b@Bytes offset@Integer ptr-depth@Integer]
     [if [= ptr-depth 0]
       [name: ""  next: offset]   # pointer loop guard — return empty
       [if [>= offset [length b]]
@@ -973,7 +973,7 @@
 
   # RFC 1035 §4.1.3: parse RDATA for a given type, returning a dnsRecord.
   # b: full message (for name decompression); offset: start of RDATA; rdlength: length.
-  parse-dns-rdata: [fn [let b@Bytes offset@Int rdlength@Int qtype@Int ttl@Duration]
+  parse-dns-rdata: [fn [let b@Bytes offset@Integer rdlength@Integer qtype@Integer ttl@Duration]
     [data-end: [+ offset rdlength]]
     [match qtype
       1:  # A record — 4-byte IPv4 address (wire bytes are exactly IpAddress.Ipv4)
@@ -1064,7 +1064,7 @@
   # Parse N resource records starting at offset in b. Returns [records: [Seq dnsRecord] next: Int].
   # OPT pseudorecords (type 41, RFC 6891) are parsed here rather than in parse-dns-rdata
   # because they need rclass (UDP payload size) and the raw TTL (extended RCODE + flags).
-  parse-rrs: [fn [let b@Bytes offset@Int n@Int acc@[Seq dnsRecord]]
+  parse-rrs: [fn [let b@Bytes offset@Integer n@Integer acc@[Seq dnsRecord]]
     [if [= n 0]
       [records: acc  next: offset]
       [block
@@ -1170,7 +1170,7 @@
 
   # Encode all records in one section, threading the compression table and offset.
   # Returns {bytes: Bytes  offset: Int  table: [Map DnsName Int]}.
-  encode-section: [fn [let records offset@Int table@[Map DnsName Int]]
+  encode-section: [fn [let records offset@Integer table@[Map DnsName Int]]
     [reduce [fn [let acc r]
       [result: [encode-rr-compressed r acc.offset acc.table]]
       [offset: [+ acc.offset [length result.bytes]]
@@ -1395,7 +1395,7 @@
 #             pointers; the encoded bytes are self-contained and decode correctly with msg=rr-bytes.
 [instance Codec
   [let a@DnsRecordCodec b@dnsRecord c@Bytes]: [encode: [fn [let _ r] [encode-rr r]]   # encode-rr uses encode-rr-compressed offset=0 table=[]
-                                               decode: [fn [let codec rr-bytes@Bytes offset@Int]
+                                               decode: [fn [let codec rr-bytes@Bytes offset@Integer]
                                                  [frame: [slice rr-bytes offset [length rr-bytes]]]
                                                  [msg:     [if [empty? codec.msg] frame codec.msg]]
                                                  [name-res: [parse-dns-name msg 0 5]]

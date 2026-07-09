@@ -615,7 +615,7 @@ pub enum ArityBound {
 **Variant design principles:**
 
 - **One variant per user-distinguishable error class.** If two errors should produce different suggestions, they get different variants. If they differ only in wording, they share a variant with a field.
-- **`TypeMismatch` vs `TypeAssertFailed`:** `TypeMismatch` is an evaluator/builtin dispatch error ("merge got the wrong type"). `TypeAssertFailed` is a user-written runtime type guard failure (`[@Int "hello"]`). Different error class, different suggestions, different error code. `ThunkState::Guarded` validation (§TypeAssert Runtime Validation) produces `TypeAssertFailed` for guard failures.
+- **`TypeMismatch` vs `TypeAssertFailed`:** `TypeMismatch` is an evaluator/builtin dispatch error ("merge got the wrong type"). `TypeAssertFailed` is a user-written runtime type guard failure (`[@Integer "hello"]`). Different error class, different suggestions, different error code. `ThunkState::Guarded` validation (§TypeAssert Runtime Validation) produces `TypeAssertFailed` for guard failures.
 - **`context: Option<String>` in `TypeMismatch`** carries the builtin name when the mismatch originates from a builtin (e.g., `"merge"` in `"merge: expected Dict, got Int"`). `None` for generic type mismatches from the evaluator. The `expected` field is human-readable, not machine-parseable — it may contain compound descriptions like `"Dict or Seq"`. Programmatic matching on expected types is not supported; use the error code and `context` field instead.
 - **`DivisionByZero` carries `op`** to preserve the operator prefix in Display output (e.g., `"/: division by zero"`). This maintains `try` message compatibility and future-proofs for additional division operators.
 - **`FloatNotFinite`** covers NaN, Infinity, and -Infinity — all non-finite `f64` values. Named `NotFinite` rather than `OutOfRange` because NaN is not a range concept.
@@ -1132,8 +1132,8 @@ Operations fail in predictable, distinguishable ways. `try` is for exceptional a
 FooError: [type
   [NotFound   key@String]
   [Forbidden  reason@String]
-  [Timeout    after@Int]
-  [BadFormat  offset@Int]]
+  [Timeout    after@Integer]
+  [BadFormat  offset@Integer]]
 
 # Return it alongside success values
 do-thing: [fn@[or FooResult FooError] [let input]

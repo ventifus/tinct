@@ -290,7 +290,7 @@ pub(crate) fn apply_narrowings(
 
                 // Create a record type with at least the given key
                 let mut fields: indexmap::IndexMap<String, Type> = indexmap::IndexMap::new();
-                let fresh_type_var = state.fresh_type_var();
+                let fresh_type_var = state.fresh_type_var(&crate::rust_span!());
                 fields.insert(key.clone(), fresh_type_var);
 
                 // BAS: all tails are Empty. Merge existing record fields if present.
@@ -640,10 +640,10 @@ fn resolve_annotation_sync(ann: &crate::ast::Spanned<Annotation>, state: &mut In
                         return resolve_name(name);
                     }
                     // Complex type expression (e.g., [List a]) — fall back to fresh TypeVar
-                    return state.fresh_type_var();
+                    return state.fresh_type_var(&ann.span);
                 }
             }
-            state.fresh_type_var()
+            state.fresh_type_var(&ann.span)
         }
         Annotation::Annotated(name, _) => resolve_name(name),
     }
@@ -695,7 +695,7 @@ pub(crate) fn extract_binding_types(
                 }
             } else {
                 // Named-key dict: single compound type (structural/record type)
-                types.push(state.fresh_type_var());
+                types.push(state.fresh_type_var(&binding.span));
             }
         }
         // Inner binding bracket [let a@Int b@Float] (new unified-bindings syntax)
@@ -737,7 +737,7 @@ pub(crate) fn extract_binding_types(
         // - T016 coverage violations are still correctly detected (TypeVars in determined
         //   positions that don't appear in determining positions still trigger T016)
         SurfaceExpression::VarRef { .. } => {
-            types.push(state.fresh_type_var());
+            types.push(state.fresh_type_var(&binding.span));
         }
         // Gradual: wildcard placeholder
         SurfaceExpression::Placeholder => {
@@ -772,11 +772,9 @@ pub(crate) fn patterns_overlap(
     let saved_constraints = state.constraints.clone();
     let saved_kind_env = state.kind_env.clone();
     let saved_deferred = state.deferred_equalities.clone();
-    // Also save subst and name_counter: improve_functional_dependency writes directly to
-    // state.subst (via std::mem::take/replace) rather than through temp_subst, and
-    // resolve_instance may call fresh_type_var() incrementing name_counter.
+    // Also save subst: improve_functional_dependency writes directly to
+    // state.subst (via std::mem::take/replace) rather than through temp_subst.
     let saved_subst = state.subst.clone();
-    let saved_name_counter = state.name_counter;
 
     // Use a temporary substitution so state.subst is also unaffected.
     let _temp_subst = state.subst.clone();
@@ -797,7 +795,6 @@ pub(crate) fn patterns_overlap(
     state.kind_env = saved_kind_env;
     state.deferred_equalities = saved_deferred;
     state.subst = saved_subst;
-    state.name_counter = saved_name_counter;
 
     Ok(overlaps)
 }
@@ -833,7 +830,6 @@ pub(crate) fn types_can_unify(
     let saved_kind_env = state.kind_env.clone();
     let saved_deferred = state.deferred_equalities.clone();
     let saved_subst = state.subst.clone();
-    let saved_name_counter = state.name_counter;
 
     // Use a temporary substitution for the probe.
     // Note: this probe uses a separate temp_subst; constraint checking via
@@ -851,7 +847,6 @@ pub(crate) fn types_can_unify(
     state.kind_env = saved_kind_env;
     state.deferred_equalities = saved_deferred;
     state.subst = saved_subst;
-    state.name_counter = saved_name_counter;
 
     Ok(can_unify)
 }

@@ -84,11 +84,11 @@ Labels are introduced at system boundaries — places where data crosses from th
 
 ```tinct
 # Network input (lib-net-v3)
-read-bytes:    [Fn [h@Handle n@Int] [Tainted Bytes]]
+read-bytes:    [Fn [h@Handle n@Integer] [Tainted Bytes]]
 recv-datagram: [Fn [sock@UdpSocket] [Tainted UdpDatagram]]
 
 # Cryptographic key material
-crypto-random: [Fn [len@Int] [Secret Bytes]]    # random bytes are sensitive
+crypto-random: [Fn [len@Integer] [Secret Bytes]]    # random bytes are sensitive
 x25519-keypair: [Fn [] [private: [Secret [Bytes 32]]  public: [Bytes 32]]]
                 #           ^^^^ private key is Secret; public key is not
 

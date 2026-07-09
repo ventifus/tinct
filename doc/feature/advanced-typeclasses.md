@@ -54,11 +54,11 @@ deep-eq: [fn@[return: Bool  constraint: [a: Equatable]] [x@a y@a]
 
 ```tinct
 # Int | Str is Equatable (both Int and Str are Equatable)
-compare: [fn@[return: Bool  constraint: [a: Equatable]] [x@[Int Str] y@[Int Str]]
+compare: [fn@[return: Bool  constraint: [a: Equatable]] [x@[or Int Str] y@[or Int Str]]
   [= x y]]
 
 # Int | Fn is NOT Equatable (Fn is not Equatable)
-bad: [fn@[return: Bool  constraint: [a: Equatable]] [x@[Int Fn] y@[Int Fn]]
+bad: [fn@[return: Bool  constraint: [a: Equatable]] [x@[or Int Fn] y@[or Int Fn]]
   [= x y]]   # type error
 ```
 
@@ -71,7 +71,7 @@ A user-defined type participates in `=`, `<`, `str`, and arithmetic by declaring
 ### Equatable and Comparable
 
 ```tinct
-[type Priority [level@Int]]
+[type Priority [level@Integer]]
 
 [EquatablePriority: [instance [Equatable Priority]
   [=:   [fn [a b] [= a.level b.level]]]
@@ -96,7 +96,7 @@ p2: [Priority 3]
 ### Castable (replaces Showable)
 
 ```tinct
-[type Color [r@Int g@Int b@Int]]
+[type Color [r@Integer g@Integer b@Integer]]
 
 [instance Castable [let target@String source@Color]
   [cast: [fn [let c] [str-parts "rgb(" [@String [cast c.r]] "," [@String [cast c.g]] "," [@String [cast c.b]] ")"]]]]
@@ -111,7 +111,7 @@ red: [Color 255 0 0]
 A user-defined numeric type participates in arithmetic by declaring `Add`/`Sub`/`Mul`/`Div` instances:
 
 ```tinct
-[type Decimal [value@Str]]   # exact decimal represented as string
+[type Decimal [value@String]]   # exact decimal represented as string
 
 [AddDecimal: [instance [Add Decimal Decimal Decimal]
   [+: decimal-add]

@@ -11,13 +11,13 @@ What would it take to make tinct values carry their full annotation metadata at 
 Every function value carries its complete annotation metadata alongside its body and closure. `@[doc: "..."]`, `@[return: Type]`, `@[constraint: ...]`, and parameter annotations are not discarded after type-checking — they are stored as a metadata dict on the function value and remain accessible at runtime.
 
 ```tinct
-add: [fn@[doc: "Add two numbers" return: Int] [a@Int b@Int] [+ a b]]
+add: [fn@[doc: "Add two numbers" return: Int] [a@Integer b@Integer] [+ a b]]
 
 [describe add]
 # → [doc:    "Add two numbers"
 #    return: "Int"
 #    params: [[name: "a"  annotation: "Int"] [name: "b"  annotation: "Int"]]
-#    sig:    "fn@Int [a@Int b@Int]"]
+#    sig:    "fn@Integer [a@Integer b@Integer]"]
 ```
 
 ### `ast-of : Any → Dict`
@@ -32,7 +32,7 @@ The single Rust primitive. Returns the AST dict for any value:
 **Annotation representation:** `ast-of` uses the existing `ast_to_dict` schema from `src/ast_dict.rs` — the same schema already used by the formatters and quasiquoting. Annotations have two shapes:
 
 ```tinct
-# Annotation::Simple — e.g. fn@Int, param@Str, @Bool
+# Annotation::Simple — e.g. fn@Integer, param@String, @Boolean
 [type: "annotation"  kind: "simple"  value: "Int"]
 
 # Annotation::PropertyDict — named entries, e.g. fn@[return: Int  doc: "..."]
@@ -46,7 +46,7 @@ The single Rust primitive. Returns the AST dict for any value:
   [type: "entry"  key: []  value: "Str"]]]
 
 # Annotation entry values that are compound expressions
-# (e.g. @[constraint: [a: Numeric]] or @[return: Seq@Int])
+# (e.g. @[constraint: [a: Numeric]] or @[return: Seq@Integer])
 # are recursively serialized as full AST dicts rather than debug strings.
 # This is the one fix applied to annotation_to_thunk_id in ast_dict.rs:
 #   before: _ => "<expr at N:M>"
@@ -107,7 +107,7 @@ annotation-to-str: [fn [ann]
             [if [null? ret] "" [annotation-value-str ret.value]]]]
       _: ""]]]
 
-# Build "fn@RetType [a@Int  b@Str]" from an ast-of result.
+# Build "fn@RetType [a@Integer  b@String]" from an ast-of result.
 # Note: function metadata dicts use "return-ann" key, not "annotation".
 sig-from-ast: [fn [ast]
   [ret:    [annotation-to-str [get-or ast "return-ann" null]]]
@@ -251,7 +251,7 @@ Parameter names come from `Value::Function.params` (already carry `Param.annotat
 ```text
 io — module (17 exports)
   read-file    fn@[Ok Str | Err Str] [DirCap Str]  "Read a file..."
-  write-file   fn@Null [DirCap Str Str]              "Write content to a file..."
+  write-file   fn@Null [DirCap String String]              "Write content to a file..."
   ...
 ```
 
@@ -321,8 +321,8 @@ The return type of `[include %libdir "io.llt"]` is currently `Unknown`. This sho
 [io: [include %libdir "io.llt"]]
 # io : Record([
 #   read-file:   Fn@[Ok Str | Err Str] [DirCap Str]
-#   write-file:  Fn@Null [DirCap Str Str]
-#   write-lines: Fn@Null [WriteHandle Seq@Str]
+#   write-file:  Fn@Null [DirCap String String]
+#   write-lines: Fn@Null [WriteHandle Seq@String]
 #   ...
 # ])
 ```
@@ -351,7 +351,7 @@ Once `include` returns a typed Record, enumerating a module's documented exports
 
 ```tinct
 [describe open]
-# → [sig: "fn@Handle [DirCap Str Str]"  type: "builtin"  module: "rust::io"]
+# → [sig: "fn@Handle [DirCap String String]"  type: "builtin"  module: "rust::io"]
 ```
 
 ---

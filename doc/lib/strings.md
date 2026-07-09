@@ -5,7 +5,7 @@
 Character at position n (0-based; negative counts from end). Raises error if out of bounds.
 
 ```tinct
-fn@String [let n@Int s@String]
+fn@String [let n@Integer s@String]
 ```
 
 ### `str-substr`
@@ -13,7 +13,7 @@ fn@String [let n@Int s@String]
 Extract substring starting at start with length len. Raises error if bounds are invalid.
 
 ```tinct
-fn@String [let start@Int len@Int s@String]
+fn@String [let start@Integer len@Integer s@String]
 ```
 
 ### `upper`

@@ -245,9 +245,9 @@ nfa-accepts: [fn [nfa s]
 [
   # NfaState — one state in the compiled NFA
   NfaState: [type [
-    # transitions: Dict keyed by char-code (Int); each value is Seq@Int of successor state ids.
+    # transitions: Dict keyed by char-code (Int); each value is Seq@Integer of successor state ids.
     # tinct's Dict type is not yet parameterized by key/value types — @Dict is the best
-    # available annotation. The runtime invariant is: every key is @Int, every value is @[Seq Int].
+    # available annotation. The runtime invariant is: every key is @Integer, every value is @[Seq Int].
     transitions: @Dict
     epsilon:     @[Seq Int]  # ε-transition targets (state ids; free moves)
     accept:      @Bool
@@ -260,7 +260,7 @@ nfa-accepts: [fn [nfa s]
   # NfaDict shape (for reference; access via payload, not directly):
   NfaDict: [type [
     states: @[Seq NfaState]
-    start:  @Int
+    start:  @Integer
     # groups: Dict keyed by group-id (Int); each value is @String name ("" for unnamed).
     # Not parameterizable in current type system — @Dict with runtime invariant documented here.
     groups: @Dict
@@ -269,8 +269,8 @@ nfa-accepts: [fn [nfa s]
   # MatchResult — return type of re-find / re-findall elements
   MatchResult: [type [
     match: @String   # matched substring
-    start: @Int      # character offset of match start in haystack
-    end:   @Int      # character offset of match end (exclusive)
+    start: @Integer      # character offset of match start in haystack
+    end:   @Integer      # character offset of match end (exclusive)
     # ... additional @String fields: one per named capture group
   ]]
 ]
@@ -404,7 +404,7 @@ a name.
 ```tinct
 re-compile : [fn@Pattern              [pattern@String]]
 
-re-match   : [fn@Bool                 [pattern@[String Pattern]  s@String]]
+re-match   : [fn@Boolean                 [pattern@[String Pattern]  s@String]]
 
 re-find    : [fn@[MatchResult Dict]   # Dict = [] (empty dict) on no match
                [pattern@[String Pattern]  s@String]]

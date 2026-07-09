@@ -82,7 +82,7 @@ process-all: [fn [hosts@Hosts] [map do-work hosts]]
 
 # Map with explicit key type — string-keyed lookup table
 Scoreboard: [type [Map String Int]]
-lookup: [fn@Int [s@Scoreboard  key@String] [get-or key 0 s]]
+lookup: [fn@Integer [s@Scoreboard  key@String] [get-or key 0 s]]
 
 # Inline forms
 hosts@[Map Any T1]                                # collection of T1 values (key: Any)
@@ -380,7 +380,7 @@ Tinct has a fixed set of runtime value types. The following table lists all type
 ```tinct
 port: 8080                      # Int — no decimal point
 pi: 3.14                        # Float — has decimal point
-x@Int                           # must be an integer
+x@Integer                           # must be an integer
 y@Float                         # must be a float
 z@Number                        # accepts either
 === error

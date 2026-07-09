@@ -175,8 +175,8 @@ Both arm forms can appear in the same `[match]` expression.
 | Constructor | `[Result.Ok value]` | Matches nominal variant by qualified tag and binds payload |
 | Constructor (no binding) | `Color.Red:` | Matches unit constructor variant, no binding |
 | Constructor (no binding) | `[Tag]` | Matches any nominal variant with that tag, regardless of payload — equivalent to `[Tag _]` |
-| TypeAssert | `[@Int x]` | Matches if value has type `Int`, binds to `x` |
-| TypeAssert (bare) | `[@Int _]:` | Bare type assertion with wildcard binding — preferred form for type predicates |
+| TypeAssert | `[@Integer x]` | Matches if value has type `Int`, binds to `x` |
+| TypeAssert (bare) | `[@Integer _]:` | Bare type assertion with wildcard binding — preferred form for type predicates |
 
 ### Constructor Pattern Qualification
 
@@ -210,7 +210,7 @@ Pattern::TypeAssert { resolved_type: Type, inner: Option<Box<Spanned<Pattern>>> 
 Pattern::Constructor { tag: String, binding: Option<Box<Spanned<Pattern>>> }
 ```
 
-`inner: None` = bare type pattern (`Int:`, `Color.Red:`). `inner: Some(pat)` = type-guarded binding (`[@Int x]`).
+`inner: None` = bare type pattern (`Int:`, `Color.Red:`). `inner: Some(pat)` = type-guarded binding (`[@Integer x]`).
 
 The evaluator's `match_pattern` arm for `TypeAssert`:
 

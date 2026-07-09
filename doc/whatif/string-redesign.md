@@ -258,11 +258,11 @@ Utf8Graphemes: [type Utf8Graphemes]
 [class [let Indexed s k v]
   get:    [Fn@[or v Absent] [s k]]
   slice:  [Fn@s [s Int Int]]
-  length: [Fn@Int [s]]]
+  length: [Fn@Integer [s]]]
 
 # Bytes — O(1) byte access
 [instance Indexed
-  [let a@Bytes b@Int c@UInt8]: [get:    builtin-bytes-get
+  [let a@Bytes b@Integer c@UInt8]: [get:    builtin-bytes-get
                                  slice:  builtin-bytes-slice
                                  length: builtin-bytes-length]]
 
@@ -274,7 +274,7 @@ Utf8Graphemes: [type Utf8Graphemes]
 
 # List a = Map Int a — O(1) integer-keyed access
 [instance Indexed
-  [let a@[Map Int T] b@Int c@T]: [get:    builtin-dict-get
+  [let a@[Map Int T] b@Integer c@T]: [get:    builtin-dict-get
                                    slice:  builtin-dict-slice
                                    length: builtin-dict-length]]
 
@@ -556,7 +556,7 @@ The GCB state machine primitives (`gcb-property`, `gcb-boundary?`, `gcb-next-sta
 # Scan forward from start, decoding UTF-8 one code point at a time.
 # Stop at the first GCB boundary and return that byte offset.
 # Returns [length b] if no boundary found before end of buffer.
-gcb-cluster-end: [fn [let b@Bytes start@Int prev-prop state]
+gcb-cluster-end: [fn [let b@Bytes start@Integer prev-prop state]
   [n: [length b]]
   [scan: [fn [let offset prev-prop state]
     [if [>= offset n]

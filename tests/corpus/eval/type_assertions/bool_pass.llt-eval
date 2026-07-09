@@ -1,4 +1,4 @@
 # Structural TypeAssert: Bool annotation with Bool value passes
-[@Bool True]
+[@Boolean True]
 === out
 Variant(Boolean.True, Null)

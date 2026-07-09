@@ -5,7 +5,7 @@
 # Int because [if [= n 0] 1 [factorial [- n 1]]] returns Int in both branches
 # once the recursion bottoms out.
 [
-  factorial: [fn [let n@Int]
+  factorial: [fn [let n@Integer]
     [if [= n 0]
       1
       [factorial [- n 1]]

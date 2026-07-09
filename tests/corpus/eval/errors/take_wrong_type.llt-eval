@@ -4,10 +4,10 @@
 take: expected Dict or Seq, got String (defined at stdlib/prelude.llt:2481:57-2481:76)
   --> stdlib/prelude.llt:2481:57-2481:76
    |
-  2481 | take@[doc: "Take first n elements"]: [fn [let n@Int xs] [builtin-take n xs]]
+  2481 | take@[doc: "Take first n elements"]: [fn [let n@Integer xs] [builtin-take n xs]]
        |                                                         ^^^^^^^^^^^^^^^^^^^
   in [builtin-take ...] at stdlib/prelude.llt:2481:57-2481:76
    |
-  2481 | take@[doc: "Take first n elements"]: [fn [let n@Int xs] [builtin-take n xs]]
+  2481 | take@[doc: "Take first n elements"]: [fn [let n@Integer xs] [builtin-take n xs]]
        |                                                         ^^^^^^^^^^^^^^^^^^^
   in [take ...] at 1:1-1:17

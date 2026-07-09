@@ -158,12 +158,12 @@ Any pure-tinct function with this signature is a Layer. There is no Layer typecl
 
 # SOCKS5 proxy tunnel — pure tinct in protocols/socks5.llt
 # cap@NetCap is re-validated against the tunnel target to prevent SSRF
-[socks5-layer handle@Handle cap@NetCap host@String port@Int creds@[Dict Null]]
+[socks5-layer handle@Handle cap@NetCap host@String port@Integer creds@[or Dict Null]]
   → Handle@[... Stream]
 
 # HTTP CONNECT tunnel — pure tinct in net.llt
 # cap@NetCap is re-validated against the tunnel target to prevent SSRF
-[http-connect-layer handle@Handle cap@NetCap host@String port@Int headers@Dict]
+[http-connect-layer handle@Handle cap@NetCap host@String port@Integer headers@Dict]
   → Handle@[... Stream]
 ```
 
@@ -243,7 +243,7 @@ the ALPN negotiation, or a cleartext `Handle@[Stream]` for h2c:
 **`http-request`** is the uniform application-level call across HTTP/2 and HTTP/3 sessions:
 
 ```tinct
-http-request: [fn@Result [session method@String path@String headers@Dict body@[Bytes Null]]
+http-request: [fn@Result [session method@String path@String headers@Dict body@[or Bytes Null]]
   ...]
 # → {ok: {status: Int  headers: Dict  body: Bytes}} | {err: String}
 ```

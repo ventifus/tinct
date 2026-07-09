@@ -7,15 +7,15 @@
 # ── UTF-8 byte-class predicates ──────────────────────────────────────────────
 # Defined before the instances so they're visible to both encode and decode paths.
 [
-  ascii?:   [fn [let n@Int] [< n 0x80]]               # 0xxxxxxx: ASCII codepoint or 1-byte lead byte
-  bmp1-cp?: [fn [let cp@Int] [< cp 0x800]]            # U+0080-U+07FF: 2-byte encode range
-  bmp2-cp?: [fn [let cp@Int] [< cp 0x10000]]          # U+0800-U+FFFF: 3-byte encode range
-  utf8-2?:  [fn [let b@Int] [= [band b 0xE0] 0xC0]]  # 110xxxxx: 2-byte lead byte
-  utf8-3?:  [fn [let b@Int] [= [band b 0xF0] 0xE0]]  # 1110xxxx: 3-byte lead byte
+  ascii?:   [fn [let n@Integer] [< n 0x80]]               # 0xxxxxxx: ASCII codepoint or 1-byte lead byte
+  bmp1-cp?: [fn [let cp@Integer] [< cp 0x800]]            # U+0080-U+07FF: 2-byte encode range
+  bmp2-cp?: [fn [let cp@Integer] [< cp 0x10000]]          # U+0800-U+FFFF: 3-byte encode range
+  utf8-2?:  [fn [let b@Integer] [= [band b 0xE0] 0xC0]]  # 110xxxxx: 2-byte lead byte
+  utf8-3?:  [fn [let b@Integer] [= [band b 0xF0] 0xE0]]  # 1110xxxx: 3-byte lead byte
 
   # Encode one Unicode code point (Int) to UTF-8 Bytes.
   # Used by Utf8Graphemes.encode to re-encode each code point in a Grapheme = [Seq Int].
-  encode-cp: [fn [let cp@Int]
+  encode-cp: [fn [let cp@Integer]
     [match cp
       [ascii?]:   [bytes ByteOrder.Network [@UInt8 cp]]
       [bmp1-cp?]: [concat [bytes ByteOrder.Network [@UInt8 [bor 0xC0 [shr cp 6]]]]
@@ -37,7 +37,7 @@
 [instance@[bind: []] Codec
   [let c@Utf8Bytes input@UInt8 output@Bytes]:
   [encode:     [fn [let _ b@UInt8] [bytes ByteOrder.Network [@UInt8 b]]]
-   decode:     [fn [let _ buf@Bytes offset@Int
+   decode:     [fn [let _ buf@Bytes offset@Integer
                     handler@[type: [or [CodecInvalidHandler UInt8 Bytes] Absent]  default: Absent.Absent]]
      [value: [get buf offset]  next: [+ offset 1]]]   # handler never called; all bytes valid UInt8
    codec-name: [fn [let _] "utf-8-bytes"]]]
@@ -48,7 +48,7 @@
   [let c@Utf8Graphemes input@Grapheme output@Bytes]:
   [encode:     [fn [let _ g@Grapheme]
      [reduce [fn [let acc cp] [concat acc [encode-cp cp]]] [str-bytes ""] g]]
-   decode:     [fn [let _ buf@Bytes offset@Int
+   decode:     [fn [let _ buf@Bytes offset@Integer
                     handler@[type: [or [CodecInvalidHandler Grapheme Bytes] Absent]  default: Absent.Absent]]
      [h: [if [absent? handler] utf8-graphemes-strict handler]]
      [b0: [get buf offset]]
@@ -78,15 +78,15 @@
 # Instances reference their own defaults here; callers can pass any of these.
 [
   # Utf8Graphemes handlers
-  utf8-graphemes-strict: [fn@[CodecInvalidHandler Grapheme Bytes] [let _ offset@Int]
+  utf8-graphemes-strict: [fn@[CodecInvalidHandler Grapheme Bytes] [let _ offset@Integer]
     [raise [str "invalid UTF-8 byte at offset " [str offset]]]]
-  utf8-graphemes-lossy:  [fn@[CodecInvalidHandler Grapheme Bytes] [let _ offset@Int]
+  utf8-graphemes-lossy:  [fn@[CodecInvalidHandler Grapheme Bytes] [let _ offset@Integer]
     [value: [@Grapheme [0xFFFD]]  next: [+ offset 1]]]    # U+FFFD as [Seq Int] with one code point
 
   # String encoding handlers (UTF8, UTF16LE, Windows1252, etc.)
-  utf8-strict:        [fn@[CodecInvalidHandler String Bytes] [let _ offset@Int]
+  utf8-strict:        [fn@[CodecInvalidHandler String Bytes] [let _ offset@Integer]
     [raise [str "invalid encoding at byte offset " [str offset]]]]
-  utf8-lossy:         [fn@[CodecInvalidHandler String Bytes] [let _ offset@Int]
+  utf8-lossy:         [fn@[CodecInvalidHandler String Bytes] [let _ offset@Integer]
     [value: "\u{FFFD}"  next: [+ offset 1]]]       # U+FFFD as a string
 ]
 
@@ -98,7 +98,7 @@
 [instance@[bind: []] Codec
   [let c@UTF8 input@String output@Bytes]:
   [encode:     [fn [let _ s@String] [builtin-utf8-encode s]]
-   decode:     [fn [let _ b@Bytes offset@Int
+   decode:     [fn [let _ b@Bytes offset@Integer
                     handler@[type: [or [CodecInvalidHandler String Bytes] Absent]  default: Absent.Absent]]
      [h: [if [absent? handler] utf8-lossy handler]]
      [buf: [slice b offset [length b]]]
@@ -108,7 +108,7 @@
 [instance@[bind: []] Codec
   [let c@UTF16LE input@String output@Bytes]:
   [encode:     [fn [let _ s@String] [builtin-encoding-encode "utf-16le" s]]
-   decode:     [fn [let _ b@Bytes offset@Int
+   decode:     [fn [let _ b@Bytes offset@Integer
                     handler@[type: [or [CodecInvalidHandler String Bytes] Absent]  default: Absent.Absent]]
      [h: [if [absent? handler] utf8-lossy handler]]
      [buf: [slice b offset [length b]]]
@@ -118,7 +118,7 @@
 [instance@[bind: []] Codec
   [let c@Windows1252 input@String output@Bytes]:
   [encode:     [fn [let _ s@String] [builtin-encoding-encode "windows-1252" s]]
-   decode:     [fn [let _ b@Bytes offset@Int
+   decode:     [fn [let _ b@Bytes offset@Integer
                     handler@[type: [or [CodecInvalidHandler String Bytes] Absent]  default: Absent.Absent]]
      [h: [if [absent? handler] utf8-lossy handler]]
      [buf: [slice b offset [length b]]]
@@ -441,11 +441,11 @@
 
   # ── Grapheme break property classification ────────────────────────────────────
 
-  in-range?: [fn [let cp@Int lo@Int hi@Int] [and [>= cp lo] [<= cp hi]]]
+  in-range?: [fn [let cp@Integer lo@Integer hi@Integer] [and [>= cp lo] [<= cp hi]]]
 
   # Predicate patterns (T-1140): lowercase-head in pattern position evaluates with
   # subject appended last. [match cp [in-ranges? gcb-cr]: ...] → [in-ranges? gcb-cr cp]
-  gcb-property: [fn [let cp@Int]
+  gcb-property: [fn [let cp@Integer]
     [match cp
       [in-ranges? gcb-cr]:                                       "CR"
       [in-ranges? gcb-lf]:                                       "LF"
@@ -527,7 +527,7 @@
 
   # Decode one UTF-8 code point from bytes at offset.
   # Returns {value: Int  next: Int}.
-  utf8-decode-one: [fn [let b@Bytes offset@Int]
+  utf8-decode-one: [fn [let b@Bytes offset@Integer]
     [b0: [get b offset]]
     [match b0
       [ascii?]:  [value: b0                next: [+ offset 1]]
@@ -538,7 +538,7 @@
   # Scan forward from `cluster-start`, collecting code points belonging to one grapheme cluster.
   # Returns {end: Int} — the byte offset just after the cluster.
   # `prev-prop` and `state` are the property/state of the last seen code point.
-  gcb-cluster-end: [fn [let b@Bytes cluster-start@Int prev-prop@String state]
+  gcb-cluster-end: [fn [let b@Bytes cluster-start@Integer prev-prop@String state]
     [n: [length b]]
     [scan: [fn [let offset prev-prop state]
       [if [>= offset n]
@@ -701,21 +701,21 @@
   # ── Unicode property lookup helpers ──────────────────────────────────────────
 
   # Test if a code point falls in any of a list of [lo: hi:] ranges.
-  in-ranges?: [fn [let cp@Int ranges@[Seq [lo: Int  hi: Int]]]
+  in-ranges?: [fn [let cp@Integer ranges@[Seq [lo: Int  hi: Int]]]
     [any? [fn [let r] [and [>= cp r.lo] [<= cp r.hi]]] ranges]]
 
   # Test if cp has Bidi class R, AL, or AN (i.e. is right-to-left in IDNA sense).
-  bidi-rtl?: [fn [let cp@Int]
+  bidi-rtl?: [fn [let cp@Integer]
     [or [in-ranges? cp bidi-r-ranges]
         [in-ranges? cp bidi-al-ranges]
         [in-ranges? cp bidi-an-ranges]]]
 
   # Test if cp has joining type D, L, or R (not Transparent, not Non-joining).
-  has-joining-type-dlr?: [fn [let cp@Int]
+  has-joining-type-dlr?: [fn [let cp@Integer]
     [any? [fn [let r] [and [>= cp r.lo] [<= cp r.hi]]] joining-dlr-ranges]]
 
   # Test if cp is a Virama.
-  virama?: [fn [let cp@Int]
+  virama?: [fn [let cp@Integer]
     [any? [fn [let v] [= cp v]] virama-codepoints]]
 
   # ── IDNA2008 label validation ─────────────────────────────────────────────────
@@ -723,7 +723,7 @@
   # Validate ZWNJ (U+200C) context per RFC 5892 §A.1.
   # Valid after a Virama, or between joining characters (D/L/R) with at most
   # transparent characters in between.
-  valid-zwnj?: [fn [let cps@[Seq Int] pos@Int]
+  valid-zwnj?: [fn [let cps@[Seq Int] pos@Integer]
     # Rule 1: preceded by a Virama
     [prev: [if [> pos 0] [get cps [- pos 1]] 0]]
     [if [virama? prev]
@@ -782,11 +782,11 @@
   # Digit table: 0-25 → 'a'-'z', 26-35 → '0'-'9'
   punycode-digits: "abcdefghijklmnopqrstuvwxyz0123456789"
 
-  punycode-digit->char: [fn [let d@Int]
+  punycode-digit->char: [fn [let d@Integer]
     [str-slice punycode-digits d [+ d 1]]]
 
   # Bias adaptation function (RFC 3492 §6.1)
-  punycode-adapt: [fn [let delta@Int numpoints@Int firsttime@Bool]
+  punycode-adapt: [fn [let delta@Integer numpoints@Integer firsttime@Boolean]
     [d: [if firsttime [/ delta punycode-damp] [/ delta 2]]]
     [d: [+ d [/ d numpoints]]]
     # Find k: reduce d until small enough
@@ -798,7 +798,7 @@
     [+ k [/ [* [+ [- punycode-base punycode-tmin] 1] d] [+ d punycode-skew]]]]
 
   # Encode one delta value as a variable-length generalized integer (RFC 3492 §6.3)
-  punycode-encode-int: [fn [let q@Int bias@Int]
+  punycode-encode-int: [fn [let q@Integer bias@Integer]
     [step: [fn [let q k out]
       [t: [max punycode-tmin [min punycode-tmax [- k bias]]]]
       [if [< q t]
@@ -954,7 +954,7 @@
   #
   # grapheme?: true if cps is a non-empty [Seq Int] forming exactly one UAX#29 grapheme cluster.
   # Operates on code points (Ints) directly — encoding-agnostic, as UAX#29 requires.
-  grapheme?: [fn@Bool [let cps@[Seq Int]]
+  grapheme?: [fn@Boolean [let cps@[Seq Int]]
     [if [empty? cps] false
       [block
         [check: [fn [let remaining prev-prop state]

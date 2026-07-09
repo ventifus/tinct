@@ -14,7 +14,6 @@ use crate::ast::{Span, SurfaceExpression, SurfaceNode, SurfaceProgram};
 use crate::desugar;
 use crate::env::Env;
 use crate::parser;
-use crate::rust_span;
 use crate::typecheck::{typecheck_surface_program_with_env, TypeMap};
 use crate::types::{Row, Type};
 
@@ -35,152 +34,6 @@ thread_local! {
 
     /// Recursion guard for stdlib module env building (prevents re-entrant calls).
     static BUILDING_STDLIB_MODULE_ENV: RefCell<bool> = const { RefCell::new(false) };
-}
-
-thread_local! {
-    static PRELUDE_TYPE_STAGE_ENV_CACHE: RefCell<Option<Arc<std::sync::RwLock<crate::env::Env>>>> =
-        const { RefCell::new(None) };
-    static BUILDING_PRELUDE_TYPE_STAGE_ENV: RefCell<bool> = const { RefCell::new(false) };
-}
-
-/// Build and cache the prelude type-stage evaluation environment.
-///
-/// Evaluates the `--- stage: type` sections of prelude.llt using only core builtins.
-/// This env is used by type annotation evaluation (`@Int`, `@String`, custom type fns).
-///
-/// No circular dependency: does NOT call `build_core_env` or
-/// the type-stage docs are pure dict/fn (no macros needed).
-pub async fn get_prelude_type_stage_env() -> Option<Arc<std::sync::RwLock<crate::env::Env>>> {
-    let cached = PRELUDE_TYPE_STAGE_ENV_CACHE.with(|c| c.borrow().clone());
-    if let Some(env) = cached {
-        return Some(env);
-    }
-    let already_building = BUILDING_PRELUDE_TYPE_STAGE_ENV.with(|f| *f.borrow());
-    if already_building {
-        return None;
-    }
-    BUILDING_PRELUDE_TYPE_STAGE_ENV.with(|f| *f.borrow_mut() = true);
-    let result = build_prelude_type_stage_env_inner().await;
-    BUILDING_PRELUDE_TYPE_STAGE_ENV.with(|f| *f.borrow_mut() = false);
-    if let Some(ref env) = result {
-        PRELUDE_TYPE_STAGE_ENV_CACHE.with(|c| *c.borrow_mut() = Some(Arc::clone(env)));
-    }
-    result
-}
-
-async fn build_prelude_type_stage_env_inner() -> Option<Arc<std::sync::RwLock<crate::env::Env>>> {
-    use crate::ast::Stage;
-    use crate::env::Env as Environment;
-    use crate::value::{HashableValue, Thunk, Value};
-
-    // Bootstrap env: core builtins only — type-stage docs use only core_builtins() names.
-    let bootstrap_env = Arc::new(std::sync::RwLock::new(Environment::new()));
-    {
-        let mut env_write = bootstrap_env.write().unwrap();
-        for def in crate::builtins_core::core_builtins() {
-            let name = def.name.to_string();
-            let thunk = Arc::new(Thunk::new_materialized(Value::Builtin(def), rust_span!()));
-            env_write.insert_value(name, thunk);
-        }
-    }
-
-    // Parse prelude.llt (embedded at compile time — no libdir needed).
-    let source = include_str!("../stdlib/prelude.llt");
-    let sf = std::sync::Arc::new(crate::ast::SourceFile {
-        path: std::sync::Arc::from("stdlib/prelude.llt"),
-        content: std::sync::Arc::from(source),
-    });
-    let mut program = crate::parser::parse_with_file(source, sf).ok()?.program;
-
-    // No macro expansion: type-stage docs are pure dict/fn expressions (no begin, >>, tmpl).
-    // Expansion would require prelude already loaded (circular), so we skip it.
-
-    // Desugar and resolve (writes inline to AST nodes).
-    // Seeded from bootstrap_env so that core builtin names resolve to de Bruijn coords.
-    crate::desugar::desugar_surface_program(&mut program);
-    let _resolve_errors = crate::resolve::resolve_surface_program(&program, Some(&bootstrap_env));
-
-    // Build EvalContext backed by bootstrap_env.
-    #[allow(clippy::disallowed_methods)]
-    let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority()).ok()?;
-    let ctx = crate::eval::EvalContext::new_empty(base_dir, Arc::clone(&bootstrap_env), false);
-
-    let mut current_env = Arc::clone(&bootstrap_env);
-    let mut any_success = false;
-
-    for doc in &program.documents {
-        if doc.node.stage != Some(Stage::Type) {
-            continue;
-        }
-        let expr_nodes: Vec<std::sync::Arc<crate::ast::SurfaceNode>> =
-            doc.node.expressions().cloned().collect();
-        if expr_nodes.is_empty() {
-            continue;
-        }
-        let doc_env = Arc::new(std::sync::RwLock::new(Environment::with_parent(
-            Arc::clone(&current_env),
-        )));
-        let result_thunk =
-            match crate::eval::eval_document_exprs(&expr_nodes, Arc::clone(&doc_env), &ctx).await {
-                Ok(t) => t,
-                Err(e) => {
-                    // Type-stage doc evaluation must not silently swallow errors.
-                    // A failure here means prelude's type-stage section is broken.
-                    eprintln!("prelude type-stage eval error: {e}");
-                    return None;
-                }
-            };
-        let val = match crate::eval::materialize(&result_thunk, None, &ctx).await {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("prelude type-stage materialize error: {e}");
-                return None;
-            }
-        };
-        let dict = match val {
-            Value::Dict(map) => map,
-            Value::Overlay(l_id, r_id) => {
-                match crate::builtins::flatten_overlay(
-                    &l_id,
-                    &r_id,
-                    "prelude type-stage",
-                    &ctx,
-                    rust_span!(),
-                )
-                .await
-                {
-                    Ok(d) => d,
-                    Err(e) => {
-                        eprintln!("prelude type-stage overlay error: {e}");
-                        return None;
-                    }
-                }
-            }
-            _ => continue,
-        };
-        let next_env = Arc::new(std::sync::RwLock::new(Environment::with_parent(
-            Arc::clone(&current_env),
-        )));
-        {
-            let mut env_write = next_env.write().unwrap();
-            for (key, thunk_id) in &dict {
-                if let HashableValue::Str(name) = key {
-                    let thunk = ctx.get_thunk(*thunk_id);
-                    env_write.insert_value(name.to_string(), thunk);
-                    any_success = true;
-                }
-            }
-        }
-        current_env = next_env;
-    }
-
-    if any_success {
-        Some(current_env)
-    } else {
-        Some(Arc::new(std::sync::RwLock::new(Environment::with_parent(
-            bootstrap_env,
-        ))))
-    }
 }
 
 /// Retrieve the type environment exported by a stdlib module at `module_path`.
@@ -275,7 +128,8 @@ async fn build_stdlib_module_type_env_inner(module_path: &str) -> Option<Arc<RwL
         typecheck_surface_program_with_env(
             &program, parent_env, false, // enable_scheme_map
             None,  // resolver_seed_env: no runtime env available at bootstrap
-        );
+        )
+        .await;
 
     // `final_env` is the child Env containing parent bindings plus new declarations.
     Some(final_env)
@@ -358,7 +212,8 @@ async fn build_builtin_core_type_env_inner() -> Option<Arc<RwLock<Env>>> {
         typecheck_surface_program_with_env(
             &program, parent_env, false, // enable_scheme_map
             None,  // resolver_seed_env: no runtime env available at bootstrap
-        );
+        )
+        .await;
 
     // `final_env` is the child Env containing parent bindings plus new type declarations.
     Some(final_env)
@@ -794,7 +649,7 @@ async fn resolve_includes(
             _state,
             _final_env,
             _annot,
-        ) = typecheck_surface_program_with_env(&program, typecheck_env, false, None);
+        ) = typecheck_surface_program_with_env(&program, typecheck_env, false, None).await;
 
         // Stdlib includes are user code — their type errors are surfaced like any other.
         if !type_errors.is_empty() {

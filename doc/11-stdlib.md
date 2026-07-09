@@ -483,8 +483,8 @@ Functions primarily used internally by other stdlib functions, but also availabl
 |----------|-----------|-------------|
 | `join` | Rust native builtin — no LLT wrapper | Join values as strings with separator (O(n) string builder; dual-dispatch Dict/Seq) |
 | `words` | `[fn [s] ...]` | Split a string by spaces, filtering empty strings (returns Seq). Derived from `str`, `split`, and `filter`. |
-| `str-repeat` | `fn@Str [n@Int s@Str]` | Repeat string `s` exactly `n` times. Pure LLT implementation using `reduce` over `range` |
-| `str-find` | `fn@Int [needle@String haystack@String]` | Find first occurrence of `needle` in `haystack`; returns byte index or -1 if not found. Pure LLT implementation |
+| `str-repeat` | `fn@String [n@Integer s@String]` | Repeat string `s` exactly `n` times. Pure LLT implementation using `reduce` over `range` |
+| `str-find` | `fn@Integer [needle@String haystack@String]` | Find first occurrence of `needle` in `haystack`; returns byte index or -1 if not found. Pure LLT implementation |
 | `unindent` | `fn@String [s@String]` | Strip common leading indentation from multi-line string. Algorithm: last line (whitespace-only) determines indent depth; strips that many characters from each content line |
 
 **Control Flow:**
@@ -620,8 +620,8 @@ Functions primarily used internally by other stdlib functions, but also availabl
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `between` | `fn@Fn [lo hi]` | Predicate factory `lo hi → (v → Bool)` for inclusive range check |
-| `non-negative` | `fn@Bool [v]` | Predicate for `v >= 0` |
-| `positive` | `fn@Bool [v]` | Predicate for `v > 0` |
+| `non-negative` | `fn@Boolean [v]` | Predicate for `v >= 0` |
+| `positive` | `fn@Boolean [v]` | Predicate for `v > 0` |
 
 ## Typeclass Hierarchy
 
@@ -1466,21 +1466,21 @@ The `Maybe` type is declared in the prelude: `Maybe: [type [a] [Some a] | [None]
 
 | Function | Type signature | Notes |
 |----------|---------------|-------|
-| `not` | `(Any -> Bool)` | `fn@Bool [x]` — materializes x |
+| `not` | `(Any -> Bool)` | `fn@Boolean [x]` — materializes x |
 | `and` | `(Any -> a -> Union(a, Bool))` | `fn@[a Bool] [p b@a]` — short-circuit; returns `b` or `false` |
 | `or` | `(Any -> Any -> Any)` | `fn@Unknown [a b]` — short-circuit; returns `a` or `b` (args need not be same type) |
-| `any?` | `((a -> Bool) -> Dict a -> Bool)` | `fn@Bool [pred@Fn xs@Dict]` |
-| `all?` | `((a -> Bool) -> Dict a -> Bool)` | `fn@Bool [pred@Fn xs@Dict]` |
+| `any?` | `((a -> Bool) -> Dict a -> Bool)` | `fn@Boolean [pred@Fn xs@Dict]` |
+| `all?` | `((a -> Bool) -> Dict a -> Bool)` | `fn@Boolean [pred@Fn xs@Dict]` |
 
 ### Comparison
 
 | Function | Type signature | Notes |
 |----------|---------------|-------|
-| `<` | `(Comparable -> Comparable -> Bool)` | `fn@Bool [a b]` — shadowable wrapper over `builtin-lt` |
-| `=` | `(Comparable -> Comparable -> Bool)` | `fn@Bool [a b]` — shadowable wrapper over `builtin-eq` |
-| `>` | `(Comparable -> Comparable -> Bool)` | `fn@Bool [a b]` |
-| `<=` | `(Comparable -> Comparable -> Bool)` | `fn@Bool [a b]` |
-| `>=` | `(Comparable -> Comparable -> Bool)` | `fn@Bool [a b]` |
+| `<` | `(Comparable -> Comparable -> Bool)` | `fn@Boolean [a b]` — shadowable wrapper over `builtin-lt` |
+| `=` | `(Comparable -> Comparable -> Bool)` | `fn@Boolean [a b]` — shadowable wrapper over `builtin-eq` |
+| `>` | `(Comparable -> Comparable -> Bool)` | `fn@Boolean [a b]` |
+| `<=` | `(Comparable -> Comparable -> Bool)` | `fn@Boolean [a b]` |
+| `>=` | `(Comparable -> Comparable -> Bool)` | `fn@Boolean [a b]` |
 
 ### Arithmetic
 
@@ -1490,12 +1490,12 @@ The `Maybe` type is declared in the prelude: `Maybe: [type [a] [Some a] | [None]
 | `-` | `(Number -> Number -> Number)` | `fn@Number [a@Number b@Number]` — shadowable |
 | `*` | `(Number -> Number -> Number)` | `fn@Number [a@Number b@Number]` — shadowable |
 | `/` | `(Number -> Number -> Number)` | `fn@Number [a@Number b@Number]` — shadowable; always returns Float at runtime |
-| `quot` | `(Number -> Number -> Int)` | `fn@Int [a@Number b@Number]` |
+| `quot` | `(Number -> Number -> Int)` | `fn@Integer [a@Number b@Number]` |
 | `mod` | `(Number -> Number -> Number)` | `fn@Number [a@Number b@Number]` |
 | `abs` | `(Number -> Number)` | `fn@Number [x@Number]` |
-| `sign` | `(Number -> Int)` | `fn@Int [x@Number]` |
-| `ceil` | `(Number -> Int)` | `fn@Int [x@Number]` |
-| `trunc` | `(Number -> Int)` | `fn@Int [x@Number]` |
+| `sign` | `(Number -> Int)` | `fn@Integer [x@Number]` |
+| `ceil` | `(Number -> Int)` | `fn@Integer [x@Number]` |
+| `trunc` | `(Number -> Int)` | `fn@Integer [x@Number]` |
 | `clamp` | `(Number -> Number -> Number -> Number)` | `fn@Number [lo@Number hi@Number x@Number]` |
 
 ### String
@@ -1508,7 +1508,7 @@ The `Maybe` type is declared in the prelude: `Maybe: [type [a] [Some a] | [None]
 
 | Function | Type signature | Notes |
 |----------|---------------|-------|
-| `if` | `(Bool -> ⊤ -> ⊤ -> ⊤)` | `fn@Top [condition@Bool then_@Top else_@Top]` — shadowable; returns chosen branch |
+| `if` | `(Bool -> ⊤ -> ⊤ -> ⊤)` | `fn@Top [condition@Boolean then_@Top else_@Top]` — shadowable; returns chosen branch |
 | `when` | `(Any -> a -> Union(a, Null))` | `fn@[a Null] [pred body@a]` — returns body or `[]` |
 | `unless` | `(Any -> a -> Union(a, Null))` | `fn@[a Null] [pred body@a]` — returns body or `[]` |
 | `cond` | `(Dict [Dict, Any] -> Union(a, Null))` | `fn@[a Null] [pairs@Dict]` — polymorphic result |
@@ -1518,11 +1518,11 @@ The `Maybe` type is declared in the prelude: `Maybe: [type [a] [Some a] | [None]
 | Function | Type signature | Notes |
 |----------|---------------|-------|
 | `get` | `(a -> Dict b -> b)` | `fn@Unknown [k xs@Dict]` — polymorphic value type |
-| `has?` | `(b -> Dict a -> Bool)` | `fn@Bool [k xs@Dict]` |
+| `has?` | `(b -> Dict a -> Bool)` | `fn@Boolean [k xs@Dict]` |
 | `get-or` | `(b -> a -> Dict a -> a)` | `fn@a [k default@a xs@Dict]` — polymorphic; return type unified with default type |
 | `get-in` | `(Dict -> Dict a -> a)` | `fn@Unknown [path@Dict xs]` — polymorphic; errors on missing key |
 | `get-in-or` | `(Dict -> a -> Dict a -> a)` | `fn@Unknown [path@Dict default xs]` — polymorphic; returns default on missing key |
-| `empty?` | `(Any -> Bool)` | `fn@Bool [xs]` — false for Seq (never empty by definition) |
+| `empty?` | `(Any -> Bool)` | `fn@Boolean [xs]` — false for Seq (never empty by definition) |
 | `set` | `(Dict a -> ...Dict -> Dict a)` | `fn@Dict [xs@Dict ...kvs@Dict]` — variadic named key-value pairs merged into xs |
 | `remove` | `(b -> Dict a -> Dict a)` | `fn@Dict [k xs@Dict]` |
 | `update` | `(b -> (a -> a) -> Dict a -> Dict a)` | `fn@Dict [k f@Fn xs@Dict]` |
@@ -1590,7 +1590,7 @@ Each bucket accumulates elements via `cons` (O(1) prepend onto the bucket Dict).
 | Function | Type signature | Notes |
 |----------|---------------|-------|
 | `first` | `(Dict a -> a)` | `fn [xs@Dict]` — no return annotation; polymorphic element type |
-| `nth` | `(Int -> Dict a -> a)` | `fn [n@Int xs@Dict]` — no return annotation |
+| `nth` | `(Int -> Dict a -> a)` | `fn [n@Integer xs@Dict]` — no return annotation |
 | `last` | `(Dict a -> a)` | `fn [xs@Dict]` — no return annotation |
 | `conj` | `(a -> Dict a -> Dict a)` | `fn@Dict [x xs@Dict]` |
 | `reindex` | `(Dict a -> Dict a)` | `fn@Dict [xs@Dict]` |
@@ -1614,7 +1614,7 @@ Each bucket accumulates elements via `cons` (O(1) prepend onto the bucket Dict).
 | `map-entries` | `(([key: k  value: a] -> b) -> Dict a -> Dict b)` | `fn@Dict [f@Fn xs@Dict]` |
 | `fold` | `((b -> a -> b) -> b -> c -> b)` | `fn@Unknown [f@Fn init xs]` — delegates to `builtin-reduce` |
 | `foldr` | `((b -> a -> b) -> b -> c -> b)` | `fn [f@Fn acc xs]` — no return annotation |
-| `slice` | `(Int -> Int -> Dict a -> Dict a)` | `fn@Dict [start@Int end@Int xs@Dict]` |
+| `slice` | `(Int -> Int -> Dict a -> Dict a)` | `fn@Dict [start@Integer end@Integer xs@Dict]` |
 | `zip` | `(a -> b -> Dict [Dict, Dict])` | `fn@Unknown [xs ys]` — lazy for Seq+Seq, eager for Dict |
 | `flatten` | `(Dict a -> Dict b)` | `fn@Dict [xs@Dict]` — one level deep |
 | `find-deep` | `(b -> Dict a -> a)` | `fn [target xs@Dict]` — no return annotation; searches recursively for key; errors with E000 if key not found |
@@ -1622,8 +1622,8 @@ Each bucket accumulates elements via `cons` (O(1) prepend onto the bucket Dict).
 | `filter` | `((a -> Bool) -> b -> Seq a)` | `fn [pred@Fn xs]` — no return annotation; shadowable; returns Seq |
 | `map` | `((a -> b) -> c -> d)` | `fn [f@Fn xs]` — no return annotation; shadowable |
 | `reduce` | `((b -> a -> b) -> b -> c -> b)` | `fn [f@Fn init xs]` — no return annotation; shadowable |
-| `take` | `(Int -> a -> a)` | `fn [n@Int xs]` — no return annotation; shadowable |
-| `drop` | `(Int -> a -> a)` | `fn [n@Int xs]` — no return annotation; shadowable |
+| `take` | `(Int -> a -> a)` | `fn [n@Integer xs]` — no return annotation; shadowable |
+| `drop` | `(Int -> a -> a)` | `fn [n@Integer xs]` — no return annotation; shadowable |
 | `collect-kv` | `(Seq [key: a  value: b] -> Dict b)` | `fn@Dict [xs]` — reconstructs Dict from `each-kv` output |
 
 ### Higher-Order
@@ -1651,8 +1651,8 @@ Each bucket accumulates elements via `cons` (O(1) prepend onto the bucket Dict).
 | `product` | `(c -> Number)` | `fn@Number [xs]` |
 | `min` | `(c -> a)` | `fn@Unknown [xs]` — polymorphic; errors on empty |
 | `max` | `(c -> a)` | `fn@Unknown [xs]` — polymorphic; errors on empty |
-| `count` | `((a -> Bool) -> c -> Int)` | `fn@Int [pred@Fn xs]` |
-| `contains?` | `(a -> c -> Bool)` | `fn@Bool [val xs]` |
+| `count` | `((a -> Bool) -> c -> Int)` | `fn@Integer [pred@Fn xs]` |
+| `contains?` | `(a -> c -> Bool)` | `fn@Boolean [val xs]` |
 | `uniq` | `(Dict a -> Dict a)` | `fn@Dict [xs@Dict]` |
 
 ### Type Predicates
@@ -1670,7 +1670,7 @@ Each bucket accumulates elements via `cons` (O(1) prepend onto the bucket Dict).
 | `seq?` | `(Any -> Bool)` | Rust builtin |
 | `record?` | `(Any -> Bool)` | LLT stdlib alias for `dict?`; runtime has no key-type tracking |
 | `map?` | `(Any -> Bool)` | LLT stdlib alias for `dict?`; runtime has no key-type tracking |
-| `list?` | `(Any -> Bool)` | `fn@Bool [xs]` — LLT stdlib; checks all keys are integers |
+| `list?` | `(Any -> Bool)` | `fn@Boolean [xs]` — LLT stdlib; checks all keys are integers |
 
 ### Error Handling and Assertions
 

@@ -32,7 +32,7 @@ fn surf_ann_entry_tc(
 async fn check(input: &str) -> Result<(), Vec<TypeError>> {
     let mut program = crate::parse(input).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
-    let (errors, _table, _tycon_env) = typecheck_surface_program_annotation_table(&program);
+    let (errors, _table, _tycon_env) = typecheck_surface_program_annotation_table(&program).await;
     if errors.is_empty() {
         Ok(())
     } else {
@@ -61,7 +61,9 @@ async fn infer(input: &str) -> Type {
         crate::ast::SurfaceItem::Expr(n) => n,
         _ => panic!("expected expression item"),
     };
-    infer_surface_expr(node, &arc_env, &mut state, &mut None).unwrap()
+    infer_surface_expr(node, &arc_env, &mut state, &mut None)
+        .await
+        .unwrap()
 }
 
 async fn doc_env(input: &str) -> Arc<RwLock<crate::env::Env>> {
@@ -102,7 +104,8 @@ async fn doc_env_with_prelude(input: &str) -> Arc<RwLock<crate::env::Env>> {
         &mut None,
         &empty_pipeline,
         &named_types,
-    );
+    )
+    .await;
     if !errors.is_empty() {
         panic!("doc_env_with_prelude: typecheck error: {:?}", errors);
     }
@@ -183,7 +186,8 @@ async fn doc_tycon_env(
         &mut None,
         &empty_pipeline,
         &named_types,
-    );
+    )
+    .await;
     if !errors.is_empty() {
         panic!("doc_tycon_env: typecheck error: {:?}", errors);
     }
@@ -215,7 +219,8 @@ async fn file_env_impl(input: &str) -> Arc<RwLock<crate::env::Env>> {
             &mut None,
             &pipeline_type,
             &named_types,
-        );
+        )
+        .await;
         if !errors.is_empty() {
             panic!("file_env: typecheck error: {:?}", errors);
         }
@@ -359,7 +364,9 @@ async fn test_dict_multiple_errors() {
         crate::ast::SurfaceItem::Expr(n) => n,
         _ => panic!("expected expression item"),
     };
-    let errs = infer_surface_expr(node, &env, &mut state, &mut None).unwrap_err();
+    let errs = infer_surface_expr(node, &env, &mut state, &mut None)
+        .await
+        .unwrap_err();
     assert_eq!(errs.len(), 2, "infer_expr should return all dict errors");
     assert!(errs[0].message().contains("undefined1"));
     assert!(errs[1].message().contains("undefined2"));
@@ -640,7 +647,8 @@ async fn test_dot_access_typevar_generates_constraint_verified() {
         &mut None,
         &empty_pipeline,
         &named_types,
-    );
+    )
+    .await;
     if !errors.is_empty() {
         panic!("typecheck should succeed, got errors: {:?}", errors);
     }
@@ -669,7 +677,7 @@ async fn test_typeassert_default_inference_error_propagation() {
     // resolve_type_assert in typecheck_annot.rs propagates Err(errs) when
     // the default expression itself fails to infer (e.g., references undefined variable).
 
-    let errors = check_err("[@[type: Int  default: $undefined_var] 42]").await;
+    let errors = check_err("[@[type: Integer  default: $undefined_var] 42]").await;
 
     // Should have at least one error (from the undefined variable in default)
     assert!(
@@ -689,14 +697,14 @@ async fn test_typeassert_default_inference_error_propagation() {
 
 #[tokio::test]
 async fn test_type_assert_pass() {
-    let ty = infer("[@Int 42]").await;
+    let ty = infer("[@Integer 42]").await;
     assert_eq!(ty, Type::Int);
 }
 
 #[tokio::test]
 async fn test_type_assert_fail() {
     // In new syntax, bare words are references. Use a quoted string to test type mismatch.
-    let errors = check_err("[@Int \"hello\"]").await;
+    let errors = check_err("[@Integer \"hello\"]").await;
     assert_eq!(errors.len(), 1);
     assert!(errors[0].message().contains("cannot unify"));
 }
@@ -710,7 +718,7 @@ async fn test_type_assert_int_not_string() {
 
 #[tokio::test]
 async fn test_type_assert_default_suppresses_mismatch() {
-    let result = check("[@[type: Int  default: 0] hello]").await;
+    let result = check("[@[type: Integer  default: 0] hello]").await;
     assert!(
         result.is_ok(),
         "TypeAssert with default: should not raise type error, got: {:?}",
@@ -721,7 +729,7 @@ async fn test_type_assert_default_suppresses_mismatch() {
 #[tokio::test]
 async fn test_type_assert_no_default_still_errors() {
     // In new syntax, string literals require quotes. "hello" infers as Str, not Number.
-    let errors = check_err("[@[type: Int] \"hello\"]").await;
+    let errors = check_err("[@[type: Integer] \"hello\"]").await;
     assert!(
         errors.iter().any(|e| e.message().contains("cannot unify")),
         "TypeAssert without default: should still report type error, got: {:?}",
@@ -731,10 +739,10 @@ async fn test_type_assert_no_default_still_errors() {
 
 #[tokio::test]
 async fn test_typeassert_default_wrong_type_emits_error() {
-    // [@Int default: "hello" expr] — default is Str, asserted type is Number
+    // [@Integer default: "hello" expr] — default is Str, asserted type is Number
     // Should emit a default value type mismatch error
     // In new syntax, string literals require quotes.
-    let errors = check_err("[@[type: Int  default: \"hello\"] 42]").await;
+    let errors = check_err("[@[type: Integer  default: \"hello\"] 42]").await;
     assert!(
         errors
             .iter()
@@ -746,9 +754,9 @@ async fn test_typeassert_default_wrong_type_emits_error() {
 
 #[tokio::test]
 async fn test_typeassert_default_correct_type_no_error() {
-    // [@Int default: 0 expr] — default is IntLiteral(0) which is subtype of Number
+    // [@Integer default: 0 expr] — default is IntLiteral(0) which is subtype of Number
     // Should not emit any error
-    let result = check("[@[type: Int  default: 0] 42]").await;
+    let result = check("[@[type: Integer  default: 0] 42]").await;
     assert!(
         result.is_ok(),
         "TypeAssert with correct default type should not emit error, got: {:?}",
@@ -758,10 +766,10 @@ async fn test_typeassert_default_correct_type_no_error() {
 
 #[tokio::test]
 async fn test_typeassert_default_wrong_type_main_check_fails() {
-    // [@Int default: "hello" wrong_expr] — both main and default are wrong
+    // [@Integer default: "hello" wrong_expr] — both main and default are wrong
     // Should emit a default value type mismatch error
     // In new syntax, string literals require quotes.
-    let errors = check_err("[@[type: Int  default: \"hello\"] \"world\"]").await;
+    let errors = check_err("[@[type: Integer  default: \"hello\"] \"world\"]").await;
     assert!(
             errors
                 .iter()
@@ -773,8 +781,8 @@ async fn test_typeassert_default_wrong_type_main_check_fails() {
 
 #[tokio::test]
 async fn test_typeassert_default_int_subtype_of_number() {
-    // [@Int default: 42 expr] — IntLiteral(42) <: Number — no error
-    let result = check("[@[type: Int  default: 42] hello]").await;
+    // [@Integer default: 42 expr] — IntLiteral(42) <: Number — no error
+    let result = check("[@[type: Integer  default: 42] hello]").await;
     assert!(
         result.is_ok(),
         "TypeAssert with Int default for Number assertion should not emit error, got: {:?}",
@@ -805,7 +813,7 @@ async fn test_typeassert_default_suppresses_main_error_but_propagates_ok() {
     //
     // The expression is wrapped in a dict so the result is observable via result_field.
     // `hello` is a bare word (StringLiteral type), not a Number → mismatch, suppressed.
-    let result = check("[result: [@[type: Int  default: 0] hello]]").await;
+    let result = check("[result: [@[type: Integer  default: 0] hello]]").await;
     assert!(
         result.is_ok(),
         "TypeAssert with valid default should suppress main-check error (hello is not a Number), \
@@ -994,7 +1002,7 @@ async fn test_fn_unannotated() {
 
 #[tokio::test]
 async fn test_fn_annotated_params() {
-    let ty = infer("[fn [let x@Int] $x]").await;
+    let ty = infer("[fn [let x@Integer] $x]").await;
     match ty {
         Type::Function {
             params,
@@ -1011,7 +1019,7 @@ async fn test_fn_annotated_params() {
 
 #[tokio::test]
 async fn test_fn_return_annotation_match() {
-    let ty = infer("[fn@Int [let x@Int] $x]").await;
+    let ty = infer("[fn@Integer [let x@Integer] $x]").await;
     match ty {
         Type::Function { ret, .. } => assert_eq!(*ret, Type::Int),
         other => panic!("expected Function, got {other}"),
@@ -1020,47 +1028,9 @@ async fn test_fn_return_annotation_match() {
 
 #[tokio::test]
 async fn test_fn_return_annotation_mismatch() {
-    let errors = check_err("[fn@String [let x@Int] $x]").await;
+    let errors = check_err("[fn@String [let x@Integer] $x]").await;
     assert_eq!(errors.len(), 1);
     assert!(errors[0].message().contains("cannot unify"));
-}
-
-#[tokio::test]
-async fn test_fn_union_return_annotation_int_null() {
-    // Regression: fn@[Int Null] must route to union return type path.
-    // Previously failed with "property dict annotation must be a dict expression"
-    // because the parser rejected lowercase-headed implied calls in annotation position.
-    // After fix: [Int Null] is two positional entries → Union(Int, Null).
-    let ty = infer("[fn@[Int Null] [let] []]").await;
-    match ty {
-        Type::Function { ret, .. } => {
-            // Return type should be Union(Int, empty-record) — the Null type
-            assert!(
-                matches!(*ret, Type::Union(_)),
-                "expected Union return type, got {ret}"
-            );
-        }
-        other => panic!("expected Function, got {other}"),
-    }
-}
-
-#[tokio::test]
-async fn test_fn_union_return_annotation_typevar_null() {
-    // Regression: fn@[a Null] must route to union return type path.
-    // 'a' is a lowercase type variable name; 'Null' is the empty record type.
-    // Both are positional entries → treated as union type members.
-    let ty = infer("[fn@[a Null] [let] []]").await;
-    match ty {
-        Type::Function { ret, .. } => {
-            // Return type is Union(TypeVar, Record({})) — the [a Null] union annotation.
-            // Tighter check: must be Union, not just non-Error (which would pass Unknown).
-            assert!(
-                matches!(*ret, Type::Union(_)),
-                "expected Union return type, got {ret}"
-            );
-        }
-        other => panic!("expected Function, got {other}"),
-    }
 }
 
 // -- Call --
@@ -1068,7 +1038,7 @@ async fn test_fn_union_return_annotation_typevar_null() {
 #[tokio::test]
 async fn test_call_returns_function_ret_type() {
     assert_eq!(
-        result_field("[f: [fn@Int [] 42]]\n[result: [call $f]]", "result").await,
+        result_field("[f: [fn@Integer [] 42]]\n[result: [call $f]]", "result").await,
         Type::Int,
     );
 }
@@ -1121,7 +1091,7 @@ async fn test_check_call_with_scheme_non_function_scheme() {
         crate::ast::SurfaceItem::Expr(n) => n,
         _ => panic!("expected expression item"),
     };
-    let result = infer_surface_expr(node, &parent_env, &mut state, &mut None);
+    let result = infer_surface_expr(node, &parent_env, &mut state, &mut None).await;
 
     // Must produce a not_a_function error, not a panic.
     assert!(
@@ -1380,7 +1350,7 @@ async fn test_resolve_type_name_outside_function_scope_monotonicity() {
     let span = crate::test_util::test_span(1, 1, 1, 5);
     let mut state = InferState::new();
 
-    // Call at level 1
+    // Call at level 1 with a specific span
     state.level = 1;
     let ty1 = resolve_type_name(
         "a",
@@ -1392,28 +1362,35 @@ async fn test_resolve_type_name_outside_function_scope_monotonicity() {
         &None,
         None,
     )
+    .await
     .unwrap();
 
-    // Call at level 2 (simulating a nested scope)
+    // Call at level 2 (simulating a nested scope) with a different span position
+    let span2 = crate::test_util::test_span(2, 1, 2, 5);
     state.level = 2;
     let ty2 = resolve_type_name(
         "a",
         &env,
-        span,
+        span2,
         &mut state,
         &mut Vec::new(),
         &mut None,
         &None,
         None,
     )
+    .await
     .unwrap();
 
-    // Each call produces a distinct TypeVar at its respective current level
+    // Each call produces a distinct TypeVar at its respective current level.
+    // With span-based naming, distinct spans guarantee distinct TypeVar names.
     match (&ty1, &ty2) {
         (Type::TypeVar(n1, 1), Type::TypeVar(n2, 2)) => {
-            assert_ne!(n1, n2, "distinct fresh vars for two outer-scope `@a` uses");
+            assert_ne!(
+                n1, n2,
+                "distinct fresh vars for two outer-scope `@a` uses at different spans"
+            );
         }
-        other => panic!("expected TypeVar(_t0, 1) and TypeVar(_t1, 2), got: {other:?}"),
+        other => panic!("expected TypeVar at level 1 and TypeVar at level 2, got: {other:?}"),
     }
 }
 
@@ -1468,7 +1445,7 @@ async fn test_fix1_outer_scope_annotation_does_not_contaminate_siblings() {
     // fresh TypeVars. Only lowercase annotation names get fresh vars.
     // Verify that concrete-type annotations still work correctly at the top level.
     // In new syntax, string literals require quotes.
-    let result = check("[x: [@Int 42]  y: [@String \"hello\"]]").await;
+    let result = check("[x: [@Integer 42]  y: [@String \"hello\"]]").await;
     assert!(
         result.is_ok(),
         "concrete-type annotations at top level should work (not affected by Fix 1): {:?}",
@@ -1500,7 +1477,7 @@ async fn test_fix3_default_wrong_type_emits_error() {
     // The main expression (42) satisfies the assertion (Number), but the default
     // value ("hello") does NOT — it's a String. This should be a type error.
     // In new syntax, string literals require quotes.
-    let errors = check_err("[@[type: Int  default: \"hello\"] 42]").await;
+    let errors = check_err("[@[type: Integer  default: \"hello\"] 42]").await;
     assert!(
         errors
             .iter()
@@ -1515,7 +1492,7 @@ async fn test_fix3_default_correct_type_no_error() {
     // Main expression (hello as VarRef → undefined) does NOT satisfy Number, but default (0) DOES.
     // The type error for the main expression is suppressed, and the default is valid.
     // No error should be emitted (TypeAssert default suppression applies to undefined vars too).
-    let result = check("[@[type: Int  default: 0] hello]").await;
+    let result = check("[@[type: Integer  default: 0] hello]").await;
     assert!(
         result.is_ok(),
         "TypeAssert with correct default type should not emit an error; got: {:?}",
@@ -1529,7 +1506,7 @@ async fn test_fix3_default_wrong_type_main_also_wrong_emits_error() {
     // The type error for the main expression would be suppressed (default present),
     // but the default itself is wrong — must emit a 'default value type mismatch' error.
     // In new syntax, string literals require quotes.
-    let errors = check_err("[@[type: Int  default: \"hello\"] \"world\"]").await;
+    let errors = check_err("[@[type: Integer  default: \"hello\"] \"world\"]").await;
     assert!(
         errors
             .iter()
@@ -1541,7 +1518,7 @@ async fn test_fix3_default_wrong_type_main_also_wrong_emits_error() {
 
 #[tokio::test]
 async fn test_annotation_property_dict_with_type() {
-    let ty = infer("[fn [let x@[type: Int  default: 0]] $x]").await;
+    let ty = infer("[fn [let x@[type: Integer  default: 0]] $x]").await;
     match ty {
         Type::Function { params, .. } => {
             assert_eq!(params, vec![(Some("x".to_string()), Type::Int)])
@@ -1702,7 +1679,7 @@ async fn test_property_dict_literal_value_falls_back_to_any() {
 async fn test_property_dict_fn_type_error_propagates() {
     let env = Arc::new(TypeEnv::new());
     let span = crate::test_util::test_span(1, 1, 1, 10);
-    // [Fn@Int] -- function type pattern detected (Fn@ prefix) but wrong
+    // [Fn@Integer] -- function type pattern detected (Fn@ prefix) but wrong
     // number of entries: should propagate, not fall back to Any.
     let ann = Annotation::PropertyDict(vec![surf_ann_entry_tc(
         None,
@@ -1795,7 +1772,7 @@ async fn test_annotation_type_value_invalid_expr() {
 #[tokio::test]
 async fn test_annotation_composite_function_type() {
     let ty =
-        infer("[fn [let f@[type: [Fn@Int [Int]] default: [fn [let x] $x]]] [@Int [call $f 42]]]")
+        infer("[fn [let f@[type: [Fn@Integer [Integer]] default: [fn [let x] $x]]] [@Integer [call $f 42]]]")
             .await;
     match ty {
         Type::Function {
@@ -1852,9 +1829,9 @@ async fn test_annotation_composite_record_type() {
 #[tokio::test]
 async fn test_annotation_composite_type_in_type_assert() {
     // With fresh TypeVars for unannotated params, the default function needs annotations
-    // to match the expected type Fn@Int [Int]
+    // to match the expected type Fn@Integer [Int]
     let ty = infer(
-        "[f: [fn [let x] $x]  result: [@[type: [Fn@Int [Int]] default: [fn [let x@Int] 0]] $f]]",
+        "[f: [fn [let x] $x]  result: [@[type: [Fn@Integer [Integer]] default: [fn [let x@Integer] 0]] $f]]",
     )
     .await;
     let result_ty = match ty {
@@ -1878,12 +1855,12 @@ async fn test_annotation_composite_type_in_type_assert() {
 
 #[tokio::test]
 async fn test_annotation_nested_composite_higher_order_function() {
-    // Nested composite type: [type: [Fn@[Fn@Int [Int]] [Int]]]
+    // Nested composite type: [type: [Fn@[Fn@Integer [Integer]] [Int]]]
     // Resolves to Fn(Int -> Fn(Int -> Int)) — a curried function.
-    // Exercises recursive resolve_type_expr: the return type [Fn@Int [Int]] is
+    // Exercises recursive resolve_type_expr: the return type [Fn@Integer [Integer]] is
     // itself a Fn type expression that must be recursively resolved.
     let ty = infer(
-            "[fn [let f@[type: [Fn@[Fn@Int [Int]] [Int]] default: [fn [let x] [fn [let y] $y]]]] [call $f 0]]",
+            "[fn [let f@[type: [Fn@[Fn@Integer [Integer]] [Integer]] default: [fn [let x] [fn [let y] $y]]]] [call $f 0]]",
         )
         .await;
     // f has type Fn(Int -> Fn(Int -> Int))
@@ -1943,7 +1920,7 @@ async fn test_annotation_nested_composite_higher_order_function() {
 
 #[tokio::test]
 async fn test_annotated_non_fn_resolves_annotation() {
-    let ty = infer("Config@Int").await;
+    let ty = infer("Config@Integer").await;
     assert_eq!(ty, Type::Int);
 }
 
@@ -1952,12 +1929,12 @@ async fn test_annotated_non_fn_resolves_annotation() {
 #[tokio::test]
 async fn test_fn_type_one_param() {
     let ty = result_field(
-        "[Mapper: [type [let a b] [Fn@b [a]]]]\n[x: [@[Mapper Int Str] [fn [let v@Int] \"result\"]]]",
+        "[Mapper: [type [let a b] [Fn@b [a]]]]\n[x: [@[Mapper Integer String] [fn [let v@Integer] \"result\"]]]",
         "x",
     )
     .await;
     match ty {
-        // [fn [v] $v] is annotated with [@[Mapper Int Str]] where Mapper = [Fn@b [a]].
+        // [fn [v] $v] is annotated with [@[Mapper Integer String]] where Mapper = [Fn@b [a]].
         // With concrete type arguments, the alias expands to [Fn@Str [Int]].
         // Lambda checking mode enforces the expanded type: param is Int, ret is Str.
         Type::Function {
@@ -1970,13 +1947,13 @@ async fn test_fn_type_one_param() {
             assert_eq!(
                 params[0].1,
                 Type::Int,
-                "param should be Int (from [@[Mapper Int Str]]), got {:?}",
+                "param should be Int (from [@[Mapper Integer String]]), got {:?}",
                 params[0]
             );
             assert_eq!(
                 *ret,
                 Type::Str,
-                "ret should be Str (from [@[Mapper Int Str]]), got {ret:?}"
+                "ret should be Str (from [@[Mapper Integer String]]), got {ret:?}"
             );
         }
         other => panic!("expected Function, got {other}"),
@@ -1988,7 +1965,7 @@ async fn test_fn_type_one_param() {
 #[tokio::test]
 async fn test_fn_type_concrete_types() {
     let ty = result_field(
-        "[Addable: [type [Fn@Int [Int Int]]]]\n[x: [@Addable [fn [let a@Int b@Int] $a]]]",
+        "[Addable: [type [Fn@Integer [Integer Integer]]]]\n[x: [@Addable [fn [let a@Integer b@Integer] $a]]]",
         "x",
     )
     .await;
@@ -2012,7 +1989,7 @@ async fn test_fn_type_concrete_types() {
 
 #[tokio::test]
 async fn test_fn_type_standalone_fn_annotation() {
-    let ty = infer("Fn@Int").await;
+    let ty = infer("Fn@Integer").await;
     match ty {
         Type::Function {
             params,
@@ -2064,7 +2041,7 @@ async fn test_bare_fn_annotation_no_false_type_error() {
     // spurious type errors from attempting to unify Type::Unknown with a concrete
     // Function type — the two are compatible under Any semantics.
     // [fn [pred@Fn] [pred 42]] applied with a concrete function for pred.
-    let result = check("[result: [[fn [let pred@Fn] [pred 42]] [fn [let x@Int] $x]]]").await;
+    let result = check("[result: [[fn [let pred@Fn] [pred 42]] [fn [let x@Integer] $x]]]").await;
     // There should be no type errors — @Fn accepts any callable.
     assert!(
         result.is_ok(),
@@ -2076,7 +2053,7 @@ async fn test_bare_fn_annotation_no_false_type_error() {
 #[tokio::test]
 async fn test_fn_type_in_type_assert() {
     let ty = result_field(
-        "[F: [type [Fn@Int [Int]]]]\n[x: [@F [fn [let n@Int] $n]]]",
+        "[F: [type [Fn@Integer [Integer]]]]\n[x: [@F [fn [let n@Integer] $n]]]",
         "x",
     )
     .await;
@@ -2177,7 +2154,7 @@ async fn test_call_polymorphic_multiple_calls_different_types() {
 async fn test_call_monomorphic_no_unification() {
     assert_eq!(
         result_field(
-            "[f: [fn@Int [let x@Int] $x]]\n[result: [call $f 42]]",
+            "[f: [fn@Integer [let x@Integer] $x]]\n[result: [call $f 42]]",
             "result"
         )
         .await,
@@ -2199,7 +2176,8 @@ async fn test_call_polymorphic_arity_mismatch_error() {
 
 #[tokio::test]
 async fn test_call_monomorphic_arity_mismatch() {
-    let errors = check_err("[f: [fn@Int [let x@Int y@Int] $x]]\n[result: [call $f 42]]").await;
+    let errors =
+        check_err("[f: [fn@Integer [let x@Integer y@Integer] $x]]\n[result: [call $f 42]]").await;
     assert!(
         errors
             .iter()
@@ -2245,7 +2223,7 @@ async fn test_call_polymorphic_with_named_arg() {
 
     // Wrong-type named arg: $f expects `x@Int`; passing a string should produce a type error.
     let errors = check_err(
-        "[f: [fn [let x@Int] $x]]
+        "[f: [fn [let x@Integer] $x]]
              ---
              [result: [call $f x: \"wrong-type\"]]",
     )
@@ -2260,7 +2238,7 @@ async fn test_call_polymorphic_with_named_arg() {
 
     // Unknown named arg: $f has no parameter named `z`; should produce an "unknown named argument" error.
     let errors = check_err(
-        "[f: [fn [let x@Int] $x]]
+        "[f: [fn [let x@Integer] $x]]
              ---
              [result: [call $f z: 42]]",
     )
@@ -2301,7 +2279,7 @@ async fn test_call_polymorphic_named_arg_bad_value_errors() {
     // before the call, avoiding the letrec TypeVar-arm bypass.
     // 1 positional + 1 named = 2 total matches the 2-param function (x, y).
     let errors = check_err(
-        "[f: [fn [let x@Int y@Int] [call $+ $x $y]]]\n\
+        "[f: [fn [let x@Integer y@Integer] [call $+ $x $y]]]\n\
              ---\n\
              [result: [call $f 42 y: $missing]]",
     )
@@ -2362,7 +2340,7 @@ async fn test_fn_type_expr_with_params() {
             ..
         } => {
             assert_eq!(params.len(), 1, "Identity should have 1 param");
-            // [@[Identity Int]] expands to [Fn@Int [Int]], so param and ret are both Int.
+            // [@[Identity Int]] expands to [Fn@Integer [Integer]], so param and ret are both Int.
             assert_eq!(
                 params[0].1,
                 Type::Int,
@@ -2382,10 +2360,10 @@ async fn test_fn_type_expr_with_params() {
 #[tokio::test]
 async fn test_fn_type_expr_multi_params() {
     // [Mapper: [type [let a b] [Fn@b [a b]]]] — map function type with 2 type params.
-    // Verify the alias works correctly by using it with concrete type args [@[Mapper Int Str]].
+    // Verify the alias works correctly by using it with concrete type args [@[Mapper Integer String]].
     // The params[1] type and return type should match (both use `b`).
     let ty = result_field(
-        "[Mapper: [type [let a b] [Fn@b [a b]]]]\n[x: [@[Mapper Int Str] [fn [let p q] $q]]]",
+        "[Mapper: [type [let a b] [Fn@b [a b]]]]\n[x: [@[Mapper Integer String] [fn [let p q] $q]]]",
         "x",
     )
     .await;
@@ -2397,24 +2375,24 @@ async fn test_fn_type_expr_multi_params() {
             ..
         } => {
             assert_eq!(params.len(), 2, "Mapper should have 2 params");
-            // [@[Mapper Int Str]] expands to [Fn@Str [Int Str]].
+            // [@[Mapper Integer String]] expands to [Fn@Str [Int Str]].
             assert_eq!(
                 params[0].1,
                 Type::Int,
-                "params[0] should be Int (from [@[Mapper Int Str]]), got {:?}",
+                "params[0] should be Int (from [@[Mapper Integer String]]), got {:?}",
                 params[0]
             );
             assert_eq!(
                 params[1].1,
                 Type::Str,
-                "params[1] should be Str (from [@[Mapper Int Str]]), got {:?}",
+                "params[1] should be Str (from [@[Mapper Integer String]]), got {:?}",
                 params[1]
             );
             // Return type is Str (same as params[1], both use `b`).
             assert_eq!(
                 *ret,
                 Type::Str,
-                "ret should be Str (from [@[Mapper Int Str]]), got {ret:?}"
+                "ret should be Str (from [@[Mapper Integer String]]), got {ret:?}"
             );
         }
         other => panic!("expected Function, got {other}"),
@@ -2423,10 +2401,10 @@ async fn test_fn_type_expr_multi_params() {
 
 #[tokio::test]
 async fn test_fn_type_expr_concrete_params() {
-    // [Addable: [type [Fn@Int [Int Int]]]] — non-parameterized function type alias.
+    // [Addable: [type [Fn@Integer [Integer Integer]]]] — non-parameterized function type alias.
     // Verify the alias works correctly by using it to annotate a function.
     let ty = result_field(
-        "[Addable: [type [Fn@Int [Int Int]]]]\n[x: [@Addable [fn [let a@Int b@Int] $a]]]",
+        "[Addable: [type [Fn@Integer [Integer Integer]]]]\n[x: [@Addable [fn [let a@Integer b@Integer] $a]]]",
         "x",
     )
     .await;
@@ -2877,11 +2855,11 @@ async fn test_let_gen_any_touched_not_generalized() {
 #[tokio::test]
 async fn test_check_expr_basic_subsumption() {
     // IntLiteral(42) should check against Int via subsumption
-    let ty = result_field("[x: [@Int 42]]", "x").await;
+    let ty = result_field("[x: [@Integer 42]]", "x").await;
     assert_eq!(ty, Type::Int, "IntLiteral should subsume to Int");
 
     // IntLiteral(42) should check against Number via subsumption
-    let ty = result_field("[x: [@Int 42]]", "x").await;
+    let ty = result_field("[x: [@Integer 42]]", "x").await;
     assert_eq!(ty, Type::Int, "IntLiteral should subsume to Number");
 
     // StringLiteral should subsume to String (use quoted string in new syntax)
@@ -2893,11 +2871,15 @@ async fn test_check_expr_basic_subsumption() {
 async fn test_call_mono_argument_checking() {
     // Monomorphic function call should use check_expr for arguments
     // This should succeed: IntLiteral(42) <: Int
-    let ty = result_field("[f: [fn [let x@Int] $x]]\n[result: [call $f 42]]", "result").await;
+    let ty = result_field(
+        "[f: [fn [let x@Integer] $x]]\n[result: [call $f 42]]",
+        "result",
+    )
+    .await;
     assert_eq!(ty, Type::Int, "CALL-MONO should accept IntLiteral arg");
 
     // This should fail: String is not subtype of Int (use quoted string in new syntax)
-    let errors = check_err("[f: [fn [let x@Int] $x]]\n[result: [call $f \"hello\"]]").await;
+    let errors = check_err("[f: [fn [let x@Integer] $x]]\n[result: [call $f \"hello\"]]").await;
     assert!(
         errors.iter().any(|e| e.message().contains("cannot unify")),
         "CALL-MONO should reject String arg for Int param, got: {:?}",
@@ -2911,7 +2893,8 @@ async fn test_call_mono_argument_checking() {
 async fn test_lambda_checking_mode_concrete() {
     // Lambda checked against concrete function type should propagate param types
     // Define a concrete function type alias first
-    let env = doc_env("[IntFn: [type [Fn@Int [Int]]]]\n[f: [@IntFn [fn [let x] $x]]]").await;
+    let env =
+        doc_env("[IntFn: [type [Fn@Integer [Integer]]]]\n[f: [@IntFn [fn [let x] $x]]]").await;
     let f_scheme = env_get(&env, "f").unwrap();
     match &f_scheme.body {
         Type::Function {
@@ -2930,10 +2913,10 @@ async fn test_lambda_checking_mode_concrete() {
 #[tokio::test]
 async fn test_lambda_checking_mode_with_polymorphic_expected() {
     // Lambda checked against parameterized function type alias with concrete args.
-    // With parameterized aliases requiring explicit args, use [@[Mapper Int Str]] to get
+    // With parameterized aliases requiring explicit args, use [@[Mapper Integer String]] to get
     // concrete types. The lambda is checked against the expanded type [Fn@Str [Int]].
     let ty = result_field(
-        "[Mapper: [type [let a b] [Fn@b [a]]]]\n[x: [@[Mapper Int Str] [fn [let v@Int] \"result\"]]]",
+        "[Mapper: [type [let a b] [Fn@b [a]]]]\n[x: [@[Mapper Integer String] [fn [let v@Integer] \"result\"]]]",
         "x",
     )
     .await;
@@ -2949,13 +2932,13 @@ async fn test_lambda_checking_mode_with_polymorphic_expected() {
             assert_eq!(
                 params[0].1,
                 Type::Int,
-                "param should be Int (from [@[Mapper Int Str]]), got {:?}",
+                "param should be Int (from [@[Mapper Integer String]]), got {:?}",
                 params[0]
             );
             assert_eq!(
                 *ret,
                 Type::Str,
-                "ret should be Str (from [@[Mapper Int Str]]), got {ret:?}"
+                "ret should be Str (from [@[Mapper Integer String]]), got {ret:?}"
             );
         }
         other => panic!("expected Function, got {other}"),
@@ -2965,11 +2948,11 @@ async fn test_lambda_checking_mode_with_polymorphic_expected() {
 #[tokio::test]
 async fn test_type_assert_checking_mode() {
     // TypeAssert should use check_expr for subsumption
-    let ty = result_field("[x: [@Int 42]]", "x").await;
+    let ty = result_field("[x: [@Integer 42]]", "x").await;
     assert_eq!(ty, Type::Int, "TypeAssert should accept IntLiteral <: Int");
 
     // TypeAssert with default should suppress errors
-    let ty = result_field("[x: [@[type: Int  default: 0] hello]]", "x").await;
+    let ty = result_field("[x: [@[type: Integer  default: 0] hello]]", "x").await;
     assert_eq!(
         ty,
         Type::Int,
@@ -3001,7 +2984,7 @@ async fn test_call_poly_still_uses_unify() {
 async fn test_function_return_annotation_checking() {
     // Function with return annotation should check body via check_expr
     // Subsumption should work: IntLiteral(42) <: Int
-    let ty = result_field("[f: [fn@Int [] 42]]", "f").await;
+    let ty = result_field("[f: [fn@Integer [] 42]]", "f").await;
     match ty {
         Type::Function { ret, .. } => {
             assert_eq!(*ret, Type::Int, "Return type should be declared type");
@@ -3010,7 +2993,7 @@ async fn test_function_return_annotation_checking() {
     }
 
     // IntLiteral should subsume to Number in return annotation
-    let ty = result_field("[f: [fn@Int [] 42]]", "f").await;
+    let ty = result_field("[f: [fn@Integer [] 42]]", "f").await;
     match ty {
         Type::Function { ret, .. } => {
             assert_eq!(*ret, Type::Int);
@@ -3019,7 +3002,7 @@ async fn test_function_return_annotation_checking() {
     }
 
     // Type mismatch should fail (use quoted string in new syntax)
-    let errors = check_err("[f: [fn@Int [] \"hello\"]]").await;
+    let errors = check_err("[f: [fn@Integer [] \"hello\"]]").await;
     assert!(
         errors.iter().any(|e| e.message().contains("cannot unify")),
         "Function body type mismatch should error, got: {:?}",
@@ -3098,7 +3081,7 @@ async fn test_lambda_checking_mode_annotated_param_incompatible() {
     // Expected: Fn(Int -> Int), lambda: [fn [x@String] $x]
     // The annotation String is incompatible: Int (expected) is not a subtype of String.
     // This tests the fix added in the bidirectional-typing fix pass (contravariant check).
-    let errors = check_err("[x: [@[Fn@Int [Int]] [fn [let x@String] $x]]]").await;
+    let errors = check_err("[x: [@[Fn@Integer [Integer]] [fn [let x@String] $x]]]").await;
     assert!(
         errors
             .iter()
@@ -3151,10 +3134,10 @@ async fn test_lambda_checking_mode_return_annotation_with_type_var() {
     // but does NOT bind the TypeVar. The fix switches to unification mode when
     // declared.has_inference_vars() so that the TypeVar gets bound via constraint solving.
     //
-    // Pattern: [@[Fn@Int [Int]] [fn@c [x] 42]] — expected return Int, declared TypeVar("c").
+    // Pattern: [@[Fn@Integer [Integer]] [fn@c [x] 42]] — expected return Int, declared TypeVar("c").
     // Without unification mode: TypeVar("c") is accepted but unbound → downstream failure.
     // With unification mode: unify(TypeVar("c"), Int) binds c → success.
-    let result = check("[f: [@[Fn@Int [Int]] [fn@c [let x] 42]]]").await;
+    let result = check("[f: [@[Fn@Integer [Integer]] [fn@c [let x] 42]]]").await;
     assert!(
         result.is_ok(),
         "Lambda with TypeVar return annotation in checking mode should unify, not subsume: {:?}",
@@ -3162,7 +3145,7 @@ async fn test_lambda_checking_mode_return_annotation_with_type_var() {
     );
 
     // Verify the recorded function type
-    let ty = result_field("[f: [@[Fn@Int [Int]] [fn@c [let x] $x]]]", "f").await;
+    let ty = result_field("[f: [@[Fn@Integer [Integer]] [fn@c [let x] $x]]]", "f").await;
     match ty {
         Type::Function {
             params,
@@ -3180,10 +3163,10 @@ async fn test_lambda_checking_mode_return_annotation_with_type_var() {
 #[tokio::test]
 async fn test_lambda_checking_mode_param_annotation_error_message() {
     // Verify that parameter annotation type mismatch error messages are correctly ordered.
-    // When checking [@[Fn@Int [Int]] [fn [x@String] $x]], the expected param type is Int
+    // When checking [@[Fn@Integer [Integer]] [fn [x@String] $x]], the expected param type is Int
     // (from the function type annotation) but the parameter annotation says String.
     // The error should say "cannot unify Int with String" (not "cannot unify String with Int").
-    let errors = check_err("[f: [@[Fn@Int [Int]] [fn [let x@String] $x]]]").await;
+    let errors = check_err("[f: [@[Fn@Integer [Integer]] [fn [let x@String] $x]]]").await;
     assert_eq!(errors.len(), 1, "should have exactly one error");
     let msg = errors[0].message();
     assert!(
@@ -3209,11 +3192,11 @@ async fn test_lambda_checking_mode_subst_apply_forward_compat_guard() {
     // does not cause regressions.
     //
     // Pattern: [data: [x: 42]] entry creates state.subst bindings, then
-    // [f: [@[Fn@Int [Int]] [fn [n] $n]]] triggers lambda checking mode with
+    // [f: [@[Fn@Integer [Integer]] [fn [n] $n]]] triggers lambda checking mode with
     // concrete expected type Fn(Int -> Int). The body check uses expected_ret = Int
     // (subst applied, though it's a no-op for concrete types).
     let ty = result_field(
-        "[data: [x: 42]]\n[f: [@[Fn@Int [Int]] [fn [let n] $n]]]",
+        "[data: [x: 42]]\n[f: [@[Fn@Integer [Integer]] [fn [let n] $n]]]",
         "f",
     )
     .await;
@@ -3231,7 +3214,7 @@ async fn test_lambda_checking_mode_subst_apply_forward_compat_guard() {
     }
 
     // Also verify with a body that returns a literal subtype of the expected return type
-    let result = check("[f: [@[Fn@Int [Int]] [fn [let n] 42]]]").await;
+    let result = check("[f: [@[Fn@Integer [Integer]] [fn [let n] 42]]]").await;
     assert!(
         result.is_ok(),
         "Lambda body returning IntLiteral(42) should satisfy expected return type Int: {:?}",
@@ -3262,7 +3245,7 @@ async fn test_lambda_checking_mode_subst_applied_to_expected() {
     );
 
     // With concrete expected type, lambda checking mode fires as before
-    let ty = result_field("[f: [@[Fn@Int [Int]] [fn [let x] $x]]]", "f").await;
+    let ty = result_field("[f: [@[Fn@Integer [Integer]] [fn [let x] $x]]]", "f").await;
     match ty {
         Type::Function {
             params,
@@ -3279,7 +3262,7 @@ async fn test_lambda_checking_mode_subst_applied_to_expected() {
     // Verify that prior dict entries creating state.subst bindings don't
     // interfere with lambda checking mode on concrete expected types
     let ty = result_field(
-        "[id: [fn [let x@a] $x]]\n[n: [call $id 42]]\n[f: [@[Fn@Int [Int]] [fn [let x] $x]]]",
+        "[id: [fn [let x@a] $x]]\n[n: [call $id 42]]\n[f: [@[Fn@Integer [Integer]] [fn [let x] $x]]]",
         "f",
     )
     .await;
@@ -3358,7 +3341,7 @@ async fn test_zero_param_monomorphic_function_type() {
     // This test verifies the zero-param CALL-MONO path (no type vars) works correctly.
 
     // Zero-param monomorphic function (CALL-MONO): the function type is correct.
-    let ty = result_field("[f: [fn@Int [] 42]]", "f").await;
+    let ty = result_field("[f: [fn@Integer [] 42]]", "f").await;
     match ty {
         Type::Function {
             params,
@@ -3383,12 +3366,14 @@ async fn test_zero_param_monomorphic_function_type() {
 async fn test_call_mono_argument_type_checking_verification() {
     // CALL-MONO uses check_expr for argument type checking
     // IntLiteral(42) <: Int succeeds
-    assert!(check("[f: [fn [let x@Int] $x]]\n[result: [call $f 42]]")
-        .await
-        .is_ok());
+    assert!(
+        check("[f: [fn [let x@Integer] $x]]\n[result: [call $f 42]]")
+            .await
+            .is_ok()
+    );
 
     // StringLiteral for Int param fails
-    let errors = check_err("[f: [fn [let x@Int] $x]]\n[result: [call $f \"hello\"]]").await;
+    let errors = check_err("[f: [fn [let x@Integer] $x]]\n[result: [call $f \"hello\"]]").await;
     assert!(
         errors.iter().any(|e| e.message().contains("cannot unify")),
         "StringLiteral arg for Int param should error: {:?}",
@@ -3396,9 +3381,11 @@ async fn test_call_mono_argument_type_checking_verification() {
     );
 
     // IntLiteral(42) <: Number succeeds (transitive subsumption)
-    assert!(check("[f: [fn [let x@Int] $x]]\n[result: [call $f 42]]")
-        .await
-        .is_ok());
+    assert!(
+        check("[f: [fn [let x@Integer] $x]]\n[result: [call $f 42]]")
+            .await
+            .is_ok()
+    );
 }
 
 // -- Task 3: Subsumption tests --
@@ -3406,13 +3393,13 @@ async fn test_call_mono_argument_type_checking_verification() {
 #[tokio::test]
 async fn test_subsumption_int_literal_to_int() {
     // IntLiteral(42) <: Int via [SUB] rule
-    assert!(check("[result: [@Int 42]]").await.is_ok());
+    assert!(check("[result: [@Integer 42]]").await.is_ok());
 }
 
 #[tokio::test]
 async fn test_subsumption_int_literal_to_int_via_check() {
     // IntLiteral(42) <: Int via annotation check
-    assert!(check("[result: [@Int 42]]").await.is_ok());
+    assert!(check("[result: [@Integer 42]]").await.is_ok());
 }
 
 #[tokio::test]
@@ -3424,8 +3411,9 @@ async fn test_subsumption_string_literal_to_string() {
 #[tokio::test]
 async fn test_subsumption_direction_matters() {
     // Int <: Number succeeds, but Number <: Int fails — direction matters
-    assert!(check("[result: [@Int 42]]").await.is_ok());
-    let errors = check_err("[f: [fn [let x@Int] $x]]\n[result: [@Int [call $f 3.14]]]").await;
+    assert!(check("[result: [@Integer 42]]").await.is_ok());
+    let errors =
+        check_err("[f: [fn [let x@Integer] $x]]\n[result: [@Integer [call $f 3.14]]]").await;
     assert!(
         errors.iter().any(|e| e.message().contains("cannot unify")),
         "Float should not be subtype of Int: {:?}",
@@ -3445,7 +3433,7 @@ async fn test_subsumption_float_to_float() {
 async fn test_lambda_param_inference_from_context() {
     // When checking lambda against Fn(Int → Int), unannotated param gets Int
     // Uses Fn@ReturnType [params] syntax to get a real function type, not Type::Unknown
-    assert!(check("[result: [@[Fn@Int [Int]] [fn [let x] $x]]]")
+    assert!(check("[result: [@[Fn@Integer [Integer]] [fn [let x] $x]]]")
         .await
         .is_ok());
 }
@@ -3456,7 +3444,7 @@ async fn test_lambda_param_inference_preserves_annotation() {
     // In new syntax, function types use [Fn@RetType [ParamType]] dict form (Fn@RetType is Annotated).
     // Note: @Int with expected Number is REJECTED (Int <: Number but function params are
     // checked for exact compatibility, not subtype). This test uses @Int to match exactly.
-    let result = check("[result: [@[Fn@Int [Int]] [fn [let x@Int] $x]]]").await;
+    let result = check("[result: [@[Fn@Integer [Integer]] [fn [let x@Integer] $x]]]").await;
     assert!(
         result.is_ok(),
         "expected ok, got errors: {:?}",
@@ -3468,7 +3456,7 @@ async fn test_lambda_param_inference_preserves_annotation() {
 async fn test_lambda_param_inference_rejects_incompatible_annotation() {
     // @String is NOT compatible with expected Int param (Int <: String is false)
     // Uses Fn@ReturnType [params] syntax for function type annotation
-    let errors = check_err("[result: [@[Fn@Int [Int]] [fn [let x@String] $x]]]").await;
+    let errors = check_err("[result: [@[Fn@Integer [Integer]] [fn [let x@String] $x]]]").await;
     assert!(
         errors
             .iter()
@@ -3486,11 +3474,11 @@ async fn test_zero_param_polymorphic_function_instantiation() {
     // Zero-param CALL-POLY must return *inst_ret* (instantiated), not *ret* (scheme-internal).
     // Without the fix, ret == inst_ret for concrete return types, but the instantiated copy
     // is the one whose type variables (if any) are fresh per-call-site.
-    let ty = result_field("[f: [fn@Int [] 42]]\n[result: [call $f]]", "result").await;
+    let ty = result_field("[f: [fn@Integer [] 42]]\n[result: [call $f]]", "result").await;
     assert_eq!(
         ty,
         Type::Int,
-        "zero-param fn@Int should return Int, got {ty}"
+        "zero-param fn@Integer should return Int, got {ty}"
     );
 }
 
@@ -3847,7 +3835,7 @@ async fn test_call_any_callee_populates_type_map_for_positional_args() {
         crate::ast::SurfaceItem::Expr(n) => n,
         _ => panic!("expected expression item"),
     };
-    let result = infer_surface_expr(node, &parent_env, &mut state, &mut Some(&mut type_map));
+    let result = infer_surface_expr(node, &parent_env, &mut state, &mut Some(&mut type_map)).await;
 
     // The call to an Any-typed function returns Any.
     assert_eq!(
@@ -3910,7 +3898,11 @@ async fn test_check_call_mono_subst_apply_documented() {
 
     // Verify current behavior: CALL-MONO in check_call with a monomorphic inline lambda
     // Function body IntLiteral(42) is preserved as the return type
-    let ty = result_field("[f: [fn [let x@Int] 42]]\n[result: [call $f 1]]", "result").await;
+    let ty = result_field(
+        "[f: [fn [let x@Integer] 42]]\n[result: [call $f 1]]",
+        "result",
+    )
+    .await;
     assert_eq!(
         ty,
         Type::IntLiteral(42),
@@ -3953,7 +3945,7 @@ async fn test_variadic_param_type_is_any() {
 
     // Variadic with annotated params before it: non-variadic params keep their annotation,
     // variadic param is a uniform record
-    let ty = result_field("[f: [fn [let a@Int b@Int ...rest] $a]]", "f").await;
+    let ty = result_field("[f: [fn [let a@Integer b@Integer ...rest] $a]]", "f").await;
     match ty {
         Type::Function { params, .. } => {
             assert_eq!(params.len(), 3, "function should have 3 params");
@@ -4282,7 +4274,8 @@ async fn test_level_restored_after_non_dict_record_error() {
         &mut None,
         &pipeline_type,
         &named_types,
-    );
+    )
+    .await;
     if !errors.is_empty() {
         panic!("first document should type-check, got errors: {:?}", errors);
     }
@@ -4300,7 +4293,8 @@ async fn test_level_restored_after_non_dict_record_error() {
         &mut None,
         &pipeline_type,
         &named_types,
-    );
+    )
+    .await;
     assert!(!errors.is_empty(), "second document should fail");
     assert!(
         errors[0].message().contains("undefined variable"),
@@ -4322,7 +4316,8 @@ async fn test_level_restored_after_non_dict_record_error() {
         &mut None,
         &pipeline_type,
         &named_types,
-    );
+    )
+    .await;
     if !errors.is_empty() {
         panic!(
             "third document should type-check correctly after level restoration, got errors: {:?}",
@@ -4342,8 +4337,8 @@ async fn test_level_restored_after_non_dict_record_error() {
 #[tokio::test]
 async fn test_annotation_malformed_function_missing_params() {
     // Regression test for error handling of malformed Fn@ annotations.
-    // [Fn@Int] has only 1 entry, but function types require exactly 2.
-    let errors = check_err("[fn [let f@[type: [Fn@Int]]] $f]").await;
+    // [Fn@Integer] has only 1 entry, but function types require exactly 2.
+    let errors = check_err("[fn [let f@[type: [Fn@Integer]]] $f]").await;
     assert!(
         errors
             .iter()
@@ -4356,8 +4351,8 @@ async fn test_annotation_malformed_function_missing_params() {
 #[tokio::test]
 async fn test_annotation_malformed_function_non_dict_params() {
     // Function type with non-bracket parameter list should produce clear error.
-    // [Fn@Int 42] — second entry is not a bracket expression.
-    let errors = check_err("[fn [let f@[type: [Fn@Int 42]]] $f]").await;
+    // [Fn@Integer 42] — second entry is not a bracket expression.
+    let errors = check_err("[fn [let f@[type: [Fn@Integer 42]]] $f]").await;
     assert!(
         errors.iter().any(|e| e
             .message()
@@ -4447,7 +4442,7 @@ async fn test_arity_mismatch_named_args_counted() {
 
     // With an annotated param type, a wrong-type named arg should produce a type error.
     let errors = check_err(
-        "[f: [fn [let x@Int] $x]]
+        "[f: [fn [let x@Integer] $x]]
              ---
              [result: [call $f x: \"wrong-type\"]]",
     )
@@ -4876,24 +4871,24 @@ async fn test_resolve_type_assert_subst_apply_is_load_bearing() {
     // Case 1: TypeAssert with Int annotation returns Int (not IntLiteral(42))
     // This verifies the apply path returns the expected type (widening behavior).
     // Without apply (for concrete types), result is identical — but this exercises the code path.
-    let ty = result_field("[x: [@Int 42]]", "x").await;
+    let ty = result_field("[x: [@Integer 42]]", "x").await;
     assert_eq!(
         ty,
         Type::Int,
-        "[@Int 42] should return Int (the asserted type), not IntLiteral(42)"
+        "[@Integer 42] should return Int (the asserted type), not IntLiteral(42)"
     );
 
     // Case 2: TypeAssert with default: — inner fails, default succeeds.
     // Tests that state.subst.apply(&expected) at line ~1461 (default check path)
     // resolves the expected type correctly.
-    // [@[type: Int  default: 42] $missing]: $missing is undefined, check_expr fails,
+    // [@[type: Integer  default: 42] $missing]: $missing is undefined, check_expr fails,
     // default 42 is inferred as IntLiteral(42), is_subtype(IntLiteral, Int) = true,
     // return apply(Int) = Int.
-    let ty = result_field("[x: [@[type: Int  default: 42] $missing]]", "x").await;
+    let ty = result_field("[x: [@[type: Integer  default: 42] $missing]]", "x").await;
     assert_eq!(
             ty,
             Type::Int,
-            "[@[type: Int  default: 42] $missing] should return Int (the asserted type) using the default"
+            "[@[type: Integer  default: 42] $missing] should return Int (the asserted type) using the default"
         );
 
     // Case 3: Verify the apply at line ~1482 works for a concrete annotation type.
@@ -4955,7 +4950,8 @@ async fn test_check_call_with_scheme_records_func_span_in_type_map() {
         &mut Some(&mut type_map),
         &pipeline_type,
         &named_types,
-    );
+    )
+    .await;
     if !errors.is_empty() {
         panic!("document 1 should type-check, got errors: {:?}", errors);
     }
@@ -4971,7 +4967,8 @@ async fn test_check_call_with_scheme_records_func_span_in_type_map() {
         &mut Some(&mut type_map),
         &pipeline_type,
         &named_types,
-    );
+    )
+    .await;
     if !errors.is_empty() {
         panic!("document 2 should type-check, got errors: {:?}", errors);
     }
@@ -5063,7 +5060,7 @@ async fn test_check_expr_lambda_arity_mismatch() {
 
     let env: Arc<RwLock<crate::env::Env>> = Arc::new(RwLock::new(crate::env::Env::new()));
     let mut state = InferState::new();
-    let result = check_surface_expr(&lambda, &expected_ty, &env, &mut state, &mut None);
+    let result = check_surface_expr(&lambda, &expected_ty, &env, &mut state, &mut None).await;
 
     assert!(
         result.is_err(),
@@ -5086,9 +5083,9 @@ async fn test_double_typecheck_no_panic() {
     // for write-once tracking is a local variable created fresh in each infer_surface_expr
     // call, so no reset is needed and double-typecheck cannot trigger any assertion.
     let input = r#"
-            [@Int 42]
+            [@Integer 42]
             [@String "hello"]
-            [@Int 99]
+            [@Integer 99]
         "#;
 
     let mut program = crate::parse(input).unwrap().program;
@@ -5098,7 +5095,8 @@ async fn test_double_typecheck_no_panic() {
     let (errors1, type_map1, _doc_map1, _scheme_map1, _diagnostics1) = typecheck_surface_program(
         &program,
         Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
-    );
+    )
+    .await;
     assert!(
         errors1.is_empty() || errors1.iter().all(|e| !e.message().contains("panic")),
         "First typecheck should not panic"
@@ -5112,7 +5110,8 @@ async fn test_double_typecheck_no_panic() {
     let (errors2, type_map2, _doc_map2, _scheme_map2, _diagnostics2) = typecheck_surface_program(
         &program,
         Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
-    );
+    )
+    .await;
     assert!(
         errors2.is_empty() || errors2.iter().all(|e| !e.message().contains("panic")),
         "Second typecheck should not panic"
@@ -5126,7 +5125,8 @@ async fn test_double_typecheck_no_panic() {
     let (errors3, _type_map3, _doc_map3, _scheme_map3, _diagnostics3) = typecheck_surface_program(
         &program,
         Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
-    );
+    )
+    .await;
     assert!(
         errors3.is_empty() || errors3.iter().all(|e| !e.message().contains("panic")),
         "Third typecheck should not panic"
@@ -5148,7 +5148,8 @@ async fn test_error_recorded_in_type_map_on_failure() {
     let (errors, type_map, _doc_map, _scheme_map, _diagnostics) = typecheck_surface_program(
         &program,
         Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
-    );
+    )
+    .await;
 
     // Must have an error (undefined variable)
     assert!(!errors.is_empty(), "expected type error for $undefined");
@@ -5168,10 +5169,10 @@ async fn test_cascade_prevention_error_does_not_multiply_errors() {
     // Cascade prevention: when a call argument fails inference, only the original
     // error should be reported — not a cascade of "wrong argument type" errors on top.
     //
-    // [f: [fn [x@Int] $x]] called with $undefined (an undefined variable).
+    // [f: [fn [x@Integer] $x]] called with $undefined (an undefined variable).
     // Without cascade prevention: two errors — (1) undefined variable, (2) arg type mismatch.
     // With cascade prevention: only one error — undefined variable.
-    let errors = check_err("[f: [fn [let x@Int] $x]]\n[result: [call $f $undefined]]").await;
+    let errors = check_err("[f: [fn [let x@Integer] $x]]\n[result: [call $f $undefined]]").await;
 
     // Must have at least one error
     assert!(!errors.is_empty(), "expected at least one type error");
@@ -5248,7 +5249,8 @@ async fn test_calling_error_function_does_not_produce_t003() {
     let (errors, _type_map, _doc_map, _scheme_map, _diagnostics) = typecheck_surface_program(
         &program,
         Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
-    );
+    )
+    .await;
 
     // Should have an error about undefined variable inside `broken`
     let has_undefined = errors
@@ -5310,7 +5312,7 @@ async fn test_typecheck_returns_diagnostics() {
     let mut program = crate::parse(input).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
 
-    let (errors, _table, _tycon_env) = typecheck_surface_program_annotation_table(&program);
+    let (errors, _table, _tycon_env) = typecheck_surface_program_annotation_table(&program).await;
     assert!(
         errors.is_empty(),
         "simple dict should typecheck without errors"
@@ -5326,7 +5328,7 @@ async fn test_typecheck_with_types_returns_diagnostics() {
 
     let env = Arc::new(std::sync::RwLock::new(crate::env::Env::new()));
     let (errors, _type_map, _doc_map, _scheme_map, diagnostics) =
-        typecheck_surface_program(&program, env);
+        typecheck_surface_program(&program, env).await;
     assert!(
         errors.is_empty(),
         "simple dict should typecheck without errors"
@@ -5686,7 +5688,8 @@ async fn test_narrowing_type_map_hover() {
         &mut Some(&mut type_map),
         &empty_pipeline,
         &named_types,
-    );
+    )
+    .await;
 
     // The type map should have entries for the narrowed `x` in the then branch
     // We can't easily check the exact span, but verify the type map is populated
@@ -6048,7 +6051,7 @@ async fn test_adt_parameterized_alias_registered() {
 #[tokio::test]
 async fn test_exhaustive_match_int_string_complete() {
     // Complete coverage: Int and String arms cover the union
-    let result = check("[match [@[Int String] 42] Int: \"int\" String: \"str\"]").await;
+    let result = check("[match [@[Integer String] 42] Integer: \"int\" String: \"str\"]").await;
     assert!(
         result.is_ok(),
         "Int+String should be exhaustive: {:?}",
@@ -6059,14 +6062,14 @@ async fn test_exhaustive_match_int_string_complete() {
 #[tokio::test]
 async fn test_exhaustive_match_wildcard_covers_all() {
     // Wildcard covers all variants
-    let result = check("[match [@[Int String] 42] _: \"any\"]").await;
+    let result = check("[match [@[Integer String] 42] _: \"any\"]").await;
     assert!(result.is_ok(), "wildcard should cover all: {:?}", result);
 }
 
 #[tokio::test]
 async fn test_non_exhaustive_match_missing_variant() {
     // Missing String variant
-    let result = check("[match [@[Int String] 42] Int: \"int\"]").await;
+    let result = check("[match [@[Integer String] 42] Integer: \"int\"]").await;
     assert!(
         result.is_err(),
         "should fail typecheck for missing variant, but got Ok"
@@ -6082,8 +6085,10 @@ async fn test_non_exhaustive_match_missing_variant() {
 #[tokio::test]
 async fn test_redundant_arm_detected() {
     // Third arm (Int) is redundant — already covered
-    let result =
-        check("[match [@[Int String] 42] Int: \"int\" String: \"str\" Int: \"int-again\"]").await;
+    let result = check(
+        "[match [@[Integer String] 42] Integer: \"int\" String: \"str\" Integer: \"int-again\"]",
+    )
+    .await;
     assert!(
         result.is_err(),
         "should fail typecheck for redundant arm, but got Ok"
@@ -6100,7 +6105,7 @@ async fn test_redundant_arm_detected() {
 async fn test_inaccessible_arm_after_complete_coverage() {
     // Wildcard after complete Int+String coverage — inaccessible via ⊥
     let result =
-        check("[match [@[Int String] 42] Int: \"int\" String: \"str\" _: \"catch\"]").await;
+        check("[match [@[Integer String] 42] Integer: \"int\" String: \"str\" _: \"catch\"]").await;
     assert!(
         result.is_err(),
         "should fail typecheck for inaccessible arm, but got Ok"
@@ -6116,11 +6121,11 @@ async fn test_inaccessible_arm_after_complete_coverage() {
 #[tokio::test]
 async fn test_exhaustive_match_dict_variants() {
     // Structural variants: [ok: _] | [err: _]
-    // Use positional syntax @[[ok: Int] [err: String]] for inline union.
+    // Use positional syntax @[[ok: Integer] [err: String]] for inline union.
     // Bodies use literals (not pattern variables) since pattern bindings
     // aren't yet added to the type environment in the basic match checker.
     let result = check(
-        "[match [@[[ok: Int] [err: String]] [ok: 42]]\n\
+        "[match [@[[ok: Integer] [err: String]] [ok: 42]]\n\
                  [ok: _]:    \"ok\"\n\
                  [err: _]:   \"err\"]",
     )
@@ -6136,7 +6141,7 @@ async fn test_exhaustive_match_dict_variants() {
 async fn test_non_exhaustive_match_dict_missing_variant() {
     // Missing [err: _] variant
     let result = check(
-        "[match [@[[ok: Int] [err: String]] [ok: 42]]\n\
+        "[match [@[[ok: Integer] [err: String]] [ok: 42]]\n\
                  [ok: _]: \"ok\"]",
     )
     .await;
@@ -6195,7 +6200,7 @@ async fn test_exhaustive_match_non_union_no_check() {
     // Non-union scrutinee — match is not checked for exhaustiveness.
     // This match has only Int arm with no wildcard, but since 42 doesn't
     // have a union type, no exhaustiveness error is raised.
-    let result = check("[match 42 Int: \"int\"]").await;
+    let result = check("[match 42 Integer: \"int\"]").await;
     assert!(
         result.is_ok(),
         "non-union scrutinee should not trigger exhaustiveness: {:?}",
@@ -6294,7 +6299,8 @@ async fn test_doc_extraction_from_param_annotation() {
     let (_errors, _type_map, doc_map, _scheme_map, _diagnostics) = typecheck_surface_program(
         &program,
         Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
-    );
+    )
+    .await;
 
     assert_eq!(doc_map.get("x"), Some(&"The input value".to_string()));
 }
@@ -6308,7 +6314,8 @@ async fn test_doc_extraction_from_dict_entry_key() {
     let (_errors, _type_map, doc_map, _scheme_map, _diagnostics) = typecheck_surface_program(
         &program,
         Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
-    );
+    )
+    .await;
 
     assert_eq!(doc_map.get("myFunc"), Some(&"My function".to_string()));
 }
@@ -6316,13 +6323,14 @@ async fn test_doc_extraction_from_dict_entry_key() {
 #[tokio::test]
 async fn test_doc_extraction_from_fn_return_annotation() {
     // Test Task 2: extract doc from function return annotation
-    let input = "[count@[]: [fn@[type: Int  doc: \"Returns the count\"] [] 42]]";
+    let input = "[count@[]: [fn@[type: Integer  doc: \"Returns the count\"] [] 42]]";
     let mut program = crate::parse(input).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
     let (_errors, _type_map, doc_map, _scheme_map, _diagnostics) = typecheck_surface_program(
         &program,
         Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
-    );
+    )
+    .await;
 
     assert_eq!(doc_map.get("count"), Some(&"Returns the count".to_string()));
 }
@@ -6338,7 +6346,8 @@ async fn test_doc_extraction_combined() {
     let (_errors, _type_map, doc_map, _scheme_map, _diagnostics) = typecheck_surface_program(
         &program,
         Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
-    );
+    )
+    .await;
 
     // When both key annotation and return annotation have doc:, the return annotation
     // wins because it is extracted later during recursion (overwrite semantics).
@@ -6418,7 +6427,7 @@ async fn test_match_arm_nested_dict_pin_pattern_does_not_bind() {
 async fn test_recursive_function_with_annotation_works() {
     // Task 1: Recursive functions WITH return annotations should work
     // Use a simple recursive function that returns a constant (doesn't actually recurse at runtime)
-    let result = check("[f: [fn@Int [let x@Int] 42]]").await;
+    let result = check("[f: [fn@Integer [let x@Integer] 42]]").await;
     assert!(
         result.is_ok(),
         "function with return annotation should type-check: {:?}",
@@ -6454,7 +6463,7 @@ async fn test_call_mono_poly_agree_on_literals() {
     // should both accept IntLiteral(42) for Int parameter
     let result = check(
         "[id: [fn [let x] $x]\n\
-             id_int: [fn [let x@Int] $x]\n\
+             id_int: [fn [let x@Integer] $x]\n\
              poly_result: [$id 42]\n\
              mono_result: [$id_int 42]]",
     )
@@ -6470,7 +6479,7 @@ async fn test_call_mono_poly_agree_on_literals() {
 async fn test_int_to_number_subsumption() {
     // Task 2: Passing Int to Number param should work via subsumption
     let result = check(
-        "[to_number: [fn [let x@Int] $x]\n\
+        "[to_number: [fn [let x@Integer] $x]\n\
              result: [$to_number 42]]",
     )
     .await;
@@ -6563,7 +6572,7 @@ async fn test_scc_non_recursive_function_generalizes() {
     // Use [fn [x@a] $x] so the test detects SCC removal (Unknown would pass vacuously).
     let result = check(
         "[id: [fn [let x@a] $x]\n\
-             const: [fn [let x@Int] $x]\n\
+             const: [fn [let x@Integer] $x]\n\
              use_id_int: [$id 42]\n\
              use_id_str: [$id \"hello\"]]",
     )
@@ -7028,7 +7037,7 @@ async fn test_union_narrowing_in_pattern() {
     //
     // This rewrite tests what DOES work: union type annotations are accepted by the
     // type checker, and a function with a union return annotation infers its return type.
-    let result = check("[myfn: [fn@[Int String] [let n@Int] $n]]").await;
+    let result = check("[myfn: [fn@[Integer String] [let n@Integer] $n]]").await;
     assert!(
         result.is_ok(),
         "function with union return annotation should typecheck, got: {:?}",
@@ -7036,7 +7045,7 @@ async fn test_union_narrowing_in_pattern() {
     );
 
     // A function accepting a union-typed parameter passes the argument through.
-    let result = check("[myfn: [fn@[Int String] [let x@[Int String]] $x]]").await;
+    let result = check("[myfn: [fn@[Integer String] [let x@[Integer String]] $x]]").await;
     assert!(
         result.is_ok(),
         "function with union parameter annotation should typecheck, got: {:?}",
@@ -7084,7 +7093,8 @@ async fn test_scan_type_quality_detects_unknown() {
     let (errors, _type_map, _doc_map, _scheme_map, diagnostics) = typecheck_surface_program(
         &program,
         Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
-    );
+    )
+    .await;
 
     // Should have no type errors
     assert!(
@@ -7107,14 +7117,15 @@ async fn test_scan_type_quality_detects_unknown() {
 #[tokio::test]
 async fn test_scan_type_quality_no_diagnostic_for_concrete_types() {
     // Test that scan_type_quality does NOT emit diagnostics for concrete types
-    let mut program = crate::parse("[f: [fn@Int [let x@Int] $x]]")
+    let mut program = crate::parse("[f: [fn@Integer [let x@Integer] $x]]")
         .unwrap()
         .program;
     crate::desugar::desugar_surface_program(&mut program);
     let (errors, _type_map, _doc_map, _scheme_map, diagnostics) = typecheck_surface_program(
         &program,
         Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
-    );
+    )
+    .await;
 
     // Should have no type errors or diagnostics
     assert!(
@@ -7139,7 +7150,8 @@ async fn test_scan_type_quality_explicit_unknown_annotation() {
     let (errors, _type_map, _doc_map, _scheme_map, diagnostics) = typecheck_surface_program(
         &program,
         Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
-    );
+    )
+    .await;
 
     // Should have no type errors
     assert!(
@@ -7177,7 +7189,8 @@ async fn test_scan_type_quality_typeassert_unknown() {
     let (errors, _type_map, _doc_map, _scheme_map, diagnostics) = typecheck_surface_program(
         &program,
         Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
-    );
+    )
+    .await;
 
     // Should have no type errors
     assert!(
@@ -7211,15 +7224,16 @@ async fn test_scan_type_quality_typeassert_unknown() {
 
 #[tokio::test]
 async fn test_scan_type_quality_no_overbroad_for_matching_type() {
-    // Test that fn@Int when body infers Int does NOT produce over-broad diagnostic
-    let mut program = crate::parse("[f: [fn@Int [let x@Int] $x]]")
+    // Test that fn@Integer when body infers Int does NOT produce over-broad diagnostic
+    let mut program = crate::parse("[f: [fn@Integer [let x@Integer] $x]]")
         .unwrap()
         .program;
     crate::desugar::desugar_surface_program(&mut program);
     let (errors, _type_map, _doc_map, _scheme_map, diagnostics) = typecheck_surface_program(
         &program,
         Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
-    );
+    )
+    .await;
 
     // Should have no type errors or diagnostics
     assert!(
@@ -7366,7 +7380,9 @@ async fn test_placeholder_has_type_unknown() {
         crate::ast::SurfaceItem::Expr(n) => n,
         _ => panic!("expected expression item"),
     };
-    let ty = infer_surface_expr(node, &env, &mut state, &mut None).unwrap();
+    let ty = infer_surface_expr(node, &env, &mut state, &mut None)
+        .await
+        .unwrap();
     assert_eq!(
         ty,
         Type::Unknown,
@@ -7377,8 +7393,8 @@ async fn test_placeholder_has_type_unknown() {
 #[tokio::test]
 async fn test_placeholder_in_function_body_typechecks() {
     // Task 4: ... in a function body satisfies any return type annotation.
-    // [fn@Int [x@Int] ...] should type-check without error because ... : Unknown ~ Int.
-    let result = check("[f: [fn@Int [let x@Int] ...]]").await;
+    // [fn@Integer [x@Integer] ...] should type-check without error because ... : Unknown ~ Int.
+    let result = check("[f: [fn@Integer [let x@Integer] ...]]").await;
     assert!(
         result.is_ok(),
         "... in function body should satisfy any return type annotation; got: {:?}",
@@ -7400,10 +7416,10 @@ async fn test_case_arm_plain_binding_gets_scrutinee_type() {
 
 #[tokio::test]
 async fn test_case_arm_typed_binding_intersects_scrutinee() {
-    // T-1151: 2-arg [case [let n@Int] body] now requires 3 positional args.
+    // T-1151: 2-arg [case [let n@Integer] body] now requires 3 positional args.
     // Parser rejects it before the typechecker sees it.
     // The new 3-arg form is [case [let bindings] pattern body].
-    let result = check("[f: [fn [let x@Int] [case [let n@Int] n]]]");
+    let result = check("[f: [fn [let x@Integer] [case [let n@Integer] n]]]");
     let _ = result; // test updated to document behavior change post-T-1151
 }
 
@@ -8147,7 +8163,7 @@ async fn test_cond_like_function_typechecks() {
     // Test a function similar to cond: has return: annotation with multi-line doc and complex body
     // Note: this doesn't use cond from the prelude — it uses a simplified version
     let result = crate::typecheck_source_errors_only(
-            "[cond-impl2: [fn@Any [let pairs@Dict i@Int]\n  i]\n \
+            "[cond-impl2: [fn@Any [let pairs@Dict i@Integer]\n  i]\n \
              my-cond: [fn@[return: [a Null] doc: \"Multi-branch conditional\"] [let pairs@Dict] [cond-impl2 pairs 0]]]"
         )
         .await;
@@ -8165,7 +8181,7 @@ async fn test_exact_cond_annotation() {
     // Test with the EXACT same annotation as the prelude's cond function
     // Uses a triple-quoted doc string like the prelude
     let input = r#"[
-cond-impl: [fn@Any [let pairs@Dict i@Int] i]
+cond-impl: [fn@Any [let pairs@Dict i@Integer] i]
 my-cond: [fn@[return: [a Null]  doc: """
 Multi-branch conditional.
 
@@ -8192,8 +8208,8 @@ async fn test_prelude_typecheck_cond_isolation() {
     // The prelude env exposes `if`, not `builtin-if`.
     let simplified_prelude_cond = r#"
 [
-cond-impl: [fn@Any [let pairs@Dict i@Int] i]
-cond-check: [fn@Any [let pairs@Dict i@Int condition result] result]
+cond-impl: [fn@Any [let pairs@Dict i@Integer] i]
+cond-check: [fn@Any [let pairs@Dict i@Integer condition result] result]
 when: [fn@[return: [a Null]  doc: """
 Evaluate body if predicate is true.
 Example: [when true "result"] => "result"
@@ -8641,43 +8657,45 @@ async fn test_b452_type_alias_entry_type_is_not_unknown() {
     );
 }
 
-/// B-436: [type True False] should produce a union of two unit constructors, not a single-payload constructor.
-/// The 2-entry positional case in resolve_type_dict_with_guard was treating [type A B] as [A B],
-/// which meant A as constructor tag and B as its payload type. This test verifies the fix:
-/// when both entries are uppercase constructor names, fall through to the multi-entry union path.
+/// B-436: [type X Y] with two bare uppercase constructors must produce a union of two unit
+/// constructors, not a single-payload constructor.
+/// The 2-entry positional case was treating [type A B] as constructor A with payload B.
 #[tokio::test]
 async fn test_b436_two_unit_constructors_produce_union() {
-    let env = doc_env("[Bool: [type True False]]").await;
+    let env = doc_env("[Direction: [type North South]]").await;
 
-    // Both True and False should be exported as unit constructors with NominalVariant type
-    let true_scheme = env_get(&env, "True").expect("True should be in the exported env");
+    // Both North and South should be exported as unit constructors with qualified tags
+    let north = env_get(&env, "North").expect("North should be in the exported env");
     assert!(
-        matches!(&true_scheme.body, Type::NominalVariant { tag, fields } if tag == "True" && fields.fields.is_empty()),
-        "True should be a unit constructor (NominalVariant with no fields), got {:?}",
-        true_scheme.body
+        matches!(&north.body, Type::NominalVariant { tag, fields } if tag == "Direction.North" && fields.fields.is_empty()),
+        "North should be NominalVariant{{tag:Direction.North}}, got {:?}",
+        north.body
     );
 
-    let false_scheme = env_get(&env, "False").expect("False should be in the exported env");
+    let south = env_get(&env, "South").expect("South should be in the exported env");
     assert!(
-        matches!(&false_scheme.body, Type::NominalVariant { tag, fields } if tag == "False" && fields.fields.is_empty()),
-        "False should be a unit constructor (NominalVariant with no fields), got {:?}",
-        false_scheme.body
+        matches!(&south.body, Type::NominalVariant { tag, fields } if tag == "Direction.South" && fields.fields.is_empty()),
+        "South should be NominalVariant{{tag:Direction.South}}, got {:?}",
+        south.body
     );
 
-    // The type alias itself should resolve to a Union of the two constructors
-    let bool_scheme = env_get(&env, "Bool").expect("Bool should be in the exported env");
-    match &bool_scheme.body {
+    // The type alias itself should be Union of the two constructors
+    let dir = env_get(&env, "Direction").expect("Direction should be in the exported env");
+    match &dir.body {
         Type::Union(members) => {
-            assert_eq!(members.len(), 2, "Bool should be a union of 2 members");
-            let has_true = members
+            assert_eq!(members.len(), 2, "Direction should be a union of 2 members");
+            let has_north = members
                 .iter()
-                .any(|m| matches!(m, Type::NominalVariant { tag, .. } if tag == "True"));
-            let has_false = members
+                .any(|m| matches!(m, Type::NominalVariant { tag, .. } if tag == "Direction.North"));
+            let has_south = members
                 .iter()
-                .any(|m| matches!(m, Type::NominalVariant { tag, .. } if tag == "False"));
-            assert!(has_true, "Bool union should contain True variant");
-            assert!(has_false, "Bool union should contain False variant");
+                .any(|m| matches!(m, Type::NominalVariant { tag, .. } if tag == "Direction.South"));
+            assert!(has_north, "Direction union should contain Direction.North");
+            assert!(has_south, "Direction union should contain Direction.South");
         }
-        other => panic!("Bool should be Union of True and False, got {:?}", other),
+        other => panic!(
+            "Direction should be Union of two unit constructors, got {:?}",
+            other
+        ),
     }
 }

@@ -30,7 +30,7 @@ use super::*;
 /// Free variables from the enclosing scope would already be bound in `state.subst` and would
 /// not appear as TypeVars in the input type. Per Algorithm W, instantiation only applies to
 /// the syntactic type variables present in the type expression, which are all treated uniformly here.
-pub fn instantiate_at_level(ty: &Type, state: &mut InferState) -> Type {
+pub fn instantiate_at_level(ty: &Type, state: &mut InferState, span: &crate::ast::Span) -> Type {
     // Use Vec instead of HashSet to avoid hash computation overhead for small types.
     // Deduplication is handled by the contains_key guard below: only the first occurrence
     // of each type/row var generates a fresh variable. Subsequent occurrences are skipped.
@@ -50,19 +50,46 @@ pub fn instantiate_at_level(ty: &Type, state: &mut InferState) -> Type {
     // avoiding a resize when the type var count is known upfront (CALL-POLY hot path).
     // Note: capacity hint may be larger than actual unique count if there are duplicates,
     // but this wastes at most a few slots and is cheaper than deduplicating first.
+    // Build source-name frequency map: if two vars share the same source name, we must use
+    // the full concrete name as the instantiation source to avoid InferState collisions.
+    // Build source-name frequency counts (owned to avoid borrow conflicts).
+    let source_counts: HashMap<String, usize> = {
+        let mut m: HashMap<String, usize> = HashMap::new();
+        for var in &type_vars {
+            let src = crate::type_infer::InferState::typevar_source_only(var).to_owned();
+            *m.entry(src).or_insert(0) += 1;
+        }
+        m
+    };
+
     let renaming = Substitution {
         type_map: std::cell::RefCell::new(HashMap::with_capacity(type_vars.len())),
     };
     for var in type_vars {
         // First-write-wins: skip if this var was already mapped (handles duplicates from the Vec).
         if !renaming.type_map.borrow().contains_key(&var) {
-            let fresh_name = format!("_t{}", state.name_counter);
-            state.name_counter = state.name_counter.saturating_add(1);
-            state.set_level(fresh_name.clone(), state.level);
+            // Use the abstract source name when unique; fall back to full concrete name on collision.
+            let src = crate::type_infer::InferState::typevar_source_only(&var).to_owned();
+            let effective_src = if source_counts.get(&src).copied().unwrap_or(0) == 1 {
+                src
+            } else {
+                var.clone() // collision: preserve full concrete name for within-scope uniqueness
+            };
+            let kind = if operator_names.contains(&var) {
+                Kind::Operator
+            } else {
+                Kind::Type
+            };
+            let fresh_name =
+                crate::type_infer::InferState::typevar_name(&effective_src, &kind, span);
+            let lvl = state.level;
+            state.levels.insert(fresh_name.clone(), lvl);
+            state.type_vars.insert(
+                fresh_name.clone(),
+                crate::type_infer::TypeVarEntry::blank(lvl, kind.clone()),
+            );
 
-            // If this var appears as Type::Operator in the original type, preserve the Operator kind
-            if operator_names.contains(&var) {
-                // Register the fresh name in kind_env as Kind::Operator
+            if matches!(kind, Kind::Operator) {
                 state.kind_env.insert(fresh_name.clone(), Kind::Operator);
                 renaming
                     .type_map
@@ -72,7 +99,7 @@ pub fn instantiate_at_level(ty: &Type, state: &mut InferState) -> Type {
                 renaming
                     .type_map
                     .borrow_mut()
-                    .insert(var, Type::TypeVar(fresh_name, state.level));
+                    .insert(var, Type::TypeVar(fresh_name, lvl));
             }
         }
     }
@@ -189,6 +216,7 @@ pub fn instantiate_scheme(
     state: &mut InferState,
     origin_name: Option<&str>,
     origin_span: Option<Span>,
+    span: &Span,
 ) -> Type {
     if scheme.type_vars.is_empty() && scheme.kind_vars.is_empty() {
         // Monomorphic scheme: return body directly
@@ -202,9 +230,14 @@ pub fn instantiate_scheme(
     // avoid building Substitution (HashMap + apply HashSet).
     // Inline rename is allocation-free aside from the string format for the fresh name.
     if scheme.type_vars.len() == 1 && scheme.kind_vars.is_empty() {
-        let fresh_name = format!("_t{}", state.name_counter);
-        state.name_counter = state.name_counter.saturating_add(1);
-        state.set_level(fresh_name.clone(), level);
+        // Single var → always unique, use abstract source name.
+        let src = crate::type_infer::InferState::typevar_source_only(&scheme.type_vars[0]);
+        let fresh_name = crate::type_infer::InferState::typevar_name(src, &Kind::Type, span);
+        state.levels.insert(fresh_name.clone(), level);
+        state.type_vars.insert(
+            fresh_name.clone(),
+            crate::type_infer::TypeVarEntry::blank(level, Kind::Type),
+        );
         var_renaming.insert(scheme.type_vars[0].clone(), fresh_name.clone());
 
         // Copy constraints with renamed variables
@@ -291,19 +324,43 @@ pub fn instantiate_scheme(
         type_map: std::cell::RefCell::new(HashMap::with_capacity(total_vars)),
     };
 
+    // Build source-name frequency map across all scheme vars (type_vars + kind_vars).
+    // Vars sharing a source name must fall back to the full concrete name to avoid collisions.
+    let source_counts: HashMap<String, usize> = {
+        let mut m: HashMap<String, usize> = HashMap::new();
+        for var in scheme
+            .type_vars
+            .iter()
+            .chain(scheme.kind_vars.iter().map(|(v, _)| v))
+        {
+            let src = crate::type_infer::InferState::typevar_source_only(var).to_owned();
+            *m.entry(src).or_insert(0) += 1;
+        }
+        m
+    };
+
     // Instantiate regular type variables as Type::TypeVar.
     for var in &scheme.type_vars {
-        let fresh_name = format!("_t{}", state.name_counter);
-        state.name_counter = state.name_counter.saturating_add(1);
-        state.set_level(fresh_name.clone(), level);
+        let src = crate::type_infer::InferState::typevar_source_only(var).to_owned();
+        let effective_src = if source_counts.get(&src).copied().unwrap_or(0) == 1 {
+            src.as_str()
+        } else {
+            var.as_str()
+        };
+        let label = scheme.label_vars.contains(var);
+        let kind = if label { Kind::Label } else { Kind::Type };
+        let fresh_name = crate::type_infer::InferState::typevar_name(effective_src, &kind, span);
+        state.levels.insert(fresh_name.clone(), level);
+        state.type_vars.insert(
+            fresh_name.clone(),
+            crate::type_infer::TypeVarEntry::blank(level, kind.clone()),
+        );
         var_renaming.insert(var.clone(), fresh_name.clone());
         renaming
             .type_map
             .borrow_mut()
             .insert(var.clone(), Type::TypeVar(fresh_name.clone(), level));
-
-        // Re-register label vars in kind_env with Kind::Label
-        if scheme.label_vars.contains(var) {
+        if label {
             state.kind_env.insert(fresh_name, Kind::Label);
         }
     }
@@ -313,9 +370,18 @@ pub fn instantiate_scheme(
     // Kind::Label    → Type::TypeVar(fresh_name, level), registered in kind_env as Label.
     // Kind::Type     → Type::TypeVar(fresh_name, level) (same as a regular type_var).
     for (var, kind) in &scheme.kind_vars {
-        let fresh_name = format!("_t{}", state.name_counter);
-        state.name_counter = state.name_counter.saturating_add(1);
-        state.set_level(fresh_name.clone(), level);
+        let src = crate::type_infer::InferState::typevar_source_only(var).to_owned();
+        let effective_src = if source_counts.get(&src).copied().unwrap_or(0) == 1 {
+            src.as_str()
+        } else {
+            var.as_str()
+        };
+        let fresh_name = crate::type_infer::InferState::typevar_name(effective_src, kind, span);
+        state.levels.insert(fresh_name.clone(), level);
+        state.type_vars.insert(
+            fresh_name.clone(),
+            crate::type_infer::TypeVarEntry::blank(level, kind.clone()),
+        );
         var_renaming.insert(var.clone(), fresh_name.clone());
 
         let instantiated_type = match kind {
@@ -2420,7 +2486,7 @@ mod help_suggestion_tests {
 
         // Instantiate at level 1
         state.level = 1;
-        let instantiated = instantiate_at_level(&original_ty, &mut state);
+        let instantiated = instantiate_at_level(&original_ty, &mut state, &crate::rust_span!());
 
         // The result should be App(Operator(fresh_name), Int), not App(TypeVar(fresh_name), Int)
         match instantiated {
@@ -2730,7 +2796,14 @@ mod help_suggestion_tests {
             inner_schemes: None,
         };
 
-        let instantiated = instantiate_scheme(&scheme, state.level, &mut state, None, None);
+        let instantiated = instantiate_scheme(
+            &scheme,
+            state.level,
+            &mut state,
+            None,
+            None,
+            &crate::rust_span!(),
+        );
 
         // The instantiated type must be App(Operator(fresh_f), TypeVar(fresh_a, 1)).
         match instantiated {
@@ -2787,11 +2860,18 @@ mod help_suggestion_tests {
         use crate::types::{InferState, Type};
 
         let mut state = InferState::new();
-        let counter_before = state.name_counter;
+        let type_vars_before = state.type_vars.len();
 
         let scheme = TypeScheme::mono(Type::Int);
 
-        let result = instantiate_scheme(&scheme, state.level, &mut state, None, None);
+        let result = instantiate_scheme(
+            &scheme,
+            state.level,
+            &mut state,
+            None,
+            None,
+            &crate::rust_span!(),
+        );
 
         assert_eq!(
             result,
@@ -2799,8 +2879,9 @@ mod help_suggestion_tests {
             "monomorphic scheme must return body unchanged"
         );
         assert_eq!(
-            state.name_counter, counter_before,
-            "monomorphic instantiation must not increment name_counter"
+            state.type_vars.len(),
+            type_vars_before,
+            "monomorphic instantiation must not create new type variables"
         );
     }
 }

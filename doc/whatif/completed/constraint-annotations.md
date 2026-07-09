@@ -10,7 +10,7 @@ annotations, and to unify `fn@[...]` into a proper metadata dict?
 Tinct's type system infers typeclass constraints from the function body. When
 you write `[fn [a b] [= a b]]`, the type checker sees the `=` builtin (typed
 `Equatable a => a → a → Bool`) and infers `Equatable a` on the result scheme.
-LSP hover shows `Equatable a => Fn@Bool [a a]`. The constraint is correct — but
+LSP hover shows `Equatable a => Fn@Boolean [a a]`. The constraint is correct — but
 it cannot be written in source.
 
 The annotation `fn@Type` names the return type, and lowercase TypeVar names

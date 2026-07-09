@@ -4,7 +4,7 @@
 
 Tinct's numeric type system extends beyond `Int` and `Float` with three capabilities:
 
-1. **General value constraints via `is:`.** The `is:` annotation key accepts any `Fn@Bool [Any]` predicate — ranges, divisibility, sign checks, or domain-specific invariants:
+1. **General value constraints via `is:`.** The `is:` annotation key accepts any `Fn@Boolean [Any]` predicate — ranges, divisibility, sign checks, or domain-specific invariants:
 
    ```tinct
    port@[type: Int  is: [between 0 65535]]

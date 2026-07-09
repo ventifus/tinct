@@ -1,6 +1,6 @@
-# Test [fn [let x@Int y] body] syntax works correctly
+# Test [fn [let x@Integer y] body] syntax works correctly
 
-[fn [let x@Int y] [+ $x $y]]
+[fn [let x@Integer y] [+ $x $y]]
 
 === out
-[fn [let x@Int y] [+ x y]]
+[fn [let x@Integer y] [+ x y]]

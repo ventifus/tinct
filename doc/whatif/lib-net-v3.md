@@ -143,7 +143,7 @@ These correspond directly to cap-std's `TcpListener`, `UdpSocket`, and `TcpStrea
 | `udp-recv` | `[Fn [sock@UdpSocket] UdpDatagram]` | Receive one UDP datagram with source address (async) | Reads from `UdpSocket` opaque Rust state; tinct cannot access UdpSocket internals |
 | `udp-send` | `[Fn [sock@UdpSocket addr@SocketAddress data@Bytes] Null]` | Send a datagram to a specific address | Writes through `UdpSocket` opaque Rust state |
 | `unix-listen` | `[Fn [cap@DirCap path@String] [Channel Handle]]` | Incoming Unix socket connections | cap-std's `UnixListener` is not yet implemented upstream; wraps the accept loop internally using `openat2(RESOLVE_BENEATH)` + raw `UnixListener`. When cap-std adds `UnixListener`, two new Rust primitives appear: `unix-bind: [Fn [DirCap String] UnixListener]` and `unix-accept: [Fn [UnixListener] Handle]`; one `[instance [Listener UnixListener] accept: unix-accept]` declaration is added; `unix-listen` becomes pure tinct using `listen-loop` |
-| `builtin-read-bytes` | `[Fn [h@Handle n@Int] Bytes]` | Read exactly n bytes from a Handle (async, suspends until available). Exposed as `read` via the `ByteStream` typeclass instance. | Handle is opaque Rust state backed by tokio `AsyncRead`; tinct cannot access Handle internals or call tokio I/O directly |
+| `builtin-read-bytes` | `[Fn [h@Handle n@Integer] Bytes]` | Read exactly n bytes from a Handle (async, suspends until available). Exposed as `read` via the `ByteStream` typeclass instance. | Handle is opaque Rust state backed by tokio `AsyncRead`; tinct cannot access Handle internals or call tokio I/O directly |
 | `builtin-write-bytes` | `[Fn [h@Handle b@Bytes] Null]` | Write bytes to a Handle (async). Exposed as `write` via the `ByteStream` typeclass instance. | Handle is opaque Rust state backed by tokio `AsyncWrite` |
 | `builtin-parse-ip` | `[Fn [s@String] [Result IpAddress]]` | Parse a string as IPv4 or IPv6 address; `Result.Error` if not an IP | Used by `parse-ip` in net.llt; needed by cert-valid-for-host? for IP-ID vs DNS-ID routing (RFC 9525 §6.4) |
 | `builtin-unicode-nfc` | `[Fn [s@String] String]` | Unicode Canonical Decomposition + Canonical Composition (NFC). Required for consistent text storage and comparison across different input sources (RFC 5198). | `unicode-normalization` crate; needed by any tinct program that compares or stores multilingual text from external sources |
@@ -202,8 +202,8 @@ All operate on `Bytes` and `[Bytes N]`. All are Rust for one reason: timing-sens
 | `hmac-sha256` | `[Fn [key@Bytes  data@Bytes] [Bytes 32]]` | HMAC-SHA-256 | Constant-time |
 | `hmac-sha384` | `[Fn [key@Bytes  data@Bytes] [Bytes 48]]` | HMAC-SHA-384 | Constant-time; required for TLS_AES_256_GCM_SHA384 cipher suite |
 | `hkdf-extract` | `[Fn [hash@HkdfHash  salt@Bytes  input-key-material@Bytes] Bytes]` | HKDF-Extract (hash: `[Sha256]` `[Sha384]` `[Sha512]` `[Blake2s]`) | Constant-time; output size = hash output size (32 for Sha256/Blake2s, 48 for Sha384, 64 for Sha512) |
-| `hkdf-expand` | `[Fn@[Bytes len] [hash@HkdfHash  pseudorandom-key@Bytes  info@Bytes  len@Int]]` | HKDF-Expand | Constant-time; return type `[Bytes len]` inferred from argument |
-| `crypto-random` | `[Fn@[Bytes len] [let len@Int]]` | Cryptographically secure random bytes | OS entropy source; return type `[Bytes len]` inferred from argument — no TypeAssert needed at call site |
+| `hkdf-expand` | `[Fn@[Bytes len] [hash@HkdfHash  pseudorandom-key@Bytes  info@Bytes  len@Integer]]` | HKDF-Expand | Constant-time; return type `[Bytes len]` inferred from argument |
+| `crypto-random` | `[Fn@[Bytes len] [let len@Integer]]` | Cryptographically secure random bytes | OS entropy source; return type `[Bytes len]` inferred from argument — no TypeAssert needed at call site |
 
 ---
 
@@ -355,7 +355,7 @@ WsFrame: [union
   [Binary data@Bytes]
   [Ping   data@Bytes]
   [Pong   data@Bytes]
-  [Close  code@Int  reason@String]]
+  [Close  code@Integer  reason@String]]
 
 WebSocketConnection: [type [underlying: Handle  server-side: Bool]]
 
@@ -930,8 +930,8 @@ H3 used as byte transport — not HTTP. Each QUIC substream carries raw ICMP ech
 ```tinct
 # stdlib/protocols/icmp.llt
 IcmpPacket: [union
-  [EchoRequest id@Int  seq@Int  data@Bytes]
-  [EchoReply   id@Int  seq@Int  data@Bytes]]
+  [EchoRequest id@Integer  seq@Integer  data@Bytes]
+  [EchoReply   id@Integer  seq@Integer  data@Bytes]]
 
 # read-icmp returns IcmpRequest — packet + respond closure (not the raw packet directly)
 IcmpRequest: [type
@@ -1036,7 +1036,7 @@ HTTPS records have two forms. **ServiceMode** (priority > 0) carries the paramet
 SvcbRecord: [union
   [AliasMode  target@String]           # SvcPriority=0 (RFC 9460 §3): redirect to target
   [ServiceMode                         # SvcPriority>0: connection hints
-    priority@Int                       # lower = more preferred when multiple records exist
+    priority@Integer                       # lower = more preferred when multiple records exist
     target@[or String Absent]          # Absent/"." = use original QNAME (RFC 9460 §2.5.2)
     params@SvcParams]]                 # typed SvcParams — access via params.alpn, params.port, etc.
 
@@ -1055,7 +1055,7 @@ SvcParams: [type
 # Follow the SVCB alias chain and select the best ServiceMode record.
 # AliasMode (priority=0) redirects; ServiceMode (priority>0) carries hints.
 # When multiple ServiceMode records exist, the lowest priority number wins.
-svcb-lookup: [fn [let cap@NetCap host@String depth@Int]
+svcb-lookup: [fn [let cap@NetCap host@String depth@Integer]
   [if [> depth 3]
     null
     [match [try [await [task [resolve cap DnsQtype.HTTPS host]]]]
@@ -1082,7 +1082,7 @@ svcb-lookup: [fn [let cap@NetCap host@String depth@Int]
 
 # SVCB-aware HTTP connection — the implementation behind fetch.
 # Races HTTPS record lookup against A/AAAA, then races h3/QUIC against h2/TCP.
-http-connect: [fn [let cap@NetCap host@String port@Int]
+http-connect: [fn [let cap@NetCap host@String port@Integer]
   [svcb-task: [task [svcb-lookup cap host 0]]
    v6-task:   [task [lookup-ips cap DnsQtype.AAAA host]]
    v4-task:   [task [lookup-ips cap DnsQtype.A    host]]]
@@ -1112,7 +1112,7 @@ http-connect: [fn [let cap@NetCap host@String port@Int]
       [connect cap Http [host-port [hostname host] port]]]
 
 # Race h3/QUIC and h2/TCP with 250ms stagger in ALPN preference order.
-http-protocol-race: [fn [let cap@NetCap host@String port@Int
+http-protocol-race: [fn [let cap@NetCap host@String port@Integer
                           alpn@[Seq String] addrs@[Seq IpAddress] ech@Bytes]
   [result-ch:  [channel 1]
    h3?:        [not [empty? [filter [fn [let p] [= p "h3"]] alpn]]]
@@ -1530,7 +1530,7 @@ resolve-host: [fn [let cap@NetCap host@String]
 # If dots in host >= ndots: try absolute first, then each search domain.
 # If dots in host <  ndots: try each search domain first, then absolute.
 # A trailing dot in the original hostname means absolute only — no search expansion.
-candidate-names: [fn [let host@String search@[Seq String] ndots@Int]
+candidate-names: [fn [let host@String search@[Seq String] ndots@Integer]
   [if [ends-with? host "."]
     [list host]   # already absolute — no expansion
     [dot-count: [length [filter [fn [let c] [= c "."]] [str-to-chars host]]]

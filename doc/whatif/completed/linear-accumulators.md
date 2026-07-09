@@ -99,7 +99,7 @@ Value::Builder(Arc<Builder>)
 Builtins:
 
 ```tinct
-make-builder@[Fn [capacity: @Int] Builder]       # capacity: is a hint for IndexMap::with_capacity
+make-builder@[Fn [capacity: @Integer] Builder]       # capacity: is a hint for IndexMap::with_capacity
 builder-set@[Fn [b@Builder  k  v] Builder]       # O(1) amortized insert; strict on builder + key; returns same builder
 builder-delete@[Fn [b@Builder  k] Builder]       # O(1) remove; strict on builder + key; returns same builder
 builder-has?@[Fn [b@Builder  k] Bool]            # O(1) contains_key

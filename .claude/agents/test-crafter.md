@@ -88,7 +88,7 @@ The expected output is `parse_expression(input).node.to_string()` — run the pa
 
 **Eval test asserting zero warnings** — a test without `=== warn` implicitly asserts no warnings:
 ```
-[x@Int: 42]
+[x@Integer: 42]
 === out
 42
 ```

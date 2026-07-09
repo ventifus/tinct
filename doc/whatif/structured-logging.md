@@ -241,16 +241,16 @@ syslog-severity: [fn [let level@Level]
     [case [let _: Error] 3]]]
 
 # Formatter factory — caller chooses facility, appname, clock
-make-syslog-formatter: [fn [let facility@Int appname@Str clock@ClockCap]
-  [fn [let level@Level message@Str kv@Dict]
+make-syslog-formatter: [fn [let facility@Integer appname@String clock@ClockCap]
+  [fn [let level@Level message@String kv@Dict]
     [str "<" [+ [* facility 8] [syslog-severity level]] ">"
          [format-timestamp [now clock]] " "
          appname ": " message
          [if [empty? kv] "" [str " " [format-kv kv]]]]]]
 
 # Sink factory — caller provides the bound socket and destination
-make-syslog-sink: [fn [let sock host@Str port@Port]
-  [fn [let level@Level message@Str kv@Dict formatted-syslog@Str]
+make-syslog-sink: [fn [let sock host@String port@Port]
+  [fn [let level@Level message@String kv@Dict formatted-syslog@String]
     [udp-send sock host port formatted-syslog]]]
 ```
 
@@ -269,11 +269,11 @@ make-syslog-sink: [fn [let sock host@Str port@Port]
   # Each arm returns a fn that writes to the appropriate sinks
   log-router: [fn [let line@LogLine]
     [if [>= line.level Error]
-      [fn [let fmt@Str]               # Error: console stderr + syslog
+      [fn [let fmt@String]               # Error: console stderr + syslog
         [write-handle %stderr fmt]
         [syslog-sink line.level line.message
           [dissoc line "level" "message"] [syslog-fmt line]]]
-      [fn [let fmt@Str]               # Other: console stdout + syslog
+      [fn [let fmt@String]               # Other: console stdout + syslog
         [emit fmt]
         [syslog-sink line.level line.message
           [dissoc line "level" "message"] [syslog-fmt line]]]]]

@@ -47,7 +47,7 @@ write-config: [fn@Null [path@String  content@String  dir@DirCap]
     [write dir path content]]
 
 # @Null as a parameter type (unusual but consistent)
-assert-done: [fn@Bool [result@Null]
+assert-done: [fn@Boolean [result@Null]
     true]
 
 # Type assertion: check that a value is null

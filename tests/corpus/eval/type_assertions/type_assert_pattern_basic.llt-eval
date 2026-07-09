@@ -1,4 +1,4 @@
-# T-1154: [@Int x] no longer binds x (x is Pattern::Pin — wildcard, no binding).
+# T-1154: [@Integer x] no longer binds x (x is Pattern::Pin — wildcard, no binding).
 # Use a standalone [case [let x] x body] arm to bind the scrutinee.
 # The type check is deferred to the body; a single CaseArm covers all scrutinees.
 [match 42

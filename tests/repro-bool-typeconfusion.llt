@@ -9,6 +9,6 @@
   MyClass: [class [let a]]
 
   [instance MyClass
-    [let a@Int]: [method: [fn [let x] MyBool.MyTrue]]]
+    [let a@Integer]: [method: [fn [let x] MyBool.MyTrue]]]
 ]
 [MyBool.MyTrue]

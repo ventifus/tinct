@@ -2,6 +2,6 @@
 # Type checker and eval both see from-json as undefined (E002). Note: if from-json
 # were available, this would test CALL-MONO boundary guard — from-json returns Unknown,
 # function expects Int, so the Int guard would fire at runtime on a non-Int value.
-[call [fn [let x@Int] x] [from-json "\"hello\""]]
+[call [fn [let x@Integer] x] [from-json "\"hello\""]]
 === error
 undefined variable: from-json (defined at 4:27-4:36)

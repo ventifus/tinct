@@ -34,16 +34,16 @@
   builtin-raise: [fn@Never  [let msg@String] ...]
   builtin-try:   [fn@[union a [Error msg: String]] [let f@[Fn@a []]] ...]
   # builtin-if takes Int condition: 0 = false, nonzero = true (not Boolean).
-  builtin-if:    [fn@a      [let cond@Int then@a else@a] ...]
+  builtin-if:    [fn@a      [let cond@Integer then@a else@a] ...]
 
 
   # ── String primitives ────────────────────────────────────────────────────────────────
   builtin-str-bytes:[fn@Bytes [let s@String] ...]
-  builtin-str-hash: [fn@Int   [let s@String] ...]
+  builtin-str-hash: [fn@Integer   [let s@String] ...]
 
   # ── Comparison primitives — all return Int (1=true, 0=false) ────────────────────────
-  builtin-lt:         [fn@Int [let a@Int    b@Int]    ...]
-  builtin-eq-int:     [fn@Int [let a@Int    b@Int]    ...]
-  builtin-eq-float:   [fn@Int [let a@Float  b@Float]  ...]
-  builtin-eq-string:  [fn@Int [let a@String b@String] ...]
+  builtin-lt:         [fn@Integer [let a@Integer    b@Integer]    ...]
+  builtin-eq-int:     [fn@Integer [let a@Integer    b@Integer]    ...]
+  builtin-eq-float:   [fn@Integer [let a@Float  b@Float]  ...]
+  builtin-eq-string:  [fn@Integer [let a@String b@String] ...]
 ]

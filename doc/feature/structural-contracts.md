@@ -55,7 +55,7 @@ nginx-schema: [
 %@NginxConfig                          # named type alias
 ```
 
-This extends a syntax users already know from parameter annotations (`x@Number`) and expression assertions (`[@Int expr]`). No new syntax forms are needed for the type layer.
+This extends a syntax users already know from parameter annotations (`x@Number`) and expression assertions (`[@Integer expr]`). No new syntax forms are needed for the type layer.
 
 **Runtime schemas** are ordinary tinct dicts with recognized keys:
 
@@ -110,7 +110,7 @@ Error: contract violation at pipeline boundary (data.llt -> fmt/nginx.llt)
   Got: "8080" (String)
   Produced by: data.llt, line 3
 
-  Hint: use [@Int %.port] to convert, or fix the producing stage
+  Hint: use [@Integer %.port] to convert, or fix the producing stage
 ```
 
 This follows Findler and Felleisen's (2002) positive/negative party model: the producing stage is the positive party (obligated to produce conforming data), and the consuming stage is the negative party (obligated to use data according to its declared type). Each `---` boundary or file boundary is a contract boundary.

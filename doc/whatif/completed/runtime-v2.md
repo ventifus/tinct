@@ -883,7 +883,7 @@ pub struct EvalContext {
 ```tinct
 task-a@[Task Int]:  [task [+ 1 2]]
 ch@[Channel Str]:   [channel 10]
-result@Int:         [await task-a]
+result@Integer:         [await task-a]
 
 # await-all: homogeneous — [Seq [Task T]] → [Seq T], results in submission order
 results@[Seq Int]:  [await-all [task [+ 1 2]] [task [* 3 4]]]
@@ -1055,7 +1055,7 @@ SelectSource: [type [let t r] [SelectSource
 |---------|-----------|-------------|
 | `context` | `[Fn [] Context]` | Current evaluation's cancellation context |
 | `with-cancel` | `[Fn [ctx@Context] CancelHandle]` | Child context + cancel function |
-| `with-timeout` | `[Fn [ctx@Context  ms@Int] Context]` | Auto-cancels after duration |
+| `with-timeout` | `[Fn [ctx@Context  ms@Integer] Context]` | Auto-cancels after duration |
 | `with-deadline` | `[Fn [ctx@Context  ts@Timestamp] Context]` | Auto-cancels at absolute time |
 | `cancelled?` | `[Fn [ctx@Context] Bool]` | True if context cancelled |
 | `with-context` | `[Fn [ctx@Context  f@[Fn [] t]] t]` | Evaluates thunk under given context |
@@ -1063,12 +1063,12 @@ SelectSource: [type [let t r] [SelectSource
 | `cancel-task` | `[Fn [task@[Task t]] Null]` | Cancel a specific task; abort handle inside Task |
 | `cancel-root` | `Action` | Cancel root token — signals all tasks to stop |
 | `drain` | `Action` | Await until all in-flight tasks finish |
-| `exit-now` | `[Fn [code@Int] Null]` | `process::exit` immediately |
+| `exit-now` | `[Fn [code@Integer] Null]` | `process::exit` immediately |
 | `task` | `[Fn [expr@Any] [Task t]]` | Spawn evaluation of expr |
 | `await` | `[Fn [task@[Task t]] t]` | Suspend until task completes |
 | `await-all` | `[Fn [tasks@[Seq [Task t]]] [Seq t]]` | Await all; results in submission order. **Homogeneous:** all tasks must return type `t` — use separate `await` calls or a nominal sum type for heterogeneous results |
 | `await-any` | `[Fn [tasks@[Seq [Task t]]] t]` | Return first completed; abort rest |
-| `channel` | `[Fn [capacity@Int] [Channel t]]` | Bounded channel; capacity ≥ 1 |
+| `channel` | `[Fn [capacity@Integer] [Channel t]]` | Bounded channel; capacity ≥ 1 |
 | `send` | `[Fn [ch@[Channel t]  val@t] Null]` | Send; suspend if buffer full |
 | `recv` | `[Fn [ch@[Channel t]] t]` | Receive; suspend until available |
 | `select-once` | `[Fn [sources@[Seq [SelectSource t r]]] r]` | Wait for first ready channel — `t` and `r` are fresh `TypeVar`s instantiated per call site in the Rust primitive registration, not `Unknown` |

@@ -2217,7 +2217,7 @@ async fn run_fmt(
             .await
             .expect("builtin core type env unavailable");
         let (type_errors, _type_map, _doc_map, _scheme_map, fmt_diagnostics) =
-            tinct::typecheck::typecheck_surface_program(&program, env_arc);
+            tinct::typecheck::typecheck_surface_program(&program, env_arc).await;
 
         if !type_errors.is_empty() {
             let error_msgs: Vec<String> = type_errors
@@ -2349,7 +2349,7 @@ async fn run_lint(
         .await
         .expect("builtin core type env unavailable");
     let (type_errors, _type_map, _doc_map, _scheme_map, diagnostics) =
-        tinct::typecheck::typecheck_surface_program(&program, env_arc);
+        tinct::typecheck::typecheck_surface_program(&program, env_arc).await;
 
     // Collect all errors and warnings
     let mut all_messages = Vec::new();
@@ -2590,7 +2590,7 @@ async fn run_literate_lint(tangled: &str, config: &LiterateConfig<'_>) -> Result
         .await
         .expect("builtin core type env unavailable");
     let (type_errors, _type_map, _doc_map, _scheme_map, diagnostics) =
-        tinct::typecheck::typecheck_surface_program(&program, env_arc);
+        tinct::typecheck::typecheck_surface_program(&program, env_arc).await;
 
     // Collect all errors and warnings
     let mut all_messages = Vec::new();
@@ -2683,7 +2683,7 @@ async fn run_describe(file_path: &str) -> Result<(), String> {
         .await
         .expect("builtin core type env unavailable");
     let (_type_errors, _type_map, doc_map, _scheme_map, _diagnostics) =
-        tinct::typecheck::typecheck_surface_program(&program, env_arc);
+        tinct::typecheck::typecheck_surface_program(&program, env_arc).await;
 
     // Collect contract information from each document section.
     let mut contracts: Vec<ContractSection> = Vec::new();

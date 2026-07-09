@@ -1,5 +1,5 @@
 [
-  retry-countdown: [fn [let n@Int]
+  retry-countdown: [fn [let n@Integer]
     [if [= n 0]
       "success"
       [retry-countdown [- n 1]]]]

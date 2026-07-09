@@ -48,7 +48,7 @@ Dict keys need `Hash + Eq` (IndexMap implementation). `Equatable` and `Comparabl
 # Hashable and Sortable are NOT yet declared.
 
 [class [let Hashable k]  [Equatable k]    # Hashable implies Equatable
-  hash: [Fn@Int [k]]]                     # consistent with =: [= a b] → [= [hash a] [hash b]]
+  hash: [Fn@Integer [k]]]                     # consistent with =: [= a b] → [= [hash a] [hash b]]
 
 # Sortable does NOT imply Equatable. Float is Sortable (< is defined for floats)
 # but NOT Equatable — NaN != NaN breaks the reflexivity law [= a a] = True.
@@ -61,9 +61,9 @@ Dict keys need `Hash + Eq` (IndexMap implementation). `Equatable` and `Comparabl
 **`[Map k v]` requires `k: Hashable`.** The `Hashable` typeclass is not yet declared, which means the `Key { Int, String }` enum has not yet been replaced with the `HashableValue` approach. When `Hashable` is declared, these instances are needed:
 
 ```tinct
-[instance Hashable [let k@Int]:
-  [=:    [fn [let a@Int b@Int] [builtin-int-eq a b]]
-   hash: [fn [let a@Int]       a]]]              # Int IS its own hash — the integer value itself
+[instance Hashable [let k@Integer]:
+  [=:    [fn [let a@Integer b@Integer] [builtin-int-eq a b]]
+   hash: [fn [let a@Integer]       a]]]              # Int IS its own hash — the integer value itself
 
 
 # Boolean: no pair-match — use nested match for two-value dispatch.
@@ -75,7 +75,7 @@ Dict keys need `Hash + Eq` (IndexMap implementation). `Equatable` and `Comparabl
              Boolean.False: [match b  Boolean.False: true  _: false]]]
    hash: [fn [let a] [match a  Boolean.True: 1  Boolean.False: 0]]]]
 
-[instance Sortable [let k@Int]:
+[instance Sortable [let k@Integer]:
   [<: [fn [let a b] [builtin-lt a b]]]]
 
 [instance Sortable [let k@Float]:
@@ -1137,7 +1137,7 @@ The key insight: once `Boolean: [type True False]` is a TyConDef in the type env
 |--------|---------|----------|
 | Delete `Type::Bool` | Line 230 | Remove; update all match arms in `is_consistent`, `is_subtype`, `PartialEq`, `Display` (~15 sites in `type_def.rs` alone) |
 | Keep `Type::Str` | Line 228 | Retained — `String` becomes a TyConDef backed by `Type::Str`; `@String` remains valid until string-redesign whatif |
-| Delete `Type::Number` | Line 237 | Remove; replaced by `Number: [class [let Number n]]` with `[instance Number [let n@Int]: []]` and `[instance Number [let n@Float]: []]` in prelude. `@Number` becomes a typeclass constraint checked via instance existence in TypeEnv — no dispatch, no methods. Future numeric types add instances without changing the type checker core. |
+| Delete `Type::Number` | Line 237 | Remove; replaced by `Number: [class [let Number n]]` with `[instance Number [let n@Integer]: []]` and `[instance Number [let n@Float]: []]` in prelude. `@Number` becomes a typeclass constraint checked via instance existence in TypeEnv — no dispatch, no methods. Future numeric types add instances without changing the type checker core. |
 | `Type::Seq` | **Already `Type::App(TyCon("Seq"), elem)`** via `Type::seq()` helper | No change needed — already aligned |
 | Update `is_numeric` check | Line 350: `matches!(&expected, Type::Int | Type::Number | Type::Float)` | Remove `Type::Number` arm |
 
@@ -1224,7 +1224,7 @@ Items 1–3 can proceed in parallel immediately.
 Canonical `show` implementations for non-text built-in types:
 
 ```tinct
-[instance Showable [let t@Int]:
+[instance Showable [let t@Integer]:
   [show: [fn [let n] [int-to-string n]]]]       # pure tinct; defined in prelude
 
 [instance Showable [let t@Float]:
@@ -1252,7 +1252,7 @@ The irreducible primitive is **`builtin-encode: ByteOrder × a → Bytes`** — 
 # Encode any machine numeric to its byte representation
 [builtin-encode ByteOrder.NativeEndian 3.14@Float]   # → Bytes (8 bytes, IEEE 754 bit pattern)
 [builtin-encode ByteOrder.BigEndian 443@UInt16]      # → Bytes (2 bytes, network order)
-[builtin-encode ByteOrder.LittleEndian 42@Int]       # → Bytes (8 bytes, little-endian)
+[builtin-encode ByteOrder.LittleEndian 42@Integer]       # → Bytes (8 bytes, little-endian)
 
 # For Ryu: get the IEEE 754 bits as an integer
 float-bits: [fn [let f@Float]
@@ -1373,9 +1373,9 @@ User-readable string representation for any type. Follows the `-able` typeclass 
 **Primitive instances** (declared top-level, not in a dict, like all instances):
 
 ```tinct
-[instance Printable [let a@Int]:    [print: builtin-int->string]]
+[instance Printable [let a@Integer]:    [print: builtin-int->string]]
 [instance Printable [let a@Float]:  [print: builtin-float->string]]
-[instance Printable [let a@Bool]:   [print: [fn [let b] [if b "true" "false"]]]]
+[instance Printable [let a@Boolean]:   [print: [fn [let b] [if b "true" "false"]]]]
 [instance Printable [let a@String]: [print: identity]]
 ```
 
@@ -1518,16 +1518,16 @@ Random-access extension of `ByteStream`. Only files implement this — network s
 
 ```tinct
 [class [let Seekable h] [ByteStream h]
-  seek: [Fn@Int [h SeekFrom]]]
+  seek: [Fn@Integer [h SeekFrom]]]
 ```
 
 `tell = [seek h [SeekFrom.Current 0]]`. `size = [seek h [SeekFrom.End 0]]` (seek back after if needed). `SeekFrom` is defined in `stdlib/prelude.llt`:
 
 ```tinct
 SeekFrom: [union
-  [Start   pos@Int]
-  [End     pos@Int]
-  [Current pos@Int]]
+  [Start   pos@Integer]
+  [End     pos@Integer]
+  [Current pos@Integer]]
 ```
 
 ### `Datagram`
@@ -1593,8 +1593,8 @@ nonce:           [crypto-random 12]   # inferred as [Bytes 12] — dependent ret
 
 ```tinct
 [class [Indexable s e]
-  get:    [Fn [s@s i@Int] e]
-  slice:  [Fn [s@s start@Int len@Int] s]
+  get:    [Fn [s@s i@Integer] e]
+  slice:  [Fn [s@s start@Integer len@Integer] s]
   length: [Fn [s@s] Int]]
 
 [instance [Indexable [Bytes N] UInt8] ...]
@@ -1713,7 +1713,7 @@ qtype->int: [fn [let qt@DnsQtype]
   [match qt
     [DnsQtype.A]: 1    [DnsQtype.AAAA]: 28  ...]]
 
-int->rcode: [fn [let n@Int]
+int->rcode: [fn [let n@Integer]
   [match n  0: DnsRcode.NoError  1: DnsRcode.FormErr  ... _: DnsRcode.ServFail]]
 
 # After — zero lookup functions, constants live on the type:
@@ -1738,7 +1738,7 @@ DnsRcode: [type [NoError rcode: 0] [FormErr rcode: 1] ...]
   [determines: [[[s k] v]]  resolver: IndexResult]
   get:    [Fn@[or v Absent] [s k]]
   slice:  [Fn@s [s Int Int]]
-  length: [Fn@Int [s]]]
+  length: [Fn@Integer [s]]]
 ```
 
 The functional dependency `(s, k) → v` is essential: given `[get 0 my-list]`, the type checker knows `s = [List T]` and `k = Int`, so it resolves `v = T` without ambiguity. Without the FD, `v` would be inferred as `Unknown`. The `determines:` annotation uses the same multi-parameter typeclass infrastructure as `Addable`/`Subtractable`.
@@ -1789,8 +1789,8 @@ Each subsystem defines its own error type; callers handle only the failures rele
 FooError: [type
   [NotFound   key@String]
   [Forbidden  reason@String]
-  [Timeout    after@Int]
-  [BadFormat  offset@Int]]
+  [Timeout    after@Integer]
+  [BadFormat  offset@Integer]]
 
 # Return it alongside success values
 do-thing: [fn@[or FooResult FooError] [let input]

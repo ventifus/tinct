@@ -1,7 +1,7 @@
 # annotation-of exposes both doc: and return: from @[...] function annotations (B-406).
 # doc: is evaluated (including triple-quoted strings via [unindent "..."]).
 # return: is exposed as a string representation of the return type annotation.
-[f: [fn@[return: Number  doc: "Adds one to the input"] [let x@Int] [+ x 1]]]
+[f: [fn@[return: Number  doc: "Adds one to the input"] [let x@Integer] [+ x 1]]]
 [ann: [annotation-of f]]
 [result-doc: [= ann.doc "Adds one to the input"]
  result-ret: [= ann.return "Number"]]

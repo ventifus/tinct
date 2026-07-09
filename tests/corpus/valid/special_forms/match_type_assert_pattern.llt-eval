@@ -1,5 +1,5 @@
 [match 42
-    [@Int x]: x
+    [@Integer x]: x
     _: -1]
 === out
-[match 42 [@Int x] x _ -1]
+[match 42 [@Integer x] x _ -1]

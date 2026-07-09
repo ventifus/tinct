@@ -1,4 +1,4 @@
-# T-1154: [@Bool x] no longer binds x (x is Pattern::Pin — wildcard, no binding).
+# T-1154: [@Boolean x] no longer binds x (x is Pattern::Pin — wildcard, no binding).
 # Use a standalone [case [let x] x body] arm. The _: False arm may or may not
 # trigger a coverage warning depending on the Bool scrutinee type inference.
 [match True

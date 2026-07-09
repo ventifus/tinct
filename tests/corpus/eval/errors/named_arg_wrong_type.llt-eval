@@ -1,5 +1,5 @@
 # Named arg type checking: wrong type — runtime error (type-check warning not yet implemented)
-[f: [fn [let x@Int y@Int] [call $+ $x $y]]
+[f: [fn [let x@Integer y@Integer] [call $+ $x $y]]
  result: [call $f 42 y: "not an int"]]
 === error
 no instance for Addable (Int, String) (defined at 1:27-1:42)

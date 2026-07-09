@@ -163,7 +163,7 @@ type mismatch
 These tests deliberately trigger type checker warnings:
 
 ```
-[f: [fn@String [x@Int] x]]
+[f: [fn@String [x@Integer] x]]
 === out
 {"f": <function>}
 === warn

@@ -4,469 +4,14 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use super::{infer_surface_expr, TypeMap};
-use crate::ast::{
-    Annotation, Span, Spanned, SurfaceDeclaration, SurfaceEntry, SurfaceExpression, SurfaceNode,
-};
+use crate::ast::{Span, Spanned, SurfaceDeclaration, SurfaceEntry, SurfaceExpression, SurfaceNode};
 use crate::env::Env;
 use crate::type_def::{RowTail, TyConDef};
 use crate::type_infer::Substitution;
-use crate::types::{generalize_with_doc, InferState, Row, Type, TypeAlias, TypeError, TypeScheme};
-
-/// Resolve a type alias body synchronously for TyConDef population.
-///
-/// This is a best-effort sync resolver that handles common type alias bodies without
-/// needing the async `resolve_type_expr`. It covers:
-/// - Simple type names: `String` → `Str`, `Int` → `Int`, etc.
-/// - `[or T1 T2 ...]` union forms
-/// - Dict with all-positional entries (ADT constructors)
-/// - Anything else → `Type::Unknown`
-///
-/// The `param_names` are the declared type parameter names (from `[let a b ...]`);
-/// these are treated as type variables in the body.
-fn resolve_type_alias_body_sync(body: &Arc<SurfaceNode>, param_names: &[String]) -> Type {
-    resolve_type_node_sync(&body.expr, param_names)
-}
-
-/// Resolve a single SurfaceExpression as a type synchronously.
-fn resolve_type_node_sync(expr: &SurfaceExpression, param_names: &[String]) -> Type {
-    match expr {
-        SurfaceExpression::VarRef { name, .. } => {
-            // Uppercase bare VarRef with no annotation in constructor position → unit variant
-            if name.starts_with(|c: char| c.is_uppercase())
-                && !matches!(
-                    name.as_str(),
-                    "String"
-                        | "Str"
-                        | "Int"
-                        | "Integer"
-                        | "Float"
-                        | "Bytes"
-                        | "Bool"
-                        | "Boolean"
-                        | "Never"
-                        | "Unknown"
-                        | "Any"
-                        | "Null"
-                )
-                && !param_names.contains(name)
-            {
-                // Unit nominal variant constructor (e.g. Red, None, True)
-                return Type::NominalVariant {
-                    tag: name.clone(),
-                    fields: Row {
-                        fields: indexmap::IndexMap::new(),
-                        tail: RowTail::Empty,
-                    },
-                };
-            }
-            resolve_type_name_sync(name, param_names)
-        }
-        // String literal in type position (e.g. "ok" | "err" | "pending")
-        SurfaceExpression::Str(s) => Type::StringLiteral(s.clone()),
-        SurfaceExpression::Call {
-            func,
-            args,
-            named_args,
-            implied: true,
-        } => {
-            // Handle [Fn@RetType [Params...]] function type form.
-            // `func` is VarRef("Fn", annotation: Some(ret_ann)), args is [param_list_node].
-            if let SurfaceExpression::VarRef {
-                name,
-                annotation: Some(ret_ann),
-                ..
-            } = &func.expr
-            {
-                if name == "Fn" || name == "fn" {
-                    // Resolve return type from annotation.
-                    let ret_ty = resolve_annotation_type_sync(&ret_ann.node, param_names);
-                    // Resolve param types from the first arg node.
-                    let param_types = if args.len() == 1 {
-                        resolve_param_list_sync(&args[0].expr, param_names)
-                    } else {
-                        args.iter()
-                            .map(|a| resolve_type_node_sync(&a.expr, param_names))
-                            .collect()
-                    };
-                    let required_count = param_types.len();
-                    let params: Vec<(Option<String>, Type)> =
-                        param_types.into_iter().map(|ty| (None, ty)).collect();
-                    return Type::Function {
-                        params,
-                        ret: Box::new(ret_ty),
-                        variadic: false,
-                        required_count,
-                    };
-                }
-            }
-            // Handle [or T1 T2 ...] union form
-            if let SurfaceExpression::VarRef { name, .. } = &func.expr {
-                if name == "or" {
-                    let members: Vec<Type> = args
-                        .iter()
-                        .map(|a| resolve_type_node_sync(&a.expr, param_names))
-                        .collect();
-                    if members.is_empty() {
-                        return Type::Unknown;
-                    }
-                    return Type::normalize_union(members);
-                }
-                // Implied call: [TypeName] or [TypeName arg ...] — nominal variant constructor
-                if name.starts_with(|c: char| c.is_uppercase()) {
-                    if !named_args.is_empty() {
-                        // Named-field variant: [Ok value: a err: String]
-                        let mut fields = indexmap::IndexMap::new();
-                        for na in named_args {
-                            let field_name = na.node.name.clone();
-                            let field_ty = resolve_type_node_sync(&na.node.value.expr, param_names);
-                            fields.insert(field_name, field_ty);
-                        }
-                        return Type::NominalVariant {
-                            tag: name.clone(),
-                            fields: Row {
-                                fields,
-                                tail: RowTail::Empty,
-                            },
-                        };
-                    } else if args.len() == 1 {
-                        // Single positional arg: [Ok a] — check if the arg is also an
-                        // uppercase constructor name (B-436: [type True False] produces
-                        // Union, not NominalVariant with payload).
-                        // Builtin type names start uppercase but are NOT unit constructors.
-                        // Exclude them from the B-436 union-of-unit-constructors detection.
-                        const BUILTIN_TYPE_NAMES: &[&str] = &[
-                            "String", "Str", "Int", "Integer", "Float", "Bytes", "Bool", "Boolean",
-                            "Never", "Unknown", "Any", "Null",
-                        ];
-                        let second_name: Option<&str> = match &args[0].expr {
-                            SurfaceExpression::VarRef { name: n, .. }
-                                if n.starts_with(|c: char| c.is_uppercase())
-                                    && !BUILTIN_TYPE_NAMES.contains(&n.as_str())
-                                    && !param_names.contains(n) =>
-                            {
-                                Some(n.as_str())
-                            }
-                            _ => None,
-                        };
-                        // Also exclude the first name if it's a builtin type.
-                        let first_is_builtin = BUILTIN_TYPE_NAMES.contains(&name.as_str());
-                        if let Some(second_ctor) = second_name.filter(|_| !first_is_builtin) {
-                            // Both entries are uppercase constructor names → Union of two unit variants.
-                            // [type True False] → Union(NominalVariant("True"), NominalVariant("False"))
-                            let first = Type::NominalVariant {
-                                tag: name.clone(),
-                                fields: Row {
-                                    fields: indexmap::IndexMap::new(),
-                                    tail: RowTail::Empty,
-                                },
-                            };
-                            let second = Type::NominalVariant {
-                                tag: second_ctor.to_string(),
-                                fields: Row {
-                                    fields: indexmap::IndexMap::new(),
-                                    tail: RowTail::Empty,
-                                },
-                            };
-                            return Type::normalize_union(vec![first, second]);
-                        }
-                        // Single payload arg: [Ok a] — value field carries the type
-                        let field_ty = resolve_type_node_sync(&args[0].expr, param_names);
-                        let mut fields = indexmap::IndexMap::new();
-                        fields.insert("value".to_string(), field_ty);
-                        return Type::NominalVariant {
-                            tag: name.clone(),
-                            fields: Row {
-                                fields,
-                                tail: RowTail::Empty,
-                            },
-                        };
-                    } else if !args.is_empty() {
-                        // Multiple positional args: treat as union of all constructors
-                        // [type A B C] → Union(A, B, C)
-                        let mut members = vec![Type::NominalVariant {
-                            tag: name.clone(),
-                            fields: Row {
-                                fields: indexmap::IndexMap::new(),
-                                tail: RowTail::Empty,
-                            },
-                        }];
-                        for arg in args {
-                            members.push(resolve_type_node_sync(&arg.expr, param_names));
-                        }
-                        return Type::normalize_union(members);
-                    } else {
-                        // Zero-arg implied call: [Foo] — unit variant constructor
-                        return Type::NominalVariant {
-                            tag: name.clone(),
-                            fields: Row {
-                                fields: indexmap::IndexMap::new(),
-                                tail: RowTail::Empty,
-                            },
-                        };
-                    }
-                }
-            }
-            Type::Unknown
-        }
-        SurfaceExpression::Dict(entries) => {
-            let all_positional = entries.iter().all(|e| e.node.key.is_none());
-            if all_positional && !entries.is_empty() {
-                // Special case: `[Fn@RetType [Params]]` function type form.
-                // The parser classifies this as a Dict (Priority 2b) because the head
-                // identifier `Fn` is followed by `@`. Detect and expand it here.
-                if entries.len() == 2 {
-                    if let SurfaceExpression::VarRef {
-                        name,
-                        annotation: Some(ret_ann),
-                        ..
-                    } = &entries[0].node.value.expr
-                    {
-                        if name == "Fn" || name == "fn" {
-                            let ret_ty = resolve_annotation_type_sync(&ret_ann.node, param_names);
-                            let param_types =
-                                resolve_param_list_sync(&entries[1].node.value.expr, param_names);
-                            let required_count = param_types.len();
-                            let params: Vec<(Option<String>, Type)> =
-                                param_types.into_iter().map(|ty| (None, ty)).collect();
-                            return Type::Function {
-                                params,
-                                ret: Box::new(ret_ty),
-                                variadic: false,
-                                required_count,
-                            };
-                        }
-                    }
-                }
-                // All-positional dict: each entry is a constructor (ADT union body).
-                let members: Vec<Type> = entries
-                    .iter()
-                    .map(|e| resolve_type_node_sync(&e.node.value.expr, param_names))
-                    .collect();
-                if members.len() == 1 {
-                    members.into_iter().next().unwrap()
-                } else {
-                    Type::normalize_union(members)
-                }
-            } else {
-                // Keyed dict: structural record type alias body ([head: Int  tail: List]).
-                // Produce a Record type with the declared fields.
-                // Special cases that can't be resolved synchronously return Unknown.
-                let has_uniform_key = entries.iter().any(|e| {
-                    e.node
-                        .key
-                        .as_ref()
-                        .is_some_and(|k| matches!(&k.expr, SurfaceExpression::VarRef { name, .. } if name == "_"))
-                });
-                if has_uniform_key {
-                    // Uniform dict type (`_@k: v` syntax) — cannot resolve synchronously.
-                    return Type::Unknown;
-                }
-                let mut fields = indexmap::IndexMap::new();
-                for entry in entries {
-                    if let Some(ref key) = entry.node.key {
-                        let key_name = match &key.expr {
-                            SurfaceExpression::Str(s) => Some(s.clone()),
-                            SurfaceExpression::VarRef { name, .. } => {
-                                if name != "_" {
-                                    Some(name.clone())
-                                } else {
-                                    None
-                                }
-                            }
-                            _ => None,
-                        };
-                        if let Some(k) = key_name {
-                            let field_ty =
-                                resolve_type_node_sync(&entry.node.value.expr, param_names);
-                            fields.insert(k, field_ty);
-                        }
-                    }
-                }
-                if fields.is_empty() {
-                    Type::Unknown
-                } else {
-                    Type::Record(Row {
-                        fields,
-                        tail: RowTail::Empty,
-                    })
-                }
-            }
-        }
-        _ => Type::Unknown,
-    }
-}
-
-/// Resolve a type name string synchronously.
-fn resolve_type_name_sync(name: &str, param_names: &[String]) -> Type {
-    // Check if this is a declared type parameter
-    if param_names.contains(&name.to_string()) {
-        return Type::TypeVar(name.to_string(), 0);
-    }
-    match name {
-        "String" | "Str" => Type::Str,
-        "Int" | "Integer" => Type::Int,
-        "Float" => Type::Float,
-        "Bytes" => Type::Bytes,
-        "Bool" | "Boolean" => Type::TyCon("Boolean".to_string()),
-        "Never" => Type::Never,
-        "Unknown" => Type::Unknown,
-        "Any" => Type::Any,
-        "Null" => Type::Record(Row {
-            fields: indexmap::IndexMap::new(),
-            tail: RowTail::Empty,
-        }),
-        // User-defined type names (uppercase, not a recognized builtin) → TyCon reference
-        other if other.starts_with(|c: char| c.is_uppercase()) => Type::TyCon(other.to_string()),
-        // Lowercase names that aren't params: fresh type variable (unresolved)
-        other => Type::TypeVar(other.to_string(), 0),
-    }
-}
-
-/// Resolve a type annotation (from a VarRef annotation field) as a Type synchronously.
-/// Used by `resolve_type_node_sync` for `Fn@RetType` forms in type alias bodies.
-fn resolve_annotation_type_sync(ann: &Annotation, param_names: &[String]) -> Type {
-    match ann {
-        Annotation::Simple(name) => resolve_type_name_sync(name, param_names),
-        Annotation::Annotated(name, _) => resolve_type_name_sync(name, param_names),
-        Annotation::PropertyDict(entries) => {
-            // Look for `type:` key
-            for entry in entries {
-                let key_is_type = entry.node.key.as_ref().is_some_and(|k| {
-                    matches!(&k.expr, SurfaceExpression::Str(s) if s == "type")
-                        || matches!(&k.expr, SurfaceExpression::VarRef { name, .. } if name == "type")
-                });
-                if key_is_type {
-                    return resolve_type_node_sync(&entry.node.value.expr, param_names);
-                }
-            }
-            Type::Unknown
-        }
-    }
-}
-
-/// Resolve a parameter list node to a Vec<Type> synchronously.
-/// Handles:
-/// - Dict with all-positional entries: each entry is a param type.
-/// - Implied call with plain VarRef head: `[a]` or `[Int Str]` — the parser produces
-///   `Call { func: VarRef("a"), args: [] }` or `Call { func: VarRef("Int"), args: [VarRef("Str")] }`
-///   for positional type lists. Treat each element (func + args) as a separate type.
-/// - Single expression: one param type.
-fn resolve_param_list_sync(expr: &SurfaceExpression, param_names: &[String]) -> Vec<Type> {
-    match expr {
-        SurfaceExpression::Dict(entries) => {
-            // All-positional entries: each entry is a param type.
-            entries
-                .iter()
-                .map(|e| resolve_type_node_sync(&e.node.value.expr, param_names))
-                .collect()
-        }
-        // Implied call with a plain (unannotated) VarRef head: `[a]`, `[Int]`, `[a b]`, `[Int Str]`.
-        // The parser parses `[Fn@b [a b]]`'s param bracket `[a b]` as an implied call with
-        // func=VarRef("a") and args=[VarRef("b")], not as a Dict. Similarly `[Int]` becomes
-        // Call{VarRef("Int"), []}.  Treating the entire expression as a single type via the
-        // `other` arm would wrongly produce Unknown (for lowercase) or NominalVariant (for
-        // uppercase).  Instead, expand the Call spine: func is the first type, each arg is a
-        // subsequent type — mirroring `resolve_params_for_typeassert` in typecheck.rs.
-        SurfaceExpression::Call {
-            func,
-            args,
-            implied: true,
-            ..
-        } if matches!(
-            &func.expr,
-            SurfaceExpression::VarRef {
-                annotation: None,
-                ..
-            }
-        ) =>
-        {
-            let mut types = vec![resolve_type_node_sync(&func.expr, param_names)];
-            for arg in args {
-                types.push(resolve_type_node_sync(&arg.expr, param_names));
-            }
-            types
-        }
-        // Single expression: one param type
-        other => vec![resolve_type_node_sync(other, param_names)],
-    }
-}
-
-/// Build a `TyConDef` from a type alias declaration with a synchronously-resolved body.
-///
-/// Used by `infer_dict` Pass 2 to populate `state.tycon_env` so that tests and production
-/// code can inspect registered type constructors without requiring the async resolution path.
-///
-/// `alias_name` is the name being registered — any reference to this name in the body is a
-/// recursive self-reference and is returned as a fresh TypeVar (mu-variable placeholder).
-fn build_tycon_def_sync(
-    alias_name: &str,
-    params: &[(String, Option<Spanned<Annotation>>)],
-    body: &Arc<SurfaceNode>,
-) -> std::sync::Arc<TyConDef> {
-    let param_names: Vec<String> = params.iter().map(|(n, _)| n.clone()).collect();
-    // Add the alias name itself as a "recursive" marker: when the body contains a VarRef
-    // to the alias name, resolve_type_node_sync will treat it as a TypeVar (mu-variable).
-    let mut recursive_guard = param_names.clone();
-    recursive_guard.push(alias_name.to_string());
-    let resolved_body = resolve_type_alias_body_sync(body, &recursive_guard);
-    // Qualify constructor tags with the alias name (e.g., "Ok" → "Result.Ok").
-    // NominalVariant tags in the raw body are unqualified bare names from the source;
-    // they must be qualified so type display and unification use the correct qualified tags.
-    let qualify_tag = |tag: &str| -> String {
-        if alias_name.is_empty() || tag.contains('.') {
-            tag.to_string()
-        } else {
-            format!("{}.{}", alias_name, tag)
-        }
-    };
-    let qualify_nominal = |ty: Type| -> Type {
-        match ty {
-            Type::NominalVariant { tag, fields } => Type::NominalVariant {
-                tag: qualify_tag(&tag),
-                fields,
-            },
-            other => other,
-        }
-    };
-    let resolved_body = match resolved_body {
-        Type::NominalVariant { tag, fields } => Type::NominalVariant {
-            tag: qualify_tag(&tag),
-            fields,
-        },
-        Type::Union(members) => {
-            Type::normalize_union(members.into_iter().map(qualify_nominal).collect())
-        }
-        other => other,
-    };
-    let constructors: Vec<(String, usize)> = match &resolved_body {
-        Type::NominalVariant { tag, fields } => {
-            let arity = if fields.fields.is_empty() { 0 } else { 1 };
-            vec![(tag.clone(), arity)]
-        }
-        Type::Union(members) => members
-            .iter()
-            .filter_map(|m| match m {
-                Type::NominalVariant { tag, fields } => {
-                    let arity = if fields.fields.is_empty() { 0 } else { 1 };
-                    Some((tag.clone(), arity))
-                }
-                _ => None,
-            })
-            .collect(),
-        _ => Vec::new(),
-    };
-    std::sync::Arc::new(TyConDef {
-        params: param_names,
-        body: resolved_body,
-        constraints: Vec::new(),
-        variance: Vec::new(),
-        constructors,
-        builtin_type: None,
-        annotation: None,
-        field_annotations: indexmap::IndexMap::new(),
-        constructor_constants: indexmap::IndexMap::new(),
-    })
-}
+use crate::types::{
+    generalize_with_doc, Constraint, InferState, Kind, Row, Type, TypeAlias, TypeEnv, TypeError,
+    TypeScheme,
+};
 
 /// Strongly Connected Component - a group of mutually dependent bindings
 pub(crate) struct Scc {
@@ -700,7 +245,7 @@ fn collect_dependencies(
     deps
 }
 
-pub(crate) fn infer_dict(
+pub(crate) async fn infer_dict(
     entries: &[Spanned<SurfaceEntry>],
     env: &Arc<RwLock<Env>>,
     state: &mut InferState,
@@ -712,6 +257,9 @@ pub(crate) fn infer_dict(
     state.level += 1;
 
     let mut dict_env = Env::with_parent(Arc::clone(env));
+    // Extra schemes from ADT constructors — injected in Pass 2, merged into final schemes.
+    // Keyed by short constructor name (e.g. "True" for Bool.True).
+    let mut ctor_schemes: HashMap<String, TypeScheme> = HashMap::new();
     // key_entries: Vec<(key_name, is_alias, is_static_key)>
     // - key_name: the resolved key string (Some for named/auto-indexed, None for computed)
     // - is_alias: true if the entry value is a TypeAlias declaration
@@ -724,7 +272,7 @@ pub(crate) fn infer_dict(
 
     // Pass 0: Key resolution
     for entry in entries {
-        let key_name = entry_key_name(&entry.node, &mut auto_index, env, state, type_map);
+        let key_name = entry_key_name(&entry.node, &mut auto_index, env, state, type_map).await;
         let is_alias = matches!(
             &entry.node.value.expr,
             SurfaceExpression::Decl(d) if matches!(d.as_ref(), SurfaceDeclaration::TypeAlias { .. })
@@ -750,18 +298,120 @@ pub(crate) fn infer_dict(
             if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
                 if let SurfaceDeclaration::TypeAlias { params, body } = decl.as_ref() {
                     let mut alias_ann_map: HashMap<String, String> = HashMap::new();
-                    for (param_name, _ann) in params {
-                        let fresh = format!("_t{}", state.name_counter);
-                        state.name_counter = state.name_counter.saturating_add(1);
-                        state.set_level(fresh.clone(), state.level);
+                    for (param_name, param_ann) in params {
+                        let param_span = param_ann
+                            .as_ref()
+                            .map(|a| a.span.clone())
+                            .unwrap_or_else(|| entry.span.clone());
+                        let fresh = state
+                            .fresh_type_var_with(
+                                Some(param_name.as_str()),
+                                None,
+                                Kind::Type,
+                                &param_span,
+                            )
+                            .0;
                         alias_ann_map.insert(param_name.clone(), fresh.clone());
                     }
-                    // Build a TyConDef with sync-resolved body so state.tycon_env is populated.
-                    // This enables coverage checking, TypeAssert elaboration, and test inspection
-                    // without requiring the async resolve_type_expr path.
+
+                    // Resolve the alias body to extract its TyConDef (constructor registry).
+                    // For Dict bodies (the common case for [type ...] declarations), call
+                    // resolve_type_dict directly to avoid the eval_type_stage_expr fallback in
+                    // resolve_property_dict_as_record — triggering the type-stage evaluator from
+                    // Pass 2 would spam stderr with TypeNode errors from the prelude.
+                    // For non-Dict bodies, resolve_type_expr handles VarRefs and implied calls.
                     let alias_name = key_name.as_deref().unwrap_or("");
-                    let tycon_def = build_tycon_def_sync(alias_name, params, body);
-                    let alias_ty = tycon_def.body.clone();
+                    let stub_env = TypeEnv::new();
+                    let mut alias_constraints: Vec<Constraint> = Vec::new();
+                    let mut ann_map_for_body = alias_ann_map.clone();
+                    let resolved_body: Type = match &body.expr {
+                        crate::ast::SurfaceExpression::Dict(entries) => {
+                            super::typecheck_annot::resolve_type_dict(
+                                entries,
+                                &stub_env,
+                                body.span.clone(),
+                                state,
+                                &mut alias_constraints,
+                                &mut Some(&mut ann_map_for_body),
+                                &mut None,
+                                None,
+                            )
+                            .await
+                            .unwrap_or(Type::Unknown)
+                        }
+                        _ => super::typecheck_annot::resolve_type_expr(
+                            body,
+                            &stub_env,
+                            state,
+                            &mut alias_constraints,
+                            &mut Some(&mut ann_map_for_body),
+                            &mut None,
+                            None,
+                        )
+                        .await
+                        .unwrap_or(Type::Unknown),
+                    };
+
+                    // Qualify constructor tags with the alias name (e.g., "Ok" → "Result.Ok").
+                    // NominalVariant tags in the raw resolved body are unqualified bare names
+                    // from the source; they must be qualified so type display and unification
+                    // use the correct qualified tags.
+                    let qualify_tag = |tag: &str| -> String {
+                        if alias_name.is_empty() || tag.contains('.') {
+                            tag.to_string()
+                        } else {
+                            format!("{}.{}", alias_name, tag)
+                        }
+                    };
+                    let qualify_nominal = |ty: Type| -> Type {
+                        match ty {
+                            Type::NominalVariant { tag, fields } => Type::NominalVariant {
+                                tag: qualify_tag(&tag),
+                                fields,
+                            },
+                            other => other,
+                        }
+                    };
+                    let qualified_body = match resolved_body {
+                        Type::NominalVariant { tag, fields } => Type::NominalVariant {
+                            tag: qualify_tag(&tag),
+                            fields,
+                        },
+                        Type::Union(members) => Type::normalize_union(
+                            members.into_iter().map(qualify_nominal).collect(),
+                        ),
+                        other => other,
+                    };
+                    let constructors: Vec<(String, usize)> = match &qualified_body {
+                        Type::NominalVariant { tag, fields } => {
+                            let arity = if fields.fields.is_empty() { 0 } else { 1 };
+                            vec![(tag.clone(), arity)]
+                        }
+                        Type::Union(members) => members
+                            .iter()
+                            .filter_map(|m| match m {
+                                Type::NominalVariant { tag, fields } => {
+                                    let arity = if fields.fields.is_empty() { 0 } else { 1 };
+                                    Some((tag.clone(), arity))
+                                }
+                                _ => None,
+                            })
+                            .collect(),
+                        _ => Vec::new(),
+                    };
+                    let param_names: Vec<String> = params.iter().map(|(n, _)| n.clone()).collect();
+                    let tycon_def = std::sync::Arc::new(TyConDef {
+                        params: param_names,
+                        body: qualified_body.clone(),
+                        constraints: Vec::new(),
+                        variance: Vec::new(),
+                        constructors,
+                        builtin_type: None,
+                        annotation: None,
+                        field_annotations: indexmap::IndexMap::new(),
+                        constructor_constants: indexmap::IndexMap::new(),
+                    });
+                    let alias_ty = qualified_body;
 
                     // Register the named alias (keyed entries only)
                     if let Some(name) = key_name {
@@ -779,6 +429,7 @@ pub(crate) fn infer_dict(
                             },
                         );
                         // Register in state.tycon_env so coverage checking and tests can find it.
+                        let tycon_constructors = tycon_def.constructors.clone();
                         state.tycon_env.insert(name.clone(), tycon_def);
                         // Update the scheme for this alias name with the resolved alias body type.
                         // Pass 1 pre-inserted a fresh TypeVar placeholder for the alias slot; we
@@ -790,6 +441,25 @@ pub(crate) fn infer_dict(
                         if params.is_empty() {
                             dict_env
                                 .insert_scheme(name.clone(), TypeScheme::mono(alias_ty.clone()));
+                            // Collect constructor TypeSchemes so callers can look up constructors
+                            // by their short name (e.g. "True" for Bool.True, "Ok" for Result.Ok).
+                            // Unit constructors get NominalVariant with the qualified tag.
+                            // Payload constructors are typed via the evaluator's desugar path.
+                            for (qualified_tag, arity) in &tycon_constructors {
+                                let short =
+                                    qualified_tag.rsplit('.').next().unwrap_or(qualified_tag);
+                                if *arity == 0 {
+                                    let ctor_ty = Type::NominalVariant {
+                                        tag: qualified_tag.clone(),
+                                        fields: Row {
+                                            fields: indexmap::IndexMap::new(),
+                                            tail: RowTail::Empty,
+                                        },
+                                    };
+                                    ctor_schemes
+                                        .insert(short.to_string(), TypeScheme::mono(ctor_ty));
+                                }
+                            }
                         }
                     }
                 }
@@ -827,7 +497,7 @@ pub(crate) fn infer_dict(
     //
     // fresh_vars_by_name: name → TypeVar, used to recover the bound TypeVar in Pass 3_i.
     let mut fresh_vars_by_name: HashMap<String, Type> = HashMap::new();
-    for (key_name, is_alias, is_static_key) in &key_entries {
+    for ((key_name, is_alias, is_static_key), entry) in key_entries.iter().zip(entries.iter()) {
         if *is_static_key {
             if let Some(ref name) = key_name {
                 // ALL static-key entries get a fresh TypeVar placeholder in slotted to maintain
@@ -836,7 +506,7 @@ pub(crate) fn infer_dict(
                 // their inferred type is registered separately via TypeAlias (not a scheme body).
                 // Non-alias entries also have their fresh TypeVar stored in fresh_vars_by_name so
                 // the SCC loop can unify it with the inferred type (Pass 3_i).
-                let fresh_var = state.fresh_type_var();
+                let fresh_var = state.fresh_type_var(&entry.span);
                 if !is_alias {
                     fresh_vars_by_name.insert(name.clone(), fresh_var.clone());
                 }
@@ -865,7 +535,14 @@ pub(crate) fn infer_dict(
         );
         if is_class_or_instance {
             // Infer class/instance expression (registers into state)
-            match infer_surface_expr(&entry.node.value, &dict_env_arc, state, type_map) {
+            match Box::pin(infer_surface_expr(
+                &entry.node.value,
+                &dict_env_arc,
+                state,
+                type_map,
+            ))
+            .await
+            {
                 Ok(ty) => {
                     let (ref key_name, _, _) = key_entries[idx];
                     if let Some(name) = key_name {
@@ -1001,18 +678,20 @@ pub(crate) fn infer_dict(
                 // Special case: if the value is a Dict, call infer_dict directly to capture schemes
                 let (value_ty, nested_schemes_opt) =
                     if let SurfaceExpression::Dict(nested_entries) = &entry.node.value.expr {
-                        let (ty, schemes, mut nested_errs) = infer_dict(
+                        let (ty, schemes, mut nested_errs) = Box::pin(infer_dict(
                             nested_entries,
                             &dict_env_arc,
                             state,
                             type_map,
                             entry.node.value.span.clone(),
-                        );
+                        ))
+                        .await;
                         errors.append(&mut nested_errs);
                         (Ok(ty), Some(schemes))
                     } else {
                         (
-                            infer_surface_expr(&entry.node.value, &dict_env_arc, state, type_map),
+                            infer_surface_expr(&entry.node.value, &dict_env_arc, state, type_map)
+                                .await,
                             None,
                         )
                     };
@@ -1278,6 +957,12 @@ pub(crate) fn infer_dict(
             }
         }
     }
+    // Merge in ADT constructor schemes collected in Pass 2.
+    // These are short-name bindings (e.g. "True" → NominalVariant("Bool.True")) that
+    // did not have resolver-assigned slots and therefore aren't in key_entries.
+    for (name, scheme) in ctor_schemes {
+        schemes.entry(name).or_insert(scheme);
+    }
 
     // Restore enclosing level
     state.level = enclosing_level;
@@ -1334,7 +1019,7 @@ pub(crate) fn infer_dict(
     (record_type, schemes, errors)
 }
 
-pub(crate) fn entry_key_name(
+pub(crate) async fn entry_key_name(
     entry: &SurfaceEntry,
     auto_index: &mut i64,
     env: &Arc<RwLock<Env>>,
@@ -1348,7 +1033,7 @@ pub(crate) fn entry_key_name(
             // Annotated key: name@[doc: "..."] — extract name directly
             // VarRef with annotation (name@[doc: "..."]) — extract name
             SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
-            _ => match infer_surface_expr(key_node, env, state, type_map) {
+            _ => match Box::pin(infer_surface_expr(key_node, env, state, type_map)).await {
                 Ok(Type::StringLiteral(s)) => Some(s),
                 Ok(Type::IntLiteral(n)) => Some(n.to_string()),
                 _ => None,

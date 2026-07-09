@@ -211,7 +211,7 @@
   # doc.name returns Variant{tag:"Named",payload:String} or Variant{tag:"Unnamed"}.
   # Use builtin-tag-of / builtin-variant-payload to avoid constructor name lookup.
   update-named: [fn [let state val doc]
-    [if [builtin-eq-string [builtin-tag-of doc.name] "Named"]
+    [builtin-if [builtin-eq-string [builtin-tag-of doc.name] "Named"]
       [builtin-merge state.named [make-entry [builtin-string-concat "%" [builtin-variant-payload doc.name]] val]]
       state.named]]
 

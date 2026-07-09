@@ -97,7 +97,7 @@ as inline annotations (`v@[[all A B]]`), as the body of a `[type ...]` alias dec
 infix — the bracket is the expression.
 
 **Disambiguation from union annotation:** positional entries in `@[...]` are union
-members when there are multiple entries (`@[Int Str]` → `Int | Str`). When the
+members when there are multiple entries (`@[Integer String]` → `Int | Str`). When the
 single positional entry is itself a list whose first token is `all` or `without`, it
 is an intersection or negation type, not a union member. Examples:
 `@[[all Int Num]]` → `Int & Num`; `@[[without Int]]` → `~Int`;
@@ -123,10 +123,10 @@ These arise in ordinary tinct programs:
 ```tinct
 # τ₁ ≤ τ₂ ∨ α — a Str value flowing into a [Int Str] position
 x: "hello"
-[@[Int Str] x]   # @Str satisfies @[Int a]  (where a is fresh, resolves to @Str)
+[@[Integer String] x]   # @String satisfies @[Integer a]  (where a is fresh, resolves to @String)
 
 # α ∧ τ₁ ≤ τ₂ — false-branch narrowing
-process: [fn [x@[Int Str]]
+process: [fn [x@[Integer String]]
     [if [int? x]
         [+ x 1]          # x : Int  (true branch)
         [str-upper x]]]  # x : @[[all [Int Str] [without Int]]] — satisfies @Str
@@ -145,13 +145,13 @@ For the false-branch example above the solver resolves, in tinct type notation:
 
 ```tinct
 # @[[all [Int Str] [without Int]]] satisfies @Str
-#   → @[Int Str] satisfies @[[all Str [without [without Int]]]]
+#   → @[Integer String] satisfies @[[all Str [without [without Int]]]]
 #   double-negation elimination: [without [without Int]] = Int (Boolean algebra axiom)
-#   → @[Int Str] satisfies @[Str Int]  ✓
+#   → @[Integer String] satisfies @[Str Int]  ✓
 # x in the false branch: @[[all [Int Str] [without Int]]]  — simplifies to @Str
 ```
 
-The user writes `@[Int Str]` on the parameter. The narrowed type
+The user writes `@[Integer String]` on the parameter. The narrowed type
 `@[[all [Int Str] [without Int]]]` appears in LSP hover over `x` in the false branch;
 the type simplifier reduces it to `Str` before display. If a user needs to annotate
 with an intersection or negation explicitly, the forms are `x@[[all Int Str]]` and
@@ -521,7 +521,7 @@ After `[if [int? x] ...]`, the false branch knows `x : ~Int`. Combined with a un
 annotation, this is precise:
 
 ```tinct
-process: [fn [x@[Int Str]]
+process: [fn [x@[Integer String]]
     [if [int? x]
         [+ x 1]        # x : Int  (true branch — already works today)
         [str-upper x]]]  # x : Str  (false branch — requires ~Int narrowing)
@@ -653,14 +653,14 @@ no annotation.
 **Type predicate guard:**
 
 ```tinct
-process: [fn [x@[Int Str]]
+process: [fn [x@[Integer String]]
     [if [int? x]
         [+ x 1]            # x : Int   (true branch — works in typing cluster)
         [str-upper x]]]    # x : Str   (false branch — (Int|Str) & ~Int = Str)
 ```
 
 Without false-branch narrowing, the `else` branch types `x` as `Int | Str` and
-`str-upper` produces a type error or requires `[@Str x]`.
+`str-upper` produces a type error or requires `[@String x]`.
 
 **Match arms on declared unions:**
 

@@ -84,7 +84,7 @@ pub async fn format_source_tinct_with_dir(
     // Seeded from the core env so formatter builtins resolve correctly.
     let _resolve_table = resolve::resolve_surface_program(&formatter_program, Some(&env));
     // Typecheck the desugared formatter (writes inline type annotations).
-    let _ = typecheck::typecheck_surface_program_annotation_table(&formatter_program); // tycon_env discarded: formatter ctx has no runtime TypeAsserts on user-defined ADTs
+    let _ = typecheck::typecheck_surface_program_annotation_table(&formatter_program).await; // tycon_env discarded: formatter ctx has no runtime TypeAsserts on user-defined ADTs
 
     let ctx = EvalContext::new_empty(base_dir, Arc::clone(&env), false);
 
@@ -1630,11 +1630,11 @@ mod tests {
     #[test]
     fn test_immediate_at_spacing() {
         // ImmediateAt in type-assert context: no space before @ — stays without space
-        assert_eq!(format_source("[@Int 42]").unwrap(), "[@Int 42]\n");
+        assert_eq!(format_source("[@Integer 42]").unwrap(), "[@Integer 42]\n");
         // Annotation in param context — formatter now emits [let ...] form
         assert_eq!(
-            format_source("[fn [let x@Int] $x]").unwrap(),
-            "[fn [let x@Int] $x]\n"
+            format_source("[fn [let x@Integer] $x]").unwrap(),
+            "[fn [let x@Integer] $x]\n"
         );
     }
 
@@ -1809,8 +1809,8 @@ mod tests {
     fn test_annotated_key() {
         // Annotated param in function — formatter now emits [let ...] form
         assert_eq!(
-            format_source("[fn [let x@Int] $x]").unwrap(),
-            "[fn [let x@Int] $x]\n"
+            format_source("[fn [let x@Integer] $x]").unwrap(),
+            "[fn [let x@Integer] $x]\n"
         );
     }
 

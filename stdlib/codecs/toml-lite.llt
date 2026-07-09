@@ -35,7 +35,7 @@
 
 # Check if a line is blank or a comment.
 # Type: (String -> Bool)
-not-blank-or-comment: [fn@Bool [let line@String]
+not-blank-or-comment: [fn@Boolean [let line@String]
     [if [= [length line] 0]
         false
         [not [starts-with? "#" line]]]]
@@ -54,7 +54,7 @@ parse-array-table-header: [fn@Dict [let line@String]
 
 # Split on = and build the key-value entry.
 # Type: (String -> Int -> Dict)
-parse-kv-split: [fn@Dict [let line@String eq-pos@Int]
+parse-kv-split: [fn@Dict [let line@String eq-pos@Integer]
     [parse-kv-build
         [trim [str-slice line 0 eq-pos]]
         [trim [str-slice line [+ eq-pos 1] [length line]]]]]
@@ -94,14 +94,14 @@ parse-key-value-impl: [fn@Dict [let line@String]
 
 # Recursive line processor with accumulator.
 # Type: (Dict String -> Int -> Int -> Dict -> Dict String -> Dict)
-parse-lines-impl: [fn@Dict [let lines i@Int len@Int acc@Dict current-path]
+parse-lines-impl: [fn@Dict [let lines i@Integer len@Integer acc@Dict current-path]
     [if [>= i len]
         acc
         [parse-line-dispatch lines i len acc current-path [get i lines]]]]
 
 # Dispatch on line type: [section], [[array-table]], or key = value.
 # Type: (Dict String -> Int -> Int -> Dict -> Dict String -> String -> Dict)
-parse-line-dispatch: [fn@Dict [let lines i@Int len@Int acc@Dict current-path line@String]
+parse-line-dispatch: [fn@Dict [let lines i@Integer len@Integer acc@Dict current-path line@String]
     [if [starts-with? "[[" line]
         # Array table: [[name]]
         [parse-lines-impl lines [+ i 1] len
@@ -136,7 +136,7 @@ toml-set-at-path-impl-entry: [fn@Dict [let root@Dict path kv@Dict]
 
 # Recursive path setter — recursive step.
 # Type: (Dict -> Dict String -> Dict -> Int -> Dict)
-toml-set-at-path-rec: [fn@Dict [let root@Dict path kv@Dict depth@Int]
+toml-set-at-path-rec: [fn@Dict [let root@Dict path kv@Dict depth@Integer]
     [if [= depth [- [length path] 1]]
         [toml-set-at-path-final root [get depth path] kv]
         [merge root [make-entry [get depth path]
@@ -163,17 +163,17 @@ toml-merge-into-last-impl: [fn@Dict [let arr@Dict kv@Dict]
 
 # Check if a value is an array (dict with all integer keys and non-empty).
 # Type: (Any -> Bool)
-is-array?: [fn@Bool [let xs]
+is-array?: [fn@Boolean [let xs]
     [and [dict? xs] [is-array?-check-keys xs]]]
 
-is-array?-check-keys: [fn@Bool [let xs@Dict]
+is-array?-check-keys: [fn@Boolean [let xs@Dict]
     [if [= [length xs] 0]
         false
         [all? int? [keys xs]]]]
 
 # Recursive array table appender — recursive step.
 # Type: (Dict -> Dict String -> Int -> Dict)
-toml-append-array-rec: [fn@Dict [let root@Dict path depth@Int]
+toml-append-array-rec: [fn@Dict [let root@Dict path depth@Integer]
     [if [= depth [- [length path] 1]]
         [merge root [make-entry [get depth path]
             [append [] [get-or [get depth path] [] root]]]]

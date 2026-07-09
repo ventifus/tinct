@@ -2,7 +2,7 @@
 # A function with annotated Int param is called with a string.
 # The type checker will emit a type mismatch error, but evaluation
 # should still succeed and return the string value.
-[f: [fn [let x@Int] x]
+[f: [fn [let x@Integer] x]
  result: [f "hello"]]
 === out
 Dict({"f": Function(x), "result": String("hello")})

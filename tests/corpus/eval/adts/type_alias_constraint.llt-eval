@@ -8,7 +8,7 @@
 
   # Annotate a function parameter with SortKey instantiated at Int.
   # Int satisfies Comparable (ComparableInt instance in prelude), so instantiation succeeds.
-  identity-key: [fn@Int [let k@[SortKey Int]] k]
+  identity-key: [fn@Integer [let k@[SortKey Int]] k]
 
   result: [identity-key 42]
 ]

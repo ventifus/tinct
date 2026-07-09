@@ -81,25 +81,25 @@ write `[map [fn [c] c] s]` or use string operations directly.
 # stdlib/strings.llt
 
 # str-contains? — true if needle appears anywhere in haystack
-str-contains?: [fn@Bool [needle@String haystack@String]
+str-contains?: [fn@Boolean [needle@String haystack@String]
   [> [length [split haystack needle]] 1]]
 
 # pad-left — left-pad s to width with spaces
-pad-left: [fn@String [width@Int s@String]
+pad-left: [fn@String [width@Integer s@String]
   [str
     [join "" [take [max 0 [- width [str-length s]]] [repeat " "]]]
     s]]
 
 # pad-right — right-pad s to width with spaces
-pad-right: [fn@String [width@Int s@String]
+pad-right: [fn@String [width@Integer s@String]
   [str s
     [join "" [take [max 0 [- width [str-length s]]] [repeat " "]]]]]
 
 # str-repeat — repeat s n times
-str-repeat: [fn@String [n@Int s@String] [join "" [take n [repeat s]]]]
+str-repeat: [fn@String [n@Integer s@String] [join "" [take n [repeat s]]]]
 
 # str-find — character index of first occurrence of needle, or -1
-str-find: [fn@Int [needle@String haystack@String]
+str-find: [fn@Integer [needle@String haystack@String]
   [if [str-contains? needle haystack]
     [str-length [first [split haystack needle]]]
     -1]]
@@ -109,15 +109,15 @@ str-reverse: [fn@String [s@String]
   [join "" [reverse s]]]
 
 # str-take — first n characters
-str-take: [fn@String [n@Int s@String]
+str-take: [fn@String [n@Integer s@String]
   [join "" [take n s]]]
 
 # str-drop — drop first n characters
-str-drop: [fn@String [n@Int s@String]
+str-drop: [fn@String [n@Integer s@String]
   [join "" [drop n s]]]
 
 # str-count — count characters matching predicate
-str-count: [fn@Int [pred@Fn s@String]
+str-count: [fn@Integer [pred@Fn s@String]
   [count [filter pred s]]]
 ```
 
@@ -434,7 +434,7 @@ any flag is unsupported, `open` returns an error. The returned Handle
 carries the intersection of the requested flags and the backend's
 capabilities.
 
-**`write-file fscap path content@[String Bytes] → null`**
+**`write-file fscap path content@[or String Bytes] → null`**
 
 Atomic write: on POSIX, temp file + rename. On S3, a single PUT
 request. On WebDAV, a PUT with `Content-Length`.
@@ -799,7 +799,7 @@ dispatch changes only.
   `count`, `reverse`, `contains?`, `get`, `nth`, `length` gain
   `String` and `Bytes` dual-dispatch
 - `stdlib/io.llt` — gains `write-line`; `write-file`/`write-file-atomic`
-  signatures extended to `content@[String Bytes]`; `list-dir`, `stat`,
+  signatures extended to `content@[or String Bytes]`; `list-dir`, `stat`,
   `make-dir`, `remove`, `rename`, `copy`, `link`, `read-link` for
   local `DirCap`; `open` now takes explicit capability flags
 
@@ -819,29 +819,29 @@ explicitly). `stdlib/in/toml-lite.llt` is available as `-i toml-lite`.
     name:  @String
     type:  @String            # "file" | "dir" | "symlink" | "other"
     size:  @Int
-    mtime: @[Timestamp Null]
+    mtime: @[or Timestamp Null]
   ]]
 
   StatResult: [type [
     name:         @String
     type:         @String
     size:         @Int
-    mtime:        @[Timestamp Null]
-    atime:        @[Timestamp Null]
-    ctime:        @[Timestamp Null]
-    inode:        @[Int Null]
-    nlink:        @[Int Null]
-    mode:         @[Int Null]
-    uid:          @[Int Null]
-    gid:          @[Int Null]
-    etag:         @[String Null]
-    content-type: @[String Null]
+    mtime:        @[or Timestamp Null]
+    atime:        @[or Timestamp Null]
+    ctime:        @[or Timestamp Null]
+    inode:        @[or Int Null]
+    nlink:        @[or Int Null]
+    mode:         @[or Int Null]
+    uid:          @[or Int Null]
+    gid:          @[or Int Null]
+    etag:         @[or String Null]
+    content-type: @[or String Null]
   ]]
 
   FsCap: [type [
     caps:       @[Seq Any]
     open:       [fn@Handle       [path@String]]
-    write-file: [fn@Null         [path@String  content@[String Bytes]]]
+    write-file: [fn@Null         [path@String  content@[or String Bytes]]]
     list-dir:   [fn@[Seq DirEntry] [path@String]]
     stat:       [fn@StatResult   [path@String]]
     make-dir:   [fn@Null         [path@String]]

@@ -1,8 +1,8 @@
 # Over-broad annotation: fn@Top when body infers a specific type
 # The type checker should emit a T012 Info diagnostic
-[f: [fn@Top [let x@Int] x]]
+[f: [fn@Top [let x@Integer] x]]
 === out
 Dict({"f": Function(x)})
 
 === warn
-annotation @Top is over-broad — inferred type is Int; consider using @Int
+annotation @Top is over-broad — inferred type is Int; consider using @Integer

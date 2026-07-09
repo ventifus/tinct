@@ -19,7 +19,7 @@
 
   # Construct a WsFrame from a wire opcode and payload bytes.
   # WsFrame variants carry opcode as a compile-time constant; construction still needs payload dispatch.
-  int->ws-frame: [fn [let opcode@Int payload@Bytes]
+  int->ws-frame: [fn [let opcode@Integer payload@Bytes]
     [match opcode
       WsFrame.Continuation.opcode: [WsFrame.Continuation payload]
       WsFrame.Text.opcode:         [WsFrame.Text   [bytes-str payload]]
@@ -149,7 +149,7 @@
   WsError: [type
     [ConnectionClosed]                           # underlying TCP connection closed without WS Close frame
     [ProtocolViolation  reason@String]            # RFC 6455 protocol error (bad opcode, reserved bits, etc.)
-    [MessageTooLarge    size@Int  limit@Int]      # payload exceeds implementation limit
+    [MessageTooLarge    size@Integer  limit@Integer]      # payload exceeds implementation limit
     [MaskingViolation]]                           # client sent unmasked / server sent masked frame
 
   ws-accept: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h]
@@ -251,7 +251,7 @@
     [mask-key:       [if client [crypto-random 4] []]]
     [masked-payload: [if client [bytes-xor-mask payload mask-key] payload]]
     [concat [bytes [bor 0x80 opcode]] len-bytes mask-key masked-payload]]
-  decode: [fn [let _ data@Bytes offset@Int]
+  decode: [fn [let _ data@Bytes offset@Integer]
     [b0:     [get data [+ offset 0]]]
     [b1:     [get data [+ offset 1]]]
     [opcode: [band b0 0x0F]]

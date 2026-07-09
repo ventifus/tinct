@@ -14,7 +14,7 @@ Tinct functions carry their full annotation metadata at runtime. The `ast-of` pr
 **For functions:**
 
 ```tinct
-add: [fn@[doc: "Add two numbers" return: Int] [a@Int b@Int] [+ a b]]
+add: [fn@[doc: "Add two numbers" return: Int] [a@Integer b@Integer] [+ a b]]
 
 [ast-of add]
 # → [type:       "fn"
@@ -27,7 +27,7 @@ add: [fn@[doc: "Add two numbers" return: Int] [a@Int b@Int] [+ a b]]
 The `return-ann` dict has two shapes depending on the annotation form:
 
 ```tinct
-# Simple annotation: fn@Int, param@Str, @Bool
+# Simple annotation: fn@Integer, param@String, @Boolean
 [type: "annotation"  kind: "simple"  value: "Int"]
 
 # Property dict annotation: fn@[return: Int  doc: "..."]
@@ -35,8 +35,9 @@ The `return-ann` dict has two shapes depending on the annotation form:
   [type: "entry"  key: "return"  value: "Int"]
   [type: "entry"  key: "doc"     value: "Add two numbers"]]]
 
-# Union annotation: @[Ok Str]
+# Union annotation: @[or Ok Str]
 [type: "annotation"  kind: "dict"  entries: [
+  [type: "entry"  key: []  value: "or"]
   [type: "entry"  key: []  value: "Ok"]
   [type: "entry"  key: []  value: "Str"]]]
 ```
@@ -63,7 +64,7 @@ The `return-ann` dict has two shapes depending on the annotation form:
 
 ```tinct
 # A binding whose value hasn't been accessed yet
-lazy-fn: [fn@[doc: "Compute something"] [x@Int] [+ x 1]]
+lazy-fn: [fn@[doc: "Compute something"] [x@Integer] [+ x 1]]
 
 [ast-of lazy-fn]
 # → [type: "fn"  return-ann: ...  params: [...]  doc: "Compute something"]
@@ -94,13 +95,13 @@ This allows docgen and other introspection tools to detect pipeline stage files 
 `describe` returns a metadata dict for a function or a type tag for other values:
 
 ```tinct
-add: [fn@[doc: "Add two numbers" return: Int] [a@Int b@Int] [+ a b]]
+add: [fn@[doc: "Add two numbers" return: Int] [a@Integer b@Integer] [+ a b]]
 
 [describe add]
 # → [doc:        "Add two numbers"
 #    return-ann: [type: "annotation"  kind: "simple"  value: "Int"]
 #    params:     [[name: "a"  annotation: [...]] [name: "b"  annotation: [...]]]
-#    sig:        "fn@Int [a@Int  b@Int]"]
+#    sig:        "fn@Integer [a@Integer  b@Integer]"]
 
 [describe 42]
 # → [type: "int"]
@@ -113,7 +114,7 @@ The `sig` field is a human-readable signature string built from the annotation, 
 `sig-from-ast` builds a `"fn@RetType [params]"` string from an `ast-of` result:
 
 ```tinct
-[sig-from-ast [ast-of add]]   # → "fn@Int [a@Int  b@Int]"
+[sig-from-ast [ast-of add]]   # → "fn@Integer [a@Integer  b@Integer]"
 
 [sig-from-ast [ast-of [fn [x y] [+ x y]]]]   # → "fn [x  y]"
 ```
@@ -142,7 +143,7 @@ For non-functions, both return `null`.
 [compact-fmt: [include %libdir "formatter/compact.llt"]]
 [pretty-fmt:  [include %libdir "formatter/pretty.llt"]]
 
-[compact-fmt.format [ast-of add]]   # → "fn@Int [a@Int b@Int] [+ a b]"
+[compact-fmt.format [ast-of add]]   # → "fn@Integer [a@Integer b@Integer] [+ a b]"
 [pretty-fmt.format  [ast-of add]]   # → multi-line formatted source
 ```
 

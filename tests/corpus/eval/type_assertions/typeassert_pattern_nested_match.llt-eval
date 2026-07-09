@@ -1,5 +1,5 @@
 # Nested match with variable binding at both levels.
-# T-1154: [@String s] / [@Int i] no longer bind; use [case [let v] v body] standalone arms.
+# T-1154: [@String s] / [@Integer i] no longer bind; use [case [let v] v body] standalone arms.
 # Outer CaseArm binds s to the scrutinee; inner CaseArm binds i — s is in scope from outer.
 # The _: fallback arms are unreachable (Unknown scrutinee type — no coverage warning).
 [

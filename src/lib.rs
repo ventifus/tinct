@@ -124,7 +124,7 @@ pub use builtins::{build_core_env, MAX_COLLECT_SIZE, MAX_FILE_SIZE};
 /// Import resolution for the type checker.
 pub use imports::{
     apply_include_type_post_pass, build_type_env, build_type_env_with_cap,
-    get_builtin_core_type_env, get_prelude_type_stage_env,
+    get_builtin_core_type_env,
 };
 
 // Compile-time assertion: LSP MAX_DOCUMENT_SIZE must match builtins MAX_FILE_SIZE
@@ -215,7 +215,7 @@ pub async fn run_loader_pipeline(
     // (e.g. @Boolean on builtin-if's condition arg) resolve correctly instead of failing
     // conservatively because tycon_env is None.
     let (_loader_type_errors, _loader_annotation_table, _loader_expects_resolved) =
-        typecheck::typecheck_surface_program_annotation_table(&loader_program);
+        typecheck::typecheck_surface_program_annotation_table(&loader_program).await;
 
     // Evaluate loader.llt. env already contains all stdlib builtins, %programs, %args,
     // %cwd, %libdir, and any other caps injected by the caller.
@@ -258,7 +258,7 @@ pub async fn typecheck_source(input: &str) -> Result<(), String> {
         .await
         .expect("builtin core type env not available — bootstrap error");
     let (type_errors, _type_map, _doc_map, _scheme_map, diagnostics) =
-        typecheck::typecheck_surface_program(&program, env_arc);
+        typecheck::typecheck_surface_program(&program, env_arc).await;
     if type_errors.is_empty() && diagnostics.is_empty() {
         Ok(())
     } else {
@@ -292,7 +292,7 @@ pub async fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
         .await
         .expect("builtin core type env not available — bootstrap error");
     let (type_errors, _type_map, _doc_map, _scheme_map, _diagnostics) =
-        typecheck::typecheck_surface_program(&program, env_arc2);
+        typecheck::typecheck_surface_program(&program, env_arc2).await;
     if type_errors.is_empty() {
         Ok(())
     } else {
@@ -919,7 +919,7 @@ mod tests {
         let env = builtins::build_core_env();
         let _resolve_errors = resolve::resolve_surface_program(&program, Some(&env));
         let (_type_errors, _inferred, _tycon_env) =
-            typecheck::typecheck_surface_program_annotation_table(&program);
+            typecheck::typecheck_surface_program_annotation_table(&program).await;
         let ctx = test_ctx().await;
 
         // Evaluate: this should fail because $undefined_var is not defined.

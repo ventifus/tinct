@@ -523,7 +523,7 @@ A test file without a `=== warn` section asserts that type checking produces zer
 To assert that a test *should* produce warnings, include a `=== warn` section with the expected warning substring:
 
 ```text
-[x@Int: "hello"]
+[x@Integer: "hello"]
 === out
 {"x": "hello"}
 === warn
@@ -549,8 +549,8 @@ The actual error message might be `[E024] explicit error: boom`, but the test on
 ```text
 # Test: dict with type error
 [
-  x@Int: 42
-  y@Str: 99
+  x@Integer: 42
+  y@String: 99
 ]
 === out
 {"x": 42, "y": 99}

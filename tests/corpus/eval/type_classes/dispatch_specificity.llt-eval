@@ -4,7 +4,7 @@
 # shadows the prelude's instance binding of the same name.
 [
   [instance Addable
-    [let a@Int b@Int c]: [+: [fn [let x y] "int-add"]]
+    [let a@Integer b@Integer c]: [+: [fn [let x y] "int-add"]]
     [let a b c]:          [+: [fn [let x y] "generic-add"]]]
 
   r1: [+ 1 2]

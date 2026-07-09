@@ -4,16 +4,16 @@
 # This verifies the Intersection arm in collect_pattern_bindings:
 # arm_scrutinee_ty for multi-arm matches is Intersection([Union([MyOk,MyErr]),
 # NominalVariant("MyOk", {n:Int})]) — must search members to find the typed payload.
-# If p.n is Unknown (bug), [@Int p.n] would fail type assertion validation.
-# If p.n is Int (correct), [@Int p.n] typechecks and validates successfully.
+# If p.n is Unknown (bug), [@Integer p.n] would fail type assertion validation.
+# If p.n is Int (correct), [@Integer p.n] typechecks and validates successfully.
 [
   Result2: [type [MyOk n: Int] [MyErr msg: Str]]
 
   # Type-only test: function with typed parameter; we don't call it at runtime.
-  # The type checker must see p.n as Int (not Unknown) for [@Int p.n] to typecheck.
+  # The type checker must see p.n as Int (not Unknown) for [@Integer p.n] to typecheck.
   unwrap-ok: [fn [let r@Result2]
     [match r
-      [case [let p] [Result2.MyOk p] [@Int p.n]]
+      [case [let p] [Result2.MyOk p] [@Integer p.n]]
       [Result2.MyErr _]: 0
     ]
   ]

@@ -326,7 +326,7 @@ impl fmt::Display for Type {
                 variadic,
                 required_count: _,
             } => {
-                // Parenthesize nested function types in return position for clarity
+                // Parenthesize nested function return types for clarity
                 match **ret {
                     Type::Function { .. } => write!(f, "Fn@({}) [", ret)?,
                     _ => write!(f, "Fn@{} [", ret)?,
@@ -360,7 +360,7 @@ impl fmt::Display for Type {
             }
             Type::Proxy => write!(f, "Proxy"),
             Type::TypeVar(name, _level) => write!(f, "{}", name),
-            Type::Unknown => write!(f, "_"),
+            Type::Unknown => write!(f, "Unknown"),
             Type::Any => write!(f, "Any"),
             Type::Error(errs) => {
                 if let Some(first) = errs.first() {
@@ -370,30 +370,20 @@ impl fmt::Display for Type {
                 }
             }
             Type::Union(types) => {
-                for (i, ty) in types.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, " | ")?;
-                    }
-                    // Parenthesize nested unions (shouldn't happen after normalization, but be safe)
-                    match ty {
-                        Type::Union(_) => write!(f, "({})", ty)?,
-                        _ => write!(f, "{}", ty)?,
-                    }
+                // Use tinct annotation syntax: [or T1 T2 ...]
+                write!(f, "[or")?;
+                for ty in types.iter() {
+                    write!(f, " {}", ty)?;
                 }
-                Ok(())
+                write!(f, "]")
             }
             Type::Intersection(types) => {
-                for (i, ty) in types.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, " & ")?;
-                    }
-                    // Parenthesize nested intersections and unions for clarity
-                    match ty {
-                        Type::Intersection(_) | Type::Union(_) => write!(f, "({})", ty)?,
-                        _ => write!(f, "{}", ty)?,
-                    }
+                // Use tinct annotation syntax: [all T1 T2 ...]
+                write!(f, "[all")?;
+                for ty in types.iter() {
+                    write!(f, " {}", ty)?;
                 }
-                Ok(())
+                write!(f, "]")
             }
             Type::DirCap => write!(f, "DirCap"),
             Type::NetCap => write!(f, "NetCap"),

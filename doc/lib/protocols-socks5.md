@@ -13,7 +13,7 @@ fn@String [let methods@Dict]
 Build SOCKS5 CONNECT request for host:port (RFC 1928 §4)
 
 ```tinct
-fn@String [let host@String port@Int]
+fn@String [let host@String port@Integer]
 ```
 
 ### `parse-socks5-response`

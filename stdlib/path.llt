@@ -26,7 +26,7 @@ dirname-impl: [fn@String [let parts@Dict]
 
 # Drop the last element from a dict by iterating through all but the last key.
 # Type: (Dict String -> Dict Int -> Int -> Dict String -> Dict String)
-dirname-drop-last: [fn@Dict [let parts@Dict ks i@Int acc@Dict]
+dirname-drop-last: [fn@Dict [let parts@Dict ks i@Integer acc@Dict]
     [if [= i [- [length parts] 1]]
         acc
         [dirname-drop-last parts ks [+ i 1] [append [get [get i ks] parts] acc]]]]

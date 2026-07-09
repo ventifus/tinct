@@ -16,7 +16,7 @@ after-first: [fn@String [let needle@String s@String]
     ""
     [str-slice start [length s] s]]]
 
-find-close: [fn [let s@String depth@Int i@Int]
+find-close: [fn [let s@String depth@Integer i@Integer]
   [c: [str-slice i [trunc [+ i 1]] s]]
   [if [>= i [length s]]
     -1
@@ -62,7 +62,7 @@ parse-doc-line: [fn@Dict [let line@String]
 
 # Test lines — one that appears, one that should but doesn't
 line-abs:   "abs@[doc: \"Absolute value\"]: [fn@Number [x@Number] [builtin-if [builtin-lt x 0] [builtin-sub 0 x] x]]"
-line-sign:  "sign@[doc: \"Sign of number (-1, 0, or 1)\"]: [fn@Int [x@Number]"
+line-sign:  "sign@[doc: \"Sign of number (-1, 0, or 1)\"]: [fn@Integer [x@Number]"
 line-uint8: "UInt8@[doc: \"Unsigned 8-bit integer (0-255)\"]:  [type Int@[is: [between 0 255]]]"
 line-pi:    "pi@[doc: \"Pi: ratio of a circle's circumference to its diameter\"]: 3.141592653589793"
 

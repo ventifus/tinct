@@ -1,10 +1,10 @@
 # Constraint violation: + requires Number for both arguments.
-# x@Int satisfies Number, but "hello" (String) does not.
+# x@Integer satisfies Number, but "hello" (String) does not.
 # The type checker reports a unification error when checking the String argument.
 # Eval proceeds — the function body is never invoked so no runtime error occurs.
 # Note: builtin-concat is private (not in user scope); this tests the same category
 # of numeric constraint violation via the public + operator.
-[f: [fn [let x@Int] [+ x "hello"]]]
+[f: [fn [let x@Integer] [+ x "hello"]]]
 === out
 Dict({"f": Function(x)})
 

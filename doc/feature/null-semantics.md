@@ -28,7 +28,7 @@ write-config: [fn@Null [path@String  content@String  dir@DirCap]
     [write dir path content]]
 
 # @Null as a parameter type (unusual but consistent)
-assert-done: [fn@Bool [result@Null]
+assert-done: [fn@Boolean [result@Null]
     true]
 
 # Type assertion: check that a value is null
@@ -98,7 +98,7 @@ This completes when the union-types proposal Phase 2 lands — `String | Null` b
 **Gradual-typing B2 interaction note:** After `doc/whatif/gradual-typing.md` Phase 2
 splits `Type::Any` into `Unknown` (consistent with everything) and `Top` (true supertype),
 `env` and similar builtins are reclassified from `Any` to `Unknown`. A value from
-`env` used in a `String | Null` annotation context — `x@[String Null]` — is then
+`env` used in a `String | Null` annotation context — `x@[or String Null]` — is then
 checked via `is_consistent(Unknown, Union(Str, Record(Row::Empty)))` rather than
 the current `is_subtype(Any, ...)`. The consistency check succeeds (Unknown is consistent with
 any type), but the behavior is semantically different from the B1 phase where `Any`-as-bottom

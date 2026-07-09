@@ -122,7 +122,7 @@ Each blame boundary records:
 
 | Boundary | Positive blame | Negative blame |
 |----------|---------------|----------------|
-| `[@Int x]` TypeAssert | The TypeAssert annotation | Provider of `x` |
+| `[@Integer x]` TypeAssert | The TypeAssert annotation | Provider of `x` |
 | `[f x]`, `f: Int→Int`, `x: Unknown` | The argument position | Provider of `x` |
 | `[f x]`, `f: Unknown` | The call site (expected callable) | Provider of `f` |
 | Builtin return typed `Unknown` consumed as typed | The consuming expression | The builtin |
@@ -144,7 +144,7 @@ When a runtime check fails, the error message identifies both the failure point 
 
 ```text
 type assertion failed at line 5: expected Int, got String
-  asserted by: [@Int ...] at line 5
+  asserted by: [@Integer ...] at line 5
   value originated from: unannotated parameter x at line 3
 ```
 

@@ -13,7 +13,7 @@ fn@Any [let tasks]
 [unindent "\nReceive exactly n items from a channel, returning them as a Seq.\n\nExample: [recv-all ch 3]\n\nNote: Blocks until all n items have been received. Uses reduce over [range 0 n]\nto collect results; the accumulator grows by one item per step.\n"]
 
 ```tinct
-fn@Any [let ch@Channel n@Int]
+fn@Any [let ch@Channel n@Integer]
 ```
 
 ### `exit`
@@ -21,7 +21,7 @@ fn@Any [let ch@Channel n@Int]
 [unindent "\nGraceful shutdown: cancel all tasks, drain, then exit with code.\n\nExample: [exit 0]\n\nNote: Waits indefinitely for tasks to drain. For bounded wait, use graceful-exit.\n"]
 
 ```tinct
-fn@Any [let code@Int]
+fn@Any [let code@Integer]
 ```
 
 ### `graceful-exit`
@@ -29,7 +29,7 @@ fn@Any [let code@Int]
 [unindent "\nBounded graceful shutdown: cancel tasks, drain with timeout, then exit.\n\nExample: [graceful-exit 0 5000]  # 5-second drain timeout\n\nArgs:\n- code: exit code\n- timeout-ms: maximum milliseconds to wait for drain\n\nIf drain times out, exits immediately without waiting for remaining tasks.\n"]
 
 ```tinct
-fn@Any [let code@Int timeout-ms@Int]
+fn@Any [let code@Integer timeout-ms@Integer]
 ```
 
 ### `loop-select`
@@ -45,7 +45,7 @@ fn@Any [let ctx sources@Seq handler@Fn]
 [unindent "\nRetry a zero-arg function up to n times on error.\n\nExample: [retry 3 [fn [] [flaky-operation]]]\n\nNote: Makes up to n+1 total attempts (1 initial + n retries).\nRaises \"retry limit exceeded\" if all attempts fail.\nInherently materializing: must force each attempt to catch errors.\n"]
 
 ```tinct
-fn@Any [let n@Int thunk@Fn]
+fn@Any [let n@Integer thunk@Fn]
 ```
 
 ### `finally`

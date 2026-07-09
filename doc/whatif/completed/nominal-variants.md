@@ -381,7 +381,7 @@ system:
 ```tinct
 Option: [type [Some a] None]
 
-lookup: [fn [dict@[...] key@Str]
+lookup: [fn [dict@[...] key@String]
     [if [has? dict key]
         [Some [get dict key]]
         None]]

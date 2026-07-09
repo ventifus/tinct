@@ -40,10 +40,10 @@
 
 # str-at-impl: extract single character at char-index `n` from string `s`.
 # Precondition: n is already a valid non-negative character index.
-str-at-impl: [fn@String [let s@String n@Int]
+str-at-impl: [fn@String [let s@String n@Integer]
     [str-slice s n [+ n 1]]]
 
-str-reverse-impl: [fn@String [let s@String i@Int len@Int acc@String]
+str-reverse-impl: [fn@String [let s@String i@Integer len@Integer acc@String]
     [if [< i len]
         [str-reverse-impl s [+ i 1] len [str [str-slice s i [+ i 1]] acc]]
         acc]]
@@ -68,7 +68,7 @@ str-reverse-impl: [fn@String [let s@String i@Int len@Int acc@String]
 # Example: [str-at 4 "hello"] => "o"
 # Example: [str-at -1 "hello"] => "o"
 # Example: [str-at 3 "cafe"] => "e"  (multi-byte UTF-8 counts codepoints, not bytes)
-str-at@[doc: "Character at position n (0-based; negative counts from end). Raises error if out of bounds."]: [fn@String [let n@Int s@String]
+str-at@[doc: "Character at position n (0-based; negative counts from end). Raises error if out of bounds."]: [fn@String [let n@Integer s@String]
     [len: [str-length s]]
     [idx: [if [>= n 0] n [+ len n]]]
     [if [or [< idx 0] [>= idx len]]
@@ -81,7 +81,7 @@ str-at@[doc: "Character at position n (0-based; negative counts from end). Raise
 # Example: [str-substr 0 3 "hello"] => "hel"
 # Example: [str-substr 2 0 "hello"] => ""
 # Raises an error if start or len is negative, or if start+len exceeds string length.
-str-substr@[doc: "Extract substring starting at start with length len. Raises error if bounds are invalid."]: [fn@String [let start@Int len@Int s@String]
+str-substr@[doc: "Extract substring starting at start with length len. Raises error if bounds are invalid."]: [fn@String [let start@Integer len@Integer s@String]
     [str-len: [str-length s]]
     [end: [+ start len]]
     [if [< start 0]

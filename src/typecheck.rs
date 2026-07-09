@@ -13,8 +13,9 @@ use crate::ast::{
 // No Expr bridge needed — tests use parse_surface_expression directly.
 use crate::coverage;
 use crate::env::Env;
+use crate::rust_span;
 use crate::types::{
-    generalize, instantiate_scheme, InferState, Row, Type, TypeAlias, TypeEnv, TypeError,
+    generalize, instantiate_scheme, InferState, Kind, Row, Type, TypeAlias, TypeEnv, TypeError,
     TypeScheme,
 };
 
@@ -88,7 +89,7 @@ pub use crate::types::SchemeMap;
 /// Returns `(errors, table)` where:
 /// - `errors`: Type errors encountered during inference (advisory — evaluation proceeds)
 /// - `table`: TypeAnnotationTable mapping NodeId → Type for successfully inferred expressions
-pub fn typecheck_surface_program_annotation_table(
+pub async fn typecheck_surface_program_annotation_table(
     program: &SurfaceProgram,
 ) -> (
     Vec<TypeError>,
@@ -128,7 +129,8 @@ pub fn typecheck_surface_program_annotation_table(
             &mut None, // annotation_table path — no span TypeMap needed
             &pipeline_type,
             &named_types,
-        );
+        )
+        .await;
         env = new_env;
         // Collect all errors (type errors + advisory) without blocking propagation.
         errors.append(&mut doc_errors);
@@ -160,7 +162,7 @@ pub fn typecheck_surface_program_annotation_table(
 /// during inference (populated per-node by `typecheck_surface_document`). Only top-level
 /// expression nodes are inserted in the table; inner sub-expressions are included via the
 /// recursive `collect_type_map_from_node` walk.
-pub fn typecheck_surface_program(
+pub async fn typecheck_surface_program(
     program: &SurfaceProgram,
     parent_env: Arc<RwLock<Env>>,
 ) -> (
@@ -171,7 +173,7 @@ pub fn typecheck_surface_program(
     Vec<crate::error::TypeDiagnostic>,
 ) {
     let (errors, type_map, doc_map, scheme_map, diagnostics, _state, _env, _annotation_table) =
-        typecheck_surface_program_with_env(program, parent_env, true, None);
+        typecheck_surface_program_with_env(program, parent_env, true, None).await;
     // type_map is now populated during inference (enable_scheme_map=true path).
     (errors, type_map, doc_map, scheme_map, diagnostics)
 }
@@ -207,7 +209,7 @@ pub fn typecheck_surface_program(
 /// `type_map` and `doc_map` are currently empty — all callers discard them. If a caller
 /// needs span-keyed types, use [`typecheck_surface_program`] instead.
 #[allow(clippy::type_complexity)]
-pub fn typecheck_surface_program_with_env(
+pub async fn typecheck_surface_program_with_env(
     program: &SurfaceProgram,
     parent_env: Arc<RwLock<Env>>,
     enable_scheme_map: bool,
@@ -277,7 +279,8 @@ pub fn typecheck_surface_program_with_env(
             &mut type_map_ref,
             &pipeline_type,
             &named_types,
-        );
+        )
+        .await;
         env = new_env;
         // Collect all errors (type errors + advisory) without blocking env propagation.
         errors.append(&mut doc_errors);
@@ -438,7 +441,7 @@ fn propagate_classes_instances_to_env(
 ///
 /// Mirrors the structure of `typecheck_document()` but operates on SurfaceItem instead of Expr.
 /// Converts SurfaceNode back to Expr for type inference, then captures results in TypeAnnotationTable.
-fn typecheck_surface_document(
+async fn typecheck_surface_document(
     doc: &SurfaceDocument,
     parent_env: &Arc<RwLock<Env>>,
     state: &mut InferState,
@@ -583,7 +586,9 @@ fn typecheck_surface_document(
                         &env,
                         state,
                         &mut None,
-                    ) {
+                    )
+                    .await
+                    {
                         Ok(_) => {
                             // Drain TypeAnnotationTable entries produced during InstanceDecl inference
                             // to prevent them from leaking into subsequent items.
@@ -649,7 +654,7 @@ fn typecheck_surface_document(
             // This mirrors typecheck_document which calls infer_dict directly for dict exprs.
             // infer_dict always returns Ok with best-effort schemes; errors are in the third element.
             let (dict_ty, schemes, mut dict_errs) =
-                infer_dict(entries, &env, state, type_map, surface_node.span.clone());
+                infer_dict(entries, &env, state, type_map, surface_node.span.clone()).await;
             errors.append(&mut dict_errs);
             table.insert(node_id(surface_node), dict_ty.clone());
             // Merge nested TypeAssert entries from infer_dict into the document-level table
@@ -675,7 +680,7 @@ fn typecheck_surface_document(
             let enclosing_level = state.level;
             state.level += 1;
 
-            match infer_surface_expr(surface_node, &env, state, type_map) {
+            match infer_surface_expr(surface_node, &env, state, type_map).await {
                 Ok(ty) => {
                     state.level = enclosing_level;
                     table.insert(node_id(surface_node), ty.clone());
@@ -789,7 +794,7 @@ fn typecheck_surface_document(
 /// - Walks `SurfaceItem::Decl` for `TypeAlias`, `ClassDecl`, `InstanceDecl`
 ///   Pass 0c pre-scan via `SurfaceExpression::Decl` is already handled by `typecheck_surface_document`.
 #[allow(dead_code)]
-pub(crate) fn typecheck_surface_document_native(
+pub(crate) async fn typecheck_surface_document_native(
     doc: &SurfaceDocument,
     state: &mut InferState,
     type_map: &mut TypeAnnotationTable,
@@ -809,7 +814,8 @@ pub(crate) fn typecheck_surface_document_native(
         &mut None, // no span TypeMap for this entry point
         &pipeline_type,
         &named_types,
-    );
+    )
+    .await;
     if errors.is_empty() {
         Ok(())
     } else {
@@ -1019,19 +1025,20 @@ fn register_type_aliases_env(
 /// Map a resolved `Type` to the dispatch tag string used in instance binding names.
 ///
 /// This mapping must match `extract_dispatch_tags` in `lower.rs`, which reads `@Annotation`
-/// names from instance arm patterns.  Annotations are written as `@Int`, `@Float`, `@String`,
-/// `@Bool`, `@Bytes`, `@TyConName` — the strings that appear in `instance_binding_name` calls.
+/// names from instance arm patterns.  Annotations are written as `@Integer`, `@Float`,
+/// `@String`, `@Boolean`, `@Bytes`, `@TyConName` — the strings that appear in
+/// `instance_binding_name` calls.
 ///
 /// Returns `None` for:
 /// - Unbound `TypeVar` (instance not yet determined).
 /// - `Unknown` / `Top` / `Error` (gradual / lattice types that don't correspond to instances).
 /// - Compound types that don't map to a single dispatch tag (records, functions, unions).
 ///
-/// `IntLiteral`/`StringLiteral` are promoted to `"Int"`/`"String"` because instance arms are
-/// always annotated with the widened type (e.g., `@Int`, never `@42`).
+/// `IntLiteral`/`StringLiteral` are promoted to `"Integer"`/`"String"` because instance arms
+/// are always annotated with the widened type (e.g., `@Integer`, never `@42`).
 fn type_to_dispatch_tag(ty: &Type) -> Option<String> {
     match ty {
-        Type::Int | Type::IntLiteral(_) => Some("Int".to_string()),
+        Type::Int | Type::IntLiteral(_) => Some("Integer".to_string()),
         Type::Float => Some("Float".to_string()),
         Type::Str | Type::StringLiteral(_) => Some("String".to_string()),
         // Bytes is a direct variant (not TyCon("Bytes")).
@@ -1228,7 +1235,7 @@ fn try_resolve_call_dispatch(
 /// Natively walks SurfaceExpression variants without converting to Expr.
 /// Recursive calls use `infer_surface_expr` for child SurfaceNodes.
 /// Bridge to check_* functions (via surface_node_to_expr) will be eliminated in Phase 4.
-pub(crate) fn infer_surface_expr(
+pub(crate) async fn infer_surface_expr(
     node: &std::sync::Arc<SurfaceNode>,
     env: &Arc<RwLock<Env>>,
     state: &mut InferState,
@@ -1284,6 +1291,7 @@ pub(crate) fn infer_surface_expr(
                     state,
                     Some(name.as_str()),
                     Some(node.span.clone()),
+                    &node.span,
                 ))
             } else {
                 let mut err = TypeError::undefined_variable(name, node.span.clone());
@@ -1328,7 +1336,8 @@ pub(crate) fn infer_surface_expr(
         }
 
         SurfaceExpression::Dict(entries) => {
-            let (ty, _schemes, errs) = infer_dict(entries, env, state, type_map, node.span.clone());
+            let (ty, _schemes, errs) =
+                Box::pin(infer_dict(entries, env, state, type_map, node.span.clone())).await;
             if errs.is_empty() {
                 Ok(ty)
             } else {
@@ -1364,20 +1373,22 @@ pub(crate) fn infer_surface_expr(
 
                 if is_last {
                     // Last expression: return its type
-                    return infer_surface_expr(seq_expr, &current_env, state, type_map);
+                    return Box::pin(infer_surface_expr(seq_expr, &current_env, state, type_map))
+                        .await;
                 }
 
                 // Intermediate expression: infer and extract record bindings.
                 // For Dict expressions, call infer_dict directly to get TypeSchemes
                 // (infer_surface_expr discards them via TypeScheme::mono()).
                 if let SurfaceExpression::Dict(entries) = &seq_expr.expr {
-                    let (dict_ty, schemes, dict_errs) = infer_dict(
+                    let (dict_ty, schemes, dict_errs) = Box::pin(infer_dict(
                         entries,
                         &current_env,
                         state,
                         type_map,
                         seq_expr.span.clone(),
-                    );
+                    ))
+                    .await;
                     if !dict_errs.is_empty() {
                         return Err(dict_errs);
                     }
@@ -1401,7 +1412,9 @@ pub(crate) fn infer_surface_expr(
                     }
                 } else {
                     let enclosing_level = state.level;
-                    let expr_ty = infer_surface_expr(seq_expr, &current_env, state, type_map)?;
+                    let expr_ty =
+                        Box::pin(infer_surface_expr(seq_expr, &current_env, state, type_map))
+                            .await?;
 
                     // Extract record fields to extend the type environment.
                     // Generalize each field type at the enclosing level so that
@@ -1468,7 +1481,8 @@ pub(crate) fn infer_surface_expr(
                     let false_node = &args[2];
 
                     // Infer condition for side effects (type errors on the condition itself).
-                    let _cond_ty = infer_surface_expr(cond_node, env, state, type_map)
+                    let _cond_ty = Box::pin(infer_surface_expr(cond_node, env, state, type_map))
+                        .await
                         .unwrap_or(Type::Unknown);
 
                     // Extract narrowing constraints from the condition.
@@ -1476,15 +1490,24 @@ pub(crate) fn infer_surface_expr(
 
                     // Infer true branch with narrowed environment.
                     let true_ty = if narrowings.is_empty() {
-                        infer_surface_expr(true_node, env, state, type_map).unwrap_or(Type::Unknown)
+                        Box::pin(infer_surface_expr(true_node, env, state, type_map))
+                            .await
+                            .unwrap_or(Type::Unknown)
                     } else {
                         let narrowed_env = apply_narrowings(env, &narrowings, state);
-                        infer_surface_expr(true_node, &narrowed_env, state, type_map)
-                            .unwrap_or(Type::Unknown)
+                        Box::pin(infer_surface_expr(
+                            true_node,
+                            &narrowed_env,
+                            state,
+                            type_map,
+                        ))
+                        .await
+                        .unwrap_or(Type::Unknown)
                     };
 
                     // Infer false branch with the original environment.
-                    let false_ty = infer_surface_expr(false_node, env, state, type_map)
+                    let false_ty = Box::pin(infer_surface_expr(false_node, env, state, type_map))
+                        .await
                         .unwrap_or(Type::Unknown);
 
                     // Widen literal types before joining so that Union(Int, IntLiteral(n)) → Int,
@@ -1515,13 +1538,15 @@ pub(crate) fn infer_surface_expr(
                     && named_args.is_empty()
                 {
                     // Infer the container type (arg 1)
-                    let container_ty =
-                        infer_surface_expr(&args[1], env, state, type_map).unwrap_or(Type::Unknown);
+                    let container_ty = Box::pin(infer_surface_expr(&args[1], env, state, type_map))
+                        .await
+                        .unwrap_or(Type::Unknown);
                     let container_resolved = state.subst.apply(&container_ty);
 
                     // Infer the key type (arg 0)
-                    let key_ty =
-                        infer_surface_expr(&args[0], env, state, type_map).unwrap_or(Type::Unknown);
+                    let key_ty = Box::pin(infer_surface_expr(&args[0], env, state, type_map))
+                        .await
+                        .unwrap_or(Type::Unknown);
                     let key_resolved = state.subst.apply(&key_ty);
 
                     // When the key is a string literal and container is a Record, resolve the field type.
@@ -1577,8 +1602,9 @@ pub(crate) fn infer_surface_expr(
                 // Variable/non-literal path: returns Unknown (gradual fallback).
                 if name == "get-in" && args.len() == 2 && named_args.is_empty() {
                     // Infer dict type (arg 1)
-                    let dict_ty =
-                        infer_surface_expr(&args[1], env, state, type_map).unwrap_or(Type::Unknown);
+                    let dict_ty = Box::pin(infer_surface_expr(&args[1], env, state, type_map))
+                        .await
+                        .unwrap_or(Type::Unknown);
                     let dict_ty = state.subst.apply(&dict_ty);
 
                     // Check if path (arg 0) is a literal dict with auto-indexed string entries
@@ -1637,14 +1663,16 @@ pub(crate) fn infer_surface_expr(
                                         }
                                     }
                                 }
-                                let _ = infer_surface_expr(&args[0], env, state, type_map);
+                                let _ =
+                                    Box::pin(infer_surface_expr(&args[0], env, state, type_map))
+                                        .await;
                                 return Ok(if resolved { current } else { Type::Unknown });
                             }
                         }
                         _ => {}
                     }
                     // Non-literal path: infer arg 0 for side effects, return Unknown
-                    let _ = infer_surface_expr(&args[0], env, state, type_map);
+                    let _ = Box::pin(infer_surface_expr(&args[0], env, state, type_map)).await;
                     return Ok(Type::Unknown);
                 }
 
@@ -1653,7 +1681,7 @@ pub(crate) fn infer_surface_expr(
                     let fn_scheme_opt: Option<TypeScheme> = env.read().unwrap().get_scheme(name);
                     let fn_resolved_ty = fn_scheme_opt
                         .map(|scheme| state.subst.apply(&scheme.body))
-                        .unwrap_or_else(|| state.fresh_type_var());
+                        .unwrap_or_else(|| state.fresh_type_var(&node.span));
 
                     match &fn_resolved_ty {
                         Type::Function {
@@ -1688,15 +1716,22 @@ pub(crate) fn infer_surface_expr(
                             }
 
                             for (arg, (_param_name, _param_ty)) in args.iter().zip(params.iter()) {
-                                let arg_ty = infer_surface_expr(arg, env, state, type_map)?;
+                                let arg_ty =
+                                    Box::pin(infer_surface_expr(arg, env, state, type_map)).await?;
                                 // Type-checking arg against param type: bind in substitution
                                 state.subst.type_map.borrow_mut().insert(
-                                    format!("_check_{}", state.name_counter),
+                                    InferState::typevar_name("_check", &Kind::Type, &arg.span),
                                     arg_ty.clone(),
                                 );
                             }
                             for na in named_args {
-                                let _ = infer_surface_expr(&na.node.value, env, state, type_map)?;
+                                let _ = Box::pin(infer_surface_expr(
+                                    &na.node.value,
+                                    env,
+                                    state,
+                                    type_map,
+                                ))
+                                .await?;
                             }
                             return Ok(state.subst.apply(&ret));
                         }
@@ -1716,12 +1751,19 @@ pub(crate) fn infer_surface_expr(
                         _ => {
                             // Other non-Function type: allow speculatively.
                             for arg in args {
-                                let _ = infer_surface_expr(arg, env, state, type_map)?;
+                                let _ =
+                                    Box::pin(infer_surface_expr(arg, env, state, type_map)).await?;
                             }
                             for na in named_args {
-                                let _ = infer_surface_expr(&na.node.value, env, state, type_map)?;
+                                let _ = Box::pin(infer_surface_expr(
+                                    &na.node.value,
+                                    env,
+                                    state,
+                                    type_map,
+                                ))
+                                .await?;
                             }
-                            return Ok(state.fresh_type_var());
+                            return Ok(state.fresh_type_var(&node.span));
                         }
                     }
                 }
@@ -1751,6 +1793,7 @@ pub(crate) fn infer_surface_expr(
                             state,
                             Some(name.as_str()),
                             Some(node.span.clone()),
+                            &node.span,
                         );
                         // Record the function VarRef span → instantiated type in type_map.
                         // This mirrors check_call_with_scheme's explicit recording, enabling
@@ -1794,7 +1837,7 @@ pub(crate) fn infer_surface_expr(
                         // Infer args and collect types for call_dispatch resolution.
                         let mut arg_types: Vec<Type> = Vec::with_capacity(args.len());
                         for arg in args {
-                            match infer_surface_expr(arg, env, state, type_map) {
+                            match Box::pin(infer_surface_expr(arg, env, state, type_map)).await {
                                 Ok(ty) => arg_types.push(ty),
                                 Err(_) => arg_types.push(Type::Unknown),
                             }
@@ -1890,10 +1933,17 @@ pub(crate) fn infer_surface_expr(
                         } else if matches!(inst_ty, Type::Error(_)) {
                             // Error cascade suppression (B-180): scheme body is Error → suppress T003.
                             for arg in args {
-                                let _ = infer_surface_expr(arg, env, state, type_map);
+                                let _ =
+                                    Box::pin(infer_surface_expr(arg, env, state, type_map)).await;
                             }
                             for na in named_args {
-                                let _ = infer_surface_expr(&na.node.value, env, state, type_map);
+                                let _ = Box::pin(infer_surface_expr(
+                                    &na.node.value,
+                                    env,
+                                    state,
+                                    type_map,
+                                ))
+                                .await;
                             }
                             Ok(Type::Unknown)
                         } else {
@@ -1956,9 +2006,11 @@ pub(crate) fn infer_surface_expr(
                                     Type::TyCon(_) | Type::Unknown | Type::Any
                                 ) {
                                     // Gradual or opaque param: infer for side effects only
-                                    let _ = infer_surface_expr(arg, env, state, type_map);
+                                    let _ = Box::pin(infer_surface_expr(arg, env, state, type_map))
+                                        .await;
                                 } else {
                                     check_surface_expr(arg, &param_resolved, env, state, type_map)
+                                        .await
                                         .map_err(|e| e)?;
                                 }
                             }
@@ -1975,21 +2027,23 @@ pub(crate) fn infer_surface_expr(
                                             Type::TyCon(_) | Type::Unknown | Type::Any
                                         ) {
                                             // Gradual or opaque param: infer for side effects
-                                            let _ = infer_surface_expr(
+                                            let _ = Box::pin(infer_surface_expr(
                                                 &na.node.value,
                                                 env,
                                                 state,
                                                 type_map,
-                                            );
+                                            ))
+                                            .await;
                                         } else {
                                             // Type-check the named arg value.
                                             // On mismatch, wrap the error with a named-arg context.
-                                            let actual_ty = infer_surface_expr(
+                                            let actual_ty = Box::pin(infer_surface_expr(
                                                 &na.node.value,
                                                 env,
                                                 state,
                                                 type_map,
-                                            )?;
+                                            ))
+                                            .await?;
                                             let actual_resolved = state.subst.apply(&actual_ty);
                                             if !Type::is_consistent_subtype(
                                                 &actual_resolved,
@@ -2019,9 +2073,11 @@ pub(crate) fn infer_surface_expr(
                         {
                             // TypeVar or gradual type: cannot check call statically.
                             // Infer func and args for side effects, return Unknown.
-                            let _func_ty = infer_surface_expr(func, env, state, type_map)?;
+                            let _func_ty =
+                                Box::pin(infer_surface_expr(func, env, state, type_map)).await?;
                             for arg in args {
-                                let _ = infer_surface_expr(arg, env, state, type_map);
+                                let _ =
+                                    Box::pin(infer_surface_expr(arg, env, state, type_map)).await;
                             }
                             Ok(Type::Unknown)
                         } else if matches!(func_ty, Type::Error(_)) {
@@ -2031,10 +2087,17 @@ pub(crate) fn infer_surface_expr(
                             // has already been reported at the definition site.
                             // Infer args for side effects (type map population) and return Unknown.
                             for arg in args {
-                                let _ = infer_surface_expr(arg, env, state, type_map);
+                                let _ =
+                                    Box::pin(infer_surface_expr(arg, env, state, type_map)).await;
                             }
                             for na in named_args {
-                                let _ = infer_surface_expr(&na.node.value, env, state, type_map);
+                                let _ = Box::pin(infer_surface_expr(
+                                    &na.node.value,
+                                    env,
+                                    state,
+                                    type_map,
+                                ))
+                                .await;
                             }
                             Ok(Type::Unknown)
                         } else {
@@ -2056,7 +2119,7 @@ pub(crate) fn infer_surface_expr(
             } else {
                 // Non-VarRef function expression (e.g., literal, nested call).
                 // Infer the function expression type and check it's callable.
-                let func_ty = infer_surface_expr(func, env, state, type_map)?;
+                let func_ty = Box::pin(infer_surface_expr(func, env, state, type_map)).await?;
                 let func_resolved = if state.subst.type_map.borrow().is_empty() {
                     func_ty
                 } else {
@@ -2097,13 +2160,13 @@ pub(crate) fn infer_surface_expr(
                     if total_supplied < min_required || total_supplied > max_allowed {
                         // Arity mismatch for non-VarRef callee — still infer args for side effects
                         for arg in args {
-                            let _ = infer_surface_expr(arg, env, state, type_map);
+                            let _ = Box::pin(infer_surface_expr(arg, env, state, type_map)).await;
                         }
                         return Ok(Type::Unknown);
                     }
                     let mut arg_types: Vec<Type> = Vec::with_capacity(args.len());
                     for arg in args {
-                        match infer_surface_expr(arg, env, state, type_map) {
+                        match Box::pin(infer_surface_expr(arg, env, state, type_map)).await {
                             Ok(ty) => arg_types.push(ty),
                             Err(_) => arg_types.push(Type::Unknown),
                         }
@@ -2128,7 +2191,7 @@ pub(crate) fn infer_surface_expr(
                     return Ok(state.subst.apply(&fn_ret_clone));
                 }
                 for arg in args {
-                    let _ = infer_surface_expr(arg, env, state, type_map);
+                    let _ = Box::pin(infer_surface_expr(arg, env, state, type_map)).await;
                 }
                 Ok(Type::Unknown)
             }
@@ -2169,7 +2232,7 @@ pub(crate) fn infer_surface_expr(
                     let param_ty = if p.node.variadic {
                         // Variadic params collect positional args into an open integer-keyed record.
                         // Mirrors the infer_fn (async) treatment of variadic params.
-                        let elem_ty = state.fresh_type_var();
+                        let elem_ty = state.fresh_type_var(&p.span);
                         Type::Record(Row {
                             fields: indexmap::IndexMap::new(),
                             tail: crate::type_def::RowTail::Uniform {
@@ -2197,7 +2260,8 @@ pub(crate) fn infer_surface_expr(
                     param_types.push((Some(p.node.name.clone()), param_ty));
                 }
                 let fn_env_arc = Arc::new(RwLock::new(fn_env_inner));
-                let body_ty = infer_surface_expr(body, &fn_env_arc, state, type_map)?;
+                let body_ty =
+                    Box::pin(infer_surface_expr(body, &fn_env_arc, state, type_map)).await?;
 
                 // Determine the function's return type.
                 // Priority: declared return annotation (if resolvable) > inferred body type.
@@ -2283,7 +2347,7 @@ pub(crate) fn infer_surface_expr(
             // default provides a fallback value at runtime. Errors on the default itself
             // are never suppressed (hard type errors).
             let has_default = annotation.node.get_property("default").is_some();
-            let actual_result = infer_surface_expr(inner, env, state, type_map);
+            let actual_result = Box::pin(infer_surface_expr(inner, env, state, type_map)).await;
 
             let (actual, inner_ok) = match actual_result {
                 Ok(ty) => (ty, true),
@@ -2410,7 +2474,7 @@ pub(crate) fn infer_surface_expr(
 
                 // Validate the default value type — hard error regardless of main-check result.
                 if let Some(default_node) = annotation.node.get_property("default") {
-                    match infer_surface_expr(default_node, env, state, type_map) {
+                    match Box::pin(infer_surface_expr(default_node, env, state, type_map)).await {
                         Ok(default_ty) => {
                             let default_resolved = if state.subst.type_map.borrow().is_empty() {
                                 default_ty
@@ -2456,18 +2520,19 @@ pub(crate) fn infer_surface_expr(
 
         SurfaceExpression::Unquote(inner) => {
             // [unquote expr] evaluates expr and returns its type.
-            infer_surface_expr(inner, env, state, type_map)
+            Box::pin(infer_surface_expr(inner, env, state, type_map)).await
         }
 
         SurfaceExpression::UnquoteSplice(inner) => {
             // [unquote-splice expr] — infer inner type only (unify is async)
-            let _inner_ty = infer_surface_expr(inner, env, state, type_map)?;
+            let _inner_ty = Box::pin(infer_surface_expr(inner, env, state, type_map)).await?;
             Ok(Type::Unknown)
         }
 
         SurfaceExpression::Match { scrutinee, arms } => {
             // Infer scrutinee type — needed for exhaustiveness checking.
-            let scrutinee_ty = infer_surface_expr(scrutinee, env, state, type_map)?;
+            let scrutinee_ty =
+                Box::pin(infer_surface_expr(scrutinee, env, state, type_map)).await?;
             let scrutinee_ty = state.subst.apply(&scrutinee_ty);
 
             // I-Case3 (BAS match narrowing): maintain a "remaining scrutinee" type that
@@ -2517,7 +2582,8 @@ pub(crate) fn infer_surface_expr(
 
                 // Type-check guard if present, and apply is: predicate narrowing.
                 let arm_env = if let Some(guard) = &arm.guard {
-                    let _guard_ty = infer_surface_expr(guard, &arm_env, state, type_map)?;
+                    let _guard_ty =
+                        Box::pin(infer_surface_expr(guard, &arm_env, state, type_map)).await?;
                     // extract_narrowings walks SurfaceExpression natively — pass guard directly.
                     let guard_narrowings = extract_narrowings(guard);
                     if guard_narrowings.is_empty() {
@@ -2528,7 +2594,8 @@ pub(crate) fn infer_surface_expr(
                 } else {
                     arm_env
                 };
-                let arm_ty = infer_surface_expr(&arm.body, &arm_env, state, type_map)?;
+                let arm_ty =
+                    Box::pin(infer_surface_expr(&arm.body, &arm_env, state, type_map)).await?;
                 arm_result_types.push(arm_ty);
 
                 // Update remaining_scrutinee for subsequent arms (I-Case3 negation accumulation).
@@ -2651,14 +2718,15 @@ pub(crate) fn infer_surface_expr(
                 SurfaceDeclaration::InstanceDecl {
                     ref class_name,
                     ref arms,
-                } => infer_instance_decl_from_surface(
+                } => Box::pin(infer_instance_decl_from_surface(
                     class_name,
                     arms,
                     node.span.clone(),
                     env,
                     state,
                     type_map,
-                ),
+                ))
+                .await,
                 SurfaceDeclaration::TypeAlias { .. } => {
                     // Type alias declarations in expression position have no runtime type.
                     // expand_type_alias is async and cannot be called from sync infer_surface_expr.
@@ -2717,12 +2785,12 @@ pub(crate) fn infer_surface_expr(
                 } else {
                     let mut child_inner = Env::with_parent(Arc::clone(env));
                     for name in binding_names {
-                        child_inner.insert(name, state.fresh_type_var());
+                        child_inner.insert(name, state.fresh_type_var(&node.span));
                     }
                     Arc::new(RwLock::new(child_inner))
                 }
             };
-            infer_surface_expr(body, &arm_env, state, type_map)
+            Box::pin(infer_surface_expr(body, &arm_env, state, type_map)).await
         }
 
         SurfaceExpression::Placeholder => {
@@ -2744,7 +2812,7 @@ pub(crate) fn infer_surface_expr(
             match expr {
                 None => Ok(Type::Unknown),
                 Some(base) => {
-                    let base_ty = infer_surface_expr(base, env, state, type_map)?;
+                    let base_ty = Box::pin(infer_surface_expr(base, env, state, type_map)).await?;
                     // Look up the field type from the record type (or Unknown for gradual).
                     let resolved_base = state.subst.apply(&base_ty);
                     match &resolved_base {
@@ -2946,7 +3014,7 @@ type SurfaceMatchArmData<'a> = (Vec<Type>, Span, &'a Vec<Spanned<crate::ast::Sur
 
 /// Type-check an [instance ...] declaration from SurfaceDeclaration::InstanceDecl fields.
 /// Called from infer_surface_expr (Decl arm) and typecheck_surface_document — no Expr bridge needed.
-fn infer_instance_decl_from_surface(
+async fn infer_instance_decl_from_surface(
     class_name: &str,
     arms: &[(Arc<SurfaceNode>, Vec<Spanned<crate::ast::SurfaceEntry>>)],
     span: Span,
@@ -3146,7 +3214,8 @@ fn infer_instance_decl_from_surface(
                 }
             };
 
-            let method_impl_type = infer_surface_expr(&method.node.value, env, state, type_map)?;
+            let method_impl_type =
+                infer_surface_expr(&method.node.value, env, state, type_map).await?;
             method_types.insert(method_name, method_impl_type);
         }
 
@@ -3229,7 +3298,7 @@ fn contains_unknown_or_top(ty: &Type) -> bool {
 /// This function is used at checking positions where the expected type is fully concrete
 /// (no type variables): CALL-MONO arguments, concrete return annotations (no TypeVars), and TypeAssert.
 #[allow(dead_code)]
-pub(crate) fn check_surface_expr(
+pub(crate) async fn check_surface_expr(
     node: &Arc<SurfaceNode>,
     expected: &Type,
     env: &Arc<RwLock<Env>>,
@@ -3278,10 +3347,10 @@ pub(crate) fn check_surface_expr(
 
     // Default: synthesize then check via infer_surface_expr.
     // Full lambda checking mode (CHECK-FN) that propagates expected parameter types into a lambda
-    // requires async annotation resolution (resolve_annotation) and cannot be performed in this
-    // sync function. Lambda inference is handled correctly by infer_fn in typecheck_match.rs
-    // when infer_surface_expr reaches a Fn node. Fall through to synthesize+subsume.
-    let actual = infer_surface_expr(node, env, state, type_map)?;
+    // requires async annotation resolution (resolve_annotation). Lambda inference is handled
+    // correctly by infer_fn in typecheck_match.rs when infer_surface_expr reaches a Fn node.
+    // Fall through to synthesize+subsume.
+    let actual = Box::pin(infer_surface_expr(node, env, state, type_map)).await?;
     // Apply state.subst to both types before comparison — access-chain constraints
     // may have bound TypeVars in state.subst. Without substitution, the comparison
     // uses stale TypeVars.
@@ -3875,7 +3944,7 @@ fn resolve_simple_type_name_for_typeassert(name: &str, state: &mut InferState) -
         // Each call to resolve_simple_type_name_for_typeassert creates an independent fresh
         // TypeVar (no sharing across calls). For sharing within a single function, use
         // resolve_simple_annotation_for_typeassert_with_mapping with ann_mapping instead.
-        _ => state.fresh_type_var(),
+        _ => state.fresh_type_var(&rust_span!()),
     }
 }
 
@@ -3897,7 +3966,7 @@ fn resolve_simple_annotation_for_typeassert_with_mapping(
                 // Lowercase annotation name (e.g. @a, @b): reuse or create TypeVar
                 ann_mapping
                     .entry(name.clone())
-                    .or_insert_with(|| state.fresh_type_var())
+                    .or_insert_with(|| state.fresh_type_var(&ann.span))
                     .clone()
             } else {
                 resolve_simple_type_name_for_typeassert(name.as_str(), state)
@@ -3921,7 +3990,7 @@ fn resolve_simple_annotation_for_typeassert_with_mapping(
                         {
                             return ann_mapping
                                 .entry(name.clone())
-                                .or_insert_with(|| state.fresh_type_var())
+                                .or_insert_with(|| state.fresh_type_var(&ann.span))
                                 .clone();
                         }
                     }
@@ -3964,11 +4033,13 @@ fn resolve_simple_annotation_for_typeassert_with_mapping(
                                 return existing.clone();
                             }
                             let level = state.level;
-                            let n = state.alloc_counter("", "label");
-                            let v = format!("_label_{}", n);
-                            state.set_level(v.clone(), level);
-                            state.set_kind(v.clone(), crate::types::Kind::Label);
-                            let fresh_ty = Type::TypeVar(v.clone(), level);
+                            let (v, fresh_ty) = state.fresh_type_var_with(
+                                Some("_label"),
+                                Some(level),
+                                Kind::Label,
+                                &ann.span,
+                            );
+                            state.kind_env.insert(v.clone(), Kind::Label);
                             ann_mapping.insert(label_name.clone(), fresh_ty.clone());
                             return fresh_ty;
                         }
@@ -4105,17 +4176,7 @@ fn resolve_simple_annotation_for_typeassert(
                     }
                 }
             }
-            // All-positional entries → Union type (e.g. @[Int Null], @[a Null]).
-            // This handles fn@[A B] return annotations where the annotation has no key entries.
-            let all_positional = entries.iter().all(|e| e.node.key.is_none());
-            if all_positional && entries.len() >= 2 {
-                let members: Vec<Type> = entries
-                    .iter()
-                    .map(|e| resolve_simple_type_node_for_typeassert(&e.node.value, state))
-                    .collect();
-                return Type::normalize_union(members);
-            }
-            state.fresh_type_var()
+            state.fresh_type_var(&ann.span)
         }
         Annotation::Annotated(name, _) => {
             resolve_simple_type_name_for_typeassert(name.as_str(), state)
@@ -4152,7 +4213,7 @@ fn resolve_params_for_typeassert(node: &Arc<SurfaceNode>, state: &mut InferState
                 .map(|e| resolve_type_node_for_typeassert(&e.node.value, state))
                 .collect()
         }
-        _ => vec![state.fresh_type_var()],
+        _ => vec![state.fresh_type_var(&node.span)],
     }
 }
 
@@ -4167,7 +4228,7 @@ fn resolve_surface_node_as_type(node: &Arc<SurfaceNode>, state: &mut InferState)
             annotation: Some(ann),
             ..
         } => resolve_simple_annotation_for_typeassert(ann, state),
-        _ => state.fresh_type_var(),
+        _ => state.fresh_type_var(&node.span),
     }
 }
 

@@ -39,7 +39,7 @@ Cross-type comparison allowed with precision loss warning for integers
 ## What Constrained Numerics Would Provide
 
 1. **General value constraints via `is:`.** The `is:` annotation key
-   accepts any `Fn@Bool [Any]` predicate — ranges, divisibility, sign
+   accepts any `Fn@Boolean [Any]` predicate — ranges, divisibility, sign
    checks, or domain-specific invariants:
 
    ```tinct

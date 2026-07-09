@@ -36,7 +36,7 @@ Also: a testbed for fully automated *agentic virtuous-loop* software development
 ```tinct
 [name: "alice"  active: true]         # dict
 [map [fn [let u] u.name] users]       # function call
-[x@Int: 42]                           # annotated entry
+[x@Integer: 42]                           # annotated entry
 ```
 
 ### Dict-first
@@ -90,12 +90,12 @@ Hindley-Milner inference with row polymorphism. Annotate where you want precisio
 
 ### Union types and algebraic data types
 
-`x@[Int Null]` annotates a nullable value. Multi-entry `[type ...]` declarations define structural ADTs; `[match]` destructures them with exhaustiveness checking.
+`x@[or Int Null]` annotates a nullable value. Multi-entry `[type ...]` declarations define structural ADTs; `[match]` destructures them with exhaustiveness checking.
 
 ```tinct
-Result: [type [ok: a] [err: Str]]
+Result: [type [ok: a] [err: String]]
 
-parse: [fn@Result [let input@Str]
+parse: [fn@Result [let input@String]
     [match [try [json-parse input]]
         [ok: v]    [ok: v]
         [err: msg] [err: [str "parse failed: " msg]]]]

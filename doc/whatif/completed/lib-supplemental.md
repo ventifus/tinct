@@ -181,25 +181,25 @@ yielding `String { source: Rc::clone(&source), start: start+off, end: start+off+
 # stdlib/strings.llt
 
 # str-contains? — true if needle appears anywhere in haystack
-str-contains?: [fn@Bool [needle@String haystack@String]
+str-contains?: [fn@Boolean [needle@String haystack@String]
   [> [length [split haystack needle]] 1]]
 
 # pad-left — left-pad s to width with spaces
-pad-left: [fn@String [width@Int s@String]
+pad-left: [fn@String [width@Integer s@String]
   [str
     [join "" [take [max 0 [- width [str-length s]]] [repeat " "]]]
     s]]
 
 # pad-right — right-pad s to width with spaces
-pad-right: [fn@String [width@Int s@String]
+pad-right: [fn@String [width@Integer s@String]
   [str s
     [join "" [take [max 0 [- width [str-length s]]] [repeat " "]]]]]
 
 # str-repeat — repeat s n times
-str-repeat: [fn@String [n@Int s@String] [join "" [take n [repeat s]]]]
+str-repeat: [fn@String [n@Integer s@String] [join "" [take n [repeat s]]]]
 
 # str-find — character index of first occurrence of needle, or -1
-str-find: [fn@Int [needle@String haystack@String]
+str-find: [fn@Integer [needle@String haystack@String]
   [if [str-contains? needle haystack]
     [str-length [first [split haystack needle]]]
     -1]]
@@ -211,15 +211,15 @@ str-reverse: [fn@String [s@String]
   [join "" [reverse s]]]
 
 # str-take — first n characters
-str-take: [fn@String [n@Int s@String]
+str-take: [fn@String [n@Integer s@String]
   [join "" [take n s]]]
 
 # str-drop — drop first n characters
-str-drop: [fn@String [n@Int s@String]
+str-drop: [fn@String [n@Integer s@String]
   [join "" [drop n s]]]
 
 # str-count — count characters matching predicate
-str-count: [fn@Int [pred@Fn s@String]
+str-count: [fn@Integer [pred@Fn s@String]
   [count [filter pred s]]]
 ```
 
@@ -1052,7 +1052,7 @@ explicitly). `stdlib/in/toml-lite.llt` is available as `-i toml-lite`.
   DirEntry: [type [
     name:  @String            # filename only (no directory component)
     type:  @String            # "file" | "dir" | "symlink" | "other"
-    size:  @Int               # bytes
+    size:  @Integer               # bytes
     mtime: @[Timestamp Null]  # last modified; null if unavailable
   ]]
 
@@ -1060,7 +1060,7 @@ explicitly). `stdlib/in/toml-lite.llt` is available as `-i toml-lite`.
   StatResult: [type [
     name:         @String
     type:         @String           # "file" | "dir" | "symlink" | "other"
-    size:         @Int
+    size:         @Integer
     mtime:        @[Timestamp Null]
     atime:        @[Timestamp Null]  # null on S3/WebDAV
     ctime:        @[Timestamp Null]  # null on S3/WebDAV
@@ -1099,12 +1099,12 @@ explicitly). `stdlib/in/toml-lite.llt` is available as `-i toml-lite`.
 
 ```tinct
 # Prelude additions (multi-dispatch: String | Bytes | Seq)
-starts-with? : [fn@Bool         [prefix@[String Bytes Seq]  haystack@[String Bytes Seq]]]
-ends-with?   : [fn@Bool         [suffix@[String Bytes Seq]  haystack@[String Bytes Seq]]]
+starts-with? : [fn@Boolean         [prefix@[String Bytes Seq]  haystack@[String Bytes Seq]]]
+ends-with?   : [fn@Boolean         [suffix@[String Bytes Seq]  haystack@[String Bytes Seq]]]
 
 # String-domain
 str-chars : [fn@[Seq String]  [s@String]]          # internal; Seq of single-char String slices
-str-slice : [fn@String      [from@Int  to@Int  s@String]]  # O(1) zero-copy substring
+str-slice : [fn@String      [from@Integer  to@Integer  s@String]]  # O(1) zero-copy substring
 
 # Math
 pow    : [fn@Float  [base@Number  exp@Number]]
@@ -1112,37 +1112,37 @@ sqrt   : [fn@Float  [x@Float]]
 log    : [fn@Float  [x@Float]]    # log2, log10, exp analogous
 sin    : [fn@Float  [x@Float]]    # cos, tan, asin, acos, atan analogous
 atan2  : [fn@Float  [y@Float  x@Float]]
-nan?   : [fn@Bool   [x@Float]]
-inf?   : [fn@Bool   [x@Float]]
-finite?: [fn@Bool   [x@Float]]
+nan?   : [fn@Boolean   [x@Float]]
+inf?   : [fn@Boolean   [x@Float]]
+finite?: [fn@Boolean   [x@Float]]
 # pi, e, phi are Float literals in math.llt, not registered builtins
 
 # Bitwise primitives
-band      : [fn@Int     [a@Int  b@Int]]
-bor       : [fn@Int     [a@Int  b@Int]]
-bxor      : [fn@Int     [a@Int  b@Int]]
-shl       : [fn@Int     [a@Int  n@Int]]
-shr       : [fn@Int     [a@Int  n@Int]]
-char-code : [fn@Int     [s@String]]   # Unicode codepoint of first char
-chr       : [fn@String  [n@Int]]      # single-char string for codepoint
+band      : [fn@Integer     [a@Integer  b@Integer]]
+bor       : [fn@Integer     [a@Integer  b@Integer]]
+bxor      : [fn@Integer     [a@Integer  b@Integer]]
+shl       : [fn@Integer     [a@Integer  n@Integer]]
+shr       : [fn@Integer     [a@Integer  n@Integer]]
+char-code : [fn@Integer     [s@String]]   # Unicode codepoint of first char
+chr       : [fn@String  [n@Integer]]      # single-char string for codepoint
 str-bytes : [fn@Bytes   [s@String]]   # UTF-8 encode
 bytes-str : [fn@String  [b@Bytes]]    # UTF-8 decode; errors on invalid UTF-8
 
 # Bytes
 bytes       : [fn@Bytes  [...@Bytes]]              # variadic concat; mirrors str
-bytes-find  : [fn@Int    [pattern@Bytes  b@Bytes]] # byte index, or -1
+bytes-find  : [fn@Integer    [pattern@Bytes  b@Bytes]] # byte index, or -1
 bytes-of    : [fn@Bytes  [seq@[Seq Int]]]           # collect byte Ints (0-255)
-bytes-equal?: [fn@Bool  [b1@Bytes  b2@Bytes]]   # fast structural equality (short-circuits)
-ct-equal?:    [fn@Bool  [b1@Bytes  b2@Bytes]]   # constant-time (subtle::ConstantTimeEq); use for secrets
+bytes-equal?: [fn@Boolean  [b1@Bytes  b2@Bytes]]   # fast structural equality (short-circuits)
+ct-equal?:    [fn@Boolean  [b1@Bytes  b2@Bytes]]   # constant-time (subtle::ConstantTimeEq); use for secrets
 
 # I/O (WriteHandle encoding is tracked in the type)
 write    : [fn@WriteHandle  [wh@WriteHandle  content@[String Bytes]]]
            # content type must match wh encoding (String for Text, Bytes for Binary)
 flush    : [fn@WriteHandle  [wh@WriteHandle]]
 close    : [fn@Null         [wh@WriteHandle]]
-seek     : [fn@Handle       [h@Handle  offset@Int]]   # h must carry Seekable
+seek     : [fn@Handle       [h@Handle  offset@Integer]]   # h must carry Seekable
 seek-end : [fn@Handle       [h@Handle]]               # h must carry Seekable
-position : [fn@Int          [h@Handle]]               # h must carry Seekable
+position : [fn@Integer          [h@Handle]]               # h must carry Seekable
 
 # FsCap DirCap extension
 make-dir  : [fn@Null         [cap@DirCap  path@String]]

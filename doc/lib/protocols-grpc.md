@@ -5,7 +5,7 @@
 Build a gRPC Length-Prefixed Message frame
 
 ```tinct
-fn@String [let data@String compressed@Bool]
+fn@String [let data@String compressed@Boolean]
 ```
 
 ### `parse-grpc-frame-header`

@@ -214,7 +214,7 @@ fn ground_type_of(v: &Value) -> Type {
         Value::Builtin(..)
         | Value::Proxy(..)      => Type::Unknown,
         // Builder is a transient construction artifact — produce Top (type mismatch error)
-        // rather than panicking; Builder can reach TypeAssert via e.g. [@Int [make-builder]].
+        // rather than panicking; Builder can reach TypeAssert via e.g. [@Integer [make-builder]].
         Value::Builder(..)      => Type::Top,
         // AST values, async primitives, and other runtime-only types have no static equivalent.
         _                       => Type::Top,

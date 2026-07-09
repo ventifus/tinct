@@ -2312,31 +2312,31 @@ mod tests {
     fn test_immediate_at() {
         // Identifier followed by @ with no whitespace — ImmediateAt
         assert_eq!(
-            tok("x@Int"),
+            tok("x@Integer"),
             vec![
                 Token::Identifier("x".into()),
                 Token::ImmediateAt,
-                Token::Identifier("Int".into())
+                Token::Identifier("Integer".into())
             ]
         );
 
         // Identifier followed by @ with whitespace — At
         assert_eq!(
-            tok("x @Int"),
+            tok("x @Integer"),
             vec![
                 Token::Identifier("x".into()),
                 Token::At,
-                Token::Identifier("Int".into())
+                Token::Identifier("Integer".into())
             ]
         );
 
         // EscapedRef followed by @ — At (not ImmediateAt, only fires after Identifier)
         assert_eq!(
-            tok("$var@Int"),
+            tok("$var@Integer"),
             vec![
                 Token::EscapedRef("var".into()),
                 Token::At,
-                Token::Identifier("Int".into())
+                Token::Identifier("Integer".into())
             ]
         );
     }

@@ -92,7 +92,7 @@
       loss-state:     [quic-init-loss-state]
       flow:           [QuicFlowState send-window: 65535  recv-window: 65535  send-blocked-at: Absent.Absent]]]
 
-  decode-pn: [fn [let truncated@Int pn-bits@Int largest-acked@Int]
+  decode-pn: [fn [let truncated@Integer pn-bits@Integer largest-acked@Integer]
     [expected:  [+ largest-acked 1]]
     [pn-win:    [shl 1 pn-bits]]
     [pn-hwin:   [/ pn-win 2]]
@@ -105,7 +105,7 @@
         candidate]]]
 
   # RFC 9002 §A. Packet-level ACK processing: mark packet as acked, update largest-acked.
-  on-packet-acked: [fn [let state@QuicLossState pn@Int]
+  on-packet-acked: [fn [let state@QuicLossState pn@Integer]
     [new-sent: [map-kv [fn [let k v] [pair k v]] state.sent-packets]]  # remove pn entry
     [QuicLossState
       largest-acked: [max state.largest-acked pn]
@@ -181,13 +181,13 @@
 
   # Encode CRYPTO frame: type(1) = 0x06, offset(varint), length(varint), data.
   # RFC 9000 §19.6: CRYPTO frame for handshake data.
-  encode-quic-crypto-frame: [fn [let offset@Int data@Bytes]
+  encode-quic-crypto-frame: [fn [let offset@Integer data@Bytes]
     [concat [0x06]
             [encode-quic-varint offset]
             [encode-quic-varint [length data]]
             data]]
 
-  encode-quic-varint: [fn [let n@Int]
+  encode-quic-varint: [fn [let n@Integer]
     [if [<= n 63]
       [bytes ByteOrder.Network [@UInt8 n]]
       [if [<= n 16383]
@@ -198,7 +198,7 @@
 
   # Build QUIC Initial long header packet (RFC 9000 §17.2.2).
   # Packet: flags(1) version(4) dcid-len(1) dcid scid-len(1) scid token-len(varint) token pn(1-4) payload
-  build-quic-initial-packet: [fn [let dcid@Bytes scid@Bytes pn@Int payload@Bytes]
+  build-quic-initial-packet: [fn [let dcid@Bytes scid@Bytes pn@Integer payload@Bytes]
     [pn-bytes:  [bytes ByteOrder.Network [@UInt8 pn]]]   # 1-byte packet number for simplicity
     [pkt-len:   [+ [length payload] 1 16]]        # payload + pn-byte + AEAD tag
     [concat
@@ -224,7 +224,7 @@
         _:                    acc]]
      [] frames]]
 
-  decode-quic-varint: [fn [let b@Bytes offset@Int]
+  decode-quic-varint: [fn [let b@Bytes offset@Integer]
     [b0: [get b offset]]
     [prefix: [shr [band b0 0xC0] 6]]
     [match prefix
@@ -248,7 +248,7 @@
 [instance ByteStream
   [let h@QuicStream]: [
     # Accumulate bytes from the stream's readable channel until n bytes collected.
-    read: [fn [let s@QuicStream n@Int]
+    read: [fn [let s@QuicStream n@Integer]
       [acc: [fn [let remaining buf]
         [if [= remaining 0]
           buf
@@ -299,9 +299,9 @@
 
   # QUIC error type — RFC 9000 §20 transport error codes as named variants.
   QuicError: [type
-    [ProtocolViolation  frame-type@Int  reason@String]   # QUIC_PROTOCOL_VIOLATION (0xa)
-    [StreamReset        id@Int  error-code@Int]           # stream reset by peer (RESET_STREAM)
-    [ConnectionClose    error-code@Int  reason@String]    # peer sent CONNECTION_CLOSE
+    [ProtocolViolation  frame-type@Integer  reason@String]   # QUIC_PROTOCOL_VIOLATION (0xa)
+    [StreamReset        id@Integer  error-code@Integer]           # stream reset by peer (RESET_STREAM)
+    [ConnectionClose    error-code@Integer  reason@String]    # peer sent CONNECTION_CLOSE
     [StatelessReset]                                      # server sent stateless reset token
     [VersionNegotiationFailed]                            # no QUIC version in common
     [FlowControlViolation]                                # FLOW_CONTROL_ERROR (0x3)
@@ -311,19 +311,19 @@
   AckRange: [type [gap: Int  range: Int]]
 
   QuicFrame: [type
-    [Padding       length@Int]
+    [Padding       length@Integer]
     [Ping]
-    [Ack           largest@Int  delay@Int  ranges@[Seq AckRange]]
-    [ResetStream   id@Int  error@Int  final-size@Int]
-    [StopSending   id@Int  error@Int]
-    [Crypto        offset@Int  data@Bytes]
+    [Ack           largest@Integer  delay@Integer  ranges@[Seq AckRange]]
+    [ResetStream   id@Integer  error@Integer  final-size@Integer]
+    [StopSending   id@Integer  error@Integer]
+    [Crypto        offset@Integer  data@Bytes]
     [NewToken      token@Bytes]
-    [Stream        id@Int  offset@Int  fin@Bool  data@Bytes]
-    [MaxData       max@Int]
-    [MaxStreamData id@Int  max@Int]
-    [MaxStreams    bidi@Bool  max@Int]
-    [DataBlocked   limit@Int]
-    [ConnectionClose  error@Int  frame-type@Int  reason@String]
+    [Stream        id@Integer  offset@Integer  fin@Boolean  data@Bytes]
+    [MaxData       max@Integer]
+    [MaxStreamData id@Integer  max@Integer]
+    [MaxStreams    bidi@Boolean  max@Integer]
+    [DataBlocked   limit@Integer]
+    [ConnectionClose  error@Integer  frame-type@Integer  reason@String]
     [HandshakeDone]]
 
   # QuicFrameCodec: codec for QUIC frame wire format (RFC 9000 §12, §19).
@@ -696,7 +696,7 @@
                 [encode-quic-varint [length reason-bytes]]
                 reason-bytes]
       [QuicFrame.HandshakeDone]: [encode-quic-varint 0x1e]]]
-  decode: [fn [let _ data@Bytes offset@Int]
+  decode: [fn [let _ data@Bytes offset@Integer]
     [type-res: [decode-quic-varint data offset]]
     [p:        type-res.next]
     [match type-res.value

@@ -3,7 +3,7 @@
 ## Overview
 
 Union types exist at two levels in tinct. Annotation-only unions
-(`x@[Int Null]`) express "A or B" in explicit type annotations and builtin
+(`x@[or Int Null]`) express "A or B" in explicit type annotations and builtin
 signatures without altering inference. Full algebraic subtyping (Simple-sub)
 replaces Robinson unification with polarity-aware constraint solving, enabling
 inferred union and intersection types throughout the type system.
@@ -26,45 +26,34 @@ explicit type annotations and builtin signatures, but `unify` never produces the
 
 #### Syntax
 
-Union types use **positional entries in `@[…]` annotations**. No infix operator.
-This avoids collision with the `|` pipe operator (access-pipeline) and extends
-the existing annotation model naturally: positional entries are type-union members,
-named entries are metadata.
+Union types use **`@[or T1 T2 ...]`** where `or` is a type-stage function defined
+in the type prelude. No infix operator. This avoids collision with the `|` pipe
+operator (access-pipeline).
+
+The old positional-entries-as-union syntax (`@[Int Str]`) was retired because it
+is structurally identical to a parameterized type constructor call (`@[Seq Int]`):
+both are implied calls with VarRef heads. There is no way to disambiguate `[Seq Int]`
+(Seq<Int>) from `[Int Str]` (Int | Str) without knowing which head identifiers are
+type constructors — information unavailable to the parser. The `or` function makes
+union intent explicit.
 
 ```tinct
-# Positional entries in @[...] are collected and unioned
-x@[Int Str]                          # type: Int | Str
-x@[String Null]                      # type: String | Null
-x@[String Null default: ""]         # type: String | Null, with default metadata
+# or is a type-stage function — wraps members in a Union type
+x@[or Int Str]                       # type: Int | Str
+x@[or String Null]                   # type: String | Null
+x@[or String Null]@[default: ""]     # type: String | Null, with default metadata
 
 # In function parameters
-[fn [x@[Int Str]] ...]               # x accepts Int or Str
-[fn@[String Null] [name@String] ...] # returns String or Null
-
-# In type aliases
-Result: [type [ok: a] [err: String]] # union of two record types
+[fn [x@[or Int Str]] ...]            # x accepts Int or Str
+[fn@[or String Null] [name@String] ...] # returns String or Null
 
 # Shorthand still works for single types — unchanged
-x@String                             # equivalent to x@[type: String]
+x@String                             # simple annotation
 ```
-
-**Desugar rule.** Positional entries in an annotation dict are moved to the
-`type:` key as a list, preserving the existing annotation resolution path:
-
-```text
-x@[T1 T2 ...named...]  →  x@[type: [T1 T2]  ...named...]
-x@[T]                  →  x@[type: T]         (single positional unwraps)
-x@T                    →  x@[type: T]         (existing shorthand, unchanged)
-```
-
-The type resolver then handles `type: [T1 T2]` as `Union(T1, T2)`. This is
-backward-compatible: `x@[type: Number  default: 30]` has no positional entries
-and is unchanged.
 
 **Param lists are unaffected.** `[Fn@Number [String Bool]]` means a two-param
 function (String, Bool → Number) — the inner `[String Bool]` is in param-list
-context, not annotation context, so it is not treated as a union. To express
-a one-param function taking a union type: `[Fn@Number [@[String Bool]]]`.
+context, not annotation context, and is not treated as a union.
 
 #### Internal Representation
 
@@ -177,10 +166,10 @@ problem; Simple-sub's concrete bounds help.
 |-----------|--------|--------|
 | `src/types.rs` | Add `Union(Vec<Type>)` + `normalize_union()` | Moderate — propagates through `is_subtype`, `apply_substitution`, `collect_type_vars`, `display` |
 | `src/types.rs` `is_subtype` | Add `[UNION-INJ-L]`, `[UNION-INJ-R]`, `[UNION-ELIM]` | Minor — three new match arms |
-| `src/typecheck.rs` `resolve_annotation` | Collect positional entries from `Annotation::PropertyDict` into `type:` value as a list; resolve `type: [T1 T2]` as `Union(normalize(T1), normalize(T2))` | Minor |
+| `src/typecheck.rs` `resolve_annotation` | Resolve `or` type-stage function calls as `Union(normalize(T1), normalize(T2), ...)` | Minor |
 | `src/eval.rs` | No changes; unions erased at runtime | None |
 | `src/builtins.rs` | Update dual-dispatch signatures to use `Union` types | Minor |
-| `doc/05-type-annotations.md` | Add generalized annotation model: positional entries = union members, named entries = metadata; update property table; add union examples | Minor |
+| `doc/05-type-annotations.md` | Add `or` type-stage function to annotation model; update property table; add union examples | Minor |
 
 ### For Full Algebraic Subtyping
 

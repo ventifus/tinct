@@ -2,6 +2,6 @@
 # Second stage expects Int via TypeAssert but receives a Dict
 [x: 1]
 ---
-[@Int %]
+[@Integer %]
 === out
 Dict({"x": Int(1)})

@@ -9,6 +9,6 @@
 
   # Instance whose method body references my-helper from the same dict
   MyInstance: [instance MyClass
-    [let a@Int]: [method: my-helper]]
+    [let a@Integer]: [method: my-helper]]
 ]
 [my-helper 42]

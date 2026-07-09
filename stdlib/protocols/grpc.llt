@@ -38,19 +38,19 @@
 # Integer arithmetic helpers (self-contained copies of quot, mod)
 # --------------------------------------------------------------------------
 
-grpc-quot: [fn@Int [let a@Int b@Int]
+grpc-quot: [fn@Integer [let a@Integer b@Integer]
     [if [= b 0]
         [error "grpc-quot: division by zero"]
         [grpc-quot-impl a b]]]
 
-grpc-quot-impl: [fn@Int [let a@Int b@Int]
+grpc-quot-impl: [fn@Integer [let a@Integer b@Integer]
     [if [< a 0]
         [error "grpc-quot: negative dividend not supported"]
         [if [< a b]
             0
             [+ 1 [grpc-quot-impl [- a b] b]]]]]
 
-grpc-mod: [fn@Int [let a@Int b@Int]
+grpc-mod: [fn@Integer [let a@Integer b@Integer]
     [- a [* [grpc-quot a b] b]]]
 
 # --------------------------------------------------------------------------
@@ -59,7 +59,7 @@ grpc-mod: [fn@Int [let a@Int b@Int]
 
 # Encode a 32-bit unsigned integer as 4 big-endian bytes.
 # n must be in range 0..4294967295 (unchecked for performance).
-grpc-encode-u32-be: [fn@String [let n@Int]
+grpc-encode-u32-be: [fn@Stringing [let n@Integer]
     [str
         [chr [grpc-quot  n 16777216]]
         [chr [grpc-mod   [grpc-quot n 65536]   256]]
@@ -68,7 +68,7 @@ grpc-encode-u32-be: [fn@String [let n@Int]
 
 # Decode a 4-byte big-endian string slice back to an integer.
 # Reads exactly 4 bytes starting at `offset` in `bytes`.
-grpc-decode-u32-be: [fn@Int [let bytes@String offset@Int]
+grpc-decode-u32-be: [fn@Integer [let bytes@String offset@Integer]
     [+
         [*
             [+
@@ -121,7 +121,7 @@ GRPC-HEADER-LEN: 5
 #
 # Type: (String -> Bool -> String)
 build-grpc-frame@[doc: "Build a gRPC Length-Prefixed Message frame"]:
-    [fn@String [let data@String compressed@Bool]
+    [fn@Stringing [let data@String compressed@Boolean]
         [str
             [chr [if compressed 1 0]]
             [grpc-encode-u32-be [length data]]

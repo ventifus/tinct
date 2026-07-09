@@ -11,9 +11,9 @@
 **`@` attaches a type or property dict** to a name, function, or expression. It is always a structural separator — not a valid identifier character. Wherever `@` appears immediately after a bare word (no whitespace), it separates the word from its annotation.
 
 ```tinct
-x@Int                       # parameter x has type Int
+x@Integer                       # parameter x has type Int
 fn@String                   # function returns String
-[@Int expr]                 # type assertion: expr must be Int at runtime
+[@Integer expr]                 # type assertion: expr must be Int at runtime
 === error
 type errors:
   expected record type, got Int at 1:1-1:6
@@ -79,7 +79,7 @@ Config: [type [record
 `x@Type` declares the compile-time type of parameter `x`. If the annotation is a bare name, it is a type reference (uppercase = concrete, lowercase = TypeVar). If it is a bracket expression, it is resolved as a type-stage expression.
 
 ```tinct
-x@Int                       # x has type Int
+x@Integer                       # x has type Int
 x@String                    # x has type String
 x@a                         # x has TypeVar type a (polymorphic)
 x@[or Int Null]             # x has union type Int | Null
@@ -130,10 +130,10 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 data: [from-json input]           # type: Any
 
 name: [@String data.name]         # throws if data.name is not a String
-port: [@Int    data.port]         # throws if data.port is not an Int
+port: [@Integer    data.port]         # throws if data.port is not an Int
 
 # Inline
-[+ [@Int x] 1]
+[+ [@Integer x] 1]
 
 # With fallback — safe cast
 port: [@[type: Int  default: 8080] config.port]
@@ -244,12 +244,12 @@ In annotation positions, `@[m a]` applies type constructor `m` to type argument 
 ```tinct
 x@[or Int Null]           # Int | Null
 x@[or String Int Bool]    # String | Int | Bool
-fn@[return: [or Int Null]] [xs@[Seq Int]  target@Int] ...]
+fn@[return: [or Int Null]] [xs@[Seq Int]  target@Integer] ...]
 === error
 error: unmatched closing bracket
  --> block 8:3:58
   |
-  3 | fn@[return: [or Int Null]] [xs@[Seq Int]  target@Int] ...]
+  3 | fn@[return: [or Int Null]] [xs@[Seq Int]  target@Integer] ...]
     |                                                          ^
 ```
 
@@ -328,12 +328,12 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 **`@Dict`** — open record with a fresh row variable per annotation site. Use when the function truly accepts any dict structure:
 
 ```tinct
-count-keys: [fn@Int [d@Dict] [length [keys d]]]
+count-keys: [fn@Integer [d@Dict] [length [keys d]]]
 === error
 error: `:` can only appear in dict, call, class, instance, or match forms
  --> block 12:1:11
   |
-  1 | count-keys: [fn@Int [d@Dict] [length [keys d]]]
+  1 | count-keys: [fn@Integer [d@Dict] [length [keys d]]]
     |           ^
 ```
 
@@ -356,20 +356,20 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 
 ```tinct
 # Definition:   fn@Return [params] body
-[fn@Int [x@Int y@Int] [+ x y]]
+[fn@Integer [x@Integer y@Integer] [+ x y]]
 
 # Type:         Fn@Return [ParamTypes]
-[Fn@Int [Int Int]]
+[Fn@Integer [Int Int]]
 === error
 type errors:
-  expected record type, got Fn@Int [x: Int y: Int] at 2:1-2:31
+  expected record type, got Fn@Integer [x: Int y: Int] at 2:1-2:31
   undefined variable: Int at 5:10-5:13
 
 ```
 
 ```tinct
 [Fn@b [a]]                    # function from a to b
-[Fn@Bool [a]]                 # predicate
+[Fn@Boolean [a]]                 # predicate
 [Fn@c [a b]]                  # two-arg function
 [Fn@[return: [f b]] [[Fn@b [a]]  [f a]]]  # HKT: (a→b) → f a → f b
 === error
@@ -387,7 +387,7 @@ type errors:
 
 **`@Fn`** (bare) — any callable: variadic function returning `Any`. Used for higher-order parameters where the specific signature is not constraining.
 
-**Subtyping:** named function types are subtypes of anonymous ones by dropping parameter names (Gaster & Jones 1996). `Fn@Int [x: Int  y: Int]` <: `Fn@Int [Int Int]`.
+**Subtyping:** named function types are subtypes of anonymous ones by dropping parameter names (Gaster & Jones 1996). `Fn@Integer [x: Int  y: Int]` <: `Fn@Integer [Int Int]`.
 
 ---
 
@@ -488,7 +488,7 @@ min: [fn@[bind: [a]  return: a  constraint: [a: Comparable]  doc: "Return smalle
 
 compare: [fn@[bind: [a b]  return: Bool  constraint: [a: Comparable  b: Printable]]
           [x@a  y@a  logger@b] ...]
-# Inferred: (Comparable a, Printable b) => Fn@Bool [a a b]
+# Inferred: (Comparable a, Printable b) => Fn@Boolean [a a b]
 
 display-sorted: [fn@[bind: [a]  return: String  constraint: [a: [each Comparable Printable]]]
                  [xs@[Seq a]] ...]
@@ -496,14 +496,14 @@ display-sorted: [fn@[bind: [a]  return: String  constraint: [a: [each Comparable
 
 check-all: [fn@[bind: [a]  return: Bool  constraint: [a: Equatable]]
             [xs@[Seq a]  target@a] ...]
-# Inferred: Equatable a => Fn@Bool [[Seq a] a]
+# Inferred: Equatable a => Fn@Boolean [[Seq a] a]
 
 between: [fn@[bind: [a]
-              return: [Fn@Bool [a]]
+              return: [Fn@Boolean [a]]
               constraint: [a: Comparable]
               doc: "Return a predicate for [lo, hi)"]
           [lo@a  hi@a]
-          [fn@Bool [x@a] [and [>= x lo] [< x hi]]]]
+          [fn@Boolean [x@a] [and [>= x lo] [< x hi]]]]
 === error
 error: `:` can only appear in dict, call, class, instance, or match forms
  --> block 20:1:4
@@ -668,7 +668,7 @@ Annotation brackets `@[...]` are resolved by evaluating their contents in the ty
 Note: A `CheckerType` newtype wrapping `TypeNode` values is a planned future refactor (see `doc/whatif/equirecursive-types.md`) but is not yet implemented. The current type checker uses the `Type` enum from `src/type_def.rs` directly. Annotation resolution produces `Type` values via `typenode_value_to_type` — the bridge between tinct-level `TypeNode` values and the `Type` enum.
 
 ```text
-# Named annotation path (@Int, @ListA, @Color, @Maybe Int):
+# Named annotation path (@Integer, @ListA, @Color, @Maybe Int):
 expand_named(name, args, expansion_stack)
   → TypeNode value (normalized, may be TypeNode.Recursive for self-referential aliases)
   → typenode_value_to_type(...)
@@ -825,7 +825,7 @@ data@{_@String : Int}             # String keys, Int values
 
 ```tinct
 Absent: [type Absent]
-absent?: [fn@Bool [let x@Unknown] [match x Absent.Absent: true  _: false]]
+absent?: [fn@Boolean [let x@Unknown] [match x Absent.Absent: true  _: false]]
 ```
 
 `[or Absent T]` is the structural optional type. Pattern matching is the canonical narrowing form:
@@ -915,7 +915,7 @@ Helper functions (`child-fields`, `child-role`, `child-field?`) read the unified
 IntList: [type [or Absent [record head: Int  tail: IntList]]]
 
 # Inline mu form — equivalent, no alias needed
-depth: [fn@Int [tree@[mu [fn [let self] [or Absent [record value: Int  left: self  right: self]]]]]]
+depth: [fn@Integer [tree@[mu [fn [let self] [or Absent [record value: Int  left: self  right: self]]]]]]
   [if [absent? tree] 0 [+ 1 [max [depth tree.left] [depth tree.right]]]]
 ```
 
@@ -958,14 +958,14 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 **In function parameters (hard guard):**
 
 ```tinct
-positive: [fn@Int [x@[type: Int  is: positive?]] ...]
+positive: [fn@Integer [x@[type: Int  is: positive?]] ...]
 # If caller passes x=(-1), predicate fails → runtime TypeError
 # The default: value is NEVER used as fallback for is: failure
 === error
 error: `:` can only appear in dict, call, class, instance, or match forms
  --> block 33:1:9
   |
-  1 | positive: [fn@Int [x@[type: Int  is: positive?]] ...]
+  1 | positive: [fn@Integer [x@[type: Int  is: positive?]] ...]
     |         ^
 ```
 
@@ -974,7 +974,7 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 ```tinct
 [match value
   n@[type: Int  is: positive?]: [str "positive: " n]   # falsy → skip to next arm
-  n@Int:                         [str "non-positive: " n]]
+  n@Integer:                         [str "non-positive: " n]]
 === error
 type errors:
   undefined variable: value at 1:8-1:13
@@ -1030,7 +1030,7 @@ Tinct uses capability types to statically track I/O permissions. Three capabilit
 read-file: [fn@String [cap@DirCap  path@String]
   [slurp [open cap path Readable]]]
 
-connect: [fn@Handle [nc@NetCap  host@String  port@Int] ...]
+connect: [fn@Handle [nc@NetCap  host@String  port@Integer] ...]
 
 # caps: pragma on document header — declared required capabilities
 --- caps: [%nc: @NetCap  %data: @DirCap]
@@ -1175,7 +1175,7 @@ type_assert_body    = { "@" ~ annotation_value ~ value }
 chained_annotation  = ${ identifier ~ ("@" ~ annotation_value)+ }
 ```
 
-`@` is `ImmediateAt` — emitted only when it appears directly after an identifier with no whitespace. This distinguishes `x@Int` (annotation) from `x @ Int` (which would be parsed differently if `@` were a regular operator).
+`@` is `ImmediateAt` — emitted only when it appears directly after an identifier with no whitespace. This distinguishes `x@Integer` (annotation) from `x @ Int` (which would be parsed differently if `@` were a regular operator).
 
 ### 25. Mixed-Stage Routing
 
@@ -1195,11 +1195,11 @@ Mixed-stage routing for annotation brackets in general:
 
 | Annotation form | Stage | Destination |
 |-----------------|-------|-------------|
-| `x@Int` | Type | `Type::Int` (via `expand_named` → `typenode_value_to_type`) |
+| `x@Integer` | Type | `Type::Int` (via `expand_named` → `typenode_value_to_type`) |
 | `x@[or Int Null]` | Type-stage eval | `Type::Union(...)` (via `eval_type_stage_expr` → `typenode_value_to_type`) |
 | `x@[type: Int  default: 0]` | Split | `type:` → type-stage, `default:` → runtime |
 | `fn@[bind: [a]  return: a  constraint: ...]` | Split | Per step table above |
-| `[@Int expr]` | Type + runtime | Type assertion at materialization |
+| `[@Integer expr]` | Type + runtime | Type assertion at materialization |
 | `x@[is: pred]` in match | Runtime | Soft guard at match time |
 | `x@[repr: "u8"]` | Runtime | Materialization boundary check |
 

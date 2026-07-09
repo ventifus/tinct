@@ -4658,8 +4658,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_type_assert_int_passes() {
-        // [@Int 42] -> 42
-        let thunk = eval_str("[@Int 42]", empty_env(), &test_ctx())
+        // [@Integer 42] -> 42
+        let thunk = eval_str("[@Integer 42]", empty_env(), &test_ctx())
             .await
             .unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
@@ -4698,14 +4698,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_type_assert_int_fails_on_string() {
-        // [@Int "hello"] -> error
+        // [@Integer "hello"] -> error
         // Use eval_core_for_test with resolved_type: Type::Int to exercise the TypeAssert
         // failure path directly. eval_str doesn't typecheck, so TypeAnnotation is not set, giving
         // resolved_type=Type::Unknown (accepts all values via consistent subtyping).
         let span = rust_span!();
         let expr = Spanned::new(
             CoreExpr::TypeAssert {
-                annotation: sp(Annotation::Simple("Int".into())),
+                annotation: sp(Annotation::Simple("Integer".into())),
                 expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span.clone())),
                 resolved_type: Type::Int,
                 pipeline_blame: None,
@@ -4718,7 +4718,7 @@ mod tests {
         let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
         assert!(
             err.to_string()
-                .contains("type assertion failed: expected Int, got String"),
+                .contains("type assertion failed: expected Integer, got String"),
             "got: {}",
             err
         );
@@ -6977,9 +6977,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_typeassert_nominal_fallback() {
-        // Nominal fallback path: resolved_type = None, annotation "Int", value is Int -> pass
+        // Nominal fallback path: resolved_type = None, annotation "Integer", value is Int -> pass
         // (This ensures the existing nominal path is preserved alongside the new structural path.)
-        let thunk = eval_str("[@Int 7]", empty_env(), &test_ctx())
+        let thunk = eval_str("[@Integer 7]", empty_env(), &test_ctx())
             .await
             .unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
@@ -6993,9 +6993,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_annotation_has_structural_fields_simple_returns_false() {
-        // Simple annotations like @Int have no structural fields
+        // Simple annotations like @Integer have no structural fields
         assert!(!annotation_has_structural_fields(&Annotation::Simple(
-            "Int".into()
+            "Integer".into()
         )));
     }
 

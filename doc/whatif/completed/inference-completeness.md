@@ -261,7 +261,7 @@ problem — a recursive typeclass expresses the full type (Kiselyov et al. 2004)
 
 ```tinct
 [FormatResult: [class [r@*]
-  [apply-fmt: [fn@r [template@Str collected@[Seq Str]]]]]]
+  [apply-fmt: [fn@r [template@String collected@[Seq String]]]]]]
 
 [FormatStr: [instance [FormatResult Str]
   [apply-fmt: [fn [t args] [str-format t args]]]]]
@@ -270,7 +270,7 @@ problem — a recursive typeclass expresses the full type (Kiselyov et al. 2004)
                [FormatResult [fn@r [a]]]
   [apply-fmt: [fn [t args] [fn [x] [apply-fmt t [conj args [show x]]]]]]]]
 
-format: [fn@[return: r  constraint: [r: FormatResult]] [template@Str]
+format: [fn@[return: r  constraint: [r: FormatResult]] [template@String]
   [apply-fmt template []]]
 ```
 

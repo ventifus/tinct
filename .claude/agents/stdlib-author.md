@@ -29,23 +29,23 @@ Every binding bracket in tinct is now self-announcing via `[let ...]`. Old impli
 
 ```tinct
 # Old (parse error now):
-[fn [x@Int y@Float] [+ x y]]
+[fn [x@Integer y@Float] [+ x y]]
 
 # New (required):
-[fn [let x@Int y@Float] [+ x y]]
+[fn [let x@Integer y@Float] [+ x y]]
 
 # Zero params:
 [fn [let] 42]
 
 # Variadic:
-[fn [let x@Int ...rest@[Seq Int]] [+ x [sum rest]]]
+[fn [let x@Integer ...rest@[Seq Int]] [+ x [sum rest]]]
 ```
 
 ### Class and type aliases
 
 ```tinct
 Equatable: [class [let a]
-  eq?: [fn@Bool [let a a] ...]]
+  eq?: [fn@Boolean [let a a] ...]]
 
 Either: [type [let a b] [or a b]]
 ```
@@ -62,16 +62,16 @@ The new `[case pattern body]` form replaces `[pattern]: body` syntax for match a
 
 [match status
   [case 200         "ok"]       # exact-value match (integer literal)
-  [case [let n@Int] [str n]]]   # typed binding, no structural test
+  [case [let n@Integer] [str n]]]   # typed binding, no structural test
 ```
 
 Binding patterns inside `[let ...]` in case arms:
 
 - `[let n]` — bind n to scrutinee
-- `[let n@Int]` — bind n, type-constrained to Int
+- `[let n@Integer]` — bind n, type-constrained to Int
 - `[let _]` — wildcard
 - `[let v: Ok]` — structural test (tag = Ok), v binds to Ok's payload
-- `[let v@Int: Ok]` — structural test + payload type constraint
+- `[let v@Integer: Ok]` — structural test + payload type constraint
 - `[let _: Ok]` — structural test, discard payload
 - `[let [a b]: Pair]` — multi-payload destructuring
 
@@ -81,7 +81,7 @@ Binding patterns inside `[let ...]` in case arms:
 
 ```tinct
 Equatable: [class [let a]
-  eq?: [fn@Bool [let a a] ...]]
+  eq?: [fn@Boolean [let a a] ...]]
 ```
 
 ### `_` wildcard
@@ -149,7 +149,7 @@ par-map@[Fn [f@[Fn [a] b]  seq@[Seq a]] [Seq b]]    # stdlib/prelude.llt
 par-filter@[Fn [f@[Fn [a] Bool]  seq@[Seq a]] [Seq a]]  # stdlib/prelude.llt
 
 # Channels
-channel@[Fn [capacity@Int] [Channel t]]
+channel@[Fn [capacity@Integer] [Channel t]]
 send@[Fn [ch@[Channel t]  val@t] Null]
 recv@[Fn [ch@[Channel t]] t]
 select-once@[Fn [sources@[Seq [SelectSource t r]]] r]
@@ -162,12 +162,12 @@ watch-channel@[Fn [cap@DirCap  path@String] [Channel Null]]
 # Context / cancellation
 context@[Fn [] Context]
 with-cancel@[Fn [ctx@Context] CancelHandle]
-with-timeout@[Fn [ctx@Context  ms@Int] Context]
+with-timeout@[Fn [ctx@Context  ms@Integer] Context]
 timeout@[Fn [dur@Duration  task@[Task t]] [Result t]]
 cancel-task@[Fn [task@[Task t]] Null]
 cancel-root  # Action — cancel all tasks
 drain        # Action — await until all tasks finish
-exit-now@[Fn [code@Int] Null]
+exit-now@[Fn [code@Integer] Null]
 ```
 
 New tinct-implemented async stdlib functions (now in `stdlib/prelude.llt`, deleted `stdlib/async.llt`): `exit`, `graceful-exit`, `finally`, `loop-select`, `retry`.
@@ -309,13 +309,13 @@ All stdlib files with internal helpers must use the **two-dict document pattern*
 # First dict — internal helpers: in scope below, NOT exported
 [
     make-entry: [fn@Dict [k v] [$k: v]]
-    any?-impl:  [fn@Bool [pred@Fn xs@Dict ks i@Int len@Int] ...]
+    any?-impl:  [fn@Boolean [pred@Fn xs@Dict ks i@Integer len@Integer] ...]
     # ... all -impl / -step / -check helper functions
 ]
 
 # Second (final) dict — public API: the only value returned by include
 [
-    any?: [fn@Bool [pred@Fn xs@Dict]
+    any?: [fn@Boolean [pred@Fn xs@Dict]
         [any?-impl pred xs [keys xs] 0 [length xs]]]
     # ... public functions; helpers referenced by plain name via parent scope
 ]
@@ -468,7 +468,7 @@ Clone each repo if not already present using `mcp__toolbox__gh_repo_clone`. Skip
 
 ## Known Traps and Gotchas
 
-- **`[let ...]` is REQUIRED in all binding positions** — `[fn [x@Int] body]` is a parse error; it must be `[fn [let x@Int] body]`. Same for `[class [let a] ...]`, `[type [let a b] body]`, `[instance ...]` arms. Writing old-style implicit binding brackets produces a parse error, not silently wrong output.
+- **`[let ...]` is REQUIRED in all binding positions** — `[fn [x@Integer] body]` is a parse error; it must be `[fn [let x@Integer] body]`. Same for `[class [let a] ...]`, `[type [let a b] body]`, `[instance ...]` arms. Writing old-style implicit binding brackets produces a parse error, not silently wrong output.
 - **`[case ...]` arms vs old `[pattern]: body` shorthands** — both coexist, but new code should use `[case [let v: Ok] v]` form. The old `[Ok v]: v` shorthand remains valid.
 - **`...` placeholder type is `Unknown`** — satisfies any type constraint. Use it for abstract method bodies in class declarations. Raises `UnimplementedError` when forced; error is cacheable and catchable via `$try`.
 - **`_` inside `[let ...]` is a wildcard, not an identifier** — `[let _]` matches anything but introduces no binding. Outside `[let ...]`, `_` is a regular identifier (as in `$_` implicit lambda).

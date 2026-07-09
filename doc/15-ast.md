@@ -254,7 +254,7 @@ pub struct CoreMatchArm {
 enum Annotation {
     Simple(String),               // x@Number — shorthand
     PropertyDict(Vec<Spanned<SurfaceEntry>>),  // x@[type: Number  default: 30]
-    Annotated(String, Box<Annotation>),  // Seq@Int — chained annotation
+    Annotated(String, Box<Annotation>),  // Seq@Integer — chained annotation
 }
 ```
 
@@ -277,7 +277,7 @@ enum Annotation {
 | `TypeAlias` | `[type expr]` | Type alias declaration |
 | `TypeAssert` | `[@T expr]` | Type assertion |
 | `Annotated` | `Fn@Number` | Annotated bare word |
-| `LetDecl { bindings }` | `[let x@Int y]` | Binding declaration list for fn params, case arms, and pattern contexts |
+| `LetDecl { bindings }` | `[let x@Integer y]` | Binding declaration list for fn params, case arms, and pattern contexts |
 | `CaseArm { pattern, body }` | `[case [let x] body]` | Match arm with explicit scoping — pattern can be LetDecl (binding) or exact-value match |
 | `Placeholder` | `...` | Placeholder expression — type Unknown, evaluates to lazy error on materialization |
 | `Rest(None)` | `...` | Open record marker in type expressions |
@@ -290,27 +290,27 @@ enum Annotation {
 | `Match { scrutinee, arms }` | `[match val pat1: body1 ...]` | Pattern matching with arms (pattern, optional guard, body) |
 | `ClassDecl { name, params, superclasses, methods, determines, resolver, resolver_injective }` | `[class [Name a] super... methods...]` | Type class declaration with type parameters, method signatures, optional functional dependencies (`determines`), optional resolver function (`resolver`), and `resolver_injective: bool` flag for CHR constraint head uniqueness |
 | `InstanceDecl { class_name, arms }` | `[instance ClassName [pattern [...]]: methods...]` | Type class instance with match-arm syntax; each arm pairs a `PatternDecl` expression with method entries |
-| `PatternDecl { bindings }` | `[pattern [a@Int b@Float]]` | Pattern declaration for instance match arms; bindings are typically `Annotated` nodes |
+| `PatternDecl { bindings }` | `[pattern [a@Integer b@Float]]` | Pattern declaration for instance match arms; bindings are typically `Annotated` nodes |
 
 #### LetDecl, CaseArm, and Placeholder Details
 
 **LetDecl** — `SurfaceExpression::LetDecl { bindings: Vec<Arc<SurfaceNode>> }` — is a binding declaration list introduced by the `let` keyword. Each binding is one of:
 
 - `VarRef { name, escaped: false, .. }` — bare identifier binding (e.g., `x`)
-- `Annotated { name, annotation }` — typed binding (e.g., `x@Int`) or structural test (e.g., `v: Ok`)
+- `Annotated { name, annotation }` — typed binding (e.g., `x@Integer`) or structural test (e.g., `v: Ok`)
 - `Placeholder` (represented as `_`) — wildcard match, introduces no binding
 - Nested `LetDecl` — multi-level pattern for constructor payloads (e.g., `[let [let inner]]`)
 
 LetDecl appears in:
 
-- Function parameter lists: `[fn [let x@Int y] body]`
-- Case arm patterns: `[case [let x@Int] body]`
+- Function parameter lists: `[fn [let x@Integer y] body]`
+- Case arm patterns: `[case [let x@Integer] body]`
 - Type class declarations: `[class [let Equatable a] ...]` (TypeVar binding list)
-- Instance patterns: `[instance Class [pattern [let a@Int b@Float]] ...]`
+- Instance patterns: `[instance Class [pattern [let a@Integer b@Float]] ...]`
 
 **CaseArm** — `SurfaceExpression::CaseArm { pattern, body }` — is a match arm with explicit scoping introduced by the `case` keyword. The pattern can be:
 
-- `LetDecl` — binding pattern that introduces variables into the body's scope (e.g., `[case [let x@Int] body]`)
+- `LetDecl` — binding pattern that introduces variables into the body's scope (e.g., `[case [let x@Integer] body]`)
 - Any other expression — exact-value match (e.g., `[case 42 body]`, `[case "hello" body]`)
 
 CaseArm is used inside `[match ...]` expressions. The `match` evaluator tries each arm's pattern in order. For LetDecl patterns, the type checker validates that the binding constraints are satisfiable and binds the matched value. For exact-value patterns, the evaluator compares the scrutinee for equality.
@@ -410,8 +410,8 @@ Annotation bracket expressions (e.g., `x@[type: Number  default: 30]`) are parse
 x@[type: Number  default: 30]    # valid: property dict (Dict literal)
 x@Number                         # valid: simple annotation
 [@[name: String  ...] $val]      # valid: type expression with rest (no type: key)
-fn@[Int Null]                    # valid: union return type (implied call, VarRef head)
-fn@[a Null]                      # valid: union with type variable (lowercase VarRef head)
+fn@[or Int Null]                 # valid: union return type (or is a type-stage function)
+fn@[or a Null]                   # valid: union with type variable
 x@[Seq Int]                      # valid: parameterized type (implied call, VarRef head)
 x@[call $f $x]                   # ERROR: explicit call special form in annotation bracket
 x@[fn [a] $a]                    # ERROR: fn special form in annotation bracket
@@ -432,8 +432,8 @@ The parser classifies annotation bracket contents after re-parsing the bracket s
 |------|---------------|-----------|---------|
 | `x@[a: Int  b: String]` | `SurfaceExpression::Dict` | YES | `Annotation::PropertyDict` with named entries |
 | `x@[Seq Int]` | `SurfaceExpression::Call { implied: true, func: VarRef("Seq"), .. }` | YES | `Annotation::PropertyDict` with auto-indexed entries (parameterized type) |
-| `x@[Int Null]` | `SurfaceExpression::Call { implied: true, func: VarRef("Int"), .. }` | YES | `Annotation::PropertyDict` with auto-indexed entries (union type) |
-| `x@[a Null]` | `SurfaceExpression::Call { implied: true, func: VarRef("a"), .. }` | YES | `Annotation::PropertyDict` with auto-indexed entries (lowercase type variable union) |
+| `x@[or Int Null]` | `SurfaceExpression::Call { implied: true, func: VarRef("or"), .. }` | YES | `Annotation::PropertyDict` with auto-indexed entries; `or` is a type-stage function resolving to Union(Int, Null) |
+| `x@[or a Null]` | `SurfaceExpression::Call { implied: true, func: VarRef("or"), .. }` | YES | `Annotation::PropertyDict` with auto-indexed entries; `or` with type variable |
 | `x@[call f x]` | `SurfaceExpression::Call { implied: false, .. }` | NO | Parse error: "property dict annotation must be a dict expression" |
 | `x@[fn [a] $a]` | `SurfaceExpression::Fn` | NO | Parse error |
 | `x@[type Number]` | `SurfaceDeclaration::TypeAlias` | NO | Parse error |
@@ -442,7 +442,7 @@ The parser classifies annotation bracket contents after re-parsing the bracket s
 **Exhaustive classification:**
 
 - **Dict literals** (`[a: Int b: String]`) → accepted, become `Annotation::PropertyDict` with the literal's entries.
-- **Implied VarRef-head calls** (`[Seq Int]`, `[Int Null]`, `[a Null]`) → accepted, func and args become auto-indexed PropertyDict entries. Both uppercase (parameterized types) and lowercase (type variable unions) VarRef heads are accepted.
+- **Implied VarRef-head calls** (`[Seq Int]`, `[or Int Null]`, `[or a Null]`) → accepted, func and args become auto-indexed PropertyDict entries. Both uppercase (type constructors such as `Seq`) and lowercase (type-stage functions such as `or`) VarRef heads are accepted. The `or` function produces a union type; bare positional entries without an `or` head (e.g., `[Int Null]`) are not union syntax — they are resolved by the type-stage function named by the head identifier.
 - **All other forms** (explicit `call`, `fn`, `type`, `TypeAssert`, VarRef alone, literals, etc.) → rejected with parse error "property dict annotation must be a dict expression".
 
 `type_assert_body` (`[@Annotation expr]`) is rejected on the "anything else" basis, not because of keyword disambiguation.

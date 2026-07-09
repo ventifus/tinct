@@ -63,7 +63,7 @@
   join: [fn [let sep xs] [_join-loop sep "" xs 0 [builtin-length xs]]]
 
   # bool->int: Boolean.False→0, Int pass-through, anything else→1.
-  bool->int: [fn [let b] [match b Boolean.False: 0 [@Int _]: b _: 1]]
+  bool->int: [fn [let b] [match b Boolean.False: 0 [@Integer _]: b _: 1]]
 
   # %stdout and %stderr: protocol dicts wrapping the stateless Rust builtins.
   # These MUST be defined here because test-loader runs as --init and main.rs

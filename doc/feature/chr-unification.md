@@ -15,7 +15,7 @@ Classes are declared with `[class [params] [structural-metadata] methods...]`. T
 ```tinct
 # Simple class — no structural metadata needed
 Equatable: [class [a]
-  eq?: [fn@Bool [a a]]]
+  eq?: [fn@Boolean [a a]]]
 
 # Class with functional dependency: (a, b) determines c
 Addable: [class [a b c]  [determines: [[[a b] c]]  resolver: AddResult]
@@ -27,7 +27,7 @@ Functor: [class [f]  [kinds: [f: Operator]]
 
 # Superclass relationship
 Comparable: [class [a]  [superclasses: [Equatable]]
-  lt?: [fn@Bool [a a]]]
+  lt?: [fn@Boolean [a a]]]
 ```
 
 **`determines:`** declares a functional dependency as a two-element list `[[determining-vars] determined-var]`. Multiple FDs or multi-output FDs are supported:
@@ -60,9 +60,9 @@ Instances use match-arm syntax. Each arm pairs a `[pattern [...]]` type-paramete
 
 ```tinct
 [instance Addable
-  [pattern [a@Int   b@Int   c@Int  ]]: [+: [fn@Int   [x@Int   y@Int  ] [builtin-add x y]]]
-  [pattern [a@Int   b@Float c@Float]]: [+: [fn@Float [x@Int   y@Float] [builtin-add x y]]]
-  [pattern [a@Float b@Int   c@Float]]: [+: [fn@Float [x@Float y@Int  ] [builtin-add x y]]]
+  [pattern [a@Integer   b@Integer   c@Integer  ]]: [+: [fn@Integer   [x@Integer   y@Integer  ] [builtin-add x y]]]
+  [pattern [a@Integer   b@Float c@Float]]: [+: [fn@Float [x@Integer   y@Float] [builtin-add x y]]]
+  [pattern [a@Float b@Integer   c@Float]]: [+: [fn@Float [x@Float y@Integer  ] [builtin-add x y]]]
   [pattern [a@Float b@Float c@Float]]: [+: [fn@Float [x@Float y@Float] [builtin-add x y]]]]
 
 [instance Functor
@@ -75,7 +75,7 @@ Instances use match-arm syntax. Each arm pairs a `[pattern [...]]` type-paramete
 
 | Form | Meaning |
 |------|---------|
-| `a@Int` | Class param `a` must be `Int` |
+| `a@Integer` | Class param `a` must be `Int` |
 | `f@Seq` | Class param `f` must be `Seq` (bare constructor for HKT params) |
 | `a@[Seq elem]` | Class param `a` must be `Seq` of fresh TypeVar `elem` |
 | `a@[Map k v]` | Class param `a` must be `Map` from `k` to `v` |
@@ -229,8 +229,8 @@ The type checker enforces three conditions on instance declarations (checked as 
 # Rejected: consistency violation — both arms have (Int, Int) determining
 #           positions but different determined types (Int vs Float)
 [instance Addable
-  [pattern [a@Int b@Int c@Int  ]]: [+: ...]
-  [pattern [a@Int b@Int c@Float]]: [+: ...]]  # error
+  [pattern [a@Integer b@Integer c@Integer  ]]: [+: ...]
+  [pattern [a@Integer b@Integer c@Float]]: [+: ...]]  # error
 ```
 
 ## Automatic Boundary Guards
@@ -270,8 +270,8 @@ type-stage reduction depth exceeded while computing MergeResult(ServerBase, Serv
 
 ```text
 consistency violation for class Add:
-  arm [pattern [a@Int b@Int c@Int]] at line 5
-  arm [pattern [a@Int b@Int c@Float]] at line 6
+  arm [pattern [a@Integer b@Integer c@Integer]] at line 5
+  arm [pattern [a@Integer b@Integer c@Float]] at line 6
   both match determining positions (Int, Int) but disagree on c: Int vs Float
 ```
 

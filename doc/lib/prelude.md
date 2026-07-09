@@ -5,7 +5,7 @@
 Check if value is a Variant.
 
 ```tinct
-fn@Bool [let v]
+fn@Boolean [let v]
 ```
 
 ### `payload-of`
@@ -37,7 +37,7 @@ fn@String [let s@String]
 Check if collection is empty
 
 ```tinct
-fn@Bool [let xs]
+fn@Boolean [let xs]
 ```
 
 ### `make-entry`
@@ -69,7 +69,7 @@ fn@Dict [let xs@Dict k f@Fn]
 Get nth element (supports negative indices)
 
 ```tinct
-fn@Any [let xs@Dict n@Int]
+fn@Any [let xs@Dict n@Integer]
 ```
 
 ### `conj`
@@ -125,7 +125,7 @@ fn@Dict [let xs@Dict]
 Find-deep implementation (internal helper)
 
 ```tinct
-fn@Any [let xs@Dict target ks i@Int]
+fn@Any [let xs@Dict target ks i@Integer]
 ```
 
 ### `find-deep-check`
@@ -133,7 +133,7 @@ fn@Any [let xs@Dict target ks i@Int]
 Find-deep check (internal helper)
 
 ```tinct
-fn@Any [let xs@Dict target ks i@Int current-key]
+fn@Any [let xs@Dict target ks i@Integer current-key]
 ```
 
 ### `find-deep-try`
@@ -141,7 +141,7 @@ fn@Any [let xs@Dict target ks i@Int current-key]
 Find-deep try (internal helper)
 
 ```tinct
-fn@Any [let subtree@Dict target parent@Dict ks i@Int]
+fn@Any [let subtree@Dict target parent@Dict ks i@Integer]
 ```
 
 ### `find-deep-try-check`
@@ -149,7 +149,7 @@ fn@Any [let subtree@Dict target parent@Dict ks i@Int]
 Find-deep try-check (internal helper)
 
 ```tinct
-fn@Any [let result parent@Dict target ks i@Int]
+fn@Any [let result parent@Dict target ks i@Integer]
 ```
 
 ### `find-first`
@@ -189,7 +189,7 @@ fn@Dict [let f@Fn xs@Dict]
 Count elements satisfying predicate
 
 ```tinct
-fn@Int [let pred@Fn xs]
+fn@Integer [let pred@Fn xs]
 ```
 
 ### `contains?`
@@ -197,7 +197,7 @@ fn@Int [let pred@Fn xs]
 Check if collection contains element
 
 ```tinct
-fn@Bool [let xs val]
+fn@Boolean [let xs val]
 ```
 
 ### `uniq`
@@ -301,7 +301,7 @@ fn@Any [let x]
 Check if value is numeric (Int or Float)
 
 ```tinct
-fn@Bool [let x]
+fn@Boolean [let x]
 ```
 
 ### `list?`
@@ -309,7 +309,7 @@ fn@Bool [let x]
 Check if dict has all integer keys
 
 ```tinct
-fn@Bool [let xs]
+fn@Boolean [let xs]
 ```
 
 ### `maybe-map`
@@ -325,7 +325,7 @@ fn@Any [let f ma]
 Less than
 
 ```tinct
-fn@Bool [let x@a y@a]
+fn@Boolean [let x@a y@a]
 ```
 
 ### `=`
@@ -333,7 +333,7 @@ fn@Bool [let x@a y@a]
 Equality
 
 ```tinct
-fn@Bool [let x@a y@a]
+fn@Boolean [let x@a y@a]
 ```
 
 ### `+`
@@ -413,7 +413,7 @@ fn@Any [let f@Fn init xs]
 Take first n elements
 
 ```tinct
-fn@Any [let n@Int xs]
+fn@Any [let n@Integer xs]
 ```
 
 ### `drop`
@@ -421,7 +421,7 @@ fn@Any [let n@Int xs]
 Drop first n elements
 
 ```tinct
-fn@Any [let n@Int xs]
+fn@Any [let n@Integer xs]
 ```
 
 ### `length`
@@ -445,7 +445,7 @@ fn@Dict [let xs]
 Check if haystack contains needle
 
 ```tinct
-fn@Bool [let haystack@Stringing needle@Stringing]
+fn@Boolean [let haystack@Stringing needle@Stringing]
 ```
 
 ### `starts-with?`
@@ -453,7 +453,7 @@ fn@Bool [let haystack@Stringing needle@Stringing]
 Check if string starts with prefix
 
 ```tinct
-fn@Bool [let s@Stringing prefix@Stringing]
+fn@Boolean [let s@Stringing prefix@Stringing]
 ```
 
 ### `ends-with?`
@@ -461,7 +461,7 @@ fn@Bool [let s@Stringing prefix@Stringing]
 Check if string ends with suffix
 
 ```tinct
-fn@Bool [let s@Stringing suffix@Stringing]
+fn@Boolean [let s@Stringing suffix@Stringing]
 ```
 
 ### `str-repeat`
@@ -469,7 +469,7 @@ fn@Bool [let s@Stringing suffix@Stringing]
 Repeat string n times
 
 ```tinct
-fn@Stringing [let s@Stringing n@Int]
+fn@Stringing [let s@Stringing n@Integer]
 ```
 
 ### `str-find`
@@ -477,7 +477,7 @@ fn@Stringing [let s@Stringing n@Int]
 Find first occurrence of needle in haystack; returns byte index or -1
 
 ```tinct
-fn@Int [let haystack@Stringing needle@Stringing]
+fn@Integer [let haystack@Stringing needle@Stringing]
 ```
 
 ### `to-json`
@@ -508,7 +508,7 @@ fn@Any [let v]
 Check if value is non-negative
 
 ```tinct
-fn@Bool [let v]
+fn@Boolean [let v]
 ```
 
 ### `positive`
@@ -516,7 +516,7 @@ fn@Bool [let v]
 Check if value is positive
 
 ```tinct
-fn@Bool [let v]
+fn@Boolean [let v]
 ```
 
 ### `lines`
@@ -532,5 +532,5 @@ fn@Any [let h]
 Lazily read fixed-size byte chunks from a Handle. Returns a Seq of Bytes.
 
 ```tinct
-fn@Any [let h n@Int]
+fn@Any [let h n@Integer]
 ```

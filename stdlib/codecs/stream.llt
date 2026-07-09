@@ -20,7 +20,7 @@
   #
   # Type: (String -> Int)
   # Example: [bracket-count "[x: 1]"] → 0
-  bracket-count: [fn@Int [let s@String]
+  bracket-count: [fn@Integer [let s@String]
     [reduce
       [fn [let st ch]
         [if st.done  st

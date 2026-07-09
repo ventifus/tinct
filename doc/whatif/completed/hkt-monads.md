@@ -347,7 +347,7 @@ forM: [fn@[m [Seq b]] [m@Monad  xs@[Seq a]  f@[Fn@[m b] [a]]]
   [traverse m f xs]]
 
 # when: conditionally execute a monadic action
-when: [fn@[m []] [m@Monad  cond@Bool  action@[m []]]
+when: [fn@[m []] [m@Monad  cond@Boolean  action@[m []]]
   [if cond action [m.pure []]]]
 
 # liftM2: lift a two-argument function into the monad
@@ -391,7 +391,7 @@ With `Monad` instances registered, `[do]` can infer the monad from the enclosing
   [r.body]]
 
 # Inferred form (requires @Result annotation on enclosing function)
-[fetch-and-parse: [fn@[ok: Str  err: Str] [url@Str]
+[fetch-and-parse: [fn@[ok: String  err: String] [url@String]
   [do
     [r:    [fetch %nc url]]
     [data: [from-json r.body]]

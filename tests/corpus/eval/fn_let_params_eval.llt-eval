@@ -1,6 +1,6 @@
 # Function with [let ...] parameter list
-# Tests that [fn [let x@Int y] body] syntax works correctly in evaluation
-[f: [fn [let x@Int y] [+ $x $y]]
+# Tests that [fn [let x@Integer y] body] syntax works correctly in evaluation
+[f: [fn [let x@Integer y] [+ $x $y]]
  result: [call $f 5 3]]
 === out
 Dict({"f": Function(x, y), "result": Int(8)})
