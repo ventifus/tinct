@@ -1255,7 +1255,7 @@ pub fn type_env_module(name: &str) -> Option<crate::types::TypeEnv> {
 )]
 mod tests {
     use super::*;
-    use crate::env::Env as Environment;
+    use crate::env::Env;
     use crate::error::ErrorKind;
     use crate::test_util::test_span;
     use crate::value::{string_val, Strictness};
@@ -1279,7 +1279,7 @@ mod tests {
 
     fn test_ctx() -> Arc<crate::eval::EvalContext> {
         let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
-        let env = Arc::new(RwLock::new(Environment::new()));
+        let env = Arc::new(RwLock::new(Env::new()));
         if let Some(defs) = builtin_module("core") {
             for def in defs {
                 let name = def.name.to_string();
@@ -1361,7 +1361,7 @@ mod tests {
         });
         Arc::new(Thunk::new_surface(
             node,
-            Arc::new(RwLock::new(Environment::new())),
+            Arc::new(RwLock::new(Env::new())),
             Arc::clone(ctx),
             test_span(1, 1, 1, 10),
         ))
@@ -1411,7 +1411,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(42));
@@ -1424,7 +1424,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(-7));
@@ -1437,7 +1437,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(0));
@@ -1450,7 +1450,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(3));
@@ -1464,7 +1464,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(-4));
@@ -1477,7 +1477,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(5));
@@ -1490,7 +1490,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(2));
@@ -1503,7 +1503,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -1517,7 +1517,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -1535,7 +1535,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -1553,7 +1553,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -1571,7 +1571,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -1589,7 +1589,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -1607,7 +1607,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -1625,7 +1625,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -1645,7 +1645,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -1663,7 +1663,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -1681,7 +1681,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -1699,7 +1699,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(42));
@@ -1712,7 +1712,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(-7));
@@ -1726,7 +1726,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(1));
@@ -1740,7 +1740,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(-1));
@@ -1753,7 +1753,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(2));
@@ -1766,7 +1766,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(3));
@@ -1780,7 +1780,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(-2));
@@ -1794,7 +1794,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(-3));
@@ -1807,7 +1807,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(2));
@@ -1820,7 +1820,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(-2));
@@ -1833,7 +1833,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(5));
@@ -1846,7 +1846,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -1860,7 +1860,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -1878,7 +1878,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -1896,7 +1896,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -1914,7 +1914,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -1932,7 +1932,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -1950,7 +1950,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -1968,7 +1968,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -1986,7 +1986,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -2004,7 +2004,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(42));
@@ -2017,7 +2017,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(-7));
@@ -2030,7 +2030,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(0));
@@ -2043,7 +2043,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(i64::MAX));
@@ -2056,7 +2056,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -2074,7 +2074,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -2092,7 +2092,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -2110,7 +2110,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -2128,7 +2128,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -2151,7 +2151,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -2169,7 +2169,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -2187,7 +2187,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -2205,7 +2205,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -2223,7 +2223,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -2241,7 +2241,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Float(3.14));
@@ -2255,7 +2255,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Float(42.0));
@@ -2268,7 +2268,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Float(-2.5));
@@ -2281,7 +2281,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Float(1.5e10));
@@ -2294,7 +2294,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Float(2.5e-3));
@@ -2307,7 +2307,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Float(0.0));
@@ -2321,7 +2321,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Float(0.5));
@@ -2334,7 +2334,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -2352,7 +2352,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -2370,7 +2370,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -2388,7 +2388,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -2406,7 +2406,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -2424,7 +2424,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -2442,7 +2442,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -2460,7 +2460,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -2478,7 +2478,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -2496,7 +2496,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -2517,7 +2517,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -2537,7 +2537,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -2556,7 +2556,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -2574,7 +2574,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -2588,7 +2588,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -2602,7 +2602,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -2621,7 +2621,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -2642,7 +2642,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         match result {
@@ -2664,7 +2664,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         match result {
@@ -2684,7 +2684,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -2704,7 +2704,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -2722,7 +2722,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -2753,7 +2753,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         match result {
@@ -2789,7 +2789,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         match result {
@@ -2835,7 +2835,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -2867,7 +2867,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(42));
@@ -2893,7 +2893,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(10));
@@ -2919,7 +2919,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(20));
@@ -2969,7 +2969,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(7));
@@ -2993,7 +2993,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .expect("should return thunk");
@@ -3026,7 +3026,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .expect("should return thunk");
@@ -3049,7 +3049,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .expect("should return thunk");
@@ -3070,7 +3070,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .expect("should return thunk");
@@ -3091,7 +3091,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, string_val("Int".into()));
@@ -3104,7 +3104,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, string_val("Float".into()));
@@ -3117,7 +3117,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, string_val("String".into()));
@@ -3130,7 +3130,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, string_val("Dict".into()));
@@ -3145,7 +3145,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, string_val("Function".into()));
@@ -3170,7 +3170,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, string_val("Function".into()));
@@ -3191,7 +3191,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, string_val("Color.Red".into()));
@@ -3204,7 +3204,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -3224,7 +3224,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         match result {
@@ -3247,7 +3247,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         match result {
@@ -3278,7 +3278,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         match result {
@@ -3310,7 +3310,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         match result {
@@ -3341,7 +3341,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         match result {
@@ -3366,7 +3366,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(0));
@@ -3385,7 +3385,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(3));
@@ -3403,7 +3403,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(2));
@@ -3424,7 +3424,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         // builtin_merge now returns Value::Overlay; flatten to verify contents.
@@ -3451,7 +3451,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         let map = flatten_val(result, &ctx).await;
@@ -3475,7 +3475,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         let map = flatten_val(result, &ctx).await;
@@ -3522,7 +3522,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         let map = flatten_val(result, &ctx).await;
@@ -3541,7 +3541,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         let map = flatten_val(result, &ctx).await;
@@ -3569,7 +3569,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         // Flatten and verify values are preserved correctly through the overlay.
@@ -3599,7 +3599,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         let map = flatten_val(result, &ctx).await;
@@ -3622,7 +3622,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -3642,7 +3642,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -3660,7 +3660,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -3680,7 +3680,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -3700,7 +3700,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -3720,7 +3720,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -3738,7 +3738,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -3762,7 +3762,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -3782,7 +3782,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(5));
@@ -3795,7 +3795,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(0));
@@ -3809,7 +3809,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(2));
@@ -3826,7 +3826,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         // builtin_merge itself succeeds — returns Overlay(Int(1), {})
@@ -3864,7 +3864,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         let overlay_thunk = result.unwrap();
@@ -3899,7 +3899,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         match result {
@@ -3924,7 +3924,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         match result {
@@ -3949,7 +3949,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         match result {
@@ -3975,7 +3975,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         match result {
@@ -3999,7 +3999,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         match result {
@@ -4026,7 +4026,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         match result {
@@ -4046,7 +4046,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -4065,7 +4065,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -4079,7 +4079,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -4102,7 +4102,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -4124,7 +4124,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, string_val("hello Rust".into()));
@@ -4141,7 +4141,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, string_val("bonono".into()));
@@ -4158,7 +4158,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, string_val("hello".into()));
@@ -4175,7 +4175,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, string_val("-a-b-c-".into()));
@@ -4192,7 +4192,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, string_val("heo".into()));
@@ -4213,7 +4213,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert!(result.is_err());
@@ -4234,7 +4234,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         // 1000 'a' replaced with 'bb' -> 2000 'b'
@@ -4248,7 +4248,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, string_val("hello".into()));
@@ -4261,7 +4261,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, string_val("hello".into()));
@@ -4274,7 +4274,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, string_val("hello".into()));
@@ -4287,7 +4287,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, string_val("hello".into()));
@@ -4300,7 +4300,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, string_val("".into()));
@@ -4313,7 +4313,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, string_val("hello".into()));
@@ -4326,7 +4326,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, string_val("".into()));
@@ -4339,7 +4339,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -4362,7 +4362,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -4384,7 +4384,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -4411,7 +4411,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -4433,7 +4433,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -4456,7 +4456,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -4486,7 +4486,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -4506,7 +4506,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -4526,7 +4526,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -4546,7 +4546,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -4570,7 +4570,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -4590,7 +4590,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -4610,7 +4610,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -4630,7 +4630,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -4650,7 +4650,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -4670,7 +4670,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -4690,7 +4690,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -4714,7 +4714,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -4743,7 +4743,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -4764,7 +4764,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -4787,7 +4787,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -4807,7 +4807,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -4829,7 +4829,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -4851,7 +4851,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .expect("should return thunk");
@@ -4899,7 +4899,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(8));
@@ -4912,7 +4912,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Float(5.5));
@@ -4925,7 +4925,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Float(5.5));
@@ -4938,7 +4938,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Float(4.0));
@@ -4951,7 +4951,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(-7));
@@ -4964,7 +4964,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -4977,7 +4977,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -4996,7 +4996,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -5019,7 +5019,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(3));
@@ -5032,7 +5032,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -5050,7 +5050,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -5068,7 +5068,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(7));
@@ -5081,7 +5081,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Float(6.5));
@@ -5094,7 +5094,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Float(7.5));
@@ -5107,7 +5107,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Float(7.0));
@@ -5120,7 +5120,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(-7));
@@ -5133,7 +5133,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -5146,7 +5146,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -5164,7 +5164,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -5187,7 +5187,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(-1));
@@ -5200,7 +5200,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -5219,7 +5219,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(20));
@@ -5232,7 +5232,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Float(10.0));
@@ -5245,7 +5245,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Float(10.0));
@@ -5258,7 +5258,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Float(7.5));
@@ -5271,7 +5271,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -5284,7 +5284,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(-12));
@@ -5297,7 +5297,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(-42));
@@ -5310,7 +5310,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -5328,7 +5328,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -5350,7 +5350,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -5368,7 +5368,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -5393,7 +5393,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -5411,7 +5411,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         match r {
@@ -5429,7 +5429,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         match r {
@@ -5445,7 +5445,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         match r {
@@ -5463,7 +5463,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Float(3.0));
@@ -5476,7 +5476,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -5506,7 +5506,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -5525,7 +5525,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -5543,7 +5543,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Float(0.0));
@@ -5556,7 +5556,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(1));
@@ -5569,7 +5569,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -5583,7 +5583,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(1));
@@ -5596,7 +5596,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -5609,7 +5609,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -5622,7 +5622,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(1));
@@ -5639,7 +5639,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(1));
@@ -5655,7 +5655,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -5668,7 +5668,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -5686,7 +5686,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(1));
@@ -5699,7 +5699,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -5712,7 +5712,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -5725,7 +5725,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(1));
@@ -5741,7 +5741,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(1));
@@ -5757,7 +5757,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -5773,7 +5773,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -5789,7 +5789,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(1));
@@ -5802,7 +5802,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(1));
@@ -5815,7 +5815,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(1));
@@ -5828,7 +5828,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -5841,7 +5841,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -5856,7 +5856,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(1));
@@ -5870,7 +5870,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -5884,7 +5884,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -5898,7 +5898,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -5914,7 +5914,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -5928,7 +5928,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -5946,7 +5946,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(1));
@@ -5959,7 +5959,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -5977,7 +5977,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(42));
@@ -5995,7 +5995,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(99));
@@ -6012,7 +6012,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(42));
@@ -6029,7 +6029,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(99));
@@ -6049,7 +6049,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -6078,7 +6078,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -6097,7 +6097,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -6121,7 +6121,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -6151,7 +6151,7 @@ mod tests {
             named: no_named(),
             call_span: call_span_val,
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -6198,7 +6198,7 @@ mod tests {
             named: no_named(),
             call_span: same_span,
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -6244,7 +6244,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         match result {
@@ -6276,7 +6276,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         match result {
@@ -6298,7 +6298,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         match result {
@@ -6321,7 +6321,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         match result {
@@ -6339,7 +6339,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert!(result.is_err());
@@ -6355,7 +6355,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert!(result.is_err());
@@ -6368,7 +6368,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert!(result.is_err());
@@ -6388,7 +6388,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
 
@@ -6419,7 +6419,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
 
@@ -6458,7 +6458,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
 
@@ -6503,7 +6503,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -6533,7 +6533,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
 
@@ -6577,7 +6577,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
 
@@ -6604,7 +6604,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap();
@@ -6628,7 +6628,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -6644,7 +6644,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -6664,7 +6664,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -6685,7 +6685,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap_err();
@@ -6775,7 +6775,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         let m = match result {
@@ -6795,7 +6795,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         match result {
@@ -6811,7 +6811,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         match result {
@@ -6828,7 +6828,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         let m = match result {
@@ -6848,7 +6848,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         match result {
@@ -6865,7 +6865,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         let m = match result {
@@ -6895,7 +6895,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         let m = match result {
@@ -6913,7 +6913,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         match result {
@@ -6936,7 +6936,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(20));
@@ -6954,7 +6954,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert!(
@@ -6974,7 +6974,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert!(matches!(result, Value::String { .. }));
@@ -6990,7 +6990,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         match result {
@@ -7014,7 +7014,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert_eq!(result, string_val("second".into()));
@@ -7031,7 +7031,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert!(result.is_err());
@@ -7072,7 +7072,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         let result_thunk = result.unwrap_or_else(|e| {
@@ -7114,7 +7114,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         let result_thunk = result.unwrap_or_else(|e| {
@@ -7149,7 +7149,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         let result_thunk = result.unwrap_or_else(|e| {

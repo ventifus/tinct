@@ -3192,6 +3192,14 @@ async fn infer_instance_decl_from_surface(
             })
         };
 
+        // Extract type tags for instance binding name generation.
+        // Only concrete uppercase type names contribute to the binding name — TypeVars and
+        // Unknown are filtered out (same semantics as lower.rs:extract_dispatch_tags).
+        let type_args: Vec<String> = pattern_types
+            .iter()
+            .filter_map(|ty| type_to_dispatch_tag(ty))
+            .collect();
+
         let mut method_types = HashMap::new();
 
         for method in *methods {
@@ -3216,7 +3224,22 @@ async fn infer_instance_decl_from_surface(
 
             let method_impl_type =
                 infer_surface_expr(&method.node.value, env, state, type_map).await?;
-            method_types.insert(method_name, method_impl_type);
+            method_types.insert(method_name.clone(), method_impl_type.clone());
+
+            // Insert TypeScheme for the ɪ-prefixed binding name so that VarRef resolution
+            // can find the method type. This mirrors what lower.rs does at runtime:
+            // lower.rs creates a dict entry with key `ɪɴꜱᴛᴀɴᴄᴇ⧼Class∷method⟨T⟩⧽` and the
+            // type checker must insert a matching TypeScheme at that name.
+            let type_args_str: Vec<&str> = type_args.iter().map(|s| s.as_str()).collect();
+            let binding_name =
+                crate::type_def::instance_binding_name(class_name, &method_name, &type_args_str);
+
+            let scheme = generalize(state.level, &method_impl_type, state);
+
+            // Insert into the parent dict env. The env parameter is the dict's environment,
+            // so inserting here makes the ɪ-prefixed binding visible to the same scope as
+            // the instance declaration itself (letrec scope).
+            env.write().unwrap().insert_scheme(binding_name, scheme);
         }
 
         let det_positions: Vec<usize> = {

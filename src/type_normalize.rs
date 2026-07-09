@@ -9,7 +9,7 @@ use std::sync::{Arc, RwLock};
 
 use indexmap::IndexMap;
 
-use crate::env::Env as Environment;
+use crate::env::Env;
 use crate::rust_span;
 use crate::type_def::Type;
 use crate::type_infer::TypeVarEntry;
@@ -37,7 +37,7 @@ pub struct NormCtxt {
     /// `None` during bootstrap (when the type-stage env is being built),
     /// when type-stage env creation fails, or when resolver evaluation is
     /// not needed (e.g., in tests that only normalize concrete types).
-    pub type_stage_env: Option<Arc<RwLock<Environment>>>,
+    pub type_stage_env: Option<Arc<RwLock<Env>>>,
     /// If false, disable resolver evaluation (prevents runtime errors from propagating into type inference).
     /// Set to false inside unify() to prevent evaluation failures from causing type errors.
     pub allow_eval: bool,
@@ -50,7 +50,7 @@ impl NormCtxt {
     /// defined in `--- stage: type` sections of prelude.llt are available.  Test callers
     /// and bootstrap contexts where no env has been built yet pass `None`, which causes
     /// `TypeStageApp` nodes to remain stuck (resolver evaluation is skipped).
-    pub fn new(type_stage_env: Option<Arc<RwLock<Environment>>>) -> Self {
+    pub fn new(type_stage_env: Option<Arc<RwLock<Env>>>) -> Self {
         Self {
             cache: HashMap::new(),
             depth: 0,
@@ -219,7 +219,7 @@ fn type_to_typenode(ty: &Type) -> Option<Value> {
 pub(crate) async fn evaluate_resolver(
     fn_name: &str,
     args: &[Type],
-    env: &Arc<RwLock<Environment>>,
+    env: &Arc<RwLock<Env>>,
 ) -> Option<Type> {
     // Look up the resolver function thunk via slot_names (seeding path — not eval-time lookup).
     // Walks slot_names (linear scan) + parent chain, identical semantics to get_by_name

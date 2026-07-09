@@ -7,7 +7,7 @@ use lsp_types::Uri;
 
 use crate::ast::SurfaceProgram;
 use crate::builtins::build_core_env;
-use crate::env::Env as Environment;
+use crate::env::Env;
 use crate::error::{EvalError, TypeDiagnostic};
 use crate::parser::{parse, ParseError};
 use crate::typecheck::{DocMap, SchemeMap, TypeMap};
@@ -58,7 +58,7 @@ impl DocumentState {
     /// the type environment. Pass `None` for source-only contexts.
     pub fn new(
         text: String,
-        _stdlib_env: &Arc<RwLock<Environment>>,
+        _stdlib_env: &Arc<RwLock<Env>>,
         eval_ctx: &Arc<crate::eval::EvalContext>,
         base_dir: Option<&std::path::Path>,
     ) -> Self {
@@ -174,7 +174,7 @@ impl DocumentState {
     /// pre-aggregated here, so spans can be correctly mapped to markdown coordinates.
     pub fn new_markdown(
         text: String,
-        _stdlib_env: &Arc<RwLock<Environment>>,
+        _stdlib_env: &Arc<RwLock<Env>>,
         _eval_ctx: &Arc<crate::eval::EvalContext>,
         _base_dir: Option<&std::path::Path>,
     ) -> Self {
@@ -236,7 +236,7 @@ pub fn resolve_include_uri(base_uri: &Uri, path: &str) -> Option<Uri> {
 pub fn index_file(
     uri: Uri,
     graph: &mut IncludeGraph,
-    stdlib_env: &Arc<RwLock<Environment>>,
+    stdlib_env: &Arc<RwLock<Env>>,
     eval_ctx: &Arc<crate::eval::EvalContext>,
     depth: usize,
 ) -> Result<(), String> {
@@ -342,7 +342,7 @@ pub fn index_file(
 pub fn invalidate_dependents(
     changed_uri: &Uri,
     graph: &mut IncludeGraph,
-    stdlib_env: &Arc<RwLock<Environment>>,
+    stdlib_env: &Arc<RwLock<Env>>,
     eval_ctx: &Arc<crate::eval::EvalContext>,
 ) {
     use std::collections::VecDeque;
@@ -412,7 +412,7 @@ pub type IncludeGraph = HashMap<Uri, IncludeNode>;
 pub struct DocumentStore {
     docs: HashMap<Uri, DocumentState>,
     /// Cached stdlib environment, created once on construction.
-    stdlib_env: Arc<RwLock<Environment>>,
+    stdlib_env: Arc<RwLock<Env>>,
     /// Base evaluation context (with "." as base_dir).
     base_eval_ctx: Arc<crate::eval::EvalContext>,
     /// Include dependency graph for cross-file resolution.
@@ -449,7 +449,7 @@ impl DocumentStore {
         );
         // Initialize TypeContext so loader.llt builtins don't error on type context access.
         base_eval_ctx.init_type_context(crate::eval::TypeContextData {
-            type_stage_env: Arc::new(std::sync::RwLock::new(Environment::new())),
+            type_stage_env: Arc::new(std::sync::RwLock::new(Env::new())),
             inference_env: crate::imports::get_builtin_core_type_env()
                 .await
                 .expect("builtin_core type env unavailable"),
@@ -692,7 +692,7 @@ mod tests {
     use super::*;
 
     /// Helper: create a core env for tests.
-    async fn test_env() -> Arc<RwLock<Environment>> {
+    async fn test_env() -> Arc<RwLock<Env>> {
         build_core_env()
     }
 

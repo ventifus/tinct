@@ -47,7 +47,7 @@ use crate::ast::Span;
 use crate::builtins::{
     builtin, ok_val, reject_named, require_string, synthetic_call_expr, MAX_COLLECT_SIZE,
 };
-use crate::env::Env as Environment;
+use crate::env::Env;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{materialize, TypeContextData};
 use crate::eval_call::{invoke_function, CallContext};
@@ -298,9 +298,9 @@ pub(crate) fn builtin_try(
                 // (which is always pushed, even for empty param lists) would be missing at
                 // runtime, causing all references inside the fn body to resolve to wrong
                 // slots (off-by-one in the parent chain).
-                let call_env = std::sync::Arc::new(std::sync::RwLock::new(
-                    Environment::with_parent(Arc::clone(&closure_env)),
-                ));
+                let call_env = std::sync::Arc::new(std::sync::RwLock::new(Env::with_parent(
+                    Arc::clone(&closure_env),
+                )));
                 let body_thunk = Arc::new(Thunk::new_unevaluated_core(
                     Arc::clone(&body),
                     call_env,
@@ -314,7 +314,7 @@ pub(crate) fn builtin_try(
                     args: vec![],
                     named: None,
                     call_span: call_span.clone(),
-                    caller_env: Arc::new(std::sync::RwLock::new(Environment::new())),
+                    caller_env: Arc::new(std::sync::RwLock::new(Env::new())),
                     ctx: Arc::clone(&ctx),
                 };
                 match (def.func)(builtin_args).await {
@@ -560,7 +560,7 @@ pub(crate) fn builtin_apply_impl(
                         Some(named_args)
                     },
                     call_span,
-                    caller_env: Arc::new(std::sync::RwLock::new(Environment::new())),
+                    caller_env: Arc::new(std::sync::RwLock::new(Env::new())),
                     ctx: Arc::clone(&ctx),
                 };
                 (def.func)(builtin_args).await
@@ -608,7 +608,7 @@ pub(crate) fn builtin_apply(
             named_opt,
             call_span,
             Some(Arc::from("apply")),
-            Arc::new(std::sync::RwLock::new(Environment::new())),
+            Arc::new(std::sync::RwLock::new(Env::new())),
             ctx,
         )))
     })
@@ -1959,7 +1959,7 @@ pub(crate) fn builtin_parse(
 /// 2. `resolve_surface_program` (with optional `env:` argument for env-seeded resolution)
 ///    — name resolution (De Bruijn levels)
 ///
-/// **Optional `env:` argument**: When provided (a `Value::Environment`), the resolver is
+/// **Optional `env:` argument**: When provided (a `Value::Env`), the resolver is
 /// pre-seeded from the env chain so that prelude/stdlib names resolve to proper de Bruijn
 /// coordinates instead of producing resolution errors. This is the primary path for user code.
 /// When absent, bootstrap mode is used (empty scope stack) — suitable for loader.llt and tests.
@@ -1978,7 +1978,7 @@ pub(crate) fn builtin_resolve(
             ctx,
             ..
         } = ctx_arg;
-        // Extract optional env: named argument (Value::Environment).
+        // Extract optional env: named argument (Value::Env).
         // Reject any other named arguments.
         let opt_env = if let Some(ref named_map) = named {
             let unknown: Vec<&str> = named_map
@@ -2405,7 +2405,7 @@ pub(crate) fn builtin_make_type_ctx(
         }
         // Create a fresh TypeContextData seeded with the builtin_core TypeEnv.
         let tc = TypeContextData {
-            type_stage_env: Arc::new(RwLock::new(Environment::new())),
+            type_stage_env: Arc::new(RwLock::new(Env::new())),
             inference_env: crate::imports::get_builtin_core_type_env()
                 .await
                 .expect("builtin_core type env unavailable"),
@@ -2622,7 +2622,7 @@ pub(crate) fn builtin_builtin_module(
 /// Positional arg[0]: `Value::Document` (preferred) or integer-keyed `Dict` of `Expr.*` variants.
 ///
 /// Named args:
-/// - `env:`   (`Value::Environment`) — the starting environment (required).
+/// - `env:`   (`Value::Env`) — the starting environment (required).
 /// - `table:` (`Value::Dict`) — span-keyed resolution table from `builtin-resolve doc env: E`
 ///             (optional; if absent, empty table is used — unresolved VarRefs produce Error at eval time).
 ///
@@ -2631,14 +2631,14 @@ pub(crate) fn builtin_builtin_module(
 /// correct de Bruijn coordinate lookup during lowering.
 ///
 /// Returns: `Value::Dict` with two keys:
-/// - `env:` (`Value::Environment`) — child env with `%` bound to the last expression's thunk
+/// - `env:` (`Value::Env`) — child env with `%` bound to the last expression's thunk
 ///   on success, or the original starting_env on failure.
 /// - `error:` (`Value::Dict([])` = null on success, `Value::Str(message)` on failure)
 ///
 /// Callers MUST check `result.error` before using `result.env`. This design ensures
 /// Rust never prints errors — tinct code receives errors as data and decides what to do.
 ///
-/// The `env:` arg is mandatory. Callers must pass a `Value::Environment` (e.g. one constructed
+/// The `env:` arg is mandatory. Callers must pass a `Value::Env` (e.g. one constructed
 /// via `builtin-extend-env`). There is no default stdlib_env fallback.
 pub(crate) fn builtin_eval(
     ctx_arg: BuiltinArgs,
@@ -2657,7 +2657,7 @@ pub(crate) fn builtin_eval(
         }
 
         // Named args:
-        //   env:   (Value::Environment) — required
+        //   env:   (Value::Env) — required
         //
         // Resolution is now inline on the AST nodes (written by builtin-resolve).
         // The `table:` argument has been removed; pass env: only.
@@ -2672,7 +2672,7 @@ pub(crate) fn builtin_eval(
                 None => {
                     return Err(EvalError::type_mismatch_ctx(
                         "eval".to_string(),
-                        "Environment (for env: argument — required)",
+                        "Env (for env: argument — required)",
                         "absent",
                         call_span,
                     )
@@ -2683,21 +2683,21 @@ pub(crate) fn builtin_eval(
             // No named args at all — env: is missing.
             return Err(EvalError::type_mismatch_ctx(
                 "eval".to_string(),
-                "Environment (for env: argument — required)",
+                "Env (for env: argument — required)",
                 "absent",
                 call_span,
             )
             .into());
         };
 
-        // Force env: — must be Value::Environment.
+        // Force env: — must be Value::Env.
         let env_val = materialize(&env_thunk, Some(&call_span), &ctx).await?;
         let starting_env = match env_val {
             Value::Environment(e) => e,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "eval".to_string(),
-                    "Environment (for env: argument)",
+                    "Env (for env: argument)",
                     other.type_name(),
                     call_span,
                 )
@@ -2913,7 +2913,7 @@ pub(crate) fn builtin_variant_payload(
 /// `builtin-eval-repr`: evaluate a document in an env and return `builtin-llt-repr` of the
 /// last expression's result. Combines `builtin-eval` + `builtin-llt-repr` atomically.
 ///
-/// Named arg `env:` (Value::Environment) — required, same as builtin-eval.
+/// Named arg `env:` (Value::Env) — required, same as builtin-eval.
 /// Positional arg[0]: Value::Document or Dict of Expr.* nodes.
 /// Returns: String (the llt-repr of the last expression's value).
 pub(crate) fn builtin_eval_repr(
@@ -2945,7 +2945,7 @@ pub(crate) fn builtin_eval_repr(
                 None => {
                     return Err(EvalError::type_mismatch_ctx(
                         "eval-repr".to_string(),
-                        "Environment (for env: argument — required)",
+                        "Env (for env: argument — required)",
                         "absent",
                         call_span,
                     )
@@ -2955,7 +2955,7 @@ pub(crate) fn builtin_eval_repr(
         } else {
             return Err(EvalError::type_mismatch_ctx(
                 "eval-repr".to_string(),
-                "Environment (for env: argument — required)",
+                "Env (for env: argument — required)",
                 "absent",
                 call_span,
             )
@@ -2968,7 +2968,7 @@ pub(crate) fn builtin_eval_repr(
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "eval-repr".to_string(),
-                    "Environment (for env: argument)",
+                    "Env (for env: argument)",
                     other.type_name(),
                     call_span,
                 )
@@ -3022,20 +3022,20 @@ pub(crate) fn builtin_eval_repr(
 
 /// `builtin-extend-env`: create a child (or fresh) environment with additional bindings.
 ///
-/// arg[0]: `Value::Environment` — the parent environment, OR `Value::Dict({})` (empty dict)
+/// arg[0]: `Value::Env` — the parent environment, OR `Value::Dict({})` (empty dict)
 ///   to create a fresh environment with no parent chain.
 /// arg[1]: `Value::Dict` — string-keyed bindings to add as a child layer, OR
-///   `Value::Environment` — whose own top-level bindings are copied into the child.
+///   `Value::Env` — whose own top-level bindings are copied into the child.
 ///   Integer keys in a Dict are silently skipped. The values remain as thunks — no
 ///   materialization of dict or env values.
 ///
 /// Full matrix:
-/// - `(Environment, Dict)` → child of parent env with dict's string-keyed entries
+/// - `(Env, Dict)` → child of parent env with dict's string-keyed entries
 /// - `(Dict({}), Dict)`    → fresh env (no parent) with dict's string-keyed entries
-/// - `(Environment, Environment)` → child of parent env with source env's own bindings
-/// - `(Dict({}), Environment)`    → fresh env (no parent) with source env's own bindings
+/// - `(Env, Env)` → child of parent env with source env's own bindings
+/// - `(Dict({}), Env)`    → fresh env (no parent) with source env's own bindings
 ///
-/// Returns: `Value::Environment`.
+/// Returns: `Value::Env`.
 ///
 /// Useful for injecting additional bindings into an environment before passing it to
 /// `builtin-eval`, without mutating the original env.
@@ -3057,15 +3057,15 @@ pub(crate) fn builtin_extend_env(
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
 
-        // Force arg[0] — must be Value::Environment or Value::Dict({}) (empty dict → fresh env).
+        // Force arg[0] — must be Value::Env or Value::Dict({}) (empty dict → fresh env).
         let parent_val = materialize(&args[0], Some(&call_span), &ctx).await?;
-        let base_env: Option<Arc<std::sync::RwLock<Environment>>> = match parent_val {
+        let base_env: Option<Arc<std::sync::RwLock<Env>>> = match parent_val {
             Value::Environment(e) => Some(e),
             Value::Dict(ref m) if m.is_empty() => None, // empty dict → fresh env with no parent
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "extend-env".to_string(),
-                    "Environment or empty Dict",
+                    "Env or empty Dict",
                     other.type_name(),
                     call_span,
                 )
@@ -3075,11 +3075,11 @@ pub(crate) fn builtin_extend_env(
 
         // Create the child environment (or a fresh env if base_env is None).
         let child_env = Arc::new(std::sync::RwLock::new(match base_env {
-            Some(ref parent) => Environment::with_parent(Arc::clone(parent)),
-            None => Environment::new(),
+            Some(ref parent) => Env::with_parent(Arc::clone(parent)),
+            None => Env::new(),
         }));
 
-        // Force arg[1] — must be Value::Dict or Value::Environment.
+        // Force arg[1] — must be Value::Dict or Value::Env.
         // Normalize: peel Annotated wrappers and flatten Overlay into a plain Dict.
         // builtin-merge returns Value::Overlay (lazy); @Any annotations wrap in Annotated.
         // Both have type_name()="Dict" but don't match Value::Dict directly.
@@ -3125,7 +3125,7 @@ pub(crate) fn builtin_extend_env(
                 other => {
                     return Err(EvalError::type_mismatch_ctx(
                         "extend-env".to_string(),
-                        "Dict or Environment",
+                        "Dict or Env",
                         other.type_name(),
                         call_span,
                     )
@@ -3143,7 +3143,7 @@ pub(crate) fn builtin_extend_env(
 
 /// `builtin-current-env`: capture and return the calling environment.
 ///
-/// Takes zero arguments. Returns the `Value::Environment` that was the caller's
+/// Takes zero arguments. Returns the `Value::Env` that was the caller's
 /// lexical environment at the point of the call. This is the environment in scope
 /// at the `[builtin-current-env]` call site — not the environment of `builtin-current-env`
 /// itself (which has no body).
@@ -3185,7 +3185,7 @@ pub(crate) fn builtin_current_env(
 /// explicitly threading `__call-env__` / `__call-span__` through their parameter lists.
 ///
 /// Evaluation pipeline:
-///   1. Read `ᴍᴀᴄʀᴏ∷env` from caller_env → call-site `Value::Environment`
+///   1. Read `ᴍᴀᴄʀᴏ∷env` from caller_env → call-site `Value::Env`
 ///   2. Convert the `Expr.*` variant to a `SurfaceNode` using `dict_to_surface_node`
 ///   3. Wrap in a single-expression `SurfaceProgram`
 ///   4. Desugar + resolve in the call-site env
@@ -3218,7 +3218,7 @@ pub(crate) fn builtin_eval_macro_ast(
         // tinct function in the macro call chain down to here.
         const MACRO_ENV_NAME: &str = "ᴍᴀᴄʀᴏ∷env";
 
-        let call_site_env: Arc<RwLock<Environment>> = {
+        let call_site_env: Arc<RwLock<Env>> = {
             let env_thunk_opt = caller_env.read().unwrap().get_value_by_name(MACRO_ENV_NAME);
             if let Some(env_thunk) = env_thunk_opt {
                 let env_val = materialize(&env_thunk, Some(&call_span), &ctx).await?;
@@ -3227,7 +3227,7 @@ pub(crate) fn builtin_eval_macro_ast(
                     other => {
                         return Err(EvalError::type_mismatch_ctx(
                             "eval-macro-ast".to_string(),
-                            "Environment (ᴍᴀᴄʀᴏ∷env)",
+                            "Env (ᴍᴀᴄʀᴏ∷env)",
                             other.type_name(),
                             call_span,
                         )
@@ -3360,9 +3360,9 @@ pub(crate) fn builtin_eval_types(
             let env_val = materialize(&env_thunk, Some(&call_span), &ctx).await?;
             match env_val {
                 Value::Dict(entries) => {
-                    let child_env = Arc::new(std::sync::RwLock::new(Environment::with_parent(
-                        Arc::clone(&base_env),
-                    )));
+                    let child_env = Arc::new(std::sync::RwLock::new(Env::with_parent(Arc::clone(
+                        &base_env,
+                    ))));
                     for (key, thunk_id) in entries.iter() {
                         if let HashableValue::Str(name) = key {
                             child_env
@@ -3389,9 +3389,9 @@ pub(crate) fn builtin_eval_types(
 
         // Add %: (pipeline input) as % binding if provided
         let final_env = if let Some(input_thunk) = pipeline_input {
-            let child_env = Arc::new(std::sync::RwLock::new(Environment::with_parent(
-                Arc::clone(&env_with_bindings),
-            )));
+            let child_env = Arc::new(std::sync::RwLock::new(Env::with_parent(Arc::clone(
+                &env_with_bindings,
+            ))));
             child_env
                 .write()
                 .unwrap()
@@ -4472,7 +4472,7 @@ pub(crate) fn builtin_check_type(
 /// tinct runtime environment.
 ///
 /// - arg 0: String — the name to look up (e.g. `"%myfs"`)
-/// - arg 1: Environment (`Value::Environment`) — the environment to search
+/// - arg 1: Env (`Value::Env`) — the environment to search
 /// - Returns: `Boolean.True` if the name is bound in the environment chain,
 ///   `Boolean.False` otherwise
 ///
@@ -4558,7 +4558,7 @@ mod tests {
     use indexmap::IndexMap;
 
     use super::{builtin_current_env, builtin_tag_of};
-    use crate::env::Env as Environment;
+    use crate::env::Env;
     use crate::error::EvalResult;
     use crate::test_util::test_span;
     use crate::value::{string_val, BuiltinArgs, Thunk, Value};
@@ -4573,7 +4573,7 @@ mod tests {
 
     fn test_ctx() -> Arc<crate::eval::EvalContext> {
         let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
-        let env = Arc::new(RwLock::new(Environment::new()));
+        let env = Arc::new(RwLock::new(Env::new()));
         crate::eval::EvalContext::new_empty(base_dir, env, false)
     }
 
@@ -4605,7 +4605,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap();
@@ -4631,7 +4631,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap();
@@ -4660,7 +4660,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await
         .unwrap();
@@ -4669,13 +4669,13 @@ mod tests {
     }
 
     /// `builtin_current_env` captures the `caller_env` from `BuiltinArgs` and returns it
-    /// as a `Value::Environment`. The returned environment must be the exact same
-    /// `Arc<RwLock<Environment>>` that was passed in, so bindings inserted before the
+    /// as a `Value::Env`. The returned environment must be the exact same
+    /// `Arc<RwLock<Env>>` that was passed in, so bindings inserted before the
     /// call are accessible via `get_by_name` on the captured env.
     #[tokio::test]
     async fn current_env_captures_caller_env() {
         // Build a caller environment with a known binding: "x" → Int(42).
-        let caller_env = Arc::new(RwLock::new(Environment::new()));
+        let caller_env = Arc::new(RwLock::new(Env::new()));
         {
             let mut env = caller_env.write().unwrap();
             env.insert_value(
@@ -4694,7 +4694,7 @@ mod tests {
         .await
         .unwrap();
 
-        // The thunk must materialize to Value::Environment.
+        // The thunk must materialize to Value::Env.
         let val = materialize_sync(&result, &test_ctx()).await;
         let captured_env = match val {
             Value::Environment(env) => env,
@@ -4719,7 +4719,7 @@ mod tests {
     /// `builtin_current_env` rejects positional arguments — it takes zero args.
     #[tokio::test]
     async fn current_env_rejects_positional_args() {
-        let caller_env = Arc::new(RwLock::new(Environment::new()));
+        let caller_env = Arc::new(RwLock::new(Env::new()));
         let result = run(builtin_current_env(BuiltinArgs {
             args: vec![thunk(Value::Int(1))],
             named: no_named(),
@@ -4752,7 +4752,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }))
         .await;
         assert!(

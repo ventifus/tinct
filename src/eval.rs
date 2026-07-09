@@ -35,7 +35,7 @@ use crate::types::{Row, Type};
 // Circular module dependency: this module calls builtins via function pointers stored in `Value::Builtin`.
 // builtins.rs imports `invoke_function` and `materialize` from this module.
 // This bidirectional dependency is safe because neither module's initialization depends on the other.
-use crate::env::Env as Environment;
+use crate::env::Env;
 use crate::value::{string_val, HashableValue, Thunk, Value};
 
 // ============================================================================
@@ -73,7 +73,7 @@ thread_local! {
 /// - **Empty slice**: returns a materialized empty-dict thunk (same as an empty doc).
 pub(crate) async fn eval_document_exprs(
     expr_nodes: &[Arc<SurfaceNode>],
-    env: Arc<RwLock<Environment>>,
+    env: Arc<RwLock<Env>>,
     ctx: &Arc<EvalContext>,
 ) -> EvalResult<Arc<Thunk>> {
     eval_document_exprs_with_env(expr_nodes, env, ctx)
@@ -84,13 +84,13 @@ pub(crate) async fn eval_document_exprs(
 /// Like `eval_document_exprs` but also returns the leaf environment after evaluation.
 /// The leaf env is `current_env` at the end of the loop — a chain of child envs built
 /// from intermediate dict results. Used by `builtin-eval` to construct the result
-/// `Value::Environment` so that intermediate dict bindings (e.g. prelude's `=`, `map`)
+/// `Value::Env` so that intermediate dict bindings (e.g. prelude's `=`, `map`)
 /// are accessible from the returned env's ancestor chain.
 pub(crate) async fn eval_document_exprs_with_env(
     expr_nodes: &[Arc<SurfaceNode>],
-    env: Arc<RwLock<Environment>>,
+    env: Arc<RwLock<Env>>,
     ctx: &Arc<EvalContext>,
-) -> EvalResult<(Arc<Thunk>, Arc<RwLock<Environment>>)> {
+) -> EvalResult<(Arc<Thunk>, Arc<RwLock<Env>>)> {
     if expr_nodes.is_empty() {
         return Ok((
             Arc::new(Thunk::new_materialized(
@@ -139,9 +139,7 @@ pub(crate) async fn eval_document_exprs_with_env(
         };
 
         if let Some(entries) = map {
-            let child_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(
-                &current_env,
-            ))));
+            let child_env = Arc::new(RwLock::new(Env::with_parent(Arc::clone(&current_env))));
             {
                 let mut env_write = child_env.write().unwrap();
                 for (key, val_thunk_id) in entries.iter() {
@@ -176,7 +174,7 @@ pub(crate) async fn eval_document_exprs_with_env(
 /// via `builtin-cap-env-has?` and `builtin-check-type` (T-1506, T-1507).
 pub async fn eval_surface_document(
     doc: &Spanned<Arc<crate::ast::SurfaceDocument>>,
-    env: Arc<RwLock<Environment>>,
+    env: Arc<RwLock<Env>>,
     ctx: &Arc<EvalContext>,
 ) -> EvalResult<Arc<Thunk>> {
     // Collect expression nodes (skip Decl items — processed by expander) and
@@ -194,7 +192,7 @@ pub async fn eval_surface_document(
 /// it writes de Bruijn coordinates inline to the AST nodes.
 /// If type checking was skipped, `TypeAssert` nodes will use Type::Unknown (accepts all values).
 ///
-/// # Environment threading
+/// # Env threading
 ///
 /// `env` is the fully-constructed loader environment (prelude + caps + named sections already
 /// bound). Each document receives the **same** `env` — there is no sequential env threading
@@ -202,7 +200,7 @@ pub async fn eval_surface_document(
 /// for threading the per-document leaf env forward via `builtin-extend-env`.
 pub async fn eval_surface_file(
     program: &SurfaceProgram,
-    env: Arc<RwLock<Environment>>,
+    env: Arc<RwLock<Env>>,
     ctx: &Arc<EvalContext>,
 ) -> EvalResult<Arc<Thunk>> {
     let mut last = EMPTY_DICT_THUNK.with(Arc::clone);
@@ -222,12 +220,12 @@ pub async fn eval_surface_file(
 /// Used by the formatter (which passes the AST dict as `%`).
 pub async fn eval_surface_file_with_input(
     program: &SurfaceProgram,
-    env: Arc<RwLock<Environment>>,
+    env: Arc<RwLock<Env>>,
     ctx: &Arc<EvalContext>,
     initial_input: Option<Arc<Thunk>>,
 ) -> EvalResult<Arc<Thunk>> {
     let eval_env = if let Some(input) = initial_input {
-        let child = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(&env))));
+        let child = Arc::new(RwLock::new(Env::with_parent(Arc::clone(&env))));
         child.write().unwrap().insert_value("%".to_string(), input);
         child
     } else {
@@ -245,12 +243,11 @@ pub(crate) const IS_ANNOTATION_KEY: &str = "is";
 
 /// Type alias for the optional default expression + environment pair used by guarded thunks.
 /// Reduces type_complexity in function signatures that carry this optional default.
-type GuardDefault = (Arc<Spanned<crate::ast::CoreExpr>>, Arc<RwLock<Environment>>);
+type GuardDefault = (Arc<Spanned<crate::ast::CoreExpr>>, Arc<RwLock<Env>>);
 
 /// Type alias for the return type of `match_pattern` — an async fn returning an optional env.
-type MatchPatternFuture<'a> = std::pin::Pin<
-    Box<dyn std::future::Future<Output = EvalResult<Option<Arc<RwLock<Environment>>>>> + 'a>,
->;
+type MatchPatternFuture<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Option<Arc<RwLock<Env>>>>> + 'a>>;
 
 // ValuesEqualFuture removed — primitive_eq is synchronous (no async needed).
 
@@ -307,7 +304,7 @@ pub struct TypeContextData {
     /// Used by `builtin_eval_types` to evaluate type-stage documents in isolation.
     /// Mirrors `EvalConfig.type_stage_env` but owned by TypeContext so it can be updated
     /// as new type declarations are registered.
-    pub type_stage_env: Arc<RwLock<Environment>>,
+    pub type_stage_env: Arc<RwLock<Env>>,
     /// Accumulated Hindley-Milner inference environment.
     /// Initialized to the builtin_core TypeEnv at startup (via `init_type_context` callers).
     /// Each `builtin-typecheck` call seeds from this env and writes the resulting `final_env`
@@ -321,10 +318,10 @@ pub struct TypeContextData {
 #[derive(Debug)]
 pub struct EvalConfig {
     pub base_dir: cap_std::fs::Dir,
-    pub stdlib_env: Arc<RwLock<Environment>>,
+    pub stdlib_env: Arc<RwLock<Env>>,
     /// Type-stage environment: contains only type-level builtins, no IO/caps/runtime API.
     /// Used by `builtin_eval_types` to evaluate type-stage documents in isolation.
-    pub type_stage_env: Arc<RwLock<Environment>>,
+    pub type_stage_env: Arc<RwLock<Env>>,
     pub no_fs: bool,
     /// When true, every `$include` call must supply an integrity hash.
     /// Hashless includes are rejected with `IncludeHashRequired`.
@@ -400,12 +397,12 @@ pub struct EvalContext {
     /// **Shared ownership:** Arc<Mutex<>> allows child contexts (created via with_base_dir)
     /// to share the parent's arena, preventing ThunkId index-out-of-bounds panics.
     pub(crate) thunk_arena: Arc<Mutex<ThunkArena>>,
-    /// Environment arena registry. Phase 3: populated by `eval_dict` (alloc_root +
+    /// Env arena registry. Phase 3: populated by `eval_dict` (alloc_root +
     /// fill_letrec_slot per dict scope). Env IDs enable O(1) variable lookup in the
     /// CoreExpr force path.
     /// **Shared ownership:** Arc<Mutex<>> allows child contexts to share the parent's arena.
     pub(crate) env_arena: Arc<Mutex<EnvArena>>,
-    /// Environment variable allowlist. None = unrestricted (all allowed), Some(set) = only those in set.
+    /// Env variable allowlist. None = unrestricted (all allowed), Some(set) = only those in set.
     /// Some(empty) means all denied (--no-env mode).
     pub env_allowed: Option<HashSet<String>>,
     /// Pipeline blame map: records producing stage label for each `%` thunk at `---` boundaries.
@@ -467,8 +464,8 @@ pub struct EvalContext {
 impl EvalContext {
     pub fn new(
         base_dir: cap_std::fs::Dir,
-        stdlib_env: Arc<RwLock<Environment>>,
-        type_stage_env: Arc<RwLock<Environment>>,
+        stdlib_env: Arc<RwLock<Env>>,
+        type_stage_env: Arc<RwLock<Env>>,
         no_fs: bool,
     ) -> Arc<Self> {
         Self::new_with_options(base_dir, stdlib_env, type_stage_env, no_fs, false, None)
@@ -485,14 +482,14 @@ impl EvalContext {
     /// `new_with_options()` all create fresh arenas.
     pub fn new_empty(
         base_dir: cap_std::fs::Dir,
-        stdlib_env: Arc<RwLock<Environment>>,
+        stdlib_env: Arc<RwLock<Env>>,
         no_fs: bool,
     ) -> Arc<Self> {
         Arc::new(Self {
             config: Arc::new(EvalConfig {
                 base_dir,
                 stdlib_env,
-                type_stage_env: Arc::new(RwLock::new(Environment::new())),
+                type_stage_env: Arc::new(RwLock::new(Env::new())),
                 no_fs,
                 require_integrity: false,
                 macro_injects_map: HashMap::new(),
@@ -518,8 +515,8 @@ impl EvalContext {
 
     pub fn new_with_options(
         base_dir: cap_std::fs::Dir,
-        stdlib_env: Arc<RwLock<Environment>>,
-        type_stage_env: Arc<RwLock<Environment>>,
+        stdlib_env: Arc<RwLock<Env>>,
+        type_stage_env: Arc<RwLock<Env>>,
         no_fs: bool,
         require_integrity: bool,
         env_allowed: Option<HashSet<String>>,
@@ -1202,7 +1199,7 @@ pub(crate) fn is_constructor_name(name: &str) -> bool {
 /// This function operates entirely on SurfaceNode (no Expr round-trip).
 async fn eval_quote_walk(
     node: Arc<crate::ast::SurfaceNode>,
-    env: Arc<RwLock<Environment>>,
+    env: Arc<RwLock<Env>>,
     ctx: &Arc<EvalContext>,
 ) -> EvalResult<Arc<Thunk>> {
     let span = node.span.clone();
@@ -1305,7 +1302,7 @@ async fn collect_seq_elements(
 /// Operates entirely on SurfaceNode — no Expr round-trip.
 fn eval_quote_preprocess<'a>(
     node: Arc<crate::ast::SurfaceNode>,
-    env: &'a Arc<RwLock<Environment>>,
+    env: &'a Arc<RwLock<Env>>,
     ctx: &'a Arc<EvalContext>,
 ) -> std::pin::Pin<
     Box<dyn std::future::Future<Output = EvalResult<Arc<crate::ast::SurfaceNode>>> + 'a>,
@@ -1585,7 +1582,7 @@ fn eval_quote_preprocess<'a>(
 /// Dict/Call/Fn to eliminate the bridge conversions.
 fn eval_core_expr<'a>(
     expr: &'a Spanned<CoreExpr>,
-    env: &'a Arc<RwLock<Environment>>,
+    env: &'a Arc<RwLock<Env>>,
     ctx: &'a Arc<EvalContext>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>> + 'a>> {
     Box::pin(async move {
@@ -1908,7 +1905,7 @@ fn eval_core_expr<'a>(
 /// or for types with no instance.
 pub async fn call_to_match(
     val: &Value,
-    env: &Arc<RwLock<Environment>>,
+    env: &Arc<RwLock<Env>>,
     ctx: &Arc<EvalContext>,
     span: &Span,
 ) -> bool {
@@ -1956,7 +1953,7 @@ pub async fn call_to_match(
 pub async fn call_to_match_resolved(
     val: &Value,
     binding_name: &str,
-    env: &Arc<RwLock<Environment>>,
+    env: &Arc<RwLock<Env>>,
     ctx: &Arc<EvalContext>,
     span: &Span,
 ) -> bool {
@@ -2015,10 +2012,7 @@ pub async fn call_to_match_resolved(
 ///
 /// This does NOT call the binding — it only resolves the name. The environment lookup
 /// and invocation happen inside `call_to_match_resolved` at call time.
-pub fn resolve_matchable_binding_from_fn(
-    pred: &Value,
-    env: &Arc<RwLock<Environment>>,
-) -> Option<String> {
+pub fn resolve_matchable_binding_from_fn(pred: &Value, env: &Arc<RwLock<Env>>) -> Option<String> {
     let return_ann = match pred {
         Value::Function { return_ann, .. } => return_ann.as_ref()?,
         // Builtins don't carry return annotations -- fall back to dynamic dispatch.
@@ -2052,7 +2046,7 @@ pub fn resolve_matchable_binding_from_fn(
 pub async fn call_to_match_opt_resolved(
     val: &Value,
     binding_name: Option<&str>,
-    env: &Arc<RwLock<Environment>>,
+    env: &Arc<RwLock<Env>>,
     ctx: &Arc<EvalContext>,
     span: &Span,
 ) -> bool {
@@ -3106,7 +3100,7 @@ pub(crate) fn check_pattern_linearity(pattern: &Spanned<Pattern>) -> Result<(), 
 pub(crate) fn match_pattern<'a>(
     pattern: &'a Pattern,
     value: &'a Value,
-    env: &'a Arc<RwLock<Environment>>,
+    env: &'a Arc<RwLock<Env>>,
     value_span: &'a Span,
     ctx: &'a Arc<EvalContext>,
 ) -> MatchPatternFuture<'a> {
@@ -3264,7 +3258,7 @@ pub(crate) fn match_pattern<'a>(
                     Value::Dict(dict_thunk_ids) => {
                         // Start with the current environment
                         let mut result_env =
-                            Arc::new(RwLock::new(Environment::with_parent(Arc::clone(env))));
+                            Arc::new(RwLock::new(Env::with_parent(Arc::clone(env))));
 
                         // Check each pattern field
                         for (key, field_pattern) in fields {
