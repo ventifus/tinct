@@ -1159,13 +1159,11 @@ async fn test_annotation_simple() {
 async fn test_annotation_type_var() {
     let env = Arc::new(TypeEnv::new());
     let span = crate::test_util::test_span(1, 1, 1, 5);
-    // InferState::new() has level=0, so annotation-derived TypeVars start at level 0
-    // When no mapping is provided (outside function scope), a fresh var is created,
-    // NOT the raw annotation name. This prevents cross-contamination between
-    // two different `@a` annotations in the same dict.
+    // With explicit bind: required, lowercase names outside a function scope (ann_mapping=None)
+    // now produce a TypeError — implicit TypeVar creation was removed.
     let mut state = InferState::new();
     let mut c = Vec::new();
-    let ty = resolve_annotation(
+    let result = resolve_annotation(
         &Annotation::Simple("a".into()),
         &env,
         span,
@@ -1175,27 +1173,24 @@ async fn test_annotation_type_var() {
         &mut None,
         None,
     )
-    .await
-    .unwrap();
-    // Should be a fresh TypeVar (not literally "a"), at level 0
-    matches!(ty, Type::TypeVar(ref s, 0) if s.starts_with('?'));
+    .await;
+    assert!(
+        result.is_err(),
+        "lowercase annotation outside function scope should produce undefined type error; got: {result:?}"
+    );
 }
 
 // test_resolve_type_name_outside_function_scope — migrated to tests/corpus/eval/typecheck/resolve_type_name_outer_scope.llt-eval
 
 #[tokio::test]
 async fn test_resolve_type_name_outside_function_scope_monotonicity() {
-    // With Fix 1: outside function scope each call gets a fresh var, so there is no
-    // "second reference to the same annotation name" scenario — each use produces its
-    // own fresh var. The monotonicity invariant (levels only decrease) still holds for
-    // individual fresh vars; this test verifies the counter advances correctly.
+    // With explicit bind: required, resolve_type_name for a lowercase name without a prior
+    // bind: declaration now produces a TypeError at any scope level.
     let env = Arc::new(TypeEnv::new());
     let span = crate::test_util::test_span(1, 1, 1, 5);
     let mut state = InferState::new();
-
-    // Call at level 1 with a specific span
     state.level = 1;
-    let ty1 = resolve_type_name(
+    let result = resolve_type_name(
         "a",
         &env,
         span.clone(),
@@ -1205,36 +1200,11 @@ async fn test_resolve_type_name_outside_function_scope_monotonicity() {
         &None,
         None,
     )
-    .await
-    .unwrap();
-
-    // Call at level 2 (simulating a nested scope) with a different span position
-    let span2 = crate::test_util::test_span(2, 1, 2, 5);
-    state.level = 2;
-    let ty2 = resolve_type_name(
-        "a",
-        &env,
-        span2,
-        &mut state,
-        &mut Vec::new(),
-        &mut None,
-        &None,
-        None,
-    )
-    .await
-    .unwrap();
-
-    // Each call produces a distinct TypeVar at its respective current level.
-    // With span-based naming, distinct spans guarantee distinct TypeVar names.
-    match (&ty1, &ty2) {
-        (Type::TypeVar(n1, 1), Type::TypeVar(n2, 2)) => {
-            assert_ne!(
-                n1, n2,
-                "distinct fresh vars for two outer-scope `@a` uses at different spans"
-            );
-        }
-        other => panic!("expected TypeVar at level 1 and TypeVar at level 2, got: {other:?}"),
-    }
+    .await;
+    assert!(
+        result.is_err(),
+        "lowercase type name outside function scope should produce undefined type error; got: {result:?}"
+    );
 }
 
 #[tokio::test]
@@ -1445,18 +1415,11 @@ async fn test_property_dict_unresolvable_type_propagates_error() {
         None,
     )
     .await;
-    // Uppercase unresolvable type names like "NoSuchType" become NominalVariants (unit constructors).
-    // For this test we use "noSuchType" (lowercase) which does not match is_constructor_name
-    // and instead creates a fresh TypeVar (since lowercase names outside a function scope
-    // become anonymous type variables). So the result is Ok (a TypeVar).
-    //
-    // NOTE: The original test used "NoSuchType" and expected Err, but that was incorrect —
-    // uppercase unknown names silently became NominalVariants both before and after the
-    // constructor-name priority fix. This test now verifies that annotation resolution
-    // succeeds for unknown names (either as TypeVar or NominalVariant depending on case).
+    // With explicit bind: required, lowercase names in annotation position without a prior
+    // bind: declaration produce a TypeError. "noSuchType" starts lowercase → error.
     assert!(
-        result.is_ok(),
-        "resolve_annotation for unknown type name should not fail; got: {result:?}"
+        result.is_err(),
+        "lowercase annotation name not in scope should produce undefined type error; got: {result:?}"
     );
 }
 
@@ -4371,7 +4334,7 @@ async fn test_resolve_type_assert_subst_apply_is_load_bearing() {
     // The scenario where ONLY removing state.subst.apply(&expected) causes a failure
     // requires that `expected` contains a TypeVar bound in state.subst. Since
     // resolve_type_assert calls resolve_annotation with &mut None (no ann_mapping),
-    // a lowercase annotation name like `@a` produces TypeVar("a", level) as expected.
+    // a lowercase annotation name like `@a` now produces an "undefined type" error.
     //
     // For TypeVar("a") to be in state.subst, something in the letrec pass before or
     // during check_expr must unify "a" with a concrete type. The current architecture

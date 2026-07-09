@@ -2272,31 +2272,6 @@ pub(crate) fn builtin_typecheck(
                     }
                 };
 
-                // Upgrade builtin-resolve and builtin-eval to variadic in the parent_env
-                // (the accumulated inference env). Callers pass optional named kwargs (env:,
-                // table:) to these builtins; the runtime registration only declares the required
-                // positional arg "doc". Without this override, the type checker sees a 1-arg
-                // non-variadic function and generates false "arity mismatch" / "unknown named
-                // argument" warnings for valid prelude code like [resolve doc env: full-env].
-                {
-                    let variadic_scheme = crate::types::TypeScheme::mono(
-                        crate::types::Type::Function {
-                            params: vec![(None, crate::types::Type::Any)],
-                            ret: Box::new(crate::types::Type::Any),
-                            variadic: true,
-                            required_count: 1,
-                        },
-                    );
-                    let mut guard = parent_env.write().unwrap();
-                    for name in ["builtin-resolve", "builtin-eval"] {
-                        // Use insert_scheme (not insert_scheme_named_only) so that if
-                        // builtin-resolve is already in parent_env.slots from a prior typecheck
-                        // pass, the variadic scheme OVERWRITES it in-place. get_scheme checks
-                        // slots before extras, so slots must be updated.
-                        guard.insert_scheme(name.to_string(), variadic_scheme.clone());
-                    }
-                }
-
                 // Run the full typecheck pass seeded from the accumulated env.
                 // Pass resolver_seed_env (from the env: named argument, if any) so that
                 // instance binding names (ɪ-prefixed) visible in the runtime eval env are

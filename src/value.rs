@@ -96,6 +96,11 @@ pub struct BuiltinDef {
     pub force_count: usize,
     /// Parameter names for arity mismatch error messages. Empty slice means no names shown.
     pub params: &'static [&'static str],
+    /// Named kwargs this builtin accepts (e.g. ["env"] for builtin-resolve).
+    /// Non-empty means the builtin is variadic in the type system — callers may pass
+    /// these names as named arguments without triggering "unknown named argument" warnings.
+    /// Empty slice means no named kwargs declared.
+    pub named_params: &'static [&'static str],
 }
 
 impl PartialEq for BuiltinDef {
@@ -2396,6 +2401,7 @@ mod tests {
             pos_strictness: &[],
             force_count: 0,
             params: &[],
+            named_params: &[],
         });
         assert_ne!(b.clone(), b);
     }
@@ -2428,6 +2434,7 @@ mod tests {
             pos_strictness: &[],
             force_count: 0,
             params: &[],
+            named_params: &[],
         };
         let same_name_b = BuiltinDef {
             func: func_b, // different function pointer, same name
@@ -2435,6 +2442,7 @@ mod tests {
             pos_strictness: &[Strictness::Seq],
             force_count: 0,
             params: &[],
+            named_params: &[],
         };
         let different_name = BuiltinDef {
             func: func_a,
@@ -2442,6 +2450,7 @@ mod tests {
             pos_strictness: &[],
             force_count: 0,
             params: &[],
+            named_params: &[],
         };
 
         assert_eq!(
@@ -2651,6 +2660,7 @@ mod tests {
             pos_strictness: &[],
             force_count: 0,
             params: &[],
+            named_params: &[],
         });
         assert_eq!(format!("{builtin}"), "<builtin test_fn>");
     }
@@ -2746,6 +2756,7 @@ mod tests {
             pos_strictness: &[],
             force_count: 0,
             params: &[],
+            named_params: &[],
         });
         assert_eq!(format!("{builtin:?}"), "Builtin(test_builtin)");
     }
@@ -2824,6 +2835,7 @@ mod tests {
             pos_strictness: &[],
             force_count: 0,
             params: &[],
+            named_params: &[],
         };
         let thunk = Thunk::new_pending_builtin(
             dummy_def,
@@ -3118,6 +3130,7 @@ mod tests {
             pos_strictness: &[],
             force_count: 0,
             params: &[],
+            named_params: &[],
         };
         let thunk = Thunk::new_pending_builtin(
             dummy_def,
@@ -3175,6 +3188,7 @@ mod tests {
             pos_strictness: &[],
             force_count: 0,
             params: &[],
+            named_params: &[],
         };
         let thunk = Thunk::new_pending_builtin(
             error_def,

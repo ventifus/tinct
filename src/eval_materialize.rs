@@ -4260,6 +4260,7 @@ mod tests {
             pos_strictness: &[],
             force_count: 0,
             params: &[],
+            named_params: &[],
         };
 
         let args = vec![Arc::clone(&thunk)];
@@ -4910,6 +4911,7 @@ mod tests {
             pos_strictness: KEYS_STRICTNESS,
             force_count: 1,
             params: &[],
+            named_params: &[],
         };
 
         // Create a PendingBuiltin thunk for the CEK machine to force.
@@ -5022,6 +5024,7 @@ mod tests {
             pos_strictness: DUMMY_STRICTNESS,
             force_count: 2,
             params: &[],
+            named_params: &[],
         };
 
         let outer_thunk = Arc::new(Thunk::new_pending_builtin(

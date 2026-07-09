@@ -2088,8 +2088,11 @@ pub(crate) async fn resolve_type_name_with_guard(
         .await;
     }
 
-    // Uppercase type name — check for type alias
-    if let Some(alias) = env.lookup_tycon_def(name) {
+    // Uppercase type name — check for type alias (TypeEnv first, then state.tycon_env)
+    if let Some(alias) = env
+        .lookup_tycon_def(name)
+        .or_else(|| state.tycon_env.get(name).cloned())
+    {
         // Check if we're in a recursive expansion
         if recursion_guard.contains(name) {
             // Recursive reference detected — return a fresh type variable as the mu-variable
@@ -2198,11 +2201,6 @@ pub(crate) async fn resolve_type_name(
         "Unknown" => return Ok(Type::Unknown),
         "Any" => return Ok(Type::Any),
         "Proxy" => return Ok(Type::Proxy),
-        // Dict: gradual dict annotation — any dict value satisfies this annotation.
-        // Used in prelude for functions that accept or produce arbitrary dicts.
-        // Unknown is the gradual type: it unifies with any concrete dict type,
-        // including closed empty records ([]), open records, and uniform-tailed records.
-        "Dict" => return Ok(Type::Unknown),
         _ => {
             if name.starts_with(|c: char| c.is_lowercase()) {
                 // Type parameter scope enforcement (T-1100 / T-951).
@@ -2218,7 +2216,8 @@ pub(crate) async fn resolve_type_name(
                     }
                     // Strict mode (TypeAlias bodies): validate that undeclared lowercase
                     // names are either scope references or error. Non-strict (class methods):
-                    // allow extra TypeVars to fall through to ann_mapping / fresh_type_var.
+                    // allow names to fall through to the ann_mapping lookup below, which will
+                    // either find a bind:-declared TypeVar or produce a TypeError.
                     let in_params = ann_mapping.as_ref().is_some_and(|m| m.contains_key(name));
                     if strict && !in_params && !params.contains_key(name) {
                         // Name not declared as a type parameter — check if it's a scope reference.
@@ -2259,7 +2258,9 @@ pub(crate) async fn resolve_type_name(
                 }
 
                 // If we have an annotation mapping (within a function), check if this
-                // annotation name has already been mapped to a fresh variable
+                // annotation name has already been mapped to a fresh variable.
+                // TypeVars must be explicitly declared via bind: — implicit creation is
+                // not allowed. If the name is not in the mapping, it is a type error.
                 if let Some(ref mut mapping) = ann_mapping {
                     // Check if this annotation name already has a mapping
                     if let Some(existing_var) = mapping.get(name) {
@@ -2271,25 +2272,10 @@ pub(crate) async fn resolve_type_name(
                             .expect("invariant: annotation var registered in mapping must be in state.type_vars");
                         Ok(Type::TypeVar(existing_var.clone(), current_level))
                     } else {
-                        // First time seeing this annotation: create fresh var and register level
-                        let level = state.level;
-                        let (fresh, fresh_ty) = state.fresh_type_var_with(Some(name), Some(level), Kind::Type, &span);
-                        // Register source name for better T013 diagnostics
-                        state.type_var_source_names.insert(fresh.clone(), name.to_string());
-                        mapping.insert(name.to_string(), fresh);
-                        Ok(fresh_ty)
+                        Err(TypeError::new(format!("undefined type: {name}"), span))
                     }
                 } else {
-                    // Outside of function scope: create a genuinely fresh type variable so
-                    // two independent annotations like `[@a expr1]` and `[@a expr2]` at
-                    // top-level do not share the same substitution variable and cause
-                    // unintended unification.
-                    //
-                    // NOTE: we intentionally do NOT reuse the raw annotation name here.
-                    // Using `name` directly means every occurrence of `@a` at the top
-                    // level is the same TypeVar, causing unintended unification between
-                    // unrelated dict entries that both happen to use `@a`.
-                    Ok(state.fresh_type_var(&span))
+                    Err(TypeError::new(format!("undefined type: {name}"), span))
                 }
             } else {
                 // Uppercase type name — check for type alias
@@ -3447,7 +3433,10 @@ pub(crate) async fn resolve_type_dict(
         if let Some(first) = entries.first() {
             if first.node.key.is_none() {
                 if let SurfaceExpression::VarRef { name, .. } = &first.node.value.expr {
-                    if let Some(def) = env.lookup_tycon_def(name) {
+                    let tycon_def = env
+                        .lookup_tycon_def(name)
+                        .or_else(|| state.tycon_env.get(name).cloned());
+                    if let Some(def) = tycon_def {
                         let arity = def.arity();
                         if arity == 0 && entries.len() == 1 {
                             // Zero-arity TyCon: expand via expand_named, which handles
@@ -3572,7 +3561,10 @@ pub(crate) async fn resolve_type_dict(
         if let Some(first) = entries.first() {
             if first.node.key.is_none() {
                 if let SurfaceExpression::VarRef { name, .. } = &first.node.value.expr {
-                    if let Some(alias) = env.lookup_tycon_def(name) {
+                    let alias_def = env
+                        .lookup_tycon_def(name)
+                        .or_else(|| state.tycon_env.get(name).cloned());
+                    if let Some(alias) = alias_def {
                         if !alias.params.is_empty() {
                             let mut type_args = Vec::new();
                             for entry in &entries[1..] {

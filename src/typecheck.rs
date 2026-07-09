@@ -4019,10 +4019,6 @@ fn resolve_simple_type_name_for_typeassert(name: &str, state: &mut InferState) -
         "Any" => Type::Any,
         "Unknown" => Type::Unknown,
         "Never" => Type::Never,
-        // Dict: gradual open-record type annotation. Returns Unknown so that
-        // TypeAssert runtime checks with @Dict accept any dict value without
-        // unification errors ([] and {x:1} are both valid Dicts).
-        "Dict" => Type::Unknown,
         "Null" => Type::Record(Row {
             fields: indexmap::IndexMap::new(),
             tail: crate::type_def::RowTail::Empty,

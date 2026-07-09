@@ -53,6 +53,7 @@ macro_rules! builtin {
             pos_strictness: S,
             force_count: 0,
             params: &[],
+            named_params: &[],
         }
     }};
     // 3-arg form: with strictness array (force_count=0, no params)
@@ -64,6 +65,7 @@ macro_rules! builtin {
             pos_strictness: S,
             force_count: 0,
             params: &[],
+            named_params: &[],
         }
     }};
     // 4-arg form: with strictness array and force_count (no params)
@@ -75,6 +77,7 @@ macro_rules! builtin {
             pos_strictness: S,
             force_count: $force_count,
             params: &[],
+            named_params: &[],
         }
     }};
     // 5-arg form: with strictness array, force_count, and param names
@@ -87,6 +90,21 @@ macro_rules! builtin {
             pos_strictness: S,
             force_count: $force_count,
             params: P,
+            named_params: &[],
+        }
+    }};
+    // 6-arg form: with strictness, force_count, param names, and named kwargs
+    ($name:literal, $func:expr, [$($strictness:expr),* $(,)?], $force_count:expr, [$($param:literal),* $(,)?], [$($named:literal),* $(,)?]) => {{
+        const S: &[crate::value::Strictness] = &[$($strictness),*];
+        const P: &[&str] = &[$($param),*];
+        const N: &[&str] = &[$($named),*];
+        crate::value::BuiltinDef {
+            func: $func as crate::value::BuiltinFn,
+            name: $name,
+            pos_strictness: S,
+            force_count: $force_count,
+            params: P,
+            named_params: N,
         }
     }};
 }
@@ -2747,6 +2765,7 @@ mod tests {
             pos_strictness: &[],
             force_count: 0,
             params: &[],
+            named_params: &[],
         });
         let result = mat(builtin_try(BuiltinArgs {
             args: vec![thunk(b)],
@@ -2783,6 +2802,7 @@ mod tests {
             pos_strictness: &[],
             force_count: 0,
             params: &[],
+            named_params: &[],
         });
         let result = mat(builtin_try(BuiltinArgs {
             args: vec![thunk(b)],
@@ -2829,6 +2849,7 @@ mod tests {
             pos_strictness: &[],
             force_count: 0,
             params: &[],
+            named_params: &[],
         });
         let err = run(builtin_try(BuiltinArgs {
             args: vec![thunk(b)],
@@ -2953,6 +2974,7 @@ mod tests {
             pos_strictness: &[],
             force_count: 0,
             params: &[],
+            named_params: &[],
         });
         let args_val = thunk_dict(
             {
@@ -3164,6 +3186,7 @@ mod tests {
             pos_strictness: &[],
             force_count: 0,
             params: &[],
+            named_params: &[],
         });
         let result = mat(builtin_type_of(BuiltinArgs {
             args: vec![thunk(builtin)],

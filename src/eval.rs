@@ -4396,6 +4396,7 @@ mod tests {
                     pos_strictness: &[],
                     force_count: 0,
                     params: &[],
+                    named_params: &[],
                 }),
                 test_span(1, 1, 1, 5),
             )),
@@ -5594,6 +5595,7 @@ mod tests {
                     pos_strictness: &[],
                     force_count: 0,
                     params: &[],
+                    named_params: &[],
                 }),
                 test_span(1, 1, 1, 5),
             )),
@@ -5706,6 +5708,7 @@ mod tests {
                     pos_strictness: &[],
                     force_count: 0,
                     params: &[],
+                    named_params: &[],
                 }),
                 test_span(1, 1, 1, 5),
             )),
@@ -5770,6 +5773,7 @@ mod tests {
                 pos_strictness: &[],
                 force_count: 0,
                 params: &[],
+                named_params: &[],
             }),
             test_span(1, 1, 1, 5),
         ));
@@ -5984,6 +5988,7 @@ mod tests {
                     pos_strictness: &[],
                     force_count: 0,
                     params: &[],
+                    named_params: &[],
                 }),
                 test_span(1, 1, 1, 5),
             )),
@@ -6110,6 +6115,7 @@ mod tests {
                     pos_strictness: &[],
                     force_count: 0,
                     params: &[],
+                    named_params: &[],
                 }),
                 test_span(1, 1, 1, 5),
             )),
@@ -6328,6 +6334,7 @@ mod tests {
                     pos_strictness: &[],
                     force_count: 0,
                     params: &[],
+                    named_params: &[],
                 }),
                 test_span(1, 1, 1, 5),
             )),
@@ -8252,6 +8259,7 @@ mod tests {
             pos_strictness: KEYS_STRICTNESS,
             force_count: 1,
             params: &[],
+            named_params: &[],
         };
 
         // Create a PendingBuiltin thunk wrapping `builtin_keys` with the unevaluated arg.
@@ -8322,6 +8330,7 @@ mod tests {
             pos_strictness: KEYS_STRICTNESS,
             force_count: 1,
             params: &[],
+            named_params: &[],
         };
         let func_thunk = Arc::new(Thunk::new_materialized(
             Value::Builtin(keys_def),

@@ -764,8 +764,7 @@ pub(crate) async fn infer_dict(
                 // inner_schemes is HashMap-keyed (name-based DOT-POLY lookup, no slot indexing),
                 // so convert from IndexMap to HashMap here.
                 if let Some(nested_schemes) = nested_schemes_opt {
-                    entry_inner_schemes
-                        .insert(name.clone(), nested_schemes.into_iter().collect());
+                    entry_inner_schemes.insert(name.clone(), nested_schemes.into_iter().collect());
                 }
 
                 match value_ty {

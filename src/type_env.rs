@@ -1455,14 +1455,11 @@ impl TypeEnv {
     }
 
     /// Look up a user-defined type constructor definition by name.
-    /// Returns `None` if no TyConDef is registered for this name.
-    /// Placeholder: TyConDef registration is in `InferState.tycon_env` (new design)
-    /// or not yet implemented in the current TypeEnv design.
     pub fn lookup_tycon_def(
         &self,
-        _name: &str,
+        name: &str,
     ) -> Option<std::sync::Arc<crate::type_def::TyConDef>> {
-        None
+        self.tycon_defs.get(name).cloned()
     }
 
     /// Register a TyConDef in the type environment (stub — TyCon defs are stored in InferState.tycon_env,

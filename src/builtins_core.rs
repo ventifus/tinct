@@ -1037,12 +1037,14 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             ["bytes", "path"]
         ),
         // Stage 3: builtin-resolve — expand + desugar + resolve (no typecheck)
+        // Named kwargs: env: (Value::Environment to resolve against, optional)
         builtin!(
             "builtin-resolve",
             builtin_resolve,
             [Strictness::Seq],
             1,
-            ["doc"]
+            ["doc"],
+            ["env"]
         ),
         // Stage 4: builtin-typecheck — typecheck a resolved Program, update TypeContext
         // Accepts 1 or 2 args: program, [type-ctx]. Marked variadic; arity checked inside.
@@ -1077,7 +1079,15 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             1,
             ["name"]
         ),
-        builtin!("builtin-eval", builtin_eval, [Strictness::Seq], 1, ["doc"]),
+        // Named kwargs: env: (Value::Environment), table: (resolution table, optional)
+        builtin!(
+            "builtin-eval",
+            builtin_eval,
+            [Strictness::Seq],
+            1,
+            ["doc"],
+            ["env", "table"]
+        ),
         builtin!(
             "builtin-eval-repr",
             builtin_eval_repr,
@@ -1837,24 +1847,27 @@ pub fn core_type_env(env: &mut TypeEnv) {
         },
     );
 
-    // ── Pipeline stage builtins ───────────────────────────────────────────────
-    // builtin-resolve: doc → (env:) → {doc, errors}
-    // builtin-eval:    doc → (env:) → {env, result, doc-name, error}
-    // These take an optional named arg env: (Value::Environment). Required_count=1
-    // (only the positional doc arg is required; env: is optional with a default).
-    // Prelude defines `resolve` and `eval` as aliases that always pass env:.
-    // builtin-resolve and builtin-eval are variadic so callers can pass env:, table: etc.
-    // as optional named kwargs without triggering "unknown named argument" warnings.
-    for name in ["builtin-resolve", "builtin-eval"] {
-        env.insert(
-            name.to_string(),
-            Type::Function {
-                params: vec![(None, Type::Any)],
-                ret: Box::new(Type::Any),
-                variadic: true,
-                required_count: 1,
-            },
-        );
+    // ── Builtins with named kwargs ────────────────────────────────────────────
+    // For any builtin registered with non-empty `named_params`, register a variadic
+    // type so the type checker accepts calls with those named arguments.
+    // This derives directly from the registration, avoiding hardcoded name lists.
+    for def in core_builtins().into_iter() {
+        if !def.named_params.is_empty() {
+            let positional: Vec<(Option<String>, Type)> = def
+                .params
+                .iter()
+                .map(|p| (Some(p.to_string()), Type::Any))
+                .collect();
+            env.insert(
+                def.name.to_string(),
+                Type::Function {
+                    params: positional,
+                    ret: Box::new(Type::Any),
+                    variadic: true,
+                    required_count: def.force_count,
+                },
+            );
+        }
     }
 
     // ── Arithmetic builtins — builtin-add, builtin-sub, builtin-mul, builtin-div ──
