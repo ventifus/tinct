@@ -1615,26 +1615,18 @@ fn eval_core_expr<'a>(
             CoreExpr::Var {
                 name, level, slot, ..
             } => {
-                if *level == u32::MAX || *slot == u32::MAX {
-                    // Sentinel: resolver did not assign de Bruijn coordinates, or lowerer
-                    // chose name-based lookup. Fall back to name-based lookup via get_value_by_name.
-                    let env_lock = env.read().unwrap();
-                    if let Some(thunk) = env_lock.get_value_by_name(name) {
-                        return Ok(thunk);
-                    }
-                    drop(env_lock);
-                    return Err(EvalError::undefined_variable(name.clone(), span.clone()).into());
-                }
                 let env_lock = env.read().unwrap();
                 match env_lock.get_value_at(*level, *slot) {
                     Some(thunk) => Ok(thunk),
                     None => {
-                        // Slot lookup failed — fall back to name-based lookup as a safety net.
-                        if let Some(thunk) = env_lock.get_value_by_name(name) {
-                            return Ok(thunk);
-                        }
                         drop(env_lock);
-                        Err(EvalError::undefined_variable(name.clone(), span.clone()).into())
+                        Err(EvalError::internal(
+                            format!(
+                                "slot lookup failed for '{name}' at level={level} slot={slot} — \
+                                 compiler bug: resolver assigned coordinates that do not exist in the runtime env"
+                            ),
+                            span.clone(),
+                        ).into())
                     }
                 }
             }

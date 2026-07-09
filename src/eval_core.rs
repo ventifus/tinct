@@ -645,33 +645,20 @@ pub(crate) fn eval_core_expr<'a>(
                 name, level, slot, ..
             } => {
                 // Variable lookup with de Bruijn coordinates — O(1) slot-based lookup.
+                // No name-based fallback: if the resolver assigned coordinates, they must be valid.
+                // A miss is a compiler bug (resolver coordinates don't match runtime env chain).
                 let env_lock = env.read().unwrap();
                 match env_lock.get_value_at(*level, *slot) {
                     Some(thunk) => Ok(thunk),
                     None => {
-                        // Slot lookup failed. Three name-based fallback cases use MAX/MAX:
-                        //
-                        // 1. field-get and slot-get: the resolver had no env (e.g. type-stage
-                        //    documents are skipped by builtin-resolve).
-                        //
-                        // 2. Typeclass instance bindings: the type checker resolved a typeclass
-                        //    method call to a concrete instance (call_dispatch in lower.rs emits
-                        //    level=MAX, slot=MAX with the mangled binding name, e.g.
-                        //    ɪɴꜱᴛᴀɴᴄᴇ⧼Addable∷+⟨Int,Int,Int⟩⧽). The instance binding is in
-                        //    scope at runtime (injected by the lowered InstanceDecl), so
-                        //    get_value_by_name traverses the env chain to find it.
-                        //
-                        // All other MAX/MAX references are compiler bugs.
-                        if *level == u32::MAX
-                            && *slot == u32::MAX
-                            && (name == "field-get" || name == "slot-get" || name.starts_with('ɪ'))
-                        {
-                            if let Some(thunk) = env_lock.get_value_by_name(name) {
-                                return Ok(thunk);
-                            }
-                        }
                         drop(env_lock);
-                        Err(EvalError::undefined_variable(name.clone(), span.clone()).into())
+                        Err(EvalError::internal(
+                            format!(
+                                "slot lookup failed for '{name}' at level={level} slot={slot} — \
+                                 compiler bug: resolver assigned coordinates that do not exist in the runtime env"
+                            ),
+                            span.clone(),
+                        ).into())
                     }
                 }
             }
