@@ -496,21 +496,57 @@ pub(crate) async fn infer_dict(
     // IndexMap, preserving slot positions) as it infers the actual types.
     //
     // fresh_vars_by_name: name → TypeVar, used to recover the bound TypeVar in Pass 3_i.
+    // Pass 1 (global): Pre-insert fresh TypeVar placeholders for ALL statically-known bindings
+    // in SOURCE ORDER, matching the slot assignment order of surface_dict_static_keys in resolve.rs.
+    //
+    // This includes:
+    // (a) Static-key entries (keyed with Str/VarRef key): one placeholder per entry.
+    // (b) Anonymous InstanceDecl entries (no outer key): one placeholder per ɪ-prefixed method
+    //     binding, interleaved at the source position where the InstanceDecl appears.
+    //
+    // Correct interleaving is critical: the resolver assigns slots in source order (keyed entries
+    // AND ɪ-prefixed names). If we insert keyed entries first then ɪ-prefixed names, slot indices
+    // shift and get_scheme_at(level, slot) will not find the right TypeScheme for class method VarRefs.
     let mut fresh_vars_by_name: HashMap<String, Type> = HashMap::new();
     for ((key_name, is_alias, is_static_key), entry) in key_entries.iter().zip(entries.iter()) {
+        // (a) Static-key entry.
         if *is_static_key {
             if let Some(ref name) = key_name {
-                // ALL static-key entries get a fresh TypeVar placeholder in slotted to maintain
-                // alignment with the resolver's slot assignments (which include Decl entries).
-                // Type aliases get a placeholder too — they occupy their resolver slot even though
-                // their inferred type is registered separately via TypeAlias (not a scheme body).
-                // Non-alias entries also have their fresh TypeVar stored in fresh_vars_by_name so
-                // the SCC loop can unify it with the inferred type (Pass 3_i).
                 let fresh_var = state.fresh_type_var(&entry.span);
                 if !is_alias {
                     fresh_vars_by_name.insert(name.clone(), fresh_var.clone());
                 }
                 dict_env.insert_scheme(name.clone(), TypeScheme::mono(fresh_var));
+            }
+        }
+        // (b) Anonymous InstanceDecl entry: insert ɪ-prefixed placeholders at this source position.
+        if entry.node.key.is_none() {
+            if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
+                if let SurfaceDeclaration::InstanceDecl { class_name, arms } = decl.as_ref() {
+                    for (pattern, method_entries) in arms {
+                        let dispatch_tags = crate::lower::extract_dispatch_tags(&pattern.expr);
+                        let type_args: Vec<&str> =
+                            dispatch_tags.iter().filter_map(|t| t.as_deref()).collect();
+                        for me in method_entries {
+                            let method_name = match me.node.key.as_ref() {
+                                Some(k) => match &k.expr {
+                                    SurfaceExpression::Str(s) => s.clone(),
+                                    SurfaceExpression::VarRef { name, .. } => name.clone(),
+                                    _ => continue,
+                                },
+                                None => continue,
+                            };
+                            let binding_name = crate::type_def::instance_binding_name(
+                                class_name,
+                                &method_name,
+                                &type_args,
+                            );
+                            let fresh_var = state.fresh_type_var(&entry.span);
+                            fresh_vars_by_name.insert(binding_name.clone(), fresh_var.clone());
+                            dict_env.insert_scheme(binding_name, TypeScheme::mono(fresh_var));
+                        }
+                    }
+                }
             }
         }
     }
@@ -575,6 +611,21 @@ pub(crate) async fn infer_dict(
                             .insert(name.clone(), entry.span.clone());
                     }
                     errors.append(&mut errs);
+                }
+            }
+        }
+    }
+
+    // After Pass 0c: propagate ɪ-prefixed TypeSchemes inserted by infer_instance_decl_from_surface
+    // back into the original dict_env. Pass 0c's dict_env_arc is a clone — updates to it are NOT
+    // automatically reflected in dict_env. The SCC loop creates fresh clones of dict_env, so
+    // without this propagation, instance method TypeSchemes are invisible during SCC inference.
+    {
+        let arc_guard = dict_env_arc.read().unwrap();
+        for (name, slot) in arc_guard.slots.iter() {
+            if name.starts_with('ɪ') {
+                if let Some(ref scheme) = slot.scheme {
+                    dict_env.insert_scheme(name.clone(), scheme.clone());
                 }
             }
         }
