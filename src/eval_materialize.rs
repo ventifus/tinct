@@ -95,6 +95,33 @@ type GuardDefault = (
     Arc<RwLock<crate::env::Env>>,
 );
 
+/// Collect all lower errors into a single EvalError, combining their messages.
+/// Returns None if there are no errors.
+pub(crate) fn lower_errors_to_eval_error(
+    diags: Vec<crate::lower::LowerDiagnostic>,
+) -> Option<Box<EvalError>> {
+    let errors: Vec<_> = diags
+        .into_iter()
+        .filter(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error))
+        .collect();
+    if errors.is_empty() {
+        return None;
+    }
+    let first = &errors[0];
+    let mut msg = first.message.clone();
+    for extra in &errors[1..] {
+        msg.push('\n');
+        msg.push_str(&extra.message);
+        if let Some(ref sf) = extra.span.file {
+            msg.push_str(&format!(
+                " (at {}:{}:{})",
+                sf.path, extra.span.start.line, extra.span.start.column
+            ));
+        }
+    }
+    Some(EvalError::user_error(msg, first.span.clone()).into())
+}
+
 /// Attach materialization span and origin frame to an error.
 /// This function is called at every error site in the CEK machine to ensure
 /// errors carry full context (definition span, materialization span, stack trace).
@@ -1066,12 +1093,9 @@ pub(crate) async fn force_step(
         };
 
         let (lowered, surface_lower_diags) = crate::lower::lower(&node);
-        if let Some(err) = surface_lower_diags
-            .into_iter()
-            .find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error))
-        {
+        if let Some(err) = lower_errors_to_eval_error(surface_lower_diags) {
             let decorated = attach_materialization_context(
-                EvalError::user_error(err.message, err.span).into(),
+                err,
                 mat_span.as_ref(),
                 origin.as_deref(),
                 thunk_span.clone(),
@@ -1100,12 +1124,9 @@ pub(crate) async fn force_step(
                 (&inner.node, annotation.node.get_property("default"))
             {
                 let (lowered_default, lower_diags) = crate::lower::lower(default_node);
-                if let Some(err) = lower_diags
-                    .into_iter()
-                    .find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error))
-                {
+                if let Some(err) = lower_errors_to_eval_error(lower_diags) {
                     let decorated = attach_materialization_context(
-                        EvalError::user_error(err.message, err.span).into(),
+                        err,
                         mat_span.as_ref(),
                         origin.as_deref(),
                         thunk_span.clone(),
@@ -1253,12 +1274,9 @@ pub(crate) async fn force_step(
                 (&inner.node, annotation.node.get_property("default"))
             {
                 let (lowered_default, lower_diags) = crate::lower::lower(default_node);
-                if let Some(err) = lower_diags
-                    .into_iter()
-                    .find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error))
-                {
+                if let Some(err) = lower_errors_to_eval_error(lower_diags) {
                     let decorated = attach_materialization_context(
-                        EvalError::user_error(err.message, err.span).into(),
+                        err,
                         mat_span.as_ref(),
                         origin.as_deref(),
                         thunk_span.clone(),
@@ -2584,13 +2602,8 @@ pub(crate) async fn apply_cont(
                     if let Some(default_node) = annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
                     {
                         let (lowered_default, lower_diags) = crate::lower::lower(default_node);
-                        if let Some(diag) = lower_diags
-                            .into_iter()
-                            .find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error))
-                        {
-                            Action::Continue(Err(
-                                EvalError::user_error(diag.message, diag.span).into()
-                            ))
+                        if let Some(err) = lower_errors_to_eval_error(lower_diags) {
+                            Action::Continue(Err(err))
                         } else {
                             Action::EvalCore {
                                 expr: Arc::new(lowered_default),
@@ -2629,14 +2642,8 @@ pub(crate) async fn apply_cont(
                                 annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
                             {
                                 let (lowered, lower_diags) = crate::lower::lower(node);
-                                if let Some(diag) = lower_diags.into_iter().find(|d| {
-                                    matches!(d.kind, crate::lower::LowerDiagnosticKind::Error)
-                                }) {
-                                    return Action::Continue(Err(EvalError::user_error(
-                                        diag.message,
-                                        diag.span,
-                                    )
-                                    .into()));
+                                if let Some(err) = lower_errors_to_eval_error(lower_diags) {
+                                    return Action::Continue(Err(err));
                                 }
                                 Some((Arc::new(lowered), Arc::clone(&env)))
                             } else {
@@ -2687,14 +2694,8 @@ pub(crate) async fn apply_cont(
                                 // The result will flow to the next continuation on the stack.
                                 let (lowered_default, lower_diags) =
                                     crate::lower::lower(default_node);
-                                if let Some(diag) = lower_diags.into_iter().find(|d| {
-                                    matches!(d.kind, crate::lower::LowerDiagnosticKind::Error)
-                                }) {
-                                    return Action::Continue(Err(EvalError::user_error(
-                                        diag.message,
-                                        diag.span,
-                                    )
-                                    .into()));
+                                if let Some(err) = lower_errors_to_eval_error(lower_diags) {
+                                    return Action::Continue(Err(err));
                                 }
                                 Action::EvalCore {
                                     expr: Arc::new(lowered_default),
@@ -2727,14 +2728,8 @@ pub(crate) async fn apply_cont(
                         let is_predicate = annotation.node.get_property(IS_ANNOTATION_KEY).cloned();
                         if let Some(predicate_node) = is_predicate {
                             let (lowered_pred, lower_diags) = crate::lower::lower(&predicate_node);
-                            if let Some(diag) = lower_diags.into_iter().find(|d| {
-                                matches!(d.kind, crate::lower::LowerDiagnosticKind::Error)
-                            }) {
-                                return Action::Continue(Err(EvalError::user_error(
-                                    diag.message,
-                                    diag.span,
-                                )
-                                .into()));
+                            if let Some(err) = lower_errors_to_eval_error(lower_diags) {
+                                return Action::Continue(Err(err));
                             }
                             stack.push(Cont::PredicateCheck(Box::new(PredicateCheckData {
                                 value: value.clone(),
@@ -2757,15 +2752,8 @@ pub(crate) async fn apply_cont(
                         annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
                     {
                         let (lowered_default, lower_diags) = crate::lower::lower(default_node);
-                        if let Some(diag) = lower_diags
-                            .into_iter()
-                            .find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error))
-                        {
-                            return Action::Continue(Err(EvalError::user_error(
-                                diag.message,
-                                diag.span,
-                            )
-                            .into()));
+                        if let Some(err) = lower_errors_to_eval_error(lower_diags) {
+                            return Action::Continue(Err(err));
                         }
                         Action::EvalCore {
                             expr: Arc::new(lowered_default),
@@ -3110,14 +3098,8 @@ pub(crate) async fn apply_cont(
                         {
                             let resolved_binding = to_match_binding.get().cloned();
                             let (lowered_pred, lower_diags) = crate::lower::lower(pred_node);
-                            if let Some(diag) = lower_diags.into_iter().find(|d| {
-                                matches!(d.kind, crate::lower::LowerDiagnosticKind::Error)
-                            }) {
-                                return Action::Continue(Err(EvalError::user_error(
-                                    diag.message,
-                                    diag.span,
-                                )
-                                .into()));
+                            if let Some(err) = lower_errors_to_eval_error(lower_diags) {
+                                return Action::Continue(Err(err));
                             }
                             let pred_span = lowered_pred.span.clone();
                             // Check if the lowered predicate is a Call expression.
@@ -3578,14 +3560,8 @@ pub(crate) async fn apply_cont(
                         {
                             // Evaluate default expression iteratively
                             let (lowered_default, lower_diags) = crate::lower::lower(default_node);
-                            if let Some(diag) = lower_diags.into_iter().find(|d| {
-                                matches!(d.kind, crate::lower::LowerDiagnosticKind::Error)
-                            }) {
-                                return Action::Continue(Err(EvalError::user_error(
-                                    diag.message,
-                                    diag.span,
-                                )
-                                .into()));
+                            if let Some(err) = lower_errors_to_eval_error(lower_diags) {
+                                return Action::Continue(Err(err));
                             }
                             Action::EvalCore {
                                 expr: Arc::new(lowered_default),
@@ -3768,11 +3744,8 @@ fn eval_structural_pattern_inner<'a>(
                 // Check if annotation contains an "is:" property (predicate)
                 if let Some(pred_surface_node) = annotation.node.get_property(IS_ANNOTATION_KEY) {
                     let (lowered_pred, lower_diags) = crate::lower::lower(pred_surface_node);
-                    if let Some(diag) = lower_diags
-                        .into_iter()
-                        .find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error))
-                    {
-                        return Err(EvalError::user_error(diag.message, diag.span).into());
+                    if let Some(err) = lower_errors_to_eval_error(lower_diags) {
+                        return Err(err);
                     }
                     let pred_expr_core = Arc::new(lowered_pred);
 
