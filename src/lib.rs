@@ -204,7 +204,7 @@ pub async fn run_loader_pipeline(
     desugar::desugar_surface_program(&mut loader_program);
 
     // Resolve the loader program. Seeded from the runtime env so that builtin names
-    // (builtin-if, builtin-parse, etc.) resolve to de Bruijn coordinates instead of
+    // (builtin-parse, etc.) resolve to de Bruijn coordinates instead of
     // falling back to name-based lookup via the MAX/MAX sentinel.
     let _loader_resolve_table = resolve::resolve_surface_program(&loader_program, Some(&env));
 
@@ -212,7 +212,7 @@ pub async fn run_loader_pipeline(
     // The returned tycon_env maps type constructor names (e.g. "Boolean", "Seq") to their
     // TyConDef, populated by [type ...] declarations in the program. Wiring it into
     // eval_ctx ensures that runtime TypeAssert checks against user-defined nominal types
-    // (e.g. @Boolean on builtin-if's condition arg) resolve correctly instead of failing
+    // (e.g. @Boolean on annotated function args) resolve correctly instead of failing
     // conservatively because tycon_env is None.
     let (_loader_type_errors, _loader_annotation_table, _loader_expects_resolved) =
         typecheck::typecheck_surface_program_annotation_table(&loader_program).await;

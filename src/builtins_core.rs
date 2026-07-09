@@ -24,9 +24,9 @@ use crate::builtins_math::{
     builtin_acos, builtin_add, builtin_asin, builtin_atan, builtin_atan2, builtin_band,
     builtin_bor, builtin_bxor, builtin_cos, builtin_div_float, builtin_eq_float, builtin_eq_int,
     builtin_eq_string, builtin_exp, builtin_finite_check, builtin_float, builtin_gt, builtin_gte,
-    builtin_if, builtin_inf_check, builtin_log, builtin_log10, builtin_log2, builtin_lt,
-    builtin_lte, builtin_mul, builtin_nan_check, builtin_pow, builtin_shl, builtin_shr,
-    builtin_sin, builtin_sqrt, builtin_sub, builtin_tan,
+    builtin_inf_check, builtin_log, builtin_log10, builtin_log2, builtin_lt, builtin_lte,
+    builtin_mul, builtin_nan_check, builtin_pow, builtin_shl, builtin_shr, builtin_sin,
+    builtin_sqrt, builtin_sub, builtin_tan,
 };
 // Dict/access implementations.
 use crate::builtins_dict::{
@@ -65,8 +65,9 @@ use crate::builtins_meta::{
     builtin_include_cache_put, builtin_is_contractive, builtin_llt_repr, builtin_load,
     builtin_macro_error, builtin_macro_injects, builtin_make_annotated, builtin_make_type_ctx,
     builtin_parse, builtin_program, builtin_raise, builtin_resolve, builtin_sequential,
-    builtin_span_of, builtin_tag_of, builtin_try, builtin_type_of, builtin_typecheck,
-    builtin_until, builtin_validate, builtin_var_resolution, builtin_variant_payload,
+    builtin_span_of, builtin_tag_of, builtin_tc_with_type_stage_env, builtin_try, builtin_type_of,
+    builtin_typecheck, builtin_until, builtin_validate, builtin_var_resolution,
+    builtin_variant_payload,
 };
 // I/O implementations.
 use crate::builtins_dict::{builtin_concat, builtin_drop, builtin_take};
@@ -265,14 +266,6 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             [Strictness::Seq, Strictness::Seq],
             2,
             ["a", "b"]
-        ),
-        // ── Control flow ─────────────────────────────────────────────────────────────
-        builtin!(
-            "builtin-if",
-            builtin_if,
-            [Strictness::Seq, Strictness::Id, Strictness::Id],
-            1,
-            ["cond", "then", "else"]
         ),
         // ── Dict primitives ──────────────────────────────────────────────────────────
         builtin!("builtin-keys", builtin_keys, [Strictness::Spine], 1, ["xs"]),
@@ -1066,6 +1059,13 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             ["type-ctx"]
         ),
         builtin!(
+            "builtin-tc-with-type-stage-env",
+            builtin_tc_with_type_stage_env,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["type-ctx", "ts-env"]
+        ),
+        builtin!(
             "builtin-program",
             builtin_program,
             [Strictness::Spine],
@@ -1833,20 +1833,6 @@ pub fn core_type_env(env: &mut TypeEnv) {
         },
     );
 
-    // ── Control flow — builtin-if ─────────────────────────────────────────────
-    // builtin-if: Bool → Top → Top → Top
-    // Three-argument conditional: condition, then-branch, else-branch.
-    // Return type is Top (union of branch types depends on runtime choice).
-    env.insert(
-        "builtin-if".to_string(),
-        Type::Function {
-            params: vec![(None, Type::Int), (None, Type::Any), (None, Type::Any)],
-            ret: Box::new(Type::Any),
-            variadic: false,
-            required_count: 3,
-        },
-    );
-
     // ── Builtins with named kwargs ────────────────────────────────────────────
     // For any builtin registered with non-empty `named_params`, register a variadic
     // type so the type checker accepts calls with those named arguments.
@@ -2225,6 +2211,16 @@ pub fn core_type_env(env: &mut TypeEnv) {
             ret: Box::new(Type::Any), // Returns an opaque TypeContext handle
             variadic: false,
             required_count: 1,
+        },
+    );
+    // builtin-tc-with-type-stage-env: inject a runtime env into a TypeContext as its type-stage env.
+    env.insert(
+        "builtin-tc-with-type-stage-env".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any), (None, Type::Any)],
+            ret: Box::new(Type::Any), // Returns the same TypeContext handle
+            variadic: false,
+            required_count: 2,
         },
     );
     // builtin-blake3: compute blake3 hash of a string. Returns a hex string.
@@ -4281,12 +4277,17 @@ pub fn core_type_env(env: &mut TypeEnv) {
     );
 
     // ── Control flow — bare `if` and `until` ─────────────────────────────────
-    // `if` is registered in core_builtins() as an alias for builtin-if.
-    // It must have a type entry so prelude code that calls `if` directly type-checks.
+    // `if` is now defined in the prelude using [match c Boolean.True: t Boolean.False: e].
+    // The type entry here provides a stable type for callers that reference `if` before
+    // the prelude is loaded (e.g. type-checker bootstrap paths).
     env.insert(
         "if".to_string(),
         Type::Function {
-            params: vec![(None, Type::Int), (None, Type::Any), (None, Type::Any)],
+            params: vec![
+                (None, Type::TyCon("Boolean".to_string())),
+                (None, Type::Any),
+                (None, Type::Any),
+            ],
             ret: Box::new(Type::Any),
             variadic: false,
             required_count: 3,

@@ -74,7 +74,7 @@ pub struct ArityMismatch {
     pub span: Span,
     pub notes: Vec<String>,
     pub call_stack: Vec<TypeSpanFrame>,
-    /// Name of the function being called, if known (e.g. "builtin-if", "[f ...]").
+    /// Name of the function being called, if known (e.g. "if", "[f ...]").
     pub callee: Option<String>,
     /// Parameter names (or "name: Type" descriptions) to include in the error message.
     pub params: Vec<String>,

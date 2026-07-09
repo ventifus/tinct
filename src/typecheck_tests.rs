@@ -7267,8 +7267,7 @@ async fn test_prelude_typecheck_cond_isolation() {
     let _prelude_source = include_str!("../stdlib/prelude.llt");
     // Only type-check the cond-specific part to understand the error
     // Simplified version of cond from the prelude.
-    // NOTE: Use `if` (the public alias) instead of `builtin-if` (the internal name).
-    // The prelude env exposes `if`, not `builtin-if`.
+    // NOTE: Use `if` — it is defined in the prelude using match on Boolean.
     let simplified_prelude_cond = r#"
 [
 cond-impl: [fn@Any [let pairs@Dict i@Integer] i]

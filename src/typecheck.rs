@@ -1520,10 +1520,7 @@ pub(crate) async fn infer_surface_expr(
             // then joins the branch result types. Both branches are widened (literal → base type)
             // before joining so that Union(Int, IntLiteral(0)) collapses to Int correctly.
             if let SurfaceExpression::VarRef { name, .. } = &func.expr {
-                if (name == "if" || name == "builtin-if")
-                    && args.len() == 3
-                    && named_args.is_empty()
-                {
+                if name == "if" && args.len() == 3 && named_args.is_empty() {
                     let cond_node = &args[0];
                     let true_node = &args[1];
                     let false_node = &args[2];

@@ -1729,7 +1729,6 @@ impl TypeEnv {
             ("builtin-sub", "-"),
             ("builtin-mul", "*"),
             ("builtin-div", "/"),
-            ("builtin-if", "if"),
             ("builtin-filter", "filter"),
             ("builtin-map", "map"),
             ("builtin-reduce", "reduce"),

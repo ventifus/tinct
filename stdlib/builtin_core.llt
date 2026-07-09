@@ -32,9 +32,9 @@
 
   # ── Control flow ─────────────────────────────────────────────────────────────────────
   builtin-raise: [fn@Never  [let msg@String] ...]
-  builtin-try:   [fn@[bind: [a]  return: [union a [Error msg: String]]] [let f@[Fn@a []]] ...]
-  # builtin-if takes Int condition: 0 = false, nonzero = true (not Boolean).
-  builtin-if:    [fn@[bind: [a]  return: a] [let cond@Integer then@a else@a] ...]
+  # builtin-try returns {ok: value} on success or {error: message} on failure (both Dicts).
+  # The prelude `try` wrapper converts this to Result.Ok / Result.Error for callers.
+  builtin-try:   [fn@[bind: [a]] [let f@[Fn@a []]] ...]
 
 
   # ── String primitives ────────────────────────────────────────────────────────────────

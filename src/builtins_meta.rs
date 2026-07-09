@@ -251,8 +251,9 @@ pub(crate) fn builtin_macro_error(
     })
 }
 
-/// `try`: takes 1 arg (a zero-arg Function). Calls it. Returns `[Result.Ok value]`
-/// on success or `[Result.Error message]` on failure.
+/// `try`: takes 1 arg (a zero-arg Function). Calls it. Returns `{ok: value}` on success
+/// or `{error: message}` on failure. Both branches are Dicts so callers can always
+/// use `[builtin-has-key? "ok" raw]` to discriminate without a type check.
 /// Inherently materializing: must materialize body to catch errors.
 pub(crate) fn builtin_try(
     ctx_arg: BuiltinArgs,
@@ -335,34 +336,25 @@ pub(crate) fn builtin_try(
 
         match call_result {
             Ok(val) => {
-                // Success: return Value::Variant { tag: "Result.Ok", payload: Some(value) }
-                let payload_thunk_id = ctx.alloc_thunk(ok_val(val, call_span.clone())?);
-                ok_val(
-                    Value::Variant {
-                        tag: "Result.Ok".to_string(),
-                        payload: Some(payload_thunk_id),
-                    },
-                    call_span,
-                )
+                // Success: {ok: value}. Caller uses [builtin-has-key? "ok" raw] to discriminate.
+                // Both success and failure return Dicts so builtin-has-key? is always safe.
+                let mut map = IndexMap::new();
+                let val_tid = ctx.alloc_thunk(ok_val(val, call_span.clone())?);
+                map.insert(HashableValue::Str("ok".into()), val_tid);
+                ok_val(Value::Dict(map), call_span)
             }
             Err(e) => {
-                // DepthExceeded and ResourceLimitExceeded are non-catchable:
-                // they indicate system-level limits, not user-level errors.
+                // ResourceLimitExceeded is non-catchable: it indicates a system-level limit.
                 use crate::error::ErrorKind;
                 if let ErrorKind::ResourceLimitExceeded { .. } = &e.kind {
                     return Err(e);
                 }
-                // Error: return Value::Variant { tag: "Result.Error", payload: Some(message) }
-                // Use full EvalError::to_string() to include span info (file:line:col).
-                let msg_thunk_id =
+                // Failure: {error: message}
+                let mut map = IndexMap::new();
+                let err_tid =
                     ctx.alloc_thunk(ok_val(string_val(&e.to_string()), call_span.clone())?);
-                ok_val(
-                    Value::Variant {
-                        tag: "Result.Error".to_string(),
-                        payload: Some(msg_thunk_id),
-                    },
-                    call_span,
-                )
+                map.insert(HashableValue::Str("error".into()), err_tid);
+                ok_val(Value::Dict(map), call_span)
             }
         }
     })
@@ -2477,6 +2469,80 @@ pub(crate) fn builtin_fork_type_ctx(
             )
             .into()),
         }
+    })
+}
+
+/// `builtin-tc-with-type-stage-env`: Inject a runtime `Value::Environment` into a `TypeContext`
+/// as its type-stage environment.
+///
+/// Takes 2 positional args (both forced):
+///   - arg 0: `Value::TypeContext` — the TypeContext to update
+///   - arg 1: `Value::Environment` — the env produced by evaluating type-stage documents
+///
+/// Locks the TypeContext mutex, replaces `tc.type_stage_env` with the provided env (wrapped
+/// in a fresh `Arc<RwLock<_>>`), and returns the **same** `Value::TypeContext` value.
+/// The mutation is in-place — the caller's handle already points to the same underlying data.
+///
+/// This is a thin wrapper with no logic beyond the field update. Used by loader.llt and
+/// test-loader.llt to wire the type-stage env into the TypeContext before type-checking.
+///
+/// Signature: `[builtin-tc-with-type-stage-env type-ctx ts-env]`
+pub(crate) fn builtin_tc_with_type_stage_env(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ..
+        } = ctx_arg;
+        crate::builtins::reject_named(
+            "builtin-tc-with-type-stage-env",
+            named.as_ref(),
+            call_span.clone(),
+        )?;
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        let tc_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let env_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+
+        let tc_arc = match tc_val {
+            Value::TypeContext(arc) => arc,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-tc-with-type-stage-env".to_string(),
+                    "TypeContext",
+                    other.type_name(),
+                    call_span,
+                )
+                .into())
+            }
+        };
+        let env_arc = match env_val {
+            Value::Environment(arc) => arc,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-tc-with-type-stage-env".to_string(),
+                    "Environment",
+                    other.type_name(),
+                    call_span,
+                )
+                .into())
+            }
+        };
+
+        {
+            let mut guard = tc_arc.lock().unwrap();
+            guard.type_stage_env = Arc::clone(&env_arc);
+        }
+
+        ok_val(Value::TypeContext(tc_arc), call_span)
     })
 }
 

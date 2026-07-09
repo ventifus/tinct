@@ -531,7 +531,7 @@ pub fn resolve_surface_document_inplace(
 /// Resolve all VarRef nodes in a SurfaceProgram and return a ResolutionTable.
 ///
 /// When `env` is provided, the resolver is pre-seeded from the env chain so that
-/// builtin names (e.g. `builtin-if`, `builtin-mul`, prelude functions) resolve to
+/// builtin names (e.g. `builtin-mul`, prelude functions) resolve to
 /// proper de Bruijn (level, slot) coordinates instead of leaving VarRef nodes
 /// unresolved and falling back to name-based lookup at eval time.
 ///

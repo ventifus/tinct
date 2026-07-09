@@ -3250,11 +3250,14 @@ pub(crate) async fn resolve_type_expr(
             // Pattern: [a T1 T2 ...] where `a` is lowercase.
             //
             // Two sub-cases:
-            // 1. `a` is a type-stage function (e.g. `or`, `all`, `without`): try
-            //    eval_type_stage_expr first. If the call succeeds and returns a non-Unknown
-            //    type, use that result.
-            // 2. `a` is a TypeVar: eval_type_stage_expr fails (unknown name in type-stage env),
-            //    fall through to Union([TypeVar(a), T1, T2, ...]).
+            // 1. `a` is a type-stage function in `state.type_stage_env` (e.g. `or`, `all`,
+            //    `without`, or a user-defined combinator): resolve each arg to a `Type`, convert
+            //    each to a `TypeNode Value`, and call the function via `eval_type_stage_value`.
+            //    This avoids calling `eval_type_stage_expr` on the whole implied-call node,
+            //    which fails when arg names (e.g. TypeVars `a`, `b`) are not in any lexical
+            //    scope and the lowerer emits `CoreExpr::Placeholder` for them.
+            // 2. `a` is not in type_stage_env (or type_stage_env is unavailable): fall through
+            //    to Union([TypeVar(a), T1, T2, ...]).
             //
             // This handles prelude annotations like `[return: [a Null]]` in:
             //   cond: [fn@[return: [a Null] doc: "..."] ...]
@@ -3270,47 +3273,103 @@ pub(crate) async fn resolve_type_expr(
             } = &func.expr
             {
                 if func_name.starts_with(|c: char| c.is_lowercase()) && !args.is_empty() {
-                    // Try eval_type_stage_expr on the implied call node first.
-                    // This handles type-stage functions like `or`, `all`, `without`.
-                    let am_ref: Option<&HashMap<String, String>> = match &*ann_mapping {
-                        Some(m) => Some(&**m),
-                        None => None,
-                    };
-                    let stage_result = eval_type_stage_expr(node, env, state, am_ref).await;
-                    if let Ok(ty) = stage_result {
-                        if ty != Type::Unknown {
-                            return Ok(ty);
+                    // Try type-stage function call with resolved type arguments.
+                    // This handles [or a b], [all A B], [without A], and any user-defined
+                    // type-stage combinator where args may include TypeVars.
+                    //
+                    // We look up the function by name in type_stage_env (avoiding the lowering
+                    // pipeline that would produce CoreExpr::Placeholder for TypeVar arg names),
+                    // then resolve each arg as a Type and convert to TypeNode values before calling.
+                    'type_stage: {
+                        let ts_env = match state.type_stage_env.clone() {
+                            Some(e) => e,
+                            None => break 'type_stage,
+                        };
+
+                        // Look up function by name in the type-stage env.
+                        // The type-stage env contains only type-stage definitions
+                        // (e.g. or = [fn [let ...types] [TypeNode.Union types: types]]),
+                        // NOT the runtime env where `or` means short-circuit boolean OR.
+                        let fn_thunk = {
+                            let env_guard = ts_env.read().unwrap();
+                            let mut found: Option<Arc<Thunk>> = None;
+                            for (n, slot) in env_guard.iter_slots() {
+                                if n == func_name.as_str() {
+                                    if let Some(ref thunk) = slot.value {
+                                        found = Some(Arc::clone(thunk));
+                                    }
+                                    break;
+                                }
+                            }
+                            match found {
+                                Some(t) => t,
+                                None => break 'type_stage,
+                            }
+                        };
+
+                        #[allow(clippy::disallowed_methods)]
+                        let base_dir = match cap_std::fs::Dir::open_ambient_dir(
+                            ".",
+                            cap_std::ambient_authority(),
+                        ) {
+                            Ok(d) => d,
+                            Err(_) => break 'type_stage,
+                        };
+                        let ctx = Arc::new(crate::eval::EvalContext::new_empty(
+                            base_dir,
+                            Arc::clone(&ts_env),
+                            false,
+                        ));
+
+                        // Materialize the function value.
+                        let fn_val = match crate::eval::materialize(&fn_thunk, None, &ctx).await {
+                            Ok(v) => v,
+                            Err(_) => break 'type_stage,
+                        };
+
+                        // Resolve each arg as a Type, then convert to TypeNode value.
+                        let mut typenode_args: Vec<Value> = Vec::with_capacity(args.len());
+                        let mut all_ok = true;
+                        for arg_node in args.iter() {
+                            let arg_ty = Box::pin(resolve_type_expr(
+                                arg_node,
+                                env,
+                                state,
+                                constraints,
+                                ann_mapping,
+                                row_ann_mapping,
+                                type_params_scope,
+                            ))
+                            .await
+                            .unwrap_or(Type::Unknown);
+
+                            match Box::pin(type_to_typenode_value(&arg_ty, &ctx, node.span.clone()))
+                                .await
+                            {
+                                Some(tn_val) => typenode_args.push(tn_val),
+                                None => {
+                                    all_ok = false;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if all_ok {
+                            if let Ok(result_ty) =
+                                eval_type_stage_value(&fn_val, &typenode_args, state).await
+                            {
+                                if result_ty != Type::Unknown {
+                                    return Ok(result_ty);
+                                }
+                            }
                         }
                     }
 
-                    // eval_type_stage_expr failed or returned Unknown — fall through to the
-                    // TypeVar Union interpretation: Union([TypeVar(func_name), arg0_ty, ...]).
-                    let head_ty = resolve_type_name(
-                        func_name,
-                        env,
+                    // Type-stage lookup or call failed — this is a genuine resolution error.
+                    return Err(TypeError::new(
+                        format!("undefined type-stage function: {func_name}"),
                         func.span.clone(),
-                        state,
-                        constraints,
-                        ann_mapping,
-                        &row_ann_mapping.as_ref().map(|m| &**m),
-                        type_params_scope,
-                    )
-                    .await?;
-                    let mut members = vec![head_ty];
-                    for arg in args.iter() {
-                        let member_ty = Box::pin(resolve_type_expr(
-                            arg,
-                            env,
-                            state,
-                            constraints,
-                            ann_mapping,
-                            row_ann_mapping,
-                            type_params_scope,
-                        ))
-                        .await?;
-                        members.push(member_ty);
-                    }
-                    return Ok(Type::normalize_union(members));
+                    ));
                 }
             }
 
@@ -4411,6 +4470,132 @@ fn typenode_value_to_type<'a>(
             // Not a Dict, Annotated, or Variant — cannot be a TypeNode value.
             _ => None,
         }
+    })
+}
+
+/// Convert a resolved `Type` back to a `Value::Variant` representing the corresponding
+/// TypeNode ADT constructor.
+///
+/// This is the inverse of `typenode_value_to_type` for the subset of `Type` variants that
+/// have a direct TypeNode representation. Used by the implied-call path in `resolve_type_expr`
+/// when calling type-stage functions (like `or`, `all`, `without`) with arguments that may
+/// contain TypeVars — the args are first resolved to `Type` via `resolve_type_expr`, then
+/// converted to `TypeNode Value`s here before being passed to `eval_type_stage_value`.
+///
+/// Returns `None` for `Type` variants that cannot be faithfully round-tripped through the
+/// TypeNode ADT (e.g., complex structural types not yet fully supported). Callers should fall
+/// back to the Union interpretation when `None` is returned.
+fn type_to_typenode_value<'a>(
+    ty: &'a Type,
+    ctx: &'a Arc<crate::eval::EvalContext>,
+    span: Span,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<Value>> + 'a>> {
+    Box::pin(async move {
+        let alloc_str = |s: &str| -> crate::value::ThunkId {
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                crate::value::string_val(s),
+                span.clone(),
+            )))
+        };
+        let alloc_int = |n: i64| -> crate::value::ThunkId {
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                Value::Int(n),
+                span.clone(),
+            )))
+        };
+        let alloc_val = |v: Value| -> crate::value::ThunkId {
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(v, span.clone())))
+        };
+
+        Some(match ty {
+            Type::Int => Value::Variant {
+                tag: "TypeNode.Int".to_string(),
+                payload: None,
+            },
+            Type::Float => Value::Variant {
+                tag: "TypeNode.Float".to_string(),
+                payload: None,
+            },
+            Type::Str => Value::Variant {
+                tag: "TypeNode.String".to_string(),
+                payload: None,
+            },
+            Type::Bytes => Value::Variant {
+                tag: "TypeNode.Bytes".to_string(),
+                payload: None,
+            },
+            Type::Any => Value::Variant {
+                tag: "TypeNode.Top".to_string(),
+                payload: None,
+            },
+            Type::Never => Value::Variant {
+                tag: "TypeNode.Never".to_string(),
+                payload: None,
+            },
+            Type::Unknown => Value::Variant {
+                tag: "TypeNode.Unknown".to_string(),
+                payload: None,
+            },
+            Type::Proxy => Value::Variant {
+                tag: "TypeNode.Proxy".to_string(),
+                payload: None,
+            },
+            Type::TypeVar(name, level) => {
+                let mut payload: indexmap::IndexMap<HashableValue, crate::value::ThunkId> =
+                    indexmap::IndexMap::new();
+                payload.insert(HashableValue::Str("name".into()), alloc_str(name));
+                payload.insert(HashableValue::Str("level".into()), alloc_int(*level as i64));
+                let payload_tid = alloc_val(Value::Dict(payload));
+                Value::Variant {
+                    tag: "TypeNode.TypeVar".to_string(),
+                    payload: Some(payload_tid),
+                }
+            }
+            Type::Dict(row) => {
+                // TypeNode.Dict { fields: dict_of_typenodes, open: Bool }
+                let mut fields_map: indexmap::IndexMap<HashableValue, crate::value::ThunkId> =
+                    indexmap::IndexMap::new();
+                for (k, v_ty) in &row.fields {
+                    let field_tn =
+                        Box::pin(type_to_typenode_value(v_ty, ctx, span.clone())).await?;
+                    let field_tid = alloc_val(field_tn);
+                    fields_map.insert(HashableValue::Str(k.clone().into()), field_tid);
+                }
+                let fields_tid = alloc_val(Value::Dict(fields_map));
+                let open = matches!(row.tail, crate::type_def::RowTail::Uniform { .. });
+                let open_tid = alloc_val(Value::Int(if open { 1 } else { 0 }));
+                let mut payload: indexmap::IndexMap<HashableValue, crate::value::ThunkId> =
+                    indexmap::IndexMap::new();
+                payload.insert(HashableValue::Str("fields".into()), fields_tid);
+                payload.insert(HashableValue::Str("open".into()), open_tid);
+                let payload_tid = alloc_val(Value::Dict(payload));
+                Value::Variant {
+                    tag: "TypeNode.Dict".to_string(),
+                    payload: Some(payload_tid),
+                }
+            }
+            Type::Union(members) => {
+                let mut member_vals: indexmap::IndexMap<HashableValue, crate::value::ThunkId> =
+                    indexmap::IndexMap::new();
+                for (i, m) in members.iter().enumerate() {
+                    let m_tn = Box::pin(type_to_typenode_value(m, ctx, span.clone())).await?;
+                    let m_tid = alloc_val(m_tn);
+                    member_vals.insert(HashableValue::Int(i as i64), m_tid);
+                }
+                let types_tid = alloc_val(Value::Dict(member_vals));
+                let mut payload: indexmap::IndexMap<HashableValue, crate::value::ThunkId> =
+                    indexmap::IndexMap::new();
+                payload.insert(HashableValue::Str("types".into()), types_tid);
+                let payload_tid = alloc_val(Value::Dict(payload));
+                Value::Variant {
+                    tag: "TypeNode.Union".to_string(),
+                    payload: Some(payload_tid),
+                }
+            }
+            // For types we cannot faithfully represent as a TypeNode value, return None.
+            // The caller falls back to the Union interpretation.
+            _ => return None,
+        })
     })
 }
 

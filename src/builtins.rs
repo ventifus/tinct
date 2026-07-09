@@ -378,7 +378,7 @@ pub(crate) fn reject_named(
     Ok(())
 }
 
-// Arithmetic, comparison, and control-flow builtins: +, -, *, /, =, <, if.
+// Arithmetic and comparison builtins: +, -, *, /, =, <.
 // Implementations live in builtins_math.rs; re-exported here so that
 // builtin_module() registration and unit tests (via `use super::*`) still work.
 #[allow(unused_imports)] // used in test modules via `use super::*`
@@ -386,9 +386,9 @@ pub(crate) use crate::builtins_math::{
     builtin_acos, builtin_add, builtin_asin, builtin_atan, builtin_atan2, builtin_band,
     builtin_bor, builtin_bxor, builtin_cos, builtin_div_float, builtin_eq_float, builtin_eq_int,
     builtin_eq_string, builtin_exp, builtin_finite_check, builtin_float, builtin_gt, builtin_gte,
-    builtin_if, builtin_inf_check, builtin_log, builtin_log10, builtin_log2, builtin_lt,
-    builtin_lte, builtin_mul, builtin_nan_check, builtin_pow, builtin_shl, builtin_shr,
-    builtin_sin, builtin_sqrt, builtin_sub, builtin_tan,
+    builtin_inf_check, builtin_log, builtin_log10, builtin_log2, builtin_lt, builtin_lte,
+    builtin_mul, builtin_nan_check, builtin_pow, builtin_shl, builtin_shr, builtin_sin,
+    builtin_sqrt, builtin_sub, builtin_tan,
 };
 
 // Dict/access builtins: keys, length, merge, append, get, each, each-key, each-kv, build-dict.
@@ -2651,8 +2651,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn try_success_returns_ok_variant() {
-        // [fn [let] 42]
+    async fn try_success_returns_ok_dict() {
+        // builtin-try returns {ok: value} on success.
         let ctx = test_ctx();
         let func = parse_eval("[fn [let] 42]", &ctx).await;
         let result = mat(builtin_try(BuiltinArgs {
@@ -2664,12 +2664,15 @@ mod tests {
         }))
         .await;
         match result {
-            Value::Variant { tag, payload } => {
-                assert_eq!(tag, "Result.Ok");
-                let payload_val = mat_id(payload.expect("Ok should have payload"), &ctx).await;
-                assert_eq!(payload_val, Value::Int(42));
+            Value::Dict(map) => {
+                let ok_tid = map
+                    .get(&HashableValue::Str("ok".into()))
+                    .copied()
+                    .expect("success dict must have 'ok' key");
+                let ok_val_result = mat_id(ok_tid, &ctx).await;
+                assert_eq!(ok_val_result, Value::Int(42));
             }
-            _ => panic!("expected Variant(Result.Ok, ...), got: {:?}", result),
+            _ => panic!("expected Dict {{ok: ...}}, got: {:?}", result),
         }
     }
 
@@ -2686,12 +2689,15 @@ mod tests {
         }))
         .await;
         match result {
-            Value::Variant { tag, payload } => {
-                assert_eq!(tag, "Result.Ok");
-                let payload_val = mat_id(payload.expect("Ok should have payload"), &ctx).await;
-                assert_eq!(payload_val, string_val("hello".into()));
+            Value::Dict(map) => {
+                let ok_tid = map
+                    .get(&HashableValue::Str("ok".into()))
+                    .copied()
+                    .expect("success dict must have 'ok' key");
+                let ok_val_result = mat_id(ok_tid, &ctx).await;
+                assert_eq!(ok_val_result, string_val("hello".into()));
             }
-            _ => panic!("expected Variant(Result.Ok, ...), got: {:?}", result),
+            _ => panic!("expected Dict {{ok: ...}}, got: {:?}", result),
         }
     }
 
@@ -2776,12 +2782,15 @@ mod tests {
         }))
         .await;
         match result {
-            Value::Variant { tag, payload } => {
-                assert_eq!(tag, "Result.Ok");
-                let payload_val = mat_id(payload.expect("Ok should have payload"), &ctx).await;
-                assert_eq!(payload_val, Value::Int(99));
+            Value::Dict(map) => {
+                let ok_tid = map
+                    .get(&HashableValue::Str("ok".into()))
+                    .copied()
+                    .expect("success dict must have 'ok' key");
+                let ok_val_result = mat_id(ok_tid, &ctx).await;
+                assert_eq!(ok_val_result, Value::Int(99));
             }
-            _ => panic!("expected Variant(Result.Ok, ...), got: {:?}", result),
+            _ => panic!("expected Dict {{ok: ...}}, got: {:?}", result),
         }
     }
 
@@ -2813,18 +2822,20 @@ mod tests {
         }))
         .await;
         match result {
-            Value::Variant { tag, payload } => {
-                assert_eq!(tag, "Result.Error");
-                let payload_val =
-                    mat_id(payload.expect("Result.Error should have payload"), &ctx).await;
+            Value::Dict(map) => {
+                let err_tid = map
+                    .get(&HashableValue::Str("error".into()))
+                    .copied()
+                    .expect("failure dict must have 'error' key");
+                let err_val = mat_id(err_tid, &ctx).await;
                 // builtin-try uses e.to_string() which includes error code and span.
-                let s = format!("{payload_val}");
+                let s = format!("{err_val}");
                 assert!(
                     s.contains("builtin error"),
-                    "error payload should contain 'builtin error', got: {s}"
+                    "error value should contain 'builtin error', got: {s}"
                 );
             }
-            _ => panic!("expected Variant(Result.Error, ...), got: {:?}", result),
+            _ => panic!("expected Dict {{error: ...}}, got: {:?}", result),
         }
     }
 
@@ -4725,30 +4736,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn if_rejects_named_args() {
-        let mut named = IndexMap::new();
-        named.insert("extra".into(), thunk(Value::Int(1)));
-        let err = run(builtin_if(BuiltinArgs {
-            args: vec![
-                thunk(Value::Int(1)),
-                thunk(Value::Int(1)),
-                thunk(Value::Int(2)),
-            ],
-            named: Some(named),
-            call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await
-        .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("named arguments"),
-            "got: {}",
-            err.kind
-        );
-    }
-
-    #[tokio::test]
     async fn keys_rejects_named_args() {
         let ctx = test_ctx();
         let mut named = IndexMap::new();
@@ -5988,251 +5975,6 @@ mod tests {
         assert_eq!(r, Value::Int(0));
     }
 
-    #[tokio::test]
-    async fn if_true_returns_then_branch() {
-        let args = vec![
-            thunk(Value::Int(1)),
-            thunk(Value::Int(42)),
-            thunk(Value::Int(99)),
-        ];
-        let result = mat(builtin_if(BuiltinArgs {
-            args,
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await;
-        assert_eq!(result, Value::Int(42));
-    }
-
-    #[tokio::test]
-    async fn if_false_returns_else_branch() {
-        let args = vec![
-            thunk(Value::Int(0)),
-            thunk(Value::Int(42)),
-            thunk(Value::Int(99)),
-        ];
-        let result = mat(builtin_if(BuiltinArgs {
-            args,
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await;
-        assert_eq!(result, Value::Int(99));
-    }
-
-    #[tokio::test]
-    async fn if_does_not_materialize_unchosen_else_branch() {
-        let ctx = test_ctx();
-        let error_thunk = make_undef_thunk(&ctx);
-
-        let args = vec![thunk(Value::Int(1)), thunk(Value::Int(42)), error_thunk];
-        let result = mat(builtin_if(BuiltinArgs {
-            args,
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await;
-        assert_eq!(result, Value::Int(42));
-    }
-
-    #[tokio::test]
-    async fn if_does_not_materialize_unchosen_then_branch() {
-        let ctx = test_ctx();
-        let error_thunk = make_undef_thunk(&ctx);
-
-        let args = vec![thunk(Value::Int(0)), error_thunk, thunk(Value::Int(99))];
-        let result = mat(builtin_if(BuiltinArgs {
-            args,
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await;
-        assert_eq!(result, Value::Int(99));
-    }
-
-    #[tokio::test]
-    async fn if_non_bool_condition_error() {
-        // builtin-if requires an Int condition (0=false, non-zero=true).
-        // A Dict condition is not Int and must produce a type error.
-        let args = vec![
-            thunk(Value::Dict(IndexMap::new())),
-            thunk(Value::Int(42)),
-            thunk(Value::Int(99)),
-        ];
-        let e = run(builtin_if(BuiltinArgs {
-            args,
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await
-        .unwrap_err();
-        assert!(
-            e.kind.to_string().contains("expected Int"),
-            "got: {}",
-            e.kind
-        );
-        assert!(
-            e.kind.to_string().contains("Int"),
-            "expected Int mentioned, got: {}",
-            e.kind
-        );
-    }
-
-    #[tokio::test]
-    async fn if_string_condition_error() {
-        // builtin-if requires an Int condition; a String condition must produce a type error.
-        let args = vec![
-            thunk(string_val("true".into())),
-            thunk(Value::Int(42)),
-            thunk(Value::Int(99)),
-        ];
-        let e = run(builtin_if(BuiltinArgs {
-            args,
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await
-        .unwrap_err();
-        assert!(
-            e.kind.to_string().contains("expected Int"),
-            "got: {}",
-            e.kind
-        );
-    }
-
-    #[tokio::test]
-    async fn if_arity_too_few() {
-        let args = vec![thunk(Value::Int(1)), thunk(Value::Int(42))];
-        let e = run(builtin_if(BuiltinArgs {
-            args,
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await
-        .unwrap_err();
-        assert!(
-            e.kind.to_string().contains("arity mismatch"),
-            "got: {}",
-            e.kind
-        );
-    }
-
-    #[tokio::test]
-    async fn if_arity_too_many() {
-        let args = vec![
-            thunk(Value::Int(1)),
-            thunk(Value::Int(1)),
-            thunk(Value::Int(2)),
-            thunk(Value::Int(3)),
-        ];
-        let e = run(builtin_if(BuiltinArgs {
-            args,
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await
-        .unwrap_err();
-        assert!(
-            e.kind.to_string().contains("arity mismatch"),
-            "got: {}",
-            e.kind
-        );
-    }
-
-    #[tokio::test]
-    async fn if_non_bool_condition_has_secondary_span() {
-        // Test that $if with a non-Int condition includes secondary_span
-        // pointing to where the condition was produced (if different from call site).
-        // builtin-if accepts only Int; String is not a valid condition type.
-        let condition_span = test_span(5, 1, 5, 10); // Where the String value is defined
-        let call_span_val = test_span(10, 1, 10, 30); // Where the $if call is
-
-        let args = vec![
-            thunk_with_span(string_val("true".into()), condition_span.clone()),
-            thunk(Value::Int(42)),
-            thunk(Value::Int(99)),
-        ];
-
-        let err = run(builtin_if(BuiltinArgs {
-            args,
-            named: no_named(),
-            call_span: call_span_val,
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await
-        .unwrap_err();
-
-        // Check that the error has a secondary_span
-        assert!(
-            err.secondary_span.is_some(),
-            "Expected secondary_span to be set for $if type mismatch"
-        );
-
-        let (sec_span, sec_label) = err.secondary_span.unwrap();
-        assert_eq!(
-            sec_span, condition_span,
-            "Secondary span should point to where the condition value was produced"
-        );
-        assert!(
-            sec_label.contains("condition evaluated to"),
-            "Secondary label should mention 'condition evaluated to', got: {}",
-            sec_label
-        );
-        assert!(
-            sec_label.contains("String"),
-            "Secondary label should mention the actual type (String), got: {}",
-            sec_label
-        );
-    }
-
-    #[tokio::test]
-    async fn if_non_bool_secondary_span_suppressed_when_same() {
-        // Test that when the condition span equals the call span,
-        // secondary_span is NOT set (would be redundant).
-        // builtin-if accepts only Int; a Dict condition with the same span as the
-        // call site must error without a secondary_span (spans are identical).
-        let same_span = test_span(1, 1, 1, 10);
-
-        let args = vec![
-            thunk_with_span(Value::Dict(IndexMap::new()), same_span.clone()),
-            thunk(Value::Int(42)),
-            thunk(Value::Int(99)),
-        ];
-
-        let err = run(builtin_if(BuiltinArgs {
-            args,
-            named: no_named(),
-            call_span: same_span,
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await
-        .unwrap_err();
-
-        // Secondary span should NOT be set because it equals call_span
-        assert!(
-            err.secondary_span.is_none(),
-            "Secondary span should be suppressed when same as call span"
-        );
-    }
-
     /// Parse-only smoke test for the prelude. Evaluating the full prelude requires a
     #[tokio::test]
     async fn build_core_env_has_builtins() {
@@ -6240,8 +5982,8 @@ mod tests {
         let env_ref = env.read().unwrap();
         // Should have core builtins
         assert!(
-            env_ref.get_value_by_name("builtin-if").is_some(),
-            "missing builtin builtin-if"
+            env_ref.get_value_by_name("builtin-raise").is_some(),
+            "missing builtin builtin-raise"
         );
         // Prelude functions are NOT in core_env — they are loaded via run_loader_pipeline.
         assert!(
@@ -6732,7 +6474,6 @@ mod tests {
 
         // Core builtins that must exist (from builtin_module("core"))
         let required_names: &[&str] = &[
-            "builtin-if",
             "builtin-raise",
             "builtin-type-of",
             "builtin-keys",

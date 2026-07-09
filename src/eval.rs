@@ -8591,7 +8591,7 @@ mod tests {
 
     /// B-427: tail-recursive LLT function evaluates correctly using builtin names.
     ///
-    /// Tests a tail-recursive accumulator function. Uses `builtin-if`, `builtin-eq-int`,
+    /// Tests a tail-recursive accumulator function. Uses `builtin-eq-int`,
     /// `builtin-add`, `builtin-sub` directly — no prelude aliases needed.
     /// The function sums 1..=100 using an accumulator; result must be 5050.
     #[tokio::test]
@@ -8603,9 +8603,9 @@ mod tests {
         // sum-to 100 0 = 1 + 2 + ... + 100 = 5050
         let source = r#"[
             sum-to: [fn [let n acc]
-                [builtin-if [builtin-eq-int n 0]
-                    acc
-                    [sum-to [builtin-sub n 1] [builtin-add acc n]]]]
+                [match [builtin-eq-int n 0]
+                    1: acc
+                    0: [sum-to [builtin-sub n 1] [builtin-add acc n]]]]
             result: [sum-to 100 0]
         ]"#;
 

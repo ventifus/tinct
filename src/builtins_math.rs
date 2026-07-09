@@ -1,4 +1,4 @@
-//! Arithmetic, comparison, and control-flow builtins: `+`, `-`, `*`, `/`, `=`, `<`, `if`.
+//! Arithmetic and comparison builtins: `+`, `-`, `*`, `/`, `=`, `<`.
 //! `builtin-add/sub/mul/div` are pure Int/Float primitives — no typeclass dispatch. Dispatch belongs at the operator level.
 //!
 //! These builtins operate on numeric and boolean values. They are all inherently
@@ -6,7 +6,6 @@
 //!
 //! - Arithmetic (`+`, `-`, `*`, `/`): auto-promote Int/Float operands
 //! - Comparison (`=`, `<`): cross-type Int/Float promotion; String/Bool same-type comparison
-//! - Control flow (`if`): materializes only the condition, returns the chosen branch thunk
 //!
 //! Extracted from `builtins.rs` to keep that file manageable.
 //!
@@ -562,56 +561,6 @@ pub(crate) fn builtin_gte(
             }),
             call_span,
         )
-    })
-}
-
-/// `if`: Conditional with selective materialization.
-///
-/// Takes 3 positional args: condition, then-branch, else-branch.
-/// Materializes ONLY the condition, then materializes ONLY the chosen branch.
-/// The unchosen branch's thunk is never materialized -- this preserves lazy
-/// semantics because `eval_call` wraps each arg as a thunk before calling.
-pub(crate) fn builtin_if(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx: _,
-        ..
-    } = ctx_arg;
-    Box::pin(async move {
-        reject_named("if", named.as_ref(), call_span.clone())?;
-        if args.len() != 3 {
-            return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
-        }
-
-        // Get the pre-materialized condition
-        let condition = args[0]
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
-
-        match condition {
-            Value::Int(0) => Ok(Arc::clone(&args[2])),
-            Value::Int(_) => Ok(Arc::clone(&args[1])),
-            _ => {
-                let cond_span = args[0].span.clone();
-                let mut err = EvalError::type_mismatch_ctx(
-                    "if".to_string(),
-                    "Int",
-                    condition.type_name(),
-                    cond_span.clone(),
-                );
-                if call_span != cond_span {
-                    err = err.with_secondary_span(
-                        cond_span,
-                        format!("condition evaluated to {} here", condition.type_name()),
-                    );
-                }
-                Err(err.into())
-            }
-        }
     })
 }
 
@@ -1206,7 +1155,6 @@ pub fn math_builtin_types(env: &mut crate::types::TypeEnv) {
         ("builtin-sub", "-"),
         ("builtin-mul", "*"),
         ("builtin-div", "/"),
-        ("builtin-if", "if"),
         ("builtin-band", "band"),
         ("builtin-bor", "bor"),
         ("builtin-bxor", "bxor"),

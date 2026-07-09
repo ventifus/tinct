@@ -2368,7 +2368,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn test_arity_bound_display() {
         // Test Display output for all ArityBound variants
@@ -2937,7 +2936,6 @@ mod tests {
             "unexpected state"
         );
     }
-
 
     #[test]
     fn test_stack_frame_accumulation_chain() {

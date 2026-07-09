@@ -146,7 +146,7 @@ thread_local! {
 }
 
 /// T-1366 Rust step 2 bootstrap: type-check `stdlib/builtin_core.llt` and return the
-/// resulting `TypeEnv` so that `Boolean`, `Handle`, `builtin-if`, `builtin-raise`, etc.
+/// resulting `TypeEnv` so that `Boolean`, `Handle`, `builtin-raise`, etc.
 /// are visible to the prelude type-checker by their bare names.
 ///
 /// Uses `include_str!` so the file is embedded at compile time — no runtime libdir access

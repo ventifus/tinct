@@ -76,7 +76,7 @@ pub async fn format_source_tinct_with_dir(
     desugar::desugar_surface_program(&mut formatter_program);
 
     // Build a fresh core env BEFORE resolving so the resolver can be seeded from it.
-    // This ensures builtin names (builtin-if, builtin-str, etc.) in the formatter script
+    // This ensures builtin names (builtin-str, etc.) in the formatter script
     // resolve to de Bruijn coordinates instead of falling back to name-based lookup.
     let env = crate::builtins::build_core_env();
 
