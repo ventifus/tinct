@@ -2805,7 +2805,10 @@ pub(crate) async fn apply_cont(
 
             // Result is the materialized value from the previous expression
             match result {
-                Err(e) => Action::Continue(Err(e)),
+                Err(mut e) => {
+                    e.push_frame("sequential expression".to_string(), seq_span);
+                    Action::Continue(Err(e))
+                }
                 Ok(intermediate_value) => {
                     // Process the value to extract bindings if needed
                     let next_idx = idx + 1;
@@ -3008,7 +3011,10 @@ pub(crate) async fn apply_cont(
 
             // Result is the materialized payload value from the Variant
             match result {
-                Err(e) => Action::Continue(Err(e)),
+                Err(mut e) => {
+                    e.push_frame("sequential expression".to_string(), seq_span);
+                    Action::Continue(Err(e))
+                }
                 Ok(payload_val) => {
                     // Unpack the payload dict using require_dict
                     let map = match crate::builtins::require_dict(
@@ -3073,7 +3079,10 @@ pub(crate) async fn apply_cont(
 
             // Result is the materialized scrutinee value
             match result {
-                Err(e) => Action::Continue(Err(e)),
+                Err(mut e) => {
+                    e.push_frame("match expression".to_string(), match_span);
+                    Action::Continue(Err(e))
+                }
                 Ok(scrutinee_value) => {
                     // Try each arm starting from arm_idx
                     for i in arm_idx..arms.len() {
@@ -3303,7 +3312,10 @@ pub(crate) async fn apply_cont(
             } = *data;
 
             match result {
-                Err(e) => Action::Continue(Err(e)),
+                Err(mut e) => {
+                    e.push_frame("match guard".to_string(), match_span);
+                    Action::Continue(Err(e))
+                }
                 Ok(guard_value) => {
                     // PM1: If the guard is callable and we haven't yet invoked it, do so
                     // iteratively via the CEK machine rather than block_on_anywhere.
