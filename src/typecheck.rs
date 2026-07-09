@@ -2271,13 +2271,58 @@ pub(crate) async fn infer_surface_expr(
                     )
                 })
                 .collect();
-            // infer_fn is async; use simplified sync inference in sync context.
-            // Also check return annotation if present (fn@RetType).
+            // Resolve annotations via the async resolver (resolve_annotation from
+            // typecheck_annot.rs) so that user-defined type names (e.g. @Dict, @Color)
+            // are looked up through state.type_stage_env rather than falling back to the
+            // opaque TyCon("…") sentinel produced by the sync resolver.
+            //
+            // The async resolver (resolve_type_name) requires that lowercase type-variable
+            // names be pre-seeded in ann_mapping before they are referenced — it does not
+            // auto-create TypeVars for unseen names (unlike the old sync resolver).
+            // We therefore scan all param and return annotations first to collect every
+            // lowercase name, create a fresh TypeVar for each, and register it in
+            // ann_mapping_str before the annotation resolution loop.
             {
-                // ann_mapping: reuse the same TypeVar for the same lowercase annotation name.
-                // Without this, `fn [let x@a y@a]` would give x and y DIFFERENT TypeVars,
-                // losing the constraint that both params have the same type.
-                let mut ann_mapping: HashMap<String, Type> = HashMap::new();
+                // Step 1: Collect all lowercase TypeVar names from all annotations on this
+                // function (params + return). Pre-seed ann_mapping_str so that every
+                // lowercase name encountered during resolve_annotation has an entry.
+                let mut lowercase_names: Vec<String> = Vec::new();
+                for p in &params_converted {
+                    if let Some(ann) = &p.node.annotation {
+                        collect_annotation_type_var_names(&ann.node, &mut lowercase_names);
+                    }
+                }
+                if let Some(ret_ann) = return_ann {
+                    collect_annotation_type_var_names(&ret_ann.node, &mut lowercase_names);
+                }
+
+                // Step 2: Create fresh TypeVars for each unique lowercase name and register
+                // them in ann_mapping_str. Using the first param's span as a fallback span.
+                let fallback_span = params_converted
+                    .first()
+                    .map(|p| p.span.clone())
+                    .unwrap_or_else(|| node.span.clone());
+                let mut ann_mapping_str: HashMap<String, String> = HashMap::new();
+                for name in &lowercase_names {
+                    let var_name = state.fresh_type_var_with(
+                        Some(name.as_str()),
+                        Some(state.level),
+                        Kind::Type,
+                        &fallback_span,
+                    ).0;
+                    state.type_var_source_names.insert(var_name.clone(), name.clone());
+                    ann_mapping_str.insert(name.clone(), var_name);
+                }
+
+                // Step 3: Resolve param and return annotations using the async resolver.
+                // All annotations share the same ann_mapping_str so that a lowercase name
+                // like `a` in `fn@a [let x@a]` maps to the SAME TypeVar throughout.
+                let stub_type_env = crate::types::TypeEnv::new();
+                let mut constraints: Vec<crate::types::Constraint> = Vec::new();
+                let mut ann_mapping_opt = Some(&mut ann_mapping_str);
+                let mut row_ann_mapping_str: HashMap<String, String> = HashMap::new();
+                let mut row_ann_mapping_opt = Some(&mut row_ann_mapping_str);
+
                 let mut fn_env_inner = Env::with_parent(Arc::clone(env));
                 let mut param_types: Vec<(Option<String>, Type)> = Vec::new();
                 for p in &params_converted {
@@ -2294,21 +2339,24 @@ pub(crate) async fn infer_surface_expr(
                             },
                         })
                     } else if let Some(ann) = &p.node.annotation {
-                        resolve_simple_annotation_for_typeassert_with_mapping(
-                            ann,
+                        typecheck_annot::resolve_annotation(
+                            &ann.node,
+                            &stub_type_env,
+                            ann.span.clone(),
                             state,
-                            &mut ann_mapping,
+                            &mut constraints,
+                            &mut ann_mapping_opt,
+                            &mut row_ann_mapping_opt,
+                            None,
                         )
+                        .await
+                        .map_err(|e| vec![e])?
                     } else {
                         // Unannotated params use Unknown (gradual typing escape hatch).
                         // Using fresh_type_var() here would cause O(N²) blowup in the prelude
                         // type-checking (see comment in infer_fn in typecheck_match.rs).
                         Type::Unknown
                     };
-                    // Drain annotation_errors collected during param annotation resolution.
-                    if !state.annotation_errors.is_empty() {
-                        return Err(std::mem::take(&mut state.annotation_errors));
-                    }
                     fn_env_inner.insert(p.node.name.clone(), param_ty.clone());
                     param_types.push((Some(p.node.name.clone()), param_ty));
                 }
@@ -2318,20 +2366,21 @@ pub(crate) async fn infer_surface_expr(
 
                 // Determine the function's return type.
                 // Priority: declared return annotation (if resolvable) > inferred body type.
-                // Resolve the return annotation using the same ann_mapping as params,
+                // Resolve the return annotation using the same ann_mapping_str as params,
                 // so that `fn@a [let x@a]` shares the same TypeVar for param and return.
                 let fn_ret_ty = if let Some(ret_ann) = return_ann {
-                    // Use the mapping-aware resolver first to handle lowercase TypeVar names
-                    // correctly (e.g., @a in both param and return shares the same TypeVar).
-                    let declared_ret = resolve_simple_annotation_for_typeassert_with_mapping(
-                        ret_ann,
+                    let declared_ret = typecheck_annot::resolve_annotation(
+                        &ret_ann.node,
+                        &stub_type_env,
+                        ret_ann.span.clone(),
                         state,
-                        &mut ann_mapping,
-                    );
-                    // Drain annotation_errors from return annotation resolution.
-                    if !state.annotation_errors.is_empty() {
-                        return Err(std::mem::take(&mut state.annotation_errors));
-                    }
+                        &mut constraints,
+                        &mut ann_mapping_opt,
+                        &mut row_ann_mapping_opt,
+                        None,
+                    )
+                    .await
+                    .map_err(|e| vec![e])?;
                     // Check for body type mismatches against concrete return annotations.
                     // Only check concrete primitive mismatches: Int, Float, String, Bytes.
                     // Avoid TyCon (e.g. "Dict" doesn't match Record), TypeVar, Unknown, Any.
@@ -2358,8 +2407,8 @@ pub(crate) async fn infer_surface_expr(
                             )]);
                         }
                     }
-                    // If the resolved return type is Unknown/TypeVar and the body type is
-                    // concrete, prefer the body type (it carries more information than Unknown).
+                    // If the resolved return type is Unknown and the body type is concrete,
+                    // prefer the body type (it carries more information than Unknown).
                     // But preserve TypeVar — it's a deliberate annotation that should unify.
                     match &declared_ret {
                         Type::Unknown => body_ty.clone(),
@@ -4000,6 +4049,70 @@ fn resolve_simple_type_node_for_typeassert(
     }
 }
 
+/// Collect all lowercase type-variable annotation names from an `Annotation`.
+///
+/// Scans the annotation recursively (including `PropertyDict` entry values) to find
+/// every lowercase name that appears in a type-variable position. The result is used
+/// to pre-seed the `ann_mapping` before calling the async `resolve_annotation`, which
+/// requires all lowercase names to be declared before they are used.
+///
+/// Collected names satisfy: starts with lowercase, not "any" or "unknown", and appear
+/// either as a bare `Simple` annotation or as a `VarRef` inside a `PropertyDict` value.
+fn collect_annotation_type_var_names(ann: &Annotation, out: &mut Vec<String>) {
+    match ann {
+        Annotation::Simple(name) => {
+            if name.starts_with(|c: char| c.is_lowercase())
+                && !matches!(name.as_str(), "any" | "unknown")
+            {
+                if !out.contains(name) {
+                    out.push(name.clone());
+                }
+            }
+        }
+        Annotation::PropertyDict(entries) => {
+            for entry in entries {
+                collect_type_var_names_in_surface_node(&entry.node.value, out);
+            }
+        }
+        Annotation::Annotated(_, inner) => {
+            collect_annotation_type_var_names(inner, out);
+        }
+    }
+}
+
+/// Recursively collect lowercase type-variable names from a surface expression node.
+/// Only `VarRef` nodes whose name starts with lowercase (excluding "any"/"unknown") are
+/// collected — these are the positions where type-variable names appear in annotation dicts.
+fn collect_type_var_names_in_surface_node(node: &Arc<SurfaceNode>, out: &mut Vec<String>) {
+    collect_type_var_names_in_expr(&node.expr, out);
+}
+
+fn collect_type_var_names_in_expr(expr: &SurfaceExpression, out: &mut Vec<String>) {
+    match expr {
+        SurfaceExpression::VarRef { name, .. } => {
+            if name.starts_with(|c: char| c.is_lowercase())
+                && !matches!(name.as_str(), "any" | "unknown")
+            {
+                if !out.contains(name) {
+                    out.push(name.clone());
+                }
+            }
+        }
+        SurfaceExpression::Call { func, args, .. } => {
+            collect_type_var_names_in_surface_node(func, out);
+            for arg in args {
+                collect_type_var_names_in_surface_node(arg, out);
+            }
+        }
+        SurfaceExpression::Dict(entries) => {
+            for entry in entries {
+                collect_type_var_names_in_surface_node(&entry.node.value, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn resolve_simple_type_name_for_typeassert(name: &str, state: &mut InferState) -> Type {
     match name {
         "Int" | "Integer" => Type::Int,
@@ -4037,118 +4150,6 @@ fn resolve_simple_type_name_for_typeassert(name: &str, state: &mut InferState) -
         // TypeVar (no sharing across calls). For sharing within a single function, use
         // resolve_simple_annotation_for_typeassert_with_mapping with ann_mapping instead.
         _ => state.fresh_type_var(&rust_span!()),
-    }
-}
-
-/// Resolve a param annotation synchronously, reusing TypeVars for the same lowercase name.
-///
-/// This is the annotation-name-aware variant of `resolve_simple_annotation_for_typeassert`.
-/// It uses `ann_mapping` to ensure that `fn [let x@a y@a]` gives x and y the SAME TypeVar
-/// for `a` — preserving the "same annotation = same type" semantics of the async path.
-fn resolve_simple_annotation_for_typeassert_with_mapping(
-    ann: &Spanned<Annotation>,
-    state: &mut InferState,
-    ann_mapping: &mut HashMap<String, Type>,
-) -> Type {
-    match &ann.node {
-        Annotation::Simple(name) => {
-            if name.starts_with(|c: char| c.is_lowercase())
-                && !matches!(name.as_str(), "any" | "unknown")
-            {
-                // Lowercase annotation name (e.g. @a, @b): reuse or create TypeVar
-                ann_mapping
-                    .entry(name.clone())
-                    .or_insert_with(|| state.fresh_type_var(&ann.span))
-                    .clone()
-            } else {
-                resolve_simple_type_name_for_typeassert(name.as_str(), state)
-            }
-        }
-        Annotation::PropertyDict(entries) => {
-            // `normalize_varref_annotation` converts `Simple("a")` to
-            // `PropertyDict([{type: VarRef("a")}])`. Detect this normalized form
-            // for lowercase type variable names so they route through ann_mapping
-            // and produce reusable TypeVars (enabling polymorphism like `∀a. a → a`).
-            if entries.len() == 1 {
-                let entry = &entries[0];
-                let key_is_type = entry.node.key.as_ref().map_or(false, |k| {
-                    matches!(&k.expr, SurfaceExpression::Str(s) if s == "type")
-                        || matches!(&k.expr, SurfaceExpression::VarRef { name, .. } if name == "type")
-                });
-                if key_is_type {
-                    if let SurfaceExpression::VarRef { name, .. } = &entry.node.value.expr {
-                        if name.starts_with(|c: char| c.is_lowercase())
-                            && !matches!(name.as_str(), "any" | "unknown")
-                        {
-                            return ann_mapping
-                                .entry(name.clone())
-                                .or_insert_with(|| state.fresh_type_var(&ann.span))
-                                .clone();
-                        }
-                    }
-                }
-
-                // @[label: name] — named Label-kinded TypeVar.
-                // Validate and create a Label-kinded TypeVar for parameter annotations
-                // like `key@[label: l]`. The `label:` key is recognized here (not in the
-                // property-dict fallback) so validation errors are pushed to annotation_errors.
-                let key_is_label = entry.node.key.as_ref().map_or(
-                    false,
-                    |k| matches!(&k.expr, SurfaceExpression::Str(s) if s == "label"),
-                );
-                if key_is_label {
-                    match &entry.node.value.expr {
-                        SurfaceExpression::Str(_) => {
-                            // String literal: error — must be a bare name
-                            state.annotation_errors.push(TypeError::new(
-                                "label: value must be a bare name (e.g. `label: l`), not a string literal",
-                                ann.span.clone(),
-                            ));
-                            return Type::Unknown;
-                        }
-                        SurfaceExpression::VarRef {
-                            name: label_name, ..
-                        } => {
-                            if label_name.starts_with(|c: char| c.is_uppercase()) {
-                                // Uppercase: error — must be a lowercase type variable name
-                                state.annotation_errors.push(TypeError::new(
-                                    format!(
-                                        "label: value must be a lowercase type variable name (e.g. `label: l`), got '{}'",
-                                        label_name
-                                    ),
-                                    ann.span.clone(),
-                                ));
-                                return Type::Unknown;
-                            }
-                            // Valid lowercase label name: create or reuse Label-kinded TypeVar
-                            if let Some(existing) = ann_mapping.get(label_name.as_str()) {
-                                return existing.clone();
-                            }
-                            let level = state.level;
-                            let (v, fresh_ty) = state.fresh_type_var_with(
-                                Some("_label"),
-                                Some(level),
-                                Kind::Label,
-                                &ann.span,
-                            );
-                            state.kind_env.insert(v.clone(), Kind::Label);
-                            ann_mapping.insert(label_name.clone(), fresh_ty.clone());
-                            return fresh_ty;
-                        }
-                        _ => {
-                            // Other: error
-                            state.annotation_errors.push(TypeError::new(
-                                "label: value must be a bare name (e.g. `label: l`)",
-                                ann.span.clone(),
-                            ));
-                            return Type::Unknown;
-                        }
-                    }
-                }
-            }
-            resolve_simple_annotation_for_typeassert(ann, state)
-        }
-        Annotation::Annotated(_, _) => resolve_simple_annotation_for_typeassert(ann, state),
     }
 }
 

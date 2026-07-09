@@ -273,9 +273,9 @@
             [builtin-extend-env eval-result.env
               [make-entry
                 [builtin-if [builtin-eq-string eval-result.doc-name ""] "%" eval-result.doc-name]
-                eval-result.result]]]]]
+                eval-result.result]]]]]]
       seed-env
-      parse-result.program.documents]]]
+      parse-result.program.documents]]
     # Typecheck the now-resolved program (documents have inline coords from bare-eval loop above).
     # The second resolve pass was removed — OnceLocks are write-once, so a second
     # [builtin-resolve doc env: final-env] call would be a no-op.
