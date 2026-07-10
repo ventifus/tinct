@@ -1362,10 +1362,51 @@ async fn resolve_annotation_as_type(
             .await
         }
         Annotation::PropertyDict(surface_entries) => {
-            // In a type-expression context, a PropertyDict is always a structural type:
-            // a record type [field: Type ...], a function type [Fn@Return [Params]],
-            // or a type constructor application [Seq Int], [or A B], etc.
-            // Delegate to resolve_type_dict which handles all these forms.
+            // Check for the @[type: T] shorthand — the canonical form produced by
+            // normalize_varref_annotation for Simple("T") annotations on VarRefs.
+            // When all keys are annotation metadata keys and "type:" is present, resolve
+            // the type: value as the type expression rather than as a structural record.
+            //
+            // This mirrors the same shorthand detection in resolve_annotation (line ~1599)
+            // so that `Fn@Boolean [params]` resolves the Fn's return type as TyCon("Boolean")
+            // rather than Dict({type: TyCon("Boolean")}).
+            //
+            // Metadata keys: "type", "default", "repr", "doc", "is"
+            // Non-metadata key (e.g. "id", "name") means @[type: T  id: X] is a structural
+            // record — the "type" here is just a field name, not the shorthand.
+            const METADATA_KEYS: &[&str] = &["type", "default", "repr", "doc", "is"];
+            let has_non_metadata_key = surface_entries.iter().any(|se| {
+                if let Some(ref k) = se.node.key {
+                    match &k.expr {
+                        SurfaceExpression::Str(s) => !METADATA_KEYS.contains(&s.as_str()),
+                        _ => true, // non-string key → treat as non-metadata
+                    }
+                } else {
+                    true // positional entry → not the @[type: T] shorthand
+                }
+            });
+            if !has_non_metadata_key {
+                if let Some(type_node) = surface_entries.iter().find_map(|se| {
+                    let key_node = se.node.key.as_ref()?;
+                    match &key_node.expr {
+                        SurfaceExpression::Str(s) if s == "type" => Some(&se.node.value),
+                        _ => None,
+                    }
+                }) {
+                    return Box::pin(resolve_type_expr(
+                        type_node,
+                        env,
+                        state,
+                        constraints,
+                        ann_mapping,
+                        row_ann_mapping,
+                        type_params_scope,
+                    ))
+                    .await;
+                }
+            }
+            // All-positional or has non-metadata keys: structural type, function type, or
+            // type constructor application. Delegate to resolve_type_dict.
             resolve_type_dict(
                 surface_entries,
                 env,
