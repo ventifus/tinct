@@ -55,7 +55,7 @@ loop:
 
 **2a — Implement:**
 - Mark item `in_progress`, dispatch one agent per task (or parallel agents for independent tasks)
-- Brief agents with: the task, files to read, the test plan from context notes, permission to refactor freely
+- Brief agents with: the task, files to read, the test plan from context notes, permission to refactor freely, **and the axioms below — every agent brief must include the axioms verbatim**
 - **Agents write code only — they must NOT run `just build`, `just ci`, `just test`, or any `cargo` command.** Only the coordinator runs builds. Concurrent CI runs crash the MCP.
 - After all agents finish, **you** (the coordinator) run `just build` in the foreground to check compilation. Fix build failures by dispatching the relevant agent, then re-run `just build` yourself. Do not delegate build runs.
 - Mark item `done` with a `completed_reason` describing **what was actually implemented** — files changed, functions added, tests written. "Created tracking item" or "added placeholder" are not acceptable reasons.
@@ -93,7 +93,7 @@ Run `git diff HEAD --name-only` to determine which agents to dispatch:
 | **integration-verifier** | always |
 | **computer-scientist** | always |
 
-Brief each agent: read `.tmp/sprint-review-{slug}.md`, run `git diff HEAD`, assess the sprint, flag workarounds/special-cases.
+Brief each agent: read `.tmp/sprint-review-{slug}.md`, run `git diff HEAD`, assess the sprint, flag workarounds/special-cases. **Include the axioms from the Axioms section in every brief** — reviewers must reject solutions that violate them.
 
 **Triage findings** from all agents before proceeding:
 - All findings are fix-now in this sprint. Pre-existing issues found during review are in-scope — if nobody takes ownership they never get fixed. Add to sprint context notes and implement before completing.
@@ -138,6 +138,18 @@ If an item is genuinely blocked by an external dependency (another sprint not ye
 ## Docs-Only Sprints
 
 If every task only touches `.md` files, comments, mempalace, or non-code metadata: run Steps 1 and 2a, then skip to Step 5. No build gate, no reviewers.
+
+## Axioms
+
+**Every agent brief must include these axioms verbatim.** They are not optional guidance — they are the non-negotiable constraints that govern every implementation decision.
+
+- **Prelude speaks the Rust protocol**: Rust defines the protocol; prelude implements it. Rust never embeds prelude-specific behavior. Prelude works because it is correct tinct, not because Rust accommodates it.
+- **No fast paths, no fallbacks, no backwards compatibility**: one correct path. Fast paths, fallback branches, and legacy shims create parallel implementations that diverge. Old behavior is replaced, not preserved.
+- **Correctness, not performance**: performance is not a design concern. Write the provably correct implementation. Never add complexity to skip a check or avoid an allocation.
+- **Loader/prelude agnosticism**: users can replace the loader and prelude with their own stack. Language features must be agnostic to what is in the loader and prelude — a feature that only works with the default prelude is not a language feature.
+- **General case, not specific**: we build blocks, not solutions. Solve the general problem; do not implement special cases that happen to work for the current caller.
+
+When reviewing an agent's output, verify it against these axioms. If a solution adds a fast path, a special case, a hardcoded name, or a workaround — reject it and ask for the correct general solution.
 
 ## Key Principles
 
