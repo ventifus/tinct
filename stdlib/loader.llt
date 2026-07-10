@@ -78,8 +78,6 @@
 #   builtin-to-int/to-float   → replaced by builtin-float-to-int / builtin-parse-int
 #   duration-seconds/minutes/hours/days → tinct arithmetic (* n constant)
 
---- uses: ["core"]
-
 # ============================================================================
 # Dict 1 — Private helpers
 # ============================================================================

@@ -34,8 +34,6 @@
 #   Dict 2: test pipeline functions (sees Dict 1 + initial env)
 #   Dict 3: load prelude, run all tests, write summary to %stdout
 
---- uses: ["core"]
-
 # ============================================================================
 # Dict 1 — Private helpers (loader-level builtins only)
 # ============================================================================
