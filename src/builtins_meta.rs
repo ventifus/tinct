@@ -2380,19 +2380,15 @@ pub(crate) fn builtin_get_type_context(
             }
             None => {
                 drop(tc_guard);
-                // Auto-initialize: first call to builtin-get-type-context bootstraps the
-                // TypeContext so loader.llt doesn't need an explicit builtin-make-type-ctx call.
-                // tycon_env starts empty — populated by uses-scope calling builtin-typecheck
-                // for each module in --- uses: (core first, so DirCap etc. accumulate).
-                let tc = TypeContextData {
-                    type_stage_env: Arc::new(RwLock::new(Env::new())),
-                    inference_env: crate::imports::get_builtin_core_type_env()
-                        .await
-                        .expect("builtin_core type env unavailable"),
-                    tycon_env: std::collections::HashMap::new(),
-                };
-                ctx.init_type_context(tc.clone());
-                ok_val(Value::TypeContext(Arc::new(Mutex::new(tc))), call_span)
+                // TypeContext must be initialized by the caller (main.rs / lsp/document.rs)
+                // before any tinct code runs. If it's missing here, something is wrong.
+                Err(EvalError::internal(
+                    "builtin-get-type-context: TypeContext not initialized — \
+                     this is a Rust bootstrap error, not a tinct error"
+                        .to_string(),
+                    call_span,
+                )
+                .into())
             }
         }
     })
