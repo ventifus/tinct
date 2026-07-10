@@ -99,7 +99,7 @@
   # builtin-add) so it is available in the type-stage evaluator.
   # Uses match for branching (Boolean.True/False not available at type stage).
   # Uses [$k: v] dynamic key syntax to preserve string keys.
-  object-map-step: [fn [let obj f keys i n acc]
+  object-map-step: [fn@Dict [let obj f keys i n acc]
     [match [builtin-eq-int i n]
       0: [call [fn [let]
         [k: [builtin-get i keys]]
@@ -298,7 +298,7 @@
     # Leaf constructors (no @Child fields) return [] (empty Dict).
     # builtin-concat(Dict, Dict) reindexes both into a flat integer-keyed Dict.
     # match on string role values — stored as "One"/"MapValues" in field-annotations.
-    children-step: [fn [let t ctor fields i n acc]
+    children-step: [fn@Dict [let t ctor fields i n acc]
       [match [builtin-eq-int i n]
         0: [call [fn [let]
           [field: [builtin-dict-nth fields i]]

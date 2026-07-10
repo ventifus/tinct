@@ -114,11 +114,7 @@ pub async fn typecheck_surface_program_annotation_table(
     for doc_spanned in &program.documents {
         let doc = &doc_spanned.node;
 
-        // Skip type-stage documents — they are handled separately by create_type_stage_env()
-        // and should not be type-checked in the runtime pipeline.
-        if doc.stage == Some(crate::ast::Stage::Type) {
-            continue;
-        }
+        // Type-stage documents are type-checked in document order.
 
         let (new_env, doc_output_type, mut doc_errors) = typecheck_surface_document(
             doc,
@@ -278,39 +274,12 @@ pub async fn typecheck_surface_program_with_env(
         tail: crate::type_def::RowTail::Empty,
     });
 
-    // Pre-pass: type-check type-stage documents to register their TyConDefs into state.tycon_env.
-    // This makes types declared in the type-stage (Boolean, Seq, Result, etc.) visible when
-    // type-checking runtime documents' annotations (@Boolean, @Seq, etc.).
-    // Warnings from the pre-pass are discarded — only TyConDef registrations matter.
-    {
-        let mut dummy_table = TypeAnnotationTable::new();
-        let mut dummy_type_map = None;
-        for doc_spanned in &program.documents {
-            let doc = &doc_spanned.node;
-            if doc.stage != Some(crate::ast::Stage::Type) {
-                continue;
-            }
-            let pre_env = Arc::clone(&env);
-            let _ = typecheck_surface_document(
-                doc,
-                &pre_env,
-                &mut state,
-                &mut dummy_table,
-                &mut dummy_type_map,
-                &pipeline_type,
-                &named_types,
-            )
-            .await;
-        }
-    }
-
     for doc_spanned in &program.documents {
         let doc = &doc_spanned.node;
 
-        // Skip type-stage documents — handled separately by create_type_stage_env().
-        if doc.stage == Some(crate::ast::Stage::Type) {
-            continue;
-        }
+        // Type-stage documents are type-checked in document order alongside runtime documents.
+        // Their type declarations (Boolean, Seq, etc.) register in state.tycon_env so runtime
+        // documents can resolve @Boolean, @Seq annotations without any separate pass.
 
         let mut type_map_ref: Option<&mut TypeMap> = if enable_scheme_map {
             Some(&mut type_map_inner)
