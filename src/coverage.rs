@@ -410,11 +410,32 @@ impl ConstructorSignature {
         fields: &crate::type_def::Row,
         tycon_env: &TyConEnv,
     ) -> Self {
+        let qualified_tag = qualify_nominal_tag(tag, tycon_env);
+
+        // If the tag is a TyCon name (i.e., a type name, not a specific constructor),
+        // expand to all its constructors. This handles scrutinee types like
+        // NominalVariant { tag: "Boolean" } where "Boolean" is the type name rather
+        // than a constructor — the correct signature for exhaustiveness checking is
+        // the full set of Boolean's constructors [Boolean.True, Boolean.False].
+        if let Some(def) = tycon_env.get(&qualified_tag) {
+            if !def.constructors.is_empty() {
+                let constructors = def
+                    .constructors
+                    .iter()
+                    .map(|(ctor_tag, arity)| {
+                        let clamped = if *arity == 0 { 0 } else { 1 };
+                        (ConstructorTag::Variant(ctor_tag.clone()), clamped)
+                    })
+                    .collect();
+                return ConstructorSignature { constructors };
+            }
+        }
+
+        // Standard case: the tag is a specific constructor (e.g., "Result.Ok").
         // Arity matches the pattern side: 0 for unit variants, 1 for payload variants.
         // See KNOWN ISSUE in from_union for why this is clamped to 0/1 rather than
         // fields.len() — Pattern::Constructor has a single binding, not per-field.
         let arity = if fields.fields.is_empty() { 0 } else { 1 };
-        let qualified_tag = qualify_nominal_tag(tag, tycon_env);
         let constructors = vec![(ConstructorTag::Variant(qualified_tag), arity)];
         ConstructorSignature { constructors }
     }

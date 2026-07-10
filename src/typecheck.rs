@@ -2766,7 +2766,28 @@ pub(crate) async fn infer_surface_expr(
                         tycon_env_ref,
                     ))
                 }
-                // Type::Bool doesn't exist; skip Bool signature
+                // Nominal ADT: scrutinee is a TyCon with declared constructors.
+                // Look up the constructors from tycon_env and build the signature directly.
+                // This handles `[match c Boolean.True: t Boolean.False: e]` where c: TyCon("Boolean").
+                // Mirrors the TyCon member handling in ConstructorSignature::from_union so that
+                // the same exhaustiveness analysis applies when a TyCon appears as a scrutinee
+                // directly (not wrapped in a Union).
+                Type::TyCon(name) => {
+                    match tycon_env_ref.get(name.as_str()) {
+                        Some(def) if !def.constructors.is_empty() => {
+                            let constructors = def
+                                .constructors
+                                .iter()
+                                .map(|(tag, arity)| {
+                                    let clamped = if *arity == 0 { 0 } else { 1 };
+                                    (coverage::ConstructorTag::Variant(tag.clone()), clamped)
+                                })
+                                .collect();
+                            Some(coverage::ConstructorSignature { constructors })
+                        }
+                        _ => None,
+                    }
+                }
                 _ => None,
             };
 
