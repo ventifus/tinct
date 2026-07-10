@@ -1120,9 +1120,11 @@ pub fn builtin_module(name: &str) -> Option<Vec<crate::value::BuiltinDef>> {
         "core" => Some(crate::builtins_core::core_builtins()),
         "datetime" => Some(crate::builtins_datetime::datetime_builtins()),
         "net" => Some(crate::builtins_net::net_builtins()),
-        // These modules provide type declarations via builtin_*.llt but have no
-        // Rust-side runtime registrations (all actual builtins live in "core").
-        "io" | "math" | "meta" | "string" | "async" => Some(vec![]),
+        "io" => Some(crate::builtins_io::io_builtins()),
+        "math" => Some(crate::builtins_math::math_builtins()),
+        "meta" => Some(crate::builtins_meta::meta_builtins()),
+        "string" => Some(crate::builtins_string::string_builtins()),
+        "async" => Some(crate::builtins_async::async_builtins()),
         _ => return None,
     }?;
 
@@ -1278,31 +1280,26 @@ pub fn type_env_module(name: &str) -> Option<crate::types::TypeEnv> {
         "net" => Some(crate::builtins_net::net_type_env()),
         "io" => {
             let mut env = crate::types::TypeEnv::new();
-            crate::builtins_core::core_type_env(&mut env);
             crate::builtins_io::io_builtin_types(&mut env);
             Some(env)
         }
         "math" => {
             let mut env = crate::types::TypeEnv::new();
-            crate::builtins_core::core_type_env(&mut env);
             crate::builtins_math::math_builtin_types(&mut env);
             Some(env)
         }
         "meta" => {
             let mut env = crate::types::TypeEnv::new();
-            crate::builtins_core::core_type_env(&mut env);
             crate::builtins_meta::meta_builtin_types(&mut env);
             Some(env)
         }
         "string" => {
             let mut env = crate::types::TypeEnv::new();
-            crate::builtins_core::core_type_env(&mut env);
             crate::builtins_string::string_builtin_types(&mut env);
             Some(env)
         }
         "async" => {
             let mut env = crate::types::TypeEnv::new();
-            crate::builtins_core::core_type_env(&mut env);
             crate::builtins_async::async_builtin_types(&mut env);
             Some(env)
         }

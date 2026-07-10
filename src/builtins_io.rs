@@ -2742,53 +2742,524 @@ pub(crate) fn builtin_read_stdin(
     })
 }
 
-/// Register `builtin-*` type aliases for I/O builtins (T-1102).
+/// Returns all "io" module Rust builtins.
 ///
-/// Each alias copies the TypeScheme from the canonical name already registered in
-/// `core_type_env`. Call this AFTER `core_type_env` has run.
+/// These are the filesystem, capability, and environment builtins that live in the "io"
+/// module. They are separate from the Core-46 set (builtin-file-open, builtin-file-read,
+/// builtin-write-stdout, builtin-write-stderr, builtin-list-dir, builtin-path-dir,
+/// builtin-narrow) which must stay in core_builtins() for loader.llt.
+///
+/// Consumed exclusively by `builtin_module("io")` in `src/builtins.rs`.
+pub fn io_builtins() -> Vec<crate::value::BuiltinDef> {
+    use crate::builtins::builtin;
+    use crate::value::Strictness;
+    vec![
+        // ── File primitives — operations beyond open/read (Core-46 stays in core) ────
+        builtin!(
+            "builtin-file-write",
+            builtin_file_write,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["file", "bytes"]
+        ),
+        builtin!(
+            "builtin-file-flush",
+            builtin_file_flush,
+            [Strictness::Seq],
+            0,
+            ["file"]
+        ),
+        builtin!(
+            "builtin-file-close",
+            builtin_file_close,
+            [Strictness::Seq],
+            0,
+            ["file"]
+        ),
+        builtin!(
+            "builtin-file-seek",
+            builtin_file_seek,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["file", "pos"]
+        ),
+        // ── Filesystem: atomic write and bulk I/O ─────────────────────────────────────
+        builtin!(
+            "builtin-write",
+            builtin_write,
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
+            3,
+            ["cap", "path", "content"]
+        ),
+        builtin!(
+            "builtin-write-atomic",
+            builtin_write_atomic,
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
+            3,
+            ["cap", "path", "content"]
+        ),
+        // ── Filesystem: metadata ───────────────────────────────────────────────────────
+        builtin!(
+            "builtin-stat",
+            builtin_stat,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["cap", "path"]
+        ),
+        builtin!(
+            "builtin-exists",
+            builtin_exists,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["cap", "path"]
+        ),
+        builtin!(
+            "builtin-stat-symlink",
+            builtin_stat_symlink,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["cap", "path"]
+        ),
+        // ── Filesystem: directory and path operations ──────────────────────────────────
+        builtin!(
+            "builtin-make-dir",
+            builtin_make_dir,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["cap", "path"]
+        ),
+        builtin!(
+            "builtin-remove",
+            builtin_remove,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["cap", "path"]
+        ),
+        builtin!(
+            "builtin-rename",
+            builtin_rename,
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
+            3,
+            ["cap", "from", "to"]
+        ),
+        builtin!(
+            "builtin-copy-file",
+            builtin_copy_file,
+            [
+                Strictness::Seq,
+                Strictness::Seq,
+                Strictness::Seq,
+                Strictness::Seq
+            ],
+            4,
+            ["src-cap", "src-path", "dst-cap", "dst-path"]
+        ),
+        builtin!(
+            "builtin-symlink",
+            builtin_symlink,
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
+            3,
+            ["cap", "path", "target"]
+        ),
+        builtin!(
+            "builtin-link",
+            builtin_link,
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
+            3,
+            ["cap", "path", "target"]
+        ),
+        builtin!(
+            "builtin-read-link",
+            builtin_read_link,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["cap", "path"]
+        ),
+        builtin!(
+            "builtin-set-permissions",
+            builtin_set_permissions,
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
+            3,
+            ["cap", "path", "mode"]
+        ),
+        // ── Extended attributes ────────────────────────────────────────────────────────
+        builtin!(
+            "builtin-get-xattr",
+            builtin_get_xattr,
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
+            3,
+            ["cap", "path", "name"]
+        ),
+        builtin!(
+            "builtin-set-xattr",
+            builtin_set_xattr,
+            [
+                Strictness::Seq,
+                Strictness::Seq,
+                Strictness::Seq,
+                Strictness::Seq
+            ],
+            4,
+            ["cap", "path", "name", "value"]
+        ),
+        builtin!(
+            "builtin-remove-xattr",
+            builtin_remove_xattr,
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
+            3,
+            ["cap", "path", "name"]
+        ),
+        builtin!(
+            "builtin-list-xattrs",
+            builtin_list_xattrs,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["cap", "path"]
+        ),
+        // ── Capability operations ──────────────────────────────────────────────────────
+        builtin!(
+            "builtin-revocable",
+            builtin_revocable,
+            [Strictness::Seq],
+            0,
+            ["cap"]
+        ),
+        builtin!(
+            "builtin-revoke-cap",
+            builtin_revoke_cap,
+            [Strictness::Seq],
+            0,
+            ["cap"]
+        ),
+        // ── Output and environment ─────────────────────────────────────────────────────
+        builtin!("builtin-emit", builtin_emit, [Strictness::Seq], 0, ["x"]),
+        builtin!("builtin-env", builtin_env, [Strictness::Seq], 0, ["name"]),
+        builtin!(
+            "builtin-env-has?",
+            builtin_env_has,
+            [Strictness::Seq],
+            0,
+            ["name"]
+        ),
+        // ── Stateless stdin ───────────────────────────────────────────────────────────
+        builtin!("builtin-read-stdin", builtin_read_stdin, [Strictness::Seq]),
+    ]
+}
+
+/// Register type signatures for io module builtins (T-1102).
+///
+/// Directly inserts `Type::Function` TypeSchemes for each builtin registered in
+/// `io_builtins()`. Self-contained — does not call or depend on `core_type_env`.
 pub fn io_builtin_types(env: &mut crate::types::TypeEnv) {
-    env.alias_types(&[
-        ("builtin-env", "env"),
-        ("builtin-emit", "emit"),
-        ("builtin-open", "open"),
-        ("builtin-write", "write"),
-        ("builtin-write-atomic", "write-atomic"),
-        ("builtin-write-handle", "write-handle"),
-        ("builtin-flush", "flush"),
-        ("builtin-close", "close"),
-        ("builtin-file-open", "open"),
-        ("builtin-file-read", "read-chunk"),
-        ("builtin-file-write", "write-handle"),
-        ("builtin-file-flush", "flush"),
-        ("builtin-file-close", "close"),
-        ("builtin-file-seek", "seek"),
-        ("builtin-stat", "stat"),
-        ("builtin-exists", "exists"),
-        ("builtin-stat-symlink", "stat-symlink"),
-        ("builtin-make-dir", "make-dir"),
-        ("builtin-rename", "rename"),
-        ("builtin-list-dir", "list-dir"),
-        ("builtin-string-handle", "string-handle"),
-        ("builtin-copy-file", "copy-file"),
-        ("builtin-symlink", "symlink"),
-        ("builtin-set-permissions", "set-permissions"),
-        ("builtin-link", "link"),
-        ("builtin-read-link", "read-link"),
-        ("builtin-get-xattr", "get-xattr"),
-        ("builtin-set-xattr", "set-xattr"),
-        ("builtin-remove-xattr", "remove-xattr"),
-        ("builtin-list-xattrs", "list-xattrs"),
-        ("builtin-raw-create", "raw-create"),
-        ("builtin-seek", "seek"),
-        ("builtin-seek-end", "seek-end"),
-        ("builtin-position", "position"),
-        ("builtin-revocable", "revocable"),
-        ("builtin-revoke-cap", "revoke-cap"),
-        ("builtin-cap-data", "cap-data"),
-        ("builtin-connect", "connect"),
-        ("builtin-tls-layer", "tls-layer"),
-        ("builtin-tls-peer-cert", "tls-peer-cert"),
-        ("builtin-send-datagram", "send-datagram"),
-        ("builtin-recv-datagram", "recv-datagram"),
-    ]);
+    use crate::types::{Row, Type};
+
+    let null_ty = Type::Dict(Row {
+        fields: indexmap::IndexMap::new(),
+        tail: crate::type_def::RowTail::Empty,
+    });
+
+    let stat_ret = Type::Dict(Row {
+        fields: indexmap::IndexMap::from_iter([
+            ("name".to_string(), Type::Str),
+            ("kind".to_string(), Type::Str),
+            ("size".to_string(), Type::Int),
+        ]),
+        tail: crate::type_def::RowTail::Empty,
+    });
+
+    // ── File primitives (non-Core-46) ───────────────────────────────────────
+    // builtin-file-write: File → Str → Int  (write content to open file, returns bytes written)
+    env.insert(
+        "builtin-file-write".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any), (None, Type::Any)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-file-flush: File → Int
+    env.insert(
+        "builtin-file-flush".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-file-close: File → Int
+    env.insert(
+        "builtin-file-close".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-file-seek: File → Int → Int
+    env.insert(
+        "builtin-file-seek".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any), (None, Type::Int)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+
+    // ── Filesystem: atomic write and bulk I/O ───────────────────────────────
+    // builtin-write: DirCap → Str → Any → Int  (write content to path, returns bytes written)
+    env.insert(
+        "builtin-write".to_string(),
+        Type::Function {
+            params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Any)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 3,
+        },
+    );
+    // builtin-write-atomic: DirCap → Str → Any → Int  (atomic write via temp file + rename)
+    env.insert(
+        "builtin-write-atomic".to_string(),
+        Type::Function {
+            params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Any)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 3,
+        },
+    );
+
+    // ── Filesystem: metadata ────────────────────────────────────────────────
+    // builtin-stat: DirCap → Str → Dict  (follows symlinks)
+    env.insert(
+        "builtin-stat".to_string(),
+        Type::Function {
+            params: vec![(None, Type::DirCap), (None, Type::Str)],
+            ret: Box::new(stat_ret.clone()),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-exists: DirCap → Str → Int
+    env.insert(
+        "builtin-exists".to_string(),
+        Type::Function {
+            params: vec![(None, Type::DirCap), (None, Type::Str)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-stat-symlink: DirCap → Str → Dict  (does not follow symlinks)
+    env.insert(
+        "builtin-stat-symlink".to_string(),
+        Type::Function {
+            params: vec![(None, Type::DirCap), (None, Type::Str)],
+            ret: Box::new(stat_ret.clone()),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+
+    // ── Filesystem: directory and path operations ────────────────────────────
+    // builtin-make-dir: DirCap → Str → Int
+    env.insert(
+        "builtin-make-dir".to_string(),
+        Type::Function {
+            params: vec![(None, Type::DirCap), (None, Type::Str)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-remove: DirCap → Str → Int
+    env.insert(
+        "builtin-remove".to_string(),
+        Type::Function {
+            params: vec![(None, Type::DirCap), (None, Type::Str)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-rename: DirCap → Str → Str → Int
+    env.insert(
+        "builtin-rename".to_string(),
+        Type::Function {
+            params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 3,
+        },
+    );
+    // builtin-copy-file: DirCap → Str → DirCap → Str → Int
+    env.insert(
+        "builtin-copy-file".to_string(),
+        Type::Function {
+            params: vec![
+                (None, Type::DirCap),
+                (None, Type::Str),
+                (None, Type::DirCap),
+                (None, Type::Str),
+            ],
+            ret: Box::new(null_ty.clone()),
+            variadic: false,
+            required_count: 4,
+        },
+    );
+    // builtin-symlink: DirCap → Str → Str → Int
+    env.insert(
+        "builtin-symlink".to_string(),
+        Type::Function {
+            params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
+            ret: Box::new(null_ty.clone()),
+            variadic: false,
+            required_count: 3,
+        },
+    );
+    // builtin-link: DirCap → Str → Str → Int
+    env.insert(
+        "builtin-link".to_string(),
+        Type::Function {
+            params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 3,
+        },
+    );
+    // builtin-read-link: DirCap → Str → Str
+    env.insert(
+        "builtin-read-link".to_string(),
+        Type::Function {
+            params: vec![(None, Type::DirCap), (None, Type::Str)],
+            ret: Box::new(Type::Str),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-set-permissions: DirCap → Str → Int → Int
+    env.insert(
+        "builtin-set-permissions".to_string(),
+        Type::Function {
+            params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Int)],
+            ret: Box::new(null_ty.clone()),
+            variadic: false,
+            required_count: 3,
+        },
+    );
+
+    // ── Extended attributes ──────────────────────────────────────────────────
+    // builtin-get-xattr: DirCap → Str → Str → Str
+    env.insert(
+        "builtin-get-xattr".to_string(),
+        Type::Function {
+            params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
+            ret: Box::new(Type::Str),
+            variadic: false,
+            required_count: 3,
+        },
+    );
+    // builtin-set-xattr: DirCap → Str → Str → Str → Int
+    env.insert(
+        "builtin-set-xattr".to_string(),
+        Type::Function {
+            params: vec![
+                (None, Type::DirCap),
+                (None, Type::Str),
+                (None, Type::Str),
+                (None, Type::Str),
+            ],
+            ret: Box::new(null_ty.clone()),
+            variadic: false,
+            required_count: 4,
+        },
+    );
+    // builtin-remove-xattr: DirCap → Str → Str → Int
+    env.insert(
+        "builtin-remove-xattr".to_string(),
+        Type::Function {
+            params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
+            ret: Box::new(null_ty.clone()),
+            variadic: false,
+            required_count: 3,
+        },
+    );
+    // builtin-list-xattrs: DirCap → Str → Dict
+    env.insert(
+        "builtin-list-xattrs".to_string(),
+        Type::Function {
+            params: vec![(None, Type::DirCap), (None, Type::Str)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+
+    // ── Capability operations ────────────────────────────────────────────────
+    // builtin-revocable: DirCap → DirCap  (create a revocable wrapper around a DirCap)
+    env.insert(
+        "builtin-revocable".to_string(),
+        Type::Function {
+            params: vec![(None, Type::DirCap)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-revoke-cap: DirCap → Int  (revoke a previously created revocable capability)
+    env.insert(
+        "builtin-revoke-cap".to_string(),
+        Type::Function {
+            params: vec![(None, Type::DirCap)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+
+    // ── Output and environment ───────────────────────────────────────────────
+    // builtin-emit: Any → Dict  (write value to stdout, returns [])
+    env.insert(
+        "builtin-emit".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(null_ty.clone()),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-env: Str → Str  (read OS environment variable by name)
+    env.insert(
+        "builtin-env".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str)],
+            ret: Box::new(Type::Str),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-env-has?: Str → Int  (check if env var is set and allowed)
+    env.insert(
+        "builtin-env-has?".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+
+    // ── Stateless stdin ──────────────────────────────────────────────────────
+    // builtin-read-stdin: Int → Bytes  (read up to n bytes from stdin)
+    env.insert(
+        "builtin-read-stdin".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Int)],
+            ret: Box::new(Type::Bytes),
+            variadic: false,
+            required_count: 1,
+        },
+    );
 }

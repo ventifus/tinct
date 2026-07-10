@@ -65,12 +65,9 @@
   builtin-proxy:             [fn@Any     [let handler@Dict] ...]
 
   # ── Capability and identity ────────────────────────────────────────────────
-  # narrow: create a narrowed DirCap restricted to a sub-path.
-  builtin-narrow:            [fn@DirCap  [let cap@DirCap ...sub] ...]
   # cap-identity: return a stable string identity for a DirCap (for content-addressed caching).
+  # Note: builtin-narrow and builtin-cap-env-has? are Core-46 — declared in builtin_core.llt.
   builtin-cap-identity:      [fn@String  [let cap@DirCap] ...]
-  # cap-env-has?: check if a capability name is present in the environment.
-  builtin-cap-env-has?:      [fn@Integer [let name@String env@Any] ...]
 
   # ── Include cache ─────────────────────────────────────────────────────────
   # include-cache-get: get a cached include result by content hash.
@@ -84,12 +81,4 @@
   # ── Numeric coercions ─────────────────────────────────────────────────────
   builtin-decimal:           [fn@Decimal [let x@Any] ...]
   builtin-big-int:           [fn@BigInt  [let x@Any] ...]
-
-  # ── Environment operations ────────────────────────────────────────────────
-  # extend-env: create a child environment from parent, adding bindings dict.
-  builtin-extend-env:        [fn@Any     [let parent@Any bindings@Dict] ...]
-  # env-has?: check if a name is bound in the environment.
-  builtin-env-has?:          [fn@Integer [let name@String env@Any] ...]
-  # get-env: retrieve a binding by name from an environment.
-  builtin-get-env:           [fn@Any     [let name@String env@Any] ...]
 ]

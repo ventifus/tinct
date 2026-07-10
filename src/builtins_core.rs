@@ -19,16 +19,14 @@
 //! per the whatif spec (§Module Contents).
 
 use crate::builtins::builtin;
-// Arithmetic, comparison, bitwise, type-conversion, and control-flow implementations.
+// Arithmetic and comparison implementations — Core-46 only.
+// Non-Core-46 math builtins (mul, div, eq-float, lte, floor, round, pow, etc.)
+// are now in math_builtins() in src/builtins_math.rs.
 use crate::builtins_math::{
-    builtin_acos, builtin_add, builtin_asin, builtin_atan, builtin_atan2, builtin_band,
-    builtin_bor, builtin_bxor, builtin_cos, builtin_div_float, builtin_eq_float, builtin_eq_int,
-    builtin_eq_string, builtin_exp, builtin_finite_check, builtin_float, builtin_gt, builtin_gte,
-    builtin_inf_check, builtin_log, builtin_log10, builtin_log2, builtin_lt, builtin_lte,
-    builtin_mul, builtin_nan_check, builtin_pow, builtin_shl, builtin_shr, builtin_sin,
-    builtin_sqrt, builtin_sub, builtin_tan,
+    builtin_add, builtin_eq_int, builtin_eq_string, builtin_gt, builtin_gte, builtin_lt,
+    builtin_sub,
 };
-// Dict/access implementations.
+// Dict/access implementations — all stay in core.
 use crate::builtins_dict::{
     builtin_append, builtin_build_dict, builtin_builder_delete, builtin_builder_finish,
     builtin_builder_get, builtin_builder_get_or, builtin_builder_has, builtin_builder_set,
@@ -37,93 +35,37 @@ use crate::builtins_dict::{
     builtin_field_get, builtin_get, builtin_get_by_field, builtin_has_key, builtin_keys,
     builtin_length, builtin_make_builder, builtin_merge, builtin_slot_get,
 };
-// String implementations.
+// String implementations — Core-46 only.
+// Non-Core-46 string builtins (trim, replace, char ops, regex, etc.) are in string_builtins().
 use crate::builtins_string::{
-    builtin_bytes_str, builtin_char_code, builtin_chr, builtin_float_to_string,
-    builtin_int_to_string, builtin_regex_match, builtin_replace, builtin_str_byte_count,
-    builtin_str_bytes, builtin_str_has_nth, builtin_str_has_nth_byte, builtin_str_index_of,
-    builtin_str_length, builtin_str_map_chars, builtin_str_nth_byte, builtin_str_nth_char,
-    builtin_str_slice, builtin_str_to_lower_char, builtin_str_to_upper_char, builtin_string_concat,
-    builtin_trim, builtin_trim_end, builtin_trim_start,
+    builtin_bytes_str, builtin_int_to_string, builtin_str_bytes, builtin_str_index_of,
+    builtin_str_length, builtin_str_slice, builtin_string_concat,
 };
-// Bytes implementations.
-use crate::builtins_bytes::{
-    builtin_bytes, builtin_bytes_concat, builtin_bytes_equal, builtin_bytes_find,
-    builtin_bytes_get, builtin_bytes_of, builtin_bytes_slice, builtin_ct_equal, builtin_encode,
-};
-// Numeric (floor, round) and parsing (to-int, to-float) implementations — live in builtins.rs.
-use crate::builtins::{builtin_floor, builtin_round, builtin_to_float, builtin_to_int};
-// Stream output implementations.
-use crate::stream::builtin_to_tinct;
-// Meta/eval implementations.
+// Bytes implementations — Core-46 only (bytes, bytes-concat, bytes-str).
+// Non-Core-46 bytes builtins (find, of, equal?, ct-equal?, encode, get, slice) are in string_builtins().
+use crate::builtins_bytes::{builtin_bytes, builtin_bytes_concat};
+// Meta/eval implementations — Core-46 only.
+// Non-Core-46 meta builtins are now in meta_builtins() in src/builtins_meta.rs.
 use crate::builtins_meta::{
-    builtin_annotation_of, builtin_apply, builtin_ast_of, builtin_ast_to_program, builtin_big_int,
-    builtin_blake3, builtin_builtin_module, builtin_cap_env_has, builtin_cap_identity,
-    builtin_check_type, builtin_current_env, builtin_decimal, builtin_eval, builtin_eval_macro_ast,
-    builtin_eval_repr, builtin_eval_types, builtin_extend_env, builtin_force,
-    builtin_fork_type_ctx, builtin_gensym, builtin_get_type_context, builtin_include_cache_get,
-    builtin_include_cache_put, builtin_is_contractive, builtin_llt_repr, builtin_load,
-    builtin_macro_error, builtin_macro_injects, builtin_make_annotated, builtin_make_type_ctx,
-    builtin_parse, builtin_program, builtin_raise, builtin_resolve, builtin_sequential,
-    builtin_span_of, builtin_tag_of, builtin_tc_with_type_stage_env, builtin_try, builtin_type_of,
-    builtin_typecheck, builtin_until, builtin_validate, builtin_var_resolution,
-    builtin_variant_payload,
+    builtin_builtin_module, builtin_cap_env_has, builtin_check_type, builtin_eval,
+    builtin_extend_env, builtin_get_type_context, builtin_llt_repr, builtin_parse, builtin_raise,
+    builtin_resolve, builtin_tag_of, builtin_tc_with_type_stage_env, builtin_try, builtin_type_of,
+    builtin_typecheck, builtin_variant_payload,
 };
-// I/O implementations.
+// I/O implementations — Core-46 only.
+// Non-Core-46 I/O builtins (emit, env, file-write, stat, revocable, etc.) are in io_builtins().
 use crate::builtins_dict::{builtin_concat, builtin_drop, builtin_take};
 use crate::builtins_io::{
-    // builtin_cap_data, builtin_close, builtin_flush, builtin_open, builtin_raw_create,
-    // builtin_read_all, builtin_read_chunk, builtin_read_line, builtin_seek, builtin_seek_end,
-    // builtin_position, builtin_string_handle, builtin_write_handle REMOVED: used Value::Handle.
-    builtin_copy_file,
-    builtin_emit,
-    builtin_env,
-    builtin_env_has,
-    builtin_exists,
-    builtin_file_close,
-    builtin_file_flush,
-    builtin_file_open,
-    builtin_file_read,
-    builtin_file_seek,
-    builtin_file_write,
-    builtin_get_xattr,
-    builtin_link,
-    builtin_list_dir,
-    builtin_list_xattrs,
-    builtin_make_dir,
-    builtin_narrow,
-    builtin_path_dir,
-    builtin_read_link,
-    builtin_read_stdin,
-    builtin_remove,
-    builtin_remove_xattr,
-    builtin_rename,
-    builtin_revocable,
-    builtin_revoke_cap,
-    builtin_set_permissions,
-    builtin_set_xattr,
-    builtin_stat,
-    builtin_stat_symlink,
-    builtin_symlink,
-    builtin_write,
-    builtin_write_atomic,
-    builtin_write_stderr,
-    builtin_write_stdout,
+    builtin_file_open, builtin_file_read, builtin_list_dir, builtin_narrow, builtin_path_dir,
+    builtin_write_stderr, builtin_write_stdout,
 };
-// List operation implementations — live in builtins.rs.
+// List operation implementations — stay in core (no module home in io/math/string/meta/async).
 use crate::builtins::{
-    builtin_first, builtin_last, builtin_proxy, builtin_rest, builtin_reverse, builtin_sort,
+    builtin_first, builtin_last, builtin_rest, builtin_reverse, builtin_sort,
 };
-// Async concurrency implementations.
-use crate::builtins_async::{
-    builtin_await, builtin_broadcast_channel, builtin_cancel_root, builtin_cancel_task,
-    builtin_cancelled_q, builtin_cell_get, builtin_cell_set, builtin_channel, builtin_context,
-    builtin_drain, builtin_exit_now, builtin_non_cancellable, builtin_oneshot_channel, builtin_par,
-    builtin_par_filter, builtin_par_map, builtin_reactive_cell, builtin_recv, builtin_select_once,
-    builtin_send, builtin_signal_channel, builtin_task, builtin_timer_channel, builtin_try_send,
-    builtin_watch_channel, builtin_with_cancel, builtin_with_context, builtin_with_deadline,
-    builtin_with_timeout,
-};
+// Async concurrency implementations — Core-46 only (channel, send).
+// Non-Core-46 async builtins are now in async_builtins() in src/builtins_async.rs.
+use crate::builtins_async::{builtin_channel, builtin_send};
 
 use crate::value::{BuiltinDef, Strictness};
 
@@ -198,20 +140,7 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             2,
             ["a", "b"]
         ),
-        builtin!(
-            "builtin-mul",
-            builtin_mul,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["a", "b"]
-        ),
-        builtin!(
-            "builtin-div",
-            builtin_div_float,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["a", "b"]
-        ),
+        // builtin-mul and builtin-div moved to math_builtins() — not in Core-46.
         // ── Comparison ───────────────────────────────────────────────────────────────
         // Note: =, <, >, <=, >= are NOT registered here — they dispatch via
         // Equatable/Comparable instances in prelude.llt. (S-885)
@@ -225,13 +154,7 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             2,
             ["a", "b"]
         ),
-        builtin!(
-            "builtin-eq-float",
-            builtin_eq_float,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["a", "b"]
-        ),
+        // builtin-eq-float moved to math_builtins() — not in Core-46.
         builtin!(
             "builtin-eq-string",
             builtin_eq_string,
@@ -253,13 +176,7 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             2,
             ["a", "b"]
         ),
-        builtin!(
-            "builtin-lte",
-            builtin_lte,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["a", "b"]
-        ),
+        // builtin-lte moved to math_builtins() — not in Core-46.
         builtin!(
             "builtin-gte",
             builtin_gte,
@@ -405,7 +322,7 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             0,
             ["builder", "default", "key"]
         ),
-        // ── String ops ───────────────────────────────────────────────────────────────
+        // ── String ops (Core-46 only — rest moved to string_builtins()) ─────────────
         builtin!(
             "builtin-int->string",
             builtin_int_to_string,
@@ -413,29 +330,9 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             1,
             ["n"]
         ),
-        builtin!(
-            "builtin-float->string",
-            builtin_float_to_string,
-            [Strictness::Seq],
-            1,
-            ["n"]
-        ),
-        builtin!(
-            // Hyphenated alias for builtin-float->string (used by type-foundations loader).
-            "builtin-float-to-string",
-            builtin_float_to_string,
-            [Strictness::Seq],
-            1,
-            ["n"]
-        ),
-        builtin!(
-            "builtin-replace",
-            builtin_replace,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            3,
-            ["pattern", "replacement", "str"]
-        ),
-        builtin!("builtin-trim", builtin_trim, [Strictness::Seq], 1, ["str"]),
+        // builtin-float->string and builtin-float-to-string moved to string_builtins().
+        // builtin-replace, builtin-trim, builtin-str-byte-count moved to string_builtins().
+        // builtin-str-has-nth-byte?, builtin-str-nth-byte moved to string_builtins().
         builtin!(
             "builtin-str-length",
             builtin_str_length,
@@ -443,27 +340,8 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             1,
             ["str"]
         ),
-        builtin!(
-            "builtin-str-byte-count",
-            builtin_str_byte_count,
-            [Strictness::Seq],
-            1,
-            ["str"]
-        ),
-        builtin!(
-            "builtin-str-has-nth-byte?",
-            builtin_str_has_nth_byte,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["str", "i"]
-        ),
-        builtin!(
-            "builtin-str-nth-byte",
-            builtin_str_nth_byte,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["str", "i"]
-        ),
+        // builtin-str-byte-count moved to string_builtins().
+        // builtin-str-has-nth-byte?, builtin-str-nth-byte moved to string_builtins().
         builtin!(
             "builtin-str-slice",
             builtin_str_slice,
@@ -471,28 +349,8 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             3,
             ["str", "start", "end"]
         ),
-        builtin!(
-            "builtin-str-has-nth?",
-            builtin_str_has_nth,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["str", "n"]
-        ),
-        builtin!(
-            "builtin-str-nth-char",
-            builtin_str_nth_char,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["str", "n"]
-        ),
-        builtin!(
-            "builtin-char-code",
-            builtin_char_code,
-            [Strictness::Seq],
-            1,
-            ["char"]
-        ),
-        builtin!("builtin-chr", builtin_chr, [Strictness::Seq], 1, ["n"]),
+        // builtin-str-has-nth?, builtin-str-nth-char moved to string_builtins().
+        // builtin-char-code, builtin-chr moved to string_builtins().
         builtin!(
             "builtin-str-bytes",
             builtin_str_bytes,
@@ -514,48 +372,9 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             2,
             ["str", "needle"]
         ),
-        builtin!(
-            "builtin-trim-start",
-            builtin_trim_start,
-            [Strictness::Seq],
-            1,
-            ["str"]
-        ),
-        builtin!(
-            "builtin-trim-end",
-            builtin_trim_end,
-            [Strictness::Seq],
-            1,
-            ["str"]
-        ),
-        builtin!(
-            "builtin-str-to-upper-char",
-            builtin_str_to_upper_char,
-            [Strictness::Seq],
-            1,
-            ["str"]
-        ),
-        builtin!(
-            "builtin-str-to-lower-char",
-            builtin_str_to_lower_char,
-            [Strictness::Seq],
-            1,
-            ["str"]
-        ),
-        builtin!(
-            "builtin-str-map-chars",
-            builtin_str_map_chars,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["f", "str"]
-        ),
-        builtin!(
-            "builtin-regex-match?",
-            builtin_regex_match,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["pattern", "str"]
-        ),
+        // builtin-trim-start, builtin-trim-end moved to string_builtins().
+        // builtin-str-to-upper-char, builtin-str-to-lower-char, builtin-str-map-chars moved to string_builtins().
+        // builtin-regex-match? moved to string_builtins().
         builtin!(
             "builtin-string-concat",
             builtin_string_concat,
@@ -563,7 +382,7 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             2,
             ["a", "b"]
         ),
-        // ── Bytes ────────────────────────────────────────────────────────────────────
+        // ── Bytes (Core-46 only — rest moved to string_builtins()) ────────────────────
         builtin!("builtin-bytes", builtin_bytes, []),
         builtin!(
             "builtin-bytes-concat",
@@ -572,146 +391,12 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             2,
             ["a", "b"]
         ),
-        builtin!(
-            "builtin-bytes-find",
-            builtin_bytes_find,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["needle", "bytes"]
-        ),
-        builtin!("builtin-bytes-of", builtin_bytes_of, [Strictness::Seq]),
-        builtin!(
-            "builtin-bytes-equal?",
-            builtin_bytes_equal,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["a", "b"]
-        ),
-        builtin!(
-            "builtin-ct-equal?",
-            builtin_ct_equal,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["a", "b"]
-        ),
-        builtin!(
-            "builtin-encode",
-            builtin_encode,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["encoding", "bytes"]
-        ),
-        builtin!(
-            "builtin-bytes-get",
-            builtin_bytes_get,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["bytes", "n"]
-        ),
-        builtin!(
-            "builtin-bytes-slice",
-            builtin_bytes_slice,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            3,
-            ["bytes", "start", "end"]
-        ),
-        // ── Math ─────────────────────────────────────────────────────────────────────
-        builtin!("builtin-floor", builtin_floor, [Strictness::Seq], 1, ["n"]),
-        builtin!("builtin-round", builtin_round, [Strictness::Seq], 1, ["n"]),
-        builtin!(
-            "builtin-pow",
-            builtin_pow,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["base", "exp"]
-        ),
-        builtin!("builtin-sqrt", builtin_sqrt, [Strictness::Seq], 1, ["n"]),
-        builtin!("builtin-log", builtin_log, [Strictness::Seq], 1, ["n"]),
-        builtin!("builtin-log2", builtin_log2, [Strictness::Seq], 1, ["n"]),
-        builtin!("builtin-log10", builtin_log10, [Strictness::Seq], 1, ["n"]),
-        builtin!("builtin-exp", builtin_exp, [Strictness::Seq], 1, ["n"]),
-        builtin!("builtin-sin", builtin_sin, [Strictness::Seq], 1, ["n"]),
-        builtin!("builtin-cos", builtin_cos, [Strictness::Seq], 1, ["n"]),
-        builtin!("builtin-tan", builtin_tan, [Strictness::Seq], 1, ["n"]),
-        builtin!("builtin-asin", builtin_asin, [Strictness::Seq], 1, ["n"]),
-        builtin!("builtin-acos", builtin_acos, [Strictness::Seq], 1, ["n"]),
-        builtin!("builtin-atan", builtin_atan, [Strictness::Seq], 1, ["n"]),
-        builtin!(
-            "builtin-atan2",
-            builtin_atan2,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["y", "x"]
-        ),
-        builtin!(
-            "builtin-nan?",
-            builtin_nan_check,
-            [Strictness::Seq],
-            1,
-            ["n"]
-        ),
-        builtin!(
-            "builtin-inf?",
-            builtin_inf_check,
-            [Strictness::Seq],
-            1,
-            ["n"]
-        ),
-        builtin!(
-            "builtin-finite?",
-            builtin_finite_check,
-            [Strictness::Seq],
-            1,
-            ["n"]
-        ),
-        // ── Bitwise ──────────────────────────────────────────────────────────────────
-        builtin!(
-            "builtin-band",
-            builtin_band,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["a", "b"]
-        ),
-        builtin!(
-            "builtin-bor",
-            builtin_bor,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["a", "b"]
-        ),
-        builtin!(
-            "builtin-bxor",
-            builtin_bxor,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["a", "b"]
-        ),
-        builtin!(
-            "builtin-shl",
-            builtin_shl,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["n", "bits"]
-        ),
-        builtin!(
-            "builtin-shr",
-            builtin_shr,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["n", "bits"]
-        ),
-        // ── Type conversion ──────────────────────────────────────────────────────────
-        builtin!("builtin-float", builtin_float, [Strictness::Seq], 1, ["n"]),
-        builtin!("builtin-to-int", builtin_to_int, [Strictness::Seq]),
-        builtin!("builtin-to-float", builtin_to_float, [Strictness::Seq]),
-        // ── Evaluation control ───────────────────────────────────────────────────────
-        builtin!(
-            "builtin-materialize",
-            builtin_force,
-            [Strictness::Seq],
-            0,
-            ["x"]
-        ),
+        // builtin-bytes-find, builtin-bytes-of, builtin-bytes-equal?, builtin-ct-equal?,
+        // builtin-encode, builtin-bytes-get, builtin-bytes-slice moved to string_builtins().
+        // Math, bitwise, type-conversion moved to math_builtins() — none are Core-46.
+        // ── Evaluation control (Core-46 only) ────────────────────────────────────────
+        // builtin-materialize, builtin-macro-error, builtin-apply, builtin-until
+        // moved to meta_builtins() — not in Core-46.
         builtin!(
             "builtin-raise",
             builtin_raise,
@@ -719,22 +404,9 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             0,
             ["msg"]
         ),
-        builtin!(
-            "builtin-macro-error",
-            builtin_macro_error,
-            [Strictness::Seq, Strictness::Id]
-        ),
         builtin!("builtin-try", builtin_try, [Strictness::Id], 1, ["f"]),
-        builtin!(
-            "builtin-apply",
-            builtin_apply,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["f", "args"]
-        ),
-        builtin!("builtin-until", builtin_until),
-        // ── Typeclass dispatch ──────────────────────────────────────────────────────
-        // ── Type introspection ───────────────────────────────────────────────────────
+        // ── Type introspection (Core-46 only) ─────────────────────────────────────────
+        // builtin-ast-of, builtin-validate moved to meta_builtins() — not in Core-46.
         builtin!(
             "builtin-type-of",
             builtin_type_of,
@@ -742,7 +414,6 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             0,
             ["x"]
         ),
-        builtin!("builtin-ast-of", builtin_ast_of, [Strictness::Id], 0, ["x"]),
         builtin!(
             "builtin-check-type",
             builtin_check_type,
@@ -758,28 +429,12 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             2,
             ["name", "env"]
         ),
-        // ── Schema validation ────────────────────────────────────────────────────────
-        builtin!(
-            "builtin-validate",
-            builtin_validate,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["schema", "x"]
-        ),
-        // ── I/O ──────────────────────────────────────────────────────────────────────
-        builtin!("builtin-emit", builtin_emit, [Strictness::Seq], 0, ["x"]),
-        builtin!("builtin-env", builtin_env, [Strictness::Seq], 0, ["name"]),
-        builtin!(
-            "builtin-env-has?",
-            builtin_env_has,
-            [Strictness::Seq],
-            0,
-            ["name"]
-        ),
-        // builtin-open, builtin-string-handle, builtin-read-line, builtin-read-chunk,
-        // builtin-cap-data, builtin-write-handle, builtin-flush, builtin-close,
-        // builtin-raw-create, builtin-seek, builtin-seek-end, builtin-position
-        // REMOVED: All operated on Value::Handle/WriteHandle which no longer exist.
+        // ── I/O (Core-46 only) ────────────────────────────────────────────────────────
+        // builtin-emit, builtin-env, builtin-env-has?, builtin-revocable,
+        // builtin-revoke-cap, builtin-write, builtin-write-atomic, builtin-stat,
+        // builtin-exists, builtin-stat-symlink, builtin-copy-file, builtin-symlink,
+        // builtin-set-permissions, builtin-get-xattr, builtin-set-xattr,
+        // builtin-remove-xattr, builtin-list-xattrs moved to io_builtins().
         builtin!(
             "builtin-narrow",
             builtin_narrow,
@@ -788,155 +443,18 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             ["cap", "path"]
         ),
         builtin!(
-            "builtin-revocable",
-            builtin_revocable,
-            [Strictness::Seq],
-            0,
-            ["cap"]
-        ),
-        builtin!(
-            "builtin-revoke-cap",
-            builtin_revoke_cap,
-            [Strictness::Seq],
-            0,
-            ["cap"]
-        ),
-        builtin!(
-            "builtin-write",
-            builtin_write,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            3,
-            ["cap", "path", "content"]
-        ),
-        builtin!(
-            "builtin-write-atomic",
-            builtin_write_atomic,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            3,
-            ["cap", "path", "content"]
-        ),
-        builtin!(
             "builtin-list-dir",
             builtin_list_dir,
             [Strictness::Seq, Strictness::Seq],
             2,
             ["cap", "path"]
         ),
-        builtin!(
-            "builtin-stat",
-            builtin_stat,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["cap", "path"]
-        ),
-        builtin!(
-            "builtin-exists",
-            builtin_exists,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["cap", "path"]
-        ),
-        builtin!(
-            "builtin-stat-symlink",
-            builtin_stat_symlink,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["cap", "path"]
-        ),
-        builtin!(
-            "builtin-copy-file",
-            builtin_copy_file,
-            [
-                Strictness::Seq,
-                Strictness::Seq,
-                Strictness::Seq,
-                Strictness::Seq
-            ],
-            4,
-            ["src-cap", "src-path", "dst-cap", "dst-path"]
-        ),
-        builtin!(
-            "builtin-symlink",
-            builtin_symlink,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            3,
-            ["cap", "path", "target"]
-        ),
-        builtin!(
-            "builtin-set-permissions",
-            builtin_set_permissions,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            3,
-            ["cap", "path", "mode"]
-        ),
-        builtin!(
-            "builtin-get-xattr",
-            builtin_get_xattr,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            3,
-            ["cap", "path", "name"]
-        ),
-        builtin!(
-            "builtin-set-xattr",
-            builtin_set_xattr,
-            [
-                Strictness::Seq,
-                Strictness::Seq,
-                Strictness::Seq,
-                Strictness::Seq
-            ],
-            4,
-            ["cap", "path", "name", "value"]
-        ),
-        builtin!(
-            "builtin-remove-xattr",
-            builtin_remove_xattr,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            3,
-            ["cap", "path", "name"]
-        ),
-        builtin!(
-            "builtin-list-xattrs",
-            builtin_list_xattrs,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["cap", "path"]
-        ),
-        builtin!(
-            "builtin-make-dir",
-            builtin_make_dir,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["cap", "path"]
-        ),
-        builtin!(
-            "builtin-remove",
-            builtin_remove,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["cap", "path"]
-        ),
-        builtin!(
-            "builtin-rename",
-            builtin_rename,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            3,
-            ["cap", "from", "to"]
-        ),
-        builtin!(
-            "builtin-link",
-            builtin_link,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            3,
-            ["cap", "path", "target"]
-        ),
-        builtin!(
-            "builtin-read-link",
-            builtin_read_link,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["cap", "path"]
-        ),
+        // builtin-make-dir, builtin-remove, builtin-rename, builtin-link, builtin-read-link,
+        // builtin-revocable, builtin-revoke-cap, builtin-write, builtin-write-atomic,
+        // builtin-stat, builtin-exists, builtin-stat-symlink, builtin-copy-file, builtin-symlink,
+        // builtin-set-permissions, builtin-get-xattr, builtin-set-xattr, builtin-remove-xattr,
+        // builtin-list-xattrs, builtin-emit, builtin-env, builtin-env-has?, builtin-read-stdin
+        // moved to io_builtins() — not in Core-46.
         // builtin-read-all removed: operated on Value::Handle which no longer exists.
         builtin!(
             "builtin-path-dir",
@@ -945,7 +463,9 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             1,
             ["path"]
         ),
-        // ── File primitives (Value::File — thin OS wrappers, no buffering) ───────────
+        // ── File primitives (Core-46 only) ────────────────────────────────────────────
+        // builtin-file-write, builtin-file-flush, builtin-file-close, builtin-file-seek
+        // moved to io_builtins() — not in Core-46.
         builtin!(
             "builtin-file-open",
             builtin_file_open,
@@ -960,35 +480,8 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             2,
             ["file", "n"]
         ),
-        builtin!(
-            "builtin-file-write",
-            builtin_file_write,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["file", "bytes"]
-        ),
-        builtin!(
-            "builtin-file-flush",
-            builtin_file_flush,
-            [Strictness::Seq],
-            0,
-            ["file"]
-        ),
-        builtin!(
-            "builtin-file-close",
-            builtin_file_close,
-            [Strictness::Seq],
-            0,
-            ["file"]
-        ),
-        builtin!(
-            "builtin-file-seek",
-            builtin_file_seek,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["file", "pos"]
-        ),
-        // ── Stateless stdio primitives ────────────────────────────────────────────────
+        // ── Stateless stdio primitives (Core-46) ─────────────────────────────────────
+        // builtin-read-stdin moved to io_builtins() — not in Core-46.
         builtin!(
             "builtin-write-stdout",
             builtin_write_stdout,
@@ -1003,23 +496,8 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             2,
             ["sep", "x"]
         ),
-        builtin!("builtin-read-stdin", builtin_read_stdin, [Strictness::Seq]),
-        // ── Decomposed include primitives ─────────────────────────────────────────────
-        builtin!(
-            "builtin-blake3",
-            builtin_blake3,
-            [Strictness::Seq],
-            0,
-            ["bytes"]
-        ),
-        builtin!(
-            "builtin-cap-identity",
-            builtin_cap_identity,
-            [Strictness::Seq],
-            0,
-            ["cap"]
-        ),
-        builtin!("builtin-load", builtin_load, [Strictness::Seq], 1, ["path"]),
+        // ── Decomposed include primitives — moved to meta_builtins() ─────────────────
+        // builtin-blake3, builtin-cap-identity, builtin-load moved to meta_builtins().
         // ── 4-stage pipeline primitives ───────────────────────────────────────────────
         // Stage 1: builtin-parse  — Bytes + path → raw Program (parse only)
         builtin!(
@@ -1048,29 +526,15 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             1,
             ["program"]
         ),
-        // TypeContext primitives
+        // TypeContext primitives (Core-46 only)
+        // builtin-make-type-ctx, builtin-fork-type-ctx, builtin-program moved to meta_builtins().
         builtin!("builtin-get-type-context", builtin_get_type_context, [], 0),
-        builtin!("builtin-make-type-ctx", builtin_make_type_ctx, [], 0),
-        builtin!(
-            "builtin-fork-type-ctx",
-            builtin_fork_type_ctx,
-            [Strictness::Seq],
-            1,
-            ["type-ctx"]
-        ),
         builtin!(
             "builtin-tc-with-type-stage-env",
             builtin_tc_with_type_stage_env,
             [Strictness::Seq, Strictness::Seq],
             2,
             ["type-ctx", "ts-env"]
-        ),
-        builtin!(
-            "builtin-program",
-            builtin_program,
-            [Strictness::Spine],
-            1,
-            ["docs"]
         ),
         builtin!(
             "builtin-module",
@@ -1088,13 +552,7 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             ["doc"],
             ["env", "table"]
         ),
-        builtin!(
-            "builtin-eval-repr",
-            builtin_eval_repr,
-            [Strictness::Seq],
-            1,
-            ["x"]
-        ),
+        // builtin-eval-repr moved to meta_builtins() — not in Core-46.
         builtin!(
             "builtin-variant-payload",
             builtin_variant_payload,
@@ -1109,41 +567,8 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             2,
             ["parent", "entries"]
         ),
-        // builtin-current-env: zero-arg; returns the calling lexical environment.
-        // No force_count or pos_strictness — it inspects no arguments.
-        builtin!("builtin-current-env", builtin_current_env, [], 0),
-        // builtin-eval-macro-ast: evaluate a macro-produced Expr.* AST in the call-site scope.
-        // Reads ᴍᴀᴄʀᴏ∷env and ᴍᴀᴄʀᴏ∷span from caller_env (injected by @Expr dispatch).
-        // pos_strictness[0] = Seq: the Expr.* arg must be materialized before conversion.
-        // force_count = 1: force the first positional arg before dispatching to the builtin.
-        builtin!(
-            "builtin-eval-macro-ast",
-            builtin_eval_macro_ast,
-            [Strictness::Seq],
-            1,
-            ["ast"]
-        ),
-        builtin!(
-            "builtin-eval-types",
-            builtin_eval_types,
-            [Strictness::Seq],
-            1,
-            ["program"]
-        ),
-        builtin!(
-            "builtin-include-cache-get",
-            builtin_include_cache_get,
-            [Strictness::Seq],
-            1,
-            ["key"]
-        ),
-        builtin!(
-            "builtin-include-cache-put",
-            builtin_include_cache_put,
-            [],
-            2,
-            ["key", "value"]
-        ),
+        // builtin-current-env, builtin-eval-macro-ast, builtin-eval-types,
+        // builtin-include-cache-get, builtin-include-cache-put moved to meta_builtins().
         // ── Sequences — transforms ─────────────────────────────────────────────────────
         builtin!(
             "builtin-take",
@@ -1190,93 +615,23 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             0,
             ["cmp", "xs"]
         ),
-        // ── Async concurrency ─────────────────────────────────────────────────────────
-        builtin!("builtin-task", builtin_task),
-        builtin!("builtin-await", builtin_await),
+        // ── Async concurrency (Core-46 only) ─────────────────────────────────────────
+        // All non-Core-46 async builtins moved to async_builtins():
+        // builtin-task, builtin-await, builtin-recv, builtin-broadcast-channel,
+        // builtin-oneshot-channel, builtin-try-send, builtin-select-once, builtin-par,
+        // builtin-par-map, builtin-par-filter, builtin-signal-channel, builtin-timer-channel,
+        // builtin-watch-channel, builtin-context, builtin-with-cancel, builtin-with-timeout,
+        // builtin-with-deadline, builtin-cancelled-q, builtin-cancel-task, builtin-non-cancellable,
+        // builtin-with-context, builtin-cancel-root, builtin-drain, builtin-exit-now,
+        // builtin-reactive-cell, builtin-cell-get, builtin-cell-set.
         builtin!("builtin-channel", builtin_channel),
         builtin!("builtin-send", builtin_send),
-        builtin!("builtin-recv", builtin_recv),
-        builtin!("builtin-broadcast-channel", builtin_broadcast_channel),
-        builtin!("builtin-oneshot-channel", builtin_oneshot_channel),
-        builtin!("builtin-try-send", builtin_try_send),
-        builtin!("builtin-select-once", builtin_select_once),
-        builtin!("builtin-par", builtin_par),
-        builtin!("builtin-par-map", builtin_par_map),
-        builtin!("builtin-par-filter", builtin_par_filter),
-        builtin!("builtin-signal-channel", builtin_signal_channel),
-        builtin!(
-            "builtin-timer-channel",
-            builtin_timer_channel,
-            [Strictness::Seq],
-            1,
-            ["duration"]
-        ),
-        builtin!("builtin-watch-channel", builtin_watch_channel),
-        builtin!("builtin-context", builtin_context),
-        builtin!(
-            "builtin-with-cancel",
-            builtin_with_cancel,
-            [Strictness::Seq],
-            0,
-            ["ctx"]
-        ),
-        builtin!(
-            "builtin-with-timeout",
-            builtin_with_timeout,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            1,
-            ["ctx", "duration", "f"]
-        ),
-        builtin!(
-            "builtin-with-deadline",
-            builtin_with_deadline,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            1,
-            ["ctx", "deadline", "f"]
-        ),
-        builtin!(
-            "builtin-cancelled-q",
-            builtin_cancelled_q,
-            [Strictness::Seq],
-            0,
-            ["ctx"]
-        ),
-        builtin!(
-            "builtin-cancel-task",
-            builtin_cancel_task,
-            [Strictness::Seq],
-            0,
-            ["task"]
-        ),
-        builtin!("builtin-non-cancellable", builtin_non_cancellable),
-        builtin!(
-            "builtin-with-context",
-            builtin_with_context,
-            [Strictness::Seq, Strictness::Id],
-            1,
-            ["ctx", "f"]
-        ),
-        builtin!("builtin-cancel-root", builtin_cancel_root),
-        builtin!("builtin-drain", builtin_drain),
-        builtin!(
-            "builtin-exit-now",
-            builtin_exit_now,
-            [Strictness::Seq],
-            0,
-            ["code"]
-        ),
-        // ── Reactive cells (T-831) ────────────────────────────────────────────────────
-        builtin!("builtin-reactive-cell", builtin_reactive_cell),
-        builtin!("builtin-cell-get", builtin_cell_get),
-        builtin!("builtin-cell-set", builtin_cell_set),
-        // ── Meta / reflection ─────────────────────────────────────────────────────────
-        builtin!(
-            "builtin-gensym",
-            builtin_gensym,
-            [Strictness::Seq, Strictness::Seq],
-            0,
-            ["prefix", "n"]
-        ),
+        // ── Meta / reflection (Core-46 only) ─────────────────────────────────────────
+        // All non-Core-46 meta builtins moved to meta_builtins():
+        // builtin-gensym, builtin-to-tinct, builtin-span-of, builtin-var-resolution,
+        // builtin-annotation-of, builtin-make-annotated, builtin-is-contractive,
+        // builtin-decimal, builtin-big-int, builtin-proxy, builtin-macro-injects,
+        // builtin-sequential, builtin-ast-to-program.
         builtin!(
             "builtin-llt-repr",
             builtin_llt_repr,
@@ -1285,97 +640,11 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             ["x"]
         ),
         builtin!(
-            "builtin-to-tinct",
-            builtin_to_tinct,
-            [Strictness::Seq],
-            1,
-            ["x"]
-        ),
-        builtin!(
             "builtin-tag-of",
             builtin_tag_of,
             [Strictness::Seq],
             0,
             ["x"]
-        ),
-        builtin!(
-            "builtin-span-of",
-            builtin_span_of,
-            [Strictness::Seq],
-            0,
-            ["x"]
-        ),
-        builtin!(
-            "builtin-var-resolution",
-            builtin_var_resolution,
-            [Strictness::Seq, Strictness::Seq],
-            0,
-            ["offset", "env"]
-        ),
-        builtin!(
-            "builtin-annotation-of",
-            builtin_annotation_of,
-            [Strictness::Seq],
-            0,
-            ["x"]
-        ),
-        builtin!(
-            "builtin-make-annotated",
-            builtin_make_annotated,
-            [Strictness::Seq, Strictness::Seq],
-            0,
-            ["value", "annotation"]
-        ),
-        // S-861: equirecursive-checker — contractiveness check for mu combinator.
-        // Used by stdlib/prelude.llt type-stage `mu` to validate TypeNode.Recursive bodies.
-        // Also called from expand_named in typecheck_annot.rs (wired in S-861, both still
-        // dead code pending annotation resolver wiring in S-862).
-        builtin!(
-            "builtin-is-contractive",
-            builtin_is_contractive,
-            [Strictness::Seq],
-            0,
-            ["type-node"]
-        ),
-        builtin!(
-            "builtin-decimal",
-            builtin_decimal,
-            [Strictness::Seq],
-            0,
-            ["x"]
-        ),
-        builtin!(
-            "builtin-big-int",
-            builtin_big_int,
-            [Strictness::Seq],
-            0,
-            ["x"]
-        ),
-        builtin!("builtin-proxy", builtin_proxy),
-        builtin!(
-            "builtin-macro-injects",
-            builtin_macro_injects,
-            [Strictness::Seq],
-            0,
-            ["macro-env"]
-        ),
-        // ── Boot-level AST construction ───────────────────────────────────────────────
-        // builtin-sequential: used by boot-level macros (>>, loader.llt) to construct
-        // a Sequential AST node before the prelude's Expr type is in scope.
-        builtin!(
-            "builtin-sequential",
-            builtin_sequential,
-            [Strictness::Seq],
-            0,
-            ["exprs"]
-        ),
-        // builtin-ast-to-program: convert Expr.* AST node to Value::Program
-        builtin!(
-            "builtin-ast-to-program",
-            builtin_ast_to_program,
-            [Strictness::Seq],
-            1,
-            ["ast"]
         ),
     ]
 }

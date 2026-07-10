@@ -1,7 +1,8 @@
 # builtin_io.llt — I/O, filesystem, and network primitive types.
 # Bodies are Placeholder — valid tinct, errors if forced (builtins are Rust-side).
-# Note: builtin-write-stdout, builtin-write-stderr, builtin-read-stdin are in
-# builtin_core.llt (stateless stdio; registered in the core module).
+# Note: builtin-write-stdout, builtin-write-stderr are in builtin_core.llt (Core-46).
+# builtin-file-open, builtin-file-read, builtin-list-dir, builtin-path-dir, builtin-narrow
+# are also in builtin_core.llt (Core-46 — needed by loader.llt with only --- uses: ["core"]).
 
 [
   # ── Opaque OS file handle ──────────────────────────────────────────────────
@@ -46,11 +47,26 @@
   builtin-remove-xattr:  [fn@Integer [let cap@DirCap path@String name@String] ...]
   builtin-list-xattrs:   [fn@Dict    [let cap@DirCap path@String] ...]
 
+  # ── Filesystem: remove ────────────────────────────────────────────────────
+  builtin-remove:        [fn@Integer [let cap@DirCap path@String] ...]
+
   # ── Capability operations ──────────────────────────────────────────────────
   # revocable: create a revocable wrapper around a DirCap.
   builtin-revocable:     [fn@DirCap  [let cap@DirCap] ...]
   # revoke-cap: revoke a previously created revocable capability.
   builtin-revoke-cap:    [fn@Integer [let cap@DirCap] ...]
+
+  # ── Output and environment ─────────────────────────────────────────────────
+  # emit: write a value to stdout (side effect, returns []).
+  builtin-emit:          [fn@Dict    [let x@Any] ...]
+  # env: read an OS environment variable by name.
+  builtin-env:           [fn@String  [let name@String] ...]
+  # env-has?: check if an OS environment variable is set (returns Integer 1/0).
+  builtin-env-has?:      [fn@Integer [let name@String] ...]
+
+  # ── Stateless stdin ────────────────────────────────────────────────────────
+  # read-stdin: read up to n bytes from stdin.
+  builtin-read-stdin:    [fn@Bytes   [let n@Integer] ...]
 
   # ── Network ────────────────────────────────────────────────────────────────
   # connect: open a network connection, return an opaque stream handle.

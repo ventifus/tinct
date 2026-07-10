@@ -4626,34 +4626,562 @@ pub(crate) fn builtin_cap_env_has(
     })
 }
 
-/// Register `builtin-*` type aliases for meta/reflection/eval builtins (T-1102).
+/// Returns all "meta" module Rust builtins.
 ///
-/// Each alias copies the TypeScheme from the canonical name already registered in
-/// `core_type_env`. Call this AFTER `core_type_env` has run.
+/// These are the AST, evaluation, reflection, and macro builtins that are NOT in the
+/// Core-46 set. The Core-46 items (builtin-parse, builtin-resolve, builtin-typecheck,
+/// builtin-eval, builtin-module, builtin-extend-env, builtin-get-type-context,
+/// builtin-tc-with-type-stage-env, builtin-tag-of, builtin-variant-payload,
+/// builtin-type-of, builtin-llt-repr, builtin-cap-env-has?, builtin-check-type)
+/// stay in core_builtins() for loader.llt.
+///
+/// Consumed exclusively by `builtin_module("meta")` in `src/builtins.rs`.
+pub fn meta_builtins() -> Vec<crate::value::BuiltinDef> {
+    use crate::builtins::builtin;
+    use crate::value::Strictness;
+    vec![
+        // ── AST construction and evaluation ───────────────────────────────────────────
+        builtin!("builtin-ast-of", builtin_ast_of, [Strictness::Id], 0, ["x"]),
+        builtin!(
+            "builtin-eval-macro-ast",
+            builtin_eval_macro_ast,
+            [Strictness::Seq],
+            1,
+            ["ast"]
+        ),
+        builtin!(
+            "builtin-eval-types",
+            builtin_eval_types,
+            [Strictness::Seq],
+            1,
+            ["program"]
+        ),
+        builtin!(
+            "builtin-eval-repr",
+            builtin_eval_repr,
+            [Strictness::Seq],
+            1,
+            ["x"]
+        ),
+        builtin!("builtin-load", builtin_load, [Strictness::Seq], 1, ["path"]),
+        builtin!(
+            "builtin-ast-to-program",
+            builtin_ast_to_program,
+            [Strictness::Seq],
+            1,
+            ["ast"]
+        ),
+        builtin!(
+            "builtin-program",
+            builtin_program,
+            [Strictness::Spine],
+            1,
+            ["docs"]
+        ),
+        // ── Type-checking context ─────────────────────────────────────────────────────
+        builtin!("builtin-make-type-ctx", builtin_make_type_ctx, [], 0),
+        builtin!(
+            "builtin-fork-type-ctx",
+            builtin_fork_type_ctx,
+            [Strictness::Seq],
+            1,
+            ["type-ctx"]
+        ),
+        // ── Reflection and introspection ───────────────────────────────────────────────
+        builtin!(
+            "builtin-annotation-of",
+            builtin_annotation_of,
+            [Strictness::Seq],
+            0,
+            ["x"]
+        ),
+        builtin!(
+            "builtin-make-annotated",
+            builtin_make_annotated,
+            [Strictness::Seq, Strictness::Seq],
+            0,
+            ["value", "annotation"]
+        ),
+        builtin!(
+            "builtin-span-of",
+            builtin_span_of,
+            [Strictness::Seq],
+            0,
+            ["x"]
+        ),
+        builtin!(
+            "builtin-var-resolution",
+            builtin_var_resolution,
+            [Strictness::Seq, Strictness::Seq],
+            0,
+            ["offset", "env"]
+        ),
+        builtin!(
+            "builtin-to-tinct",
+            crate::stream::builtin_to_tinct,
+            [Strictness::Seq],
+            1,
+            ["x"]
+        ),
+        // ── Evaluation control (non-Core-46) ──────────────────────────────────────────
+        builtin!(
+            "builtin-materialize",
+            builtin_force,
+            [Strictness::Seq],
+            0,
+            ["x"]
+        ),
+        builtin!("builtin-until", builtin_until),
+        builtin!(
+            "builtin-apply",
+            builtin_apply,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["f", "args"]
+        ),
+        builtin!(
+            "builtin-validate",
+            builtin_validate,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["schema", "x"]
+        ),
+        // ── Schema validation ─────────────────────────────────────────────────────────
+        builtin!(
+            "builtin-is-contractive",
+            builtin_is_contractive,
+            [Strictness::Seq],
+            0,
+            ["type-node"]
+        ),
+        // ── Numeric value types ───────────────────────────────────────────────────────
+        builtin!(
+            "builtin-decimal",
+            builtin_decimal,
+            [Strictness::Seq],
+            0,
+            ["x"]
+        ),
+        builtin!(
+            "builtin-big-int",
+            builtin_big_int,
+            [Strictness::Seq],
+            0,
+            ["x"]
+        ),
+        // ── Proxy ────────────────────────────────────────────────────────────────────
+        builtin!("builtin-proxy", crate::builtins::builtin_proxy),
+        // ── Macro support ─────────────────────────────────────────────────────────────
+        builtin!(
+            "builtin-macro-error",
+            builtin_macro_error,
+            [Strictness::Seq, Strictness::Id]
+        ),
+        builtin!(
+            "builtin-macro-injects",
+            builtin_macro_injects,
+            [Strictness::Seq],
+            0,
+            ["macro-env"]
+        ),
+        // ── Boot-level AST construction ───────────────────────────────────────────────
+        builtin!(
+            "builtin-sequential",
+            builtin_sequential,
+            [Strictness::Seq],
+            0,
+            ["exprs"]
+        ),
+        // ── Unique name generation ────────────────────────────────────────────────────
+        builtin!(
+            "builtin-gensym",
+            builtin_gensym,
+            [Strictness::Seq, Strictness::Seq],
+            0,
+            ["prefix", "n"]
+        ),
+        // ── Hashing and identity ──────────────────────────────────────────────────────
+        builtin!(
+            "builtin-blake3",
+            builtin_blake3,
+            [Strictness::Seq],
+            0,
+            ["bytes"]
+        ),
+        builtin!(
+            "builtin-cap-identity",
+            builtin_cap_identity,
+            [Strictness::Seq],
+            0,
+            ["cap"]
+        ),
+        // ── Include cache ─────────────────────────────────────────────────────────────
+        builtin!(
+            "builtin-include-cache-get",
+            builtin_include_cache_get,
+            [Strictness::Seq],
+            1,
+            ["key"]
+        ),
+        builtin!(
+            "builtin-include-cache-put",
+            builtin_include_cache_put,
+            [],
+            2,
+            ["key", "value"]
+        ),
+        // ── Environment access ────────────────────────────────────────────────────────
+        // builtin-current-env: zero-arg; returns the calling lexical environment.
+        builtin!("builtin-current-env", builtin_current_env, [], 0),
+    ]
+}
+
+/// Register type signatures for meta module builtins (T-1102).
+///
+/// Directly inserts `Type::Function` TypeSchemes for each builtin registered in
+/// `meta_builtins()`. Self-contained — does not call or depend on `core_type_env`.
 pub fn meta_builtin_types(env: &mut crate::types::TypeEnv) {
-    env.alias_types(&[
-        ("builtin-eval-ast", "eval-ast"),
-        ("builtin-gensym", "gensym"),
-        ("builtin-llt-repr", "llt-repr"),
-        ("builtin-tag-of", "tag-of"),
-        ("builtin-decimal", "decimal"),
-        ("builtin-big-int", "big-int"),
-        ("builtin-try", "try"),
-        ("builtin-apply", "apply"),
-        ("builtin-type-of", "type-of"),
-        ("builtin-narrow", "narrow"),
-        ("builtin-raise", "raise"),
-        ("builtin-blake3", "blake3"),
-        ("builtin-eval", "eval"),
-        ("builtin-eval-types", "eval-types"),
-        ("builtin-load", "load"),
-        ("builtin-cap-identity", "cap-identity"),
-        ("builtin-include-cache-get", "include-cache-get"),
-        ("builtin-include-cache-put", "include-cache-put"),
-        ("builtin-annotation-of", "annotation-of"),
-        ("builtin-make-annotated", "make-annotated"),
-        ("builtin-proxy", "proxy"),
-    ]);
+    use crate::types::Type;
+
+    // ── AST construction and evaluation ────────────────────────────────────
+    // builtin-ast-of: Any → Any  (returns an AST node for the expression)
+    env.insert(
+        "builtin-ast-of".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-eval-macro-ast: Any → Any  (evaluate a macro-produced AST in call-site scope)
+    env.insert(
+        "builtin-eval-macro-ast".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-eval-types: Any → Program  (.llt: @Program)
+    env.insert(
+        "builtin-eval-types".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(Type::TyCon("Program".to_string())),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-eval-repr: Any → String  (.llt: @String)
+    env.insert(
+        "builtin-eval-repr".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(Type::Str),
+            variadic: true,
+            required_count: 1,
+        },
+    );
+    // builtin-load: String → Program  (.llt: @Program)
+    env.insert(
+        "builtin-load".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str)],
+            ret: Box::new(Type::TyCon("Program".to_string())),
+            variadic: true,
+            required_count: 1,
+        },
+    );
+    // builtin-ast-to-program: Any → Program
+    env.insert(
+        "builtin-ast-to-program".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(Type::TyCon("Program".to_string())),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-program: Any → Program
+    env.insert(
+        "builtin-program".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(Type::TyCon("Program".to_string())),
+            variadic: true,
+            required_count: 1,
+        },
+    );
+
+    // ── Type-checking context ───────────────────────────────────────────────
+    // builtin-make-type-ctx: () → TypeContext  (.llt: @TypeContext)
+    env.insert(
+        "builtin-make-type-ctx".to_string(),
+        Type::Function {
+            params: vec![],
+            ret: Box::new(Type::TyCon("TypeContext".to_string())),
+            variadic: false,
+            required_count: 0,
+        },
+    );
+    // builtin-fork-type-ctx: TypeContext → TypeContext  (.llt: @TypeContext)
+    env.insert(
+        "builtin-fork-type-ctx".to_string(),
+        Type::Function {
+            params: vec![(None, Type::TyCon("TypeContext".to_string()))],
+            ret: Box::new(Type::TyCon("TypeContext".to_string())),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+
+    // ── Reflection and introspection ────────────────────────────────────────
+    // builtin-annotation-of: Any → Dict  (.llt: @Dict)
+    env.insert(
+        "builtin-annotation-of".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(Type::Dict(crate::type_def::Row {
+                fields: indexmap::IndexMap::new(),
+                tail: crate::type_def::RowTail::Empty,
+            })),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-make-annotated: Any → Any → Any  (wrap x with ann as annotation)
+    env.insert(
+        "builtin-make-annotated".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any), (None, Type::Any)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-span-of: Any → Any  (return the source span of an AST node)
+    env.insert(
+        "builtin-span-of".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-var-resolution: Any → Any → Any  (variable resolution lookup)
+    env.insert(
+        "builtin-var-resolution".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any), (None, Type::Any)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-to-tinct: Any → Str  (tinct literal representation)
+    env.insert(
+        "builtin-to-tinct".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(Type::Str),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+
+    // ── Evaluation control (non-Core-46) ────────────────────────────────────
+    // builtin-materialize: Any → Any  (force evaluation of a thunk)
+    env.insert(
+        "builtin-materialize".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-until: variadic → Any  (iterate until predicate satisfied)
+    env.insert(
+        "builtin-until".to_string(),
+        Type::Function {
+            params: vec![],
+            ret: Box::new(Type::Any),
+            variadic: true,
+            required_count: 0,
+        },
+    );
+    // builtin-apply: Any → Any → Any  (call f with args dict as positional args)
+    env.insert(
+        "builtin-apply".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any), (None, Type::Any)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-validate: Any → TypeContext → Program  (.llt: @Program)
+    env.insert(
+        "builtin-validate".to_string(),
+        Type::Function {
+            params: vec![
+                (None, Type::Any),
+                (None, Type::TyCon("TypeContext".to_string())),
+            ],
+            ret: Box::new(Type::TyCon("Program".to_string())),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+
+    // ── Schema validation ────────────────────────────────────────────────────
+    // builtin-is-contractive: Any → Int  (check if recursive type body is contractive)
+    env.insert(
+        "builtin-is-contractive".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+
+    // ── Numeric value types ──────────────────────────────────────────────────
+    // builtin-decimal: Any → Decimal  (.llt: @Decimal)
+    env.insert(
+        "builtin-decimal".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(Type::TyCon("Decimal".to_string())),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-big-int: Any → BigInt  (.llt: @BigInt)
+    env.insert(
+        "builtin-big-int".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(Type::TyCon("BigInt".to_string())),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+
+    // ── Proxy ────────────────────────────────────────────────────────────────
+    // builtin-proxy: Any → Any  (create proxy that intercepts field access via handler dict)
+    env.insert(
+        "builtin-proxy".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+
+    // ── Macro support ────────────────────────────────────────────────────────
+    // builtin-macro-error: String → Any → Never  (.llt: @Never)
+    env.insert(
+        "builtin-macro-error".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str), (None, Type::Any)],
+            ret: Box::new(Type::Never),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-macro-injects: Any → Seq(Any)  (injected values for macro)
+    env.insert(
+        "builtin-macro-injects".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-sequential: Any → Any  (boot-level AST construction)
+    env.insert(
+        "builtin-sequential".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+
+    // ── Unique name generation ───────────────────────────────────────────────
+    // builtin-gensym: Str → Str → Str  (scope, prefix → fresh name)
+    env.insert(
+        "builtin-gensym".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str), (None, Type::Str)],
+            ret: Box::new(Type::Str),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+
+    // ── Hashing and identity ─────────────────────────────────────────────────
+    // builtin-blake3: Str → Str  (compute blake3 hash, returns hex string)
+    env.insert(
+        "builtin-blake3".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str)],
+            ret: Box::new(Type::Str),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-cap-identity: DirCap → String  (.llt: @DirCap param, @String return)
+    env.insert(
+        "builtin-cap-identity".to_string(),
+        Type::Function {
+            params: vec![(None, Type::DirCap)],
+            ret: Box::new(Type::Str),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+
+    // ── Include cache ────────────────────────────────────────────────────────
+    // builtin-include-cache-get: Str → Any  (get cached include result by content hash)
+    env.insert(
+        "builtin-include-cache-get".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-include-cache-put: Str → Any → Any  (store include result at content hash key)
+    env.insert(
+        "builtin-include-cache-put".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str), (None, Type::Any)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+
+    // ── Environment access ───────────────────────────────────────────────────
+    // builtin-current-env: () → Any  (returns the calling lexical environment)
+    env.insert(
+        "builtin-current-env".to_string(),
+        Type::Function {
+            params: vec![],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 0,
+        },
+    );
 }
 
 #[cfg(test)]

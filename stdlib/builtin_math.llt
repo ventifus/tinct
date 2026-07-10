@@ -1,19 +1,26 @@
 # builtin_math.llt — Arithmetic, comparison, and numeric primitive operations.
 # Bodies are Placeholder — valid tinct, errors if forced (builtins are Rust-side).
+# Note: builtin-add, builtin-sub, builtin-lt, builtin-gt, builtin-gte are Core-46
+# and registered in core_builtins() — included here for completeness but redundant.
 
 [
-  # ── Arithmetic (return type depends on inputs — Any for polymorphic ops) ────
+  # ── Arithmetic ────────────────────────────────────────────────────────────
+  # Core-46 (also in builtin_core.llt): builtin-add, builtin-sub
   builtin-add:             [fn@Any     [let a@Any b@Any] ...]
   builtin-sub:             [fn@Any     [let a@Any b@Any] ...]
+  # math module only:
   builtin-mul:             [fn@Any     [let a@Any b@Any] ...]
   builtin-div:             [fn@Float   [let a@Any b@Any] ...]
   builtin-mod:             [fn@Integer [let a@Integer b@Integer] ...]
 
   # ── Comparison — all return Integer (1=true, 0=false) ──────────────────────
+  # Core-46 (also in builtin_core.llt): builtin-lt, builtin-gt, builtin-gte
   builtin-lt:              [fn@Integer [let a@Any b@Any] ...]
   builtin-gt:              [fn@Integer [let a@Any b@Any] ...]
   builtin-gte:             [fn@Integer [let a@Any b@Any] ...]
+  # math module only:
   builtin-lte:             [fn@Integer [let a@Any b@Any] ...]
+  builtin-eq-float:        [fn@Integer [let a@Float b@Float] ...]
 
   # ── Bitwise ────────────────────────────────────────────────────────────────
   builtin-band:            [fn@Integer [let a@Integer b@Integer] ...]

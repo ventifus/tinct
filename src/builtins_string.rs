@@ -1149,33 +1149,393 @@ pub(crate) fn builtin_string_concat(
     })
 }
 
-/// Register `builtin-*` type aliases for string builtins (T-1102).
+/// Returns all "string" module Rust builtins.
 ///
-/// Each alias copies the TypeScheme from the canonical name already registered in
-/// `core_type_env`. Call this AFTER `core_type_env` has run.
+/// These are the string transformation and bytes builtins that are NOT in the Core-46 set.
+/// The Core-46 items (builtin-string-concat, builtin-str-bytes, builtin-str-length,
+/// builtin-str-slice, builtin-str-index-of, builtin-int->string, builtin-bytes,
+/// builtin-bytes-concat, builtin-bytes-str) stay in core_builtins() for loader.llt.
+///
+/// Consumed exclusively by `builtin_module("string")` in `src/builtins.rs`.
+pub fn string_builtins() -> Vec<crate::value::BuiltinDef> {
+    use crate::builtins::builtin;
+    use crate::builtins_bytes::{
+        builtin_bytes_equal, builtin_bytes_find, builtin_bytes_get, builtin_bytes_of,
+        builtin_bytes_slice, builtin_ct_equal, builtin_encode,
+    };
+    use crate::value::Strictness;
+    vec![
+        // ── String conversion (non-Core-46) ───────────────────────────────────────────
+        builtin!(
+            "builtin-float->string",
+            builtin_float_to_string,
+            [Strictness::Seq],
+            1,
+            ["n"]
+        ),
+        builtin!(
+            // Hyphenated alias for builtin-float->string (used by type-foundations loader).
+            "builtin-float-to-string",
+            builtin_float_to_string,
+            [Strictness::Seq],
+            1,
+            ["n"]
+        ),
+        // ── String inspection (non-Core-46) ───────────────────────────────────────────
+        builtin!(
+            "builtin-str-byte-count",
+            builtin_str_byte_count,
+            [Strictness::Seq],
+            1,
+            ["str"]
+        ),
+        builtin!(
+            "builtin-str-has-nth-byte?",
+            builtin_str_has_nth_byte,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["str", "i"]
+        ),
+        builtin!(
+            "builtin-str-nth-byte",
+            builtin_str_nth_byte,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["str", "i"]
+        ),
+        builtin!(
+            "builtin-str-has-nth?",
+            builtin_str_has_nth,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["str", "n"]
+        ),
+        builtin!(
+            "builtin-str-nth-char",
+            builtin_str_nth_char,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["str", "n"]
+        ),
+        // ── String transformation (non-Core-46) ───────────────────────────────────────
+        builtin!(
+            "builtin-replace",
+            builtin_replace,
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
+            3,
+            ["pattern", "replacement", "str"]
+        ),
+        builtin!("builtin-trim", builtin_trim, [Strictness::Seq], 1, ["str"]),
+        builtin!(
+            "builtin-trim-start",
+            builtin_trim_start,
+            [Strictness::Seq],
+            1,
+            ["str"]
+        ),
+        builtin!(
+            "builtin-trim-end",
+            builtin_trim_end,
+            [Strictness::Seq],
+            1,
+            ["str"]
+        ),
+        builtin!(
+            "builtin-str-to-upper-char",
+            builtin_str_to_upper_char,
+            [Strictness::Seq],
+            1,
+            ["str"]
+        ),
+        builtin!(
+            "builtin-str-to-lower-char",
+            builtin_str_to_lower_char,
+            [Strictness::Seq],
+            1,
+            ["str"]
+        ),
+        builtin!(
+            "builtin-str-map-chars",
+            builtin_str_map_chars,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["f", "str"]
+        ),
+        builtin!(
+            "builtin-regex-match?",
+            builtin_regex_match,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["pattern", "str"]
+        ),
+        // ── Character operations ───────────────────────────────────────────────────────
+        builtin!(
+            "builtin-char-code",
+            builtin_char_code,
+            [Strictness::Seq],
+            1,
+            ["char"]
+        ),
+        builtin!("builtin-chr", builtin_chr, [Strictness::Seq], 1, ["n"]),
+        // ── Bytes operations (non-Core-46) ────────────────────────────────────────────
+        builtin!(
+            "builtin-bytes-find",
+            builtin_bytes_find,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["needle", "bytes"]
+        ),
+        builtin!("builtin-bytes-of", builtin_bytes_of, [Strictness::Seq]),
+        builtin!(
+            "builtin-bytes-equal?",
+            builtin_bytes_equal,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["a", "b"]
+        ),
+        builtin!(
+            "builtin-ct-equal?",
+            builtin_ct_equal,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["a", "b"]
+        ),
+        builtin!(
+            "builtin-encode",
+            builtin_encode,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["encoding", "bytes"]
+        ),
+        builtin!(
+            "builtin-bytes-get",
+            builtin_bytes_get,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["bytes", "n"]
+        ),
+        builtin!(
+            "builtin-bytes-slice",
+            builtin_bytes_slice,
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
+            3,
+            ["bytes", "start", "end"]
+        ),
+    ]
+}
+
+/// Register type signatures for string module builtins (T-1102).
+///
+/// Directly inserts `Type::Function` TypeSchemes for each builtin registered in
+/// `string_builtins()`. Self-contained — does not call or depend on `core_type_env`.
 pub fn string_builtin_types(env: &mut crate::types::TypeEnv) {
-    env.alias_types(&[
-        ("builtin-str", "str"),
-        ("builtin-int->string", "int->string"),
-        ("builtin-float->string", "float->string"),
-        ("builtin-split", "split"),
-        ("builtin-trim", "trim"),
-        ("builtin-str-length", "str-length"),
-        ("builtin-str-slice", "str-slice"),
-        ("builtin-to-int", "to-int"),
-        ("builtin-replace", "replace"),
-        ("builtin-str-chars", "str-chars"),
-        ("builtin-char-code", "char-code"),
-        ("builtin-chr", "chr"),
-        ("builtin-str-bytes", "str-bytes"),
-        ("builtin-bytes-str", "bytes-str"),
-        ("builtin-str-index-of", "str-index-of"),
-        ("builtin-trim-start", "trim-start"),
-        ("builtin-trim-end", "trim-end"),
-        ("builtin-str-to-upper-char", "str-to-upper-char"),
-        ("builtin-str-to-lower-char", "str-to-lower-char"),
-        ("builtin-str-map-chars", "str-map-chars"),
-        ("builtin-regex-match?", "regex-match?"),
-        ("builtin-string-concat", "string-concat"),
-    ]);
+    use crate::types::Type;
+
+    // ── String conversion (non-Core-46) ────────────────────────────────────
+    // builtin-float->string, builtin-float-to-string: Float → Str
+    for name in ["builtin-float->string", "builtin-float-to-string"] {
+        env.insert(
+            name.to_string(),
+            Type::Function {
+                params: vec![(None, Type::Float)],
+                ret: Box::new(Type::Str),
+                variadic: false,
+                required_count: 1,
+            },
+        );
+    }
+
+    // ── String inspection (non-Core-46) ────────────────────────────────────
+    // builtin-str-byte-count: Str → Int
+    env.insert(
+        "builtin-str-byte-count".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-str-has-nth-byte?: Str → Int → Int
+    env.insert(
+        "builtin-str-has-nth-byte?".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str), (None, Type::Int)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-str-nth-byte: Str → Int → Int
+    env.insert(
+        "builtin-str-nth-byte".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str), (None, Type::Int)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-str-has-nth?: Str → Int → Int
+    env.insert(
+        "builtin-str-has-nth?".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str), (None, Type::Int)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-str-nth-char: Str → Int → Str
+    env.insert(
+        "builtin-str-nth-char".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str), (None, Type::Int)],
+            ret: Box::new(Type::Str),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+
+    // ── String transformation (non-Core-46) ────────────────────────────────
+    // builtin-replace: Str → Str → Str → Str
+    env.insert(
+        "builtin-replace".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str), (None, Type::Str), (None, Type::Str)],
+            ret: Box::new(Type::Str),
+            variadic: false,
+            required_count: 3,
+        },
+    );
+    // builtin-trim, builtin-trim-start, builtin-trim-end: Str → Str
+    for name in ["builtin-trim", "builtin-trim-start", "builtin-trim-end"] {
+        env.insert(
+            name.to_string(),
+            Type::Function {
+                params: vec![(None, Type::Str)],
+                ret: Box::new(Type::Str),
+                variadic: false,
+                required_count: 1,
+            },
+        );
+    }
+    // builtin-str-to-upper-char, builtin-str-to-lower-char: Str → Str
+    for name in ["builtin-str-to-upper-char", "builtin-str-to-lower-char"] {
+        env.insert(
+            name.to_string(),
+            Type::Function {
+                params: vec![(None, Type::Str)],
+                ret: Box::new(Type::Str),
+                variadic: false,
+                required_count: 1,
+            },
+        );
+    }
+    // builtin-str-map-chars: Any → Str → Str
+    env.insert(
+        "builtin-str-map-chars".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any), (None, Type::Str)],
+            ret: Box::new(Type::Str),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-regex-match?: Str → Str → Int
+    env.insert(
+        "builtin-regex-match?".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str), (None, Type::Str)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+
+    // ── Character operations ────────────────────────────────────────────────
+    // builtin-char-code: Str → Int
+    env.insert(
+        "builtin-char-code".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-chr: Int → Str
+    env.insert(
+        "builtin-chr".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Int)],
+            ret: Box::new(Type::Str),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+
+    // ── Bytes operations (non-Core-46) ──────────────────────────────────────
+    // builtin-bytes-find: Bytes → Bytes → Int
+    env.insert(
+        "builtin-bytes-find".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Bytes), (None, Type::Bytes)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-bytes-of: Any → Bytes
+    env.insert(
+        "builtin-bytes-of".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(Type::Bytes),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-bytes-equal?, builtin-ct-equal?: Bytes → Bytes → Int
+    for name in ["builtin-bytes-equal?", "builtin-ct-equal?"] {
+        env.insert(
+            name.to_string(),
+            Type::Function {
+                params: vec![(None, Type::Bytes), (None, Type::Bytes)],
+                ret: Box::new(Type::Int),
+                variadic: false,
+                required_count: 2,
+            },
+        );
+    }
+    // builtin-encode: Any → Any → Bytes
+    env.insert(
+        "builtin-encode".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any), (None, Type::Any)],
+            ret: Box::new(Type::Bytes),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-bytes-get: Int → Bytes → Int
+    env.insert(
+        "builtin-bytes-get".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Int), (None, Type::Bytes)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-bytes-slice: Bytes → Int → Int → Bytes
+    env.insert(
+        "builtin-bytes-slice".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Bytes), (None, Type::Int), (None, Type::Int)],
+            ret: Box::new(Type::Bytes),
+            variadic: false,
+            required_count: 3,
+        },
+    );
 }

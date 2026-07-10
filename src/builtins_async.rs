@@ -2649,41 +2649,383 @@ pub(crate) fn builtin_cell_set(
     })
 }
 
-/// Register `builtin-*` type aliases for async concurrency builtins (T-1102).
+/// Returns all "async" module Rust builtins.
 ///
-/// Each alias copies the TypeScheme from the canonical name already registered in
-/// `core_type_env`. Call this AFTER `core_type_env` has run.
+/// These are the task, channel, and cancellation builtins that are NOT in the Core-46 set.
+/// The Core-46 items (builtin-channel, builtin-send) stay in core_builtins() for
+/// loader.llt which only has `--- uses: ["core"]`.
+///
+/// Consumed exclusively by `builtin_module("async")` in `src/builtins.rs`.
+pub fn async_builtins() -> Vec<crate::value::BuiltinDef> {
+    use crate::builtins::builtin;
+    use crate::value::Strictness;
+    vec![
+        // ── Task lifecycle ─────────────────────────────────────────────────────────────
+        builtin!("builtin-task", builtin_task),
+        builtin!("builtin-await", builtin_await),
+        builtin!("builtin-par", builtin_par),
+        builtin!("builtin-par-map", builtin_par_map),
+        builtin!("builtin-par-filter", builtin_par_filter),
+        builtin!(
+            "builtin-exit-now",
+            builtin_exit_now,
+            [Strictness::Seq],
+            0,
+            ["code"]
+        ),
+        builtin!("builtin-non-cancellable", builtin_non_cancellable),
+        // ── Channels (non-Core-46) ────────────────────────────────────────────────────
+        builtin!("builtin-recv", builtin_recv),
+        builtin!("builtin-broadcast-channel", builtin_broadcast_channel),
+        builtin!("builtin-oneshot-channel", builtin_oneshot_channel),
+        builtin!("builtin-try-send", builtin_try_send),
+        builtin!("builtin-select-once", builtin_select_once),
+        builtin!("builtin-signal-channel", builtin_signal_channel),
+        builtin!(
+            "builtin-timer-channel",
+            builtin_timer_channel,
+            [Strictness::Seq],
+            1,
+            ["duration"]
+        ),
+        builtin!("builtin-watch-channel", builtin_watch_channel),
+        builtin!("builtin-drain", builtin_drain),
+        // ── Context and cancellation ───────────────────────────────────────────────────
+        builtin!("builtin-context", builtin_context),
+        builtin!(
+            "builtin-with-cancel",
+            builtin_with_cancel,
+            [Strictness::Seq],
+            0,
+            ["ctx"]
+        ),
+        builtin!(
+            "builtin-with-timeout",
+            builtin_with_timeout,
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
+            1,
+            ["ctx", "duration", "f"]
+        ),
+        builtin!(
+            "builtin-with-deadline",
+            builtin_with_deadline,
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
+            1,
+            ["ctx", "deadline", "f"]
+        ),
+        builtin!(
+            "builtin-cancelled-q",
+            builtin_cancelled_q,
+            [Strictness::Seq],
+            0,
+            ["ctx"]
+        ),
+        builtin!(
+            "builtin-cancel-task",
+            builtin_cancel_task,
+            [Strictness::Seq],
+            0,
+            ["task"]
+        ),
+        builtin!(
+            "builtin-with-context",
+            builtin_with_context,
+            [Strictness::Seq, Strictness::Id],
+            1,
+            ["ctx", "f"]
+        ),
+        builtin!("builtin-cancel-root", builtin_cancel_root),
+        // ── Reactive cells ────────────────────────────────────────────────────────────
+        builtin!("builtin-reactive-cell", builtin_reactive_cell),
+        builtin!("builtin-cell-get", builtin_cell_get),
+        builtin!("builtin-cell-set", builtin_cell_set),
+    ]
+}
+
+/// Register type signatures for async module builtins (T-1102).
+///
+/// Directly inserts `Type::Function` TypeSchemes for each builtin registered in
+/// `async_builtins()`. Self-contained — does not call or depend on `core_type_env`.
 pub fn async_builtin_types(env: &mut crate::types::TypeEnv) {
-    env.alias_types(&[
-        ("builtin-task", "task"),
-        ("builtin-await", "await"),
-        ("builtin-channel", "channel"),
-        ("builtin-send", "send"),
-        ("builtin-recv", "recv"),
-        ("builtin-broadcast-channel", "broadcast-channel"),
-        ("builtin-oneshot-channel", "oneshot-channel"),
-        ("builtin-try-send", "try-send"),
-        ("builtin-select-once", "select-once"),
-        ("builtin-par", "par"),
-        ("builtin-par-map", "par-map"),
-        ("builtin-par-filter", "par-filter"),
-        ("builtin-signal-channel", "signal-channel"),
-        ("builtin-timer-channel", "timer-channel"),
-        ("builtin-watch-channel", "watch-channel"),
-        ("builtin-context", "context"),
-        ("builtin-with-cancel", "with-cancel"),
-        ("builtin-with-timeout", "with-timeout"),
-        ("builtin-with-deadline", "with-deadline"),
-        ("builtin-cancel-task", "cancel-task"),
-        ("builtin-cancel-root", "cancel-root"),
-        ("builtin-drain", "drain"),
-        ("builtin-exit-now", "exit-now"),
-        ("builtin-non-cancellable", "non-cancellable"),
-        ("builtin-with-context", "with-context"),
-        ("builtin-reactive-cell", "reactive-cell"),
-        ("builtin-cell-get", "cell-get"),
-        ("builtin-cell-set", "cell-set"),
-    ]);
+    use crate::types::Type;
+
+    // ── Task lifecycle ──────────────────────────────────────────────────────
+    // builtin-task: Any → Any
+    env.insert(
+        "builtin-task".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-await: Any → Any
+    env.insert(
+        "builtin-await".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-par: Any → Any → Any
+    env.insert(
+        "builtin-par".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any), (None, Type::Any)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-par-map: Any → Any → Dict
+    env.insert(
+        "builtin-par-map".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any), (None, Type::Any)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-par-filter: Any → Any → Dict
+    env.insert(
+        "builtin-par-filter".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any), (None, Type::Any)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-exit-now: Int → Never
+    env.insert(
+        "builtin-exit-now".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Int)],
+            ret: Box::new(Type::Never),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-non-cancellable: Any → Any
+    env.insert(
+        "builtin-non-cancellable".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+
+    // ── Channels (non-Core-46) ──────────────────────────────────────────────
+    // builtin-recv: Any → Any
+    env.insert(
+        "builtin-recv".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-broadcast-channel: Int → Any
+    env.insert(
+        "builtin-broadcast-channel".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Int)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-oneshot-channel: () → Any
+    env.insert(
+        "builtin-oneshot-channel".to_string(),
+        Type::Function {
+            params: vec![],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 0,
+        },
+    );
+    // builtin-try-send: Any → Any → Any
+    env.insert(
+        "builtin-try-send".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any), (None, Type::Any)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-select-once: Any → Any → Any
+    env.insert(
+        "builtin-select-once".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any), (None, Type::Any)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-signal-channel: Any → Any
+    env.insert(
+        "builtin-signal-channel".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-timer-channel: Any → Any
+    env.insert(
+        "builtin-timer-channel".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-watch-channel: Any → Any
+    env.insert(
+        "builtin-watch-channel".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-drain: Any → Any
+    env.insert(
+        "builtin-drain".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+
+    // ── Context and cancellation ────────────────────────────────────────────
+    // builtin-context: () → Any
+    env.insert(
+        "builtin-context".to_string(),
+        Type::Function {
+            params: vec![],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 0,
+        },
+    );
+    // builtin-with-cancel: Any → Any
+    env.insert(
+        "builtin-with-cancel".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-with-timeout: Any → Any → Any → Any
+    env.insert(
+        "builtin-with-timeout".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any), (None, Type::Any), (None, Type::Any)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 3,
+        },
+    );
+    // builtin-with-deadline: Any → Any → Any → Any
+    env.insert(
+        "builtin-with-deadline".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any), (None, Type::Any), (None, Type::Any)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 3,
+        },
+    );
+    // builtin-cancelled-q: Any → Any  (runtime name uses -q suffix instead of ?)
+    env.insert(
+        "builtin-cancelled-q".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-cancel-task: Any → Any
+    env.insert(
+        "builtin-cancel-task".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-with-context: Any → Any → Any
+    env.insert(
+        "builtin-with-context".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any), (None, Type::Any)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-cancel-root: () → Any
+    env.insert(
+        "builtin-cancel-root".to_string(),
+        Type::Function {
+            params: vec![],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 0,
+        },
+    );
+
+    // ── Reactive cells ──────────────────────────────────────────────────────
+    // builtin-reactive-cell: Any → Any
+    env.insert(
+        "builtin-reactive-cell".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-cell-get: Any → Any
+    env.insert(
+        "builtin-cell-get".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-cell-set: Any → Any → Any
+    env.insert(
+        "builtin-cell-set".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any), (None, Type::Any)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 2,
+        },
+    );
 }
 
 #[cfg(test)]

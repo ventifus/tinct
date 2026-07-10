@@ -1,14 +1,19 @@
 # builtin_string.llt — String and bytes primitive operations.
 # Bodies are Placeholder — valid tinct, errors if forced (builtins are Rust-side).
+# Note: builtin-string-concat, builtin-str-bytes, builtin-str-length, builtin-str-slice,
+# builtin-str-index-of, builtin-int->string, builtin-bytes, builtin-bytes-concat,
+# builtin-bytes-str are Core-46 and in builtin_core.llt — not repeated here.
 
 [
   # ── String construction and conversion ─────────────────────────────────────
   builtin-string-concat:   [fn@String  [let a@String b@String] ...]
   builtin-int->string:     [fn@String  [let n@Integer] ...]
-  builtin-float->string:   [fn@String  [let n@Float] ...]
-  builtin-to-int:          [fn@Integer [let x@Any] ...]
-  builtin-to-float:        [fn@Float   [let x@Any] ...]
-  builtin-json-parse:      [fn@Any     [let s@String] ...]
+  builtin-float->string:      [fn@String  [let n@Float] ...]
+  # Hyphenated alias for builtin-float->string (used by type-foundations loader).
+  builtin-float-to-string:    [fn@String  [let n@Float] ...]
+  builtin-to-int:             [fn@Integer [let x@Any] ...]
+  builtin-to-float:           [fn@Float   [let x@Any] ...]
+  builtin-json-parse:         [fn@Any     [let s@String] ...]
 
   # ── String inspection ──────────────────────────────────────────────────────
   builtin-str-length:      [fn@Integer [let s@String] ...]

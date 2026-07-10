@@ -1141,27 +1141,306 @@ pub(crate) fn builtin_float(
     })
 }
 
-/// Register `builtin-*` type aliases for math and comparison builtins (T-1102).
+/// Returns all "math" module Rust builtins.
 ///
-/// Each alias copies the TypeScheme from the canonical name already registered in
-/// `core_type_env`. Call this AFTER `core_type_env` has run.
+/// These are the arithmetic, comparison, bitwise, and numeric conversion builtins that
+/// are NOT in the Core-46 set. The Core-46 items (builtin-add, builtin-sub, builtin-gt,
+/// builtin-gte, builtin-lt, builtin-eq-int, builtin-eq-string) stay in core_builtins()
+/// for loader.llt which only has `--- uses: ["core"]`.
+///
+/// Consumed exclusively by `builtin_module("math")` in `src/builtins.rs`.
+pub fn math_builtins() -> Vec<crate::value::BuiltinDef> {
+    use crate::builtins::builtin;
+    use crate::value::Strictness;
+    vec![
+        // ── Arithmetic (non-Core-46) ──────────────────────────────────────────────────
+        builtin!(
+            "builtin-mul",
+            builtin_mul,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["a", "b"]
+        ),
+        builtin!(
+            "builtin-div",
+            builtin_div_float,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["a", "b"]
+        ),
+        // ── Comparison (non-Core-46) ──────────────────────────────────────────────────
+        builtin!(
+            "builtin-eq-float",
+            builtin_eq_float,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["a", "b"]
+        ),
+        builtin!(
+            "builtin-lte",
+            builtin_lte,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["a", "b"]
+        ),
+        // ── Math ─────────────────────────────────────────────────────────────────────
+        builtin!("builtin-floor", crate::builtins::builtin_floor, [Strictness::Seq], 1, ["n"]),
+        builtin!("builtin-round", crate::builtins::builtin_round, [Strictness::Seq], 1, ["n"]),
+        builtin!(
+            "builtin-pow",
+            builtin_pow,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["base", "exp"]
+        ),
+        builtin!("builtin-sqrt", builtin_sqrt, [Strictness::Seq], 1, ["n"]),
+        builtin!("builtin-log", builtin_log, [Strictness::Seq], 1, ["n"]),
+        builtin!("builtin-log2", builtin_log2, [Strictness::Seq], 1, ["n"]),
+        builtin!("builtin-log10", builtin_log10, [Strictness::Seq], 1, ["n"]),
+        builtin!("builtin-exp", builtin_exp, [Strictness::Seq], 1, ["n"]),
+        builtin!("builtin-sin", builtin_sin, [Strictness::Seq], 1, ["n"]),
+        builtin!("builtin-cos", builtin_cos, [Strictness::Seq], 1, ["n"]),
+        builtin!("builtin-tan", builtin_tan, [Strictness::Seq], 1, ["n"]),
+        builtin!("builtin-asin", builtin_asin, [Strictness::Seq], 1, ["n"]),
+        builtin!("builtin-acos", builtin_acos, [Strictness::Seq], 1, ["n"]),
+        builtin!("builtin-atan", builtin_atan, [Strictness::Seq], 1, ["n"]),
+        builtin!(
+            "builtin-atan2",
+            builtin_atan2,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["y", "x"]
+        ),
+        builtin!(
+            "builtin-nan?",
+            builtin_nan_check,
+            [Strictness::Seq],
+            1,
+            ["n"]
+        ),
+        builtin!(
+            "builtin-inf?",
+            builtin_inf_check,
+            [Strictness::Seq],
+            1,
+            ["n"]
+        ),
+        builtin!(
+            "builtin-finite?",
+            builtin_finite_check,
+            [Strictness::Seq],
+            1,
+            ["n"]
+        ),
+        // ── Bitwise ──────────────────────────────────────────────────────────────────
+        builtin!(
+            "builtin-band",
+            builtin_band,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["a", "b"]
+        ),
+        builtin!(
+            "builtin-bor",
+            builtin_bor,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["a", "b"]
+        ),
+        builtin!(
+            "builtin-bxor",
+            builtin_bxor,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["a", "b"]
+        ),
+        builtin!(
+            "builtin-shl",
+            builtin_shl,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["n", "bits"]
+        ),
+        builtin!(
+            "builtin-shr",
+            builtin_shr,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["n", "bits"]
+        ),
+        // ── Type conversion ──────────────────────────────────────────────────────────
+        builtin!("builtin-float", builtin_float, [Strictness::Seq], 1, ["n"]),
+        builtin!("builtin-to-int", crate::builtins::builtin_to_int, [Strictness::Seq]),
+        builtin!("builtin-to-float", crate::builtins::builtin_to_float, [Strictness::Seq]),
+    ]
+}
+
+/// Register type signatures for math module builtins (T-1102).
+///
+/// Directly inserts `Type::Function` TypeSchemes for each builtin registered in
+/// `math_builtins()`. Self-contained — does not call or depend on `core_type_env`.
 pub fn math_builtin_types(env: &mut crate::types::TypeEnv) {
-    env.alias_types(&[
-        ("builtin-lt", "<"),
-        ("builtin-gt", ">"),
-        ("builtin-gte", ">="),
-        ("builtin-lte", "<="),
-        ("builtin-add", "+"),
-        ("builtin-sub", "-"),
-        ("builtin-mul", "*"),
-        ("builtin-div", "/"),
-        ("builtin-band", "band"),
-        ("builtin-bor", "bor"),
-        ("builtin-bxor", "bxor"),
-        ("builtin-shl", "shl"),
-        ("builtin-shr", "shr"),
-        ("builtin-float", "float"),
-    ]);
+    use crate::types::Type;
+
+    // ── Arithmetic (non-Core-46) ────────────────────────────────────────────
+    // builtin-mul: Any → Any → Any | Float  (matches .llt @Any return)
+    env.insert(
+        "builtin-mul".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any), (None, Type::Any)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-div: Any → Any → Float
+    env.insert(
+        "builtin-div".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any), (None, Type::Any)],
+            ret: Box::new(Type::Float),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+
+    // ── Comparison (non-Core-46) ────────────────────────────────────────────
+    // builtin-eq-float: Float → Float → Int
+    env.insert(
+        "builtin-eq-float".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Float), (None, Type::Float)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-lte: Any → Any → Int
+    env.insert(
+        "builtin-lte".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any), (None, Type::Any)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+
+    // ── Math functions ──────────────────────────────────────────────────────
+    // builtin-floor, builtin-round: Any → Int
+    for name in ["builtin-floor", "builtin-round"] {
+        env.insert(
+            name.to_string(),
+            Type::Function {
+                params: vec![(None, Type::Any)],
+                ret: Box::new(Type::Int),
+                variadic: false,
+                required_count: 1,
+            },
+        );
+    }
+    // builtin-pow, builtin-atan2: Any → Any → Float
+    for name in ["builtin-pow", "builtin-atan2"] {
+        env.insert(
+            name.to_string(),
+            Type::Function {
+                params: vec![(None, Type::Any), (None, Type::Any)],
+                ret: Box::new(Type::Float),
+                variadic: false,
+                required_count: 2,
+            },
+        );
+    }
+    // 1-arg transcendentals: Any → Float
+    for name in [
+        "builtin-sqrt",
+        "builtin-log",
+        "builtin-log2",
+        "builtin-log10",
+        "builtin-exp",
+        "builtin-sin",
+        "builtin-cos",
+        "builtin-tan",
+        "builtin-asin",
+        "builtin-acos",
+        "builtin-atan",
+    ] {
+        env.insert(
+            name.to_string(),
+            Type::Function {
+                params: vec![(None, Type::Any)],
+                ret: Box::new(Type::Float),
+                variadic: false,
+                required_count: 1,
+            },
+        );
+    }
+
+    // ── Float predicates ────────────────────────────────────────────────────
+    // builtin-nan?, builtin-inf?, builtin-finite?: Float → Int
+    for name in ["builtin-nan?", "builtin-inf?", "builtin-finite?"] {
+        env.insert(
+            name.to_string(),
+            Type::Function {
+                params: vec![(None, Type::Float)],
+                ret: Box::new(Type::Int),
+                variadic: false,
+                required_count: 1,
+            },
+        );
+    }
+
+    // ── Bitwise ─────────────────────────────────────────────────────────────
+    // builtin-band, builtin-bor, builtin-bxor, builtin-shl, builtin-shr: Int → Int → Int
+    for name in [
+        "builtin-band",
+        "builtin-bor",
+        "builtin-bxor",
+        "builtin-shl",
+        "builtin-shr",
+    ] {
+        env.insert(
+            name.to_string(),
+            Type::Function {
+                params: vec![(None, Type::Int), (None, Type::Int)],
+                ret: Box::new(Type::Int),
+                variadic: false,
+                required_count: 2,
+            },
+        );
+    }
+
+    // ── Numeric coercions ───────────────────────────────────────────────────
+    // builtin-float: Any → Float
+    env.insert(
+        "builtin-float".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(Type::Float),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-to-int: Any → Int
+    env.insert(
+        "builtin-to-int".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-to-float: Any → Float
+    env.insert(
+        "builtin-to-float".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(Type::Float),
+            variadic: false,
+            required_count: 1,
+        },
+    );
 }
 
 #[cfg(test)]
