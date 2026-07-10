@@ -36,14 +36,32 @@
   # The prelude `try` wrapper converts this to Result.Ok / Result.Error for callers.
   builtin-try:   [fn@[bind: [a]] [let f@[Fn@a []]] ...]
 
-
   # ── String primitives ────────────────────────────────────────────────────────────────
-  builtin-str-bytes:[fn@Bytes [let s@String] ...]
-  builtin-str-hash: [fn@Integer   [let s@String] ...]
+  builtin-str-bytes:[fn@Bytes   [let s@String] ...]
+  builtin-str-hash: [fn@Integer [let s@String] ...]
 
-  # ── Comparison primitives — all return Int (1=true, 0=false) ────────────────────────
-  builtin-lt:         [fn@Integer [let a@Integer    b@Integer]    ...]
-  builtin-eq-int:     [fn@Integer [let a@Integer    b@Integer]    ...]
-  builtin-eq-float:   [fn@Integer [let a@Float  b@Float]  ...]
-  builtin-eq-string:  [fn@Integer [let a@String b@String] ...]
+  # ── Comparison primitives — all return Integer (1=true, 0=false) ─────────────────────
+  builtin-lt:        [fn@Integer [let a@Integer b@Integer] ...]
+  builtin-eq-int:    [fn@Integer [let a@Integer b@Integer] ...]
+  builtin-eq-float:  [fn@Integer [let a@Float   b@Float]   ...]
+  builtin-eq-string: [fn@Integer [let a@String  b@String]  ...]
+
+  # ── Stateless stdio ───────────────────────────────────────────────────────────────────
+  # write-stdout/stderr: writes s to the stream, returns h (handle pass-through for chaining).
+  # h is not materialized — it flows through unchanged so callers can pipeline I/O.
+  builtin-write-stdout: [fn@[bind: [h]  return: h] [let s@String h] ...]
+  builtin-write-stderr: [fn@[bind: [h]  return: h] [let s@String h] ...]
+  builtin-read-stdin:   [fn@Bytes [let n@Integer] ...]
+
+  # ── Value inspection ─────────────────────────────────────────────────────────────────
+  # eval-repr: evaluate prog in env: and return llt-repr of the last result as a String.
+  builtin-eval-repr:       [fn@String [let prog@Any ...opts] ...]
+  # variant-payload: extract the payload dict from a Variant value. Errors on non-Variant.
+  builtin-variant-payload: [fn@Any    [let variant@Any] ...]
+
+  # ── Environment access ───────────────────────────────────────────────────────────────
+  # current-env: returns the caller's lexical environment. Zero positional args.
+  builtin-current-env:     [fn@Any  [] ...]
+  # var-resolution: given byte offset and resolved Program, return {level: N, slot: M} or [].
+  builtin-var-resolution:  [fn@Dict [let offset@Integer env@Any] ...]
 ]

@@ -4392,4 +4392,79 @@ pub fn core_type_env(env: &mut TypeEnv) {
             required_count: 2,
         },
     );
+
+    // ── Stateless stdio ───────────────────────────────────────────────────────
+    // builtin-write-stdout: String → h → h  (writes s, returns h for chaining)
+    // builtin-write-stderr: String → h → h  (writes s to stderr, returns h)
+    // Both take 2 args: the string to write and a handle/value to pass through.
+    // The handle is not materialized — it flows unchanged for I/O chaining.
+    for name in ["builtin-write-stdout", "builtin-write-stderr"] {
+        env.insert(
+            name.to_string(),
+            Type::Function {
+                params: vec![(None, Type::Str), (None, Type::Any)],
+                ret: Box::new(Type::Any), // pass-through of second arg
+                variadic: false,
+                required_count: 2,
+            },
+        );
+    }
+    // builtin-read-stdin: Int → Bytes  (read up to n bytes from stdin)
+    env.insert(
+        "builtin-read-stdin".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Int)],
+            ret: Box::new(Type::Bytes),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+
+    // ── Value inspection ──────────────────────────────────────────────────────
+    // builtin-eval-repr: Any → String  (eval doc in env: and return llt-repr of result)
+    env.insert(
+        "builtin-eval-repr".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(Type::Str),
+            variadic: true,
+            required_count: 1,
+        },
+    );
+    // builtin-variant-payload: Variant → Any  (extract payload from Variant; errors on non-Variant)
+    env.insert(
+        "builtin-variant-payload".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+
+    // ── Environment access ────────────────────────────────────────────────────
+    // builtin-current-env: () → Env  (returns the caller's lexical environment)
+    env.insert(
+        "builtin-current-env".to_string(),
+        Type::Function {
+            params: vec![],
+            ret: Box::new(Type::Any), // Value::Environment — opaque
+            variadic: false,
+            required_count: 0,
+        },
+    );
+    // builtin-var-resolution: Int → Any → Dict  (given byte offset + resolved Program,
+    // return {level: N, slot: M} for the VarRef at that offset, or [] if not found)
+    env.insert(
+        "builtin-var-resolution".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Int), (None, Type::Any)],
+            ret: Box::new(Type::Dict(Row {
+                fields: indexmap::IndexMap::new(),
+                tail: crate::type_def::RowTail::Empty,
+            })),
+            variadic: false,
+            required_count: 2,
+        },
+    );
 }

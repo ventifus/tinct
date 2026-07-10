@@ -2,46 +2,80 @@
 # Bodies are Placeholder — valid tinct, errors if forced (builtins are Rust-side).
 
 [
+  # ── Opaque runtime types ──────────────────────────────────────────────────
+  # Program: a parsed+resolved AST (output of builtin-parse / builtin-resolve).
+  Program:     [type Program]
+  # TypeContext: accumulated type-checker state (type env + type-stage env).
+  TypeContext:  [type TypeContext]
+
   # ── AST and evaluation ─────────────────────────────────────────────────────
-  builtin-parse:             [fn@Any     [let src@Bytes path@String] ...]
-  builtin-resolve:           [fn@Any     [let prog@Any ...opts] ...]
-  builtin-eval:              [fn@Any     [let prog@Any ...opts] ...]
-  builtin-eval-types:        [fn@Any     [let prog@Any] ...]
-  builtin-load:              [fn@Any     [let src@String ...opts] ...]
-  builtin-eval-macro-ast:    [fn@Any     [let ast@Any] ...]
+  # parse: parse source bytes at path, return Program with documents and errors.
+  builtin-parse:             [fn@Program  [let src@Bytes path@String] ...]
+  # resolve: resolve VarRef de Bruijn coords in a document against an env.
+  builtin-resolve:           [fn@Dict     [let prog@Any ...opts] ...]
+  # eval: evaluate a resolved document; returns {env, result, doc-name, error}.
+  builtin-eval:              [fn@Dict     [let prog@Any ...opts] ...]
+  # eval-types: evaluate only type-stage documents, returning a Program.
+  builtin-eval-types:        [fn@Program  [let prog@Any] ...]
+  # load: load+parse source bytes or string, return Program.
+  builtin-load:              [fn@Program  [let src@String ...opts] ...]
+  # eval-macro-ast: evaluate a macro-produced Expr.* AST in the call-site scope.
+  builtin-eval-macro-ast:    [fn@Any      [let ast@Any] ...]
 
   # ── Type-checking context ──────────────────────────────────────────────────
-  builtin-typecheck:         [fn@Any     [let prog@Any ctx@Any ...opts] ...]
-  builtin-get-type-context:  [fn@Any     [...args] ...]
-  builtin-make-type-ctx:     [fn@Any     [] ...]
-  builtin-fork-type-ctx:     [fn@Any     [let ctx@Any] ...]
-  builtin-tc-with-type-stage-env: [fn@Any [let ctx@Any env@Any] ...]
-  builtin-validate:          [fn@Any     [let prog@Any ctx@Any] ...]
+  # typecheck: run type-checking on prog using ctx; returns typed Program.
+  builtin-typecheck:              [fn@Program    [let prog@Any ctx@TypeContext ...opts] ...]
+  # get-type-context: retrieve the EvalContext's TypeContext handle.
+  builtin-get-type-context:       [fn@TypeContext [...args] ...]
+  # make-type-ctx: create a fresh TypeContext seeded with core type definitions.
+  builtin-make-type-ctx:          [fn@TypeContext [] ...]
+  # fork-type-ctx: create child TypeContext inheriting parent; mutations don't propagate up.
+  builtin-fork-type-ctx:          [fn@TypeContext [let ctx@TypeContext] ...]
+  # tc-with-type-stage-env: replace the TypeContext's type-stage env, return updated ctx.
+  builtin-tc-with-type-stage-env: [fn@TypeContext [let ctx@TypeContext env@Any] ...]
+  # validate: validate program AST structure; returns Program or error.
+  builtin-validate:               [fn@Program    [let prog@Any ctx@TypeContext] ...]
 
   # ── Reflection and introspection ───────────────────────────────────────────
+  # tag-of: return the variant tag string (e.g. "Boolean.True") or type name.
   builtin-tag-of:            [fn@String  [let x@Any] ...]
+  # type-of: return a string describing the runtime value type ("Int", "Dict", etc.).
   builtin-type-of:           [fn@String  [let x@Any] ...]
-  builtin-annotation-of:     [fn@Any     [let x@Any] ...]
-  builtin-make-annotated:    [fn@Any     [let x@Any ann@Any] ...]
+  # annotation-of: return the PropertyDict annotation stored on a value (or []).
+  builtin-annotation-of:     [fn@Dict    [let x@Any] ...]
+  # make-annotated: wrap x with ann as its runtime annotation dict; returns x.
+  builtin-make-annotated:    [fn@Any     [let x@Any ann@Dict] ...]
+  # llt-repr: return the tinct literal representation of x as a String.
   builtin-llt-repr:          [fn@String  [let x@Any] ...]
 
   # ── Macro support ─────────────────────────────────────────────────────────
+  # gensym: generate a fresh unique name with scope and prefix.
   builtin-gensym:            [fn@String  [let scope@String prefix@String] ...]
+  # macro-error: raise a macro-level error with message and offending form. Never returns.
   builtin-macro-error:       [fn@Never   [let msg@String form@Any] ...]
+  # eval-ast: evaluate a quoted AST node in the current scope; returns the result.
   builtin-eval-ast:          [fn@Any     [let ast@Any] ...]
+  # is-contractive: check if a recursive type body is contractive (non-immediately-recursive).
   builtin-is-contractive:    [fn@Integer [let ty@Any] ...]
 
   # ── Apply and meta-call ────────────────────────────────────────────────────
-  builtin-apply:             [fn@Any     [let f@Any args@Any] ...]
-  builtin-proxy:             [fn@Any     [let handler@Any] ...]
+  # apply: call f with args dict as positional arguments.
+  builtin-apply:             [fn@Any     [let f@Any args@Dict] ...]
+  # proxy: create a proxy value that intercepts field access via a handler dict.
+  builtin-proxy:             [fn@Any     [let handler@Dict] ...]
 
   # ── Capability and identity ────────────────────────────────────────────────
+  # narrow: create a narrowed DirCap restricted to a sub-path.
   builtin-narrow:            [fn@DirCap  [let cap@DirCap ...sub] ...]
+  # cap-identity: return a stable string identity for a DirCap (for content-addressed caching).
   builtin-cap-identity:      [fn@String  [let cap@DirCap] ...]
+  # cap-env-has?: check if a capability name is present in the environment.
   builtin-cap-env-has?:      [fn@Integer [let name@String env@Any] ...]
 
   # ── Include cache ─────────────────────────────────────────────────────────
+  # include-cache-get: get a cached include result by content hash.
   builtin-include-cache-get: [fn@Any     [let key@String] ...]
+  # include-cache-put: store an include result at content hash key.
   builtin-include-cache-put: [fn@Any     [let key@String val@Any] ...]
 
   # ── Hashing ───────────────────────────────────────────────────────────────
@@ -51,8 +85,11 @@
   builtin-decimal:           [fn@Decimal [let x@Any] ...]
   builtin-big-int:           [fn@BigInt  [let x@Any] ...]
 
-  # ── Extended env ──────────────────────────────────────────────────────────
-  builtin-extend-env:        [fn@Any     [let env@Any bindings@Any] ...]
+  # ── Environment operations ────────────────────────────────────────────────
+  # extend-env: create a child environment from parent, adding bindings dict.
+  builtin-extend-env:        [fn@Any     [let parent@Any bindings@Dict] ...]
+  # env-has?: check if a name is bound in the environment.
   builtin-env-has?:          [fn@Integer [let name@String env@Any] ...]
+  # get-env: retrieve a binding by name from an environment.
   builtin-get-env:           [fn@Any     [let name@String env@Any] ...]
 ]

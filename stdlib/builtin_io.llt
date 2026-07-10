@@ -1,14 +1,11 @@
 # builtin_io.llt — I/O, filesystem, and network primitive types.
 # Bodies are Placeholder — valid tinct, errors if forced (builtins are Rust-side).
+# Note: builtin-write-stdout, builtin-write-stderr, builtin-read-stdin are in
+# builtin_core.llt (stateless stdio; registered in the core module).
 
 [
   # ── Opaque OS file handle ──────────────────────────────────────────────────
   File: [type File]
-
-  # ── Standard streams ───────────────────────────────────────────────────────
-  builtin-write-stdout:  [fn@Integer [let s@String] ...]
-  builtin-write-stderr:  [fn@Integer [let s@String] ...]
-  builtin-read-stdin:    [fn@Bytes   [let n@Integer] ...]
 
   # ── Filesystem: open / read / write / close ────────────────────────────────
   builtin-file-open:     [fn@File    [let cap@DirCap path@String mode@String] ...]
@@ -18,13 +15,23 @@
   builtin-file-close:    [fn@Integer [let f@File] ...]
   builtin-file-seek:     [fn@Integer [let f@File pos@Integer] ...]
 
-  # ── Filesystem: directory and path operations ──────────────────────────────
+  # ── Filesystem: atomic write and bulk I/O ─────────────────────────────────
+  # write: write content (String or Bytes) to path; returns bytes written.
   builtin-write:         [fn@Integer [let cap@DirCap path@String content@Any] ...]
+  # write-atomic: write content atomically (temp file + rename); returns bytes written.
   builtin-write-atomic:  [fn@Integer [let cap@DirCap path@String content@Any] ...]
+
+  # ── Filesystem: metadata ───────────────────────────────────────────────────
+  # stat: return {name: String, kind: String, size: Integer} for path (follows symlinks).
   builtin-stat:          [fn@Dict    [let cap@DirCap path@String] ...]
+  # stat-symlink: same as stat but does not follow symlinks.
   builtin-stat-symlink:  [fn@Dict    [let cap@DirCap path@String] ...]
+  # exists: return 1 if path exists, 0 otherwise.
   builtin-exists:        [fn@Integer [let cap@DirCap path@String] ...]
+  # list-dir: return integer-indexed dict of {name: String, kind: String} entries.
   builtin-list-dir:      [fn@Dict    [let cap@DirCap path@String] ...]
+
+  # ── Filesystem: directory and path operations ──────────────────────────────
   builtin-make-dir:      [fn@Integer [let cap@DirCap path@String] ...]
   builtin-rename:        [fn@Integer [let cap@DirCap from@String to@String] ...]
   builtin-copy-file:     [fn@Integer [let src-cap@DirCap src@String dst-cap@DirCap dst@String] ...]
@@ -40,13 +47,20 @@
   builtin-list-xattrs:   [fn@Dict    [let cap@DirCap path@String] ...]
 
   # ── Capability operations ──────────────────────────────────────────────────
+  # revocable: create a revocable wrapper around a DirCap.
   builtin-revocable:     [fn@DirCap  [let cap@DirCap] ...]
-  builtin-revoke-cap:    [fn@Integer [let cap@Any] ...]
+  # revoke-cap: revoke a previously created revocable capability.
+  builtin-revoke-cap:    [fn@Integer [let cap@DirCap] ...]
 
   # ── Network ────────────────────────────────────────────────────────────────
-  builtin-connect:       [fn@Any     [let cap@NetCap addr@String ...opts] ...]
-  builtin-tls-layer:     [fn@Any     [let stream@Any host@String opts@Any] ...]
-  builtin-tls-peer-cert: [fn@Any     [let stream@Any] ...]
-  builtin-send-datagram: [fn@Integer [let sock@Any data@Bytes] ...]
-  builtin-recv-datagram: [fn@Bytes   [let sock@Any] ...]
+  # connect: open a network connection, return an opaque stream handle.
+  builtin-connect:       [fn@Handle  [let cap@NetCap addr@String ...opts] ...]
+  # tls-layer: wrap a stream with TLS, return a TLS stream handle.
+  builtin-tls-layer:     [fn@Handle  [let stream@Handle host@String opts@Dict] ...]
+  # tls-peer-cert: extract the peer certificate from a TLS stream (as a Dict).
+  builtin-tls-peer-cert: [fn@Dict    [let stream@Handle] ...]
+  # send-datagram: send bytes as a UDP datagram; return bytes sent.
+  builtin-send-datagram: [fn@Integer [let sock@Handle data@Bytes] ...]
+  # recv-datagram: receive a UDP datagram; return its bytes payload.
+  builtin-recv-datagram: [fn@Bytes   [let sock@Handle] ...]
 ]
