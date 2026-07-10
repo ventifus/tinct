@@ -1,9 +1,8 @@
 //! Import resolution for the type checker.
 //!
-//! This module provides shared import resolution logic for include resolution (type-checking
-//! user includes and stdlib modules) and environment construction for the type checker.
-//! The type checker receives its environment through the TypeContext unified handle,
-//! seeded during loader.llt evaluation.
+//! Provides `get_builtin_core_type_env()` which parses and type-checks
+//! `stdlib/builtin_core.llt` to build the initial type environment.
+//! Also provides LSP-level include resolution (`collect_include_paths`, `build_type_env`).
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -22,120 +21,6 @@ type IncludeBindings = HashMap<Span, Vec<(String, Type)>>;
 
 /// Depth limit for recursive include resolution (prevents infinite include cycles).
 const MAX_INCLUDE_DEPTH: usize = 16;
-
-thread_local! {
-    /// Thread-local cache of stdlib module type environments.
-    ///
-    /// Maps stdlib module path (e.g., `"strings.llt"`) to an `Arc<RwLock<Env>>` containing
-    /// only the bindings that module exports (above the prelude baseline). Built on demand
-    /// when the type checker encounters `[include %libdir "X.llt"]` calls and caches
-    /// the result so subsequent references to the same module are cheap.
-    static STDLIB_MODULE_CACHE: RefCell<HashMap<String, Arc<RwLock<Env>>>> = RefCell::new(HashMap::new());
-
-    /// Recursion guard for stdlib module env building (prevents re-entrant calls).
-    static BUILDING_STDLIB_MODULE_ENV: RefCell<bool> = const { RefCell::new(false) };
-}
-
-/// Retrieve the type environment exported by a stdlib module at `module_path`.
-///
-/// Used by the type checker when it encounters `[include %libdir "X.llt"]` in a sequential
-/// document. Returns a `TypeEnv` containing only the bindings the module exports above
-/// the prelude baseline (i.e., the names that bare-include makes available in scope).
-///
-/// The result is cached per thread by module path. On cache miss:
-/// 1. Finds the stdlib directory via `crate::find_libdir_path()`.
-/// 2. Reads the file from disk.
-/// 3. Type-checks it with the prelude env as the parent baseline.
-/// 4. Extracts the above-baseline bindings via `typecheck_and_merge_stdlib_module`.
-/// 5. Stores the result in `STDLIB_MODULE_CACHE`.
-///
-/// Returns `None` if:
-/// - The stdlib directory cannot be located.
-/// - The file cannot be read or parsed.
-/// - A re-entrant call is detected (recursion guard).
-// AMBIENT-OK: type-checker include resolution fallback — reads libdir files without cap; type-only, no runtime I/O
-#[allow(clippy::disallowed_methods, dead_code)]
-pub async fn get_stdlib_module_type_env(module_path: &str) -> Option<Arc<RwLock<Env>>> {
-    // Recursion guard: prevent re-entrant calls (e.g., from modules that include other modules
-    // during type-checking). The guard is per-thread so parallel test threads are independent.
-    let already_building = BUILDING_STDLIB_MODULE_ENV.with(|flag| *flag.borrow());
-    if already_building {
-        return None;
-    }
-
-    // Cache hit path: check without the recursion guard set (fast path).
-    let cached = STDLIB_MODULE_CACHE.with(|cache| cache.borrow().get(module_path).map(Arc::clone));
-    if let Some(env) = cached {
-        return Some(env);
-    }
-
-    // Cache miss: set recursion guard before building.
-    BUILDING_STDLIB_MODULE_ENV.with(|flag| *flag.borrow_mut() = true);
-
-    let result = build_stdlib_module_type_env_inner(module_path).await;
-
-    // Clear recursion guard and store result in cache (even if None, to avoid re-trying).
-    BUILDING_STDLIB_MODULE_ENV.with(|flag| *flag.borrow_mut() = false);
-
-    if let Some(ref env) = result {
-        STDLIB_MODULE_CACHE.with(|cache| {
-            cache
-                .borrow_mut()
-                .insert(module_path.to_string(), Arc::clone(env));
-        });
-    }
-
-    result
-}
-
-/// Inner implementation of `get_stdlib_module_type_env`.
-///
-/// Finds the libdir, reads the module file, type-checks it, and extracts bindings.
-// AMBIENT-OK: type-checker include resolution — reads libdir files; type-only, no runtime I/O
-#[allow(clippy::disallowed_methods, dead_code)]
-async fn build_stdlib_module_type_env_inner(module_path: &str) -> Option<Arc<RwLock<Env>>> {
-    // Step 1: Locate the stdlib directory.
-    let libdir = crate::find_libdir_path()?;
-    let full_path = libdir.join(module_path);
-
-    // Step 2: Read the module source from disk.
-    let source = match std::fs::read_to_string(&full_path) {
-        Ok(s) => s,
-        Err(_) => return None,
-    };
-
-    // Step 3: Build SourceFile with the module's path for span attribution.
-    let sf = Arc::new(crate::ast::SourceFile {
-        path: Arc::from(full_path.to_string_lossy().as_ref()),
-        content: Arc::from(source.as_str()),
-    });
-
-    // Step 4: Parse.
-    let mut program = crate::parser::parse_with_file(&source, sf).ok()?.program;
-
-    // Step 5: Desugar.
-    crate::desugar::desugar_surface_program(&mut program);
-
-    // Step 6: Resolve (writes inline to AST nodes).
-    // No runtime env available at this type-checker bootstrap path; pass None.
-    let _resolve_errors = crate::resolve::resolve_surface_program(&program, None);
-
-    // Step 8: Build parent env — builtin_core Env contains Boolean, Handle, builtin-* names.
-    let parent_env = get_builtin_core_type_env().await?;
-
-    // Step 9: Type-check the module with the builtin_core env as parent.
-    let (_errors, _type_map, _doc_map, _scheme_map, _diagnostics, _state, final_env, _annot) =
-        typecheck_surface_program_with_env(
-            &program, parent_env, false, // enable_scheme_map
-            None,  // resolver_seed_env: no runtime env available at bootstrap
-            None,  // type_stage_env: not available at bootstrap
-            std::collections::HashMap::new(), // seed_tycon_env: empty at bootstrap
-        )
-        .await;
-
-    // `final_env` is the child Env containing parent bindings plus new declarations.
-    Some(final_env)
-}
 
 // Thread-local cache for the builtin_core.llt type environment (T-1366 Rust step 2 bootstrap).
 // Populated on first call to `get_builtin_core_type_env()`. Once built, all subsequent
