@@ -119,7 +119,7 @@ impl SurfaceResolver {
     fn walk_surface_expr(&mut self, arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) {
         match expr {
             SurfaceExpression::VarRef {
-                name, resolution, ..
+                name, resolution, annotation, ..
             } => {
                 if let Some(coords) = self.resolve_name(name) {
                     resolution.set(Some(coords));
@@ -136,6 +136,14 @@ impl SurfaceResolver {
                     // dict-key, LetDecl binding, or declaration method-name position —
                     // none of those are runtime variable references.
                     self.unresolved.push((name.clone(), arc.span.clone()));
+                }
+                // Walk the PropertyDict annotation if present. Constructor annotations
+                // in [type ...] bodies (e.g. @[as-type: [fn [let t] t]  guarding: 1])
+                // contain runtime function expressions that need parameter resolution.
+                // walk_surface_annotation adds suppress_depth, so type names inside
+                // are silently skipped while function parameter bindings are resolved.
+                if let Some(ann) = annotation {
+                    self.walk_surface_annotation(ann);
                 }
                 // OnceLock left unset (None): the lowerer treats None as
                 // "undefined variable" and emits LowerDiagnostic::Error.
@@ -349,14 +357,22 @@ impl SurfaceResolver {
             // that runtime VarRefs inside method implementations (e.g. `result-map`
             // referenced in a named instance) get resolved against the enclosing letrec
             // scope.
-            // TypeAlias bodies are type-level and must NOT be walked: names like `Null`,
-            // `Int`, `Fn` etc. inside `[type ...]` are type names resolved by the type
-            // checker, not runtime variables. Walking them triggers false "undefined
-            // variable" diagnostics.
             SurfaceExpression::Decl(decl) => match decl.as_ref() {
                 crate::ast::SurfaceDeclaration::ClassDecl { .. }
                 | crate::ast::SurfaceDeclaration::InstanceDecl { .. } => {
                     self.walk_surface_declaration(decl);
+                }
+                crate::ast::SurfaceDeclaration::TypeAlias { body, .. } => {
+                    // Walk the TypeAlias body in suppress mode: type names like `Int`,
+                    // `String`, `TypeNode` in field-type positions are not runtime
+                    // variables, so suppress_depth silences "undefined variable" for them.
+                    // But constructor annotation bodies (e.g. @[as-type: [fn [let t] t]])
+                    // contain runtime function expressions — the VarRef handler above
+                    // calls walk_surface_annotation, which resolves function parameters
+                    // correctly even under suppression.
+                    self.suppress_depth += 1;
+                    self.walk_surface_node(body);
+                    self.suppress_depth -= 1;
                 }
                 _ => {}
             },
