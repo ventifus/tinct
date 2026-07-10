@@ -3280,59 +3280,27 @@ pub(crate) async fn resolve_type_expr(
                     // We look up the function by name in type_stage_env (avoiding the lowering
                     // pipeline that would produce CoreExpr::Placeholder for TypeVar arg names),
                     // then resolve each arg as a Type and convert to TypeNode values before calling.
-                    'type_stage: {
-                        let ts_env = match state.type_stage_env.clone() {
-                            Some(e) => e,
-                            None => break 'type_stage,
-                        };
-
-                        // Look up function by name in the type-stage env.
-                        // The type-stage env contains only type-stage definitions
-                        // (e.g. or = [fn [let ...types] [TypeNode.Union types: types]]),
-                        // NOT the runtime env where `or` means short-circuit boolean OR.
-                        let fn_thunk = {
-                            let env_guard = ts_env.read().unwrap();
-                            let mut found: Option<Arc<Thunk>> = None;
-                            for (n, slot) in env_guard.iter_slots() {
-                                if n == func_name.as_str() {
-                                    if let Some(ref thunk) = slot.value {
-                                        found = Some(Arc::clone(thunk));
-                                    }
-                                    break;
-                                }
+                    // Handle [or T1 T2 ...], [all T1 T2 ...], [without T] as Call expressions.
+                    // These appear when type combinators are used as VALUE expressions, e.g.
+                    // `return: [or a Null]` — the value [or a Null] parses as a Call node,
+                    // not as a positional PropertyDict (which the resolve_type_dict hardcoded
+                    // path handles). Resolving each arg via resolve_type_expr handles TypeVars
+                    // (via ann_mapping), named types, and primitives correctly without needing
+                    // the evaluator (which fails for annotation sub-parse nodes).
+                    let kw = func_name.as_str();
+                    if kw == "or" || kw == "all" || kw == "without" {
+                        if kw == "without" {
+                            if args.len() != 1 {
+                                return Err(TypeError::new(
+                                    format!(
+                                        "`without` requires exactly 1 type argument, got {}",
+                                        args.len()
+                                    ),
+                                    node.span.clone(),
+                                ));
                             }
-                            match found {
-                                Some(t) => t,
-                                None => break 'type_stage,
-                            }
-                        };
-
-                        #[allow(clippy::disallowed_methods)]
-                        let base_dir = match cap_std::fs::Dir::open_ambient_dir(
-                            ".",
-                            cap_std::ambient_authority(),
-                        ) {
-                            Ok(d) => d,
-                            Err(_) => break 'type_stage,
-                        };
-                        let ctx = Arc::new(crate::eval::EvalContext::new_empty(
-                            base_dir,
-                            Arc::clone(&ts_env),
-                            false,
-                        ));
-
-                        // Materialize the function value.
-                        let fn_val = match crate::eval::materialize(&fn_thunk, None, &ctx).await {
-                            Ok(v) => v,
-                            Err(_) => break 'type_stage,
-                        };
-
-                        // Resolve each arg as a Type, then convert to TypeNode value.
-                        let mut typenode_args: Vec<Value> = Vec::with_capacity(args.len());
-                        let mut all_ok = true;
-                        for arg_node in args.iter() {
-                            let arg_ty = Box::pin(resolve_type_expr(
-                                arg_node,
+                            let inner = Box::pin(resolve_type_expr(
+                                &args[0],
                                 env,
                                 state,
                                 constraints,
@@ -3340,28 +3308,28 @@ pub(crate) async fn resolve_type_expr(
                                 row_ann_mapping,
                                 type_params_scope,
                             ))
-                            .await
-                            .unwrap_or(Type::Unknown);
-
-                            match Box::pin(type_to_typenode_value(&arg_ty, &ctx, node.span.clone()))
-                                .await
-                            {
-                                Some(tn_val) => typenode_args.push(tn_val),
-                                None => {
-                                    all_ok = false;
-                                    break;
-                                }
+                            .await?;
+                            return Ok(Type::Negation(Box::new(inner)));
+                        } else {
+                            let mut members = Vec::with_capacity(args.len());
+                            for arg in args {
+                                let ty = Box::pin(resolve_type_expr(
+                                    arg,
+                                    env,
+                                    state,
+                                    constraints,
+                                    ann_mapping,
+                                    row_ann_mapping,
+                                    type_params_scope,
+                                ))
+                                .await?;
+                                members.push(ty);
                             }
-                        }
-
-                        if all_ok {
-                            if let Ok(result_ty) =
-                                eval_type_stage_value(&fn_val, &typenode_args, state).await
-                            {
-                                if result_ty != Type::Unknown {
-                                    return Ok(result_ty);
-                                }
-                            }
+                            return Ok(if kw == "or" {
+                                Type::normalize_union(members)
+                            } else {
+                                Type::normalize_intersection(members)
+                            });
                         }
                     }
 
@@ -4811,15 +4779,24 @@ pub(crate) async fn eval_type_stage_expr(
     // without moving `[type ...]` declarations into the type-stage.
     let eval_env: Arc<std::sync::RwLock<crate::env::Env>> =
         if let Some(ref main_env) = state.main_env {
-            // Create a new env frame that has type-stage bindings as its own slots
-            // and the main env as its parent chain. Type-stage names shadow main env names.
+            // Build a combined env: type-stage bindings (full parent chain) shadow main env.
+            // Walk from innermost to outermost type-stage frame, inserting each binding
+            // only once (inner frames take precedence over outer frames via the is_empty guard).
             let mut combined = crate::env::Env::with_parent(Arc::clone(main_env));
             {
-                let ts = type_stage_env.read().unwrap();
-                for (name, slot) in ts.iter_slots() {
-                    if let Some(ref thunk) = slot.value {
-                        combined.insert_value(name.to_string(), Arc::clone(thunk));
+                let mut cur_opt: Option<Arc<std::sync::RwLock<crate::env::Env>>> =
+                    Some(Arc::clone(&type_stage_env));
+                while let Some(cur) = cur_opt {
+                    let guard = cur.read().unwrap();
+                    for (name, slot) in guard.iter_slots() {
+                        if let Some(ref thunk) = slot.value {
+                            // insert_if_absent: inner frames shadow outer frames and main_env.
+                            if !combined.slots.contains_key(name) {
+                                combined.insert_value(name.to_string(), Arc::clone(thunk));
+                            }
+                        }
                     }
+                    cur_opt = guard.parent.as_ref().map(Arc::clone);
                 }
             }
             Arc::new(std::sync::RwLock::new(combined))
