@@ -419,7 +419,7 @@
 
 ]
 
---- uses: ["core" "io" "math" "meta" "dict" "string" "seq" "async" "datetime"]
+--- uses: ["core" "io" "math" "meta" "string" "async" "datetime"]
 
 # ============================================================================
 # LLT Standard Library (Prelude)

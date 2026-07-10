@@ -1111,10 +1111,10 @@ pub(crate) fn builtin_proxy(
 
 /// Return the builtin list for a named module, or None if the name is unknown.
 ///
-/// Modules "io", "math", "meta", "dict", "string", "seq", "async" return empty
-/// lists because their builtins are injected into the prelude scope directly
-/// (not via the module system). They are declared in prelude.llt's --- uses:
-/// header for documentation/intent, but have no native registrations.
+/// All Rust builtins are registered in "core" regardless of their conceptual domain.
+/// Modules "io", "math", "meta", "string", "async" return empty runtime lists
+/// because their Rust implementations live in core_builtins(). The --- uses: header
+/// for these modules exists only to load their builtin_*.llt type declarations.
 pub fn builtin_module(name: &str) -> Option<Vec<crate::value::BuiltinDef>> {
     let defs = match name {
         "core" => Some(crate::builtins_core::core_builtins()),
@@ -1122,7 +1122,7 @@ pub fn builtin_module(name: &str) -> Option<Vec<crate::value::BuiltinDef>> {
         "net" => Some(crate::builtins_net::net_builtins()),
         // These modules provide type declarations via builtin_*.llt but have no
         // Rust-side runtime registrations (all actual builtins live in "core").
-        "io" | "math" | "meta" | "dict" | "string" | "seq" | "async" => Some(vec![]),
+        "io" | "math" | "meta" | "string" | "async" => Some(vec![]),
         _ => return None,
     }?;
 
@@ -1229,7 +1229,7 @@ pub fn build_builtins_type_env_arc() -> Arc<RwLock<crate::env::Env>> {
     {
         let mut guard = env.write().unwrap();
         for module_name in &[
-            "core", "datetime", "net", "io", "math", "meta", "dict", "string", "bytes", "async",
+            "core", "datetime", "net", "io", "math", "meta", "string", "bytes", "async",
             "base64",
         ] {
             if let Some(type_env) = type_env_module(module_name) {
@@ -1294,22 +1294,10 @@ pub fn type_env_module(name: &str) -> Option<crate::types::TypeEnv> {
             crate::builtins_meta::meta_builtin_types(&mut env);
             Some(env)
         }
-        "dict" => {
-            let mut env = crate::types::TypeEnv::new();
-            crate::builtins_core::core_type_env(&mut env);
-            crate::builtins_dict::dict_builtin_types(&mut env);
-            Some(env)
-        }
         "string" => {
             let mut env = crate::types::TypeEnv::new();
             crate::builtins_core::core_type_env(&mut env);
             crate::builtins_string::string_builtin_types(&mut env);
-            Some(env)
-        }
-        "seq" => {
-            let mut env = crate::types::TypeEnv::new();
-            crate::builtins_core::core_type_env(&mut env);
-            crate::builtins_dict::dict_builtin_types(&mut env);
             Some(env)
         }
         "async" => {

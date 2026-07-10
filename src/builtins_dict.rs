@@ -2357,33 +2357,3 @@ pub(crate) fn builtin_concat(
     })
 }
 
-/// Register `builtin-*` type aliases for dict/builder builtins (T-1102).
-///
-/// Each alias copies the TypeScheme from the canonical name already registered in
-/// `core_type_env`. Call this AFTER `core_type_env` has run.
-pub fn dict_builtin_types(env: &mut crate::types::TypeEnv) {
-    env.alias_types(&[
-        ("builtin-keys", "keys"),
-        ("builtin-merge", "merge"),
-        ("builtin-dict-nth", "dict-nth"),
-        ("builtin-dict-key-nth", "dict-key-nth"),
-        ("builtin-dict-kv-nth", "dict-kv-nth"),
-        ("builtin-append", "append"),
-        ("builtin-length", "length"),
-        ("builtin-make-builder", "make-builder"),
-        ("builtin-builder-set", "builder-set"),
-        ("builtin-builder-delete", "builder-delete"),
-        ("builtin-builder-finish", "builder-finish"),
-        ("builtin-builder-snapshot", "builder-snapshot"),
-        ("builtin-builder-has?", "builder-has?"),
-        ("builtin-builder-get", "builder-get"),
-        ("builtin-builder-get-or", "builder-get-or"),
-        ("builtin-reduce", "reduce"),
-        ("builtin-map", "map"),
-        ("builtin-filter", "filter"),
-        ("builtin-take", "take"),
-        ("builtin-drop", "drop"),
-        ("builtin-join", "join"),
-        ("builtin-concat", "concat"),
-    ]);
-}
