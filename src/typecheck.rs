@@ -487,47 +487,10 @@ async fn typecheck_surface_document(
     // The async typecheck path handles them separately.
     let _ = &doc.expects; // acknowledged
     let _ = &doc.caps; // acknowledged
-
-    // Process uses: pragma if present
-    // Inject module-specific type signatures into the doc-local environment.
-    // These bindings are available for type-checking THIS document's expressions,
-    // but do NOT propagate to subsequent documents via result_env (module bindings
-    // are doc-local, matching the runtime's `builtin_module()` injection behavior).
-    if let Some(ref uses) = doc.uses {
-        let mut env_inner = Env::with_parent(Arc::clone(&env));
-        for module_name in &uses.node {
-            match crate::builtins::type_env_module(&module_name.node) {
-                Some(module_env) => {
-                    // Convert TypeEnv to Env: copy all scheme entries
-                    for (name, scheme) in module_env.iter_slotted() {
-                        env_inner.insert_scheme(name.to_string(), scheme.clone());
-                    }
-                    for (name, scheme) in module_env.iter_extras() {
-                        env_inner.insert_scheme_named_only(name.to_string(), scheme.clone());
-                    }
-                    for (name, alias) in module_env.own_type_aliases() {
-                        env_inner.insert_type_alias(name.to_string(), alias.clone());
-                    }
-                    for decl in module_env.own_classes() {
-                        env_inner.insert_class(decl.clone());
-                    }
-                    for (mangled, decl) in module_env.own_instances() {
-                        env_inner.insert_instance(mangled.to_string(), decl.clone());
-                    }
-                }
-                None => {
-                    // Emit a diagnostic for unknown native modules.
-                    // The runtime will also catch this when it attempts to call
-                    // builtin_module(), but we flag it statically here too.
-                    errors.push(TypeError::new(
-                        format!("unknown native module: {}", module_name.node),
-                        module_name.span.clone(),
-                    ));
-                }
-            }
-        }
-        env = Arc::new(RwLock::new(env_inner));
-    }
+    // Note: --- uses: headers are processed by loader's uses-scope (tinct code) which
+    // type-checks each builtin_*.llt file and accumulates results into the TypeContext.
+    // The typechecker receives all module type schemes via tc.inference_env (the parent_env
+    // passed to typecheck_surface_program_with_env). No Rust-side injection needed here.
 
     let mut result_type = Type::Dict(Row {
         fields: indexmap::IndexMap::new(),

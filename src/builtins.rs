@@ -592,19 +592,6 @@ pub(crate) fn builtin_to_float(
     })
 }
 
-/// Register `builtin-*` type aliases for core numeric builtins in this file (T-1102).
-///
-/// Covers `floor`, `round`, and `to-float`, which are implemented in `builtins.rs`
-/// and not claimed by any other per-file function. Each alias copies the TypeScheme
-/// from the canonical name already registered in `core_type_env`.
-/// Call this AFTER `core_type_env` has run.
-pub fn core_builtin_types(env: &mut crate::types::TypeEnv) {
-    env.alias_types(&[
-        ("builtin-floor", "floor"),
-        ("builtin-round", "round"),
-        ("builtin-to-float", "to-float"),
-    ]);
-}
 
 // Re-exported here for test access via `use super::*`.
 #[allow(unused_imports)] // used in test modules via `use super::*`
@@ -1128,40 +1115,6 @@ pub fn builtin_module(name: &str) -> Option<Vec<crate::value::BuiltinDef>> {
         _ => return None,
     }?;
 
-    // Invariant: every registered builtin must have a type declaration in its
-    // module's builtin_*.llt file (surfaced via type_env_module). A missing type
-    // declaration is an immediate error — the .llt file must be kept in sync.
-    if !defs.is_empty() {
-        if let Some(type_env) = type_env_module(name) {
-            let declared: std::collections::HashSet<&str> = type_env
-                .iter_slotted()
-                .map(|(n, _)| n)
-                .chain(type_env.iter_extras().map(|(n, _)| n))
-                .collect();
-
-            let untyped: Vec<&str> = defs
-                .iter()
-                .filter(|def| !declared.contains(def.name))
-                .map(|def| def.name)
-                .collect();
-
-            if !untyped.is_empty() {
-                panic!(
-                    "Untyped builtins in module '{}' — add type declarations to builtin_{}.llt:\n  {}",
-                    name, name,
-                    untyped.join("\n  ")
-                );
-            }
-        } else {
-            // Module has runtime builtins but no type environment at all.
-            panic!(
-                "Module '{}' has runtime builtins but no type environment — \
-                 create stdlib/builtin_{}.llt",
-                name, name
-            );
-        }
-    }
-
     Some(defs)
 }
 
@@ -1176,33 +1129,6 @@ pub fn builtin_module(name: &str) -> Option<Vec<crate::value::BuiltinDef>> {
 /// pre-evaluation of loader.llt; the caller drives the full pipeline via
 /// `run_loader_pipeline`.
 pub fn build_core_env() -> Arc<RwLock<crate::env::Env>> {
-    // Invariant: every Rust builtin must have a type declaration.
-    // A builtin with no type is an immediate error — it means builtin_core.llt
-    // (or the relevant module's .llt) is out of sync with the Rust implementation.
-    // This fires at startup before any user code runs.
-    {
-        let type_env = type_env_module("core")
-            .expect("core type environment must be available at startup");
-        let declared: std::collections::HashSet<&str> = type_env
-            .iter_slotted()
-            .map(|(n, _)| n)
-            .chain(type_env.iter_extras().map(|(n, _)| n))
-            .collect();
-
-        let untyped: Vec<&str> = crate::builtins_core::core_builtins()
-            .iter()
-            .filter(|def| !declared.contains(def.name))
-            .map(|def| def.name)
-            .collect();
-
-        if !untyped.is_empty() {
-            panic!(
-                "Untyped builtins — add type declarations to builtin_core.llt:\n  {}",
-                untyped.join("\n  ")
-            );
-        }
-    }
-
     let env = Arc::new(RwLock::new(crate::env::Env::new()));
     if let Some(defs) = builtin_module("core") {
         let mut env_write = env.write().unwrap();
@@ -1218,94 +1144,6 @@ pub fn build_core_env() -> Arc<RwLock<crate::env::Env>> {
     env
 }
 
-/// Build the unified builtin type environment as an `Arc<RwLock<Env>>`.
-///
-/// Collects all Rust-native builtin type signatures (core, datetime, net, io, math,
-/// meta, dict, string, bytes, async, base64) and inserts them into a fresh `Env`
-/// via the `insert_scheme_named_only` path (extras — not slot-indexed).
-///
-/// This is the bootstrap parent env for `build_builtin_core_type_env_inner` in imports.rs.
-/// It replaces the old `build_builtins_type_env() -> TypeEnv` function.
-pub fn build_builtins_type_env_arc() -> Arc<RwLock<crate::env::Env>> {
-    let env = Arc::new(RwLock::new(crate::env::Env::new()));
-    {
-        let mut guard = env.write().unwrap();
-        for module_name in &[
-            "core", "datetime", "net", "io", "math", "meta", "string", "bytes", "async",
-            "base64",
-        ] {
-            if let Some(type_env) = type_env_module(module_name) {
-                for (name, scheme) in type_env.iter_slotted() {
-                    guard.insert_scheme_named_only(name.to_string(), scheme.clone());
-                }
-                for (name, scheme) in type_env.iter_extras() {
-                    guard.insert_scheme_named_only(name.to_string(), scheme.clone());
-                }
-                for decl in type_env.own_classes() {
-                    guard.insert_class(decl.clone());
-                }
-                for (mangled, decl) in type_env.own_instances() {
-                    guard.insert_instance(mangled.to_string(), decl.clone());
-                }
-                for (name, alias) in type_env.own_type_aliases() {
-                    guard.insert_type_alias(name.to_string(), alias.clone());
-                }
-            }
-        }
-        guard.inject_builtin_aliases();
-    }
-    env
-}
-
-/// Return the type environment for a specific native module.
-///
-/// Used by the type checker to inject module-specific type signatures when a document
-/// declares `--- uses: ["core" "datetime"]`. This parallels the runtime's
-/// `builtin_module()` function which injects runtime values.
-///
-/// Returns `None` for unknown module names.
-pub fn type_env_module(name: &str) -> Option<crate::types::TypeEnv> {
-    match name {
-        "core" => {
-            let mut env = crate::types::TypeEnv::new();
-            crate::builtins_core::core_type_env(&mut env);
-            core_builtin_types(&mut env);
-            Some(env)
-        }
-        "datetime" => {
-            let mut env = crate::types::TypeEnv::new();
-            crate::builtins_datetime::datetime_type_env(&mut env);
-            Some(env)
-        }
-        "net" => Some(crate::builtins_net::net_type_env()),
-        "io" => {
-            let mut env = crate::types::TypeEnv::new();
-            crate::builtins_io::io_builtin_types(&mut env);
-            Some(env)
-        }
-        "math" => {
-            let mut env = crate::types::TypeEnv::new();
-            crate::builtins_math::math_builtin_types(&mut env);
-            Some(env)
-        }
-        "meta" => {
-            let mut env = crate::types::TypeEnv::new();
-            crate::builtins_meta::meta_builtin_types(&mut env);
-            Some(env)
-        }
-        "string" => {
-            let mut env = crate::types::TypeEnv::new();
-            crate::builtins_string::string_builtin_types(&mut env);
-            Some(env)
-        }
-        "async" => {
-            let mut env = crate::types::TypeEnv::new();
-            crate::builtins_async::async_builtin_types(&mut env);
-            Some(env)
-        }
-        _ => None,
-    }
-}
 
 #[cfg(test)]
 // Test-code lint suppressions:

@@ -90,8 +90,9 @@ async fn build_builtin_core_type_env_inner() -> Option<Arc<RwLock<Env>>> {
     // No runtime env at this type-checker bootstrap path; pass None.
     let _resolve_errors = crate::resolve::resolve_surface_program(&program, None);
 
-    // Build parent env: all Rust-native builtin type signatures in a unified Env.
-    let parent_env = crate::builtins::build_builtins_type_env_arc();
+    // Empty parent — builtin_core.llt is the source of truth. Primitives are hardcoded
+    // in resolve_type_name; types declared within the file resolve via state.tycon_env.
+    let parent_env = Arc::new(RwLock::new(crate::env::Env::new()));
 
     // Typecheck with builtins env as parent.
     // enable_scheme_map=false (no LSP hover needed for bootstrap).
