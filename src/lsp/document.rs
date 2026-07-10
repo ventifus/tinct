@@ -453,6 +453,7 @@ impl DocumentStore {
             inference_env: crate::imports::get_builtin_core_type_env()
                 .await
                 .expect("builtin_core type env unavailable"),
+            tycon_env: std::collections::HashMap::new(),
         });
 
         // Parse the embedded prelude source once for go-to-definition support.

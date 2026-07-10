@@ -604,10 +604,6 @@ pub(crate) fn collect_pattern_bindings(
 /// Returns a concrete type for primitives and known names, or a fresh TypeVar for
 /// complex/unresolvable annotations. Never returns `Type::Unknown` — that would
 /// trigger T017 for annotated patterns that simply have unresolvable type names.
-///
-/// Note: `normalize_varref_annotation` converts `Annotation::Simple("Int")` into
-/// `Annotation::PropertyDict([{type: VarRef("Int")}])` at parse time. We must handle
-/// the PropertyDict form to correctly resolve `x@Int` bindings in instance patterns.
 fn resolve_annotation_sync(ann: &crate::ast::Spanned<Annotation>, state: &mut InferState) -> Type {
     fn resolve_name(name: &str) -> Type {
         match name {
@@ -624,8 +620,7 @@ fn resolve_annotation_sync(ann: &crate::ast::Spanned<Annotation>, state: &mut In
     match &ann.node {
         Annotation::Simple(name) => resolve_name(name),
         Annotation::PropertyDict(entries) => {
-            // The normalized form of `x@Name` is PropertyDict([{type: VarRef("Name")}]).
-            // Extract the type name from the `type:` key.
+            // User-written @[type: T  default: ...] form — extract the type from the `type:` key.
             for entry in entries {
                 let key_is_type = entry.node.key.as_ref().map_or(false, |k| {
                     matches!(&k.expr, SurfaceExpression::Str(s) if s == "type")

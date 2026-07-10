@@ -663,61 +663,13 @@ impl SurfaceExpression {
     }
 }
 
-/// Normalize an annotation for storage on a VarRef.
-/// `Simple("T")` → `PropertyDict { "type": SurfaceNode(VarRef("T")) }`.
-/// `PropertyDict` and `Annotated` forms are kept as-is.
-pub fn normalize_varref_annotation(ann: Spanned<Annotation>, span: Span) -> Spanned<Annotation> {
-    if let Annotation::Simple(ref name) = ann.node {
-        let type_key = Arc::new(SurfaceNode::new(
-            SurfaceExpression::Str("type".to_string()),
-            span.clone(),
-        ));
-        let type_val = Arc::new(SurfaceNode::new(
-            SurfaceExpression::VarRef {
-                name: name.clone(),
-                escaped: false,
-                resolution: Resolution::new(),
-                call_dispatch: CallDispatch::new(),
-                annotation: None,
-            },
-            span.clone(),
-        ));
-        let entry = Spanned::new(
-            SurfaceEntry {
-                key: Some(Arc::clone(&type_key)),
-                value: type_val,
-            },
-            span.clone(),
-        );
-        Spanned::new(Annotation::PropertyDict(vec![entry]), ann.span)
-    } else {
-        ann
-    }
-}
 
-/// Returns true if `ann` is an `@Expr` annotation in either canonical form:
-/// - `Simple("Expr")` — variadic rest params (bypass normalize_varref_annotation)
-/// - `PropertyDict { "type": VarRef("Expr") }` — regular params (normalized at parse time)
+/// Returns true if `ann` is an `@Expr` annotation — `Simple("Expr")`.
 ///
 /// Used by the evaluator (eval_materialize.rs) and type checker (typecheck_match.rs) to
 /// identify params that receive raw quoted AST instead of evaluated values.
 pub fn is_expr_annotation(ann: &Annotation) -> bool {
-    match ann {
-        Annotation::Simple(s) => s == "Expr",
-        Annotation::PropertyDict(entries) => entries.iter().any(|e| {
-            let key_is_type = e.node.key.as_ref().and_then(|k| {
-                if let SurfaceExpression::Str(s) = &k.expr {
-                    Some(s.as_str())
-                } else {
-                    None
-                }
-            }) == Some("type");
-            let val_is_expr = matches!(&e.node.value.expr,
-                SurfaceExpression::VarRef { name, .. } if name == "Expr");
-            key_is_type && val_is_expr
-        }),
-        _ => false,
-    }
+    matches!(ann, Annotation::Simple(s) if s == "Expr")
 }
 
 /// Default function for `Annotated.inner` when deserializing via `ExprConvert`.
@@ -813,7 +765,7 @@ pub enum SurfaceExpression {
         #[expr(skip, default_fn = "crate::ast::CallDispatch::new")]
         call_dispatch: CallDispatch,
         /// Type/metadata annotation from `name@annotation` syntax.
-        /// `x@Simple("T")` is normalized to `x@[type: T]` (PropertyDict).
+        /// `x@Int` → `Simple("Int")`, `x@[type: Int  default: 0]` → `PropertyDict(...)`.
         #[expr(skip, default_fn = "Option::default")]
         annotation: Option<Spanned<Annotation>>,
     },
@@ -1387,7 +1339,8 @@ pub enum CoreExpr {
         name: String,
         level: u32,
         slot: u32,
-        /// Annotation from `name@annotation` syntax, normalized to PropertyDict.
+        /// Annotation from `name@annotation` syntax. Simple("T") for bare type names,
+        /// PropertyDict for user-written @[type: T  ...] forms.
         /// None for plain variable references.
         annotation: Option<Spanned<Annotation>>,
     },

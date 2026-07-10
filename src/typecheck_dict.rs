@@ -500,8 +500,11 @@ pub(crate) async fn infer_dict(
                             },
                         );
                         // Register in state.tycon_env so coverage checking and tests can find it.
+                        // Use or_insert to preserve static seed entries (e.g. DirCap with body
+                        // Type::DirCap from the initial TypeContext) over dynamic declarations
+                        // that produce nominal bodies from tinct [type ...] syntax.
                         let tycon_constructors = tycon_def.constructors.clone();
-                        state.tycon_env.insert(name.clone(), tycon_def);
+                        state.tycon_env.entry(name.clone()).or_insert(tycon_def);
                         // Update the scheme for this alias name with the resolved alias body type.
                         // Pass 1 pre-inserted a fresh TypeVar placeholder for the alias slot; we
                         // replace it here with the actual resolved type so that callers who look up

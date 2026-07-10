@@ -307,6 +307,13 @@ pub struct TypeContextData {
     /// This makes prelude names (map, filter, raise, etc.) visible to the type checker
     /// when checking user code, without re-typechecking prelude on every call.
     pub inference_env: Arc<RwLock<crate::env::Env>>,
+    /// Accumulated type constructor definitions (TyConDef).
+    /// Each `builtin-typecheck` call seeds InferState.tycon_env from this map and writes
+    /// newly registered TyConDefs back. This propagates opaque types (DirCap, File,
+    /// ClockCap, Handle, etc.) declared in `builtin_core.llt` to subsequent module
+    /// type-checks (builtin_io.llt, builtin_async.llt, ...) without requiring them to
+    /// re-declare types they receive from the runtime environment.
+    pub tycon_env: std::collections::HashMap<String, std::sync::Arc<crate::type_def::TyConDef>>,
 }
 
 /// Immutable session configuration shared across evaluation.

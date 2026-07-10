@@ -1933,11 +1933,14 @@ async fn run_eval(
             ctx.set_libdir_dir(Arc::clone(libdir_rc));
         }
         // Initialize TypeContext so loader.llt can call [builtin-get-type-context].
+        // tycon_env starts empty — it is populated by uses-scope calling builtin-typecheck
+        // for each module in the --- uses: header (core first, then io, etc.).
         ctx.init_type_context(tinct::TypeContextData {
             type_stage_env: std::sync::Arc::new(std::sync::RwLock::new(tinct::Env::new())),
             inference_env: tinct::get_builtin_core_type_env()
                 .await
                 .expect("builtin_core type env unavailable at startup"),
+            tycon_env: std::collections::HashMap::new(),
         });
         ctx
     };

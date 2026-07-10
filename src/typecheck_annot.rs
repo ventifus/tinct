@@ -1362,8 +1362,8 @@ async fn resolve_annotation_as_type(
             .await
         }
         Annotation::PropertyDict(surface_entries) => {
-            // Check for the @[type: T] shorthand — the canonical form produced by
-            // normalize_varref_annotation for Simple("T") annotations on VarRefs.
+            // Check for the @[type: T] shorthand — user-written annotations like
+            // `x@[type: Int  default: 0]` where "type:" specifies the type alongside metadata.
             // When all keys are annotation metadata keys and "type:" is present, resolve
             // the type: value as the type expression rather than as a structural record.
             //
@@ -2242,6 +2242,11 @@ pub(crate) async fn resolve_type_name(
         "Unknown" => return Ok(Type::Unknown),
         "Any" => return Ok(Type::Any),
         "Proxy" => return Ok(Type::Proxy),
+        // Dict is a Rust-protocol structural type — any dict value.
+        // Resolves to Type::Any so @Dict accepts any dict without restricting field shapes.
+        "Dict" => return Ok(Type::Any),
+        // Expr is the Rust-protocol type for macro arguments (unevaluated AST nodes).
+        "Expr" => return Ok(Type::Any),
         _ => {
             if name.starts_with(|c: char| c.is_lowercase()) {
                 // Type parameter scope enforcement (T-1100 / T-951).
@@ -2320,7 +2325,9 @@ pub(crate) async fn resolve_type_name(
                 }
             } else {
                 // Uppercase type name — check for type alias
-                if let Some(alias) = env.lookup_tycon_def(name) {
+                if let Some(alias) = env.lookup_tycon_def(name)
+                    .or_else(|| state.tycon_env.get(name).cloned())
+                {
                     // Nominal ADT check must happen before the arity check so that parameterized
                     // nominal ADTs (e.g. Result, Seq, Maybe) can be referenced bare as type
                     // constructors in HKT-style instance arm annotations ([let f@Result]).
@@ -2370,13 +2377,12 @@ pub(crate) async fn resolve_type_name(
                     // Otherwise the type-stage env is unavailable — all primitives are
                     // handled by the match arms above, so any name reaching here is undefined.
                     if let Some(ts_env) = state.type_stage_env.clone() {
-                        // Find the thunk for this name by iterating the type-stage env slots.
+                        // Walk the full env chain (not just the immediate frame) so that
+                        // type-stage bindings like Boolean, Seq, Result are found even when
+                        // they are in parent frames of the type-stage env.
                         let thunk_opt: Option<Arc<crate::value::Thunk>> = {
                             let env_guard = ts_env.read().unwrap();
-                            let found = env_guard.iter_slots()
-                                .find(|(slot_name, _)| *slot_name == name)
-                                .and_then(|(_, slot)| slot.value.as_ref().map(Arc::clone));
-                            found
+                            env_guard.get_value_by_name(name)
                         };
                         if let Some(thunk) = thunk_opt {
                             // Build an EvalContext the same way eval_type_stage_expr does,

@@ -177,6 +177,9 @@
   # Declaration files (builtin_NAME.llt) are optional — if absent, builtin-try
   # catches the error. Typecheck is forced via typed.warnings data dependency (no >>).
   uses-scope: [fn [let module-names]
+    # Get TypeContext once before the reduce so TyConDefs (DirCap, File, etc.) declared
+    # in builtin_core.llt accumulate and are visible when builtin_io.llt is type-checked.
+    [tc: [builtin-get-type-context]]
     [reduce
       [fn [let acc name]
         [decl-path:   [builtin-string-concat "builtin_" [builtin-string-concat name ".llt"]]
@@ -192,7 +195,7 @@
                  [builtin-add acc [builtin-length r.errors]]]
                0
                parse-result.program.documents]]
-             [typed:          [builtin-typecheck parse-result.program [builtin-get-type-context]]]
+             [typed:          [builtin-typecheck parse-result.program tc]]
              [match [builtin-eq-int resolve-errors 0]
                0: typed.warnings
                _: typed.warnings]]]
@@ -301,7 +304,7 @@
           _: [builtin-add total n-e]]]
       0
       parse-result.program.documents]]
-    [typed: [builtin-typecheck parse-result.program [builtin-get-type-context] env: full-env]]
+    [typed: [builtin-typecheck parse-result.program _tc env: full-env]]
     # Return errors and warnings as data. tc-errors is a count (Int): resolve errors
     # were already emitted during the per-document resolve loop above.
     [env:          full-env

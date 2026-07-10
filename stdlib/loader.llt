@@ -182,6 +182,9 @@
   # catches the error. Returns a flat Dict of all module builtins.
   # Typecheck is forced by using typed.warnings as a data dependency (no >> needed).
   uses-scope: [fn [let module-names]
+    # Get TypeContext once before the reduce so TyConDefs (DirCap, File, etc.) declared
+    # in builtin_core.llt accumulate and are visible when builtin_io.llt is type-checked.
+    [tc: [builtin-get-type-context]]
     [reduce
       [fn [let acc name]
         [decl-path:  [builtin-string-concat "builtin_" [builtin-string-concat name ".llt"]]]
@@ -198,7 +201,7 @@
                 [builtin-add acc [builtin-length r.errors]]]
               0
               parse-result.program.documents]]
-            [typed:          [builtin-typecheck parse-result.program [builtin-get-type-context]]]
+            [typed:          [builtin-typecheck parse-result.program tc]]
             [match [builtin-eq-int resolve-errors 0]
               0: typed.warnings
               _: typed.warnings]]]]

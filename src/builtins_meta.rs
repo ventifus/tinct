@@ -2213,14 +2213,21 @@ pub(crate) fn builtin_typecheck(
         if args.is_empty() || args.len() > 2 {
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
-        // Validate the optional TypeContext argument (arg 2).
-        // Must be a Value::TypeContext handle. Force it here since force_count=1 only forces arg 0.
-        if args.len() == 2 {
+        // Extract and validate the TypeContext argument (arg 2).
+        // The passed TypeContext is the one we read from AND write to — tinct code
+        // is in charge of propagating it between calls (e.g. by passing the same tc
+        // to each builtin-typecheck in a uses-scope reduce loop). This allows TyConDefs
+        // (DirCap, File, etc.) from builtin_core.llt to accumulate in the TypeContext
+        // and be visible when builtin_io.llt is subsequently type-checked.
+        // A TypeContext must always be passed explicitly — callers are responsible for
+        // threading the TypeContext so TyConDefs accumulate across module type-checks.
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        let tc_arc: Arc<Mutex<crate::eval::TypeContextData>> = {
             let tc_val = materialize(&args[1], Some(&call_span), &ctx).await?;
             match tc_val {
-                Value::TypeContext(_) => {
-                    // Real TypeContext handle accepted.
-                }
+                Value::TypeContext(arc) => arc,
                 other => {
                     return Err(EvalError::type_mismatch_ctx(
                         "builtin-typecheck".to_string(),
@@ -2231,7 +2238,7 @@ pub(crate) fn builtin_typecheck(
                     .into());
                 }
             }
-        }
+        };
         let val = args[0]
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
@@ -2241,30 +2248,20 @@ pub(crate) fn builtin_typecheck(
                 expects_resolved: _,
                 warnings: _,
             } => {
-                // Seed from the accumulated inference_env stored in the TypeContext.
-                // Also extract type_stage_env so eval_type_stage_expr can resolve
-                // user-defined type-stage functions (TypeNode constructors, etc.).
-                // Lock once, clone both Arcs, then drop the lock before the async call.
-                let (parent_env, type_stage_env): (
+                // Seed from the passed TypeContext (tc_arc). The tinct caller is responsible
+                // for passing the same TypeContext across calls so TyConDefs (DirCap, File, etc.)
+                // declared in builtin_core.llt accumulate and are visible to builtin_io.llt etc.
+                let (parent_env, type_stage_env, seed_tycon_env): (
                     Arc<std::sync::RwLock<crate::env::Env>>,
                     Option<Arc<std::sync::RwLock<crate::env::Env>>>,
+                    std::collections::HashMap<String, std::sync::Arc<crate::type_def::TyConDef>>,
                 ) = {
-                    let guard = ctx.type_context.lock().unwrap();
-                    match guard.as_ref() {
-                        Some(tc) => (
-                            Arc::clone(&tc.inference_env),
-                            Some(Arc::clone(&tc.type_stage_env)),
-                        ),
-                        None => {
-                            return Err(EvalError::internal(
-                                "builtin-typecheck: TypeContext not initialized — \
-                                 init_type_context must be called before builtin-typecheck"
-                                    .to_string(),
-                                call_span,
-                            )
-                            .into())
-                        }
-                    }
+                    let guard = tc_arc.lock().unwrap();
+                    (
+                        Arc::clone(&guard.inference_env),
+                        Some(Arc::clone(&guard.type_stage_env)),
+                        guard.tycon_env.clone(),
+                    )
                 };
 
                 // Run the full typecheck pass seeded from the accumulated env.
@@ -2275,6 +2272,8 @@ pub(crate) fn builtin_typecheck(
                 // warnings because the type-only parent_env lacks ɪ-prefixed instance bindings.
                 // Pass type_stage_env from the TypeContext so that eval_type_stage_expr can
                 // evaluate user-defined TypeNode functions and type-stage combinators.
+                // Pass seed_tycon_env so that TyConDefs (DirCap, File, ClockCap, etc.) from
+                // builtin_core.llt are available when type-checking builtin_io.llt etc.
                 let (
                     errors,
                     _type_map,
@@ -2290,14 +2289,30 @@ pub(crate) fn builtin_typecheck(
                     false, // enable_scheme_map
                     resolver_seed_env,
                     type_stage_env,
+                    seed_tycon_env,
                 )
                 .await;
 
-                // Write the final_env back into the TypeContext so subsequent calls accumulate.
+                // Write the final_env and new TyConDefs back into tc_arc (the passed TypeContext).
+                // Since tinct code passes the same tc_arc to each builtin-typecheck call,
+                // this accumulation is visible to subsequent calls — tinct is in control.
+                // TyConDefs use or_insert: core types declared first are never overwritten.
+                // Also sync to ctx.type_context for backward compat with [builtin-get-type-context].
+                {
+                    let mut guard = tc_arc.lock().unwrap();
+                    guard.inference_env = Arc::clone(&final_env);
+                    for (name, def) in &state.tycon_env {
+                        guard.tycon_env.entry(name.clone()).or_insert_with(|| Arc::clone(def));
+                    }
+                }
+                // Sync to ctx.type_context so [builtin-get-type-context] returns current state.
                 {
                     let mut guard = ctx.type_context.lock().unwrap();
                     if let Some(ref mut tc) = *guard {
                         tc.inference_env = Arc::clone(&final_env);
+                        for (name, def) in state.tycon_env {
+                            tc.tycon_env.entry(name).or_insert(def);
+                        }
                     }
                 }
 
@@ -2378,11 +2393,14 @@ pub(crate) fn builtin_get_type_context(
                 drop(tc_guard);
                 // Auto-initialize: first call to builtin-get-type-context bootstraps the
                 // TypeContext so loader.llt doesn't need an explicit builtin-make-type-ctx call.
+                // tycon_env starts empty — populated by uses-scope calling builtin-typecheck
+                // for each module in --- uses: (core first, so DirCap etc. accumulate).
                 let tc = TypeContextData {
                     type_stage_env: Arc::new(RwLock::new(Env::new())),
                     inference_env: crate::imports::get_builtin_core_type_env()
                         .await
                         .expect("builtin_core type env unavailable"),
+                    tycon_env: std::collections::HashMap::new(),
                 };
                 ctx.init_type_context(tc.clone());
                 ok_val(Value::TypeContext(Arc::new(Mutex::new(tc))), call_span)
@@ -2414,12 +2432,14 @@ pub(crate) fn builtin_make_type_ctx(
         if !args.is_empty() {
             return Err(EvalError::arity_mismatch(0, args.len(), call_span).into());
         }
-        // Create a fresh TypeContextData seeded with the builtin_core TypeEnv.
+        // Create a fresh TypeContextData. tycon_env starts empty — the init program's
+        // uses-scope populates it by type-checking builtin_core.llt (then io, etc.).
         let tc = TypeContextData {
             type_stage_env: Arc::new(RwLock::new(Env::new())),
             inference_env: crate::imports::get_builtin_core_type_env()
                 .await
                 .expect("builtin_core type env unavailable"),
+            tycon_env: std::collections::HashMap::new(),
         };
         // Install it on EvalContext (no-op if already initialized).
         ctx.init_type_context(tc.clone());

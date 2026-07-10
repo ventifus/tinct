@@ -3156,10 +3156,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                     escaped: false,
                                     resolution: crate::ast::Resolution::new(),
                                     call_dispatch: crate::ast::CallDispatch::new(),
-                                    annotation: Some(crate::ast::normalize_varref_annotation(
-                                        annotation,
-                                        full_span.clone(),
-                                    )),
+                                    annotation: Some(annotation),
                                 },
                                 full_span.clone(),
                             );
@@ -5561,12 +5558,7 @@ fn push_expr_to_parent(
                                     params.push(Spanned::new(
                                         SurfaceParam {
                                             name: name.clone(),
-                                            annotation: rest_ann.as_ref().map(|ann| {
-                                                crate::ast::normalize_varref_annotation(
-                                                    ann.clone(),
-                                                    binding.span.clone(),
-                                                )
-                                            }),
+                                            annotation: rest_ann.clone(),
                                             variadic: true,
                                         },
                                         binding.span.clone(),
@@ -6150,10 +6142,7 @@ fn commit_let_pending(
                     escaped: false,
                     resolution: crate::ast::Resolution::new(),
                     call_dispatch: crate::ast::CallDispatch::new(),
-                    annotation: Some(crate::ast::normalize_varref_annotation(
-                        ann,
-                        combined_span.clone(),
-                    )),
+                    annotation: Some(ann),
                 },
                 combined_span,
             );
@@ -7938,13 +7927,12 @@ mod tests {
                 assert_eq!(params.len(), 1);
                 assert_eq!(params[0].node.name, "x");
                 assert!(params[0].node.annotation.is_some());
-                // normalize_varref_annotation converts Simple("Int") → PropertyDict{type: Int}
                 assert!(
                     matches!(
                         &params[0].node.annotation.as_ref().unwrap().node,
-                        Annotation::PropertyDict(_)
+                        Annotation::Simple(s) if s == "Int"
                     ),
-                    "expected PropertyDict annotation, got {:?}",
+                    "expected Simple(\"Int\") annotation, got {:?}",
                     params[0].node.annotation.as_ref().unwrap().node
                 );
                 assert!(!params[0].node.variadic);
@@ -8311,13 +8299,12 @@ mod tests {
                 // param 1: annotated "y@Int"
                 assert_eq!(params[1].node.name, "y");
                 assert!(params[1].node.annotation.is_some());
-                // normalize_varref_annotation converts Simple("Int") → PropertyDict{type: Int}
                 assert!(
                     matches!(
                         &params[1].node.annotation.as_ref().unwrap().node,
-                        Annotation::PropertyDict(_)
+                        Annotation::Simple(s) if s == "Int"
                     ),
-                    "expected PropertyDict annotation, got {:?}",
+                    "expected Simple(\"Int\") annotation, got {:?}",
                     params[1].node.annotation.as_ref().unwrap().node
                 );
                 assert!(!params[1].node.variadic);
@@ -8356,13 +8343,12 @@ mod tests {
                 assert_eq!(params.len(), 1);
                 assert_eq!(params[0].node.name, "x");
                 assert!(params[0].node.annotation.is_some());
-                // normalize_varref_annotation converts Simple("Int") → PropertyDict{type: Int}
                 assert!(
                     matches!(
                         &params[0].node.annotation.as_ref().unwrap().node,
-                        Annotation::PropertyDict(_)
+                        Annotation::Simple(s) if s == "Int"
                     ),
-                    "expected PropertyDict annotation, got {:?}",
+                    "expected Simple(\"Int\") annotation, got {:?}",
                     params[0].node.annotation.as_ref().unwrap().node
                 );
                 assert!(!params[0].node.variadic);
@@ -8554,7 +8540,7 @@ mod tests {
     fn test_annotated_bare_word() {
         let expr = parse_surf_node("word@Int");
         match &expr.expr {
-            // Annotation is now on VarRef directly (annotation: Some(Spanned<Annotation>)).
+            // Annotation is stored directly on VarRef as Simple("Int").
             SurfaceExpression::VarRef {
                 name,
                 annotation: Some(annotation),
@@ -8562,11 +8548,8 @@ mod tests {
             } => {
                 assert_eq!(name.as_str(), "word");
                 match &annotation.node {
-                    Annotation::PropertyDict(_) => {
-                        // normalize_varref_annotation converts Simple("Int") → PropertyDict{type: Int}
-                    }
                     Annotation::Simple(s) => assert_eq!(s, "Int"),
-                    other => panic!("expected annotation, got {other:?}"),
+                    other => panic!("expected Simple(\"Int\") annotation, got {other:?}"),
                 }
             }
             other => panic!("expected annotated VarRef, got {other:?}"),
@@ -9444,13 +9427,12 @@ mod tests {
                 assert_eq!(params.len(), 2);
                 assert_eq!(params[0].node.name, "x");
                 assert!(params[0].node.annotation.is_some());
-                // normalize_varref_annotation converts Simple("Int") → PropertyDict{type: Int}
                 assert!(
                     matches!(
                         &params[0].node.annotation.as_ref().unwrap().node,
-                        Annotation::PropertyDict(_)
+                        Annotation::Simple(s) if s == "Int"
                     ),
-                    "expected PropertyDict annotation, got {:?}",
+                    "expected Simple(\"Int\") annotation, got {:?}",
                     params[0].node.annotation.as_ref().unwrap().node
                 );
                 assert!(!params[0].node.variadic);
@@ -9519,13 +9501,12 @@ mod tests {
                     params[0].node.annotation.is_some(),
                     "x should have @Int annotation"
                 );
-                // normalize_varref_annotation converts Simple("Int") → PropertyDict{type: Int}
                 assert!(
                     matches!(
                         &params[0].node.annotation.as_ref().unwrap().node,
-                        Annotation::PropertyDict(_)
+                        Annotation::Simple(s) if s == "Int"
                     ),
-                    "expected PropertyDict annotation, got {:?}",
+                    "expected Simple(\"Int\") annotation, got {:?}",
                     params[0].node.annotation.as_ref().unwrap().node
                 );
                 assert_eq!(params[1].node.name, "y");

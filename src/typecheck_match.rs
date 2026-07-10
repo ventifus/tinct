@@ -620,9 +620,7 @@ pub(crate) async fn infer_fn(
             Some(ann) if crate::ast::is_expr_annotation(&ann.node) => {
                 // @Expr params receive quoted AST at runtime. Resolve to the declared Expr
                 // sum type (Expr: [type [Literal ...] [VarRef ...] [Call ...] ...] in prelude)
-                // by looking up "Expr" as a simple named type. This avoids the bug where
-                // PropertyDict{type: VarRef("Expr")} is misinterpreted as a structural record
-                // type [type: <Expr-as-function>] instead of the Expr sum type.
+                // by looking up "Expr" as a simple named type.
                 let expr_ann = crate::ast::Annotation::Simple("Expr".into());
                 resolve_annotation(
                     &expr_ann,

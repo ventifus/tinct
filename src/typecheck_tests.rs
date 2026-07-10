@@ -1407,10 +1407,7 @@ async fn test_property_dict_fn_type_error_propagates() {
             escaped: false,
             resolution: crate::ast::Resolution::new(),
             call_dispatch: crate::ast::CallDispatch::new(),
-            annotation: Some(crate::ast::normalize_varref_annotation(
-                Spanned::new(Annotation::Simple("Int".into()), span.clone()),
-                span.clone(),
-            )),
+            annotation: Some(Spanned::new(Annotation::Simple("Int".into()), span.clone())),
         },
     )]);
     let mut c = Vec::new();

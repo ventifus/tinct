@@ -129,6 +129,7 @@ async fn build_stdlib_module_type_env_inner(module_path: &str) -> Option<Arc<RwL
             &program, parent_env, false, // enable_scheme_map
             None,  // resolver_seed_env: no runtime env available at bootstrap
             None,  // type_stage_env: not available at bootstrap
+            std::collections::HashMap::new(), // seed_tycon_env: empty at bootstrap
         )
         .await;
 
@@ -214,6 +215,7 @@ async fn build_builtin_core_type_env_inner() -> Option<Arc<RwLock<Env>>> {
             &program, parent_env, false, // enable_scheme_map
             None,  // resolver_seed_env: no runtime env available at bootstrap
             None,  // type_stage_env: not available at bootstrap
+            std::collections::HashMap::new(), // seed_tycon_env: empty at bootstrap
         )
         .await;
 
@@ -651,7 +653,7 @@ async fn resolve_includes(
             _state,
             _final_env,
             _annot,
-        ) = typecheck_surface_program_with_env(&program, typecheck_env, false, None, None).await;
+        ) = typecheck_surface_program_with_env(&program, typecheck_env, false, None, None, std::collections::HashMap::new()).await;
 
         // Stdlib includes are user code — their type errors are surfaced like any other.
         if !type_errors.is_empty() {

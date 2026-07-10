@@ -172,7 +172,7 @@ pub async fn typecheck_surface_program(
     Vec<crate::error::TypeDiagnostic>,
 ) {
     let (errors, type_map, doc_map, scheme_map, diagnostics, _state, _env, _annotation_table) =
-        typecheck_surface_program_with_env(program, parent_env, true, None, None).await;
+        typecheck_surface_program_with_env(program, parent_env, true, None, None, std::collections::HashMap::new()).await;
     // type_map is now populated during inference (enable_scheme_map=true path).
     (errors, type_map, doc_map, scheme_map, diagnostics)
 }
@@ -220,6 +220,7 @@ pub async fn typecheck_surface_program_with_env(
     enable_scheme_map: bool,
     resolver_seed_env: Option<Arc<RwLock<Env>>>,
     type_stage_env: Option<Arc<RwLock<Env>>>,
+    seed_tycon_env: std::collections::HashMap<String, std::sync::Arc<crate::type_def::TyConDef>>,
 ) -> (
     Vec<TypeError>,
     TypeMap,
@@ -242,6 +243,15 @@ pub async fn typecheck_surface_program_with_env(
     // When None (bootstrap/LSP paths), type_stage_env stays None — primitive types are
     // resolved directly in resolve_type_name without a type-stage env call.
     state.type_stage_env = type_stage_env;
+    // Seed tycon_env from the TypeContext's accumulated TyConDefs. This propagates
+    // opaque types (DirCap, File, ClockCap, Handle, etc.) declared in builtin_core.llt
+    // to subsequent module type-checks (builtin_io.llt, builtin_async.llt, ...) so that
+    // @DirCap and similar annotations resolve correctly without re-declaration.
+    // Use or_insert so that static TyConDefs (with correct primitive bodies) are never
+    // overwritten by dynamic declarations that produce nominal bodies.
+    for (name, def) in seed_tycon_env {
+        state.tycon_env.entry(name).or_insert(def);
+    }
     // Seed the resolver so that instance binding names (ɪ-prefixed) are visible
     // in scope and method_to_instance can resolve class method VarRefs (cast, +, -, etc.)
     // to their letrec slots. When a resolver_seed_env is provided (typically the full
@@ -267,6 +277,32 @@ pub async fn typecheck_surface_program_with_env(
         fields: indexmap::IndexMap::new(),
         tail: crate::type_def::RowTail::Empty,
     });
+
+    // Pre-pass: type-check type-stage documents to register their TyConDefs into state.tycon_env.
+    // This makes types declared in the type-stage (Boolean, Seq, Result, etc.) visible when
+    // type-checking runtime documents' annotations (@Boolean, @Seq, etc.).
+    // Warnings from the pre-pass are discarded — only TyConDef registrations matter.
+    {
+        let mut dummy_table = TypeAnnotationTable::new();
+        let mut dummy_type_map = None;
+        for doc_spanned in &program.documents {
+            let doc = &doc_spanned.node;
+            if doc.stage != Some(crate::ast::Stage::Type) {
+                continue;
+            }
+            let pre_env = Arc::clone(&env);
+            let _ = typecheck_surface_document(
+                doc,
+                &pre_env,
+                &mut state,
+                &mut dummy_table,
+                &mut dummy_type_map,
+                &pipeline_type,
+                &named_types,
+            )
+            .await;
+        }
+    }
 
     for doc_spanned in &program.documents {
         let doc = &doc_spanned.node;
