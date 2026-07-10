@@ -23,8 +23,7 @@
 #                 containing directory of each file being processed. %cwd itself
 #                 is fixed and accessible directly from the closure.
 #   prelude     — runtime value of prelude.llt, merged into every user doc's scope.
-#                 Also used via [builtin-get-type-context] to guarantee
-#                 TypeContext is populated before type-checking user files.
+#                 Used to seed the type-stage env (via builtin-tc-with-type-stage-env).
 #   emit-ch     — the shared channel for emitting values to the output formatter.
 #
 # Known initial-env entries (%cwd, %libdir, %args) are included in every

@@ -2297,7 +2297,6 @@ pub(crate) fn builtin_typecheck(
                 // Since tinct code passes the same tc_arc to each builtin-typecheck call,
                 // this accumulation is visible to subsequent calls — tinct is in control.
                 // TyConDefs use or_insert: core types declared first are never overwritten.
-                // Also sync to ctx.type_context for backward compat with [builtin-get-type-context].
                 {
                     let mut guard = tc_arc.lock().unwrap();
                     guard.inference_env = Arc::clone(&final_env);
@@ -2328,16 +2327,15 @@ pub(crate) fn builtin_typecheck(
     })
 }
 
-/// `builtin-get-type-context`: Return the current TypeContext from EvalContext.
+/// `builtin-get-type-context`: Return a clone of the EvalContext's TypeContext.
 ///
-/// Zero-arg form: returns the TypeContext handle immediately.
-/// One-arg form: forces the argument (for its side effects, e.g. loading prelude),
-///   THEN returns the TypeContext handle.
+/// Returns a clone of the TypeContextData initialized by the Rust bootstrap (main.rs /
+/// lsp/document.rs). Errors if the TypeContext was not initialized before this call.
 ///
-/// Returns the `Value::TypeContext` handle wrapping the shared `TypeContextData` from
-/// `EvalContext`. Errors if `builtin-make-type-ctx` has not yet been called to initialize it.
+/// Note: this builtin is vestigial. Tinct code should use the TypeContext created by
+/// `[builtin-make-type-ctx]` and threaded explicitly through `uses-scope` / `fundamental-tc`.
 ///
-/// Signature: `[builtin-get-type-context]` or `[builtin-get-type-context x]`
+/// Signature: `[builtin-get-type-context]`
 pub(crate) fn builtin_get_type_context(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
