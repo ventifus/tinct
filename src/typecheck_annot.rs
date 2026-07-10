@@ -4482,7 +4482,46 @@ fn typenode_value_to_type<'a>(
                 }
             }
 
-            // Not a Dict, Annotated, or Variant — cannot be a TypeNode value.
+            // Constructor dict — a tinct ADT declaration like `Boolean: [type True False]`
+            // evaluates to `{ True: Variant("Boolean.True"), False: Variant("Boolean.False") }`.
+            // Detect the pattern: all values are Variants sharing the same qualified prefix.
+            // If so, return Type::TyCon(prefix) — the name of the declared type.
+            Value::Dict(entries) if !entries.is_empty() => {
+                let mut prefix: Option<String> = None;
+                let mut all_match = true;
+                for (_key, thunk_id) in entries {
+                    let thunk = ctx.get_thunk(*thunk_id);
+                    if let Some(val) = thunk.try_get_materialized() {
+                        match val {
+                            Value::Variant { tag, .. } => {
+                                if let Some(dot) = tag.rfind('.') {
+                                    let p = &tag[..dot];
+                                    match &prefix {
+                                        None => prefix = Some(p.to_string()),
+                                        Some(existing) if existing == p => {}
+                                        _ => { all_match = false; break; }
+                                    }
+                                } else {
+                                    all_match = false; break;
+                                }
+                            }
+                            // Function entries (payload constructors) — still count as the same ADT
+                            Value::Function { .. } | Value::Builtin(_) => {}
+                            _ => { all_match = false; break; }
+                        }
+                    } else {
+                        // Thunk not yet materialized — can't determine
+                        all_match = false; break;
+                    }
+                }
+                if all_match {
+                    prefix.map(|p| Type::TyCon(p))
+                } else {
+                    None
+                }
+            }
+
+            // Not a recognizable TypeNode or ADT value.
             _ => None,
         }
     })
