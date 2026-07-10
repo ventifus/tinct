@@ -38,4 +38,7 @@
   builtin-reactive-cell:    [fn@Any   [let init@Any] ...]
   builtin-cell-get:         [fn@Any   [let cell@Any] ...]
   builtin-cell-set:         [fn@Any   [let val@Any cell@Any] ...]
+
+  # ── Cancellation check ─────────────────────────────────────────────────────
+  builtin-cancelled-q:      [fn@Integer [let ctx@Any] ...]
 ]

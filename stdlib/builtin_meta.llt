@@ -81,4 +81,19 @@
   # ── Numeric coercions ─────────────────────────────────────────────────────
   builtin-decimal:           [fn@Decimal [let x@Any] ...]
   builtin-big-int:           [fn@BigInt  [let x@Any] ...]
+
+  # ── Evaluation control ────────────────────────────────────────────────────
+  builtin-materialize:       [fn@Any     [let x@Any] ...]
+  builtin-until:             [fn@Any     [let ...args] ...]
+
+  # ── AST operations ────────────────────────────────────────────────────────
+  builtin-ast-of:            [fn@Any     [let x@Any] ...]
+  builtin-ast-to-program:    [fn@Program [let x@Any] ...]
+  builtin-program:           [fn@Program [let ...docs] ...]
+  builtin-to-tinct:          [fn@String  [let x@Any] ...]
+
+  # ── Macro support (additional) ────────────────────────────────────────────
+  builtin-macro-injects:     [fn@Any     [let x@Any] ...]
+  builtin-span-of:           [fn@Dict    [let x@Any] ...]
+  builtin-sequential:        [fn@Any     [let x@Any] ...]
 ]

@@ -1,21 +1,30 @@
 # builtin_core.llt — Core types and fundamental primitives.
-# These are the Rust-level irreducibles that type-foundations requires.
-# ... bodies are Placeholder — valid tinct, errors if forced (never called).
+# This is the source of truth for all "core" module builtin type declarations.
+# Every entry in core_builtins() in src/builtins_core.rs must be declared here.
+# Bodies are Placeholder — valid tinct, errors if forced (builtins are Rust-side).
 
 [
-  # ── Rust-backed primitive types ───────────────────────────────────────────────────────
+  # ── Opaque runtime types ──────────────────────────────────────────────────
+  # Program: parsed+resolved AST from builtin-parse / builtin-resolve.
+  Program:      [type Program]
+  # TypeContext: accumulated type-checker state.
+  TypeContext:  [type TypeContext]
+  # File: raw OS file handle (Value::File).
+  File:         [type File]
+
+  # ── Rust-backed primitive types ───────────────────────────────────────────
   Int:     [type Int]
   Float:   [type Float]
   Bytes:   [type Bytes]
 
-  # ── Capability types ─────────────────────────────────────────────────────────────────
+  # ── Capability types ──────────────────────────────────────────────────────
   DirCap:  [type DirCap]
   NetCap:  [type NetCap]
   ClockCap:[type ClockCap]
   Handle:  [type Handle]
   Url:     [type Url]
 
-  # ── Opaque Rust handle types ─────────────────────────────────────────────────────────
+  # ── Opaque Rust handle types ──────────────────────────────────────────────
   BuilderHandle: [type BuilderHandle]
   Task:          [type [let a] Task]
   Channel:       [type [let a] Channel]
@@ -30,43 +39,106 @@
   Decimal:       [type Decimal]
   BigInt:        [type BigInt]
 
-  # ── Control flow ─────────────────────────────────────────────────────────────────────
+  # ── Control flow ──────────────────────────────────────────────────────────
   builtin-raise: [fn@Never  [let msg@String] ...]
-  # builtin-try returns {ok: value} on success or {error: message} on failure (both Dicts).
-  # The prelude `try` wrapper converts this to Result.Ok / Result.Error for callers.
   builtin-try:   [fn@[bind: [a]] [let f@[Fn@a []]] ...]
 
-  # ── String primitives ────────────────────────────────────────────────────────────────
-  builtin-str-bytes:[fn@Bytes   [let s@String] ...]
-  builtin-str-hash: [fn@Integer [let s@String] ...]
+  # ── Arithmetic (Core-46) ─────────────────────────────────────────────────
+  builtin-add:   [fn@Any [let a@Any b@Any] ...]
+  builtin-sub:   [fn@Any [let a@Any b@Any] ...]
 
-  # ── Comparison primitives — all return Integer (1=true, 0=false) ─────────────────────
-  # Note: builtin-eq-float is in the "math" module (not Core-46).
+  # ── Comparison (Core-46) ─────────────────────────────────────────────────
   builtin-lt:        [fn@Integer [let a@Integer b@Integer] ...]
+  builtin-gt:        [fn@Integer [let a@Any b@Any] ...]
+  builtin-gte:       [fn@Integer [let a@Any b@Any] ...]
   builtin-eq-int:    [fn@Integer [let a@Integer b@Integer] ...]
   builtin-eq-string: [fn@Integer [let a@String  b@String]  ...]
 
-  # ── Stateless stdio ───────────────────────────────────────────────────────────────────
-  # write-stdout/stderr: writes s to the stream, returns h (handle pass-through for chaining).
-  # h is not materialized — it flows through unchanged so callers can pipeline I/O.
-  # Note: builtin-read-stdin is in the "io" module (not Core-46).
-  builtin-write-stdout: [fn@[bind: [h]  return: h] [let s@String h] ...]
-  builtin-write-stderr: [fn@[bind: [h]  return: h] [let s@String h] ...]
+  # ── Dict primitives ───────────────────────────────────────────────────────
+  builtin-keys:              [fn@Dict    [let xs@Dict] ...]
+  builtin-length:            [fn@Integer [let xs@Any] ...]
+  builtin-merge:             [fn@Dict    [let a@Dict b@Dict] ...]
+  builtin-append:            [fn@Dict    [let x@Any xs@Dict] ...]
+  builtin-get:               [fn@Any     [let k@Any xs@Any] ...]
+  builtin-has-key?:          [fn@Integer [let k@Any xs@Any] ...]
+  builtin-get-by-field:      [fn@Any     [let field@Any k@Any xs@Any] ...]
+  builtin-dict-has-nth?:     [fn@Integer [let d@Any n@Integer] ...]
+  builtin-dict-nth:          [fn@Any     [let d@Any n@Integer] ...]
+  builtin-dict-has-key-nth?: [fn@Integer [let d@Any n@Integer] ...]
+  builtin-dict-key-nth:      [fn@Any     [let d@Any n@Integer] ...]
+  builtin-dict-has-kv-nth?:  [fn@Integer [let d@Any n@Integer] ...]
+  builtin-dict-kv-nth:       [fn@Any     [let d@Any n@Integer] ...]
+  builtin-build-dict:        [fn@Dict    [let entries@Any] ...]
 
-  # ── Value inspection ─────────────────────────────────────────────────────────────────
-  # eval-repr: evaluate prog in env: and return llt-repr of the last result as a String.
-  builtin-eval-repr:       [fn@String [let prog@Any ...opts] ...]
-  # variant-payload: extract the payload dict from a Variant value. Errors on non-Variant.
-  builtin-variant-payload: [fn@Any    [let variant@Any] ...]
+  # ── Builder ops ───────────────────────────────────────────────────────────
+  builtin-make-builder:      [fn@Any     [let ...opts] ...]
+  builtin-builder-set:       [fn@Any     [let builder@Any value@Any key@Any] ...]
+  builtin-builder-delete:    [fn@Any     [let builder@Any key@Any] ...]
+  builtin-builder-finish:    [fn@Dict    [let builder@Any] ...]
+  builtin-builder-snapshot:  [fn@Dict    [let builder@Any] ...]
+  builtin-builder-has?:      [fn@Integer [let builder@Any key@Any] ...]
+  builtin-builder-get:       [fn@Any     [let builder@Any key@Any] ...]
+  builtin-builder-get-or:    [fn@Any     [let builder@Any default@Any key@Any] ...]
 
-  # ── TypeContext bootstrap ───────────────────────────────────────────────────────────────
-  # make-type-ctx: create a fresh TypeContext. Loader needs this to build the seed-tc
-  # that is passed explicitly to uses-scope (no fallback to global ctx.type_context).
-  builtin-make-type-ctx:   [fn@TypeContext [] ...]
+  # ── String primitives (Core-46) ───────────────────────────────────────────
+  builtin-str-bytes:     [fn@Bytes   [let s@String] ...]
+  builtin-str-hash:      [fn@Integer [let s@String] ...]
+  builtin-int->string:   [fn@String  [let n@Integer] ...]
+  builtin-str-length:    [fn@Integer [let s@String] ...]
+  builtin-str-slice:     [fn@String  [let s@String start@Integer end@Integer] ...]
+  builtin-bytes-str:     [fn@String  [let b@Bytes] ...]
+  builtin-str-index-of:  [fn@Integer [let needle@String s@String] ...]
+  builtin-string-concat: [fn@String  [let a@String b@String] ...]
 
-  # ── Environment access ───────────────────────────────────────────────────────────────
-  # current-env: returns the caller's lexical environment. Zero positional args.
-  builtin-current-env:     [fn@Any  [] ...]
-  # var-resolution: given byte offset and resolved Program, return {level: N, slot: M} or [].
-  builtin-var-resolution:  [fn@Dict [let offset@Integer env@Any] ...]
+  # ── Bytes (Core-46) ───────────────────────────────────────────────────────
+  builtin-bytes:        [fn@Bytes [] ...]
+  builtin-bytes-concat: [fn@Bytes [let a@Bytes b@Bytes] ...]
+
+  # ── Type introspection ─────────────────────────────────────────────────────
+  builtin-type-of:       [fn@String  [let x@Any] ...]
+  builtin-check-type:    [fn@Any     [let type-name@Any x@Any] ...]
+  builtin-variant-payload: [fn@Any   [let variant@Any] ...]
+  builtin-tag-of:        [fn@String  [let x@Any] ...]
+  builtin-llt-repr:      [fn@String  [let x@Any] ...]
+
+  # ── Capability ─────────────────────────────────────────────────────────────
+  builtin-cap-env-has?:  [fn@Integer [let name@String env@Any] ...]
+
+  # ── I/O (Core-46) ─────────────────────────────────────────────────────────
+  builtin-narrow:        [fn@DirCap  [let cap@DirCap ...sub] ...]
+  builtin-list-dir:      [fn@Dict    [let cap@DirCap path@String] ...]
+  builtin-path-dir:      [fn@DirCap  [let path@String] ...]
+  builtin-file-open:     [fn@File    [let cap@DirCap path@String mode@String] ...]
+  builtin-file-read:     [fn@Bytes   [let file@File n@Integer] ...]
+  builtin-write-stdout:  [fn@[bind: [h] return: h] [let s@String h] ...]
+  builtin-write-stderr:  [fn@[bind: [h] return: h] [let s@String h] ...]
+
+  # ── Pipeline primitives ────────────────────────────────────────────────────
+  builtin-parse:         [fn@Program [let src@Bytes path@String] ...]
+  builtin-resolve:       [fn@Dict    [let prog@Any ...opts] ...]
+  builtin-typecheck:     [fn@Program [let prog@Any ctx@TypeContext ...opts] ...]
+  builtin-eval:          [fn@Dict    [let prog@Any ...opts] ...]
+
+  # ── Module system ─────────────────────────────────────────────────────────
+  builtin-module:        [fn@Dict    [let name@String] ...]
+  builtin-extend-env:    [fn@Any     [let parent@Any bindings@Dict] ...]
+
+  # ── TypeContext bootstrap ──────────────────────────────────────────────────
+  builtin-get-type-context:       [fn@TypeContext [let ...args] ...]
+  builtin-make-type-ctx:          [fn@TypeContext [] ...]
+  builtin-tc-with-type-stage-env: [fn@TypeContext [let ctx@TypeContext env@Any] ...]
+
+  # ── Sequences (core collection ops) ───────────────────────────────────────
+  builtin-take:    [fn@Dict [let n@Integer xs@Any] ...]
+  builtin-drop:    [fn@Dict [let n@Integer xs@Any] ...]
+  builtin-concat:  [fn@Any  [let a@Any b@Any] ...]
+  builtin-first:   [fn@Any  [let xs@Any] ...]
+  builtin-last:    [fn@Any  [let xs@Any] ...]
+  builtin-rest:    [fn@Dict [let xs@Any] ...]
+  builtin-reverse: [fn@Dict [let xs@Any] ...]
+  builtin-sort:    [fn@Dict [let ...args] ...]
+
+  # ── Async (Core-46) ───────────────────────────────────────────────────────
+  builtin-channel: [fn@[Channel Any] [let ...opts] ...]
+  builtin-send:    [fn@Any [let ch@Any val@Any] ...]
 ]
