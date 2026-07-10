@@ -474,7 +474,7 @@
     # lazy result thunks are forced below (after _wb-forced runs typecheck first).
     [typed:      [match [builtin-gte [builtin-length [builtin-type-of test-state.env]] 0]
       0: []
-      _: [builtin-typecheck parse-result.program [builtin-get-type-context prelude] env: base-env]]]
+      _: [builtin-typecheck parse-result.program [builtin-get-type-context] env: base-env]]]
     # Accumulate typecheck warnings into warn-box.
     [all-warnings: typed.warnings]
     # Force warn-box update as a data dependency (no >> needed).

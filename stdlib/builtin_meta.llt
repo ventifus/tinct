@@ -26,7 +26,7 @@
   # typecheck: run type-checking on prog using ctx; returns typed Program.
   builtin-typecheck:              [fn@Program    [let prog@Any ctx@TypeContext ...opts] ...]
   # get-type-context: retrieve the EvalContext's TypeContext handle.
-  builtin-get-type-context:       [fn@TypeContext [let ...args] ...]
+  builtin-get-type-context:       [fn@TypeContext [] ...]
   # make-type-ctx: create a fresh TypeContext seeded with core type definitions.
   builtin-make-type-ctx:          [fn@TypeContext [] ...]
   # fork-type-ctx: create child TypeContext inheriting parent; mutations don't propagate up.

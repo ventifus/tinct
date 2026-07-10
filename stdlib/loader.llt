@@ -23,7 +23,7 @@
 #                 containing directory of each file being processed. %cwd itself
 #                 is fixed and accessible directly from the closure.
 #   prelude     — runtime value of prelude.llt, merged into every user doc's scope.
-#                 Also used via [builtin-get-type-context prelude] to guarantee
+#                 Also used via [builtin-get-type-context] to guarantee
 #                 TypeContext is populated before type-checking user files.
 #   emit-ch     — the shared channel for emitting values to the output formatter.
 #
@@ -440,7 +440,7 @@
     # (via resolve_surface_program with no env seed), so it does not depend on
     # OnceLocks from builtin-resolve. The OnceLocks are written by eval-document-runtime
     # per-document with full-env, ensuring correct de Bruijn coords for the evaluator.
-    [typed: [builtin-typecheck parse-result.program [builtin-get-type-context prelude] env: prelude]]
+    [typed: [builtin-typecheck parse-result.program [builtin-get-type-context] env: prelude]]
     # Emit all typecheck diagnostics as a data dependency (no >> needed).
     [_te:    [builtin-length [emit-diagnostics typed.warnings]]]
     # Force emission of all diagnostics before evaluating documents.
@@ -470,7 +470,7 @@
     # that block the correct full-env resolve (OnceLocks are write-once).
     # -e expressions rarely declare --- uses:, but uniform handling costs nothing.
     [mod-scope: [uses-scope parse-result.program.uses fundamental-tc]]
-    [typed: [builtin-typecheck parse-result.program [builtin-get-type-context prelude] env: prelude]]
+    [typed: [builtin-typecheck parse-result.program [builtin-get-type-context] env: prelude]]
     [_te:    [builtin-length [emit-diagnostics typed.warnings]]]
     [match [builtin-eq-int [builtin-add _pe _te] 0]
       0: [reduce

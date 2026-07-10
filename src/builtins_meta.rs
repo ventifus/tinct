@@ -2354,14 +2354,8 @@ pub(crate) fn builtin_get_type_context(
             named.as_ref(),
             call_span.clone(),
         )?;
-        if args.len() > 1 {
-            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
-        }
-        // One-arg form: force the argument for its side effects before returning.
-        if args.len() == 1 {
-            // Force args[0] for its side effects (e.g. loading prelude updates TypeContext).
-            // We discard the result — only the side effects matter.
-            materialize(&args[0], Some(&call_span), &ctx).await?;
+        if !args.is_empty() {
+            return Err(EvalError::arity_mismatch(0, args.len(), call_span).into());
         }
         // Return the real TypeContext handle from EvalContext.
         // Errors if builtin-make-type-ctx has not yet been called to initialize it.

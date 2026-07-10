@@ -124,7 +124,7 @@
   builtin-extend-env:    [fn@Any     [let parent@Any bindings@Dict] ...]
 
   # ── TypeContext bootstrap ──────────────────────────────────────────────────
-  builtin-get-type-context:       [fn@TypeContext [let ...args] ...]
+  builtin-get-type-context:       [fn@TypeContext [] ...]
   builtin-make-type-ctx:          [fn@TypeContext [] ...]
   builtin-tc-with-type-stage-env: [fn@TypeContext [let ctx@TypeContext env@Any] ...]
 
