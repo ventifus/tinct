@@ -119,7 +119,7 @@ impl SurfaceResolver {
     fn walk_surface_expr(&mut self, arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) {
         match expr {
             SurfaceExpression::VarRef {
-                name, resolution, annotation, ..
+                name, resolution, ..
             } => {
                 if let Some(coords) = self.resolve_name(name) {
                     resolution.set(Some(coords));
@@ -136,14 +136,6 @@ impl SurfaceResolver {
                     // dict-key, LetDecl binding, or declaration method-name position —
                     // none of those are runtime variable references.
                     self.unresolved.push((name.clone(), arc.span.clone()));
-                }
-                // Walk the PropertyDict annotation if present. Constructor annotations
-                // in [type ...] bodies (e.g. @[as-type: [fn [let t] t]  guarding: 1])
-                // contain runtime function expressions that need parameter resolution.
-                // walk_surface_annotation adds suppress_depth, so type names inside
-                // are silently skipped while function parameter bindings are resolved.
-                if let Some(ann) = annotation {
-                    self.walk_surface_annotation(ann);
                 }
                 // OnceLock left unset (None): the lowerer treats None as
                 // "undefined variable" and emits LowerDiagnostic::Error.
@@ -356,23 +348,16 @@ impl SurfaceResolver {
             // Declaration embedded as a dict entry value — walk class/instance bodies so
             // that runtime VarRefs inside method implementations (e.g. `result-map`
             // referenced in a named instance) get resolved against the enclosing letrec
-            // scope.
+            // scope. For TypeAlias, walk only constructor annotation values (runtime
+            // expressions like [fn [let t] t]) — NOT the type structure itself (constructor
+            // names, field types, type parameters), which are type-level, not runtime.
             SurfaceExpression::Decl(decl) => match decl.as_ref() {
                 crate::ast::SurfaceDeclaration::ClassDecl { .. }
                 | crate::ast::SurfaceDeclaration::InstanceDecl { .. } => {
                     self.walk_surface_declaration(decl);
                 }
                 crate::ast::SurfaceDeclaration::TypeAlias { body, .. } => {
-                    // Walk the TypeAlias body in suppress mode: type names like `Int`,
-                    // `String`, `TypeNode` in field-type positions are not runtime
-                    // variables, so suppress_depth silences "undefined variable" for them.
-                    // But constructor annotation bodies (e.g. @[as-type: [fn [let t] t]])
-                    // contain runtime function expressions — the VarRef handler above
-                    // calls walk_surface_annotation, which resolves function parameters
-                    // correctly even under suppression.
-                    self.suppress_depth += 1;
-                    self.walk_surface_node(body);
-                    self.suppress_depth -= 1;
+                    self.walk_type_alias_body(body);
                 }
                 _ => {}
             },
@@ -385,6 +370,82 @@ impl SurfaceResolver {
             | SurfaceExpression::Rest(..)
             | SurfaceExpression::Placeholder
             | SurfaceExpression::Error(_) => {}
+        }
+    }
+
+    /// Walk the body of a [type ...] declaration, resolving ONLY the runtime values
+    /// stored in constructor PropertyDict annotations (e.g. `@[as-type: [fn [let t] t]]`).
+    ///
+    /// TypeAlias bodies contain two kinds of sub-expressions:
+    ///   - Type structure: constructor name VarRefs (Red, Green), field type expressions
+    ///     ([Map String TypeNode]), type parameters (`a` in `value: a`) — ALL type-level.
+    ///   - Annotation values: PropertyDict entries on constructor VarRefs/funcs — runtime
+    ///     expressions stored via builtin-make-annotated, returned by annotation-of at runtime.
+    ///
+    /// Walking the type structure would generate false "undefined variable" errors for
+    /// constructor names and type parameters. We surgically walk ONLY annotation values,
+    /// at the current suppress_depth (no blanket suppression), so genuine errors in
+    /// annotation bodies ARE reported while the type structure is left untouched.
+    fn walk_type_alias_body(&mut self, body: &Arc<SurfaceNode>) {
+        match &body.expr {
+            SurfaceExpression::Dict(entries) => {
+                // Multi-constructor union: each positional entry is one constructor.
+                for entry in entries {
+                    self.walk_ctor_node(&entry.node.value);
+                }
+            }
+            _ => {
+                // Single constructor body.
+                self.walk_ctor_node(body);
+            }
+        }
+    }
+
+    /// Walk the PropertyDict annotation values of a single constructor node.
+    fn walk_ctor_node(&mut self, node: &Arc<SurfaceNode>) {
+        match &node.expr {
+            // Annotated VarRef: `Red@[as-type: [fn [let t] t]]` (bare unit constructor)
+            SurfaceExpression::VarRef { name, annotation, .. }
+                if crate::eval::is_constructor_name(name) =>
+            {
+                if let Some(ann) = annotation {
+                    self.walk_ctor_annotation_values(ann);
+                }
+            }
+            // Bracket form: `[Dict@[as-type: ...] fields: ...]` or `[Int@[...]]`
+            // The parser wraps annotated constructors in a bracket (a single-entry Dict).
+            // Recurse through it to find the actual VarRef or Call inside.
+            SurfaceExpression::Dict(entries) => {
+                for entry in entries {
+                    self.walk_ctor_node(&entry.node.value);
+                }
+            }
+            // Call with annotated func: `Call { func: VarRef("Dict")@[...], named_args: [...] }`
+            SurfaceExpression::Call { func, .. } => {
+                if let SurfaceExpression::VarRef { name, annotation, .. } = &func.expr {
+                    if crate::eval::is_constructor_name(name) {
+                        if let Some(ann) = annotation {
+                            self.walk_ctor_annotation_values(ann);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Walk PropertyDict annotation VALUES as runtime expressions, without adding
+    /// suppress_depth. This is the key difference from walk_surface_annotation: annotation
+    /// values on constructors ARE runtime closures (stored via builtin-make-annotated),
+    /// so undefined names in them must produce errors, not be silently swallowed.
+    fn walk_ctor_annotation_values(&mut self, ann: &Spanned<crate::ast::Annotation>) {
+        if let crate::ast::Annotation::PropertyDict(entries) = &ann.node {
+            for entry in entries {
+                // Keys are static strings — no resolution needed.
+                // Values are runtime expressions: walk them at current suppress_depth
+                // so the Fn handler can enter parameter scopes and resolve body VarRefs.
+                self.walk_surface_node(&entry.node.value);
+            }
         }
     }
 
@@ -412,7 +473,7 @@ impl SurfaceResolver {
 
     fn walk_surface_declaration(&mut self, decl: &SurfaceDeclaration) {
         match decl {
-            SurfaceDeclaration::TypeAlias { body, .. } => self.walk_surface_node(body),
+            SurfaceDeclaration::TypeAlias { body, .. } => self.walk_type_alias_body(body),
             SurfaceDeclaration::ClassDecl { .. } => {
                 // ClassDecl is entirely type-level: method signatures, determines, and the
                 // resolver function name are all resolved by the type checker against the
