@@ -1,0 +1,52 @@
+# builtin_io.llt — I/O, filesystem, and network primitive types.
+# Bodies are Placeholder — valid tinct, errors if forced (builtins are Rust-side).
+
+[
+  # ── Opaque OS file handle ──────────────────────────────────────────────────
+  File: [type File]
+
+  # ── Standard streams ───────────────────────────────────────────────────────
+  builtin-write-stdout:  [fn@Integer [let s@String] ...]
+  builtin-write-stderr:  [fn@Integer [let s@String] ...]
+  builtin-read-stdin:    [fn@Bytes   [let n@Integer] ...]
+
+  # ── Filesystem: open / read / write / close ────────────────────────────────
+  builtin-file-open:     [fn@File    [let cap@DirCap path@String mode@String] ...]
+  builtin-file-read:     [fn@Bytes   [let f@File n@Integer] ...]
+  builtin-file-write:    [fn@Integer [let f@File s@String] ...]
+  builtin-file-flush:    [fn@Integer [let f@File] ...]
+  builtin-file-close:    [fn@Integer [let f@File] ...]
+  builtin-file-seek:     [fn@Integer [let f@File pos@Integer] ...]
+
+  # ── Filesystem: directory and path operations ──────────────────────────────
+  builtin-write:         [fn@Integer [let cap@DirCap path@String content@Any] ...]
+  builtin-write-atomic:  [fn@Integer [let cap@DirCap path@String content@Any] ...]
+  builtin-stat:          [fn@Dict    [let cap@DirCap path@String] ...]
+  builtin-stat-symlink:  [fn@Dict    [let cap@DirCap path@String] ...]
+  builtin-exists:        [fn@Integer [let cap@DirCap path@String] ...]
+  builtin-list-dir:      [fn@Dict    [let cap@DirCap path@String] ...]
+  builtin-make-dir:      [fn@Integer [let cap@DirCap path@String] ...]
+  builtin-rename:        [fn@Integer [let cap@DirCap from@String to@String] ...]
+  builtin-copy-file:     [fn@Integer [let src-cap@DirCap src@String dst-cap@DirCap dst@String] ...]
+  builtin-symlink:       [fn@Integer [let cap@DirCap path@String target@String] ...]
+  builtin-link:          [fn@Integer [let cap@DirCap target@String link-path@String] ...]
+  builtin-read-link:     [fn@String  [let cap@DirCap path@String] ...]
+  builtin-set-permissions: [fn@Integer [let cap@DirCap path@String mode@Integer] ...]
+
+  # ── Extended attributes ────────────────────────────────────────────────────
+  builtin-get-xattr:     [fn@String  [let cap@DirCap path@String name@String] ...]
+  builtin-set-xattr:     [fn@Integer [let cap@DirCap path@String name@String value@String] ...]
+  builtin-remove-xattr:  [fn@Integer [let cap@DirCap path@String name@String] ...]
+  builtin-list-xattrs:   [fn@Dict    [let cap@DirCap path@String] ...]
+
+  # ── Capability operations ──────────────────────────────────────────────────
+  builtin-revocable:     [fn@DirCap  [let cap@DirCap] ...]
+  builtin-revoke-cap:    [fn@Integer [let cap@Any] ...]
+
+  # ── Network ────────────────────────────────────────────────────────────────
+  builtin-connect:       [fn@Any     [let cap@NetCap addr@String ...opts] ...]
+  builtin-tls-layer:     [fn@Any     [let stream@Any host@String opts@Any] ...]
+  builtin-tls-peer-cert: [fn@Any     [let stream@Any] ...]
+  builtin-send-datagram: [fn@Integer [let sock@Any data@Bytes] ...]
+  builtin-recv-datagram: [fn@Bytes   [let sock@Any] ...]
+]

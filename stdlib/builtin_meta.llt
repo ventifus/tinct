@@ -1,0 +1,58 @@
+# builtin_meta.llt — AST, evaluation, reflection, and macro primitives.
+# Bodies are Placeholder — valid tinct, errors if forced (builtins are Rust-side).
+
+[
+  # ── AST and evaluation ─────────────────────────────────────────────────────
+  builtin-parse:             [fn@Any     [let src@Bytes path@String] ...]
+  builtin-resolve:           [fn@Any     [let prog@Any ...opts] ...]
+  builtin-eval:              [fn@Any     [let prog@Any ...opts] ...]
+  builtin-eval-types:        [fn@Any     [let prog@Any] ...]
+  builtin-load:              [fn@Any     [let src@String ...opts] ...]
+  builtin-eval-macro-ast:    [fn@Any     [let ast@Any] ...]
+
+  # ── Type-checking context ──────────────────────────────────────────────────
+  builtin-typecheck:         [fn@Any     [let prog@Any ctx@Any ...opts] ...]
+  builtin-get-type-context:  [fn@Any     [...args] ...]
+  builtin-make-type-ctx:     [fn@Any     [] ...]
+  builtin-fork-type-ctx:     [fn@Any     [let ctx@Any] ...]
+  builtin-tc-with-type-stage-env: [fn@Any [let ctx@Any env@Any] ...]
+  builtin-validate:          [fn@Any     [let prog@Any ctx@Any] ...]
+
+  # ── Reflection and introspection ───────────────────────────────────────────
+  builtin-tag-of:            [fn@String  [let x@Any] ...]
+  builtin-type-of:           [fn@String  [let x@Any] ...]
+  builtin-annotation-of:     [fn@Any     [let x@Any] ...]
+  builtin-make-annotated:    [fn@Any     [let x@Any ann@Any] ...]
+  builtin-llt-repr:          [fn@String  [let x@Any] ...]
+
+  # ── Macro support ─────────────────────────────────────────────────────────
+  builtin-gensym:            [fn@String  [let scope@String prefix@String] ...]
+  builtin-macro-error:       [fn@Never   [let msg@String form@Any] ...]
+  builtin-eval-ast:          [fn@Any     [let ast@Any] ...]
+  builtin-is-contractive:    [fn@Integer [let ty@Any] ...]
+
+  # ── Apply and meta-call ────────────────────────────────────────────────────
+  builtin-apply:             [fn@Any     [let f@Any args@Any] ...]
+  builtin-proxy:             [fn@Any     [let handler@Any] ...]
+
+  # ── Capability and identity ────────────────────────────────────────────────
+  builtin-narrow:            [fn@DirCap  [let cap@DirCap ...sub] ...]
+  builtin-cap-identity:      [fn@String  [let cap@DirCap] ...]
+  builtin-cap-env-has?:      [fn@Integer [let name@String env@Any] ...]
+
+  # ── Include cache ─────────────────────────────────────────────────────────
+  builtin-include-cache-get: [fn@Any     [let key@String] ...]
+  builtin-include-cache-put: [fn@Any     [let key@String val@Any] ...]
+
+  # ── Hashing ───────────────────────────────────────────────────────────────
+  builtin-blake3:            [fn@String  [let s@String] ...]
+
+  # ── Numeric coercions ─────────────────────────────────────────────────────
+  builtin-decimal:           [fn@Decimal [let x@Any] ...]
+  builtin-big-int:           [fn@BigInt  [let x@Any] ...]
+
+  # ── Extended env ──────────────────────────────────────────────────────────
+  builtin-extend-env:        [fn@Any     [let env@Any bindings@Any] ...]
+  builtin-env-has?:          [fn@Integer [let name@String env@Any] ...]
+  builtin-get-env:           [fn@Any     [let name@String env@Any] ...]
+]

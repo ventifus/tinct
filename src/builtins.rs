@@ -1116,15 +1116,51 @@ pub(crate) fn builtin_proxy(
 /// (not via the module system). They are declared in prelude.llt's --- uses:
 /// header for documentation/intent, but have no native registrations.
 pub fn builtin_module(name: &str) -> Option<Vec<crate::value::BuiltinDef>> {
-    match name {
+    let defs = match name {
         "core" => Some(crate::builtins_core::core_builtins()),
         "datetime" => Some(crate::builtins_datetime::datetime_builtins()),
         "net" => Some(crate::builtins_net::net_builtins()),
-        // Declared in prelude --- uses: but have no native-level registrations.
-        // Return empty so uses-scope doesn't fail.
+        // These modules provide type declarations via builtin_*.llt but have no
+        // Rust-side runtime registrations (all actual builtins live in "core").
         "io" | "math" | "meta" | "dict" | "string" | "seq" | "async" => Some(vec![]),
-        _ => None,
+        _ => return None,
+    }?;
+
+    // Invariant: every registered builtin must have a type declaration in its
+    // module's builtin_*.llt file (surfaced via type_env_module). A missing type
+    // declaration is an immediate error — the .llt file must be kept in sync.
+    if !defs.is_empty() {
+        if let Some(type_env) = type_env_module(name) {
+            let declared: std::collections::HashSet<&str> = type_env
+                .iter_slotted()
+                .map(|(n, _)| n)
+                .chain(type_env.iter_extras().map(|(n, _)| n))
+                .collect();
+
+            let untyped: Vec<&str> = defs
+                .iter()
+                .filter(|def| !declared.contains(def.name))
+                .map(|def| def.name)
+                .collect();
+
+            if !untyped.is_empty() {
+                panic!(
+                    "Untyped builtins in module '{}' — add type declarations to builtin_{}.llt:\n  {}",
+                    name, name,
+                    untyped.join("\n  ")
+                );
+            }
+        } else {
+            // Module has runtime builtins but no type environment at all.
+            panic!(
+                "Module '{}' has runtime builtins but no type environment — \
+                 create stdlib/builtin_{}.llt",
+                name, name
+            );
+        }
     }
+
+    Some(defs)
 }
 
 /// Build a fresh environment seeded with only the core Rust builtins.
@@ -1138,6 +1174,33 @@ pub fn builtin_module(name: &str) -> Option<Vec<crate::value::BuiltinDef>> {
 /// pre-evaluation of loader.llt; the caller drives the full pipeline via
 /// `run_loader_pipeline`.
 pub fn build_core_env() -> Arc<RwLock<crate::env::Env>> {
+    // Invariant: every Rust builtin must have a type declaration.
+    // A builtin with no type is an immediate error — it means builtin_core.llt
+    // (or the relevant module's .llt) is out of sync with the Rust implementation.
+    // This fires at startup before any user code runs.
+    {
+        let type_env = type_env_module("core")
+            .expect("core type environment must be available at startup");
+        let declared: std::collections::HashSet<&str> = type_env
+            .iter_slotted()
+            .map(|(n, _)| n)
+            .chain(type_env.iter_extras().map(|(n, _)| n))
+            .collect();
+
+        let untyped: Vec<&str> = crate::builtins_core::core_builtins()
+            .iter()
+            .filter(|def| !declared.contains(def.name))
+            .map(|def| def.name)
+            .collect();
+
+        if !untyped.is_empty() {
+            panic!(
+                "Untyped builtins — add type declarations to builtin_core.llt:\n  {}",
+                untyped.join("\n  ")
+            );
+        }
+    }
+
     let env = Arc::new(RwLock::new(crate::env::Env::new()));
     if let Some(defs) = builtin_module("core") {
         let mut env_write = env.write().unwrap();

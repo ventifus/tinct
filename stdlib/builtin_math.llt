@@ -1,0 +1,51 @@
+# builtin_math.llt — Arithmetic, comparison, and numeric primitive operations.
+# Bodies are Placeholder — valid tinct, errors if forced (builtins are Rust-side).
+
+[
+  # ── Arithmetic (return type depends on inputs — Any for polymorphic ops) ────
+  builtin-add:             [fn@Any     [let a@Any b@Any] ...]
+  builtin-sub:             [fn@Any     [let a@Any b@Any] ...]
+  builtin-mul:             [fn@Any     [let a@Any b@Any] ...]
+  builtin-div:             [fn@Float   [let a@Any b@Any] ...]
+  builtin-mod:             [fn@Integer [let a@Integer b@Integer] ...]
+
+  # ── Comparison — all return Integer (1=true, 0=false) ──────────────────────
+  builtin-lt:              [fn@Integer [let a@Any b@Any] ...]
+  builtin-gt:              [fn@Integer [let a@Any b@Any] ...]
+  builtin-gte:             [fn@Integer [let a@Any b@Any] ...]
+  builtin-lte:             [fn@Integer [let a@Any b@Any] ...]
+
+  # ── Bitwise ────────────────────────────────────────────────────────────────
+  builtin-band:            [fn@Integer [let a@Integer b@Integer] ...]
+  builtin-bor:             [fn@Integer [let a@Integer b@Integer] ...]
+  builtin-bxor:            [fn@Integer [let a@Integer b@Integer] ...]
+  builtin-shl:             [fn@Integer [let a@Integer b@Integer] ...]
+  builtin-shr:             [fn@Integer [let a@Integer b@Integer] ...]
+
+  # ── Numeric coercions ──────────────────────────────────────────────────────
+  builtin-float:           [fn@Float   [let n@Any] ...]
+  builtin-to-int:          [fn@Integer [let x@Any] ...]
+  builtin-to-float:        [fn@Float   [let x@Any] ...]
+  builtin-floor:           [fn@Integer [let n@Any] ...]
+  builtin-round:           [fn@Integer [let n@Any] ...]
+
+  # ── Transcendental functions ────────────────────────────────────────────────
+  builtin-sqrt:            [fn@Float   [let n@Any] ...]
+  builtin-log:             [fn@Float   [let n@Any] ...]
+  builtin-log2:            [fn@Float   [let n@Any] ...]
+  builtin-log10:           [fn@Float   [let n@Any] ...]
+  builtin-exp:             [fn@Float   [let n@Any] ...]
+  builtin-pow:             [fn@Float   [let base@Any exp@Any] ...]
+  builtin-sin:             [fn@Float   [let n@Any] ...]
+  builtin-cos:             [fn@Float   [let n@Any] ...]
+  builtin-tan:             [fn@Float   [let n@Any] ...]
+  builtin-asin:            [fn@Float   [let n@Any] ...]
+  builtin-acos:            [fn@Float   [let n@Any] ...]
+  builtin-atan:            [fn@Float   [let n@Any] ...]
+  builtin-atan2:           [fn@Float   [let y@Any x@Any] ...]
+
+  # ── Float predicates ───────────────────────────────────────────────────────
+  builtin-nan?:            [fn@Integer [let n@Float] ...]
+  builtin-inf?:            [fn@Integer [let n@Float] ...]
+  builtin-finite?:         [fn@Integer [let n@Float] ...]
+]

@@ -1,0 +1,52 @@
+# builtin_string.llt — String and bytes primitive operations.
+# Bodies are Placeholder — valid tinct, errors if forced (builtins are Rust-side).
+
+[
+  # ── String construction and conversion ─────────────────────────────────────
+  builtin-string-concat:   [fn@String  [let a@String b@String] ...]
+  builtin-int->string:     [fn@String  [let n@Integer] ...]
+  builtin-float->string:   [fn@String  [let n@Float] ...]
+  builtin-to-int:          [fn@Integer [let x@Any] ...]
+  builtin-to-float:        [fn@Float   [let x@Any] ...]
+  builtin-json-parse:      [fn@Any     [let s@String] ...]
+
+  # ── String inspection ──────────────────────────────────────────────────────
+  builtin-str-length:      [fn@Integer [let s@String] ...]
+  builtin-str-slice:       [fn@String  [let s@String start@Integer end@Integer] ...]
+  builtin-str-index-of:    [fn@Integer [let needle@String haystack@String] ...]
+  builtin-str-chars:       [fn@Dict    [let s@String] ...]
+  builtin-str-bytes:       [fn@Bytes   [let s@String] ...]
+  builtin-str-byte-count:  [fn@Integer [let s@String] ...]
+  builtin-str-nth-char:    [fn@String  [let s@String i@Integer] ...]
+  builtin-str-has-nth?:    [fn@Integer [let s@String i@Integer] ...]
+  builtin-str-nth-byte:    [fn@Integer [let s@String i@Integer] ...]
+  builtin-str-has-nth-byte?: [fn@Integer [let s@String i@Integer] ...]
+
+  # ── String transformation ──────────────────────────────────────────────────
+  builtin-split:           [fn@Dict    [let sep@String s@String] ...]
+  builtin-trim:            [fn@String  [let s@String] ...]
+  builtin-trim-start:      [fn@String  [let s@String] ...]
+  builtin-trim-end:        [fn@String  [let s@String] ...]
+  builtin-replace:         [fn@String  [let pat@String rep@String s@String] ...]
+  builtin-str-map-chars:   [fn@String  [let f@Any s@String] ...]
+  builtin-str-to-upper-char: [fn@String [let c@String] ...]
+  builtin-str-to-lower-char: [fn@String [let c@String] ...]
+
+  # ── Character operations ───────────────────────────────────────────────────
+  builtin-char-code:       [fn@Integer [let s@String] ...]
+  builtin-chr:             [fn@String  [let n@Integer] ...]
+
+  # ── Regex ──────────────────────────────────────────────────────────────────
+  builtin-regex-match?:    [fn@Integer [let pat@String s@String] ...]
+
+  # ── Bytes operations ───────────────────────────────────────────────────────
+  builtin-bytes-str:       [fn@String  [let b@Bytes] ...]
+  builtin-bytes-concat:    [fn@Bytes   [let a@Bytes b@Bytes] ...]
+  builtin-bytes-find:      [fn@Integer [let haystack@Bytes needle@Bytes] ...]
+  builtin-bytes-of:        [fn@Bytes   [let x@Any] ...]
+  builtin-bytes-equal?:    [fn@Integer [let a@Bytes b@Bytes] ...]
+  builtin-ct-equal?:       [fn@Integer [let a@Bytes b@Bytes] ...]
+  builtin-bytes-get:       [fn@Integer [let i@Integer b@Bytes] ...]
+  builtin-bytes-slice:     [fn@Bytes   [let b@Bytes start@Integer end@Integer] ...]
+  builtin-encode:          [fn@Bytes   [let encoding@Any x@Any] ...]
+]

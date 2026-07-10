@@ -1,0 +1,41 @@
+# builtin_async.llt — Async, concurrency, and channel primitive operations.
+# Bodies are Placeholder — valid tinct, errors if forced (builtins are Rust-side).
+# Task, Channel, Context, ReactiveCell declared in builtin_core.llt.
+
+[
+  # ── Task lifecycle ─────────────────────────────────────────────────────────
+  builtin-task:            [fn@Any     [let body@Any] ...]
+  builtin-await:           [fn@Any     [let t@Any] ...]
+  builtin-par:             [fn@Any     [let a@Any b@Any] ...]
+  builtin-par-map:         [fn@Dict    [let f@Any xs@Any] ...]
+  builtin-par-filter:      [fn@Dict    [let pred@Any xs@Any] ...]
+  builtin-exit-now:        [fn@Never   [let code@Integer] ...]
+  builtin-non-cancellable: [fn@Any     [let body@Any] ...]
+
+  # ── Channels ───────────────────────────────────────────────────────────────
+  builtin-channel:          [fn@Any    [let n@Integer] ...]
+  builtin-send:             [fn@Any    [let ch@Any val@Any] ...]
+  builtin-recv:             [fn@Any    [let ch@Any] ...]
+  builtin-try-send:         [fn@Any    [let ch@Any val@Any] ...]
+  builtin-drain:            [fn@Any    [let ch@Any] ...]
+  builtin-broadcast-channel: [fn@Any  [let n@Integer] ...]
+  builtin-oneshot-channel:  [fn@Any   [] ...]
+  builtin-signal-channel:   [fn@Any   [let signals@Any] ...]
+  builtin-timer-channel:    [fn@Any   [let clk@ClockCap interval@Any] ...]
+  builtin-watch-channel:    [fn@Any   [let cap@DirCap path@String] ...]
+  builtin-select-once:      [fn@Any   [let ctx@Any sources@Any] ...]
+
+  # ── Context and cancellation ───────────────────────────────────────────────
+  builtin-context:          [fn@Any   [] ...]
+  builtin-with-cancel:      [fn@Any   [let ctx@Any] ...]
+  builtin-with-timeout:     [fn@Any   [let clk@ClockCap ctx@Any dur@Any] ...]
+  builtin-with-deadline:    [fn@Any   [let clk@ClockCap ctx@Any deadline@Any] ...]
+  builtin-with-context:     [fn@Any   [let ctx@Any body@Any] ...]
+  builtin-cancel-task:      [fn@Any   [let ctx@Any] ...]
+  builtin-cancel-root:      [fn@Any   [] ...]
+
+  # ── Reactive cells ─────────────────────────────────────────────────────────
+  builtin-reactive-cell:    [fn@Any   [let init@Any] ...]
+  builtin-cell-get:         [fn@Any   [let cell@Any] ...]
+  builtin-cell-set:         [fn@Any   [let val@Any cell@Any] ...]
+]
