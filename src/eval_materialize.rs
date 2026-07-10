@@ -110,20 +110,20 @@ pub fn lower_errors_to_eval_error(
     if errors.is_empty() {
         return None;
     }
+    let fmt_loc = |diag: &crate::lower::LowerDiagnostic| -> String {
+        let sf = &diag.span.file;
+        if !sf.path.starts_with('<') {
+            format!(" (at {}:{}:{})", sf.path, diag.span.start.line, diag.span.start.column)
+        } else {
+            String::new()
+        }
+    };
     let first = &errors[0];
-    let mut msg = first.message.clone();
+    let mut msg = format!("{}{}", first.message, fmt_loc(first));
     for extra in &errors[1..] {
         msg.push('\n');
         msg.push_str(&extra.message);
-        {
-            let sf = &extra.span.file;
-            if !sf.path.starts_with('<') {
-                msg.push_str(&format!(
-                    " (at {}:{}:{})",
-                    sf.path, extra.span.start.line, extra.span.start.column
-                ));
-            }
-        }
+        msg.push_str(&fmt_loc(extra));
     }
     Some(EvalError::user_error(msg, first.span.clone()).into())
 }
