@@ -3851,7 +3851,7 @@ Returns: updated state {prev: result, named: updated-named-sections}
                 "%include-dir": include-dir]]]
   [full-env: [extend-env full-env state.named]]
   [full-env: [extend-env full-env [uses-scope doc]]]
-  [result-env: [eval doc.expressions env: full-env]]
+  [result-env: [eval doc env: full-env]]
   [prev:  result-env.%
    named: [update-named state result-env.% doc]]]
 
