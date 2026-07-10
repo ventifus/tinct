@@ -2305,17 +2305,6 @@ pub(crate) fn builtin_typecheck(
                         guard.tycon_env.entry(name.clone()).or_insert_with(|| Arc::clone(def));
                     }
                 }
-                // Sync to ctx.type_context so [builtin-get-type-context] returns current state.
-                {
-                    let mut guard = ctx.type_context.lock().unwrap();
-                    if let Some(ref mut tc) = *guard {
-                        tc.inference_env = Arc::clone(&final_env);
-                        for (name, def) in state.tycon_env {
-                            tc.tycon_env.entry(name).or_insert(def);
-                        }
-                    }
-                }
-
                 // Store raw TypeErrors — tinct formats them via typed.warnings as structured dicts.
                 let warnings = errors;
 
