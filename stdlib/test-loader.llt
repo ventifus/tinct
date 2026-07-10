@@ -176,10 +176,10 @@
   # accumulate a flat Dict of runtime builtin implementations.
   # Declaration files (builtin_NAME.llt) are optional — if absent, builtin-try
   # catches the error. Typecheck is forced via typed.warnings data dependency (no >>).
-  uses-scope: [fn [let module-names]
-    # Get TypeContext once before the reduce so TyConDefs (DirCap, File, etc.) declared
-    # in builtin_core.llt accumulate and are visible when builtin_io.llt is type-checked.
-    [tc: [builtin-get-type-context]]
+  # seed-tc: the TypeContext to use for all module type-checks.
+  # Caller builds it explicitly — no implicit global fallback. This is the same
+  # pattern as full-env: the init program controls what environments downstream sees.
+  uses-scope: [fn [let module-names seed-tc]
     [reduce
       [fn [let acc name]
         [decl-path:   [builtin-string-concat "builtin_" [builtin-string-concat name ".llt"]]
@@ -195,7 +195,7 @@
                  [builtin-add acc [builtin-length r.errors]]]
                0
                parse-result.program.documents]]
-             [typed:          [builtin-typecheck parse-result.program tc]]
+             [typed:          [builtin-typecheck parse-result.program seed-tc]]
              [match [builtin-eq-int resolve-errors 0]
                0: typed.warnings
                _: typed.warnings]]]
@@ -210,6 +210,11 @@
           _: [builtin-merge acc module-impl]]]
       []
       module-names]]
+
+  # A fresh TypeContext passed to uses-scope. DirCap, NetCap etc. accumulate
+  # naturally as uses-scope processes "core" first in every --- uses: list.
+  # No implicit fallback to ctx.type_context — tinct code is the only mechanism.
+  fundamental-tc: [builtin-make-type-ctx]
 
   # bare-eval: load and evaluate a tinct file with an explicit seed env extension.
   # extras: dict of additional bindings injected into the seed before evaluation.
@@ -233,7 +238,7 @@
       [Boolean: Boolean  True: Boolean.True  False: Boolean.False]]]
     [ts-env: [reduce
       [fn [let env doc]
-        [doc-env:    [builtin-extend-env env [uses-scope doc.uses]]
+        [doc-env:    [builtin-extend-env env [uses-scope doc.uses fundamental-tc]]
          resolved:   [builtin-resolve doc env: doc-env]
          n-re:       [builtin-length resolved.errors]
          _re:        [emit-diagnostics resolved.errors]
@@ -263,7 +268,7 @@
       [fn [let state doc]
         [done:       [builtin-eq-string [builtin-tag-of doc.stage] "DocStage.Type"]
          env:        state.env
-         doc-env:    [builtin-extend-env env [uses-scope doc.uses]]
+         doc-env:    [builtin-extend-env env [uses-scope doc.uses fundamental-tc]]
          resolved:   [builtin-resolve doc env: doc-env]
          n-re:       [builtin-length resolved.errors]
          _re:        [emit-diagnostics resolved.errors]

@@ -59,6 +59,11 @@
   # variant-payload: extract the payload dict from a Variant value. Errors on non-Variant.
   builtin-variant-payload: [fn@Any    [let variant@Any] ...]
 
+  # ── TypeContext bootstrap ───────────────────────────────────────────────────────────────
+  # make-type-ctx: create a fresh TypeContext. Loader needs this to build the seed-tc
+  # that is passed explicitly to uses-scope (no fallback to global ctx.type_context).
+  builtin-make-type-ctx:   [fn@TypeContext [] ...]
+
   # ── Environment access ───────────────────────────────────────────────────────────────
   # current-env: returns the caller's lexical environment. Zero positional args.
   builtin-current-env:     [fn@Any  [] ...]

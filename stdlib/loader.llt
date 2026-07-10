@@ -181,10 +181,11 @@
   # Declaration files (builtin_NAME.llt) are optional — if absent, builtin-try
   # catches the error. Returns a flat Dict of all module builtins.
   # Typecheck is forced by using typed.warnings as a data dependency (no >> needed).
-  uses-scope: [fn [let module-names]
-    # Get TypeContext once before the reduce so TyConDefs (DirCap, File, etc.) declared
-    # in builtin_core.llt accumulate and are visible when builtin_io.llt is type-checked.
-    [tc: [builtin-get-type-context]]
+  #
+  # seed-tc: the TypeContext to use for all module type-checks in this reduce.
+  # Caller is responsible for building and passing it — no implicit global fallback.
+  # DirCap, Boolean, etc. propagate only through this explicit parameter.
+  uses-scope: [fn [let module-names seed-tc]
     [reduce
       [fn [let acc name]
         [decl-path:  [builtin-string-concat "builtin_" [builtin-string-concat name ".llt"]]]
@@ -201,7 +202,7 @@
                 [builtin-add acc [builtin-length r.errors]]]
               0
               parse-result.program.documents]]
-            [typed:          [builtin-typecheck parse-result.program tc]]
+            [typed:          [builtin-typecheck parse-result.program seed-tc]]
             [match [builtin-eq-int resolve-errors 0]
               0: typed.warnings
               _: typed.warnings]]]]
@@ -211,6 +212,13 @@
         [builtin-merge [emit-diagnostics warnings] [builtin-merge acc [builtin-module name]]]]
       []
       module-names]]
+
+  # ── Fundamental-types TypeContext ─────────────────────────────────────────
+  # A fresh TypeContext passed to uses-scope. DirCap, NetCap etc. accumulate
+  # naturally as uses-scope processes "core" first — the same seed-tc Arc is
+  # shared across all reduce iterations so core types are visible to later modules.
+  # No types leak from ctx.type_context — all propagation is through this value.
+  fundamental-tc: [builtin-make-type-ctx]
 
   # ── Named section accumulation ────────────────────────────────────────────
 
@@ -266,7 +274,7 @@
     # Identical body used for both the type-stage pass and the runtime pass.
     [eval-doc: [fn [let env doc]
       [call [fn [let]
-        [doc-env:  [builtin-extend-env env [uses-scope doc.uses]]]
+        [doc-env:  [builtin-extend-env env [uses-scope doc.uses fundamental-tc]]]
         [resolved: [builtin-resolve doc env: doc-env]]
         [n-re:     [builtin-length resolved.errors]]
         [_re:      [builtin-length [emit-diagnostics resolved.errors]]]
@@ -407,7 +415,7 @@
                0: [builtin-raise "unreachable"]
                _: [builtin-merge state
                     [percent: eval-result.result
-                     named:   [update-named state eval-result.result doc]]]]]]]]
+                     named:   [update-named state eval-result.result doc]]]]]]]
       _: [builtin-raise eval-result.error]]]
 
   # ── Pipeline item dispatch ────────────────────────────────────────────────
@@ -427,7 +435,7 @@
     # Emit parse errors as a data dependency (no >> needed).
     [_pe:          [builtin-length [emit-diagnostics parse-result.errors]]]
     # mod-scope: module builtins for --- uses: headers declared in the file.
-    [mod-scope: [uses-scope parse-result.program.uses]]
+    [mod-scope: [uses-scope parse-result.program.uses fundamental-tc]]
     # Typecheck: builtin-typecheck builds its own resolution table internally
     # (via resolve_surface_program with no env seed), so it does not depend on
     # OnceLocks from builtin-resolve. The OnceLocks are written by eval-document-runtime
@@ -461,7 +469,7 @@
     # A pre-resolve would write OnceLocks with wrong coordinates (prelude-relative)
     # that block the correct full-env resolve (OnceLocks are write-once).
     # -e expressions rarely declare --- uses:, but uniform handling costs nothing.
-    [mod-scope: [uses-scope parse-result.program.uses]]
+    [mod-scope: [uses-scope parse-result.program.uses fundamental-tc]]
     [typed: [builtin-typecheck parse-result.program [builtin-get-type-context prelude] env: prelude]]
     [_te:    [builtin-length [emit-diagnostics typed.warnings]]]
     [match [builtin-eq-int [builtin-add _pe _te] 0]
