@@ -23,20 +23,21 @@ pub(crate) async fn invoke_proxy_handler(
     // builtin_proxy for hot proxy access.
     let handler_val = materialize(handler, Some(access_span), ctx).await?;
     let key_arg = Arc::new(Thunk::new_materialized(key_val, access_span.clone()));
+    let key_arg_id = ctx.alloc_thunk(key_arg);
     match handler_val {
         Value::Function {
             params,
             body,
-            env: closure_env,
+            closure_env_id,
             ..
         } => {
             invoke_function(&CallContext {
                 params: &params,
                 body: &body,
-                closure_env: &closure_env,
-                positional: &[key_arg],
+                closure_env_id,
+                positional: &[key_arg_id],
                 named: None,
-                default_env: &closure_env,
+                default_env_id: closure_env_id,
                 call_span: access_span.clone(),
                 origin: Some(Arc::from("proxy field access")),
                 ctx,
@@ -45,11 +46,11 @@ pub(crate) async fn invoke_proxy_handler(
         }
         Value::Builtin(def) => Ok(Arc::new(Thunk::new_pending_builtin(
             def,
-            vec![key_arg],
+            vec![key_arg_id],
             None,
             access_span.clone(),
             Some(Arc::from("proxy field access")),
-            Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
+            ctx.current_env_id, // T-1558: caller_env_id
             Arc::clone(ctx),
         ))),
         _ => Err(EvalError::type_mismatch(

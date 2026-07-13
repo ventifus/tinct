@@ -1,0 +1,4 @@
+# builtin-arena-new: arity mismatch when called with no arguments
+[builtin-arena-new]
+=== error
+arity mismatch: expected 1 argument, got 0

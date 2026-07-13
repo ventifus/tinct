@@ -235,11 +235,12 @@ async fn check_constraints_on_var(
     // Collect only the constraints that apply to var_name (immutable scan first).
     // This avoids cloning the entire Vec<Constraint> — we clone only the constraints
     // that match, which is typically 0–2 per variable binding even in constraint-heavy
-    // programs. HasField constraints are skipped here (handled in resolve_has_field).
+    // programs.
     #[derive(Clone)]
     enum ApplicableConstraint {
         SingleParam {
             class: String,
+            structural_discharge: crate::type_class::StructuralDischarge,
         },
         MultiParam {
             class: String,
@@ -248,6 +249,12 @@ async fn check_constraints_on_var(
             args: Vec<ConstraintArg>,
             fundeps: Vec<(Vec<usize>, Vec<usize>)>,
             resolver_injective: bool,
+        },
+        /// HasField constraint on this var as the dict_var.
+        /// Fired when the dict TypeVar is bound to a concrete type.
+        HasField {
+            label: crate::type_def::Label,
+            field_var: String,
         },
     }
 
@@ -259,6 +266,7 @@ async fn check_constraints_on_var(
             {
                 Some(ApplicableConstraint::SingleParam {
                     class: class.name.clone(),
+                    structural_discharge: class.structural_discharge.clone(),
                 })
             }
             Constraint::Class { class, vars, .. }
@@ -271,13 +279,71 @@ async fn check_constraints_on_var(
                     resolver_injective: class.resolver_injective,
                 })
             }
+            Constraint::HasField { label, dict_var, field_var }
+                if dict_var.as_str() == var_name =>
+            {
+                Some(ApplicableConstraint::HasField {
+                    label: label.clone(),
+                    field_var: field_var.clone(),
+                })
+            }
             _ => None,
         })
         .collect();
 
     for constraint in applicable {
         match constraint {
-            ApplicableConstraint::SingleParam { class } => {
+            ApplicableConstraint::HasField { label, field_var } => {
+                // HasField dict_var is now bound to concrete_ty — resolve the field type.
+                // resolve_has_field is sync; it looks up label in concrete_ty and returns the field type.
+                // On success, unify field_var TypeVar with the found type.
+                // On error (field absent from closed record, type not a dict), propagate.
+                match resolve_has_field(&label, concrete_ty, state, span.clone(), 0) {
+                    Ok(field_ty) => {
+                        // Found the field — unify the field TypeVar with the resolved type.
+                        let field_var_ty = Type::TypeVar(field_var.clone(), state.level);
+                        let mut sub_constraints = Vec::new();
+                        if let Err(e) = Box::pin(unify(&field_var_ty, &field_ty, state, &mut sub_constraints, span.clone())).await {
+                            return Err(e);
+                        }
+                        constraints.extend(sub_constraints);
+                    }
+                    Err(e) => {
+                        return Err(e);
+                    }
+                }
+            }
+            ApplicableConstraint::SingleParam { class, structural_discharge } => {
+                // Structural discharge: typeclass declared with a StructuralDischarge rule
+                // is satisfied by structural inspection rather than instance lookup.
+                // This is a general mechanism — no class names hardcoded here.
+                use crate::type_class::StructuralDischarge;
+                match &structural_discharge {
+                    StructuralDischarge::ClosedDict => {
+                        match concrete_ty {
+                            Type::Dict(crate::type_def::Row { tail: crate::type_def::RowTail::Empty, .. }) => {
+                                // Closed dict — constraint satisfied.
+                                continue;
+                            }
+                            Type::Dict(crate::type_def::Row { tail: crate::type_def::RowTail::Uniform { .. }, .. }) => {
+                                // Open dict — constraint violated.
+                                return Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
+                                    message: format!(
+                                        "open dict (Dict) does not satisfy Record — Record requires a closed dict with known fields; use @Dict to accept any dict"
+                                    ),
+                                    span: span.clone(),
+                                    notes: vec![],
+                                    call_stack: vec![],
+                                })));
+                            }
+                            _ => {
+                                // Non-dict type — fall through to normal constraint checking.
+                            }
+                        }
+                    }
+                    StructuralDischarge::None => {}
+                }
+
                 // Single-parameter type class constraint (e.g., Numeric a)
                 // First, check via satisfies_constraint (lattice meta-rules: Unknown, Never,
                 // Union, Intersection). Returns false for all concrete types — those are
@@ -1011,16 +1077,30 @@ pub fn resolve_has_field(
     let dict_type = state.apply(dict_type);
 
     match &dict_type {
-        // [HAS-FIELD-REC]: Record with matching field → return field type
+        // [HAS-FIELD-REC]: Record with matching named field → return field type.
+        // [HAS-FIELD-MAP]: Open dict (Uniform tail) → any field has the Uniform value type.
+        // This handles Map[K:V] (Uniform { value: V }) — `get "key" map` returns V.
+        // It also handles Dict (Uniform { value: Any }) — any field access returns Any.
         Type::Dict(row) => {
             if let Some(field_ty) = row.fields.get(&label_str) {
+                // Named field found directly — return its type.
                 Ok(field_ty.clone())
             } else {
-                Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
-                    message: format!("record has no field '{}'", label_str),
-                    span,
-                    notes: vec![], call_stack: vec![],
-                })))
+                match &row.tail {
+                    crate::type_def::RowTail::Uniform { value, .. } => {
+                        // Open dict or typed Map: any field (beyond named ones) has value type.
+                        // Map[K:V] has no named fields but Uniform { value: V } says all values are V.
+                        Ok(*value.clone())
+                    }
+                    crate::type_def::RowTail::Empty => {
+                        // Closed record (Record) with no matching field — type error.
+                        Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
+                            message: format!("record has no field '{}'", label_str),
+                            span,
+                            notes: vec![], call_stack: vec![],
+                        })))
+                    }
+                }
             }
         }
 

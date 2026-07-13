@@ -314,7 +314,7 @@ pub(crate) async fn build_tls_config(
     {
         let thunk = ctx.get_thunk(*thunk_id);
         let val = crate::eval::materialize(&thunk, Some(&opts_span), ctx).await?;
-        val.is_truthy()
+        matches!(val, crate::value::Value::Bool(true))
     } else {
         false
     };
@@ -354,7 +354,7 @@ pub(crate) async fn build_tls_config(
     {
         let thunk = ctx.get_thunk(*thunk_id);
         let val = crate::eval::materialize(&thunk, Some(&opts_span), ctx).await?;
-        val.is_truthy()
+        matches!(val, crate::value::Value::Bool(true))
     } else {
         false
     };
@@ -1002,16 +1002,16 @@ pub(crate) fn builtin_quic_session(
         }
 
         // All args pre-materialized by force_count
-        let cap_val = args[0]
+        let cap_val = ctx.get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let host_val = args[1]
+        let host_val = ctx.get_thunk(args[1])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let port_val = args[2]
+        let port_val = ctx.get_thunk(args[2])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let opts_val = args[3]
+        let opts_val = ctx.get_thunk(args[3])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
@@ -1023,20 +1023,20 @@ pub(crate) fn builtin_quic_session(
                     "quic-session".to_string(),
                     "NetCap",
                     other.type_name(),
-                    args[0].span.clone(),
+                    call_span.clone(),
                 )
                 .into())
             }
         };
 
-        let host_str = require_string("quic-session", host_val, args[1].span.clone())?;
+        let host_str = require_string("quic-session", host_val, call_span.clone())?;
 
         let port = match port_val {
             Value::Int(n) if (1..=65535).contains(&n) => n as u16,
             Value::Int(_) => {
                 return Err(EvalError::user_error(
                     "quic-session: port must be 1–65535".to_string(),
-                    args[2].span.clone(),
+                    call_span.clone(),
                 )
                 .into())
             }
@@ -1045,7 +1045,7 @@ pub(crate) fn builtin_quic_session(
                     "quic-session".to_string(),
                     "Int",
                     other.type_name(),
-                    args[2].span.clone(),
+                    call_span.clone(),
                 )
                 .into())
             }
@@ -1079,7 +1079,7 @@ pub(crate) fn builtin_quic_session(
 
         // Build rustls ClientConfig, then adapt it for QUIC via quinn's rustls adapter.
         // ALPN defaults to "h3" for QUIC sessions (RFC 9114 §3.1).
-        let mut tls_config = build_tls_config(&opts_val, args[3].span.clone(), &ctx).await?;
+        let mut tls_config = build_tls_config(&opts_val, call_span.clone(), &ctx).await?;
 
         // Override ALPN to h3 unless caller specified explicit alpn in opts.
         // build_tls_config sets alpn_protocols to ["http/1.1"] by default; replace with h3.
@@ -1166,7 +1166,7 @@ pub(crate) fn builtin_quic_open_datagram(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -1183,7 +1183,7 @@ pub(crate) fn builtin_quic_open_datagram(
             .into());
         }
 
-        let session_val = args[0]
+        let session_val = ctx.get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
         let conn = match session_val {
@@ -1193,7 +1193,7 @@ pub(crate) fn builtin_quic_open_datagram(
                     "quic-open-datagram".to_string(),
                     "QuicSession",
                     other.type_name(),
-                    args[0].span.clone(),
+                    call_span.clone(),
                 )
                 .into())
             }
@@ -1225,7 +1225,7 @@ pub(crate) fn builtin_http2_session(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -1243,14 +1243,14 @@ pub(crate) fn builtin_http2_session(
         }
 
         // All args pre-materialized by force_count
-        let cap_val = args[0]
+        let cap_val = ctx.get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let url_val = args[1]
+        let url_val = ctx.get_thunk(args[1])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
         // opts reserved for future use (ca, client cert, timeouts, etc.)
-        let _opts_val = args[2]
+        let _opts_val = ctx.get_thunk(args[2])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
@@ -1262,13 +1262,13 @@ pub(crate) fn builtin_http2_session(
                     "http2-session".to_string(),
                     "NetCap",
                     other.type_name(),
-                    args[0].span.clone(),
+                    call_span.clone(),
                 )
                 .into())
             }
         };
 
-        let base_url = require_string("http2-session", url_val, args[1].span.clone())?;
+        let base_url = require_string("http2-session", url_val, call_span.clone())?;
 
         // Parse the base_url to extract host and port for cap validation.
         // We need a host for the allowlist check. Parse scheme://host[:port].
@@ -1378,7 +1378,7 @@ pub(crate) fn builtin_http3_session(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -1395,7 +1395,7 @@ pub(crate) fn builtin_http3_session(
             .into());
         }
 
-        let session_val = args[0]
+        let session_val = ctx.get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
@@ -1406,7 +1406,7 @@ pub(crate) fn builtin_http3_session(
                     "http3-session".to_string(),
                     "QuicSession",
                     other.type_name(),
-                    args[0].span.clone(),
+                    call_span.clone(),
                 )
                 .into())
             }
@@ -1496,25 +1496,25 @@ pub(crate) fn builtin_http_request(
         }
 
         // All args pre-materialized by force_count
-        let session_val = args[0]
+        let session_val = ctx.get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let method_val = args[1]
+        let method_val = ctx.get_thunk(args[1])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let path_val = args[2]
+        let path_val = ctx.get_thunk(args[2])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let headers_val = args[3]
+        let headers_val = ctx.get_thunk(args[3])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let body_val = args[4]
+        let body_val = ctx.get_thunk(args[4])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
-        let method_str = require_string("http-request", method_val, args[1].span.clone())?;
-        let path_str = require_string("http-request", path_val, args[2].span.clone())?;
-        let body_str = require_string("http-request", body_val, args[4].span.clone())?;
+        let method_str = require_string("http-request", method_val, call_span.clone())?;
+        let path_str = require_string("http-request", path_val, call_span.clone())?;
+        let body_str = require_string("http-request", body_val, call_span.clone())?;
 
         // Collect request headers from the Dict argument.
         // Each value is a ThunkId in the arena — resolve and materialize to extract the string.
@@ -1525,9 +1525,8 @@ pub(crate) fn builtin_http_request(
                     let key_str = match key {
                         crate::value::HashableValue::Str(s) => s.to_string(),
                         crate::value::HashableValue::Int(i) => i.to_string(),
-                        _ => "<other>".to_string(),
                     };
-                    let thunk = ctx.thunk_arena.lock().unwrap().get(*val_id).clone();
+                    let thunk = ctx.get_thunk(*val_id);
                     let val_materialized =
                         crate::eval::materialize(&thunk, Some(&call_span), &ctx).await?;
                     let val_str = require_string(
@@ -1544,7 +1543,7 @@ pub(crate) fn builtin_http_request(
                     "http-request".to_string(),
                     "Dict",
                     other.type_name(),
-                    args[3].span.clone(),
+                    call_span.clone(),
                 )
                 .into())
             }
@@ -1577,7 +1576,7 @@ pub(crate) fn builtin_http_request(
                 "http-request".to_string(),
                 "Http2Session or Http3Session",
                 other.type_name(),
-                args[0].span.clone(),
+                call_span.clone(),
             )
             .into()),
         }
@@ -1880,13 +1879,13 @@ pub(crate) fn builtin_icmp_ping(
             .into());
         }
 
-        let cap_val = args[0]
+        let cap_val = ctx.get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let host_val = args[1]
+        let host_val = ctx.get_thunk(args[1])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let timeout_val = args[2]
+        let timeout_val = ctx.get_thunk(args[2])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
@@ -1898,20 +1897,20 @@ pub(crate) fn builtin_icmp_ping(
                     "icmp-ping".to_string(),
                     "NetCap",
                     other.type_name(),
-                    args[0].span.clone(),
+                    call_span.clone(),
                 )
                 .into())
             }
         };
 
-        let host = require_string("icmp-ping", host_val, args[1].span.clone())?;
+        let host = require_string("icmp-ping", host_val, call_span.clone())?;
 
         let timeout_ms = match timeout_val {
             Value::Int(n) if n >= 0 => n,
             Value::Int(_) => {
                 return Err(EvalError::user_error(
                     "icmp-ping: timeout-ms must be a non-negative integer".to_string(),
-                    args[2].span.clone(),
+                    call_span.clone(),
                 )
                 .into())
             }
@@ -1920,7 +1919,7 @@ pub(crate) fn builtin_icmp_ping(
                     "icmp-ping".to_string(),
                     "Int",
                     other.type_name(),
-                    args[2].span.clone(),
+                    call_span.clone(),
                 )
                 .into())
             }
@@ -2211,7 +2210,7 @@ pub(crate) fn builtin_send_datagram(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -2220,10 +2219,10 @@ pub(crate) fn builtin_send_datagram(
         }
         reject_named("send-datagram", named.as_ref(), call_span.clone())?;
 
-        let data_val = args[0]
+        let data_val = ctx.get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let handle_val = args[1]
+        let handle_val = ctx.get_thunk(args[1])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
@@ -2236,7 +2235,7 @@ pub(crate) fn builtin_send_datagram(
                     "send-datagram".to_string(),
                     "String or Bytes",
                     other.type_name(),
-                    args[0].span.clone(),
+                    call_span.clone(),
                 )
                 .into())
             }
@@ -2280,7 +2279,7 @@ pub(crate) fn builtin_send_datagram(
                 "send-datagram".to_string(),
                 "DatagramHandle or QuicDatagramHandle",
                 other.type_name(),
-                args[1].span.clone(),
+                call_span.clone(),
             )
             .into()),
         }
@@ -2369,7 +2368,7 @@ pub(crate) fn builtin_recv_datagram(
                 "recv-datagram".to_string(),
                 "DatagramHandle or QuicDatagramHandle",
                 other.type_name(),
-                args[0].span.clone(),
+                call_span.clone(),
             )
             .into()),
         }

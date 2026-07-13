@@ -862,3 +862,37 @@ pub fn span_to_value(
 
     Value::Dict(map)
 }
+
+/// Return a short static tag name for a `SurfaceExpression` variant.
+///
+/// Used by `Value::Expression` Display and Debug impls to produce readable output
+/// without converting the full AST node to an `Expr.*` variant.
+/// Tags match the `#[expr(tag = "...")]` attribute on each variant (i.e. the
+/// unqualified portion of the runtime `"Expr.<Tag>"` string).
+pub fn surface_expr_tag(expr: &SurfaceExpression) -> &'static str {
+    match expr {
+        SurfaceExpression::Int(_)
+        | SurfaceExpression::U64(_)
+        | SurfaceExpression::Float(_)
+        | SurfaceExpression::Str(_) => "Literal",
+        SurfaceExpression::VarRef { .. } => "VarRef",
+        SurfaceExpression::Field { .. } => "DotAccess",
+        SurfaceExpression::Pipe { .. } => "Pipe",
+        SurfaceExpression::Sequential(_) => "Sequential",
+        SurfaceExpression::Dict(_) => "Dict",
+        SurfaceExpression::Call { .. } => "Call",
+        SurfaceExpression::Fn { .. } => "Fn",
+        SurfaceExpression::TypeAssert { .. } => "TypeAssert",
+        SurfaceExpression::Rest(..) => "Rest",
+        SurfaceExpression::Match { .. } => "Match",
+        SurfaceExpression::Quote(_) => "Quote",
+        SurfaceExpression::Unquote(_) => "Unquote",
+        SurfaceExpression::UnquoteSplice(_) => "UnquoteSplice",
+        SurfaceExpression::PatternDecl { .. } => "PatternDecl",
+        SurfaceExpression::LetDecl { .. } => "LetDecl",
+        SurfaceExpression::CaseArm { .. } => "CaseArm",
+        SurfaceExpression::Placeholder => "Placeholder",
+        SurfaceExpression::Error(_) => "AstError",
+        SurfaceExpression::Decl(_) => "Decl",
+    }
+}

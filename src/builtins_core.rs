@@ -21,17 +21,22 @@
 use crate::builtins::builtin;
 // Arithmetic and comparison implementations — Core-46 only.
 use crate::builtins_math::{
-    builtin_add, builtin_eq_int, builtin_eq_string, builtin_gt, builtin_gte, builtin_lt,
-    builtin_sub,
+    builtin_eq_int, builtin_eq_string, builtin_lt,
+    // Monomorphic typed variants.
+    builtin_int_add, builtin_float_add, builtin_int_to_float,
+    builtin_int_sub, builtin_float_sub,
+    builtin_int_mul, builtin_float_mul,
+    builtin_int_gt, builtin_float_gt, builtin_str_gt,
+    builtin_int_gte, builtin_float_gte, builtin_str_gte,
 };
 // Dict/access implementations — all stay in core.
 use crate::builtins_dict::{
-    builtin_append, builtin_build_dict, builtin_builder_delete, builtin_builder_finish,
+    builtin_build_dict, builtin_builder_delete, builtin_builder_finish,
     builtin_builder_get, builtin_builder_get_or, builtin_builder_has, builtin_builder_set,
     builtin_builder_snapshot, builtin_dict_has_key_nth, builtin_dict_has_kv_nth,
     builtin_dict_has_nth, builtin_dict_key_nth, builtin_dict_kv_nth, builtin_dict_nth,
     builtin_field_get, builtin_get, builtin_get_by_field, builtin_has_key, builtin_keys,
-    builtin_length, builtin_make_builder, builtin_merge, builtin_slot_get,
+    builtin_length, builtin_make_builder, builtin_slot_get,
 };
 // String implementations — Core-46 only.
 use crate::builtins_string::{
@@ -52,10 +57,6 @@ use crate::builtins_dict::{builtin_concat, builtin_drop, builtin_take};
 use crate::builtins_io::{
     builtin_file_open, builtin_file_read, builtin_list_dir, builtin_narrow, builtin_path_dir,
     builtin_write_stderr, builtin_write_stdout,
-};
-// List operation implementations — stay in core.
-use crate::builtins::{
-    builtin_first, builtin_last, builtin_rest, builtin_reverse, builtin_sort,
 };
 // Async concurrency implementations — Core-46 only (channel, send).
 use crate::builtins_async::{builtin_channel, builtin_send};
@@ -88,21 +89,21 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             2,
             ["slot", "dict"]
         ),
-        // ── Arithmetic ────────────────────────────────────────────────────────────────
-        builtin!(
-            "builtin-add",
-            builtin_add,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["a", "b"]
-        ),
-        builtin!(
-            "builtin-sub",
-            builtin_sub,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["a", "b"]
-        ),
+        // ── Arithmetic — monomorphic typed variants ───────────────────────────────────
+        builtin!("builtin-int-add",      builtin_int_add,      [Strictness::Seq, Strictness::Seq], 2, ["a", "b"]),
+        builtin!("builtin-float-add",    builtin_float_add,    [Strictness::Seq, Strictness::Seq], 2, ["a", "b"]),
+        builtin!("builtin-int-to-float", builtin_int_to_float, [Strictness::Seq], 1, ["n"]),
+        builtin!("builtin-int-sub",      builtin_int_sub,      [Strictness::Seq, Strictness::Seq], 2, ["a", "b"]),
+        builtin!("builtin-float-sub",    builtin_float_sub,    [Strictness::Seq, Strictness::Seq], 2, ["a", "b"]),
+        builtin!("builtin-int-mul",      builtin_int_mul,      [Strictness::Seq, Strictness::Seq], 2, ["a", "b"]),
+        builtin!("builtin-float-mul",    builtin_float_mul,    [Strictness::Seq, Strictness::Seq], 2, ["a", "b"]),
+        // ── Comparison — monomorphic typed variants ───────────────────────────────────
+        builtin!("builtin-int-gt",   builtin_int_gt,   [Strictness::Seq, Strictness::Seq], 2, ["a", "b"]),
+        builtin!("builtin-float-gt", builtin_float_gt, [Strictness::Seq, Strictness::Seq], 2, ["a", "b"]),
+        builtin!("builtin-str-gt",   builtin_str_gt,   [Strictness::Seq, Strictness::Seq], 2, ["a", "b"]),
+        builtin!("builtin-int-gte",  builtin_int_gte,  [Strictness::Seq, Strictness::Seq], 2, ["a", "b"]),
+        builtin!("builtin-float-gte",builtin_float_gte,[Strictness::Seq, Strictness::Seq], 2, ["a", "b"]),
+        builtin!("builtin-str-gte",  builtin_str_gte,  [Strictness::Seq, Strictness::Seq], 2, ["a", "b"]),
         // ── Comparison ───────────────────────────────────────────────────────────────
         builtin!(
             "builtin-eq-int",
@@ -125,37 +126,10 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             2,
             ["a", "b"]
         ),
-        builtin!(
-            "builtin-gt",
-            builtin_gt,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["a", "b"]
-        ),
-        builtin!(
-            "builtin-gte",
-            builtin_gte,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["a", "b"]
-        ),
         // ── Dict primitives ──────────────────────────────────────────────────────────
         builtin!("builtin-keys", builtin_keys, [Strictness::Spine], 1, ["xs"]),
-        builtin!(
-            "builtin-length",
-            builtin_length,
-            [Strictness::Spine],
-            1,
-            ["xs"]
-        ),
-        builtin!("builtin-merge", builtin_merge, [], 0, ["a", "b"]),
-        builtin!(
-            "builtin-append",
-            builtin_append,
-            [Strictness::Id, Strictness::Seq],
-            0,
-            ["x", "xs"]
-        ),
+        builtin!("builtin-dict-length",  builtin_length, [Strictness::Spine], 1, ["xs"]),
+        builtin!("builtin-bytes-length", builtin_length, [Strictness::Spine], 1, ["xs"]),
         builtin!(
             "builtin-get",
             builtin_get,
@@ -464,7 +438,7 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             [Strictness::Seq],
             1,
             ["doc"],
-            ["env", "table"]
+            ["env", "table", "flat-env"]
         ),
         builtin!(
             "builtin-variant-payload",
@@ -478,7 +452,8 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             builtin_extend_env,
             [Strictness::Seq, Strictness::Seq],
             2,
-            ["parent", "entries"]
+            ["parent", "entries"],
+            ["flat-env"]
         ),
         // ── Sequences ─────────────────────────────────────────────────────────────────
         builtin!(
@@ -502,29 +477,6 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             1,
             ["a", "b"]
         ),
-        builtin!(
-            "builtin-first",
-            builtin_first,
-            [Strictness::Spine],
-            0,
-            ["xs"]
-        ),
-        builtin!("builtin-last", builtin_last, [Strictness::Spine], 0, ["xs"]),
-        builtin!("builtin-rest", builtin_rest, [Strictness::Spine], 0, ["xs"]),
-        builtin!(
-            "builtin-reverse",
-            builtin_reverse,
-            [Strictness::Spine],
-            0,
-            ["xs"]
-        ),
-        builtin!(
-            "builtin-sort",
-            builtin_sort,
-            [Strictness::Spine, Strictness::Spine],
-            0,
-            ["cmp", "xs"]
-        ),
         // ── Async concurrency (Core-46 only) ─────────────────────────────────────────
         builtin!("builtin-channel", builtin_channel),
         builtin!("builtin-send", builtin_send),
@@ -542,6 +494,35 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             [Strictness::Seq],
             0,
             ["x"]
+        ),
+        // ── Arena builtins (T-1563) ───────────────────────────────────────────────────
+        builtin!(
+            "builtin-arena-new",
+            crate::builtins_meta::builtin_arena_new,
+            [Strictness::Seq],
+            0,
+            ["name"]
+        ),
+        builtin!(
+            "builtin-arena-drop",
+            crate::builtins_meta::builtin_arena_drop,
+            [Strictness::Seq],
+            0,
+            ["arena"]
+        ),
+        builtin!(
+            "builtin-arena-stats",
+            crate::builtins_meta::builtin_arena_stats,
+            [Strictness::Seq],
+            0,
+            ["arena"]
+        ),
+        builtin!(
+            "builtin-arena-migrate",
+            crate::builtins_meta::builtin_arena_migrate,
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
+            0,
+            ["value", "src", "dst"]
         ),
     ]
 }

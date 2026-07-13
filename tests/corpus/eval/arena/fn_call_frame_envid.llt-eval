@@ -1,0 +1,3 @@
+[outer: 100  f: [fn [let x] [+ x outer]]  result: [f 42]]
+=== out
+Dict({"outer": Int(100), "f": Function(x), "result": Int(142)})

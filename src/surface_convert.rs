@@ -1016,7 +1016,7 @@ fn get_bool_field(
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<bool, AstError> {
     let val = get_field(dict, key, path, ctx)?;
-    Ok(val.is_truthy())
+    Ok(matches!(val, Value::Bool(true)))
 }
 
 fn get_dict_field(
@@ -1548,7 +1548,7 @@ pub(crate) fn get_bool_field_with_aliases(
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<bool, AstError> {
     let val = get_field_with_aliases(dict, key, aliases, ctx)?;
-    Ok(val.is_truthy())
+    Ok(matches!(val, Value::Bool(true)))
 }
 
 pub(crate) fn get_int_field_with_aliases(
@@ -2415,6 +2415,7 @@ fn surface_decl_to_thunk_id(
             determines,
             resolver,
             resolver_injective,
+            structural: _,
         } => {
             variant_tag = "ClassDecl";
             dict.insert(

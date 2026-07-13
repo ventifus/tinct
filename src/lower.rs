@@ -281,7 +281,7 @@ fn lower_expr(
             // When resolution is unset (resolver had no env), fall back to MAX/MAX.
             let (field_get_level, field_get_slot) = match resolution.get() {
                 Some(Some((level, slot))) => (level, slot),
-                _ => (u32::MAX, u32::MAX), // resolver had no env (e.g. type-stage docs) — name-based fallback
+                _ => (u32::MAX, u32::MAX), // resolver had no env (e.g. type-stage docs) — MAX signals unresolved coordinates; eval will error with internal error if forced
             };
 
             let (getter_name, getter_level, getter_slot, key_arg) =
@@ -396,6 +396,88 @@ fn lower_expr(
         ),
 
         SurfaceExpression::Dict(entries) => {
+            // Check for spread entries (...expr) — desugar to builtin-merge calls.
+            // [a: 1  b: 2  ...rest  c: 3] → builtin-merge(builtin-merge([a: 1  b: 2], rest), [c: 3])
+            let has_rest = entries.iter().any(|e| {
+                e.node.key.is_none()
+                    && matches!(&e.node.value.expr, SurfaceExpression::Rest(..))
+            });
+            if has_rest {
+                // Collect entry indices between rest markers.
+                // segments[i] = indices of regular entries before rest_nodes[i].
+                let mut segments: Vec<Vec<usize>> = vec![vec![]];
+                let mut rest_indices: Vec<usize> = vec![];
+                for (idx, se) in entries.iter().enumerate() {
+                    if se.node.key.is_none() {
+                        if let SurfaceExpression::Rest(..) = &se.node.value.expr {
+                            rest_indices.push(idx);
+                            segments.push(vec![]);
+                            continue;
+                        }
+                    }
+                    segments.last_mut().unwrap().push(idx);
+                }
+
+                // Lower a group of regular entry indices to CoreExpr::Dict.
+                macro_rules! lower_seg {
+                    ($idxs:expr) => {{
+                        let mut ces: Vec<Spanned<CoreEntry>> = vec![];
+                        for &i in $idxs.iter() {
+                            let se = &entries[i];
+                            let key = se.node.key.as_ref().map(|k| {
+                                let lowered = match &k.expr {
+                                    SurfaceExpression::VarRef { name, escaped: false, .. } => CoreExpr::Str(name.clone()),
+                                    _ => lower_expr(k, &k.expr, diagnostics),
+                                };
+                                Arc::new(Spanned::new(lowered, k.span.clone()))
+                            });
+                            let value = Arc::new(lower_inner(&se.node.value, diagnostics));
+                            ces.push(Spanned::new(CoreEntry { key, value }, se.span.clone()));
+                        }
+                        CoreExpr::Dict(ces)
+                    }};
+                }
+
+                // Build nested builtin-merge calls left-associatively.
+                // acc starts as the first segment dict, then folds over (rest, next_seg) pairs.
+                let span = arc.span.clone();
+                let mut acc = lower_seg!(&segments[0]);
+                for (i, &ri) in rest_indices.iter().enumerate() {
+                    // lower_inner returns Spanned<CoreExpr> — wrap in Arc directly.
+                    let rest_spanned = lower_inner(&entries[ri].node.value, diagnostics);
+                    // merge(acc, rest)
+                    acc = CoreExpr::Call {
+                        func: Arc::new(Spanned::new(
+                            CoreExpr::Var { name: "builtin-merge".to_string(), level: u32::MAX, slot: u32::MAX, annotation: None },
+                            span.clone(),
+                        )),
+                        args: vec![
+                            Arc::new(Spanned::new(acc, span.clone())),
+                            Arc::new(rest_spanned),
+                        ],
+                        named_args: vec![],
+                        implied: false,
+                    };
+                    // merge(acc, next_segment) if non-empty
+                    if i + 1 < segments.len() && !segments[i + 1].is_empty() {
+                        let seg = lower_seg!(&segments[i + 1]);
+                        acc = CoreExpr::Call {
+                            func: Arc::new(Spanned::new(
+                                CoreExpr::Var { name: "builtin-merge".to_string(), level: u32::MAX, slot: u32::MAX, annotation: None },
+                                span.clone(),
+                            )),
+                            args: vec![
+                                Arc::new(Spanned::new(acc, span.clone())),
+                                Arc::new(Spanned::new(seg, span.clone())),
+                            ],
+                            named_args: vec![],
+                            implied: false,
+                        };
+                    }
+                }
+                return acc;
+            }
+
             let mut core_entries: Vec<Spanned<CoreEntry>> = Vec::with_capacity(entries.len());
             for se in entries {
                 if let SurfaceExpression::Decl(decl) = &se.node.value.expr {
@@ -557,8 +639,11 @@ fn lower_expr(
                 if let Some(mangled_name) = call_dispatch.get() {
                     // The type checker resolved this typeclass method call to a concrete instance
                     // binding.  Emit a Var with the mangled instance binding name and
-                    // level = u32::MAX, slot = u32::MAX so the runtime's name-based env chain
-                    // lookup (`get_by_name`) finds the binding injected by the lowered InstanceDecl.
+                    // level = u32::MAX, slot = u32::MAX as a placeholder — resolver coordinates
+                    // were not available at lower time.  At eval time, eval_core_expr returns
+                    // EvalError::internal if this Var is forced.  See B-513 (call_dispatch
+                    // FlatEnv gap: typeclass method dispatch fails in the production loader path
+                    // where typecheck precedes eval).
                     Arc::new(Spanned::new(
                         CoreExpr::Var {
                             name: mangled_name.to_string(),

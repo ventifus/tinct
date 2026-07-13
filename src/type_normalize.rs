@@ -10,10 +10,9 @@ use std::sync::{Arc, RwLock};
 use indexmap::IndexMap;
 
 use crate::env::Env;
-use crate::rust_span;
 use crate::type_def::Type;
 use crate::type_infer::TypeVarEntry;
-use crate::value::{Thunk, Value};
+use crate::value::Value;
 
 /// Normalization context for type expressions.
 ///
@@ -183,6 +182,8 @@ pub fn normalize<'a>(
 /// Resolver functions receive TypeNode Variant values as arguments.
 ///
 /// Handles primitive types. Complex types (App, Union, Record, etc.) return `None`.
+/// Currently unused: evaluate_resolver is disabled pending T-1564 (type-stage FlatEnv).
+#[allow(dead_code)]
 fn type_to_typenode(ty: &Type) -> Option<Value> {
     // Build a leaf TypeNode Variant (no payload) for the given tag name.
     let leaf = |tag: &str| -> Value {
@@ -217,75 +218,15 @@ fn type_to_typenode(ty: &Type) -> Option<Value> {
 /// - Runtime error during evaluation
 /// - Result cannot be converted back to a `Type`
 pub(crate) async fn evaluate_resolver(
-    fn_name: &str,
-    args: &[Type],
-    env: &Arc<RwLock<Env>>,
+    _fn_name: &str,
+    _args: &[Type],
+    _env: &Arc<RwLock<Env>>,
 ) -> Option<Type> {
-    // Look up the resolver function thunk via slot_names (seeding path — not eval-time lookup).
-    // Walks slot_names (linear scan) + parent chain, identical semantics to get_by_name
-    // but using the slot_names Vec directly to make the seeding nature explicit.
-    let fn_thunk = {
-        let env_guard = env.read().unwrap();
-        env_guard.get_value_by_name(fn_name)?
-    };
-
-    // Create a minimal EvalContext for type-stage evaluation.
-    // We use new_empty() to avoid inheriting stale stdlib ThunkId caches — the
-    // type-stage env was built with its own bootstrap EvalContext and ThunkArena.
-    // AMBIENT-OK: Type-stage evaluation uses CWD as base_dir (no file I/O).
-    #[allow(clippy::disallowed_methods)]
-    let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority()).ok()?;
-    let ctx = crate::eval::EvalContext::new_empty(base_dir, Arc::clone(env), false);
-
-    // Materialize the function value
-    let fn_val = crate::eval::materialize(&fn_thunk, None, &ctx).await.ok()?;
-
-    // Convert each Type arg to a TypeNode Variant Value (T-1061).
-    // Resolver functions receive TypeNode Variants.
-    let arg_thunks: Vec<Arc<Thunk>> = args
-        .iter()
-        .map(|ty| {
-            let typenode_val = type_to_typenode(ty)?;
-            Some(Arc::new(Thunk::new_materialized(
-                typenode_val,
-                rust_span!(),
-            )))
-        })
-        .collect::<Option<Vec<_>>>()?;
-
-    // Dispatch to the function
-    let result_thunk = match fn_val {
-        Value::Function {
-            ref params,
-            ref body,
-            env: ref closure_env,
-            ..
-        } => {
-            let call_ctx = crate::eval_call::CallContext {
-                params,
-                body,
-                closure_env,
-                positional: &arg_thunks,
-                named: None,
-                default_env: closure_env,
-                call_span: rust_span!(),
-                origin: None,
-                ctx: &ctx,
-            };
-            crate::eval_call::invoke_function(&call_ctx).await.ok()?
-        }
-        // Builtin resolvers are not expected — all resolvers are LLT-defined functions.
-        _ => return None,
-    };
-
-    // Force evaluation (materialize the lazy result)
-    let result_val = crate::eval::materialize(&result_thunk, None, &ctx)
-        .await
-        .ok()?;
-
-    // Convert the TypeNode Variant result back to a Type (T-1061).
-    // typenode_value_to_type handles TypeNode Variants.
-    crate::typecheck::typecheck_annot::typenode_value_to_type_pub(&result_val, &ctx).await
+    // T-1557: Env no longer stores runtime values — thunks live exclusively in FlatEnv
+    // (EvalContext.env_arena). Name-based thunk lookup from Env is no longer possible.
+    // Resolver evaluation via this path is defunct; callers that need resolver dispatch
+    // must use a ThunkId-based path through EvalContext.
+    None
 }
 
 impl fmt::Display for Type {
@@ -307,16 +248,15 @@ impl fmt::Display for Type {
                     }
                     write!(f, "{}: {}", key, ty)?;
                 }
-                // Display RowTail::Uniform as `_ : V` or `_@K : V`
+                // Display RowTail::Uniform as `...@[Dict K V]` where K is the key type
+                // (Any when unconstrained). Mirrors tinct's annotation convention and uses
+                // Dict — a type programmers already know — rather than Map (not user-visible).
                 if let crate::type_def::RowTail::Uniform { key, value } = &row.tail {
                     if !row.fields.is_empty() {
                         write!(f, " ")?;
                     }
-                    if let Some(k) = key {
-                        write!(f, "_@{} : {}", k, value)?;
-                    } else {
-                        write!(f, "_ : {}", value)?;
-                    }
+                    let key_str = key.as_ref().map(|k| format!("{}", k)).unwrap_or_else(|| "Any".to_string());
+                    write!(f, "...@[Dict {} {}]", key_str, value)?;
                 }
                 write!(f, "]")
             }

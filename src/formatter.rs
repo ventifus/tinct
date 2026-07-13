@@ -66,9 +66,21 @@ pub async fn format_source_tinct_with_dir(
     // resolve to de Bruijn coordinates instead of falling back to name-based lookup.
     let env = crate::builtins::build_core_env();
 
+    // Build a child env for resolver seeding that includes % (pipeline input).
+    // The formatter script references % to access the parsed AST. Without registering %
+    // in the resolver's seed env, it is unresolvable and lower() emits a Placeholder.
+    // % is at level=0 (innermost scope), slot=0 (first slot of the child scope).
+    // Core builtins remain at level=1 (parent scope), slot=K.
+    let resolver_env = {
+        use std::sync::RwLock;
+        let child = Arc::new(RwLock::new(crate::env::Env::with_parent(Arc::clone(&env))));
+        child.write().unwrap().insert_slot_name_only("%".to_string());
+        child
+    };
+
     // Variable resolution pass — builds ResolutionTable (NodeId → de Bruijn coordinates).
-    // Seeded from the core env so formatter builtins resolve correctly.
-    let _resolve_table = resolve::resolve_surface_program(&formatter_program, Some(&env));
+    // Seeded from the child env (% at level=0 slot=0, builtins at level=1 slot=K).
+    let _ = resolve::resolve_surface_program(&formatter_program, Some(&resolver_env));
     // Typecheck the desugared formatter (writes inline type annotations).
     let _ = typecheck::typecheck_surface_program_annotation_table(&formatter_program).await;
 

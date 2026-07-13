@@ -1079,9 +1079,20 @@ pub(crate) async fn infer_dict(
             (k, resolved)
         })
         .collect();
+    // If the dict has any spread entries (...expr), the result is an open dict (Dict),
+    // not a closed Record. The `...` marker is the syntactic signal for openness.
+    let has_spread = entries.iter().any(|e| {
+        e.node.key.is_none()
+            && matches!(&e.node.value.expr, crate::ast::SurfaceExpression::Rest(..))
+    });
+    let tail = if has_spread {
+        crate::type_def::RowTail::Uniform { key: None, value: Box::new(Type::Any) }
+    } else {
+        crate::type_def::RowTail::Empty
+    };
     let record_type = Type::Dict(Row {
         fields: resolved_field_types,
-        tail: crate::type_def::RowTail::Empty,
+        tail,
     });
 
     // Always return best-effort results along with any errors.

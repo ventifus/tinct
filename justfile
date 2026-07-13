@@ -24,13 +24,12 @@ timeout_flag := if env_var_or_default("TIMEOUT", "") != "" { " --timeout=" + env
 test_timeout_flag := " --timeout=" + env_var_or_default("TEST_TIMEOUT", "1200")
 
 # Container memory limit applied via --memory.
-# Also used to compute tinct's --max-memory (RLIMIT_AS) at 95% of this value.
-container_memory := "10g"
+container_memory := "4g"
 
-# 95% of container_memory in bytes for tinct --max-memory.
-# 10g (binary) = 10 × 2³⁰ = 10,737,418,240 bytes; × 0.95 = 10,200,547,328.
-# Update both when container_memory changes.
-tinct_max_memory := "10200547328"
+# tinct --max-memory (RLIMIT_AS) in bytes.
+# 3.5g (binary) = 3.5 × 2³⁰ = 3,758,096,384. Container is 4g so tinct
+# self-limits at 3.5g before the container OOM killer fires.
+tinct_max_memory := "3758096384"
 
 # Common container run flags
 # target/ is a bind mount so binaries land on the host (symlinkable from ~/.local/bin)
@@ -70,7 +69,7 @@ build-release:
 # --test-threads=1 serializes deep-eval tests (each 128MB unnamed thread) so only one runs at a time.
 test:
     {{container}} run {{test_run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --lib -- --test-threads=1 --quiet
-    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo run --bin tinct -- run --init stdlib/test-loader.llt $(find tests/corpus/eval -name '*.llt-eval' | sort)
+    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo run --bin tinct -- --max-memory {{tinct_max_memory}} run --init stdlib/test-loader.llt $(find tests/corpus/eval -name '*.llt-eval' | sort)
     {{container}} run {{run_flags}} -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --test cli_tests -- --quiet
 
 # Run a specific test (same flags as CI: -D warnings, test-threads=1)
@@ -86,7 +85,7 @@ test-lib:
 
 # Run corpus tests and show output (tinct runner reports failures inline)
 test-corpus-summary:
-    -{{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo run --bin tinct -- run --init stdlib/test-loader.llt $(find tests/corpus/eval -name '*.llt-eval' | sort)
+    -{{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo run --bin tinct -- --max-memory {{tinct_max_memory}} run --init stdlib/test-loader.llt $(find tests/corpus/eval -name '*.llt-eval' | sort)
 
 # Run CLI tests and show only failures + summary lines
 test-cli-summary:
@@ -97,12 +96,12 @@ test-cli-summary:
 # With no arguments: auto-discovers all tests under tests/corpus/.
 # With file arguments: runs only those specific tests.
 test-corpus:
-    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo run --bin tinct -- run --init stdlib/test-loader.llt
+    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo run --bin tinct -- --max-memory {{tinct_max_memory}} run --init stdlib/test-loader.llt
 
 # Run specific corpus test files.
 # Usage: just test-corpus-one tests/corpus/eval/simple_dict.llt-eval
 test-corpus-one +FILES:
-    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo run --bin tinct -- run --init stdlib/test-loader.llt {{FILES}}
+    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo run --bin tinct -- --max-memory {{tinct_max_memory}} run --init stdlib/test-loader.llt {{FILES}}
 
 # Run all lint checks. Always runs every check regardless of failures; exits non-zero if any failed.
 lint:
@@ -222,7 +221,7 @@ run-file FILE:
 # Run with a custom --init program and optional file arguments
 # Usage: just run-init stdlib/test-loader.llt tests/corpus/eval/simple_dict.llt-eval
 run-init INIT +FILES="":
-    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo run --bin tinct -- run --init {{INIT}} {{FILES}}
+    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo run --bin tinct -- --max-memory {{tinct_max_memory}} run --init {{INIT}} {{FILES}}
 
 # Clean build artifacts
 clean:

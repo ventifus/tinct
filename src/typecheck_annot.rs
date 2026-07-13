@@ -2104,6 +2104,7 @@ pub(crate) async fn resolve_type_name_with_guard(
     env: &TypeEnv,
     span: Span,
     state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
     recursion_guard: &mut HashSet<String>,
@@ -2115,13 +2116,12 @@ pub(crate) async fn resolve_type_name_with_guard(
     // which now uses the type-stage env as the canonical source.
     if !name.starts_with(|c: char| c.is_uppercase()) {
         let row_ref: Option<&HashMap<String, String>> = row_ann_mapping.as_ref().map(|m| &**m);
-        let mut _discard = Vec::new();
         return resolve_type_name(
             name,
             env,
             span,
             state,
-            &mut _discard,
+            constraints,
             ann_mapping,
             &row_ref,
             type_params_scope,
@@ -2179,31 +2179,184 @@ pub(crate) async fn resolve_type_name_with_guard(
         let env_guard = state.env.read().unwrap();
         env_guard.get_class(name)
     } {
-        // T-1197: Class name used in annotation position in a recursive/guarded context.
-        // Mirrors the same logic in resolve_type_name so both lookup paths handle class
-        // names consistently. See resolve_type_name for the full rationale.
+        // T-1197 / T-1206: Class name used in annotation position in a recursive/guarded context.
+        // Now that constraints is threaded through, push the Constraint::Class to the caller's
+        // collection so the constraint is not dropped.
         let level = state.level;
-        let (fresh, _) = state.fresh_type_var_with(Some(name), Some(level), Kind::Type, &span);
-        // Construct the Constraint::Class that @C should produce in this guarded path.
-        // resolve_type_name_with_guard does not carry a constraints parameter (unlike
-        // resolve_type_name), so we cannot push it to the caller's constraint vec. A local
-        // vec records the constraint to make the intent explicit. The correct fix is to add
-        // a `constraints: &mut Vec<Constraint>` parameter to this function so the constraint
-        // reaches the caller's SCC constraint collection — tracked as part of T-1206 scope.
-        // Without that threading, @C in a recursive/guarded type annotation context produces
-        // a TypeVar that is unconstrained at the unification site: a known limitation.
-        let mut _local_constraints: Vec<Constraint> = Vec::new();
-        _local_constraints.push(Constraint::Class {
+        let (fresh, fresh_ty) = state.fresh_type_var_with(Some(name), Some(level), Kind::Type, &span);
+        constraints.push(Constraint::Class {
             class: Arc::new(class_decl),
-            vars: vec![ConstraintArg::Var(fresh.clone())],
+            vars: vec![ConstraintArg::Var(fresh)],
             origin_name: None,
             origin_span: Some(span),
         });
-        // TODO(T-1206): thread _local_constraints into caller via constraints parameter
-        Ok(Type::TypeVar(fresh, state.level))
+        Ok(fresh_ty)
     } else {
         Err(TypeError::new(format!("undefined type: {}", name), span))
     }
+}
+
+/// Unified type-head resolution: given a name and optional already-resolved type arguments,
+/// produce a `Type`. This is the single canonical lookup path for all forms:
+///   - Bare name: `@Comparable`, `@Integer`, `@Seq` — call with `args = &[]`
+///   - Type application: `[Seq a]`, `[Iterable a]`, `[Map K V]` — call with resolved args
+///
+/// Lookup order (applied identically for bare names and type applications):
+///   1. Operator/Label kind annotations (kind constraints, not types)
+///   2. class_env (BEFORE tycon_env) — `[Iterable a]` creates constrained TypeVar
+///   3. tycon_env → `expand_named` or `instantiate_tycon_def` for structural aliases
+///   4. type_stage_env → `typenode_value_to_type` with App chain for args
+///   5. Undefined → TypeError
+///
+/// The lowercase path (ann_mapping, type_params_scope, cross-kind collision) is handled
+/// by `resolve_type_name` before calling this function — `resolve_type_head` only handles
+/// the case where we have a name that refers to a type constructor or class.
+#[allow(clippy::too_many_arguments)]
+async fn resolve_type_head(
+    name: &str,
+    args: &[Type],
+    env: &TypeEnv,
+    state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
+    span: Span,
+) -> Result<Type, TypeError> {
+    // Step 1: Kind constraints — Operator and Label are kinds, not types.
+    // When args are present in application position, Operator-kinded names produce App chains.
+    match name {
+        "Operator" if args.is_empty() => {
+            return Err(TypeError::new(
+                "Operator is a kind, not a type — annotate a class type parameter as `f@Operator`, not a value expression",
+                span,
+            ));
+        }
+        "Label" if args.is_empty() => {
+            // Anonymous Label-kinded TypeVar.
+            let level = state.level;
+            let (fresh, fresh_ty) = state.fresh_type_var_with(Some("_label"), Some(level), Kind::Label, &span);
+            state.kind_env.insert(fresh.clone(), Kind::Label);
+            return Ok(fresh_ty);
+        }
+        _ => {}
+    }
+
+    // Step 1b: Operator-kinded names in application position (e.g., `m` in `[m SomeType]`
+    // where `m` was declared `m@Operator` in a class definition).
+    // This handles user-defined higher-kinded type parameters.
+    if !args.is_empty() {
+        if let Some(kind) = state.get_kind(name) {
+            if kind.arity() > 0 {
+                if args.len() != 1 {
+                    return Err(TypeError::new(
+                        format!(
+                            "type constructor `{name}` requires 1 type argument, got {}",
+                            args.len()
+                        ),
+                        span,
+                    ));
+                }
+                let a_type = args[0].clone();
+                if let Type::Operator(op_name) = &a_type {
+                    return Err(TypeError::new(
+                        format!(
+                            "kind mismatch: type constructor `{name}` cannot be \
+                             applied to another type constructor `{op_name}`; \
+                             use a concrete type instead"
+                        ),
+                        span,
+                    ));
+                }
+                return Ok(Type::App(
+                    Box::new(Type::Operator(name.to_string())),
+                    Box::new(a_type),
+                ));
+            }
+        }
+    }
+
+    // Step 2: class_env — checked BEFORE tycon_env so that type class names in application
+    // position (e.g., `[Iterable a]`) produce a constrained TypeVar rather than TyCon("Iterable").
+    // This is the fix for xs@[Iterable a] producing "cannot unify Iterable with Seq".
+    if let Some(class_decl) = {
+        let env_guard = state.env.read().unwrap();
+        env_guard.get_class(name)
+    } {
+        let level = state.level;
+        let (fresh, fresh_ty) = state.fresh_type_var_with(Some(name), Some(level), Kind::Type, &span);
+        // Build ConstraintArg list: [Var(?c), Ground(arg1), Ground(arg2), ...]
+        let mut vars = vec![ConstraintArg::Var(fresh)];
+        for arg in args {
+            vars.push(ConstraintArg::Ground(arg.clone()));
+        }
+        constraints.push(Constraint::Class {
+            class: Arc::new(class_decl),
+            vars,
+            origin_name: None,
+            origin_span: Some(span),
+        });
+        return Ok(fresh_ty);
+    }
+
+    // Step 3: type_stage_env — After T-1557, Env no longer stores runtime values; thunks
+    // live exclusively in FlatEnv (EvalContext.env_arena). Name-based thunk lookup via
+    // get_value_by_name is no longer possible from Env. This step falls through to
+    // tycon_env (Step 4) for type resolution.
+
+    // Step 4: tycon_env — bootstrap fallback for types declared in builtin_core.llt that
+    // were not found in the type-stage (e.g., DirCap, NetCap, TypeContext, and primitive
+    // types when prelude is not yet loaded).
+    if let Some(def) = state
+        .tycon_env
+        .get(name)
+        .cloned()
+        .or_else(|| env.lookup_tycon_def(name))
+    {
+        // Nominal ADT check: parameterized ADTs referenced bare as type constructors (HKT-style).
+        // e.g. `[let f@Result]` — use TyCon(name) so UNIFY-TYCON-EXPAND handles variants.
+        if !def.constructors.is_empty() {
+            let base = Type::TyCon(name.to_string());
+            if args.is_empty() {
+                return Ok(base);
+            }
+            let mut result = base;
+            for arg in args {
+                result = Type::App(Box::new(result), Box::new(arg.clone()));
+            }
+            return Ok(result);
+        }
+
+        // Structural alias: use expand_named for expansion (handles param substitution,
+        // recursive types, builtins). For parameterized structural aliases with args,
+        // use instantiate_tycon_def for constraint checking.
+        if !def.params.is_empty() && !args.is_empty() {
+            if args.len() != def.params.len() {
+                return Err(TypeError::new(
+                    format!(
+                        "type alias '{}' expects {} type parameter(s), got {}",
+                        name,
+                        def.params.len(),
+                        args.len()
+                    ),
+                    span,
+                ));
+            }
+            return Box::pin(instantiate_tycon_def(def.as_ref(), args, state)).await;
+        }
+
+        // Zero-arg or arity-matches-zero: expand via expand_named.
+        return Ok(expand_named(name, args, env, state).unwrap_or_else(|| {
+            // expand_named returns None only when the name is not in tycon_env, which
+            // cannot happen here since we already found `def` above. This fallback is
+            // unreachable in practice but satisfies the type system.
+            let mut result = Type::TyCon(name.to_string());
+            for arg in args {
+                result = Type::App(Box::new(result), Box::new(arg.clone()));
+            }
+            result
+        }));
+    }
+
+    // Step 5: Undefined type name.
+    Err(TypeError::new(format!("undefined type: {}", name), span))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2230,23 +2383,10 @@ pub(crate) async fn resolve_type_name(
             state.kind_env.insert(fresh.clone(), Kind::Label);
             return Ok(fresh_ty);
         }
-        // Rust-protocol primitive types — resolved directly, bypassing type-stage eval.
-        // Only the canonical LONG-FORM names are listed here (no abbreviations).
-        // Short forms (Int, Str, Bool) must be migrated to the long form in source code.
-        // Boolean, Number, Null, Absent are tinct-defined — not Rust-side primitives.
-        "Integer" => return Ok(Type::Int),
-        "String" => return Ok(Type::Str),
-        "Float" => return Ok(Type::Float),
-        "Bytes" => return Ok(Type::Bytes),
-        "Never" => return Ok(Type::Never),
-        "Unknown" => return Ok(Type::Unknown),
-        "Any" => return Ok(Type::Any),
-        "Proxy" => return Ok(Type::Proxy),
-        // Dict is a Rust-protocol structural type — any dict value.
-        // Resolves to Type::Any so @Dict accepts any dict without restricting field shapes.
-        "Dict" => return Ok(Type::Any),
-        // Expr is the Rust-protocol type for macro arguments (unevaluated AST nodes).
-        "Expr" => return Ok(Type::Any),
+        // Operator and Label are kinds, not types — handled above.
+        // All other fundamental types (Integer, String, Float, Bytes, Never, Any, Unknown,
+        // Proxy, Dict, Expr) are declared in builtin_core.llt and resolved through tycon_env
+        // via resolve_type_head. No hardcoded Rust-type shortcuts here.
         _ => {
             if name.starts_with(|c: char| c.is_lowercase()) {
                 // Type parameter scope enforcement (T-1100 / T-951).
@@ -2324,98 +2464,10 @@ pub(crate) async fn resolve_type_name(
                     Err(TypeError::new(format!("undefined type: {name}"), span))
                 }
             } else {
-                // Uppercase type name — check for type alias
-                if let Some(alias) = env.lookup_tycon_def(name)
-                    .or_else(|| state.tycon_env.get(name).cloned())
-                {
-                    // Nominal ADT check must happen before the arity check so that parameterized
-                    // nominal ADTs (e.g. Result, Seq, Maybe) can be referenced bare as type
-                    // constructors in HKT-style instance arm annotations ([let f@Result]).
-                    // Returns TyCon(name) which UNIFY-TYCON-EXPAND can match against variants.
-                    if !alias.constructors.is_empty() || alias.builtin_type.is_some() {
-                        return Ok(Type::TyCon(name.to_string()));
-                    }
-
-                    // Check arity — bare alias name must have zero parameters for non-ADT aliases.
-                    if !alias.params.is_empty() {
-                        return Err(TypeError::new(
-                            format!("type alias '{}' expects {} type parameter(s), got 0", name, alias.params.len()),
-                            span,
-                        ));
-                    }
-
-                    // Non-nominal zero-parameter alias: return the body directly.
-                    // Recursive expansion happens during alias registration via resolve_type_name_with_guard.
-                    Ok(alias.body.clone())
-                } else if let Some(class_decl) = {
-                    let env_guard = state.env.read().unwrap();
-                    env_guard.get_class(name)
-                } {
-                    // T-1197: Class name used in annotation position: @Comparable, @Equatable, etc.
-                    //
-                    // When a name in annotation position resolves to a ClassDecl (not a type alias),
-                    // introduce a fresh type variable constrained by that class. The class constraint
-                    // is added to the threaded `constraints` parameter so that when this TypeVar is later unified with a
-                    // concrete type at a call site, check_constraints_on_var fires and verifies the
-                    // instance exists (T-1198).
-                    //
-                    // Each occurrence of @C creates an independent fresh TypeVar — class names are
-                    // not in the type variable namespace (unlike lowercase annotation names such as
-                    // @a which are deduplicated via ann_mapping). Two parameters x@Comparable and
-                    // y@Comparable get distinct TypeVars ?N and ?M, each independently constrained.
-                    let level = state.level;
-                    let (fresh, fresh_ty) = state.fresh_type_var_with(Some(name), Some(level), Kind::Type, &span);
-                    constraints.push(Constraint::Class {
-                        class: Arc::new(class_decl),
-                        vars: vec![ConstraintArg::Var(fresh)],
-                        origin_name: None,
-                        origin_span: Some(span),
-                    });
-                    Ok(fresh_ty)
-                } else {
-                    // When state.type_stage_env is set, look up the name there.
-                    // Otherwise the type-stage env is unavailable — all primitives are
-                    // handled by the match arms above, so any name reaching here is undefined.
-                    if let Some(ts_env) = state.type_stage_env.clone() {
-                        // Walk the full env chain (not just the immediate frame) so that
-                        // type-stage bindings like Boolean, Seq, Result are found even when
-                        // they are in parent frames of the type-stage env.
-                        let thunk_opt: Option<Arc<crate::value::Thunk>> = {
-                            let env_guard = ts_env.read().unwrap();
-                            env_guard.get_value_by_name(name)
-                        };
-                        if let Some(thunk) = thunk_opt {
-                            // Build an EvalContext the same way eval_type_stage_expr does,
-                            // so typenode_value_to_type can materialize nested payload thunks.
-                            #[allow(clippy::disallowed_methods)]
-                            if let Ok(base_dir) = cap_std::fs::Dir::open_ambient_dir(
-                                ".", cap_std::ambient_authority()
-                            ) {
-                                let eval_env = if let Some(ref main_env) = state.main_env {
-                                    let mut combined = crate::env::Env::with_parent(Arc::clone(main_env));
-                                    {
-                                        let ts = ts_env.read().unwrap();
-                                        for (slot_name, slot) in ts.iter_slots() {
-                                            if let Some(ref t) = slot.value {
-                                                combined.insert_value(slot_name.to_string(), Arc::clone(t));
-                                            }
-                                        }
-                                    }
-                                    Arc::new(std::sync::RwLock::new(combined))
-                                } else {
-                                    Arc::clone(&ts_env)
-                                };
-                                let ctx = crate::eval::EvalContext::new_empty(base_dir, eval_env, false);
-                                if let Ok(val) = crate::eval::materialize(&thunk, None, &ctx).await {
-                                    if let Some(ty) = typenode_value_to_type(&val, &ctx).await {
-                                        return Ok(ty);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Err(TypeError::new(format!("undefined type: {}", name), span))
-                }
+                // Uppercase type name — route through the unified resolve_type_head.
+                // resolve_type_head checks class_env BEFORE tycon_env (the correct order),
+                // then type_stage_env, then errors.
+                Box::pin(resolve_type_head(name, &[], env, state, constraints, span)).await
             }
         }
     }
@@ -2627,6 +2679,7 @@ pub(crate) async fn resolve_type_expr_with_guard(
                 env,
                 node.span.clone(),
                 state,
+                constraints,
                 ann_mapping,
                 row_ann_mapping,
                 recursion_guard,
@@ -3495,44 +3548,51 @@ pub(crate) async fn resolve_type_dict(
         }
     }
 
-    // TyConDef-based type constructor application (T-949).
-    // Primary path for user-defined and builtin type constructors declared in TyConEnv.
+    // Unified type-head application: [Name Arg1 Arg2 ...] or bare [Name].
     //
-    // Structural aliases (no constructors, no builtin_type) are expanded via expand_named
-    // (Phase 2 of parameterized-type-aliases whatif): [Pair Int] with
-    // Pair = [type [let a] [first: a second: a]] → Record({first: Int, second: Int}).
+    // Routes through `resolve_type_head` which checks in the correct order:
+    //   1. Operator/Label kind annotations
+    //   2. class_env (BEFORE tycon_env) — fixes [Iterable a], [Comparable x], etc.
+    //   3. tycon_env → expand_named / instantiate_tycon_def
+    //   4. type_stage_env → typenode_value_to_type
+    //   5. Falls through (returns None) for unrecognized names
     //
-    // ADTs and builtins produce left-associative App chains: [Tree Int] → App(TyCon("Tree"), Int).
+    // This replaces the three previously separate blocks (TyConDef-based application,
+    // kind_env application, and parameterized alias application), which were processed
+    // in that order and never checked class_env for names in application position.
+    // All three cases now go through the single canonical lookup path.
+    //
+    // IMPORTANT: We only enter this block when the name is recognizable as a type head
+    // (found in class_env, tycon_env, or kind_env as an Operator-kinded name). Uppercase
+    // names that are NOT recognized by any of these environments fall through to the
+    // nominal variant constructor block below (e.g., `[Ok a]` where Ok is a user variant).
     if !entries.is_empty() {
         if let Some(first) = entries.first() {
             if first.node.key.is_none() {
                 if let SurfaceExpression::VarRef { name, .. } = &first.node.value.expr {
-                    let tycon_def = env
-                        .lookup_tycon_def(name)
-                        .or_else(|| state.tycon_env.get(name).cloned());
-                    if let Some(def) = tycon_def {
-                        let arity = def.arity();
-                        if arity == 0 && entries.len() == 1 {
-                            // Zero-arity TyCon: expand via expand_named, which handles
-                            // structural aliases and returns Type::TyCon for builtins/ADTs.
-                            return Ok(expand_named(name, &[], env, state)
-                                .unwrap_or_else(|| Type::TyCon(name.clone())));
-                        } else if arity > 0 {
-                            // Collect argument types from subsequent positional entries.
-                            if entries.len() < 1 + arity {
-                                return Err(TypeError::new(
-                                    format!(
-                                        "type constructor '{}' requires {} argument(s), got {}",
-                                        name,
-                                        arity,
-                                        entries.len() - 1
-                                    ),
-                                    span,
-                                ));
+                    // Check whether this name is a known type head. The order matters:
+                    // class_env must be checked BEFORE tycon_env (the fix). We do this
+                    // lightweight check here to decide whether to enter the path — the
+                    // full resolution is done inside resolve_type_head.
+                    let in_class_env = {
+                        let env_guard = state.env.read().unwrap();
+                        env_guard.get_class(name).is_some()
+                    };
+                    let in_tycon_env = state.tycon_env.contains_key(name.as_str())
+                        || env.lookup_tycon_def(name).is_some();
+                    let in_kind_env = state.get_kind(name.as_str()).is_some_and(|k| k.arity() > 0);
+                    let is_kind_keyword = name == "Operator" || name == "Label";
+
+                    if in_class_env || in_tycon_env || in_kind_env || is_kind_keyword {
+                        // Resolve argument types from the remaining positional entries.
+                        // Keyed entries (constraint:, doc:, bind:, etc.) are metadata — skip them.
+                        let mut resolved_args: Vec<Type> = Vec::new();
+                        for entry in entries[1..].iter() {
+                            if entry.node.key.is_some() {
+                                continue;
                             }
-                            let mut args = Vec::with_capacity(arity);
-                            for entry in entries.iter().take(arity + 1).skip(1) {
-                                let arg = resolve_type_expr(
+                            resolved_args.push(
+                                resolve_type_expr(
                                     &entry.node.value,
                                     env,
                                     state,
@@ -3541,147 +3601,20 @@ pub(crate) async fn resolve_type_dict(
                                     row_ann_mapping,
                                     type_params_scope,
                                 )
-                                .await?;
-                                args.push(arg);
-                            }
-
-                            // Expand via expand_named (handles structural aliases, builtins,
-                            // and ADTs uniformly). Falls back to App(TyCon, args) chain when
-                            // expand_named returns None (unknown alias name).
-                            return Ok(expand_named(name, &args, env, state).unwrap_or_else(
-                                || {
-                                    let mut result = Type::TyCon(name.clone());
-                                    for arg in &args {
-                                        result = Type::App(Box::new(result), Box::new(arg.clone()));
-                                    }
-                                    result
-                                },
-                            ));
+                                .await?,
+                            );
                         }
-                    }
-                }
-            }
-        }
-    }
 
-    // General type constructor application via kind_env — the permanent dispatch path for
-    // user-defined Operator-kinded class params (e.g., `m` in `[class [m@Operator] ...]`).
-    // Seq/Map/Handle are registered in TyConDef (T-1018) and caught by the TyConDef path above;
-    // they never reach this code path. Must run BEFORE the parameterized alias lookup so
-    // Operator-kinded class params take priority over parameterized type aliases.
-    if !entries.is_empty() {
-        if let Some(first) = entries.first() {
-            if first.node.key.is_none() {
-                if let SurfaceExpression::VarRef { name, .. } = &first.node.value.expr {
-                    if let Some(kind) = state.get_kind(name.as_str()) {
-                        if kind.arity() > 0 {
-                            let mut args: Vec<Type> = Vec::new();
-                            for e in entries[1..].iter() {
-                                args.push(
-                                    resolve_type_expr(
-                                        &e.node.value,
-                                        env,
-                                        state,
-                                        constraints,
-                                        ann_mapping,
-                                        row_ann_mapping,
-                                        type_params_scope,
-                                    )
-                                    .await?,
-                                );
-                            }
-
-                            // User-defined: always Kind::Operator (arity 1).
-                            // Rank-1 restriction: argument cannot itself be a type constructor.
-                            // Note: Seq/Map/Handle are caught by the TyConDef path above and
-                            // never reach here (T-1021/T-1018).
-                            if args.len() != 1 {
-                                return Err(TypeError::new(
-                                    format!(
-                                        "type constructor `{name}` requires 1 type argument, got {}",
-                                        args.len()
-                                    ),
-                                    span,
-                                ));
-                            }
-                            let a_type = args.into_iter().next().unwrap();
-                            if let Type::Operator(op_name) = &a_type {
-                                return Err(TypeError::new(
-                                    format!(
-                                        "kind mismatch: type constructor `{name}` cannot be \
-                                         applied to another type constructor `{op_name}`; \
-                                         use a concrete type instead"
-                                    ),
-                                    span,
-                                ));
-                            }
-                            return Ok(Type::App(
-                                Box::new(Type::Operator(name.clone())),
-                                Box::new(a_type),
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Parameterized type alias application: [AliasName Arg1 Arg2 ...]
-    // When the first entry is auto-indexed and refers to a parameterized type alias,
-    // treat remaining auto-indexed entries as type arguments.
-    // This MUST run before union detection so [Result Int] resolves as alias
-    // application, not Union(Result, Int).
-    if entries.len() >= 2 {
-        if let Some(first) = entries.first() {
-            if first.node.key.is_none() {
-                if let SurfaceExpression::VarRef { name, .. } = &first.node.value.expr {
-                    let alias_def = env
-                        .lookup_tycon_def(name)
-                        .or_else(|| state.tycon_env.get(name).cloned());
-                    if let Some(alias) = alias_def {
-                        if !alias.params.is_empty() {
-                            let mut type_args = Vec::new();
-                            for entry in &entries[1..] {
-                                if entry.node.key.is_some() {
-                                    return Err(TypeError::new(
-                                        format!(
-                                            "unexpected keyed entry in type alias application '{}'",
-                                            name
-                                        ),
-                                        entry.span.clone(),
-                                    ));
-                                }
-                                type_args.push(
-                                    resolve_type_expr(
-                                        &entry.node.value,
-                                        env,
-                                        state,
-                                        constraints,
-                                        ann_mapping,
-                                        row_ann_mapping,
-                                        type_params_scope,
-                                    )
-                                    .await?,
-                                );
-                            }
-                            if type_args.len() != alias.params.len() {
-                                return Err(TypeError::new(
-                                    format!(
-                                        "type alias '{}' expects {} type parameter(s), got {}",
-                                        name,
-                                        alias.params.len(),
-                                        type_args.len()
-                                    ),
-                                    span,
-                                ));
-                            }
-                            return Box::pin(instantiate_tycon_def(
-                                alias.as_ref(),
-                                &type_args,
-                                state,
-                            ))
-                            .await;
-                        }
+                        // Delegate to the unified lookup with resolved args.
+                        return Box::pin(resolve_type_head(
+                            name,
+                            &resolved_args,
+                            env,
+                            state,
+                            constraints,
+                            span,
+                        ))
+                        .await;
                     }
                 }
             }
@@ -4187,13 +4120,8 @@ async fn collect_typenode_seq(
     dict_val: Value,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Option<Vec<Type>> {
-    // Unwrap Value::Annotated wrapper transparently.
-    let inner = match dict_val {
-        Value::Annotated { inner, .. } => inner.as_ref().clone(),
-        other => other,
-    };
-
-    let dict = match inner {
+    // T-1555: Value::Annotated is removed; no unwrapping needed.
+    let dict = match dict_val {
         Value::Dict(d) => d,
         _ => return None,
     };
@@ -4242,11 +4170,7 @@ fn typenode_value_to_type<'a>(
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<Type>> + 'a>> {
     Box::pin(async move {
         match val {
-            // Annotated wrapper — TypeNode constructors with @[...] annotations on their
-            // constructor names (e.g. `[Int@[as-type: [fn [let t] t]  guarding: true]]`) are
-            // wrapped in Value::Annotated at runtime. The inner value is the bare Variant;
-            // the annotation dict carries the constructor metadata. Unwrap transparently.
-            Value::Annotated { inner, .. } => typenode_value_to_type(inner, ctx).await,
+            // T-1555: Value::Annotated is removed; annotated bindings no longer need unwrapping.
 
             // TypeNode Variant values produced by the TypeNode ADT (T-1058 / T-1061).
             Value::Variant { tag, payload: _ } => {
@@ -4311,8 +4235,14 @@ fn typenode_value_to_type<'a>(
                     }
 
                     // ── Dict ─────────────────────────────────────────────────────────────
-                    // TypeNode.Dict { fields: [Map String TypeNode], open: Bool }
+                    // TypeNode.Dict { fields: [Map String TypeNode], open: Bool,
+                    //                 key-type?: TypeNode, value-type?: TypeNode }
                     // → Type::Dict(Row { fields: BTreeMap<String, Type>, tail: Empty | Uniform })
+                    //
+                    // Three tail cases:
+                    //   key-type present → Uniform { key: Some(K), value: V }  (typed Map[K:V])
+                    //   open: 1, no key-type → Uniform { key: None, value: Any } (open record)
+                    //   open: 0, no key-type → Empty                            (closed / Null)
                     "TypeNode.Dict" => {
                         let payload_fields = variant_payload_dict(val, ctx).await?;
                         let fields_val = payload_fields.get("fields")?.clone();
@@ -4338,7 +4268,28 @@ fn typenode_value_to_type<'a>(
                             _ => indexmap::IndexMap::new(), // Empty or unrecognized fields → empty record
                         };
 
-                        let tail = if open_val.is_truthy() {
+                        // Optional key-type and value-type fields enable Map[K:V] encoding.
+                        // If key-type is present, build a typed-key Uniform tail regardless of `open`.
+                        // row-polymorphic: 1 → sentinel RowVar; caller (resolve_type_head) will
+                        // replace it with a fresh RowVar using InferState. This is a general protocol:
+                        // any TypeNode that needs a fresh row var sets row-polymorphic: 1.
+                        let tail = if let Some(key_type_val) =
+                            payload_fields.get("key-type").cloned()
+                        {
+                            let key_ty = typenode_value_to_type(&key_type_val, ctx).await?;
+                            // value-type defaults to Any when absent.
+                            let value_ty = if let Some(vt_val) =
+                                payload_fields.get("value-type").cloned()
+                            {
+                                typenode_value_to_type(&vt_val, ctx).await?
+                            } else {
+                                Type::Any
+                            };
+                            crate::type_def::RowTail::Uniform {
+                                key: Some(Box::new(key_ty)),
+                                value: Box::new(value_ty),
+                            }
+                        } else if matches!(&open_val, Value::Bool(true)) || matches!(&open_val, Value::Int(n) if *n != 0) {
                             // Open record: any field value is allowed (Top = Any).
                             // Dict <: open-record: Null <: Record <: Dict hierarchy.
                             crate::type_def::RowTail::Uniform {
@@ -4689,62 +4640,43 @@ pub(crate) async fn eval_type_stage_value(
 ) -> Result<Type, TypeError> {
     let origin_span = rust_span!();
 
-    // Obtain the type-stage environment for building the EvalContext.
-    // Only state.type_stage_env is consulted — the prelude type-stage env is no longer
-    // built on demand. Primitive types are resolved directly in resolve_type_name.
-    let type_stage_env = match state.type_stage_env.clone() {
-        Some(env) => env,
+    // Use the EvalContext from tinct's evaluation pipeline — capabilities flow in from tinct.
+    let ctx = match state.eval_ctx.clone() {
+        Some(ctx) => ctx,
         None => {
             return Err(TypeError::new(
-                "type-stage environment unavailable",
+                "type-stage evaluation requires an EvalContext from the tinct pipeline",
                 origin_span.clone(),
             ))
         }
     };
 
-    // Build a minimal EvalContext backed by the type-stage environment.
-    // AMBIENT-OK: type-stage evaluation performs no file I/O.
-    #[allow(clippy::disallowed_methods)]
-    let base_dir =
-        cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority()).map_err(|e| {
-            TypeErrorTyped::Generic(GenericTypeError {
-                message: format!("type-stage eval: cannot open ambient dir: {e}"),
-                span: origin_span.clone(),
-                notes: vec![],
-                call_stack: vec![],
-            })
-        })?;
-    let ctx = crate::eval::EvalContext::new_empty(base_dir, type_stage_env, false);
-
-    // Allocate materialized thunks for each argument.
-    let arg_thunks: Vec<Arc<Thunk>> = args
+    // Allocate materialized ThunkIds for each argument.
+    let arg_thunks: Vec<crate::arena::ThunkId> = args
         .iter()
-        .map(|v| Arc::new(Thunk::new_materialized(v.clone(), origin_span.clone())))
+        .map(|v| {
+            let t = std::sync::Arc::new(crate::value::Thunk::new_materialized(v.clone(), origin_span.clone()));
+            ctx.alloc_thunk(t)
+        })
         .collect();
 
     // Dispatch: fn_val must be a user-defined function (not a builtin).
     // Builtin type-stage functions are not expected in as-type dispatch paths.
-    // Unwrap Value::Annotated transparently — annotated function bindings (e.g., a
-    // type-stage combinator declared with an @[doc: "..."] annotation) carry the function
-    // value in `inner`, not at the top level.
-    let fn_inner = match fn_val {
-        Value::Annotated { inner, .. } => inner.as_ref(),
-        other => other,
-    };
-    let result_thunk = match fn_inner {
+    // T-1555: Value::Annotated is removed; function values are no longer wrapped.
+    let result_thunk = match fn_val {
         Value::Function {
             ref params,
             ref body,
-            env: ref closure_env,
+            closure_env_id,
             ..
         } => {
             let call_ctx = crate::eval_call::CallContext {
                 params,
                 body,
-                closure_env,
+                closure_env_id: *closure_env_id,
                 positional: &arg_thunks,
                 named: None,
-                default_env: closure_env,
+                default_env_id: *closure_env_id,
                 call_span: origin_span.clone(),
                 origin: None,
                 ctx: &ctx,
@@ -4857,34 +4789,14 @@ pub(crate) async fn eval_type_stage_expr(
 
     // Build the evaluation environment: type-stage env on top of main env (when available).
     //
-    // state.main_env carries the full runtime environment from the eval pipeline.
-    // By chaining the type-stage env on top of it, the evaluator's tier-2 name-based
-    // fallback can find type constructor names (`Seq`, `Dict`, `Boolean`, etc.) that are
-    // defined in the main env but not in the type-stage env. This is the cross-stage bridge:
-    // type-stage expressions in annotations can reference types from the main environment
-    // without moving `[type ...]` declarations into the type-stage.
+    // T-1557: Env no longer stores runtime values; slot.value is gone.
+    // Build the stdlib_env for the new EvalContext from the type-stage env.
+    // When main_env is available, chain the type-stage env as a child of it so that
+    // type constructor names defined in the main env are reachable via the parent chain.
+    // No value copying is needed — Env is type-metadata only after T-1557.
     let eval_env: Arc<std::sync::RwLock<crate::env::Env>> =
         if let Some(ref main_env) = state.main_env {
-            // Build a combined env: type-stage bindings (full parent chain) shadow main env.
-            // Walk from innermost to outermost type-stage frame, inserting each binding
-            // only once (inner frames take precedence over outer frames via the is_empty guard).
-            let mut combined = crate::env::Env::with_parent(Arc::clone(main_env));
-            {
-                let mut cur_opt: Option<Arc<std::sync::RwLock<crate::env::Env>>> =
-                    Some(Arc::clone(&type_stage_env));
-                while let Some(cur) = cur_opt {
-                    let guard = cur.read().unwrap();
-                    for (name, slot) in guard.iter_slots() {
-                        if let Some(ref thunk) = slot.value {
-                            // insert_if_absent: inner frames shadow outer frames and main_env.
-                            if !combined.slots.contains_key(name) {
-                                combined.insert_value(name.to_string(), Arc::clone(thunk));
-                            }
-                        }
-                    }
-                    cur_opt = guard.parent.as_ref().map(Arc::clone);
-                }
-            }
+            let combined = crate::env::Env::with_parent(Arc::clone(main_env));
             Arc::new(std::sync::RwLock::new(combined))
         } else {
             Arc::clone(&type_stage_env)
@@ -4904,50 +4816,24 @@ pub(crate) async fn eval_type_stage_expr(
         })?;
     let ctx = crate::eval::EvalContext::new_empty(base_dir, Arc::clone(&eval_env), false);
 
-    // Inject TypeVar bindings from ann_mapping into the eval env so that lowercase
-    // TypeVar names (`a`, `b`, etc.) resolve to TypeNode.TypeVar values during
-    // type-stage annotation evaluation (e.g. `@[Seq a]` can find `a`).
-    if let Some(mapping) = ann_mapping {
-        let mut env_guard = eval_env.write().unwrap();
-        for (source_name, fresh_var) in mapping.iter() {
-            // TypeNode.TypeVar { name: fresh_var, level: 0 }
-            let name_tid = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                crate::value::string_val(fresh_var),
-                node_span.clone(),
-            )));
-            let level_tid = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                crate::value::Value::Int(0),
-                node_span.clone(),
-            )));
-            let mut payload: indexmap::IndexMap<
-                crate::value::HashableValue,
-                crate::value::ThunkId,
-            > = indexmap::IndexMap::new();
-            payload.insert(crate::value::HashableValue::Str("name".into()), name_tid);
-            payload.insert(crate::value::HashableValue::Str("level".into()), level_tid);
-            let payload_tid = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                crate::value::Value::Dict(payload),
-                node_span.clone(),
-            )));
-            let typevar_val = crate::value::Value::Variant {
-                tag: "TypeNode.TypeVar".to_string(),
-                payload: Some(payload_tid),
-            };
-            env_guard.insert_value(
-                source_name.clone(),
-                Arc::new(Thunk::new_materialized(typevar_val, node_span.clone())),
-            );
-        }
-    }
+    // T-1557: TypeVar bindings can no longer be injected into Env (value storage removed).
+    // TypeVar names in annotations (`a`, `b`, etc.) must be resolved through the resolver
+    // pass or via arena-based FlatEnv slots (T-1559). The ann_mapping parameter is retained
+    // for future use once the FlatEnv injection path is implemented.
+    let _ = ann_mapping; // suppress unused-variable warning
 
     // No resolution pass for synthetic type-stage nodes; resolution is inline on nodes
     // (written at definition time). Names resolve via the env chain at eval time.
     // All type annotations are inline on AST nodes — no external tables needed.
 
     // Wrap the SurfaceNode in a lazy thunk that will evaluate it in the eval env.
+    // Use empty resolution and type-annotation tables (no pre-resolved coordinates);
+    // name lookup falls through to the tier-2 name-based path in the evaluator.
     let surface_thunk = Arc::new(Thunk::new_surface(
         Arc::clone(node),
-        Arc::clone(&eval_env),
+        Arc::new(std::collections::HashMap::new()),
+        Arc::new(std::collections::HashMap::new()),
+        ctx.current_env_id,
         Arc::clone(&ctx),
         node_span.clone(),
     ));
@@ -4966,64 +4852,11 @@ pub(crate) async fn eval_type_stage_expr(
 
     // Attempt TypeNode.as-type dispatch (T-1059 hook).
     //
-    // Look up `TypeNode` in the type-stage environment and retrieve its `as-type` key.
-    // If the key exists (after T-1059 adds it via `[merge TypeNode [...]]`), call it with
-    // `typenode_val` to normalize user-defined TypeNode constructors to primitive forms.
-    // `eval_type_stage_value` calls the function and converts the result to a `Type`.
-    //
-    // If the lookup fails (pre-T-1059, when `TypeNode.as-type` has not been added to the
-    // TypeNode dict by the protocol-functions merge), fall through to direct conversion via
-    // `typenode_value_to_type`.  This is correct for T-1060: primitive TypeNode constructors
-    // (`TypeNode.Int`, `TypeNode.Float`, etc.) convert without needing `as-type` dispatch.
-    // Attempt TypeNode.as-type dispatch (T-1059 hook) using async helpers.
-    // We inline the former sync closure as sequential awaited steps so block_on_anywhere
-    // is no longer needed. Each step returns Option; on None we fall through to direct
-    // conversion via `typenode_value_to_type`.
-    let as_type_dispatch: Option<Type> = async {
-        // Look up the TypeNode dict in the type-stage environment via slot_names
-        // (seeding path — not an eval-time lookup).  Walk slot_names + parent chain
-        // to find "TypeNode" without calling get_by_name.
-        let typenode_thunk = {
-            let mut found: Option<Arc<Thunk>> = None;
-            let mut cur: Option<Arc<std::sync::RwLock<crate::env::Env>>> =
-                Some(Arc::clone(&type_stage_env));
-            while let Some(frame) = cur {
-                let frame_ref = frame.read().ok()?;
-                if let Some(slot) = frame_ref.slots.get("TypeNode") {
-                    if let Some(ref thunk) = slot.value {
-                        found = Some(Arc::clone(thunk));
-                        break;
-                    }
-                }
-                cur = frame_ref.parent.as_ref().map(Arc::clone);
-            }
-            found?
-        };
-        let typenode_dict_val = crate::eval::materialize(&typenode_thunk, None, &ctx)
-            .await
-            .ok()?;
-
-        // Retrieve the as-type function from the TypeNode dict.
-        // This key is added by `[merge TypeNode [...]]` in T-1059; absent until then.
-        let as_type_fn = match &typenode_dict_val {
-            Value::Dict(ref d) => {
-                let as_type_id = d.get(&HashableValue::Str("as-type".into()))?;
-                let as_type_thunk = ctx.get_thunk(*as_type_id);
-                crate::eval::materialize(&as_type_thunk, None, &ctx)
-                    .await
-                    .ok()?
-            }
-            _ => return None,
-        };
-
-        // Call TypeNode.as-type(typenode_val) to normalize and convert to Type.
-        // eval_type_stage_value handles: call fn → materialize → typenode_value_to_type.
-        // Returns None on failure (non-function value, eval error, unrecognized result).
-        eval_type_stage_value(&as_type_fn, std::slice::from_ref(&typenode_val), state)
-            .await
-            .ok()
-    }
-    .await;
+    // T-1557: Env no longer stores runtime values; TypeNode thunks cannot be retrieved
+    // from Env by name. The as-type dispatch path is disabled until the FlatEnv-based
+    // type-stage lookup is implemented (T-1559). Fall through to direct
+    // typenode_value_to_type conversion.
+    let as_type_dispatch: Option<Type> = None;
 
     // If as-type dispatch succeeded, return its result (the normalized Type).
     if let Some(ty) = as_type_dispatch {

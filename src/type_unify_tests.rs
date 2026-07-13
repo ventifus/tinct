@@ -157,6 +157,7 @@ async fn test_promote_literal_promoted_for_any_class() {
         determines: vec![],
         resolver: None,
         resolver_injective: false,
+        structural_discharge: crate::type_class::StructuralDischarge::None,
         method_signatures: vec![],
     });
     let constraints: Vec<Constraint> = vec![Constraint::Class {
@@ -1074,6 +1075,7 @@ async fn test_reverse_fd_back_propagates_determining_type() {
         determines: vec![(vec![0], vec![1])], // pos 0 determines pos 1
         resolver: None,
         resolver_injective: true,
+        structural_discharge: crate::type_class::StructuralDischarge::None,
         method_signatures: vec![],
     });
 
@@ -1085,6 +1087,7 @@ async fn test_reverse_fd_back_propagates_determining_type() {
         determines: vec![(vec![0], vec![1])],
         resolver: None,
         resolver_injective: true,
+        structural_discharge: crate::type_class::StructuralDischarge::None,
         method_signatures: vec![],
     });
 
@@ -1161,6 +1164,7 @@ async fn test_reverse_fd_does_not_fire_when_not_injective() {
         determines: vec![(vec![0], vec![1])],
         resolver: None,
         resolver_injective: false, // NOT injective
+        structural_discharge: crate::type_class::StructuralDischarge::None,
         method_signatures: vec![],
     });
 
@@ -1171,6 +1175,7 @@ async fn test_reverse_fd_does_not_fire_when_not_injective() {
         determines: vec![(vec![0], vec![1])],
         resolver: None,
         resolver_injective: false,
+        structural_discharge: crate::type_class::StructuralDischarge::None,
         method_signatures: vec![],
     });
 
@@ -1362,6 +1367,7 @@ async fn test_fd_in_progress_terminates_mutual_recursion() {
         ],
         resolver: None,
         resolver_injective: true, // Enables reverse lookup: b=Str → a=Int
+        structural_discharge: crate::type_class::StructuralDischarge::None,
         method_signatures: vec![],
     });
 
@@ -1372,6 +1378,7 @@ async fn test_fd_in_progress_terminates_mutual_recursion() {
         determines: vec![(vec![0], vec![1])],
         resolver: None,
         resolver_injective: true,
+        structural_discharge: crate::type_class::StructuralDischarge::None,
         method_signatures: vec![],
     });
 

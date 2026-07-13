@@ -1,0 +1,4 @@
+# builtin-arena-drop: type error when argument is not an Arena
+[builtin-arena-drop 42]
+=== error
+arena-drop: expected Arena, got Int

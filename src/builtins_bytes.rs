@@ -50,8 +50,9 @@ pub(crate) fn builtin_bytes(
         // Directly concatenate bytes without intermediate storage
         let mut result = Vec::new();
 
-        for arg_thunk in &args {
-            let val = materialize(arg_thunk, Some(&call_span), &ctx).await?; // H3: loop materialize (iterating bytes args)
+        for &tid in &args {
+            let arg_thunk = ctx.get_thunk(tid);
+            let val = materialize(&arg_thunk, Some(&call_span), &ctx).await?; // H3: loop materialize (iterating bytes args)
             match val.as_bytes() {
                 Some(bytes) => {
                     result.extend_from_slice(bytes);
@@ -90,7 +91,7 @@ pub(crate) fn builtin_bytes_find(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -115,10 +116,12 @@ pub(crate) fn builtin_bytes_find(
             .into());
         }
 
-        let haystack_val = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let haystack_val = thunk0
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let needle_val = args[1]
+        let needle_val = thunk1
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
@@ -129,7 +132,7 @@ pub(crate) fn builtin_bytes_find(
                     "bytes-find".to_string(),
                     "Bytes",
                     haystack_val.type_name(),
-                    args[0].span.clone(),
+                    thunk0.span.clone(),
                 )
                 .into());
             }
@@ -142,7 +145,7 @@ pub(crate) fn builtin_bytes_find(
                     "bytes-find".to_string(),
                     "Bytes",
                     needle_val.type_name(),
-                    args[1].span.clone(),
+                    thunk1.span.clone(),
                 )
                 .into());
             }
@@ -256,7 +259,7 @@ pub(crate) fn builtin_bytes_concat(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -281,10 +284,12 @@ pub(crate) fn builtin_bytes_concat(
             .into());
         }
 
-        let val1 = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let val1 = thunk0
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness");
-        let val2 = args[1]
+        let val2 = thunk1
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness");
 
@@ -295,7 +300,7 @@ pub(crate) fn builtin_bytes_concat(
                     "bytes-concat".to_string(),
                     "Bytes",
                     val1.type_name(),
-                    args[0].span.clone(),
+                    thunk0.span.clone(),
                 )
                 .into());
             }
@@ -308,7 +313,7 @@ pub(crate) fn builtin_bytes_concat(
                     "bytes-concat".to_string(),
                     "Bytes",
                     val2.type_name(),
-                    args[1].span.clone(),
+                    thunk1.span.clone(),
                 )
                 .into());
             }
@@ -340,7 +345,7 @@ pub(crate) fn builtin_bytes_equal(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -365,10 +370,12 @@ pub(crate) fn builtin_bytes_equal(
             .into());
         }
 
-        let val1 = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let val1 = thunk0
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let val2 = args[1]
+        let val2 = thunk1
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
@@ -379,7 +386,7 @@ pub(crate) fn builtin_bytes_equal(
                     "bytes-equal?".to_string(),
                     "Bytes",
                     val1.type_name(),
-                    args[0].span.clone(),
+                    thunk0.span.clone(),
                 )
                 .into());
             }
@@ -392,7 +399,7 @@ pub(crate) fn builtin_bytes_equal(
                     "bytes-equal?".to_string(),
                     "Bytes",
                     val2.type_name(),
-                    args[1].span.clone(),
+                    thunk1.span.clone(),
                 )
                 .into());
             }
@@ -423,7 +430,7 @@ pub(crate) fn builtin_ct_equal(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -445,10 +452,12 @@ pub(crate) fn builtin_ct_equal(
             .into());
         }
 
-        let val1 = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let val1 = thunk0
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let val2 = args[1]
+        let val2 = thunk1
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
@@ -459,7 +468,7 @@ pub(crate) fn builtin_ct_equal(
                     "ct-equal?".to_string(),
                     "Bytes",
                     val1.type_name(),
-                    args[0].span.clone(),
+                    thunk0.span.clone(),
                 )
                 .into());
             }
@@ -472,7 +481,7 @@ pub(crate) fn builtin_ct_equal(
                     "ct-equal?".to_string(),
                     "Bytes",
                     val2.type_name(),
-                    args[1].span.clone(),
+                    thunk1.span.clone(),
                 )
                 .into());
             }
@@ -517,7 +526,7 @@ pub(crate) fn builtin_encode(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -542,10 +551,12 @@ pub(crate) fn builtin_encode(
             .into());
         }
 
-        let fmt_val = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let fmt_val = thunk0
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness");
-        let num_val = args[1]
+        let num_val = thunk1
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness");
 
@@ -557,7 +568,7 @@ pub(crate) fn builtin_encode(
                     "builtin-encode".to_string(),
                     "ByteOrder variant",
                     fmt_val.type_name(),
-                    args[0].span.clone(),
+                    thunk0.span.clone(),
                 )
                 .into());
             }
@@ -581,7 +592,7 @@ pub(crate) fn builtin_encode(
                         "builtin-encode".to_string(),
                         "Int",
                         num_val.type_name(),
-                        args[1].span.clone(),
+                        thunk1.span.clone(),
                     )
                 })?;
                 vec![n as i8 as u8]
@@ -592,7 +603,7 @@ pub(crate) fn builtin_encode(
                         "builtin-encode".to_string(),
                         "Int",
                         num_val.type_name(),
-                        args[1].span.clone(),
+                        thunk1.span.clone(),
                     )
                 })?;
                 vec![n as u8]
@@ -603,7 +614,7 @@ pub(crate) fn builtin_encode(
                         "builtin-encode".to_string(),
                         "Int",
                         num_val.type_name(),
-                        args[1].span.clone(),
+                        thunk1.span.clone(),
                     )
                 })?;
                 (n as i16).to_le_bytes().to_vec()
@@ -614,7 +625,7 @@ pub(crate) fn builtin_encode(
                         "builtin-encode".to_string(),
                         "Int",
                         num_val.type_name(),
-                        args[1].span.clone(),
+                        thunk1.span.clone(),
                     )
                 })?;
                 (n as i16).to_be_bytes().to_vec()
@@ -625,7 +636,7 @@ pub(crate) fn builtin_encode(
                         "builtin-encode".to_string(),
                         "Int",
                         num_val.type_name(),
-                        args[1].span.clone(),
+                        thunk1.span.clone(),
                     )
                 })?;
                 (n as u16).to_le_bytes().to_vec()
@@ -636,7 +647,7 @@ pub(crate) fn builtin_encode(
                         "builtin-encode".to_string(),
                         "Int",
                         num_val.type_name(),
-                        args[1].span.clone(),
+                        thunk1.span.clone(),
                     )
                 })?;
                 (n as u16).to_be_bytes().to_vec()
@@ -647,7 +658,7 @@ pub(crate) fn builtin_encode(
                         "builtin-encode".to_string(),
                         "Int",
                         num_val.type_name(),
-                        args[1].span.clone(),
+                        thunk1.span.clone(),
                     )
                 })?;
                 (n as i32).to_le_bytes().to_vec()
@@ -658,7 +669,7 @@ pub(crate) fn builtin_encode(
                         "builtin-encode".to_string(),
                         "Int",
                         num_val.type_name(),
-                        args[1].span.clone(),
+                        thunk1.span.clone(),
                     )
                 })?;
                 (n as i32).to_be_bytes().to_vec()
@@ -669,7 +680,7 @@ pub(crate) fn builtin_encode(
                         "builtin-encode".to_string(),
                         "Int",
                         num_val.type_name(),
-                        args[1].span.clone(),
+                        thunk1.span.clone(),
                     )
                 })?;
                 (n as u32).to_le_bytes().to_vec()
@@ -680,7 +691,7 @@ pub(crate) fn builtin_encode(
                         "builtin-encode".to_string(),
                         "Int",
                         num_val.type_name(),
-                        args[1].span.clone(),
+                        thunk1.span.clone(),
                     )
                 })?;
                 (n as u32).to_be_bytes().to_vec()
@@ -691,7 +702,7 @@ pub(crate) fn builtin_encode(
                         "builtin-encode".to_string(),
                         "Int",
                         num_val.type_name(),
-                        args[1].span.clone(),
+                        thunk1.span.clone(),
                     )
                 })?;
                 n.to_le_bytes().to_vec()
@@ -702,7 +713,7 @@ pub(crate) fn builtin_encode(
                         "builtin-encode".to_string(),
                         "Int",
                         num_val.type_name(),
-                        args[1].span.clone(),
+                        thunk1.span.clone(),
                     )
                 })?;
                 n.to_be_bytes().to_vec()
@@ -713,7 +724,7 @@ pub(crate) fn builtin_encode(
                         "builtin-encode".to_string(),
                         "Int",
                         num_val.type_name(),
-                        args[1].span.clone(),
+                        thunk1.span.clone(),
                     )
                 })?;
                 (n as u64).to_le_bytes().to_vec()
@@ -724,7 +735,7 @@ pub(crate) fn builtin_encode(
                         "builtin-encode".to_string(),
                         "Int",
                         num_val.type_name(),
-                        args[1].span.clone(),
+                        thunk1.span.clone(),
                     )
                 })?;
                 (n as u64).to_be_bytes().to_vec()
@@ -735,7 +746,7 @@ pub(crate) fn builtin_encode(
                         "builtin-encode".to_string(),
                         "Float or Int",
                         num_val.type_name(),
-                        args[1].span.clone(),
+                        thunk1.span.clone(),
                     )
                 })?;
                 (f as f32).to_le_bytes().to_vec()
@@ -746,7 +757,7 @@ pub(crate) fn builtin_encode(
                         "builtin-encode".to_string(),
                         "Float or Int",
                         num_val.type_name(),
-                        args[1].span.clone(),
+                        thunk1.span.clone(),
                     )
                 })?;
                 (f as f32).to_be_bytes().to_vec()
@@ -757,7 +768,7 @@ pub(crate) fn builtin_encode(
                         "builtin-encode".to_string(),
                         "Float or Int",
                         num_val.type_name(),
-                        args[1].span.clone(),
+                        thunk1.span.clone(),
                     )
                 })?;
                 f.to_le_bytes().to_vec()
@@ -768,7 +779,7 @@ pub(crate) fn builtin_encode(
                         "builtin-encode".to_string(),
                         "Float or Int",
                         num_val.type_name(),
-                        args[1].span.clone(),
+                        thunk1.span.clone(),
                     )
                 })?;
                 f.to_be_bytes().to_vec()
@@ -810,7 +821,7 @@ pub(crate) fn builtin_bytes_get(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -835,10 +846,12 @@ pub(crate) fn builtin_bytes_get(
             .into());
         }
 
-        let i_val = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let i_val = thunk0
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness");
-        let b_val = args[1]
+        let b_val = thunk1
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness");
 
@@ -849,7 +862,7 @@ pub(crate) fn builtin_bytes_get(
                     "builtin-bytes-get".to_string(),
                     "Int",
                     other.type_name(),
-                    args[0].span.clone(),
+                    thunk0.span.clone(),
                 )
                 .into())
             }
@@ -862,7 +875,7 @@ pub(crate) fn builtin_bytes_get(
                     "builtin-bytes-get".to_string(),
                     "Bytes",
                     b_val.type_name(),
-                    args[1].span.clone(),
+                    thunk1.span.clone(),
                 )
                 .into())
             }
@@ -903,7 +916,7 @@ pub(crate) fn builtin_bytes_slice(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -928,13 +941,16 @@ pub(crate) fn builtin_bytes_slice(
             .into());
         }
 
-        let b_val = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk2 = ctx.get_thunk(args[2]);
+        let b_val = thunk0
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness");
-        let start_val = args[1]
+        let start_val = thunk1
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness");
-        let len_val = args[2]
+        let len_val = thunk2
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness");
 
@@ -945,7 +961,7 @@ pub(crate) fn builtin_bytes_slice(
                     "builtin-bytes-slice".to_string(),
                     "Bytes",
                     other.type_name(),
-                    args[0].span.clone(),
+                    thunk0.span.clone(),
                 )
                 .into())
             }
@@ -958,7 +974,7 @@ pub(crate) fn builtin_bytes_slice(
                     "builtin-bytes-slice".to_string(),
                     "Int",
                     other.type_name(),
-                    args[1].span.clone(),
+                    thunk1.span.clone(),
                 )
                 .into())
             }
@@ -971,7 +987,7 @@ pub(crate) fn builtin_bytes_slice(
                     "builtin-bytes-slice".to_string(),
                     "Int",
                     other.type_name(),
-                    args[2].span.clone(),
+                    thunk2.span.clone(),
                 )
                 .into())
             }

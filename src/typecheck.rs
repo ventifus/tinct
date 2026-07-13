@@ -168,7 +168,7 @@ pub async fn typecheck_surface_program(
     Vec<crate::error::TypeDiagnostic>,
 ) {
     let (errors, type_map, doc_map, scheme_map, diagnostics, _state, _env, _annotation_table) =
-        typecheck_surface_program_with_env(program, parent_env, true, None, None, std::collections::HashMap::new()).await;
+        typecheck_surface_program_with_env(program, parent_env, true, None, None, std::collections::HashMap::new(), None).await;
     // type_map is now populated during inference (enable_scheme_map=true path).
     (errors, type_map, doc_map, scheme_map, diagnostics)
 }
@@ -217,6 +217,7 @@ pub async fn typecheck_surface_program_with_env(
     resolver_seed_env: Option<Arc<RwLock<Env>>>,
     type_stage_env: Option<Arc<RwLock<Env>>>,
     seed_tycon_env: std::collections::HashMap<String, std::sync::Arc<crate::type_def::TyConDef>>,
+    eval_ctx: Option<std::sync::Arc<crate::eval::EvalContext>>,
 ) -> (
     Vec<TypeError>,
     TypeMap,
@@ -239,6 +240,7 @@ pub async fn typecheck_surface_program_with_env(
     // When None (bootstrap/LSP paths), type_stage_env stays None — primitive types are
     // resolved directly in resolve_type_name without a type-stage env call.
     state.type_stage_env = type_stage_env;
+    state.eval_ctx = eval_ctx;
     // Seed tycon_env from the TypeContext's accumulated TyConDefs. This propagates
     // opaque types (DirCap, File, ClockCap, Handle, etc.) declared in builtin_core.llt
     // to subsequent module type-checks (builtin_io.llt, builtin_async.llt, ...) so that
@@ -516,6 +518,7 @@ async fn typecheck_surface_document(
                     determines,
                     resolver,
                     resolver_injective,
+                    structural,
                 } => {
                     // Infer the class declaration to register it into state.env
                     let superclasses_flat: Vec<(String, String)> = superclasses
@@ -535,6 +538,7 @@ async fn typecheck_surface_document(
                         determines,
                         resolver,
                         *resolver_injective,
+                        structural,
                         decl_spanned.span.clone(),
                         &env,
                         state,
@@ -2010,104 +2014,30 @@ pub(crate) async fn infer_surface_expr(
                             required_count: fn_required,
                         } = func_ty
                         {
-                            let total_supplied = args.len() + named_args.len();
-                            let min_required = fn_required;
-                            let max_allowed = if fn_variadic {
-                                usize::MAX
-                            } else {
-                                fn_params.len()
-                            };
-                            if total_supplied < min_required || total_supplied > max_allowed {
-                                return Err(vec![TypeError::new(
-                                    format!(
-                                        "arity mismatch: expected {}{} arguments, got {}",
-                                        if fn_variadic { "at least " } else { "" },
-                                        if fn_variadic {
-                                            min_required
-                                        } else {
-                                            fn_params.len()
-                                        },
-                                        total_supplied,
-                                    ),
-                                    node.span.clone(),
-                                )]);
-                            }
-                            // Type-check each positional argument against its parameter type.
-                            // Skip checking if the param type is a TyCon — in the sync path,
-                            // lowercase type annotations like @a resolve to TyCon("a") because
-                            // the async resolution path is unavailable. TyCon("a") is opaque and
-                            // cannot be meaningfully checked against concrete arg types here.
-                            for (arg, (_param_name, param_ty)) in args.iter().zip(fn_params.iter())
-                            {
-                                let param_resolved = state.subst.apply(param_ty);
-                                if matches!(
-                                    &param_resolved,
-                                    Type::TyCon(_) | Type::Unknown | Type::Any
-                                ) {
-                                    // Gradual or opaque param: infer for side effects only
-                                    let _ = Box::pin(infer_surface_expr(arg, env, state, type_map))
-                                        .await;
-                                } else {
-                                    check_surface_expr(arg, &param_resolved, env, state, type_map)
-                                        .await
-                                        .map_err(|e| e)?;
-                                }
-                            }
-                            // Named args: type-check against the matching parameter by name.
-                            for na in named_args {
-                                let param_match = fn_params.iter().find(|(pname, _)| {
-                                    pname.as_deref() == Some(na.node.name.as_str())
-                                });
-                                match param_match {
-                                    Some((_, param_ty)) => {
-                                        let param_resolved = state.subst.apply(param_ty);
-                                        if matches!(
-                                            &param_resolved,
-                                            Type::TyCon(_) | Type::Unknown | Type::Any
-                                        ) {
-                                            // Gradual or opaque param: infer for side effects
-                                            let _ = Box::pin(infer_surface_expr(
-                                                &na.node.value,
-                                                env,
-                                                state,
-                                                type_map,
-                                            ))
-                                            .await;
-                                        } else {
-                                            // Type-check the named arg value.
-                                            // On mismatch, wrap the error with a named-arg context.
-                                            let actual_ty = Box::pin(infer_surface_expr(
-                                                &na.node.value,
-                                                env,
-                                                state,
-                                                type_map,
-                                            ))
-                                            .await?;
-                                            let actual_resolved = state.subst.apply(&actual_ty);
-                                            if !Type::is_consistent_subtype(
-                                                &actual_resolved,
-                                                &param_resolved,
-                                            ) {
-                                                return Err(vec![TypeError::new(
-                                                    format!(
-                                                        "named argument '{}' type mismatch: cannot unify {} with {}",
-                                                        na.node.name, param_resolved, actual_resolved
-                                                    ),
-                                                    na.node.value.span.clone(),
-                                                )]);
-                                            }
-                                        }
-                                    }
-                                    None => {
-                                        // Unknown named arg — report error
-                                        return Err(vec![TypeError::new(
-                                            format!("unknown named argument '{}'", na.node.name),
-                                            na.node.value.span.clone(),
-                                        )]);
-                                    }
-                                }
-                            }
-                            Ok(state.subst.apply(&fn_ret))
+                            // Delegate to check_call_args — the single canonical call-checking
+                            // path — instead of duplicating arity/positional/named-arg logic here.
+                            // Use mem::take to avoid borrowing both `state` and `state.constraints`.
+                            let mut constraints = std::mem::take(&mut state.constraints);
+                            let constraints_start = constraints.len();
+                            let result = Box::pin(typecheck_call::check_call_args(
+                                &fn_params,
+                                &fn_ret,
+                                fn_variadic,
+                                fn_required,
+                                None,
+                                args,
+                                named_args,
+                                env,
+                                node.span.clone(),
+                                state,
+                                &mut constraints,
+                                type_map,
+                                constraints_start,
+                                false,
+                            ))
+                            .await;
+                            state.constraints = constraints;
+                            result
                         } else if matches!(func_ty, Type::TypeVar(_, _) | Type::Unknown | Type::Any)
                         {
                             // TypeVar or gradual type: cannot check call statically.
@@ -2814,6 +2744,7 @@ pub(crate) async fn infer_surface_expr(
                     ref determines,
                     ref resolver,
                     resolver_injective,
+                    ref structural,
                 } => {
                     let sc_flat: Vec<(String, String)> = superclasses
                         .iter()
@@ -2829,6 +2760,7 @@ pub(crate) async fn infer_surface_expr(
                         determines,
                         resolver,
                         resolver_injective,
+                        structural,
                         node.span.clone(),
                         env,
                         state,
@@ -2918,10 +2850,19 @@ pub(crate) async fn infer_surface_expr(
             Ok(Type::Unknown)
         }
 
-        SurfaceExpression::Rest(..) => Err(vec![TypeError::new(
-            "rest marker (...) is only valid inside type expressions",
-            node.span.clone(),
-        )]),
+        SurfaceExpression::Rest(..) => {
+            // Rest (...expr) in value position: the spread target type.
+            // Returns Dict (open) — the spread source must be a dict.
+            // The surrounding dict literal inference will detect this Rest and use an
+            // open Uniform tail. Here we just return Dict as the type of the spread source.
+            Ok(Type::Dict(Row {
+                fields: indexmap::IndexMap::new(),
+                tail: crate::type_def::RowTail::Uniform {
+                    key: None,
+                    value: Box::new(Type::Any),
+                },
+            }))
+        }
 
         // U64 literals infer as Int (gradual: close enough for now)
         SurfaceExpression::U64(_) => Ok(Type::Int),
@@ -3060,6 +3001,7 @@ fn infer_class_decl_from_surface(
     determines: &[Arc<SurfaceNode>],
     resolver: &Option<Arc<SurfaceNode>>,
     resolver_injective: bool,
+    structural: &str,
     span: Span,
     _env: &Arc<RwLock<Env>>,
     state: &mut InferState,
@@ -3123,6 +3065,11 @@ fn infer_class_decl_from_surface(
         None
     };
 
+    let structural_discharge = match structural {
+        "closed-dict" => crate::type_class::StructuralDischarge::ClosedDict,
+        _ => crate::type_class::StructuralDischarge::None,
+    };
+
     let class_decl = ClassDecl {
         name: name.to_string(),
         params: params
@@ -3139,6 +3086,7 @@ fn infer_class_decl_from_surface(
         determines: fd_indices,
         resolver: resolver_name,
         resolver_injective,
+        structural_discharge,
         method_signatures: vec![],
     };
 

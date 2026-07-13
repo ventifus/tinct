@@ -11,6 +11,20 @@ use crate::ast::Span;
 use crate::rust_span;
 use crate::types::{instantiate_at_level, unify, InferState, Kind, Label, Type};
 
+/// Structural discharge rule for a typeclass — a general mechanism for declaring
+/// that a typeclass is satisfied by a structural property of the type rather than
+/// by a registered instance. This avoids hardcoding class names in the constraint solver.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub enum StructuralDischarge {
+    /// No structural rule — use normal instance resolution (the default).
+    #[default]
+    None,
+    /// Only closed dicts (`RowTail::Empty`) satisfy this constraint.
+    /// Open dicts (`RowTail::Uniform`) do NOT satisfy it and produce a type error.
+    /// Used by the `Record` typeclass to enforce closed-dict semantics.
+    ClosedDict,
+}
+
 /// A single argument position in a `Constraint::Class`.
 ///
 /// Most positions hold a type variable name that will be renamed during instantiation.
@@ -104,6 +118,7 @@ impl Constraint {
             determines: vec![],
             resolver: None,
             resolver_injective: false,
+            structural_discharge: StructuralDischarge::None,
             method_signatures: vec![],
         });
         Self::Class {
@@ -175,6 +190,9 @@ pub struct ClassDecl {
     /// Read site: `check_constraints_on_var` → `improve_functional_dependency_inner`
     /// (see `type_unify.rs`: `resolver_injective` is captured in `ApplicableConstraint::MultiParam`).
     pub(crate) resolver_injective: bool,
+    /// Structural discharge rule — enables this typeclass to be satisfied by a structural
+    /// property without a registered instance. See `StructuralDischarge` for variants.
+    pub structural_discharge: StructuralDischarge,
     /// Method signatures declared in the class body (S-886: class method synthesis).
     /// Each entry is (method_name, method_type) where method_type uses the class's type
     /// parameters as TypeVars. E.g., for Addable: [("+", Fn(TypeVar("a"), TypeVar("b")) -> TypeVar("c"))].

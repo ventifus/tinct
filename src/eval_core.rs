@@ -13,7 +13,7 @@
 //! - `builtins_async.rs` (eval builtin, macro transformers)
 
 use std::rc::Rc;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use indexmap::IndexMap;
 
@@ -178,7 +178,6 @@ async fn collect_seq_elements(
 /// Operates entirely on SurfaceNode — no Expr round-trip.
 fn eval_quote_preprocess<'a>(
     node: Arc<crate::ast::SurfaceNode>,
-    env: &'a Arc<RwLock<crate::env::Env>>,
     ctx: &'a Arc<EvalContext>,
 ) -> std::pin::Pin<
     Box<dyn std::future::Future<Output = EvalResult<Arc<crate::ast::SurfaceNode>>> + 'a>,
@@ -195,7 +194,7 @@ fn eval_quote_preprocess<'a>(
             SurfaceExpression::Unquote(inner) => {
                 // Evaluate the unquoted expression and convert back to SurfaceNode
                 let core = crate::lower::lower_inner(inner, &mut Vec::new());
-                let thunk = eval_core_expr(&core, env, ctx).await?;
+                let thunk = eval_core_expr(&core, ctx).await?;
                 let value = materialize(&thunk, Some(&inner.span), ctx).await?;
                 value_to_surface_node(&value, inner.span.clone(), ctx)
             }
@@ -219,7 +218,7 @@ fn eval_quote_preprocess<'a>(
                     if let SurfaceExpression::UnquoteSplice(inner) = &entry.node.value.expr {
                         // Evaluate the unquote-splice expression
                         let core = crate::lower::lower_inner(inner, &mut Vec::new());
-                        let thunk = eval_core_expr(&core, env, ctx).await?;
+                        let thunk = eval_core_expr(&core, ctx).await?;
                         let inner_span = inner.span.clone();
                         let value = materialize(&thunk, Some(&inner_span), ctx).await?;
 
@@ -270,13 +269,6 @@ fn eval_quote_preprocess<'a>(
                                                 ))
                                             }
                                         }
-                                        _ => {
-                                            // Bool/Dict/Variant keys in quote context — use Display
-                                            Arc::new(SurfaceNode::new(
-                                                SurfaceExpression::Str(key.to_string()),
-                                                inner_span.clone(),
-                                            ))
-                                        }
                                     };
 
                                     processed_entries.push(Spanned::new(
@@ -300,9 +292,9 @@ fn eval_quote_preprocess<'a>(
                     } else {
                         // Regular entry - recursively process
                         let processed_value =
-                            eval_quote_preprocess(Arc::clone(&entry.node.value), env, ctx).await?;
+                            eval_quote_preprocess(Arc::clone(&entry.node.value), ctx).await?;
                         let processed_key = if let Some(ref key_node) = entry.node.key {
-                            Some(eval_quote_preprocess(Arc::clone(key_node), env, ctx).await?)
+                            Some(eval_quote_preprocess(Arc::clone(key_node), ctx).await?)
                         } else {
                             None
                         };
@@ -324,14 +316,14 @@ fn eval_quote_preprocess<'a>(
                 named_args,
                 implied,
             } => {
-                let processed_func = eval_quote_preprocess(Arc::clone(func), env, ctx).await?;
+                let processed_func = eval_quote_preprocess(Arc::clone(func), ctx).await?;
                 let mut processed_args: Vec<Arc<SurfaceNode>> = Vec::new();
                 for arg in args {
                     // Handle unquote-splicing in call argument position
                     if let SurfaceExpression::UnquoteSplice(inner) = &arg.expr {
                         // Evaluate the unquote-splice expression
                         let core = crate::lower::lower_inner(inner, &mut Vec::new());
-                        let thunk = eval_core_expr(&core, env, ctx).await?;
+                        let thunk = eval_core_expr(&core, ctx).await?;
                         let inner_span = inner.span.clone();
                         let value = materialize(&thunk, Some(&inner_span), ctx).await?;
 
@@ -346,14 +338,14 @@ fn eval_quote_preprocess<'a>(
                     } else {
                         // Regular argument - recursively process
                         processed_args
-                            .push(eval_quote_preprocess(Arc::clone(arg), env, ctx).await?);
+                            .push(eval_quote_preprocess(Arc::clone(arg), ctx).await?);
                     }
                 }
                 let mut processed_named_args: Vec<Spanned<SurfaceNamedArg>> =
                     Vec::with_capacity(named_args.len());
                 for na in named_args {
                     let processed_value =
-                        eval_quote_preprocess(Arc::clone(&na.node.value), env, ctx).await?;
+                        eval_quote_preprocess(Arc::clone(&na.node.value), ctx).await?;
                     processed_named_args.push(Spanned::new(
                         SurfaceNamedArg {
                             name: na.node.name.clone(),
@@ -377,7 +369,7 @@ fn eval_quote_preprocess<'a>(
                 body,
                 desugared,
             } => {
-                let processed_body = eval_quote_preprocess(Arc::clone(body), env, ctx).await?;
+                let processed_body = eval_quote_preprocess(Arc::clone(body), ctx).await?;
                 Ok(make_node(SurfaceExpression::Fn {
                     return_ann: return_ann.clone(),
                     params: params.clone(),
@@ -391,7 +383,7 @@ fn eval_quote_preprocess<'a>(
                 field,
                 ..
             } => {
-                let processed_target = eval_quote_preprocess(Arc::clone(target), env, ctx).await?;
+                let processed_target = eval_quote_preprocess(Arc::clone(target), ctx).await?;
                 Ok(make_node(SurfaceExpression::Field {
                     expr: Some(processed_target),
                     field: field.clone(),
@@ -411,8 +403,8 @@ fn eval_quote_preprocess<'a>(
             })),
 
             SurfaceExpression::Pipe { lhs, rhs } => {
-                let processed_lhs = eval_quote_preprocess(Arc::clone(lhs), env, ctx).await?;
-                let processed_rhs = eval_quote_preprocess(Arc::clone(rhs), env, ctx).await?;
+                let processed_lhs = eval_quote_preprocess(Arc::clone(lhs), ctx).await?;
+                let processed_rhs = eval_quote_preprocess(Arc::clone(rhs), ctx).await?;
                 Ok(make_node(SurfaceExpression::Pipe {
                     lhs: processed_lhs,
                     rhs: processed_rhs,
@@ -422,7 +414,7 @@ fn eval_quote_preprocess<'a>(
             SurfaceExpression::Sequential(exprs) => {
                 let mut processed_exprs = Vec::with_capacity(exprs.len());
                 for e in exprs {
-                    processed_exprs.push(eval_quote_preprocess(Arc::clone(e), env, ctx).await?);
+                    processed_exprs.push(eval_quote_preprocess(Arc::clone(e), ctx).await?);
                 }
                 Ok(make_node(SurfaceExpression::Sequential(processed_exprs)))
             }
@@ -432,7 +424,7 @@ fn eval_quote_preprocess<'a>(
                 expr: inner,
                 ..
             } => {
-                let processed_expr = eval_quote_preprocess(Arc::clone(inner), env, ctx).await?;
+                let processed_expr = eval_quote_preprocess(Arc::clone(inner), ctx).await?;
                 Ok(make_node(SurfaceExpression::TypeAssert {
                     annotation: annotation.clone(),
                     expr: processed_expr,
@@ -442,19 +434,19 @@ fn eval_quote_preprocess<'a>(
 
             SurfaceExpression::Quote(inner) => {
                 // Nested quote: recurse so inner unquotes are still processed.
-                let processed_inner = eval_quote_preprocess(Arc::clone(inner), env, ctx).await?;
+                let processed_inner = eval_quote_preprocess(Arc::clone(inner), ctx).await?;
                 Ok(make_node(SurfaceExpression::Quote(processed_inner)))
             }
 
             SurfaceExpression::Match { scrutinee, arms } => {
                 let processed_scrutinee =
-                    eval_quote_preprocess(Arc::clone(scrutinee), env, ctx).await?;
+                    eval_quote_preprocess(Arc::clone(scrutinee), ctx).await?;
                 let mut processed_arms = Vec::with_capacity(arms.len());
                 for arm in arms {
                     let processed_body =
-                        eval_quote_preprocess(Arc::clone(&arm.body), env, ctx).await?;
+                        eval_quote_preprocess(Arc::clone(&arm.body), ctx).await?;
                     let processed_guard = if let Some(ref guard) = arm.guard {
-                        Some(eval_quote_preprocess(Arc::clone(guard), env, ctx).await?)
+                        Some(eval_quote_preprocess(Arc::clone(guard), ctx).await?)
                     } else {
                         None
                     };
@@ -479,7 +471,7 @@ fn eval_quote_preprocess<'a>(
                 let processed_decl = match decl.as_ref() {
                     SurfaceDeclaration::TypeAlias { params, body } => {
                         let processed_body =
-                            eval_quote_preprocess(Arc::clone(body), env, ctx).await?;
+                            eval_quote_preprocess(Arc::clone(body), ctx).await?;
                         SurfaceDeclaration::TypeAlias {
                             params: params.clone(),
                             body: processed_body,
@@ -491,7 +483,7 @@ fn eval_quote_preprocess<'a>(
                         message,
                     } => {
                         let processed_pattern =
-                            eval_quote_preprocess(Arc::clone(pattern), env, ctx).await?;
+                            eval_quote_preprocess(Arc::clone(pattern), ctx).await?;
                         SurfaceDeclaration::SyntaxClass {
                             name: name.clone(),
                             pattern: processed_pattern,
@@ -502,7 +494,7 @@ fn eval_quote_preprocess<'a>(
                         let mut processed_forms = Vec::with_capacity(forms.len());
                         for form in forms {
                             processed_forms
-                                .push(eval_quote_preprocess(Arc::clone(form), env, ctx).await?);
+                                .push(eval_quote_preprocess(Arc::clone(form), ctx).await?);
                         }
                         SurfaceDeclaration::Splice(processed_forms)
                     }
@@ -520,12 +512,11 @@ fn eval_quote_preprocess<'a>(
 
 async fn eval_quote_walk(
     node: Arc<crate::ast::SurfaceNode>,
-    env: Arc<RwLock<crate::env::Env>>,
     ctx: &Arc<EvalContext>,
 ) -> EvalResult<Arc<Thunk>> {
     let span = node.span.clone();
     // Preprocess to handle nested unquotes (rewrites unquote subexpressions)
-    let processed_node = eval_quote_preprocess(node, &env, ctx).await?;
+    let processed_node = eval_quote_preprocess(node, ctx).await?;
 
     Ok(Arc::new(Thunk::new_materialized(
         crate::surface_convert::surface_node_to_expr_variant(&processed_node, ctx),
@@ -548,7 +539,6 @@ async fn eval_quote_walk(
 /// duplicating this logic. The two call sites are identical except for crate-path prefixes.
 pub(crate) async fn extract_fn_annotation_extra(
     return_ann: Option<&crate::ast::Spanned<crate::ast::Annotation>>,
-    env: &Arc<RwLock<crate::env::Env>>,
     ctx: &Arc<EvalContext>,
 ) -> EvalResult<IndexMap<String, Value>> {
     let Some(ann_spanned) = return_ann else {
@@ -589,7 +579,7 @@ pub(crate) async fn extract_fn_annotation_extra(
                 let core_expr = crate::lower::lower_inner(&e.node.value, &mut Vec::new());
 
                 // Evaluate the CoreExpr to a thunk, then materialize to a Value.
-                let thunk = eval_core_expr(&core_expr, env, ctx).await?;
+                let thunk = eval_core_expr(&core_expr, ctx).await?;
                 materialize(&thunk, Some(&e.node.value.span), ctx).await?
             }
         };
@@ -600,20 +590,14 @@ pub(crate) async fn extract_fn_annotation_extra(
     Ok(extra)
 }
 
-/// Evaluate a CoreExpr to a thunk (transitional path for runtime-v2).
+/// Evaluate a CoreExpr to a thunk.
 ///
-/// This is the new CoreExpr evaluation entry point. It handles:
-/// - Primitive variants natively: Int, Float, Bool, Str (direct materialization)
-/// - Variables natively: Var (environment lookup with de Bruijn coordinates)
-/// - Complex variants via bridge: Dict, Call, Fn, Match, etc. convert back to Expr
-///   and call existing helpers (eval_dict, eval_call, etc.)
+/// Variable lookup uses `ctx.current_env_id` (FlatEnv de Bruijn dispatch, T-1558).
+/// Dict/call/fn construction uses `ctx` for all scope management.
 ///
-/// This is intentionally TRANSITIONAL. The round-trips to Expr are ACCEPTED for this
-/// sprint (E1). Future sprints (E2/E3) will implement native CoreExpr handlers for
-/// Dict/Call/Fn to eliminate the bridge conversions.
+/// After T-1558: `env` parameter removed. All scope is via `ctx.current_env_id`.
 pub(crate) fn eval_core_expr<'a>(
     expr: &'a Spanned<CoreExpr>,
-    env: &'a Arc<RwLock<crate::env::Env>>,
     ctx: &'a Arc<EvalContext>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>> + 'a>> {
     Box::pin(async move {
@@ -644,22 +628,37 @@ pub(crate) fn eval_core_expr<'a>(
             CoreExpr::Var {
                 name, level, slot, ..
             } => {
-                // Variable lookup with de Bruijn coordinates — O(1) slot-based lookup.
-                // No name-based fallback: if the resolver assigned coordinates, they must be valid.
-                // A miss is a compiler bug (resolver coordinates don't match runtime env chain).
-                let env_lock = env.read().unwrap();
-                match env_lock.get_value_at(*level, *slot) {
-                    Some(thunk) => Ok(thunk),
-                    None => {
-                        drop(env_lock);
-                        Err(EvalError::internal(
-                            format!(
-                                "slot lookup failed for '{name}' at level={level} slot={slot} — \
-                                 compiler bug: resolver assigned coordinates that do not exist in the runtime env"
-                            ),
+                // O(1) FlatEnv dispatch via display vector.
+                // Formula: display[n-1-level] gives the EnvId for resolver level `level`.
+                // level=0 is innermost (current scope) → display[n-1]
+                // level=N is N scopes outward → display[n-1-N]
+                let thunk = {
+                    let arena = ctx.env_arena.borrow();
+                    let n = arena.envs[ctx.current_env_id as usize].display.len();
+                    let level_idx = *level as usize;
+                    if level_idx >= n {
+                        drop(arena);
+                        return Err(EvalError::internal(
+                            format!("VarRef '{name}': level={level} >= display depth={n}"),
                             span.clone(),
-                        ).into())
+                        )
+                        .into());
                     }
+                    let target_env_id = arena.envs[ctx.current_env_id as usize].display[n - 1 - level_idx];
+                    let slot_idx = *slot as usize;
+                    arena.envs[target_env_id.0 as usize]
+                        .slots
+                        .get(slot_idx)
+                        .and_then(|s| s.as_ref())
+                        .map(Arc::clone)
+                };
+                match thunk {
+                    Some(t) => Ok(t),
+                    None => Err(EvalError::undefined_variable(
+                        format!("'{name}' at level={level} slot={slot}"),
+                        span.clone(),
+                    )
+                    .into()),
                 }
             }
 
@@ -676,7 +675,7 @@ pub(crate) fn eval_core_expr<'a>(
                     span.clone(),
                 ))),
                 Some(inner_expr) => {
-                    let payload_thunk = eval_core_expr(inner_expr, env, ctx).await?;
+                    let payload_thunk = eval_core_expr(inner_expr, ctx).await?;
                     let payload_val = materialize(&payload_thunk, Some(&span), ctx).await?;
                     let payload_id = ctx
                         .alloc_thunk(Arc::new(Thunk::new_materialized(payload_val, span.clone())));
@@ -697,7 +696,7 @@ pub(crate) fn eval_core_expr<'a>(
             // This eliminates async recursion on the Rust stack for deeply nested sequential blocks.
             CoreExpr::Sequential(_) => Ok(Arc::new(Thunk::new_unevaluated_core(
                 Arc::new(expr.clone()),
-                Arc::clone(env),
+                ctx.current_env_id,
                 Arc::clone(ctx),
                 span.clone(),
             ))),
@@ -705,7 +704,7 @@ pub(crate) fn eval_core_expr<'a>(
             // Dict: call eval_dict_core directly with the CoreEntry slice.
             // eval_dict_core uses Thunk::new_unevaluated_core for non-literal dict entries
             // (UnevaluatedState::CoreExpr), avoiding the per-entry core_expr_to_expr round-trip.
-            CoreExpr::Dict(entries) => eval_dict_core(entries, env, ctx, &span).await,
+            CoreExpr::Dict(entries) => eval_dict_core(entries, ctx, &span).await,
 
             // Call: use eval_call_core — no CoreExpr→Expr round-trip for func or named args.
             CoreExpr::Call {
@@ -718,7 +717,6 @@ pub(crate) fn eval_core_expr<'a>(
                     func,
                     args,
                     named_args,
-                    env,
                     ctx,
                     &span,
                     Arc::new(expr.clone()),
@@ -746,7 +744,7 @@ pub(crate) fn eval_core_expr<'a>(
                 // `doc` is now included in extra: triple-quoted strings desugar to
                 // `[unindent "..."]` (a Call), which is evaluated here at definition time.
                 // T-1124: expression-valued fields are evaluated at function-definition time.
-                let extra = extract_fn_annotation_extra(return_ann.as_ref(), env, ctx).await?;
+                let extra = extract_fn_annotation_extra(return_ann.as_ref(), ctx).await?;
 
                 // Derive FnAnnotation.doc from extra["doc"] so triple-quoted doc strings
                 // (evaluated via `[unindent "..."]`) produce the correct runtime string.
@@ -768,14 +766,13 @@ pub(crate) fn eval_core_expr<'a>(
 
                 // Store the body directly as Arc<Spanned<CoreExpr>>.
                 // CoreExpr::Fn.body is already Arc<Spanned<CoreExpr>> — no conversion needed.
-                // Thread return_ann through to Value::Function for constructor pattern matching.
+                // Closure captures current_env_id as the FlatEnv scope at definition time.
                 Ok(Arc::new(Thunk::new_materialized(
                     Value::Function {
                         params: Rc::new(fn_params),
                         body: Arc::clone(body),
-                        env: Arc::clone(env),
+                        closure_env_id: ctx.current_env_id,
                         annotation,
-                        return_ann: return_ann.clone(),
                     },
                     span.clone(),
                 )))
@@ -786,7 +783,7 @@ pub(crate) fn eval_core_expr<'a>(
             // Wrapping here prevents direct recursion back through eval_core_expr.
             CoreExpr::TypeAssert { .. } => Ok(Arc::new(Thunk::new_unevaluated_core(
                 Arc::new(expr.clone()),
-                Arc::clone(env),
+                ctx.current_env_id,
                 Arc::clone(ctx),
                 span.clone(),
             ))),
@@ -803,7 +800,7 @@ pub(crate) fn eval_core_expr<'a>(
             // This eliminates async recursion on the Rust stack for deeply nested match chains.
             CoreExpr::Match { .. } => Ok(Arc::new(Thunk::new_unevaluated_core(
                 Arc::new(expr.clone()),
-                Arc::clone(env),
+                ctx.current_env_id,
                 Arc::clone(ctx),
                 span.clone(),
             ))),
@@ -814,7 +811,7 @@ pub(crate) fn eval_core_expr<'a>(
             // the original name alongside the slot so the round-trip is lossless.
             CoreExpr::Quote(inner) => {
                 let surface_node = crate::lower::core_expr_to_surface_node(inner);
-                eval_quote_walk(surface_node, env.clone(), ctx).await
+                eval_quote_walk(surface_node, ctx).await
             }
 
             // Unquote: error (only valid inside quote)
@@ -869,7 +866,7 @@ pub(crate) fn eval_core_expr<'a>(
                     };
                     let val_thunk = Arc::new(Thunk::new_unevaluated_core(
                         Arc::new(val_expr.clone()),
-                        Arc::clone(env),
+                        ctx.current_env_id,
                         Arc::clone(ctx),
                         val_expr.span.clone(),
                     ));

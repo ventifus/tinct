@@ -1003,6 +1003,9 @@ pub enum SurfaceDeclaration {
         determines: Vec<Arc<SurfaceNode>>,
         resolver: Option<Arc<SurfaceNode>>,
         resolver_injective: bool,
+        /// Structural discharge rule — parsed from `structural: "closed-dict"` in class metadata.
+        /// Empty string = None (normal instance resolution).
+        structural: String,
     },
     InstanceDecl {
         class_name: String,

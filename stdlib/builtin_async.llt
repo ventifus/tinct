@@ -13,8 +13,7 @@
   builtin-non-cancellable: [fn@Any     [let body@Any] ...]
 
   # ── Channels ───────────────────────────────────────────────────────────────
-  builtin-channel:          [fn@Any    [let n@Integer] ...]
-  builtin-send:             [fn@Any    [let ch@Any val@Any] ...]
+  # builtin-channel and builtin-send are core primitives — declared in builtin_core.llt.
   builtin-recv:             [fn@Any    [let ch@Any] ...]
   builtin-try-send:         [fn@Any    [let ch@Any val@Any] ...]
   builtin-drain:            [fn@Any    [let ch@Any] ...]

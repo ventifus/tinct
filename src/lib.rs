@@ -25,6 +25,8 @@
 #![allow(clippy::result_large_err)]
 
 pub(crate) mod arena;
+// Soft heap-limit allocator: prints diagnostics and exits cleanly before RLIMIT_AS fires.
+pub mod limit_alloc;
 // Shared async runtime for QUIC/HTTP3 builtins (block_on helper).
 pub mod ast;
 pub mod async_rt;
@@ -206,7 +208,7 @@ pub async fn run_loader_pipeline(
     // Resolve the loader program. Seeded from the runtime env so that builtin names
     // (builtin-parse, etc.) resolve to de Bruijn coordinates instead of
     // falling back to name-based lookup via the MAX/MAX sentinel.
-    let _loader_resolve_table = resolve::resolve_surface_program(&loader_program, Some(&env));
+    let _ = resolve::resolve_surface_program(&loader_program, Some(&env));
 
     // Typecheck writes type annotations inline on AST nodes. Errors are advisory only.
     // The returned tycon_env maps type constructor names (e.g. "Boolean", "Seq") to their
@@ -533,6 +535,29 @@ pub fn visit_value<'a, V: ValueVisitor + 'a>(
             value::Value::Environment(_) => Err(Box::new(
                 error::EvalError::value_not_serializable("Environment".to_string(), span),
             )),
+            value::Value::Bool(_) => Err(Box::new(error::EvalError::value_not_serializable(
+                "Bool".to_string(),
+                span,
+            ))),
+            value::Value::Seq { .. } => Err(Box::new(error::EvalError::value_not_serializable(
+                "Seq".to_string(),
+                span,
+            ))),
+            value::Value::Handle { .. } => Err(Box::new(error::EvalError::value_not_serializable(
+                "Handle".to_string(),
+                span,
+            ))),
+            value::Value::WriteHandle { .. } => Err(Box::new(
+                error::EvalError::value_not_serializable("WriteHandle".to_string(), span),
+            )),
+            value::Value::Expression(_) => Err(Box::new(error::EvalError::value_not_serializable(
+                "Expression".to_string(),
+                span,
+            ))),
+            value::Value::Arena { .. } => Err(Box::new(error::EvalError::value_not_serializable(
+                "Arena".to_string(),
+                span,
+            ))),
         }
     })
 }
@@ -917,7 +942,7 @@ mod tests {
         let mut program = parse(source).expect("parse should succeed").program;
         desugar::desugar_surface_program(&mut program);
         let env = builtins::build_core_env();
-        let _resolve_errors = resolve::resolve_surface_program(&program, Some(&env));
+        let _ = resolve::resolve_surface_program(&program, Some(&env));
         let (_type_errors, _inferred, _tycon_env) =
             typecheck::typecheck_surface_program_annotation_table(&program).await;
         let ctx = test_ctx().await;

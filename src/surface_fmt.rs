@@ -52,11 +52,6 @@ pub fn fmt_dict(
                 }
                 out.push(':');
             }
-            // Bool, Dict, Variant keys: format via Display
-            other => {
-                out.push_str(&format!("{other}"));
-                out.push(':');
-            }
         }
 
         // Format value — retrieve the materialized value and recursively serialize.
@@ -128,18 +123,11 @@ pub fn fmt_fn(
 
     // Step 2: Build substitution map: name → SCN string.
     // For each captured name, look it up in env and serialize its value.
-    let mut substitutions: HashMap<String, String> = HashMap::new();
-    for name in &free_vars {
-        if let Some(thunk) = env.get_value_by_name(name) {
-            let value = thunk
-                .try_get_materialized()
-                .ok_or_else(|| format!("captured variable `{name}` is not materialized"))?;
-            let scn = value.to_tinct(Some(ctx))?;
-            substitutions.insert(name.clone(), scn);
-        }
-        // If the name is not in env at all, leave it as-is (it may be an ambient
-        // name that the runtime resolves through the enclosing scope chain).
-    }
+    // T-1558: Env is type-metadata only — no runtime values available for substitution.
+    // Substitution is deferred to T-1559 when FlatEnv provides closure value access.
+    // Leave all free vars as-is (ambient names resolved through the enclosing scope chain).
+    let substitutions: HashMap<String, String> = HashMap::new();
+    let _ = env; // env parameter retained for future T-1559 wiring
 
     // Step 3: Capture-avoiding alpha-rename.
     // For each top-level param p, check if p appears as a free-standing identifier
@@ -286,7 +274,7 @@ fn collect_free_vars(
         // Variable references — the decision point
         CoreExpr::Var { name, .. } => {
             if !param_scope.contains(name.as_str())
-                && stdlib_env.get_value_by_name(name.as_str()).is_none()
+                && stdlib_env.get_scheme(name.as_str()).is_none()
             {
                 out.insert(name.clone());
             }
@@ -1433,13 +1421,14 @@ impl Value {
             Value::Function {
                 params,
                 body,
-                env,
+                closure_env_id: _,
                 annotation: _,
-                return_ann: _,
             } => match ctx {
                 Some(ctx) => {
-                    let env_guard = env.read().map_err(|_| "failed to read env lock")?;
-                    fmt_fn(params, body, &env_guard, ctx)
+                    // T-1558: Value::Function no longer stores Arc<RwLock<Env>>.
+                    // Use an empty Env for fmt_fn formatting (T-1559 will wire properly).
+                    let stub_env = Env::new();
+                    fmt_fn(params, body, &stub_env, ctx)
                 }
                 None => Err("Function serialization requires EvalContext".to_string()),
             },
@@ -1533,6 +1522,22 @@ impl Value {
                 Err(format!("no tinct representation for {}", self.type_name()))
             }
             Value::Environment(_) => {
+                Err(format!("no tinct representation for {}", self.type_name()))
+            }
+            Value::Bool(b) => Ok(if *b { "true".to_string() } else { "false".to_string() }),
+            Value::Handle { .. } => {
+                Err(format!("no tinct representation for {}", self.type_name()))
+            }
+            Value::WriteHandle { .. } => {
+                Err(format!("no tinct representation for {}", self.type_name()))
+            }
+            Value::Seq { .. } => {
+                Err(format!("no tinct representation for {}", self.type_name()))
+            }
+            Value::Expression(_) => {
+                Err(format!("no tinct representation for {}", self.type_name()))
+            }
+            Value::Arena { .. } => {
                 Err(format!("no tinct representation for {}", self.type_name()))
             }
         }

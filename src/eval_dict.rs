@@ -7,7 +7,7 @@
 //! All evaluation is CoreExpr-native via `eval_dict_core` / `eval_key_core`.
 
 use std::rc::Rc;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use indexmap::IndexMap;
 
@@ -16,7 +16,8 @@ use crate::error::{EvalError, EvalResult};
 use crate::value::ThunkId;
 use crate::value::{string_val, HashableValue, Thunk, Value};
 
-use super::{eval_core_expr, materialize, EvalContext};
+use super::{materialize, EvalContext};
+use crate::eval_core::eval_core_expr;
 
 fn value_to_key(value: &Value, span: &Span) -> EvalResult<HashableValue> {
     match value {
@@ -196,9 +197,9 @@ pub(crate) fn core_expr_is_static_key(k: &CoreExpr) -> bool {
 ///
 /// Directly accepts the `CoreEntry` slice produced by `eval_core_expr`'s Dict arm.
 ///
-/// Semantics are identical to `eval_dict`:
-/// - String-keyed entries enter `dict_env` (letrec: forward references allowed)
-/// - Keys evaluated in `parent_env` (Key Isolation Invariant)
+/// Semantics: letrec scoping with FlatEnv display chain (see arena.rs).
+/// - String-keyed entries allocated in child FlatEnv (letrec: forward references allowed)
+/// - Keys evaluated in parent scope (Key Isolation Invariant)
 /// - Literal values (Int/Float/Bool/Str) get Materialized thunks directly (fast path)
 /// - Non-literal values become CoreExpr thunks in `dict_env` (UnevaluatedState::CoreExpr)
 ///   — no CoreExpr→Expr round-trip for dict values.
@@ -208,38 +209,23 @@ pub(crate) fn core_expr_is_static_key(k: &CoreExpr) -> bool {
 /// there are no `CoreExpr::TypeDecl` entries in the lowered AST.
 pub(crate) async fn eval_dict_core(
     entries: &[Spanned<CoreEntry>],
-    parent_env: &Arc<RwLock<crate::env::Env>>,
     ctx: &Arc<EvalContext>,
     dict_span: &Span,
 ) -> EvalResult<Arc<Thunk>> {
-    // Task 6: Skip dict_env allocation for literal-only dicts.
-    // Check if all values are literals (Int/Float/Str) - if so, we don't need letrec scoping.
-    let has_non_literal = entries.iter().any(|entry| {
-        !matches!(
-            &entry.node.value.node,
-            CoreExpr::Int(_) | CoreExpr::U64(_) | CoreExpr::Float(_) | CoreExpr::Str(_)
-        )
-    });
-
-    let dict_env = if has_non_literal {
-        Some(Arc::new(RwLock::new(crate::env::Env::with_parent(
-            Arc::clone(parent_env),
-        ))))
-    } else {
-        None
-    };
+    // dict_env (legacy Arc<RwLock<Env>>) removed — T-1557. FlatEnv env_id used instead.
     let mut dict_map: IndexMap<HashableValue, ThunkId> = IndexMap::with_capacity(entries.len());
     let mut auto_index: i64 = 0;
 
-    // Allocate a FlatEnv for this dict scope with entries.len() capacity (upper bound).
-    // This avoids the count_static_keys_core() pass. May slightly over-allocate when
-    // some entries have computed keys, but the single-pass is faster than counting first.
-    // Only allocate if we have non-literals that need env slots.
-    let env_id = if has_non_literal {
-        Some(ctx.env_arena.lock().unwrap().alloc_root(entries.len()))
-    } else {
-        None
-    };
+    // Always allocate a FlatEnv for every dict scope.
+    // The resolver assigns (level, slot) coordinates to ALL entries in ALL dict scopes,
+    // regardless of whether values are literals. Skipping allocation for literal-only dicts
+    // would shorten the display chain, causing VarRefs from nested scopes to resolve to
+    // the wrong level. Use alloc_child so the display vector inherits all ancestor scopes —
+    // this is required for VarRef dispatch at level > 0 (cross-scope variable references).
+    let env_id = ctx
+        .env_arena
+        .borrow_mut()
+        .alloc_child(crate::arena::EnvId(ctx.current_env_id), entries.len());
     let mut slot_idx: u32 = 0;
     // Collect (slot_idx, thunk_id) pairs for static-key entries so we can
     // batch-acquire the arena lock once after the loop instead of once per entry.
@@ -257,7 +243,7 @@ pub(crate) async fn eval_dict_core(
             .is_some_and(|k| core_expr_is_static_key(&k.node));
 
         let key = match &entry.node.key {
-            Some(key_expr) => eval_key_core(key_expr, parent_env, ctx).await?,
+            Some(key_expr) => eval_key_core(key_expr, ctx).await?,
             None => {
                 let k = HashableValue::Int(auto_index);
                 auto_index = auto_index.checked_add(1).ok_or_else(|| {
@@ -275,7 +261,7 @@ pub(crate) async fn eval_dict_core(
                 entry.node.value.span.clone(),
             )),
             CoreExpr::U64(n) => Arc::new(Thunk::new_materialized(
-                Value::U64(*n),
+                Value::BigInt(num_bigint::BigInt::from(*n)),
                 entry.node.value.span.clone(),
             )),
             CoreExpr::Float(f) => Arc::new(Thunk::new_materialized(
@@ -286,14 +272,10 @@ pub(crate) async fn eval_dict_core(
                 string_val(s),
                 entry.node.value.span.clone(),
             )),
-            // Non-literal: use UnevaluatedState::CoreExpr.
+            // Non-literal: use UnevaluatedState::CoreExpr with the FlatEnv dict scope.
             _ => Arc::new(Thunk::new_unevaluated_core(
                 Arc::clone(&entry.node.value),
-                Arc::clone(
-                    dict_env
-                        .as_ref()
-                        .expect("dict_env present for non-literals"),
-                ),
+                env_id.0,
                 Arc::clone(ctx),
                 entry.node.value.span.clone(),
             )),
@@ -325,19 +307,10 @@ pub(crate) async fn eval_dict_core(
                     // returns {} instead of the annotation dict — acceptable since the primary use
                     // case for annotation-of is functions (FnAnnotation.extra) and unit constructors
                     // (Value::Annotated from make-annotated), not arbitrary non-literal dict entries.
-                    if let Some(inner_value) = value_thunk.try_get_materialized() {
-                        // Wrap it in Value::Annotated
-                        Arc::new(Thunk::new_materialized(
-                            Value::Annotated {
-                                inner: Box::new(inner_value),
-                                annotation: Box::new(annotation_value),
-                            },
-                            entry.node.value.span.clone(),
-                        ))
-                    } else {
-                        // Non-literal: skip Value::Annotated wrapping to preserve laziness
-                        value_thunk
-                    }
+                    // Value::Annotated removed from Value enum; skip wrapping for all entries.
+                    // annotation_value is unused until Value::Annotated is restored.
+                    let _ = annotation_value;
+                    value_thunk
                 } else {
                     // Simple/Annotated annotations are type-level only — use unannotated value
                     value_thunk
@@ -349,19 +322,8 @@ pub(crate) async fn eval_dict_core(
             value_thunk
         };
 
-        // String keys become bindings so sibling entries can reference via $name (letrec).
-        // Only insert if we have a dict_env (i.e., if there are non-literals).
-        // CRITICAL: Only insert static-key entries to preserve slot alignment with the resolver.
-        // Computed-key entries (even if they evaluate to strings) are NOT part of the letrec scope.
-        if is_static_key {
-            if let HashableValue::Str(ref name) = key {
-                if let Some(ref env) = dict_env {
-                    env.write()
-                        .unwrap()
-                        .insert_value(name.to_string(), Arc::clone(&thunk));
-                }
-            }
-        }
+        // Values go into FlatEnv slots only (T-1557: Env is type-metadata only).
+        // The letrec scope is maintained via FlatEnv fill_letrec_slot calls below.
 
         // Task 1: Move key into dict_map instead of cloning (saves Rc::from allocation per entry).
         // If duplicate, reconstruct key string from entry (rare error path).
@@ -384,21 +346,19 @@ pub(crate) async fn eval_dict_core(
             )));
         }
 
-        if is_static_key && env_id.is_some() {
+        if is_static_key {
             letrec_slots.push((slot_idx, thunk_id));
             slot_idx += 1;
         }
     }
 
-    // Batch-fill letrec slots: acquire the arena lock once for all static-key entries
-    // instead of once per entry. This avoids repeated mutex lock/unlock overhead for
+    // Batch-fill letrec slots: acquire the arena borrow once for all static-key entries
+    // instead of once per entry. This avoids repeated borrow overhead for
     // dicts with many string-keyed fields.
-    if let Some(id) = env_id {
-        if !letrec_slots.is_empty() {
-            let mut arena_guard = ctx.env_arena.lock().unwrap();
-            for (idx, thunk_id) in letrec_slots {
-                arena_guard.fill_letrec_slot(id, idx, thunk_id);
-            }
+    if !letrec_slots.is_empty() {
+        let mut arena_guard = ctx.env_arena.borrow_mut();
+        for (idx, thunk_id) in letrec_slots {
+            arena_guard.fill_letrec_slot(env_id, idx, thunk_id);
         }
     }
 
@@ -424,7 +384,6 @@ pub(crate) async fn eval_dict_core(
 /// General path materializes the expression via `eval_core_expr`.
 pub(crate) async fn eval_key_core(
     key_expr: &Arc<Spanned<CoreExpr>>,
-    parent_env: &Arc<RwLock<crate::env::Env>>,
     ctx: &Arc<EvalContext>,
 ) -> EvalResult<HashableValue> {
     // Fast path for static keys — avoids thunk creation and materialization
@@ -454,8 +413,9 @@ pub(crate) async fn eval_key_core(
         }
         _ => {}
     }
-    // General path: must materialize because IndexMap requires concrete HashableValue keys
-    let thunk = eval_core_expr(key_expr.as_ref(), parent_env, ctx).await?;
+    // General path: must materialize because IndexMap requires concrete HashableValue keys.
+    // Key expressions evaluate in the parent scope (ctx.current_env_id).
+    let thunk = eval_core_expr(key_expr.as_ref(), ctx).await?;
     let value = materialize(&thunk, Some(&key_expr.span), ctx).await?;
     value_to_key(&value, &key_expr.span)
 }

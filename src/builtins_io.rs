@@ -119,7 +119,7 @@ pub(crate) fn builtin_emit(
             &ctx,
             call_span.clone(),
         )?;
-        let s = require_string("emit", val, args[0].span.clone())?;
+        let s = require_string("emit", val, ctx.get_thunk(args[0]).span.clone())?;
 
         // Write to stdout
         use std::io::Write;
@@ -152,7 +152,7 @@ pub(crate) fn builtin_env(
     Box::pin(async move {
         let val =
             crate::builtins::expect_one_arg("env", &args, named.as_ref(), &ctx, call_span.clone())?;
-        let name = require_string("env", val, args[0].span.clone())?;
+        let name = require_string("env", val, ctx.get_thunk(args[0]).span.clone())?;
 
         // Check env_allowed
         // None = unrestricted (all allowed), Some(set) = only those in the set
@@ -207,7 +207,7 @@ pub(crate) fn builtin_env_has(
             &ctx,
             call_span.clone(),
         )?;
-        let name = require_string("env-has?", val, args[0].span.clone())?;
+        let name = require_string("env-has?", val, ctx.get_thunk(args[0]).span.clone())?;
 
         // Check env_allowed
         let allowed = match &ctx.env_allowed {
@@ -251,15 +251,17 @@ pub(crate) fn builtin_narrow(
         }
         reject_named("narrow", named.as_ref(), call_span.clone())?;
 
-        let dir_val = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let dir_val = thunk0
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness[0]=Seq");
 
         // Extract DirCap and current permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "narrow", args[0].span.clone())?;
+        let (dir, perms) = extract_dir_cap(&dir_val, "narrow", thunk0.span.clone())?;
 
         // Check if second arg is a String (subtree narrowing) or Variant (permission restriction)
-        let second_arg_val = args[1]
+        let second_arg_val = thunk1
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness[1]=Seq");
 
@@ -273,7 +275,7 @@ pub(crate) fn builtin_narrow(
                 .into());
             }
 
-            let subpath = require_string("narrow", second_arg_val, args[1].span.clone())?;
+            let subpath = require_string("narrow", second_arg_val, thunk1.span.clone())?;
 
             // Open subdirectory (RESOLVE_BENEATH applies to subpath)
             let narrowed = dir.open_dir(&subpath).map_err(|e| {
@@ -306,8 +308,9 @@ pub(crate) fn builtin_narrow(
                 extended_attributes: false,
             };
 
-            for flag_arg in &args[1..] {
-                let flag_val = crate::eval::materialize(flag_arg, Some(&call_span), &ctx).await?;
+            for &flag_tid in &args[1..] {
+                let flag_thunk = ctx.get_thunk(flag_tid);
+                let flag_val = crate::eval::materialize(&flag_thunk, Some(&call_span), &ctx).await?;
 
                 match flag_val {
                     Value::Variant { ref tag, .. } => {
@@ -342,7 +345,7 @@ pub(crate) fn builtin_narrow(
                             "narrow".to_string(),
                             "Variant (capability flag) or String (subpath)",
                             other.type_name(),
-                            flag_arg.span.clone(),
+                            flag_thunk.span.clone(),
                         )
                         .into());
                     }
@@ -448,7 +451,7 @@ pub(crate) fn builtin_narrow(
                 "narrow".to_string(),
                 "String (subpath) or Variant (capability flag)",
                 second_arg_val.type_name(),
-                args[1].span.clone(),
+                thunk1.span.clone(),
             )
             .into())
         }
@@ -494,7 +497,7 @@ pub(crate) fn builtin_revocable(
                     "revocable".to_string(),
                     "DirCap",
                     other.type_name(),
-                    args[0].span.clone(),
+                    ctx.get_thunk(args[0]).span.clone(),
                 )
                 .into())
             }
@@ -546,7 +549,7 @@ pub(crate) fn builtin_revoke_cap(
                 "revoke-cap".to_string(),
                 "RevocableDirCap",
                 other.type_name(),
-                args[0].span.clone(),
+                ctx.get_thunk(args[0]).span.clone(),
             )
             .into()),
         }
@@ -569,7 +572,7 @@ pub(crate) fn builtin_write(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -579,18 +582,21 @@ pub(crate) fn builtin_write(
         }
         reject_named("write", named.as_ref(), call_span.clone())?;
 
-        let dir_val = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk2 = ctx.get_thunk(args[2]);
+        let dir_val = thunk0
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let path_val = args[1]
+        let path_val = thunk1
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let content_val = args[2]
+        let content_val = thunk2
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "write", args[0].span.clone())?;
+        let (dir, perms) = extract_dir_cap(&dir_val, "write", thunk0.span.clone())?;
         check_perm(
             perms,
             "Writable",
@@ -599,8 +605,8 @@ pub(crate) fn builtin_write(
             call_span.clone(),
         )?;
 
-        let path = require_string("write", path_val, args[1].span.clone())?;
-        let content = require_string("write", content_val, args[2].span.clone())?;
+        let path = require_string("write", path_val, thunk1.span.clone())?;
+        let content = require_string("write", content_val, thunk2.span.clone())?;
 
         // Open file for writing (create or truncate)
         use std::io::Write;
@@ -636,7 +642,7 @@ pub(crate) fn builtin_write_atomic(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -646,18 +652,21 @@ pub(crate) fn builtin_write_atomic(
         }
         reject_named("write-atomic", named.as_ref(), call_span.clone())?;
 
-        let dir_val = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk2 = ctx.get_thunk(args[2]);
+        let dir_val = thunk0
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let path_val = args[1]
+        let path_val = thunk1
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let content_val = args[2]
+        let content_val = thunk2
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "write-atomic", args[0].span.clone())?;
+        let (dir, perms) = extract_dir_cap(&dir_val, "write-atomic", thunk0.span.clone())?;
         check_perm(
             perms,
             "Writable",
@@ -666,8 +675,8 @@ pub(crate) fn builtin_write_atomic(
             call_span.clone(),
         )?;
 
-        let path = require_string("write-atomic", path_val, args[1].span.clone())?;
-        let content = require_string("write-atomic", content_val, args[2].span.clone())?;
+        let path = require_string("write-atomic", path_val, thunk1.span.clone())?;
+        let content = require_string("write-atomic", content_val, thunk2.span.clone())?;
 
         // Generate a unique temp filename in the same directory as the target
         // Use process ID and a random suffix to avoid collisions
@@ -760,15 +769,17 @@ pub(crate) fn builtin_list_dir(
         }
         reject_named("list-dir", named.as_ref(), call_span.clone())?;
 
-        let dir_val = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let dir_val = thunk0
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let path_val = args[1]
+        let path_val = thunk1
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "list-dir", args[0].span.clone())?;
+        let (dir, perms) = extract_dir_cap(&dir_val, "list-dir", thunk0.span.clone())?;
         check_perm(
             perms,
             "Listable",
@@ -777,7 +788,7 @@ pub(crate) fn builtin_list_dir(
             call_span.clone(),
         )?;
 
-        let path = require_string("list-dir", path_val, args[1].span.clone())?;
+        let path = require_string("list-dir", path_val, thunk1.span.clone())?;
 
         // Read directory entries
         let entries = dir.read_dir(&path).map_err(|e| {
@@ -883,18 +894,20 @@ pub(crate) fn builtin_stat(
         }
         reject_named("stat", named.as_ref(), call_span.clone())?;
 
-        let dir_val = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let dir_val = thunk0
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let path_val = args[1]
+        let path_val = thunk1
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "stat", args[0].span.clone())?;
+        let (dir, perms) = extract_dir_cap(&dir_val, "stat", thunk0.span.clone())?;
         check_perm(perms, "Statable", perms.statable, "stat", call_span.clone())?;
 
-        let path = require_string("stat", path_val, args[1].span.clone())?;
+        let path = require_string("stat", path_val, thunk1.span.clone())?;
 
         // Get metadata
         let metadata = dir.metadata(&path).map_err(|e| {
@@ -997,7 +1010,7 @@ pub(crate) fn builtin_exists(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -1007,15 +1020,17 @@ pub(crate) fn builtin_exists(
         }
         reject_named("exists", named.as_ref(), call_span.clone())?;
 
-        let dir_val = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let dir_val = thunk0
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let path_val = args[1]
+        let path_val = thunk1
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "exists", args[0].span.clone())?;
+        let (dir, perms) = extract_dir_cap(&dir_val, "exists", thunk0.span.clone())?;
         check_perm(
             perms,
             "Statable",
@@ -1024,7 +1039,7 @@ pub(crate) fn builtin_exists(
             call_span.clone(),
         )?;
 
-        let path = require_string("exists", path_val, args[1].span.clone())?;
+        let path = require_string("exists", path_val, thunk1.span.clone())?;
 
         // Check existence
         let exists = dir.try_exists(&path).map_err(|e| {
@@ -1058,15 +1073,17 @@ pub(crate) fn builtin_stat_symlink(
         }
         reject_named("stat-symlink", named.as_ref(), call_span.clone())?;
 
-        let dir_val = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let dir_val = thunk0
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let path_val = args[1]
+        let path_val = thunk1
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "stat-symlink", args[0].span.clone())?;
+        let (dir, perms) = extract_dir_cap(&dir_val, "stat-symlink", thunk0.span.clone())?;
         check_perm(
             perms,
             "Statable",
@@ -1075,7 +1092,7 @@ pub(crate) fn builtin_stat_symlink(
             call_span.clone(),
         )?;
 
-        let path = require_string("stat-symlink", path_val, args[1].span.clone())?;
+        let path = require_string("stat-symlink", path_val, thunk1.span.clone())?;
 
         // Get metadata without following symlinks
         let metadata = dir.symlink_metadata(&path).map_err(|e| {
@@ -1178,7 +1195,7 @@ pub(crate) fn builtin_copy_file(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -1188,22 +1205,26 @@ pub(crate) fn builtin_copy_file(
         }
         reject_named("copy-file", named.as_ref(), call_span.clone())?;
 
-        let src_dir_val = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk2 = ctx.get_thunk(args[2]);
+        let thunk3 = ctx.get_thunk(args[3]);
+        let src_dir_val = thunk0
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let src_path_val = args[1]
+        let src_path_val = thunk1
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let dst_dir_val = args[2]
+        let dst_dir_val = thunk2
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let dst_path_val = args[3]
+        let dst_path_val = thunk3
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
         // Extract src DirCap and check permissions
         let (src_dir, src_perms) =
-            extract_dir_cap(&src_dir_val, "copy-file", args[0].span.clone())?;
+            extract_dir_cap(&src_dir_val, "copy-file", thunk0.span.clone())?;
         check_perm(
             src_perms,
             "Readable",
@@ -1214,7 +1235,7 @@ pub(crate) fn builtin_copy_file(
 
         // Extract dst DirCap and check permissions
         let (dst_dir, dst_perms) =
-            extract_dir_cap(&dst_dir_val, "copy-file", args[2].span.clone())?;
+            extract_dir_cap(&dst_dir_val, "copy-file", thunk2.span.clone())?;
         check_perm(
             dst_perms,
             "Writable",
@@ -1223,8 +1244,8 @@ pub(crate) fn builtin_copy_file(
             call_span.clone(),
         )?;
 
-        let src_path = require_string("copy-file", src_path_val, args[1].span.clone())?;
-        let dst_path = require_string("copy-file", dst_path_val, args[3].span.clone())?;
+        let src_path = require_string("copy-file", src_path_val, thunk1.span.clone())?;
+        let dst_path = require_string("copy-file", dst_path_val, thunk3.span.clone())?;
 
         // Copy file using cap-std's efficient kernel-level copy
         src_dir.copy(&src_path, dst_dir, &dst_path).map_err(|e| {
@@ -1252,7 +1273,7 @@ pub(crate) fn builtin_symlink(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -1262,18 +1283,21 @@ pub(crate) fn builtin_symlink(
         }
         reject_named("symlink", named.as_ref(), call_span.clone())?;
 
-        let dir_val = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk2 = ctx.get_thunk(args[2]);
+        let dir_val = thunk0
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let target_val = args[1]
+        let target_val = thunk1
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let link_path_val = args[2]
+        let link_path_val = thunk2
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "symlink", args[0].span.clone())?;
+        let (dir, perms) = extract_dir_cap(&dir_val, "symlink", thunk0.span.clone())?;
         check_perm(
             perms,
             "Symlinkable",
@@ -1282,8 +1306,8 @@ pub(crate) fn builtin_symlink(
             call_span.clone(),
         )?;
 
-        let target = require_string("symlink", target_val, args[1].span.clone())?;
-        let link_path = require_string("symlink", link_path_val, args[2].span.clone())?;
+        let target = require_string("symlink", target_val, thunk1.span.clone())?;
+        let link_path = require_string("symlink", link_path_val, thunk2.span.clone())?;
 
         // Create symlink (platform-specific)
         #[cfg(unix)]
@@ -1352,7 +1376,7 @@ pub(crate) fn builtin_set_permissions(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -1362,18 +1386,21 @@ pub(crate) fn builtin_set_permissions(
         }
         reject_named("set-permissions", named.as_ref(), call_span.clone())?;
 
-        let dir_val = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk2 = ctx.get_thunk(args[2]);
+        let dir_val = thunk0
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let path_val = args[1]
+        let path_val = thunk1
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let mode_val = args[2]
+        let mode_val = thunk2
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "set-permissions", args[0].span.clone())?;
+        let (dir, perms) = extract_dir_cap(&dir_val, "set-permissions", thunk0.span.clone())?;
         check_perm(
             perms,
             "PosixPermissions",
@@ -1382,7 +1409,7 @@ pub(crate) fn builtin_set_permissions(
             call_span.clone(),
         )?;
 
-        let path = require_string("set-permissions", path_val, args[1].span.clone())?;
+        let path = require_string("set-permissions", path_val, thunk1.span.clone())?;
 
         // Extract mode as Int
         let mode = match mode_val {
@@ -1392,7 +1419,7 @@ pub(crate) fn builtin_set_permissions(
                     "set-permissions".to_string(),
                     "Int",
                     other.type_name(),
-                    args[2].span.clone(),
+                    thunk2.span.clone(),
                 )
                 .into());
             }
@@ -1449,7 +1476,7 @@ pub(crate) fn builtin_get_xattr(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -1459,18 +1486,21 @@ pub(crate) fn builtin_get_xattr(
         }
         reject_named("get-xattr", named.as_ref(), call_span.clone())?;
 
-        let dir_val = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk2 = ctx.get_thunk(args[2]);
+        let dir_val = thunk0
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let path_val = args[1]
+        let path_val = thunk1
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let name_val = args[2]
+        let name_val = thunk2
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "get-xattr", args[0].span.clone())?;
+        let (dir, perms) = extract_dir_cap(&dir_val, "get-xattr", thunk0.span.clone())?;
         check_perm(
             perms,
             "ExtendedAttributes",
@@ -1479,8 +1509,8 @@ pub(crate) fn builtin_get_xattr(
             call_span.clone(),
         )?;
 
-        let path = require_string("get-xattr", path_val, args[1].span.clone())?;
-        let attr_name = require_string("get-xattr", name_val, args[2].span.clone())?;
+        let path = require_string("get-xattr", path_val, thunk1.span.clone())?;
+        let attr_name = require_string("get-xattr", name_val, thunk2.span.clone())?;
 
         // Get the file via DirCap
         let file = dir.open(&path).map_err(|e| {
@@ -1551,7 +1581,7 @@ pub(crate) fn builtin_set_xattr(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -1561,21 +1591,25 @@ pub(crate) fn builtin_set_xattr(
         }
         reject_named("set-xattr", named.as_ref(), call_span.clone())?;
 
-        let dir_val = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk2 = ctx.get_thunk(args[2]);
+        let thunk3 = ctx.get_thunk(args[3]);
+        let dir_val = thunk0
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let path_val = args[1]
+        let path_val = thunk1
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let name_val = args[2]
+        let name_val = thunk2
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let value_val = args[3]
+        let value_val = thunk3
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "set-xattr", args[0].span.clone())?;
+        let (dir, perms) = extract_dir_cap(&dir_val, "set-xattr", thunk0.span.clone())?;
         check_perm(
             perms,
             "ExtendedAttributes",
@@ -1591,8 +1625,8 @@ pub(crate) fn builtin_set_xattr(
             call_span.clone(),
         )?;
 
-        let path = require_string("set-xattr", path_val, args[1].span.clone())?;
-        let attr_name = require_string("set-xattr", name_val, args[2].span.clone())?;
+        let path = require_string("set-xattr", path_val, thunk1.span.clone())?;
+        let attr_name = require_string("set-xattr", name_val, thunk2.span.clone())?;
 
         // Extract value as Bytes
         let value_bytes = match value_val {
@@ -1602,7 +1636,7 @@ pub(crate) fn builtin_set_xattr(
                     "set-xattr".to_string(),
                     "Bytes",
                     other.type_name(),
-                    args[3].span.clone(),
+                    thunk3.span.clone(),
                 )
                 .into())
             }
@@ -1663,7 +1697,7 @@ pub(crate) fn builtin_remove_xattr(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -1673,18 +1707,21 @@ pub(crate) fn builtin_remove_xattr(
         }
         reject_named("remove-xattr", named.as_ref(), call_span.clone())?;
 
-        let dir_val = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk2 = ctx.get_thunk(args[2]);
+        let dir_val = thunk0
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let path_val = args[1]
+        let path_val = thunk1
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let name_val = args[2]
+        let name_val = thunk2
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "remove-xattr", args[0].span.clone())?;
+        let (dir, perms) = extract_dir_cap(&dir_val, "remove-xattr", thunk0.span.clone())?;
         check_perm(
             perms,
             "ExtendedAttributes",
@@ -1700,8 +1737,8 @@ pub(crate) fn builtin_remove_xattr(
             call_span.clone(),
         )?;
 
-        let path = require_string("remove-xattr", path_val, args[1].span.clone())?;
-        let attr_name = require_string("remove-xattr", name_val, args[2].span.clone())?;
+        let path = require_string("remove-xattr", path_val, thunk1.span.clone())?;
+        let attr_name = require_string("remove-xattr", name_val, thunk2.span.clone())?;
 
         // Get the file via DirCap
         let file = dir.open(&path).map_err(|e| {
@@ -1772,15 +1809,17 @@ pub(crate) fn builtin_list_xattrs(
         }
         reject_named("list-xattrs", named.as_ref(), call_span.clone())?;
 
-        let dir_val = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let dir_val = thunk0
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let path_val = args[1]
+        let path_val = thunk1
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "list-xattrs", args[0].span.clone())?;
+        let (dir, perms) = extract_dir_cap(&dir_val, "list-xattrs", thunk0.span.clone())?;
         check_perm(
             perms,
             "ExtendedAttributes",
@@ -1789,7 +1828,7 @@ pub(crate) fn builtin_list_xattrs(
             call_span.clone(),
         )?;
 
-        let path = require_string("list-xattrs", path_val, args[1].span.clone())?;
+        let path = require_string("list-xattrs", path_val, thunk1.span.clone())?;
 
         // Get the file via DirCap
         let file = dir.open(&path).map_err(|e| {
@@ -1852,7 +1891,7 @@ pub(crate) fn builtin_make_dir(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -1862,15 +1901,17 @@ pub(crate) fn builtin_make_dir(
         }
         reject_named("make-dir", named.as_ref(), call_span.clone())?;
 
-        let dir_val = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let dir_val = thunk0
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let path_val = args[1]
+        let path_val = thunk1
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "make-dir", args[0].span.clone())?;
+        let (dir, perms) = extract_dir_cap(&dir_val, "make-dir", thunk0.span.clone())?;
         check_perm(
             perms,
             "Writable",
@@ -1879,7 +1920,7 @@ pub(crate) fn builtin_make_dir(
             call_span.clone(),
         )?;
 
-        let path = require_string("make-dir", path_val, args[1].span.clone())?;
+        let path = require_string("make-dir", path_val, thunk1.span.clone())?;
 
         // Create directory (and parents)
         dir.create_dir_all(&path).map_err(|e| {
@@ -1904,7 +1945,7 @@ pub(crate) fn builtin_remove(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -1914,15 +1955,17 @@ pub(crate) fn builtin_remove(
         }
         reject_named("remove", named.as_ref(), call_span.clone())?;
 
-        let dir_val = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let dir_val = thunk0
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let path_val = args[1]
+        let path_val = thunk1
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "remove", args[0].span.clone())?;
+        let (dir, perms) = extract_dir_cap(&dir_val, "remove", thunk0.span.clone())?;
         check_perm(
             perms,
             "Deletable",
@@ -1931,7 +1974,7 @@ pub(crate) fn builtin_remove(
             call_span.clone(),
         )?;
 
-        let path = require_string("remove", path_val, args[1].span.clone())?;
+        let path = require_string("remove", path_val, thunk1.span.clone())?;
 
         // Try to remove as file first, then as directory
         if let Err(file_err) = dir.remove_file(&path) {
@@ -1960,7 +2003,7 @@ pub(crate) fn builtin_rename(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -1970,18 +2013,21 @@ pub(crate) fn builtin_rename(
         }
         reject_named("rename", named.as_ref(), call_span.clone())?;
 
-        let dir_val = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk2 = ctx.get_thunk(args[2]);
+        let dir_val = thunk0
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let old_path_val = args[1]
+        let old_path_val = thunk1
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let new_path_val = args[2]
+        let new_path_val = thunk2
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "rename", args[0].span.clone())?;
+        let (dir, perms) = extract_dir_cap(&dir_val, "rename", thunk0.span.clone())?;
         check_perm(
             perms,
             "Renameable",
@@ -1990,8 +2036,8 @@ pub(crate) fn builtin_rename(
             call_span.clone(),
         )?;
 
-        let old_path = require_string("rename", old_path_val, args[1].span.clone())?;
-        let new_path = require_string("rename", new_path_val, args[2].span.clone())?;
+        let old_path = require_string("rename", old_path_val, thunk1.span.clone())?;
+        let new_path = require_string("rename", new_path_val, thunk2.span.clone())?;
 
         // Rename (both source and dest are in the same DirCap)
         dir.rename(&old_path, dir, &new_path).map_err(|e| {
@@ -2020,7 +2066,7 @@ pub(crate) fn builtin_link(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -2030,22 +2076,25 @@ pub(crate) fn builtin_link(
         }
         reject_named("link", named.as_ref(), call_span.clone())?;
 
-        let dir_val = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk2 = ctx.get_thunk(args[2]);
+        let dir_val = thunk0
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let existing_path_val = args[1]
+        let existing_path_val = thunk1
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let link_path_val = args[2]
+        let link_path_val = thunk2
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "link", args[0].span.clone())?;
+        let (dir, perms) = extract_dir_cap(&dir_val, "link", thunk0.span.clone())?;
         check_perm(perms, "Writable", perms.writable, "link", call_span.clone())?;
 
-        let existing_path = require_string("link", existing_path_val, args[1].span.clone())?;
-        let link_path = require_string("link", link_path_val, args[2].span.clone())?;
+        let existing_path = require_string("link", existing_path_val, thunk1.span.clone())?;
+        let link_path = require_string("link", link_path_val, thunk2.span.clone())?;
 
         // Create hard link
         dir.hard_link(&existing_path, dir, &link_path)
@@ -2073,7 +2122,7 @@ pub(crate) fn builtin_read_link(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -2083,15 +2132,17 @@ pub(crate) fn builtin_read_link(
         }
         reject_named("read-link", named.as_ref(), call_span.clone())?;
 
-        let dir_val = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let dir_val = thunk0
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let path_val = args[1]
+        let path_val = thunk1
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "read-link", args[0].span.clone())?;
+        let (dir, perms) = extract_dir_cap(&dir_val, "read-link", thunk0.span.clone())?;
         check_perm(
             perms,
             "Readable",
@@ -2100,7 +2151,7 @@ pub(crate) fn builtin_read_link(
             call_span.clone(),
         )?;
 
-        let path = require_string("read-link", path_val, args[1].span.clone())?;
+        let path = require_string("read-link", path_val, thunk1.span.clone())?;
 
         // Read symlink target
         let target = dir.read_link(&path).map_err(|e| {
@@ -2149,7 +2200,7 @@ pub(crate) fn builtin_path_dir(
             call_span.clone(),
         )?;
 
-        let path_str = require_string("builtin-path-dir", val, args[0].span.clone())?;
+        let path_str = require_string("builtin-path-dir", val, ctx.get_thunk(args[0]).span.clone())?;
 
         // Extract parent directory component from the path string.
         let path = std::path::Path::new(&path_str);
@@ -2203,7 +2254,7 @@ pub(crate) fn builtin_file_open(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -2212,19 +2263,22 @@ pub(crate) fn builtin_file_open(
         }
         reject_named("builtin-file-open", named.as_ref(), call_span.clone())?;
 
-        let dir_val = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk2 = ctx.get_thunk(args[2]);
+        let dir_val = thunk0
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness[0]=Seq");
-        let path_val = args[1]
+        let path_val = thunk1
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness[1]=Seq");
-        let mode_val = args[2]
+        let mode_val = thunk2
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness[2]=Seq");
 
-        let (dir, _perms) = extract_dir_cap(&dir_val, "builtin-file-open", args[0].span.clone())?;
-        let path = require_string("builtin-file-open", path_val, args[1].span.clone())?;
-        let mode = require_string("builtin-file-open", mode_val, args[2].span.clone())?;
+        let (dir, _perms) = extract_dir_cap(&dir_val, "builtin-file-open", thunk0.span.clone())?;
+        let path = require_string("builtin-file-open", path_val, thunk1.span.clone())?;
+        let mode = require_string("builtin-file-open", mode_val, thunk2.span.clone())?;
 
         use cap_std::fs::OpenOptions;
 
@@ -2310,7 +2364,7 @@ pub(crate) fn builtin_file_read(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -2319,10 +2373,12 @@ pub(crate) fn builtin_file_read(
         }
         reject_named("builtin-file-read", named.as_ref(), call_span.clone())?;
 
-        let file_val = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let file_val = thunk0
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness[0]=Seq");
-        let n_val = args[1]
+        let n_val = thunk1
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness[1]=Seq");
 
@@ -2333,7 +2389,7 @@ pub(crate) fn builtin_file_read(
                     "builtin-file-read".to_string(),
                     "File",
                     other.type_name(),
-                    args[0].span.clone(),
+                    thunk0.span.clone(),
                 )
                 .into())
             }
@@ -2353,7 +2409,7 @@ pub(crate) fn builtin_file_read(
                     "builtin-file-read".to_string(),
                     "Int",
                     other.type_name(),
-                    args[1].span.clone(),
+                    thunk1.span.clone(),
                 )
                 .into())
             }
@@ -2392,7 +2448,7 @@ pub(crate) fn builtin_file_write(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -2401,10 +2457,12 @@ pub(crate) fn builtin_file_write(
         }
         reject_named("builtin-file-write", named.as_ref(), call_span.clone())?;
 
-        let file_val = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let file_val = thunk0
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness[0]=Seq");
-        let s_val = args[1]
+        let s_val = thunk1
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness[1]=Seq");
 
@@ -2415,13 +2473,13 @@ pub(crate) fn builtin_file_write(
                     "builtin-file-write".to_string(),
                     "File",
                     other.type_name(),
-                    args[0].span.clone(),
+                    thunk0.span.clone(),
                 )
                 .into())
             }
         };
 
-        let s = require_string("builtin-file-write", s_val, args[1].span.clone())?;
+        let s = require_string("builtin-file-write", s_val, thunk1.span.clone())?;
 
         use std::io::Write;
         file_rc.borrow_mut().write_all(s.as_bytes()).map_err(|e| {
@@ -2431,7 +2489,7 @@ pub(crate) fn builtin_file_write(
             )
         })?;
 
-        Ok(Arc::clone(&args[0]))
+        Ok(thunk0)
     })
 }
 
@@ -2465,7 +2523,7 @@ pub(crate) fn builtin_file_flush(
                     "builtin-file-flush".to_string(),
                     "File",
                     other.type_name(),
-                    args[0].span.clone(),
+                    ctx.get_thunk(args[0]).span.clone(),
                 )
                 .into())
             }
@@ -2517,7 +2575,7 @@ pub(crate) fn builtin_file_close(
                 "builtin-file-close".to_string(),
                 "File",
                 other.type_name(),
-                args[0].span.clone(),
+                ctx.get_thunk(args[0]).span.clone(),
             )
             .into()),
         }
@@ -2536,7 +2594,7 @@ pub(crate) fn builtin_file_seek(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -2545,10 +2603,12 @@ pub(crate) fn builtin_file_seek(
         }
         reject_named("builtin-file-seek", named.as_ref(), call_span.clone())?;
 
-        let file_val = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let file_val = thunk0
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness[0]=Seq");
-        let pos_val = args[1]
+        let pos_val = thunk1
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness[1]=Seq");
 
@@ -2559,7 +2619,7 @@ pub(crate) fn builtin_file_seek(
                     "builtin-file-seek".to_string(),
                     "File",
                     other.type_name(),
-                    args[0].span.clone(),
+                    thunk0.span.clone(),
                 )
                 .into())
             }
@@ -2579,7 +2639,7 @@ pub(crate) fn builtin_file_seek(
                     "builtin-file-seek".to_string(),
                     "Int",
                     other.type_name(),
-                    args[1].span.clone(),
+                    thunk1.span.clone(),
                 )
                 .into())
             }
@@ -2615,6 +2675,7 @@ pub(crate) fn builtin_write_stdout(
             args,
             named,
             call_span,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -2623,18 +2684,19 @@ pub(crate) fn builtin_write_stdout(
         }
         reject_named("builtin-write-stdout", named.as_ref(), call_span.clone())?;
 
-        let s_val = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let s_val = thunk0
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness[0]=Seq");
 
-        let s = require_string("builtin-write-stdout", s_val, args[0].span.clone())?;
+        let s = require_string("builtin-write-stdout", s_val, thunk0.span.clone())?;
 
         use std::io::Write;
         std::io::stdout().write_all(s.as_bytes()).map_err(|e| {
             EvalError::user_error(format!("builtin-write-stdout: {e}"), call_span.clone())
         })?;
 
-        Ok(Arc::clone(&args[1]))
+        Ok(ctx.get_thunk(args[1]))
     })
 }
 
@@ -2650,6 +2712,7 @@ pub(crate) fn builtin_write_stderr(
             args,
             named,
             call_span,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -2658,11 +2721,12 @@ pub(crate) fn builtin_write_stderr(
         }
         reject_named("builtin-write-stderr", named.as_ref(), call_span.clone())?;
 
-        let s_val = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let s_val = thunk0
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness[0]=Seq");
 
-        let s = require_string("builtin-write-stderr", s_val, args[0].span.clone())?;
+        let s = require_string("builtin-write-stderr", s_val, thunk0.span.clone())?;
 
         use std::io::Write;
         std::io::stderr().write_all(s.as_bytes()).map_err(|e| {
@@ -2672,7 +2736,7 @@ pub(crate) fn builtin_write_stderr(
             )
         })?;
 
-        Ok(Arc::clone(&args[1]))
+        Ok(ctx.get_thunk(args[1]))
     })
 }
 
@@ -2688,7 +2752,7 @@ pub(crate) fn builtin_read_stdin(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -2697,7 +2761,8 @@ pub(crate) fn builtin_read_stdin(
         }
         reject_named("builtin-read-stdin", named.as_ref(), call_span.clone())?;
 
-        let n_val = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let n_val = thunk0
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness[0]=Seq");
 
@@ -2715,7 +2780,7 @@ pub(crate) fn builtin_read_stdin(
                     "builtin-read-stdin".to_string(),
                     "Int",
                     other.type_name(),
-                    args[0].span.clone(),
+                    thunk0.span.clone(),
                 )
                 .into())
             }

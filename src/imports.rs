@@ -86,13 +86,13 @@ async fn build_builtin_core_type_env_inner() -> Option<Arc<RwLock<Env>>> {
     // Desugar
     crate::desugar::desugar_surface_program(&mut program);
 
-    // Resolve (writes inline to AST nodes).
-    // No runtime env at this type-checker bootstrap path; pass None.
-    let _resolve_errors = crate::resolve::resolve_surface_program(&program, None);
-
     // Empty parent — builtin_core.llt is the source of truth. Primitives are hardcoded
     // in resolve_type_name; types declared within the file resolve via state.tycon_env.
     let parent_env = Arc::new(RwLock::new(crate::env::Env::new()));
+
+    // Resolve (writes inline to AST nodes). Seeded from parent_env so that any builtin
+    // names declared in the parent scope resolve to de Bruijn coordinates correctly.
+    let _ = crate::resolve::resolve_surface_program(&program, Some(&parent_env));
 
     // Typecheck with builtins env as parent.
     // enable_scheme_map=false (no LSP hover needed for bootstrap).
@@ -102,6 +102,7 @@ async fn build_builtin_core_type_env_inner() -> Option<Arc<RwLock<Env>>> {
             None,  // resolver_seed_env: no runtime env available at bootstrap
             None,  // type_stage_env: not available at bootstrap
             std::collections::HashMap::new(), // seed_tycon_env: empty at bootstrap
+            None,  // eval_ctx: no EvalContext at bootstrap
         )
         .await;
 
@@ -539,7 +540,7 @@ async fn resolve_includes(
             _state,
             _final_env,
             _annot,
-        ) = typecheck_surface_program_with_env(&program, typecheck_env, false, None, None, std::collections::HashMap::new()).await;
+        ) = typecheck_surface_program_with_env(&program, typecheck_env, false, None, None, std::collections::HashMap::new(), None).await;
 
         // Stdlib includes are user code — their type errors are surfaced like any other.
         if !type_errors.is_empty() {

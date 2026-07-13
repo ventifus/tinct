@@ -11,12 +11,12 @@
             close:  [fn [let h] h]]
 
   _reduce-loop: [fn [let f acc xs i len]
-    [match [builtin-gte i len]
-      0: [_reduce-loop f [f acc [builtin-get i xs]] xs [builtin-add i 1] len]
+    [match [builtin-int-gte i len]
+      0: [_reduce-loop f [f acc [builtin-get i xs]] xs [builtin-int-add i 1] len]
       _: acc]]
-  reduce: [fn [let f init xs] [_reduce-loop f init xs 0 [builtin-length xs]]]
+  reduce: [fn [let f init xs] [_reduce-loop f init xs 0 [builtin-dict-length xs]]]
 
-  bytes-empty?: [fn [let b] [builtin-eq-int [builtin-length b] 0]]
+  bytes-empty?: [fn [let b] [builtin-eq-int [builtin-bytes-length b] 0]]
   read-file: [fn [let f acc]
     [chunk: [builtin-file-read f 65536]]
     [match [bytes-empty? chunk]
@@ -35,19 +35,21 @@
   handle:       [builtin-file-open %libdir "prelude.llt" "read"]
   bytes:        [read-file handle [builtin-bytes]]
   parse-result: [builtin-parse bytes "prelude.llt"]
-  n-parse:      [builtin-length parse-result.errors]
+  n-parse:      [builtin-dict-length parse-result.errors]
 
-  seed-env: [match [builtin-eq-int n-parse 0]
+  seed-env-result: [match [builtin-eq-int n-parse 0]
     0: [builtin-raise [builtin-string-concat [builtin-int->string n-parse] " parse error(s)"]]
     _: [builtin-extend-env []
           [%prelude: final-env  Boolean: Boolean  True: True  False: False]]]
+  seed-env: seed-env-result.env
 
   final-env: [reduce
     [fn [let env doc]
-      [doc-env:     [builtin-extend-env env [uses-scope doc.uses]]
-       resolved:    [builtin-resolve doc env: doc-env]
-       eval-result: [match [builtin-eq-int [builtin-length resolved.errors] 0]
-         0: [builtin-raise [builtin-string-concat [builtin-int->string [builtin-length resolved.errors]] " resolve error(s)"]]
+      [doc-env-result: [builtin-extend-env env [uses-scope doc.uses]]
+       doc-env:        doc-env-result.env
+       resolved:       [builtin-resolve doc env: doc-env]
+       eval-result: [match [builtin-eq-int [builtin-dict-length resolved.errors] 0]
+         0: [builtin-raise [builtin-string-concat [builtin-int->string [builtin-dict-length resolved.errors]] " resolve error(s)"]]
          _: [builtin-eval resolved.doc env: doc-env]]]
       [match [builtin-eq-string [builtin-type-of eval-result.error] "String"]
         0: [builtin-extend-env eval-result.env
@@ -55,7 +57,7 @@
                 [match [builtin-eq-string eval-result.doc-name ""]
                   0: eval-result.doc-name
                   _: "%"]
-                eval-result.result]]
+                eval-result.result]].env
         _: [builtin-raise eval-result.error]]]
     seed-env
     parse-result.program.documents]
@@ -64,16 +66,16 @@
   _tc-resolve: [reduce
     [fn [let total doc]
       [r: [builtin-resolve doc env: final-env]]
-      [builtin-add total [builtin-length r.errors]]]
+      [builtin-int-add total [builtin-dict-length r.errors]]]
     0
     parse-result.program.documents]
 
   typed:  [builtin-typecheck parse-result.program [builtin-get-type-context] env: final-env]
-  n-warn: [builtin-length typed.warnings]
+  n-warn: [builtin-dict-length typed.warnings]
 
   # For each not-a-dict warning, print the span and query de Bruijn coords at that offset.
   _loop: [fn [let i h]
-    [done: [builtin-gte i n-warn]
+    [done: [builtin-int-gte i n-warn]
      w:    [builtin-get i typed.warnings]
      s:    w.span
      is-nat: [builtin-eq-string w.kind "not-a-dict"]
@@ -83,7 +85,7 @@
                 [builtin-string-concat [builtin-int->string s.start-line]
                 [builtin-string-concat ":" [builtin-int->string s.start-col]]]]]
      # coord display: {level: N, slot: M} or []
-     coord-str: [match [builtin-eq-int [builtin-length coords] 0]
+     coord-str: [match [builtin-eq-int [builtin-dict-length coords] 0]
        0: [builtin-string-concat "level="
              [builtin-string-concat [builtin-int->string coords.level]
              [builtin-string-concat " slot="
@@ -97,7 +99,7 @@
        0: h
        _: [%stderr.write line h]]]
     [match done
-      0: [_loop [builtin-add i 1] h2]
+      0: [_loop [builtin-int-add i 1] h2]
       _: h]]
 ]
 
@@ -106,6 +108,6 @@
   h2: [%stderr.write [builtin-string-concat [builtin-int->string n-warn] " total warnings\n"] h1]
 ]
 
-[match [builtin-gte [builtin-length h2] 0]
+[match [builtin-int-gte [builtin-dict-length h2] 0]
   0: 0
   _: n-warn]

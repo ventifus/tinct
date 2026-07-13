@@ -10,14 +10,12 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 
 use indexmap::IndexMap;
 
 use crate::ast::{CoreExpr, Span, Spanned};
 use crate::error::{EvalError, EvalResult};
-use crate::rust_span;
 #[allow(unused_imports)] // used in test modules via `use super::*`
 use crate::value::Strictness;
 use crate::value::ThunkId;
@@ -29,7 +27,6 @@ use crate::value::ThunkId;
 // safe because the dependency is at function-call level, not at module initialization level.
 // Rust modules can call each other's pub functions after initialization without deadlock.
 use crate::eval::materialize;
-use crate::eval_call::{invoke_function, CallContext};
 use crate::value::{BuiltinArgs, HashableValue, Thunk, Value};
 
 /// Construct a `BuiltinDef` with name, function, and optional strictness annotations.
@@ -44,7 +41,7 @@ use crate::value::{BuiltinArgs, HashableValue, Thunk, Value};
 /// For operator names (`+`, `-`, `*`, `/`) and hyphenated names (`to-int`) the
 /// string literal must be written explicitly because they are not valid Rust identifiers.
 macro_rules! builtin {
-    // 2-arg form: all-lazy (empty strictness array, force_count=0, no params)
+    // 2-arg form: all-lazy (empty strictness array, force_count=0)
     ($name:literal, $func:expr) => {{
         const S: &[crate::value::Strictness] = &[];
         crate::value::BuiltinDef {
@@ -52,11 +49,9 @@ macro_rules! builtin {
             name: $name,
             pos_strictness: S,
             force_count: 0,
-            params: &[],
-            named_params: &[],
         }
     }};
-    // 3-arg form: with strictness array (force_count=0, no params)
+    // 3-arg form: with strictness array (force_count=0)
     ($name:literal, $func:expr, [$($strictness:expr),* $(,)?]) => {{
         const S: &[crate::value::Strictness] = &[$($strictness),*];
         crate::value::BuiltinDef {
@@ -64,11 +59,9 @@ macro_rules! builtin {
             name: $name,
             pos_strictness: S,
             force_count: 0,
-            params: &[],
-            named_params: &[],
         }
     }};
-    // 4-arg form: with strictness array and force_count (no params)
+    // 4-arg form: with strictness array and force_count
     ($name:literal, $func:expr, [$($strictness:expr),* $(,)?], $force_count:expr) => {{
         const S: &[crate::value::Strictness] = &[$($strictness),*];
         crate::value::BuiltinDef {
@@ -76,35 +69,26 @@ macro_rules! builtin {
             name: $name,
             pos_strictness: S,
             force_count: $force_count,
-            params: &[],
-            named_params: &[],
         }
     }};
-    // 5-arg form: with strictness array, force_count, and param names
+    // 5-arg form: with strictness array, force_count, and param names (param names ignored — BuiltinDef no longer stores them)
     ($name:literal, $func:expr, [$($strictness:expr),* $(,)?], $force_count:expr, [$($param:literal),* $(,)?]) => {{
         const S: &[crate::value::Strictness] = &[$($strictness),*];
-        const P: &[&str] = &[$($param),*];
         crate::value::BuiltinDef {
             func: $func as crate::value::BuiltinFn,
             name: $name,
             pos_strictness: S,
             force_count: $force_count,
-            params: P,
-            named_params: &[],
         }
     }};
-    // 6-arg form: with strictness, force_count, param names, and named kwargs
+    // 6-arg form: with strictness, force_count, param names, and named kwargs (param/named names ignored — BuiltinDef no longer stores them)
     ($name:literal, $func:expr, [$($strictness:expr),* $(,)?], $force_count:expr, [$($param:literal),* $(,)?], [$($named:literal),* $(,)?]) => {{
         const S: &[crate::value::Strictness] = &[$($strictness),*];
-        const P: &[&str] = &[$($param),*];
-        const N: &[&str] = &[$($named),*];
         crate::value::BuiltinDef {
             func: $func as crate::value::BuiltinFn,
             name: $name,
             pos_strictness: S,
             force_count: $force_count,
-            params: P,
-            named_params: N,
         }
     }};
 }
@@ -151,9 +135,9 @@ pub const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
 /// and rejecting named arguments. Used by many single-arg builtins with force_count=1.
 pub(crate) fn expect_one_arg(
     name: &str,
-    args: &[Arc<Thunk>],
-    named: Option<&IndexMap<String, Arc<Thunk>>>,
-    _ctx: &Arc<crate::eval::EvalContext>,
+    args: &[ThunkId],
+    named: Option<&IndexMap<String, ThunkId>>,
+    ctx: &Arc<crate::eval::EvalContext>,
     call_span: Span,
 ) -> EvalResult<Value> {
     if args.len() != 1 {
@@ -162,7 +146,8 @@ pub(crate) fn expect_one_arg(
     if named.map(|n| !n.is_empty()).unwrap_or(false) {
         return Err(EvalError::named_arg_rejected(name.to_string(), call_span).into());
     }
-    Ok(args[0]
+    let thunk0 = ctx.get_thunk(args[0]);
+    Ok(thunk0
         .try_get_materialized()
         .expect("pre-materialized by force_count/pos_strictness"))
 }
@@ -245,7 +230,7 @@ pub(crate) async fn flatten_overlay(
     let mut layers: Vec<IndexMap<HashableValue, ThunkId>> = Vec::new();
 
     while let Some(thunk_id) = work_stack.pop() {
-        let thunk = ctx.thunk_arena.lock().unwrap().get(thunk_id).clone();
+        let thunk = ctx.get_thunk(thunk_id);
         let val = materialize(&thunk, Some(&call_span), ctx).await?;
         match val {
             Value::Dict(map) => {
@@ -369,7 +354,7 @@ pub(crate) fn require_string(name: &str, value: Value, def_span: Span) -> EvalRe
 /// Helper: reject named arguments for multi-arg builtins that don't accept them.
 pub(crate) fn reject_named(
     name: &str,
-    named: Option<&IndexMap<String, Arc<Thunk>>>,
+    named: Option<&IndexMap<String, ThunkId>>,
     call_span: Span,
 ) -> EvalResult<()> {
     if named.map(|n| !n.is_empty()).unwrap_or(false) {
@@ -383,23 +368,29 @@ pub(crate) fn reject_named(
 // builtin_module() registration and unit tests (via `use super::*`) still work.
 #[allow(unused_imports)] // used in test modules via `use super::*`
 pub(crate) use crate::builtins_math::{
-    builtin_acos, builtin_add, builtin_asin, builtin_atan, builtin_atan2, builtin_band,
+    builtin_acos, builtin_asin, builtin_atan, builtin_atan2, builtin_band,
     builtin_bor, builtin_bxor, builtin_cos, builtin_div_float, builtin_eq_float, builtin_eq_int,
-    builtin_eq_string, builtin_exp, builtin_finite_check, builtin_float, builtin_gt, builtin_gte,
+    builtin_eq_string, builtin_exp, builtin_finite_check, builtin_float,
     builtin_inf_check, builtin_log, builtin_log10, builtin_log2, builtin_lt, builtin_lte,
     builtin_mul, builtin_nan_check, builtin_pow, builtin_shl, builtin_shr, builtin_sin,
-    builtin_sqrt, builtin_sub, builtin_tan,
+    builtin_sqrt, builtin_tan,
+    // Monomorphic typed variants.
+    builtin_int_add, builtin_float_add, builtin_int_to_float,
+    builtin_int_sub, builtin_float_sub,
+    builtin_int_mul, builtin_float_mul,
+    builtin_int_gt, builtin_float_gt, builtin_str_gt,
+    builtin_int_gte, builtin_float_gte, builtin_str_gte,
 };
 
-// Dict/access builtins: keys, length, merge, append, get, each, each-key, each-kv, build-dict.
+// Dict/access builtins: keys, length, merge, get, each, each-key, each-kv, build-dict.
 // Implementations live in builtins_dict.rs; re-exported here so that
 // builtin_module() registration and unit tests (via `use super::*`) still work.
 #[allow(unused_imports)] // used in test modules via `use super::*`
 pub(crate) use crate::builtins_dict::{
-    builtin_append, builtin_build_dict, builtin_builder_delete, builtin_builder_finish,
+    builtin_build_dict, builtin_builder_delete, builtin_builder_finish,
     builtin_builder_get, builtin_builder_get_or, builtin_builder_has, builtin_builder_set,
     builtin_builder_snapshot, builtin_dict_key_nth, builtin_dict_kv_nth, builtin_dict_nth,
-    builtin_get, builtin_keys, builtin_length, builtin_make_builder, builtin_merge,
+    builtin_get, builtin_keys, builtin_length, builtin_make_builder,
 };
 
 // Type/eval/meta builtins: type-of, include, error, try, apply, validate.
@@ -447,18 +438,19 @@ pub(crate) use crate::builtins_bytes::{
 fn float_to_int_builtin(
     name: &str,
     op: fn(f64) -> f64,
-    args: &[Arc<Thunk>],
-    named: Option<&IndexMap<String, Arc<Thunk>>>,
+    args: &[ThunkId],
+    named: Option<&IndexMap<String, ThunkId>>,
     ctx: &Arc<crate::eval::EvalContext>,
     call_span: Span,
 ) -> EvalResult<Arc<Thunk>> {
     let val = expect_one_arg(name, args, named, ctx, call_span.clone())?;
+    let arg0_span = ctx.get_thunk(args[0]).span.clone();
     match val {
         Value::Int(n) => ok_val(Value::Int(n), call_span),
         Value::Float(f) => {
             if !f.is_finite() {
                 return Err(
-                    EvalError::float_not_finite(name.to_string(), f, args[0].span.clone()).into(),
+                    EvalError::float_not_finite(name.to_string(), f, arg0_span).into(),
                 );
             }
             ok_val(
@@ -470,7 +462,7 @@ fn float_to_int_builtin(
             name.to_string(),
             "Int or Float",
             other.type_name(),
-            args[0].span.clone(),
+            arg0_span,
         )
         .into()),
     }
@@ -542,7 +534,7 @@ pub(crate) fn builtin_to_int(
     }
     Box::pin(async move {
         let val = expect_one_arg("to-int", &args, named.as_ref(), &ctx, call_span.clone())?;
-        let arg0_span = args[0].span.clone();
+        let arg0_span = ctx.get_thunk(args[0]).span.clone();
         let s = require_string("to-int", val, arg0_span)?;
         match s.parse::<i64>() {
             Ok(n) => ok_val(Value::Int(n), call_span),
@@ -576,7 +568,7 @@ pub(crate) fn builtin_to_float(
     }
     Box::pin(async move {
         let val = expect_one_arg("to-float", &args, named.as_ref(), &ctx, call_span.clone())?;
-        let arg0_span = args[0].span.clone();
+        let arg0_span = ctx.get_thunk(args[0]).span.clone();
         let s = require_string("to-float", val, arg0_span)?;
         match s.parse::<f64>() {
             Ok(f) if f.is_finite() => ok_val(Value::Float(f), call_span),
@@ -597,480 +589,6 @@ pub(crate) fn builtin_to_float(
 #[allow(unused_imports)] // used in test modules via `use super::*`
 pub(crate) use crate::builtins_dict::{builtin_concat, builtin_drop, builtin_take};
 
-/// `first`: Return the first element of a Dict, the first character of a String,
-/// or the first byte (as Int) of a Bytes value.
-///
-/// - Takes 1 arg: a Dict, String, or Bytes.
-/// - Dict path: O(1) — returns the value at the first key (insertion order).
-/// - String path: O(1) — returns a single-char String slice of the first codepoint.
-/// - Bytes path: O(1) — returns the first byte as Value::Int.
-///
-/// Inherently materializing: must access the value to determine type and extract first element.
-pub(crate) fn builtin_first(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-        ..
-    } = ctx_arg;
-    Box::pin(async move {
-        reject_named("first", named.as_ref(), call_span.clone())?;
-        if args.len() != 1 {
-            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
-        }
-        let val = args[0]
-            .try_get_materialized()
-            .expect("pre-materialized by pos_strictness[0]=Spine");
-        match val {
-            Value::String {
-                ref source,
-                start,
-                end,
-            } => {
-                let s = &source[start..end];
-                if s.is_empty() {
-                    return Err(EvalError::empty_collection("first".to_string(), call_span).into());
-                }
-                let ch = s
-                    .chars()
-                    .next()
-                    .expect("non-empty string has at least one char");
-                let char_end = start + ch.len_utf8();
-                ok_val(
-                    Value::String {
-                        source: Rc::clone(source),
-                        start,
-                        end: char_end,
-                    },
-                    call_span,
-                )
-            }
-            Value::Bytes {
-                ref source,
-                start,
-                end,
-            } => {
-                if start >= end {
-                    return Err(EvalError::empty_collection("first".to_string(), call_span).into());
-                }
-                let byte = source[start];
-                ok_val(Value::Int(i64::from(byte)), call_span)
-            }
-            other => {
-                let map = require_dict(
-                    "first",
-                    other,
-                    args[0].span.clone(),
-                    &ctx,
-                    call_span.clone(),
-                )
-                .await?;
-                if map.is_empty() {
-                    return Err(EvalError::empty_collection("first".to_string(), call_span).into());
-                }
-                let (_, first_id) = map.into_iter().next().expect("non-empty map");
-                let thunk = ctx.get_thunk(first_id);
-                Ok(thunk)
-            }
-        }
-    })
-}
-
-/// `last`: Return the last element of a Dict, the last character of a String,
-/// or the last byte (as Int) of a Bytes value.
-///
-/// - Takes 1 arg: a Dict, String, or Bytes.
-/// - Dict path: O(n) — must iterate to the last entry (IndexMap doesn't have O(1) last).
-/// - String path: O(n) — must walk UTF-8 chars to find the last codepoint.
-/// - Bytes path: O(1) — returns the last byte as Value::Int.
-///
-/// Inherently materializing: must access the value to determine type and extract last element.
-pub(crate) fn builtin_last(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-        ..
-    } = ctx_arg;
-    Box::pin(async move {
-        reject_named("last", named.as_ref(), call_span.clone())?;
-        if args.len() != 1 {
-            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
-        }
-        let val = args[0]
-            .try_get_materialized()
-            .expect("pre-materialized by pos_strictness[0]=Spine");
-        match val {
-            Value::String {
-                ref source,
-                start,
-                end,
-            } => {
-                let s = &source[start..end];
-                if s.is_empty() {
-                    return Err(EvalError::empty_collection("last".to_string(), call_span).into());
-                }
-                let (last_char_start, last_ch) = s
-                    .char_indices()
-                    .last()
-                    .expect("non-empty string has at least one char");
-                let char_start = start + last_char_start;
-                let char_end = char_start + last_ch.len_utf8();
-                ok_val(
-                    Value::String {
-                        source: Rc::clone(source),
-                        start: char_start,
-                        end: char_end,
-                    },
-                    call_span,
-                )
-            }
-            Value::Bytes {
-                ref source,
-                start,
-                end,
-            } => {
-                if start >= end {
-                    return Err(EvalError::empty_collection("last".to_string(), call_span).into());
-                }
-                let byte = source[end - 1];
-                ok_val(Value::Int(i64::from(byte)), call_span)
-            }
-            other => {
-                let map =
-                    require_dict("last", other, args[0].span.clone(), &ctx, call_span.clone())
-                        .await?;
-                if map.is_empty() {
-                    return Err(EvalError::empty_collection("last".to_string(), call_span).into());
-                }
-                let (_, last_id) = map.into_iter().last().expect("non-empty map");
-                let thunk = ctx.get_thunk(last_id);
-                Ok(thunk)
-            }
-        }
-    })
-}
-
-/// `builtin-rest`: Returns all elements of a Dict except the first, reindexed 0..n-1.
-///
-/// - Takes 1 arg: a Dict. Dict path only — O(n).
-/// - For lazy collections use the tinct-defined `tail` in prelude.
-///
-/// Inherently materializing: must copy all remaining entries.
-pub(crate) fn builtin_rest(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-        ..
-    } = ctx_arg;
-    Box::pin(async move {
-        reject_named("rest", named.as_ref(), call_span.clone())?;
-        if args.len() != 1 {
-            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
-        }
-        let val = args[0]
-            .try_get_materialized()
-            .expect("pre-materialized by pos_strictness[0]=Spine");
-        let map = require_dict("rest", val, args[0].span.clone(), &ctx, call_span.clone()).await?;
-
-        // Skip the first entry (index 0 by insertion order), reindex rest as 0..n-1.
-        let mut result = IndexMap::with_capacity(map.len().saturating_sub(1));
-        for (new_idx, (_old_key, thunk)) in map.into_iter().skip(1).enumerate() {
-            let new_key = HashableValue::Int(i64::try_from(new_idx).map_err(|_| {
-                EvalError::internal("collection index overflow".to_string(), call_span.clone())
-            })?);
-            result.insert(new_key, thunk);
-        }
-        ok_val(Value::Dict(result), call_span)
-    })
-}
-
-/// `reverse`: Reverse the entries of a dict list, reindexing from 0.
-///
-/// - Takes 1 arg: a Dict.
-/// - Materializes the dict, collects entries in reverse insertion order,
-///   builds a new dict with dense integer keys 0..n-1.
-/// - O(n) — avoids the recursive LLT accumulator pattern.
-///
-/// Inherently materializing: must know all entries to reverse order.
-pub(crate) fn builtin_reverse(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-        ..
-    } = ctx_arg;
-    Box::pin(async move {
-        reject_named("reverse", named.as_ref(), call_span.clone())?;
-        if args.len() != 1 {
-            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
-        }
-        let val = args[0]
-            .try_get_materialized()
-            .expect("pre-materialized by pos_strictness[0]=Spine");
-        let map = require_dict(
-            "reverse",
-            val,
-            args[0].span.clone(),
-            &ctx,
-            call_span.clone(),
-        )
-        .await?;
-
-        let mut result = IndexMap::with_capacity(map.len());
-        // Collect values in reverse insertion order.
-        let entries: Vec<_> = map.into_iter().collect();
-        for (new_idx, (_old_key, thunk)) in entries.into_iter().rev().enumerate() {
-            let new_key = HashableValue::Int(i64::try_from(new_idx).map_err(|_| {
-                EvalError::internal("collection index overflow".to_string(), call_span.clone())
-            })?);
-            result.insert(new_key, thunk);
-        }
-        ok_val(Value::Dict(result), call_span)
-    })
-}
-
-/// Compare two materialized `Value`s for sort ordering.
-///
-/// Mirrors the `<` builtin semantics:
-/// - Int vs Int, Float vs Float, Int/Float cross-type (promote Int to f64)
-/// - String vs String (lexicographic)
-/// - Bool vs Bool (false < true)
-/// - Mixed incompatible types: returns `Err` (type error).
-///
-/// Returns `Ok(std::cmp::Ordering)` on success, `Err` on incompatible types.
-fn compare_values(a: &Value, b: &Value, call_span: Span) -> EvalResult<std::cmp::Ordering> {
-    let result = match (a, b) {
-        (Value::Int(x), Value::Int(y)) => x.cmp(y),
-        (Value::Float(x), Value::Float(y)) => x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal),
-        (Value::Int(x), Value::Float(y)) => (*x as f64)
-            .partial_cmp(y)
-            .unwrap_or(std::cmp::Ordering::Equal),
-        (Value::Float(x), Value::Int(y)) => x
-            .partial_cmp(&(*y as f64))
-            .unwrap_or(std::cmp::Ordering::Equal),
-        (
-            Value::String {
-                source: s1,
-                start: start1,
-                end: end1,
-            },
-            Value::String {
-                source: s2,
-                start: start2,
-                end: end2,
-            },
-        ) => s1[*start1..*end1].cmp(&s2[*start2..*end2]),
-        _ => {
-            return Err(EvalError::type_mismatch_ctx(
-                "sort".to_string(),
-                "Int, Float, or String (homogeneous collection)",
-                &format!("{} and {}", a.type_name(), b.type_name()),
-                call_span,
-            )
-            .into());
-        }
-    };
-    Ok(result)
-}
-
-/// `sort`: Sort a dict list by natural ordering or with a custom comparator.
-///
-/// - Takes 1 or 2 args:
-///   - 1 arg: a Dict (list-like, integer-keyed). Sorts by natural ordering.
-///   - 2 args: a comparator function and a Dict. The comparator takes two values
-///     and returns an Int (nonzero if first should come before second).
-/// - Materializes all values, sorts by natural ordering (same semantics as `<`)
-///   or by calling the comparator function for each comparison.
-/// - O(n log n) using Rust's `sort_by`.
-/// - Errors on mixed incompatible types when using natural ordering.
-/// - Errors on lazy collection input (callers must `$collect` first).
-///
-/// Inherently materializing: must inspect all values to determine sort order.
-pub(crate) fn builtin_sort(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-        caller_env,
-    } = ctx_arg;
-    Box::pin(async move {
-        reject_named("sort", named.as_ref(), call_span.clone())?;
-
-        // Accept 1 arg (dict only) or 2 args (comparator, dict)
-        if args.len() != 1 && args.len() != 2 {
-            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
-        }
-
-        // Determine if we have a comparator function
-        let (comparator_opt, dict_arg_idx) = if args.len() == 2 {
-            // First arg is comparator, second is dict.
-            // args[0] is Spine-pre-materialized by pos_strictness[0].
-            let cmp_val = args[0]
-                .try_get_materialized()
-                .expect("pre-materialized by pos_strictness[0]=Spine");
-            let arg0_span = args[0].span.clone();
-            match cmp_val {
-                Value::Function { .. } | Value::Builtin(_) => (Some((cmp_val, arg0_span)), 1),
-                other => {
-                    return Err(EvalError::type_mismatch_ctx(
-                        "sort".to_string(),
-                        "Function",
-                        other.type_name(),
-                        arg0_span,
-                    )
-                    .into());
-                }
-            }
-        } else {
-            (None, 0)
-        };
-
-        let dict_span = args[dict_arg_idx].span.clone();
-        let val = args[dict_arg_idx]
-            .try_get_materialized()
-            .expect("pre-materialized by pos_strictness[dict_arg_idx]=Spine");
-        let map = require_dict("sort", val, dict_span, &ctx, call_span.clone()).await?;
-
-        // Materialize all values so we can compare them.
-        let mut pairs: Vec<(Value, Span)> = Vec::with_capacity(map.len());
-        for (_key, thunk_id) in &map {
-            let thunk = ctx.get_thunk(*thunk_id);
-            let mat = materialize(&thunk, Some(&call_span), &ctx).await?;
-            pairs.push((mat, thunk.span.clone()));
-        }
-
-        // Sort using comparator or natural ordering.
-        if let Some((cmp_val, cmp_span)) = comparator_opt {
-            // Pre-resolve the Matchable binding name from the comparator's return annotation.
-            // This avoids re-deriving the binding name from the runtime value on every comparison.
-            // Falls back to dynamic dispatch if the comparator has no simple return annotation.
-            let cmp_matchable_binding =
-                crate::eval::resolve_matchable_binding_from_fn(&cmp_val, &caller_env);
-
-            // Use custom comparator function — async insertion sort (stable, correct).
-            // pairs.sort_by cannot .await inside the closure, so we use an explicit loop.
-            for i in 1..pairs.len() {
-                let mut j = i;
-                while j > 0 {
-                    let (a_val, a_span) = pairs[j - 1].clone();
-                    let (b_val, b_span) = pairs[j].clone();
-                    let a_thunk = Arc::new(Thunk::new_materialized(a_val, a_span.clone()));
-                    let b_thunk = Arc::new(Thunk::new_materialized(b_val, b_span.clone()));
-                    let pos_args = vec![a_thunk, b_thunk];
-
-                    let result_thunk = match &cmp_val {
-                        Value::Function {
-                            params,
-                            body,
-                            env: closure_env,
-                            ..
-                        } => {
-                            invoke_function(&CallContext {
-                                params,
-                                body,
-                                closure_env,
-                                positional: &pos_args,
-                                named: None,
-                                default_env: closure_env,
-                                call_span: call_span.clone(),
-                                origin: Some(Arc::from("sort")),
-                                ctx: &ctx,
-                            })
-                            .await?
-                        }
-                        Value::Builtin(def) => {
-                            let builtin_args = BuiltinArgs {
-                                args: pos_args,
-                                named: None,
-                                call_span: call_span.clone(),
-                                caller_env: Arc::new(
-                                    std::sync::RwLock::new(crate::env::Env::new()),
-                                ),
-                                ctx: Arc::clone(&ctx),
-                            };
-                            (def.func)(builtin_args).await?
-                        }
-                        _ => {
-                            return Err(EvalError::type_mismatch_ctx(
-                                "sort".to_string(),
-                                "Function",
-                                cmp_val.type_name(),
-                                cmp_span.clone(),
-                            )
-                            .into());
-                        }
-                    };
-
-                    let result_val = materialize(&result_thunk, Some(&call_span), &ctx).await?;
-                    if crate::eval::call_to_match_opt_resolved(
-                        &result_val,
-                        cmp_matchable_binding.as_deref(),
-                        &caller_env,
-                        &ctx,
-                        &call_span,
-                    )
-                    .await
-                    {
-                        // truthy means a > b → swap
-                        pairs.swap(j - 1, j);
-                        j -= 1;
-                    } else {
-                        // falsy means a <= b → already in order
-                        break;
-                    }
-                }
-            }
-        } else {
-            // Use natural ordering — sync sort_by is fine here (no async needed).
-            let mut sort_error: Option<Box<crate::error::EvalError>> = None;
-            pairs.sort_by(|(a, _), (b, _)| {
-                if sort_error.is_some() {
-                    return std::cmp::Ordering::Equal;
-                }
-                match compare_values(a, b, call_span.clone()) {
-                    Ok(ord) => ord,
-                    Err(e) => {
-                        sort_error = Some(e);
-                        std::cmp::Ordering::Equal
-                    }
-                }
-            });
-            if let Some(e) = sort_error {
-                return Err(e);
-            }
-        }
-
-        // Build result dict with dense integer keys 0..n-1, wrapping sorted values as thunks.
-        let mut result = IndexMap::with_capacity(pairs.len());
-        for (new_idx, (mat_val, orig_span)) in pairs.into_iter().enumerate() {
-            let new_key = HashableValue::Int(i64::try_from(new_idx).map_err(|_| {
-                EvalError::internal("collection index overflow".to_string(), call_span.clone())
-            })?);
-            let thunk = Arc::new(Thunk::new_materialized(mat_val, orig_span));
-            let thunk_id = ctx.alloc_thunk(thunk);
-            result.insert(new_key, thunk_id);
-        }
-        ok_val(Value::Dict(result), call_span)
-    })
-}
-
 pub(crate) fn builtin_proxy(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -1078,7 +596,7 @@ pub(crate) fn builtin_proxy(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -1086,10 +604,9 @@ pub(crate) fn builtin_proxy(
         if args.len() != 1 {
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
-        let handler_id = ctx.alloc_thunk(Arc::clone(&args[0]));
         Ok(Arc::new(Thunk::new_materialized(
             Value::Proxy {
-                handler: handler_id,
+                handler: args[0],
             },
             call_span,
         )))
@@ -1129,16 +646,18 @@ pub fn builtin_module(name: &str) -> Option<Vec<crate::value::BuiltinDef>> {
 /// pre-evaluation of loader.llt; the caller drives the full pipeline via
 /// `run_loader_pipeline`.
 pub fn build_core_env() -> Arc<RwLock<crate::env::Env>> {
-    let env = Arc::new(RwLock::new(crate::env::Env::new()));
-    if let Some(defs) = builtin_module("core") {
+    // T-1557: Env is type-metadata only. Runtime values are stored in FlatEnv/arena.
+    // Insert each builtin name into the slotted IndexMap so the resolver can assign
+    // de Bruijn (level, slot) coordinates. The actual Value::Builtin thunks are placed
+    // in the root FlatEnv (slot 0, 1, 2, …) by EvalContext::new_env_arena, in the SAME
+    // iteration order as core_builtins(). The two orderings must stay in sync.
+    use crate::builtins_core::core_builtins;
+    let env = crate::env::Env::new();
+    let env = Arc::new(RwLock::new(env));
+    {
         let mut env_write = env.write().unwrap();
-        for def in defs {
-            let name = def.name.to_string();
-            let thunk = Arc::new(Thunk::new_materialized(
-                crate::value::Value::Builtin(def),
-                rust_span!(),
-            ));
-            env_write.insert_value(name, thunk);
+        for def in core_builtins() {
+            env_write.insert_slot_name_only(def.name.to_string());
         }
     }
     env
@@ -1161,15 +680,21 @@ mod tests {
     use super::*;
     use crate::env::Env;
     use crate::error::ErrorKind;
+    use crate::rust_span;
     use crate::test_util::test_span;
     use crate::value::{string_val, Strictness};
 
-    /// Helper: wrap a Value in a materialized Thunk inside an Rc.
+    /// Helper: wrap a Value in a materialized Thunk (Arc).
     fn thunk(val: Value) -> Arc<Thunk> {
         Arc::new(Thunk::new_materialized(val, test_span(1, 1, 1, 5)))
     }
 
-    fn no_named() -> Option<IndexMap<String, Arc<Thunk>>> {
+    /// Helper: allocate a Value as a ThunkId in the given ctx's arena.
+    fn alloc(val: Value, ctx: &Arc<crate::eval::EvalContext>) -> ThunkId {
+        ctx.alloc_thunk(thunk(val))
+    }
+
+    fn no_named() -> Option<IndexMap<String, ThunkId>> {
         None
     }
 
@@ -1180,11 +705,11 @@ mod tests {
     fn test_ctx() -> Arc<crate::eval::EvalContext> {
         let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
         let env = Arc::new(RwLock::new(Env::new()));
+        // T-1557: Env is type-metadata only; register slot names for the resolver.
+        // Runtime thunks are pre-populated in the root FlatEnv by EvalContext::new_env_arena().
         if let Some(defs) = builtin_module("core") {
             for def in defs {
-                let name = def.name.to_string();
-                let thunk = Arc::new(Thunk::new_materialized(Value::Builtin(def), rust_span!()));
-                env.write().unwrap().insert_value(name, thunk);
+                env.write().unwrap().insert_slot_name_only(def.name.to_string());
             }
         }
         crate::eval::EvalContext::new_empty(base_dir, env, false)
@@ -1199,7 +724,7 @@ mod tests {
 
     /// Async materialize wrapper for test code.
     async fn materialize_sync(
-        t: &Thunk,
+        t: &Arc<Thunk>,
         s: Option<&crate::ast::Span>,
         c: &Arc<crate::eval::EvalContext>,
     ) -> crate::error::EvalResult<Value> {
@@ -1261,7 +786,9 @@ mod tests {
         });
         Arc::new(Thunk::new_surface(
             node,
-            Arc::new(RwLock::new(Env::new())),
+            Arc::new(std::collections::HashMap::new()),
+            Arc::new(std::collections::HashMap::new()),
+            ctx.current_env_id,
             Arc::clone(ctx),
             test_span(1, 1, 1, 10),
         ))
@@ -1270,32 +797,19 @@ mod tests {
     /// Build a materialized dict thunk whose entries are allocated into `ctx`'s arena.
     /// Accepts `IndexMap<HashableValue, Arc<Thunk>>` (convenient for test construction) and
     /// stores each as a `ThunkId` in `Value::Dict`, as the runtime requires.
+    /// Returns a `ThunkId` so the result can be used directly in `BuiltinArgs.args`.
     fn thunk_dict(
         map: IndexMap<HashableValue, Arc<Thunk>>,
         ctx: &Arc<crate::eval::EvalContext>,
-    ) -> Arc<Thunk> {
+    ) -> ThunkId {
         let mut id_map: IndexMap<HashableValue, ThunkId> = IndexMap::with_capacity(map.len());
         for (k, v) in map {
             id_map.insert(k, ctx.alloc_thunk(v));
         }
-        Arc::new(Thunk::new_materialized(
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Dict(id_map),
             test_span(1, 1, 1, 5),
-        ))
-    }
-
-    /// Helper: flatten a Value (Dict or Overlay) to an `IndexMap<HashableValue, ThunkId>` for test assertions.
-    async fn flatten_val(
-        val: Value,
-        ctx: &Arc<crate::eval::EvalContext>,
-    ) -> IndexMap<HashableValue, ThunkId> {
-        match val {
-            Value::Dict(map) => map,
-            Value::Overlay(l, r) => flatten_overlay(&l, &r, "test", ctx, test_span(1, 1, 1, 5))
-                .await
-                .unwrap(),
-            other => panic!("expected Dict or Overlay, got {other:?}"),
-        }
+        )))
     }
 
     /// Helper: materialize the thunk identified by `id` in `ctx`'s arena.
@@ -1306,12 +820,14 @@ mod tests {
 
     #[tokio::test]
     async fn floor_int_passthrough() {
+        let ctx = test_ctx();
         let result = mat(builtin_floor(BuiltinArgs {
-            args: vec![thunk(Value::Int(42))],
+            args: vec![alloc(Value::Int(42), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Int(42));
@@ -1319,12 +835,14 @@ mod tests {
 
     #[tokio::test]
     async fn floor_negative_int_passthrough() {
+        let ctx = test_ctx();
         let result = mat(builtin_floor(BuiltinArgs {
-            args: vec![thunk(Value::Int(-7))],
+            args: vec![alloc(Value::Int(-7), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Int(-7));
@@ -1332,12 +850,14 @@ mod tests {
 
     #[tokio::test]
     async fn floor_zero_int() {
+        let ctx = test_ctx();
         let result = mat(builtin_floor(BuiltinArgs {
-            args: vec![thunk(Value::Int(0))],
+            args: vec![alloc(Value::Int(0), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Int(0));
@@ -1345,12 +865,14 @@ mod tests {
 
     #[tokio::test]
     async fn floor_positive_float() {
+        let ctx = test_ctx();
         let result = mat(builtin_floor(BuiltinArgs {
-            args: vec![thunk(Value::Float(3.7))],
+            args: vec![alloc(Value::Float(3.7), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Int(3));
@@ -1359,12 +881,14 @@ mod tests {
     #[tokio::test]
     async fn floor_negative_float() {
         // floor(-3.2) = -4, not -3
+        let ctx = test_ctx();
         let result = mat(builtin_floor(BuiltinArgs {
-            args: vec![thunk(Value::Float(-3.2))],
+            args: vec![alloc(Value::Float(-3.2), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Int(-4));
@@ -1372,12 +896,14 @@ mod tests {
 
     #[tokio::test]
     async fn floor_float_exact_integer() {
+        let ctx = test_ctx();
         let result = mat(builtin_floor(BuiltinArgs {
-            args: vec![thunk(Value::Float(5.0))],
+            args: vec![alloc(Value::Float(5.0), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Int(5));
@@ -1385,12 +911,14 @@ mod tests {
 
     #[tokio::test]
     async fn floor_float_just_below_integer() {
+        let ctx = test_ctx();
         let result = mat(builtin_floor(BuiltinArgs {
-            args: vec![thunk(Value::Float(2.9999999))],
+            args: vec![alloc(Value::Float(2.9999999), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Int(2));
@@ -1398,12 +926,14 @@ mod tests {
 
     #[tokio::test]
     async fn floor_nan_errors() {
+        let ctx = test_ctx();
         let err = run(builtin_floor(BuiltinArgs {
-            args: vec![thunk(Value::Float(f64::NAN))],
+            args: vec![alloc(Value::Float(f64::NAN), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -1412,12 +942,14 @@ mod tests {
 
     #[tokio::test]
     async fn floor_positive_infinity_errors() {
+        let ctx = test_ctx();
         let err = run(builtin_floor(BuiltinArgs {
-            args: vec![thunk(Value::Float(f64::INFINITY))],
+            args: vec![alloc(Value::Float(f64::INFINITY), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -1430,12 +962,14 @@ mod tests {
 
     #[tokio::test]
     async fn floor_negative_infinity_errors() {
+        let ctx = test_ctx();
         let err = run(builtin_floor(BuiltinArgs {
-            args: vec![thunk(Value::Float(f64::NEG_INFINITY))],
+            args: vec![alloc(Value::Float(f64::NEG_INFINITY), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -1448,12 +982,14 @@ mod tests {
 
     #[tokio::test]
     async fn floor_string_type_error() {
+        let ctx = test_ctx();
         let err = run(builtin_floor(BuiltinArgs {
-            args: vec![thunk(string_val("3.5"))],
+            args: vec![alloc(string_val("3.5"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -1466,12 +1002,14 @@ mod tests {
 
     #[tokio::test]
     async fn floor_string_type_error_non_numeric() {
+        let ctx = test_ctx();
         let err = run(builtin_floor(BuiltinArgs {
-            args: vec![thunk(string_val("x"))],
+            args: vec![alloc(string_val("x"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -1484,12 +1022,14 @@ mod tests {
 
     #[tokio::test]
     async fn floor_dict_type_error() {
+        let ctx = test_ctx();
         let err = run(builtin_floor(BuiltinArgs {
-            args: vec![thunk(Value::Dict(IndexMap::new()))],
+            args: vec![alloc(Value::Dict(IndexMap::new()), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -1502,12 +1042,14 @@ mod tests {
 
     #[tokio::test]
     async fn floor_wrong_arity_zero() {
+        let ctx = test_ctx();
         let err = run(builtin_floor(BuiltinArgs {
             args: vec![],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -1520,12 +1062,14 @@ mod tests {
 
     #[tokio::test]
     async fn floor_wrong_arity_two() {
+        let ctx = test_ctx();
         let err = run(builtin_floor(BuiltinArgs {
-            args: vec![thunk(Value::Int(1)), thunk(Value::Int(2))],
+            args: vec![alloc(Value::Int(1), &ctx), alloc(Value::Int(2), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -1538,14 +1082,16 @@ mod tests {
 
     #[tokio::test]
     async fn floor_rejects_named_args() {
+        let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert("x".into(), thunk(Value::Int(1)));
+        named.insert("x".into(), alloc(Value::Int(1), &ctx));
         let err = run(builtin_floor(BuiltinArgs {
-            args: vec![thunk(Value::Float(3.5))],
+            args: vec![alloc(Value::Float(3.5), &ctx)],
             named: Some(named),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -1558,12 +1104,14 @@ mod tests {
 
     #[tokio::test]
     async fn floor_large_positive_float_out_of_range() {
+        let ctx = test_ctx();
         let err = run(builtin_floor(BuiltinArgs {
-            args: vec![thunk(Value::Float(1e19))],
+            args: vec![alloc(Value::Float(1e19), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -1576,12 +1124,14 @@ mod tests {
 
     #[tokio::test]
     async fn floor_large_negative_float_out_of_range() {
+        let ctx = test_ctx();
         let err = run(builtin_floor(BuiltinArgs {
-            args: vec![thunk(Value::Float(-1e19))],
+            args: vec![alloc(Value::Float(-1e19), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -1594,12 +1144,14 @@ mod tests {
 
     #[tokio::test]
     async fn round_int_passthrough() {
+        let ctx = test_ctx();
         let result = mat(builtin_round(BuiltinArgs {
-            args: vec![thunk(Value::Int(42))],
+            args: vec![alloc(Value::Int(42), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Int(42));
@@ -1607,12 +1159,14 @@ mod tests {
 
     #[tokio::test]
     async fn round_negative_int_passthrough() {
+        let ctx = test_ctx();
         let result = mat(builtin_round(BuiltinArgs {
-            args: vec![thunk(Value::Int(-7))],
+            args: vec![alloc(Value::Int(-7), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Int(-7));
@@ -1621,12 +1175,14 @@ mod tests {
     #[tokio::test]
     async fn round_positive_half_rounds_up() {
         // 0.5 rounds to 1 (half-away-from-zero)
+        let ctx = test_ctx();
         let result = mat(builtin_round(BuiltinArgs {
-            args: vec![thunk(Value::Float(0.5))],
+            args: vec![alloc(Value::Float(0.5), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Int(1));
@@ -1635,12 +1191,14 @@ mod tests {
     #[tokio::test]
     async fn round_negative_half_rounds_down() {
         // -0.5 rounds to -1 (half-away-from-zero)
+        let ctx = test_ctx();
         let result = mat(builtin_round(BuiltinArgs {
-            args: vec![thunk(Value::Float(-0.5))],
+            args: vec![alloc(Value::Float(-0.5), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Int(-1));
@@ -1648,12 +1206,14 @@ mod tests {
 
     #[tokio::test]
     async fn round_positive_below_half() {
+        let ctx = test_ctx();
         let result = mat(builtin_round(BuiltinArgs {
-            args: vec![thunk(Value::Float(2.4))],
+            args: vec![alloc(Value::Float(2.4), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Int(2));
@@ -1661,12 +1221,14 @@ mod tests {
 
     #[tokio::test]
     async fn round_positive_above_half() {
+        let ctx = test_ctx();
         let result = mat(builtin_round(BuiltinArgs {
-            args: vec![thunk(Value::Float(2.6))],
+            args: vec![alloc(Value::Float(2.6), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Int(3));
@@ -1675,12 +1237,14 @@ mod tests {
     #[tokio::test]
     async fn round_negative_below_half() {
         // -2.4 rounds to -2
+        let ctx = test_ctx();
         let result = mat(builtin_round(BuiltinArgs {
-            args: vec![thunk(Value::Float(-2.4))],
+            args: vec![alloc(Value::Float(-2.4), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Int(-2));
@@ -1689,12 +1253,14 @@ mod tests {
     #[tokio::test]
     async fn round_negative_above_half() {
         // -2.6 rounds to -3
+        let ctx = test_ctx();
         let result = mat(builtin_round(BuiltinArgs {
-            args: vec![thunk(Value::Float(-2.6))],
+            args: vec![alloc(Value::Float(-2.6), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Int(-3));
@@ -1702,12 +1268,14 @@ mod tests {
 
     #[tokio::test]
     async fn round_1_5_rounds_to_2() {
+        let ctx = test_ctx();
         let result = mat(builtin_round(BuiltinArgs {
-            args: vec![thunk(Value::Float(1.5))],
+            args: vec![alloc(Value::Float(1.5), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Int(2));
@@ -1715,12 +1283,14 @@ mod tests {
 
     #[tokio::test]
     async fn round_negative_1_5_rounds_to_negative_2() {
+        let ctx = test_ctx();
         let result = mat(builtin_round(BuiltinArgs {
-            args: vec![thunk(Value::Float(-1.5))],
+            args: vec![alloc(Value::Float(-1.5), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Int(-2));
@@ -1728,12 +1298,14 @@ mod tests {
 
     #[tokio::test]
     async fn round_float_exact_integer() {
+        let ctx = test_ctx();
         let result = mat(builtin_round(BuiltinArgs {
-            args: vec![thunk(Value::Float(5.0))],
+            args: vec![alloc(Value::Float(5.0), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Int(5));
@@ -1741,12 +1313,14 @@ mod tests {
 
     #[tokio::test]
     async fn round_nan_errors() {
+        let ctx = test_ctx();
         let err = run(builtin_round(BuiltinArgs {
-            args: vec![thunk(Value::Float(f64::NAN))],
+            args: vec![alloc(Value::Float(f64::NAN), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -1755,12 +1329,14 @@ mod tests {
 
     #[tokio::test]
     async fn round_positive_infinity_errors() {
+        let ctx = test_ctx();
         let err = run(builtin_round(BuiltinArgs {
-            args: vec![thunk(Value::Float(f64::INFINITY))],
+            args: vec![alloc(Value::Float(f64::INFINITY), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -1773,12 +1349,14 @@ mod tests {
 
     #[tokio::test]
     async fn round_negative_infinity_errors() {
+        let ctx = test_ctx();
         let err = run(builtin_round(BuiltinArgs {
-            args: vec![thunk(Value::Float(f64::NEG_INFINITY))],
+            args: vec![alloc(Value::Float(f64::NEG_INFINITY), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -1791,12 +1369,14 @@ mod tests {
 
     #[tokio::test]
     async fn round_string_type_error() {
+        let ctx = test_ctx();
         let err = run(builtin_round(BuiltinArgs {
-            args: vec![thunk(string_val("3.5"))],
+            args: vec![alloc(string_val("3.5"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -1809,12 +1389,14 @@ mod tests {
 
     #[tokio::test]
     async fn round_string_type_error_non_numeric() {
+        let ctx = test_ctx();
         let err = run(builtin_round(BuiltinArgs {
-            args: vec![thunk(string_val("x"))],
+            args: vec![alloc(string_val("x"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -1827,12 +1409,14 @@ mod tests {
 
     #[tokio::test]
     async fn round_wrong_arity_zero() {
+        let ctx = test_ctx();
         let err = run(builtin_round(BuiltinArgs {
             args: vec![],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -1845,12 +1429,14 @@ mod tests {
 
     #[tokio::test]
     async fn round_wrong_arity_two() {
+        let ctx = test_ctx();
         let err = run(builtin_round(BuiltinArgs {
-            args: vec![thunk(Value::Int(1)), thunk(Value::Int(2))],
+            args: vec![alloc(Value::Int(1), &ctx), alloc(Value::Int(2), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -1863,12 +1449,14 @@ mod tests {
 
     #[tokio::test]
     async fn round_large_positive_float_out_of_range() {
+        let ctx = test_ctx();
         let err = run(builtin_round(BuiltinArgs {
-            args: vec![thunk(Value::Float(1e19))],
+            args: vec![alloc(Value::Float(1e19), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -1881,12 +1469,14 @@ mod tests {
 
     #[tokio::test]
     async fn round_large_negative_float_out_of_range() {
+        let ctx = test_ctx();
         let err = run(builtin_round(BuiltinArgs {
-            args: vec![thunk(Value::Float(-1e19))],
+            args: vec![alloc(Value::Float(-1e19), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -1899,12 +1489,14 @@ mod tests {
 
     #[tokio::test]
     async fn to_int_valid_positive() {
+        let ctx = test_ctx();
         let result = mat(builtin_to_int(BuiltinArgs {
-            args: vec![thunk(string_val("42".into()))],
+            args: vec![alloc(string_val("42"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Int(42));
@@ -1912,12 +1504,14 @@ mod tests {
 
     #[tokio::test]
     async fn to_int_valid_negative() {
+        let ctx = test_ctx();
         let result = mat(builtin_to_int(BuiltinArgs {
-            args: vec![thunk(string_val("-7".into()))],
+            args: vec![alloc(string_val("-7"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Int(-7));
@@ -1925,12 +1519,14 @@ mod tests {
 
     #[tokio::test]
     async fn to_int_valid_zero() {
+        let ctx = test_ctx();
         let result = mat(builtin_to_int(BuiltinArgs {
-            args: vec![thunk(string_val("0".into()))],
+            args: vec![alloc(string_val("0"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Int(0));
@@ -1938,12 +1534,14 @@ mod tests {
 
     #[tokio::test]
     async fn to_int_valid_large() {
+        let ctx = test_ctx();
         let result = mat(builtin_to_int(BuiltinArgs {
-            args: vec![thunk(string_val("9223372036854775807".into()))],
+            args: vec![alloc(string_val("9223372036854775807"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Int(i64::MAX));
@@ -1951,12 +1549,14 @@ mod tests {
 
     #[tokio::test]
     async fn to_int_invalid_float_string() {
+        let ctx = test_ctx();
         let err = run(builtin_to_int(BuiltinArgs {
-            args: vec![thunk(string_val("3.14".into()))],
+            args: vec![alloc(string_val("3.14"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -1969,12 +1569,14 @@ mod tests {
 
     #[tokio::test]
     async fn to_int_invalid_text() {
+        let ctx = test_ctx();
         let err = run(builtin_to_int(BuiltinArgs {
-            args: vec![thunk(string_val("hello".into()))],
+            args: vec![alloc(string_val("hello"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -1987,12 +1589,14 @@ mod tests {
 
     #[tokio::test]
     async fn to_int_invalid_empty() {
+        let ctx = test_ctx();
         let err = run(builtin_to_int(BuiltinArgs {
-            args: vec![thunk(string_val("".into()))],
+            args: vec![alloc(string_val(""), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -2005,12 +1609,14 @@ mod tests {
 
     #[tokio::test]
     async fn to_int_invalid_with_spaces() {
+        let ctx = test_ctx();
         let err = run(builtin_to_int(BuiltinArgs {
-            args: vec![thunk(string_val(" 42 ".into()))],
+            args: vec![alloc(string_val(" 42 "), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -2023,12 +1629,14 @@ mod tests {
 
     #[tokio::test]
     async fn to_int_rejects_int_input() {
+        let ctx = test_ctx();
         let err = run(builtin_to_int(BuiltinArgs {
-            args: vec![thunk(Value::Int(42))],
+            args: vec![alloc(Value::Int(42), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -2046,12 +1654,14 @@ mod tests {
 
     #[tokio::test]
     async fn to_int_rejects_float_input() {
+        let ctx = test_ctx();
         let err = run(builtin_to_int(BuiltinArgs {
-            args: vec![thunk(Value::Float(3.14))],
+            args: vec![alloc(Value::Float(3.14), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -2064,12 +1674,14 @@ mod tests {
 
     #[tokio::test]
     async fn to_int_rejects_float_whole_number() {
+        let ctx = test_ctx();
         let err = run(builtin_to_int(BuiltinArgs {
-            args: vec![thunk(Value::Float(1.0))],
+            args: vec![alloc(Value::Float(1.0), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -2082,12 +1694,14 @@ mod tests {
 
     #[tokio::test]
     async fn to_int_rejects_dict_input() {
+        let ctx = test_ctx();
         let err = run(builtin_to_int(BuiltinArgs {
-            args: vec![thunk(Value::Dict(IndexMap::new()))],
+            args: vec![alloc(Value::Dict(IndexMap::new()), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -2100,12 +1714,14 @@ mod tests {
 
     #[tokio::test]
     async fn to_int_wrong_arity_zero() {
+        let ctx = test_ctx();
         let err = run(builtin_to_int(BuiltinArgs {
             args: vec![],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -2118,12 +1734,14 @@ mod tests {
 
     #[tokio::test]
     async fn to_int_wrong_arity_two() {
+        let ctx = test_ctx();
         let err = run(builtin_to_int(BuiltinArgs {
-            args: vec![thunk(string_val("1".into())), thunk(string_val("2".into()))],
+            args: vec![alloc(string_val("1"), &ctx), alloc(string_val("2"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -2136,12 +1754,14 @@ mod tests {
 
     #[tokio::test]
     async fn to_float_valid_decimal() {
+        let ctx = test_ctx();
         let result = mat(builtin_to_float(BuiltinArgs {
-            args: vec![thunk(string_val("3.14".into()))],
+            args: vec![alloc(string_val("3.14"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Float(3.14));
@@ -2150,12 +1770,14 @@ mod tests {
     #[tokio::test]
     async fn to_float_valid_integer_string() {
         // "42" parses as 42.0
+        let ctx = test_ctx();
         let result = mat(builtin_to_float(BuiltinArgs {
-            args: vec![thunk(string_val("42".into()))],
+            args: vec![alloc(string_val("42"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Float(42.0));
@@ -2163,12 +1785,14 @@ mod tests {
 
     #[tokio::test]
     async fn to_float_valid_negative() {
+        let ctx = test_ctx();
         let result = mat(builtin_to_float(BuiltinArgs {
-            args: vec![thunk(string_val("-2.5".into()))],
+            args: vec![alloc(string_val("-2.5"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Float(-2.5));
@@ -2176,12 +1800,14 @@ mod tests {
 
     #[tokio::test]
     async fn to_float_valid_scientific_notation() {
+        let ctx = test_ctx();
         let result = mat(builtin_to_float(BuiltinArgs {
-            args: vec![thunk(string_val("1.5e10".into()))],
+            args: vec![alloc(string_val("1.5e10"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Float(1.5e10));
@@ -2189,12 +1815,14 @@ mod tests {
 
     #[tokio::test]
     async fn to_float_valid_negative_exponent() {
+        let ctx = test_ctx();
         let result = mat(builtin_to_float(BuiltinArgs {
-            args: vec![thunk(string_val("2.5e-3".into()))],
+            args: vec![alloc(string_val("2.5e-3"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Float(2.5e-3));
@@ -2202,12 +1830,14 @@ mod tests {
 
     #[tokio::test]
     async fn to_float_valid_zero() {
+        let ctx = test_ctx();
         let result = mat(builtin_to_float(BuiltinArgs {
-            args: vec![thunk(string_val("0.0".into()))],
+            args: vec![alloc(string_val("0.0"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Float(0.0));
@@ -2216,12 +1846,14 @@ mod tests {
     #[tokio::test]
     async fn to_float_valid_leading_dot() {
         // ".5" parses to 0.5
+        let ctx = test_ctx();
         let result = mat(builtin_to_float(BuiltinArgs {
-            args: vec![thunk(string_val(".5".into()))],
+            args: vec![alloc(string_val(".5"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Float(0.5));
@@ -2229,12 +1861,14 @@ mod tests {
 
     #[tokio::test]
     async fn to_float_invalid_text() {
+        let ctx = test_ctx();
         let err = run(builtin_to_float(BuiltinArgs {
-            args: vec![thunk(string_val("hello".into()))],
+            args: vec![alloc(string_val("hello"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -2247,12 +1881,14 @@ mod tests {
 
     #[tokio::test]
     async fn to_float_invalid_empty() {
+        let ctx = test_ctx();
         let err = run(builtin_to_float(BuiltinArgs {
-            args: vec![thunk(string_val("".into()))],
+            args: vec![alloc(string_val(""), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -2265,12 +1901,14 @@ mod tests {
 
     #[tokio::test]
     async fn to_float_rejects_inf() {
+        let ctx = test_ctx();
         let err = run(builtin_to_float(BuiltinArgs {
-            args: vec![thunk(string_val("inf".into()))],
+            args: vec![alloc(string_val("inf"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -2283,12 +1921,14 @@ mod tests {
 
     #[tokio::test]
     async fn to_float_rejects_negative_inf() {
+        let ctx = test_ctx();
         let err = run(builtin_to_float(BuiltinArgs {
-            args: vec![thunk(string_val("-inf".into()))],
+            args: vec![alloc(string_val("-inf"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -2301,12 +1941,14 @@ mod tests {
 
     #[tokio::test]
     async fn to_float_rejects_infinity() {
+        let ctx = test_ctx();
         let err = run(builtin_to_float(BuiltinArgs {
-            args: vec![thunk(string_val("infinity".into()))],
+            args: vec![alloc(string_val("infinity"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -2319,12 +1961,14 @@ mod tests {
 
     #[tokio::test]
     async fn to_float_rejects_nan() {
+        let ctx = test_ctx();
         let err = run(builtin_to_float(BuiltinArgs {
-            args: vec![thunk(string_val("NaN".into()))],
+            args: vec![alloc(string_val("NaN"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -2337,12 +1981,14 @@ mod tests {
 
     #[tokio::test]
     async fn to_float_rejects_int_input() {
+        let ctx = test_ctx();
         let err = run(builtin_to_float(BuiltinArgs {
-            args: vec![thunk(Value::Int(42))],
+            args: vec![alloc(Value::Int(42), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -2355,12 +2001,14 @@ mod tests {
 
     #[tokio::test]
     async fn to_float_rejects_float_input() {
+        let ctx = test_ctx();
         let err = run(builtin_to_float(BuiltinArgs {
-            args: vec![thunk(Value::Float(3.14))],
+            args: vec![alloc(Value::Float(3.14), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -2373,12 +2021,14 @@ mod tests {
 
     #[tokio::test]
     async fn to_float_rejects_dict_input() {
+        let ctx = test_ctx();
         let err = run(builtin_to_float(BuiltinArgs {
-            args: vec![thunk(Value::Dict(IndexMap::new()))],
+            args: vec![alloc(Value::Dict(IndexMap::new()), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -2391,12 +2041,14 @@ mod tests {
 
     #[tokio::test]
     async fn to_float_wrong_arity_zero() {
+        let ctx = test_ctx();
         let err = run(builtin_to_float(BuiltinArgs {
             args: vec![],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -2409,15 +2061,17 @@ mod tests {
 
     #[tokio::test]
     async fn to_float_wrong_arity_two() {
+        let ctx = test_ctx();
         let err = run(builtin_to_float(BuiltinArgs {
             args: vec![
-                thunk(string_val("1.0".into())),
-                thunk(string_val("2.0".into())),
+                alloc(string_val("1.0"), &ctx),
+                alloc(string_val("2.0"), &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -2430,14 +2084,16 @@ mod tests {
 
     #[tokio::test]
     async fn to_float_rejects_named_args() {
+        let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert("x".into(), thunk(string_val("1.0".into())));
+        named.insert("x".into(), alloc(string_val("1.0"), &ctx));
         let err = run(builtin_to_float(BuiltinArgs {
-            args: vec![thunk(string_val("3.14".into()))],
+            args: vec![alloc(string_val("3.14"), &ctx)],
             named: Some(named),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -2451,12 +2107,14 @@ mod tests {
     #[tokio::test]
     async fn to_int_overflow() {
         // One past i64::MAX
+        let ctx = test_ctx();
         let err = run(builtin_to_int(BuiltinArgs {
-            args: vec![thunk(string_val("9223372036854775808".into()))],
+            args: vec![alloc(string_val("9223372036854775808"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -2469,12 +2127,14 @@ mod tests {
 
     #[tokio::test]
     async fn error_raises_with_message() {
+        let ctx = test_ctx();
         let err = run(builtin_raise(BuiltinArgs {
-            args: vec![thunk(string_val("boom".into()))],
+            args: vec![alloc(string_val("boom"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -2483,12 +2143,14 @@ mod tests {
 
     #[tokio::test]
     async fn error_custom_message() {
+        let ctx = test_ctx();
         let err = run(builtin_raise(BuiltinArgs {
-            args: vec![thunk(string_val("division by zero".into()))],
+            args: vec![alloc(string_val("division by zero"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -2497,12 +2159,14 @@ mod tests {
 
     #[tokio::test]
     async fn error_type_mismatch_on_non_string() {
+        let ctx = test_ctx();
         let err = run(builtin_raise(BuiltinArgs {
-            args: vec![thunk(Value::Int(42))],
+            args: vec![alloc(Value::Int(42), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -2516,12 +2180,14 @@ mod tests {
 
     #[tokio::test]
     async fn error_arity_check() {
+        let ctx = test_ctx();
         let err = run(builtin_raise(BuiltinArgs {
             args: vec![],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -2538,11 +2204,12 @@ mod tests {
         let ctx = test_ctx();
         let func = parse_eval("[fn [let] 42]", &ctx).await;
         let result = mat(builtin_try(BuiltinArgs {
-            args: vec![thunk(func)],
+            args: vec![alloc(func, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         match result {
@@ -2563,11 +2230,12 @@ mod tests {
         let ctx = test_ctx();
         let func = parse_eval("[fn [let] \"hello\"]", &ctx).await;
         let result = mat(builtin_try(BuiltinArgs {
-            args: vec![thunk(func)],
+            args: vec![alloc(func, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         match result {
@@ -2585,12 +2253,14 @@ mod tests {
 
     #[tokio::test]
     async fn try_non_function_type_error() {
+        let ctx = test_ctx();
         let err = run(builtin_try(BuiltinArgs {
-            args: vec![thunk(Value::Int(42))],
+            args: vec![alloc(Value::Int(42), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -2606,11 +2276,12 @@ mod tests {
         let ctx = test_ctx();
         let func = parse_eval("[fn [let x] $x]", &ctx).await;
         let err = run(builtin_try(BuiltinArgs {
-            args: vec![thunk(func)],
+            args: vec![alloc(func, &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -2623,12 +2294,14 @@ mod tests {
 
     #[tokio::test]
     async fn try_arity_check() {
+        let ctx = test_ctx();
         let err = run(builtin_try(BuiltinArgs {
             args: vec![],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -2652,15 +2325,14 @@ mod tests {
             name: "ok",
             pos_strictness: &[],
             force_count: 0,
-            params: &[],
-            named_params: &[],
         });
         let result = mat(builtin_try(BuiltinArgs {
-            args: vec![thunk(b)],
+            args: vec![alloc(b, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         match result {
@@ -2692,15 +2364,14 @@ mod tests {
             name: "fail",
             pos_strictness: &[],
             force_count: 0,
-            params: &[],
-            named_params: &[],
         });
         let result = mat(builtin_try(BuiltinArgs {
-            args: vec![thunk(b)],
+            args: vec![alloc(b, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         match result {
@@ -2741,15 +2412,15 @@ mod tests {
             name: "resource_fail",
             pos_strictness: &[],
             force_count: 0,
-            params: &[],
-            named_params: &[],
         });
+        let ctx = test_ctx();
         let err = run(builtin_try(BuiltinArgs {
-            args: vec![thunk(b)],
+            args: vec![alloc(b, &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -2776,11 +2447,12 @@ mod tests {
         );
 
         let result = mat(builtin_apply(BuiltinArgs {
-            args: vec![thunk(func), args_val],
+            args: vec![alloc(func, &ctx), args_val],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Int(42));
@@ -2802,11 +2474,12 @@ mod tests {
         );
 
         let result = mat(builtin_apply(BuiltinArgs {
-            args: vec![thunk(func), args_val],
+            args: vec![alloc(func, &ctx), args_val],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Int(10));
@@ -2828,11 +2501,12 @@ mod tests {
         );
 
         let result = mat(builtin_apply(BuiltinArgs {
-            args: vec![thunk(func), args_val],
+            args: vec![alloc(func, &ctx), args_val],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Int(20));
@@ -2851,8 +2525,10 @@ mod tests {
                     ..
                 } = builtin_ctx;
                 // TEST: test-only add_builtin with force_count=0 deliberately uses materialize directly
-                let a = materialize(&args[0], None, &ctx).await?; // TEST: test-only inline builtin
-                let b = materialize(&args[1], None, &ctx).await?; // TEST: test-only inline builtin
+                let thunk0 = ctx.get_thunk(args[0]);
+                let thunk1 = ctx.get_thunk(args[1]);
+                let a = materialize(&thunk0, None, &ctx).await?; // TEST: test-only inline builtin
+                let b = materialize(&thunk1, None, &ctx).await?; // TEST: test-only inline builtin
                 match (a, b) {
                     (Value::Int(x), Value::Int(y)) => ok_val(Value::Int(x + y), call_span),
                     _ => Err(EvalError::type_mismatch("Int", "non-Int", call_span).into()),
@@ -2865,8 +2541,6 @@ mod tests {
             name: "add",
             pos_strictness: &[],
             force_count: 0,
-            params: &[],
-            named_params: &[],
         });
         let args_val = thunk_dict(
             {
@@ -2879,11 +2553,12 @@ mod tests {
         );
 
         let result = mat(builtin_apply(BuiltinArgs {
-            args: vec![thunk(func), args_val],
+            args: vec![alloc(func, &ctx), args_val],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Int(7));
@@ -2903,11 +2578,12 @@ mod tests {
         );
 
         let apply_thunk = run(builtin_apply(BuiltinArgs {
-            args: vec![thunk(func), args_val],
+            args: vec![alloc(func, &ctx), args_val],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .expect("should return thunk");
@@ -2936,11 +2612,12 @@ mod tests {
         );
 
         let apply_thunk = run(builtin_apply(BuiltinArgs {
-            args: vec![thunk(Value::Int(42)), args_val],
+            args: vec![alloc(Value::Int(42), &ctx), args_val],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .expect("should return thunk");
@@ -2959,15 +2636,16 @@ mod tests {
         let ctx = test_ctx();
         let func = parse_eval("[fn [let x] $x]", &ctx).await;
         let apply_result = run(builtin_apply(BuiltinArgs {
-            args: vec![thunk(func), thunk(Value::Int(42))],
+            args: vec![alloc(func, &ctx), alloc(Value::Int(42), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .expect("should return thunk");
-        let err = materialize_sync(&apply_result, None, &test_ctx())
+        let err = materialize_sync(&apply_result, None, &ctx)
             .await
             .unwrap_err();
         assert!(
@@ -2979,16 +2657,18 @@ mod tests {
 
     #[tokio::test]
     async fn apply_wrong_arity() {
+        let ctx = test_ctx();
         let apply_result = run(builtin_apply(BuiltinArgs {
-            args: vec![thunk(Value::Int(1))],
+            args: vec![alloc(Value::Int(1), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .expect("should return thunk");
-        let err = materialize_sync(&apply_result, None, &test_ctx())
+        let err = materialize_sync(&apply_result, None, &ctx)
             .await
             .unwrap_err();
         assert!(
@@ -3000,12 +2680,14 @@ mod tests {
 
     #[tokio::test]
     async fn type_of_int() {
+        let ctx = test_ctx();
         let result = mat(builtin_type_of(BuiltinArgs {
-            args: vec![thunk(Value::Int(42))],
+            args: vec![alloc(Value::Int(42), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, string_val("Int".into()));
@@ -3013,12 +2695,14 @@ mod tests {
 
     #[tokio::test]
     async fn type_of_float() {
+        let ctx = test_ctx();
         let result = mat(builtin_type_of(BuiltinArgs {
-            args: vec![thunk(Value::Float(3.14))],
+            args: vec![alloc(Value::Float(3.14), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, string_val("Float".into()));
@@ -3026,12 +2710,14 @@ mod tests {
 
     #[tokio::test]
     async fn type_of_string() {
+        let ctx = test_ctx();
         let result = mat(builtin_type_of(BuiltinArgs {
-            args: vec![thunk(string_val("hi".into()))],
+            args: vec![alloc(string_val("hi"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, string_val("String".into()));
@@ -3039,12 +2725,14 @@ mod tests {
 
     #[tokio::test]
     async fn type_of_dict() {
+        let ctx = test_ctx();
         let result = mat(builtin_type_of(BuiltinArgs {
-            args: vec![thunk(Value::Dict(IndexMap::new()))],
+            args: vec![alloc(Value::Dict(IndexMap::new()), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, string_val("Dict".into()));
@@ -3055,11 +2743,12 @@ mod tests {
         let ctx = test_ctx();
         let func = parse_eval("[fn [let] 0]", &ctx).await;
         let result = mat(builtin_type_of(BuiltinArgs {
-            args: vec![thunk(func)],
+            args: vec![alloc(func, &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, string_val("Function".into()));
@@ -3077,15 +2766,15 @@ mod tests {
             name: "dummy",
             pos_strictness: &[],
             force_count: 0,
-            params: &[],
-            named_params: &[],
         });
+        let ctx = test_ctx();
         let result = mat(builtin_type_of(BuiltinArgs {
-            args: vec![thunk(builtin)],
+            args: vec![alloc(builtin, &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, string_val("Function".into()));
@@ -3094,19 +2783,18 @@ mod tests {
     #[tokio::test]
     async fn test_type_of_variant() {
         // Nominal variants return their full qualified tag from $type-of.
-        let variant = Arc::new(Thunk::new_materialized(
-            Value::Variant {
-                tag: "Color.Red".to_string(),
-                payload: None,
-            },
-            test_span(1, 1, 1, 5),
-        ));
+        let ctx = test_ctx();
+        let variant = alloc(Value::Variant {
+            tag: "Color.Red".to_string(),
+            payload: None,
+        }, &ctx);
         let result = mat(builtin_type_of(BuiltinArgs {
             args: vec![variant],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, string_val("Color.Red".into()));
@@ -3114,12 +2802,14 @@ mod tests {
 
     #[tokio::test]
     async fn type_of_arity_check() {
+        let ctx = test_ctx();
         let err = run(builtin_type_of(BuiltinArgs {
             args: vec![],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -3139,7 +2829,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         match result {
@@ -3162,7 +2853,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         match result {
@@ -3193,7 +2885,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         match result {
@@ -3225,7 +2918,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         match result {
@@ -3256,7 +2950,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         match result {
@@ -3281,7 +2976,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Int(0));
@@ -3300,7 +2996,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Int(3));
@@ -3318,84 +3015,13 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Int(2));
     }
 
-    #[tokio::test]
-    async fn merge_disjoint_keys() {
-        let ctx = test_ctx();
-        let mut left = IndexMap::new();
-        left.insert(HashableValue::Str("a".into()), thunk(Value::Int(1)));
-        left.insert(HashableValue::Str("b".into()), thunk(Value::Int(2)));
-        let mut right = IndexMap::new();
-        right.insert(HashableValue::Str("c".into()), thunk(Value::Int(3)));
-        right.insert(HashableValue::Str("d".into()), thunk(Value::Int(4)));
-
-        let result = mat(builtin_merge(BuiltinArgs {
-            args: vec![thunk_dict(left, &ctx), thunk_dict(right, &ctx)],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await;
-        // builtin_merge now returns Value::Overlay; flatten to verify contents.
-        let map = flatten_val(result, &ctx).await;
-        assert_eq!(map.len(), 4);
-        assert!(map.contains_key(&HashableValue::Str("a".into())));
-        assert!(map.contains_key(&HashableValue::Str("b".into())));
-        assert!(map.contains_key(&HashableValue::Str("c".into())));
-        assert!(map.contains_key(&HashableValue::Str("d".into())));
-    }
-
-    #[tokio::test]
-    async fn merge_overlapping_keys_right_wins() {
-        let ctx = test_ctx();
-        let mut left = IndexMap::new();
-        left.insert(HashableValue::Str("x".into()), thunk(Value::Int(1)));
-        left.insert(HashableValue::Str("y".into()), thunk(Value::Int(2)));
-        let mut right = IndexMap::new();
-        right.insert(HashableValue::Str("y".into()), thunk(Value::Int(99)));
-        right.insert(HashableValue::Str("z".into()), thunk(Value::Int(3)));
-
-        let result = mat(builtin_merge(BuiltinArgs {
-            args: vec![thunk_dict(left, &ctx), thunk_dict(right, &ctx)],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await;
-        let map = flatten_val(result, &ctx).await;
-        assert_eq!(map.len(), 3);
-        let x = mat_id(map[&HashableValue::Str("x".into())], &ctx).await;
-        assert_eq!(x, Value::Int(1));
-        let y = mat_id(map[&HashableValue::Str("y".into())], &ctx).await;
-        assert_eq!(y, Value::Int(99)); // R overrides L
-        let z = mat_id(map[&HashableValue::Str("z".into())], &ctx).await;
-        assert_eq!(z, Value::Int(3));
-    }
-
-    #[tokio::test]
-    async fn merge_empty_dicts() {
-        let ctx = test_ctx();
-        let result = mat(builtin_merge(BuiltinArgs {
-            args: vec![
-                thunk_dict(IndexMap::new(), &ctx),
-                thunk_dict(IndexMap::new(), &ctx),
-            ],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await;
-        let map = flatten_val(result, &ctx).await;
-        assert_eq!(map.len(), 0);
-    }
 
     #[tokio::test]
     async fn builtin_def_strictness_array_validity() {
@@ -3427,117 +3053,17 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn merge_left_empty() {
-        let ctx = test_ctx();
-        let mut right = IndexMap::new();
-        right.insert(HashableValue::Int(0), thunk(string_val("only".into())));
-        let result = mat(builtin_merge(BuiltinArgs {
-            args: vec![thunk_dict(IndexMap::new(), &ctx), thunk_dict(right, &ctx)],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await;
-        let map = flatten_val(result, &ctx).await;
-        assert_eq!(map.len(), 1);
-        let v = mat_id(map[&HashableValue::Int(0)], &ctx).await;
-        assert_eq!(v, string_val("only".into()));
-    }
-
-    #[tokio::test]
-    async fn merge_right_empty() {
-        let ctx = test_ctx();
-        let mut left = IndexMap::new();
-        left.insert(HashableValue::Int(0), thunk(string_val("only".into())));
-        let result = mat(builtin_merge(BuiltinArgs {
-            args: vec![thunk_dict(left, &ctx), thunk_dict(IndexMap::new(), &ctx)],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await;
-        let map = flatten_val(result, &ctx).await;
-        assert_eq!(map.len(), 1);
-        let v = mat_id(map[&HashableValue::Int(0)], &ctx).await;
-        assert_eq!(v, string_val("only".into()));
-    }
-
-    #[tokio::test]
-    async fn merge_preserves_thunks() {
-        // With arena-based ThunkIds, verify that the values are preserved correctly
-        // through a lazy overlay by materializing and comparing values.
-        let ctx = test_ctx();
-        let span = test_span(1, 1, 1, 5);
-        let left_thunk = Arc::new(Thunk::new_materialized(Value::Int(42), span.clone()));
-        let right_thunk = Arc::new(Thunk::new_materialized(Value::Int(99), span));
-
-        let mut left = IndexMap::new();
-        left.insert(HashableValue::Str("a".into()), Arc::clone(&left_thunk));
-        let mut right = IndexMap::new();
-        right.insert(HashableValue::Str("b".into()), Arc::clone(&right_thunk));
-
-        let result = mat(builtin_merge(BuiltinArgs {
-            args: vec![thunk_dict(left, &ctx), thunk_dict(right, &ctx)],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await;
-        // Flatten and verify values are preserved correctly through the overlay.
-        let map = flatten_val(result, &ctx).await;
-        assert_eq!(
-            mat_id(map[&HashableValue::Str("a".into())], &ctx).await,
-            Value::Int(42)
-        );
-        assert_eq!(
-            mat_id(map[&HashableValue::Str("b".into())], &ctx).await,
-            Value::Int(99)
-        );
-    }
-
-    #[tokio::test]
-    async fn merge_preserves_left_order() {
-        let ctx = test_ctx();
-        let mut left = IndexMap::new();
-        left.insert(HashableValue::Str("b".into()), thunk(Value::Int(1)));
-        left.insert(HashableValue::Str("a".into()), thunk(Value::Int(2)));
-        let mut right = IndexMap::new();
-        right.insert(HashableValue::Str("d".into()), thunk(Value::Int(3)));
-        right.insert(HashableValue::Str("c".into()), thunk(Value::Int(4)));
-
-        let result = mat(builtin_merge(BuiltinArgs {
-            args: vec![thunk_dict(left, &ctx), thunk_dict(right, &ctx)],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await;
-        let map = flatten_val(result, &ctx).await;
-        let keys: Vec<&HashableValue> = map.keys().collect();
-        assert_eq!(
-            keys,
-            vec![
-                &HashableValue::Str("b".into()),
-                &HashableValue::Str("a".into()),
-                &HashableValue::Str("d".into()),
-                &HashableValue::Str("c".into()),
-            ]
-        );
-    }
 
     #[tokio::test]
     async fn keys_wrong_arity_zero() {
+        let ctx = test_ctx();
         let err = run(builtin_keys(BuiltinArgs {
             args: vec![],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -3553,11 +3079,12 @@ mod tests {
         let ctx = test_ctx();
         let d = thunk_dict(IndexMap::new(), &ctx);
         let err = run(builtin_keys(BuiltinArgs {
-            args: vec![d.clone(), d],
+            args: vec![d, d],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -3570,12 +3097,14 @@ mod tests {
 
     #[tokio::test]
     async fn length_wrong_arity_zero() {
+        let ctx = test_ctx();
         let err = run(builtin_length(BuiltinArgs {
             args: vec![],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -3595,7 +3124,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -3606,54 +3136,17 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn merge_wrong_arity_one() {
-        let ctx = test_ctx();
-        let d = thunk_dict(IndexMap::new(), &ctx);
-        let err = run(builtin_merge(BuiltinArgs {
-            args: vec![d],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await
-        .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("arity mismatch"),
-            "got: {}",
-            err.kind
-        );
-    }
-
-    #[tokio::test]
-    async fn merge_wrong_arity_three() {
-        let ctx = test_ctx();
-        let d = thunk_dict(IndexMap::new(), &ctx);
-        let err = run(builtin_merge(BuiltinArgs {
-            args: vec![d.clone(), d.clone(), d],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await
-        .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("arity mismatch"),
-            "got: {}",
-            err.kind
-        );
-    }
 
     #[tokio::test]
     async fn keys_non_dict_int() {
+        let ctx = test_ctx();
         let err = run(builtin_keys(BuiltinArgs {
-            args: vec![thunk(Value::Int(42))],
+            args: vec![alloc(Value::Int(42), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -3672,12 +3165,14 @@ mod tests {
 
     #[tokio::test]
     async fn keys_non_dict_string() {
+        let ctx = test_ctx();
         let err = run(builtin_keys(BuiltinArgs {
-            args: vec![thunk(string_val("hello".into()))],
+            args: vec![alloc(string_val("hello"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -3692,12 +3187,14 @@ mod tests {
     #[tokio::test]
     async fn length_string() {
         // length now supports String inputs (returns character count)
+        let ctx = test_ctx();
         let result = mat(builtin_length(BuiltinArgs {
-            args: vec![thunk(string_val("hello".into()))],
+            args: vec![alloc(string_val("hello"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Int(5));
@@ -3705,12 +3202,14 @@ mod tests {
 
     #[tokio::test]
     async fn length_string_empty() {
+        let ctx = test_ctx();
         let result = mat(builtin_length(BuiltinArgs {
-            args: vec![thunk(string_val("".into()))],
+            args: vec![alloc(string_val(""), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Int(0));
@@ -3719,327 +3218,34 @@ mod tests {
     #[tokio::test]
     async fn length_string_unicode() {
         // Multi-byte characters: length returns char count, not byte count
+        let ctx = test_ctx();
         let result = mat(builtin_length(BuiltinArgs {
-            args: vec![thunk(string_val("\u{1F600}\u{1F601}".into()))],
+            args: vec![alloc(string_val("\u{1F600}\u{1F601}"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Int(2));
     }
 
-    #[tokio::test]
-    async fn merge_first_arg_non_dict() {
-        // With lazy overlay, builtin_merge succeeds (O(1) — no type check at call time).
-        // The type error fires when the overlay is flattened (at access time).
-        let ctx = test_ctx();
-        let d = thunk_dict(IndexMap::new(), &ctx);
-        let result = run(builtin_merge(BuiltinArgs {
-            args: vec![thunk(Value::Int(1)), d],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await;
-        // builtin_merge itself succeeds — returns Overlay(Int(1), {})
-        let overlay_thunk = result.unwrap();
-        let overlay_val = materialize_sync(&overlay_thunk, None, &ctx).await.unwrap();
-        // Flatten fires the type error: left side is Int, not Dict
-        match overlay_val {
-            Value::Overlay(l, r) => {
-                let err = flatten_overlay(&l, &r, "merge", &ctx, call_span())
-                    .await
-                    .unwrap_err();
-                assert!(
-                    err.kind.to_string().contains("expected Dict"),
-                    "got: {}",
-                    err.kind
-                );
-                assert!(
-                    err.kind.to_string().contains("got Int"),
-                    "got: {}",
-                    err.kind
-                );
-            }
-            other => panic!("expected Overlay, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn merge_second_arg_non_dict() {
-        // With lazy overlay, builtin_merge succeeds (O(1) — no type check at call time).
-        // The type error fires when the overlay is flattened (at access time).
-        let ctx = test_ctx();
-        let d = thunk_dict(IndexMap::new(), &ctx);
-        let result = run(builtin_merge(BuiltinArgs {
-            args: vec![d, thunk(string_val("nope".into()))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await;
-        let overlay_thunk = result.unwrap();
-        let overlay_val = materialize_sync(&overlay_thunk, None, &ctx).await.unwrap();
-        // Flatten fires the type error: right side is String, not Dict
-        match overlay_val {
-            Value::Overlay(l, r) => {
-                let err = flatten_overlay(&l, &r, "merge", &ctx, call_span())
-                    .await
-                    .unwrap_err();
-                assert!(
-                    err.kind.to_string().contains("expected Dict"),
-                    "got: {}",
-                    err.kind
-                );
-                assert!(
-                    err.kind.to_string().contains("got String"),
-                    "got: {}",
-                    err.kind
-                );
-            }
-            other => panic!("expected Overlay, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn append_to_empty_dict() {
-        let ctx = test_ctx();
-        let empty = thunk_dict(IndexMap::new(), &ctx);
-        let result = mat(builtin_append(BuiltinArgs {
-            args: vec![thunk(Value::Int(42)), empty],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await;
-        match result {
-            Value::Dict(map) => {
-                assert_eq!(map.len(), 1);
-                let val = mat_id(*map.get(&HashableValue::Int(0)).unwrap(), &ctx).await;
-                assert_eq!(val, Value::Int(42));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn append_to_existing_list() {
-        let ctx = test_ctx();
-        let mut map = IndexMap::new();
-        map.insert(HashableValue::Int(0), thunk(string_val("a".into())));
-        map.insert(HashableValue::Int(1), thunk(string_val("b".into())));
-        let dict = thunk_dict(map, &ctx);
-        let result = mat(builtin_append(BuiltinArgs {
-            args: vec![thunk(string_val("c".into())), dict],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await;
-        match result {
-            Value::Dict(map) => {
-                assert_eq!(map.len(), 3);
-                let val = mat_id(*map.get(&HashableValue::Int(2)).unwrap(), &ctx).await;
-                assert_eq!(val, string_val("c".into()));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn append_to_dict_with_string_keys_only() {
-        // Dict with only string keys -- next int key should be 0
-        let ctx = test_ctx();
-        let mut map = IndexMap::new();
-        map.insert(HashableValue::Str("x".into()), thunk(Value::Int(1)));
-        let dict = thunk_dict(map, &ctx);
-        let result = mat(builtin_append(BuiltinArgs {
-            args: vec![thunk(Value::Int(99)), dict],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await;
-        match result {
-            Value::Dict(map) => {
-                assert_eq!(map.len(), 2);
-                let val = mat_id(*map.get(&HashableValue::Int(0)).unwrap(), &ctx).await;
-                assert_eq!(val, Value::Int(99));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn append_to_dict_with_gap_in_int_keys() {
-        // Dict with keys 0, 5 -- next key should be 6 (max + 1)
-        let ctx = test_ctx();
-        let mut map = IndexMap::new();
-        map.insert(HashableValue::Int(0), thunk(Value::Int(10)));
-        map.insert(HashableValue::Int(5), thunk(Value::Int(50)));
-        let dict = thunk_dict(map, &ctx);
-        let result = mat(builtin_append(BuiltinArgs {
-            args: vec![thunk(Value::Int(60)), dict],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await;
-        match result {
-            Value::Dict(map) => {
-                assert_eq!(map.len(), 3);
-                let val = mat_id(*map.get(&HashableValue::Int(6)).unwrap(), &ctx).await;
-                assert_eq!(val, Value::Int(60));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn append_preserves_existing_entries() {
-        let ctx = test_ctx();
-        let mut map = IndexMap::new();
-        map.insert(HashableValue::Int(0), thunk(string_val("first".into())));
-        let dict = thunk_dict(map, &ctx);
-        let result = mat(builtin_append(BuiltinArgs {
-            args: vec![thunk(string_val("second".into())), dict],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await;
-        match result {
-            Value::Dict(map) => {
-                assert_eq!(map.len(), 2);
-                let first = mat_id(*map.get(&HashableValue::Int(0)).unwrap(), &ctx).await;
-                assert_eq!(first, string_val("first".into()));
-                let second = mat_id(*map.get(&HashableValue::Int(1)).unwrap(), &ctx).await;
-                assert_eq!(second, string_val("second".into()));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn append_value_stays_as_thunk() {
-        // The value arg is inserted lazily (not materialized at append time).
-        // Verify the inserted value is correct when materialized.
-        let ctx = test_ctx();
-        let empty = thunk_dict(IndexMap::new(), &ctx);
-        let val_thunk = thunk(Value::Int(7));
-        let result = mat(builtin_append(BuiltinArgs {
-            args: vec![Arc::clone(&val_thunk), empty],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await;
-        match result {
-            Value::Dict(map) => {
-                // Verify the value was inserted correctly and materializes to the expected value.
-                let id = *map.get(&HashableValue::Int(0)).unwrap();
-                assert_eq!(mat_id(id, &ctx).await, Value::Int(7));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn append_wrong_arity_zero() {
-        let err = run(builtin_append(BuiltinArgs {
-            args: vec![],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await
-        .unwrap_err();
-        assert!(err.kind.to_string().contains("2"), "got: {}", err.kind);
-    }
-
-    #[tokio::test]
-    async fn append_wrong_arity_three() {
-        let ctx = test_ctx();
-        let err = run(builtin_append(BuiltinArgs {
-            args: vec![
-                thunk_dict(IndexMap::new(), &ctx),
-                thunk(Value::Int(1)),
-                thunk(Value::Int(2)),
-            ],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await
-        .unwrap_err();
-        assert!(err.kind.to_string().contains("2"), "got: {}", err.kind);
-    }
-
-    #[tokio::test]
-    async fn append_second_arg_non_dict() {
-        let err = run(builtin_append(BuiltinArgs {
-            args: vec![thunk(Value::Int(1)), thunk(Value::Int(2))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await
-        .unwrap_err();
-        assert!(err.kind.to_string().contains("append"), "got: {}", err.kind);
-        assert!(
-            err.kind.to_string().contains("expected Dict"),
-            "got: {}",
-            err.kind
-        );
-    }
-
-    #[tokio::test]
-    async fn append_key_overflow_at_i64_max() {
-        let ctx = test_ctx();
-        let mut map = IndexMap::new();
-        map.insert(HashableValue::Int(i64::MAX), thunk(Value::Int(1)));
-        let dict = thunk_dict(map, &ctx);
-        let err = run(builtin_append(BuiltinArgs {
-            args: vec![thunk(Value::Int(2)), dict],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await
-        .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("integer overflow"),
-            "got: {}",
-            err.kind
-        );
-    }
 
     #[tokio::test]
     async fn replace_basic() {
+        let ctx = test_ctx();
         let result = mat(builtin_replace(BuiltinArgs {
             args: vec![
-                thunk(string_val("world".into())),
-                thunk(string_val("Rust".into())),
-                thunk(string_val("hello world".into())),
+                alloc(string_val("world"), &ctx),
+                alloc(string_val("Rust"), &ctx),
+                alloc(string_val("hello world"), &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, string_val("hello Rust".into()));
@@ -4047,16 +3253,18 @@ mod tests {
 
     #[tokio::test]
     async fn replace_multiple_occurrences() {
+        let ctx = test_ctx();
         let result = mat(builtin_replace(BuiltinArgs {
             args: vec![
-                thunk(string_val("a".into())),
-                thunk(string_val("o".into())),
-                thunk(string_val("banana".into())),
+                alloc(string_val("a"), &ctx),
+                alloc(string_val("o"), &ctx),
+                alloc(string_val("banana"), &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, string_val("bonono".into()));
@@ -4064,16 +3272,18 @@ mod tests {
 
     #[tokio::test]
     async fn replace_no_match() {
+        let ctx = test_ctx();
         let result = mat(builtin_replace(BuiltinArgs {
             args: vec![
-                thunk(string_val("xyz".into())),
-                thunk(string_val("abc".into())),
-                thunk(string_val("hello".into())),
+                alloc(string_val("xyz"), &ctx),
+                alloc(string_val("abc"), &ctx),
+                alloc(string_val("hello"), &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, string_val("hello".into()));
@@ -4081,16 +3291,18 @@ mod tests {
 
     #[tokio::test]
     async fn replace_empty_pattern() {
+        let ctx = test_ctx();
         let result = mat(builtin_replace(BuiltinArgs {
             args: vec![
-                thunk(string_val("".into())),
-                thunk(string_val("-".into())),
-                thunk(string_val("abc".into())),
+                alloc(string_val(""), &ctx),
+                alloc(string_val("-"), &ctx),
+                alloc(string_val("abc"), &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, string_val("-a-b-c-".into()));
@@ -4098,16 +3310,18 @@ mod tests {
 
     #[tokio::test]
     async fn replace_to_empty() {
+        let ctx = test_ctx();
         let result = mat(builtin_replace(BuiltinArgs {
             args: vec![
-                thunk(string_val("l".into())),
-                thunk(string_val("".into())),
-                thunk(string_val("hello".into())),
+                alloc(string_val("l"), &ctx),
+                alloc(string_val(""), &ctx),
+                alloc(string_val("hello"), &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, string_val("heo".into()));
@@ -4117,18 +3331,20 @@ mod tests {
     async fn replace_output_size_limit_empty_pattern() {
         // Empty pattern with large replacement should error.
         // 1000 chars input, 100k chars replacement -> output would be ~100MB.
+        let ctx = test_ctx();
         let input = "a".repeat(1000);
         let replacement = "x".repeat(100_000);
         let result = run(builtin_replace(BuiltinArgs {
             args: vec![
-                thunk(string_val("")),
-                thunk(string_val(&replacement)),
-                thunk(string_val(&input)),
+                alloc(string_val(""), &ctx),
+                alloc(string_val(&replacement), &ctx),
+                alloc(string_val(&input), &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert!(result.is_err());
@@ -4139,17 +3355,19 @@ mod tests {
     #[tokio::test]
     async fn replace_output_size_ok_normal_pattern() {
         // Normal pattern replacement should succeed even with moderate sizes.
+        let ctx = test_ctx();
         let input = "a".repeat(1000);
         let result = mat(builtin_replace(BuiltinArgs {
             args: vec![
-                thunk(string_val("a")),
-                thunk(string_val("bb")),
-                thunk(string_val(&input)),
+                alloc(string_val("a"), &ctx),
+                alloc(string_val("bb"), &ctx),
+                alloc(string_val(&input), &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         // 1000 'a' replaced with 'bb' -> 2000 'b'
@@ -4158,12 +3376,14 @@ mod tests {
 
     #[tokio::test]
     async fn trim_basic() {
+        let ctx = test_ctx();
         let result = mat(builtin_trim(BuiltinArgs {
-            args: vec![thunk(string_val("  hello  ".into()))],
+            args: vec![alloc(string_val("  hello  "), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, string_val("hello".into()));
@@ -4171,12 +3391,14 @@ mod tests {
 
     #[tokio::test]
     async fn trim_leading_only() {
+        let ctx = test_ctx();
         let result = mat(builtin_trim(BuiltinArgs {
-            args: vec![thunk(string_val("   hello".into()))],
+            args: vec![alloc(string_val("   hello"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, string_val("hello".into()));
@@ -4184,12 +3406,14 @@ mod tests {
 
     #[tokio::test]
     async fn trim_trailing_only() {
+        let ctx = test_ctx();
         let result = mat(builtin_trim(BuiltinArgs {
-            args: vec![thunk(string_val("hello   ".into()))],
+            args: vec![alloc(string_val("hello   "), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, string_val("hello".into()));
@@ -4197,12 +3421,14 @@ mod tests {
 
     #[tokio::test]
     async fn trim_no_whitespace() {
+        let ctx = test_ctx();
         let result = mat(builtin_trim(BuiltinArgs {
-            args: vec![thunk(string_val("hello".into()))],
+            args: vec![alloc(string_val("hello"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, string_val("hello".into()));
@@ -4210,12 +3436,14 @@ mod tests {
 
     #[tokio::test]
     async fn trim_all_whitespace() {
+        let ctx = test_ctx();
         let result = mat(builtin_trim(BuiltinArgs {
-            args: vec![thunk(string_val("   ".into()))],
+            args: vec![alloc(string_val("   "), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, string_val("".into()));
@@ -4223,12 +3451,14 @@ mod tests {
 
     #[tokio::test]
     async fn trim_tabs_and_newlines() {
+        let ctx = test_ctx();
         let result = mat(builtin_trim(BuiltinArgs {
-            args: vec![thunk(string_val("\t\nhello\n\t".into()))],
+            args: vec![alloc(string_val("\t\nhello\n\t"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, string_val("hello".into()));
@@ -4236,12 +3466,14 @@ mod tests {
 
     #[tokio::test]
     async fn trim_empty() {
+        let ctx = test_ctx();
         let result = mat(builtin_trim(BuiltinArgs {
-            args: vec![thunk(string_val("".into()))],
+            args: vec![alloc(string_val(""), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, string_val("".into()));
@@ -4249,12 +3481,14 @@ mod tests {
 
     #[tokio::test]
     async fn replace_wrong_arity() {
+        let ctx = test_ctx();
         let err = run(builtin_replace(BuiltinArgs {
-            args: vec![thunk(string_val("a".into())), thunk(string_val("b".into()))],
+            args: vec![alloc(string_val("a"), &ctx), alloc(string_val("b"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -4272,12 +3506,14 @@ mod tests {
 
     #[tokio::test]
     async fn trim_wrong_arity() {
+        let ctx = test_ctx();
         let err = run(builtin_trim(BuiltinArgs {
-            args: vec![thunk(string_val("a".into())), thunk(string_val("b".into()))],
+            args: vec![alloc(string_val("a"), &ctx), alloc(string_val("b"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -4290,16 +3526,18 @@ mod tests {
 
     #[tokio::test]
     async fn replace_wrong_type_pattern() {
+        let ctx = test_ctx();
         let err = run(builtin_replace(BuiltinArgs {
             args: vec![
-                thunk(Value::Int(1)),
-                thunk(string_val("b".into())),
-                thunk(string_val("abc".into())),
+                alloc(Value::Int(1), &ctx),
+                alloc(string_val("b"), &ctx),
+                alloc(string_val("abc"), &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -4317,16 +3555,18 @@ mod tests {
 
     #[tokio::test]
     async fn replace_wrong_type_replacement() {
+        let ctx = test_ctx();
         let err = run(builtin_replace(BuiltinArgs {
             args: vec![
-                thunk(string_val("a".into())),
-                thunk(Value::Dict(IndexMap::new())),
-                thunk(string_val("abc".into())),
+                alloc(string_val("a"), &ctx),
+                alloc(Value::Dict(IndexMap::new()), &ctx),
+                alloc(string_val("abc"), &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -4339,16 +3579,18 @@ mod tests {
 
     #[tokio::test]
     async fn replace_wrong_type_input() {
+        let ctx = test_ctx();
         let err = run(builtin_replace(BuiltinArgs {
             args: vec![
-                thunk(string_val("a".into())),
-                thunk(string_val("b".into())),
-                thunk(Value::Float(3.14)),
+                alloc(string_val("a"), &ctx),
+                alloc(string_val("b"), &ctx),
+                alloc(Value::Float(3.14), &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -4366,12 +3608,14 @@ mod tests {
 
     #[tokio::test]
     async fn trim_wrong_type() {
+        let ctx = test_ctx();
         let err = run(builtin_trim(BuiltinArgs {
-            args: vec![thunk(Value::Float(3.14))],
+            args: vec![alloc(Value::Float(3.14), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -4394,14 +3638,16 @@ mod tests {
 
     #[tokio::test]
     async fn trim_rejects_named_args() {
+        let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert("x".into(), thunk(string_val("hi".into())));
+        named.insert("x".into(), alloc(string_val("hi"), &ctx));
         let err = run(builtin_trim(BuiltinArgs {
-            args: vec![thunk(string_val("  hello  ".into()))],
+            args: vec![alloc(string_val("  hello  "), &ctx)],
             named: Some(named),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -4414,14 +3660,16 @@ mod tests {
 
     #[tokio::test]
     async fn error_rejects_named_args() {
+        let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert("x".into(), thunk(Value::Int(1)));
+        named.insert("x".into(), alloc(Value::Int(1), &ctx));
         let err = run(builtin_raise(BuiltinArgs {
-            args: vec![thunk(string_val("boom".into()))],
+            args: vec![alloc(string_val("boom"), &ctx)],
             named: Some(named),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -4434,14 +3682,16 @@ mod tests {
 
     #[tokio::test]
     async fn type_of_rejects_named_args() {
+        let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert("x".into(), thunk(Value::Int(1)));
+        named.insert("x".into(), alloc(Value::Int(1), &ctx));
         let err = run(builtin_type_of(BuiltinArgs {
-            args: vec![thunk(Value::Int(42))],
+            args: vec![alloc(Value::Int(42), &ctx)],
             named: Some(named),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -4454,14 +3704,16 @@ mod tests {
 
     #[tokio::test]
     async fn to_int_rejects_named_args() {
+        let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert("x".into(), thunk(Value::Int(1)));
+        named.insert("x".into(), alloc(Value::Int(1), &ctx));
         let err = run(builtin_to_int(BuiltinArgs {
-            args: vec![thunk(string_val("42".into()))],
+            args: vec![alloc(string_val("42"), &ctx)],
             named: Some(named),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -4474,18 +3726,20 @@ mod tests {
 
     #[tokio::test]
     async fn replace_rejects_named_args() {
+        let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert("x".into(), thunk(Value::Int(1)));
+        named.insert("x".into(), alloc(Value::Int(1), &ctx));
         let err = run(builtin_replace(BuiltinArgs {
             args: vec![
-                thunk(string_val("a".into())),
-                thunk(string_val("b".into())),
-                thunk(string_val("abc".into())),
+                alloc(string_val("a"), &ctx),
+                alloc(string_val("b"), &ctx),
+                alloc(string_val("abc"), &ctx),
             ],
             named: Some(named),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -4498,14 +3752,16 @@ mod tests {
 
     #[tokio::test]
     async fn add_rejects_named_args() {
+        let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert("extra".into(), thunk(Value::Int(99)));
-        let err = run(builtin_add(BuiltinArgs {
-            args: vec![thunk(Value::Int(1)), thunk(Value::Int(2))],
+        named.insert("extra".into(), alloc(Value::Int(99), &ctx));
+        let err = run(builtin_int_add(BuiltinArgs {
+            args: vec![alloc(Value::Int(1), &ctx), alloc(Value::Int(2), &ctx)],
             named: Some(named),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -4518,14 +3774,16 @@ mod tests {
 
     #[tokio::test]
     async fn sub_rejects_named_args() {
+        let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert("extra".into(), thunk(Value::Int(1)));
-        let err = run(builtin_sub(BuiltinArgs {
-            args: vec![thunk(Value::Int(3)), thunk(Value::Int(1))],
+        named.insert("extra".into(), alloc(Value::Int(1), &ctx));
+        let err = run(builtin_int_sub(BuiltinArgs {
+            args: vec![alloc(Value::Int(3), &ctx), alloc(Value::Int(1), &ctx)],
             named: Some(named),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -4538,14 +3796,16 @@ mod tests {
 
     #[tokio::test]
     async fn mul_rejects_named_args() {
+        let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert("extra".into(), thunk(Value::Int(1)));
+        named.insert("extra".into(), alloc(Value::Int(1), &ctx));
         let err = run(builtin_mul(BuiltinArgs {
-            args: vec![thunk(Value::Int(2)), thunk(Value::Int(3))],
+            args: vec![alloc(Value::Int(2), &ctx), alloc(Value::Int(3), &ctx)],
             named: Some(named),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -4558,14 +3818,16 @@ mod tests {
 
     #[tokio::test]
     async fn div_float_rejects_named_args() {
+        let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert("extra".into(), thunk(Value::Int(1)));
+        named.insert("extra".into(), alloc(Value::Int(1), &ctx));
         let err = run(builtin_div_float(BuiltinArgs {
-            args: vec![thunk(Value::Int(10)), thunk(Value::Int(3))],
+            args: vec![alloc(Value::Int(10), &ctx), alloc(Value::Int(3), &ctx)],
             named: Some(named),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -4578,14 +3840,16 @@ mod tests {
 
     #[tokio::test]
     async fn eq_rejects_named_args() {
+        let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert("extra".into(), thunk(Value::Int(1)));
+        named.insert("extra".into(), alloc(Value::Int(1), &ctx));
         let err = run(builtin_eq_int(BuiltinArgs {
-            args: vec![thunk(Value::Int(1)), thunk(Value::Int(2))],
+            args: vec![alloc(Value::Int(1), &ctx), alloc(Value::Int(2), &ctx)],
             named: Some(named),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -4598,14 +3862,16 @@ mod tests {
 
     #[tokio::test]
     async fn lt_rejects_named_args() {
+        let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert("extra".into(), thunk(Value::Int(1)));
+        named.insert("extra".into(), alloc(Value::Int(1), &ctx));
         let err = run(builtin_lt(BuiltinArgs {
-            args: vec![thunk(Value::Int(1)), thunk(Value::Int(2))],
+            args: vec![alloc(Value::Int(1), &ctx), alloc(Value::Int(2), &ctx)],
             named: Some(named),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -4620,7 +3886,7 @@ mod tests {
     async fn keys_rejects_named_args() {
         let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert("extra".into(), thunk(Value::Int(1)));
+        named.insert("extra".into(), alloc(Value::Int(1), &ctx));
         let dict = thunk_dict(
             {
                 let mut m = IndexMap::new();
@@ -4634,7 +3900,8 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -4647,15 +3914,17 @@ mod tests {
 
     #[tokio::test]
     async fn length_rejects_named_args() {
+        let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert("extra".into(), thunk(Value::Int(1)));
+        named.insert("extra".into(), alloc(Value::Int(1), &ctx));
         let map = IndexMap::new();
         let err = run(builtin_length(BuiltinArgs {
-            args: vec![thunk(Value::Dict(map))],
+            args: vec![alloc(Value::Dict(map), &ctx)],
             named: Some(named),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -4666,61 +3935,20 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn merge_rejects_named_args() {
-        let mut named = IndexMap::new();
-        named.insert("extra".into(), thunk(Value::Int(1)));
-        let err = run(builtin_merge(BuiltinArgs {
-            args: vec![
-                thunk(Value::Dict(IndexMap::new())),
-                thunk(Value::Dict(IndexMap::new())),
-            ],
-            named: Some(named),
-            call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await
-        .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("named arguments"),
-            "got: {}",
-            err.kind
-        );
-    }
-
-    #[tokio::test]
-    async fn append_rejects_named_args() {
-        let mut named = IndexMap::new();
-        named.insert("extra".into(), thunk(Value::Int(1)));
-        let err = run(builtin_append(BuiltinArgs {
-            args: vec![thunk(Value::Dict(IndexMap::new())), thunk(Value::Int(42))],
-            named: Some(named),
-            call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await
-        .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("named arguments"),
-            "got: {}",
-            err.kind
-        );
-    }
 
     #[tokio::test]
     async fn try_rejects_named_args() {
         let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert("extra".into(), thunk(Value::Int(1)));
+        named.insert("extra".into(), alloc(Value::Int(1), &ctx));
         let func = parse_eval("[fn [let] 42]", &ctx).await;
         let err = run(builtin_try(BuiltinArgs {
-            args: vec![thunk(func)],
+            args: vec![alloc(func, &ctx)],
             named: Some(named),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -4735,18 +3963,19 @@ mod tests {
     async fn apply_rejects_named_args() {
         let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert("extra".into(), thunk(Value::Int(1)));
+        named.insert("extra".into(), alloc(Value::Int(1), &ctx));
         let func = parse_eval("[fn [let] 42]", &ctx).await;
         let apply_result = run(builtin_apply(BuiltinArgs {
-            args: vec![thunk(func), thunk(Value::Dict(IndexMap::new()))],
+            args: vec![alloc(func, &ctx), alloc(Value::Dict(IndexMap::new()), &ctx)],
             named: Some(named),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .expect("should return thunk");
-        let err = materialize_sync(&apply_result, None, &test_ctx())
+        let err = materialize_sync(&apply_result, None, &ctx)
             .await
             .unwrap_err();
         assert!(
@@ -4760,8 +3989,8 @@ mod tests {
     async fn core_builtins_count() {
         let count = crate::builtins_core::core_builtins().len();
         assert!(
-            count > 100,
-            "expected core builtins to have >100 entries, got {count}"
+            count > 75,
+            "expected core builtins to have >75 entries, got {count}"
         );
     }
 
@@ -4785,12 +4014,14 @@ mod tests {
 
     #[tokio::test]
     async fn add_int_int() {
-        let r = mat(builtin_add(BuiltinArgs {
-            args: vec![thunk(Value::Int(3)), thunk(Value::Int(5))],
+        let ctx = test_ctx();
+        let r = mat(builtin_int_add(BuiltinArgs {
+            args: vec![alloc(Value::Int(3), &ctx), alloc(Value::Int(5), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Int(8));
@@ -4798,25 +4029,16 @@ mod tests {
 
     #[tokio::test]
     async fn add_int_float() {
-        let r = mat(builtin_add(BuiltinArgs {
-            args: vec![thunk(Value::Int(3)), thunk(Value::Float(2.5))],
+        // Int+Float is now two steps: int-to-float then float-add.
+        // Test: [3 as Float] + 2.5 = 5.5
+        let ctx = test_ctx();
+        let r = mat(builtin_float_add(BuiltinArgs {
+            args: vec![alloc(Value::Float(3.0), &ctx), alloc(Value::Float(2.5), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await;
-        assert_eq!(r, Value::Float(5.5));
-    }
-
-    #[tokio::test]
-    async fn add_float_int() {
-        let r = mat(builtin_add(BuiltinArgs {
-            args: vec![thunk(Value::Float(2.5)), thunk(Value::Int(3))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Float(5.5));
@@ -4824,12 +4046,14 @@ mod tests {
 
     #[tokio::test]
     async fn add_float_float() {
-        let r = mat(builtin_add(BuiltinArgs {
-            args: vec![thunk(Value::Float(1.5)), thunk(Value::Float(2.5))],
+        let ctx = test_ctx();
+        let r = mat(builtin_float_add(BuiltinArgs {
+            args: vec![alloc(Value::Float(1.5), &ctx), alloc(Value::Float(2.5), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Float(4.0));
@@ -4837,12 +4061,14 @@ mod tests {
 
     #[tokio::test]
     async fn add_negative_ints() {
-        let r = mat(builtin_add(BuiltinArgs {
-            args: vec![thunk(Value::Int(-10)), thunk(Value::Int(3))],
+        let ctx = test_ctx();
+        let r = mat(builtin_int_add(BuiltinArgs {
+            args: vec![alloc(Value::Int(-10), &ctx), alloc(Value::Int(3), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Int(-7));
@@ -4850,12 +4076,14 @@ mod tests {
 
     #[tokio::test]
     async fn add_zeros() {
-        let r = mat(builtin_add(BuiltinArgs {
-            args: vec![thunk(Value::Int(0)), thunk(Value::Int(0))],
+        let ctx = test_ctx();
+        let r = mat(builtin_int_add(BuiltinArgs {
+            args: vec![alloc(Value::Int(0), &ctx), alloc(Value::Int(0), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -4863,12 +4091,14 @@ mod tests {
 
     #[tokio::test]
     async fn add_type_error_string() {
-        let e = run(builtin_add(BuiltinArgs {
-            args: vec![thunk(Value::Int(1)), thunk(string_val("hello".into()))],
+        let ctx = test_ctx();
+        let e = run(builtin_int_add(BuiltinArgs {
+            args: vec![alloc(Value::Int(1), &ctx), alloc(string_val("hello"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -4882,12 +4112,14 @@ mod tests {
 
     #[tokio::test]
     async fn add_arity_one_arg() {
-        let e = run(builtin_add(BuiltinArgs {
-            args: vec![thunk(Value::Int(1))],
+        let ctx = test_ctx();
+        let e = run(builtin_int_add(BuiltinArgs {
+            args: vec![alloc(Value::Int(1), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -4899,31 +4131,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn add_arity_three_args() {
-        // + now accepts 2+ args (uses first two). Three args succeed; result is 1+2=3.
-        let result = mat(builtin_add(BuiltinArgs {
-            args: vec![
-                thunk(Value::Int(1)),
-                thunk(Value::Int(2)),
-                thunk(Value::Int(3)),
-            ],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await;
-        assert_eq!(result, Value::Int(3));
-    }
-
-    #[tokio::test]
     async fn add_overflow_error() {
-        let err = run(builtin_add(BuiltinArgs {
-            args: vec![thunk(Value::Int(i64::MAX)), thunk(Value::Int(1))],
+        let ctx = test_ctx();
+        let err = run(builtin_int_add(BuiltinArgs {
+            args: vec![alloc(Value::Int(i64::MAX), &ctx), alloc(Value::Int(1), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -4936,12 +4152,14 @@ mod tests {
 
     #[tokio::test]
     async fn sub_overflow_error() {
-        let err = run(builtin_sub(BuiltinArgs {
-            args: vec![thunk(Value::Int(i64::MIN)), thunk(Value::Int(1))],
+        let ctx = test_ctx();
+        let err = run(builtin_int_sub(BuiltinArgs {
+            args: vec![alloc(Value::Int(i64::MIN), &ctx), alloc(Value::Int(1), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -4954,51 +4172,29 @@ mod tests {
 
     #[tokio::test]
     async fn sub_int_int() {
-        let r = mat(builtin_sub(BuiltinArgs {
-            args: vec![thunk(Value::Int(10)), thunk(Value::Int(3))],
+        let ctx = test_ctx();
+        let r = mat(builtin_int_sub(BuiltinArgs {
+            args: vec![alloc(Value::Int(10), &ctx), alloc(Value::Int(3), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Int(7));
     }
 
     #[tokio::test]
-    async fn sub_int_float() {
-        let r = mat(builtin_sub(BuiltinArgs {
-            args: vec![thunk(Value::Int(10)), thunk(Value::Float(3.5))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await;
-        assert_eq!(r, Value::Float(6.5));
-    }
-
-    #[tokio::test]
-    async fn sub_float_int() {
-        let r = mat(builtin_sub(BuiltinArgs {
-            args: vec![thunk(Value::Float(10.5)), thunk(Value::Int(3))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await;
-        assert_eq!(r, Value::Float(7.5));
-    }
-
-    #[tokio::test]
     async fn sub_float_float() {
-        let r = mat(builtin_sub(BuiltinArgs {
-            args: vec![thunk(Value::Float(10.5)), thunk(Value::Float(3.5))],
+        let ctx = test_ctx();
+        let r = mat(builtin_float_sub(BuiltinArgs {
+            args: vec![alloc(Value::Float(10.5), &ctx), alloc(Value::Float(3.5), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Float(7.0));
@@ -5006,12 +4202,14 @@ mod tests {
 
     #[tokio::test]
     async fn sub_result_negative() {
-        let r = mat(builtin_sub(BuiltinArgs {
-            args: vec![thunk(Value::Int(3)), thunk(Value::Int(10))],
+        let ctx = test_ctx();
+        let r = mat(builtin_int_sub(BuiltinArgs {
+            args: vec![alloc(Value::Int(3), &ctx), alloc(Value::Int(10), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Int(-7));
@@ -5019,12 +4217,14 @@ mod tests {
 
     #[tokio::test]
     async fn sub_to_zero() {
-        let r = mat(builtin_sub(BuiltinArgs {
-            args: vec![thunk(Value::Int(5)), thunk(Value::Int(5))],
+        let ctx = test_ctx();
+        let r = mat(builtin_int_sub(BuiltinArgs {
+            args: vec![alloc(Value::Int(5), &ctx), alloc(Value::Int(5), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -5032,12 +4232,14 @@ mod tests {
 
     #[tokio::test]
     async fn sub_arity_zero_args() {
-        let e = run(builtin_sub(BuiltinArgs {
+        let ctx = test_ctx();
+        let e = run(builtin_int_sub(BuiltinArgs {
             args: vec![],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -5050,12 +4252,14 @@ mod tests {
 
     #[tokio::test]
     async fn sub_arity_one_arg() {
-        let e = run(builtin_sub(BuiltinArgs {
-            args: vec![thunk(Value::Int(1))],
+        let ctx = test_ctx();
+        let e = run(builtin_int_sub(BuiltinArgs {
+            args: vec![alloc(Value::Int(1), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -5067,31 +4271,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sub_arity_three_args() {
-        // - now accepts 2+ args (uses first two). Three args succeed; result is 1-2=-1.
-        let result = mat(builtin_sub(BuiltinArgs {
-            args: vec![
-                thunk(Value::Int(1)),
-                thunk(Value::Int(2)),
-                thunk(Value::Int(3)),
-            ],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await;
-        assert_eq!(result, Value::Int(-1));
-    }
-
-    #[tokio::test]
     async fn sub_type_error_string() {
-        let e = run(builtin_sub(BuiltinArgs {
-            args: vec![thunk(Value::Int(1)), thunk(string_val("hello".into()))],
+        let ctx = test_ctx();
+        let e = run(builtin_int_sub(BuiltinArgs {
+            args: vec![alloc(Value::Int(1), &ctx), alloc(string_val("hello"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -5105,12 +4293,14 @@ mod tests {
 
     #[tokio::test]
     async fn mul_int_int() {
+        let ctx = test_ctx();
         let r = mat(builtin_mul(BuiltinArgs {
-            args: vec![thunk(Value::Int(4)), thunk(Value::Int(5))],
+            args: vec![alloc(Value::Int(4), &ctx), alloc(Value::Int(5), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Int(20));
@@ -5118,12 +4308,14 @@ mod tests {
 
     #[tokio::test]
     async fn mul_int_float() {
+        let ctx = test_ctx();
         let r = mat(builtin_mul(BuiltinArgs {
-            args: vec![thunk(Value::Int(4)), thunk(Value::Float(2.5))],
+            args: vec![alloc(Value::Int(4), &ctx), alloc(Value::Float(2.5), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Float(10.0));
@@ -5131,12 +4323,14 @@ mod tests {
 
     #[tokio::test]
     async fn mul_float_int() {
+        let ctx = test_ctx();
         let r = mat(builtin_mul(BuiltinArgs {
-            args: vec![thunk(Value::Float(2.5)), thunk(Value::Int(4))],
+            args: vec![alloc(Value::Float(2.5), &ctx), alloc(Value::Int(4), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Float(10.0));
@@ -5144,12 +4338,14 @@ mod tests {
 
     #[tokio::test]
     async fn mul_float_float() {
+        let ctx = test_ctx();
         let r = mat(builtin_mul(BuiltinArgs {
-            args: vec![thunk(Value::Float(2.5)), thunk(Value::Float(3.0))],
+            args: vec![alloc(Value::Float(2.5), &ctx), alloc(Value::Float(3.0), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Float(7.5));
@@ -5157,12 +4353,14 @@ mod tests {
 
     #[tokio::test]
     async fn mul_by_zero() {
+        let ctx = test_ctx();
         let r = mat(builtin_mul(BuiltinArgs {
-            args: vec![thunk(Value::Int(42)), thunk(Value::Int(0))],
+            args: vec![alloc(Value::Int(42), &ctx), alloc(Value::Int(0), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -5170,12 +4368,14 @@ mod tests {
 
     #[tokio::test]
     async fn mul_negative() {
+        let ctx = test_ctx();
         let r = mat(builtin_mul(BuiltinArgs {
-            args: vec![thunk(Value::Int(-3)), thunk(Value::Int(4))],
+            args: vec![alloc(Value::Int(-3), &ctx), alloc(Value::Int(4), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Int(-12));
@@ -5183,12 +4383,14 @@ mod tests {
 
     #[tokio::test]
     async fn mul_by_negative_one() {
+        let ctx = test_ctx();
         let r = mat(builtin_mul(BuiltinArgs {
-            args: vec![thunk(Value::Int(42)), thunk(Value::Int(-1))],
+            args: vec![alloc(Value::Int(42), &ctx), alloc(Value::Int(-1), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Int(-42));
@@ -5196,12 +4398,14 @@ mod tests {
 
     #[tokio::test]
     async fn mul_overflow_error() {
+        let ctx = test_ctx();
         let err = run(builtin_mul(BuiltinArgs {
-            args: vec![thunk(Value::Int(i64::MAX)), thunk(Value::Int(2))],
+            args: vec![alloc(Value::Int(i64::MAX), &ctx), alloc(Value::Int(2), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -5214,12 +4418,14 @@ mod tests {
 
     #[tokio::test]
     async fn add_float_overflow_to_infinity_is_error() {
-        let err = run(builtin_add(BuiltinArgs {
-            args: vec![thunk(Value::Float(1e308)), thunk(Value::Float(1e308))],
+        let ctx = test_ctx();
+        let err = run(builtin_float_add(BuiltinArgs {
+            args: vec![alloc(Value::Float(1e308), &ctx), alloc(Value::Float(1e308), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -5233,15 +4439,17 @@ mod tests {
     #[tokio::test]
     async fn sub_float_nan_is_error() {
         // f64::INFINITY - f64::INFINITY = NaN
-        let err = run(builtin_sub(BuiltinArgs {
+        let ctx = test_ctx();
+        let err = run(builtin_float_sub(BuiltinArgs {
             args: vec![
-                thunk(Value::Float(f64::INFINITY)),
-                thunk(Value::Float(f64::INFINITY)),
+                alloc(Value::Float(f64::INFINITY), &ctx),
+                alloc(Value::Float(f64::INFINITY), &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -5254,12 +4462,14 @@ mod tests {
 
     #[tokio::test]
     async fn mul_float_overflow_to_infinity_is_error() {
+        let ctx = test_ctx();
         let err = run(builtin_mul(BuiltinArgs {
-            args: vec![thunk(Value::Float(1e308)), thunk(Value::Float(10.0))],
+            args: vec![alloc(Value::Float(1e308), &ctx), alloc(Value::Float(10.0), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -5276,15 +4486,17 @@ mod tests {
         // but this test documents that NaN results from non-zero / 0-adjacent
         // ops are also caught. Use f64::NAN inputs via Float values directly:
         // f64::INFINITY / f64::INFINITY = NaN
+        let ctx = test_ctx();
         let err = run(builtin_div_float(BuiltinArgs {
             args: vec![
-                thunk(Value::Float(f64::INFINITY)),
-                thunk(Value::Float(f64::INFINITY)),
+                alloc(Value::Float(f64::INFINITY), &ctx),
+                alloc(Value::Float(f64::INFINITY), &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -5297,12 +4509,14 @@ mod tests {
 
     #[tokio::test]
     async fn div_float_int_int_returns_float() {
+        let ctx = test_ctx();
         let r = mat(builtin_div_float(BuiltinArgs {
-            args: vec![thunk(Value::Int(10)), thunk(Value::Int(3))],
+            args: vec![alloc(Value::Int(10), &ctx), alloc(Value::Int(3), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         match r {
@@ -5315,12 +4529,14 @@ mod tests {
 
     #[tokio::test]
     async fn div_float_int_int_exact_returns_float() {
+        let ctx = test_ctx();
         let r = mat(builtin_div_float(BuiltinArgs {
-            args: vec![thunk(Value::Int(10)), thunk(Value::Int(2))],
+            args: vec![alloc(Value::Int(10), &ctx), alloc(Value::Int(2), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         match r {
@@ -5331,12 +4547,14 @@ mod tests {
 
     #[tokio::test]
     async fn div_float_int_float() {
+        let ctx = test_ctx();
         let r = mat(builtin_div_float(BuiltinArgs {
-            args: vec![thunk(Value::Int(10)), thunk(Value::Float(3.0))],
+            args: vec![alloc(Value::Int(10), &ctx), alloc(Value::Float(3.0), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         match r {
@@ -5349,12 +4567,14 @@ mod tests {
 
     #[tokio::test]
     async fn div_float_float_float() {
+        let ctx = test_ctx();
         let r = mat(builtin_div_float(BuiltinArgs {
-            args: vec![thunk(Value::Float(7.5)), thunk(Value::Float(2.5))],
+            args: vec![alloc(Value::Float(7.5), &ctx), alloc(Value::Float(2.5), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Float(3.0));
@@ -5362,12 +4582,14 @@ mod tests {
 
     #[tokio::test]
     async fn div_float_by_zero_int() {
+        let ctx = test_ctx();
         let e = run(builtin_div_float(BuiltinArgs {
-            args: vec![thunk(Value::Int(10)), thunk(Value::Int(0))],
+            args: vec![alloc(Value::Int(10), &ctx), alloc(Value::Int(0), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -5386,12 +4608,14 @@ mod tests {
     #[tokio::test]
     async fn div_float_by_zero_float() {
         // Float / Float(0.0) produces Inf which check_float_result rejects as non-finite.
+        let ctx = test_ctx();
         let e = run(builtin_div_float(BuiltinArgs {
-            args: vec![thunk(Value::Float(10.0)), thunk(Value::Float(0.0))],
+            args: vec![alloc(Value::Float(10.0), &ctx), alloc(Value::Float(0.0), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -5405,12 +4629,14 @@ mod tests {
     #[tokio::test]
     async fn div_float_by_zero_mixed() {
         // Int / Float(0.0) produces Inf which check_float_result rejects as non-finite.
+        let ctx = test_ctx();
         let e = run(builtin_div_float(BuiltinArgs {
-            args: vec![thunk(Value::Int(10)), thunk(Value::Float(0.0))],
+            args: vec![alloc(Value::Int(10), &ctx), alloc(Value::Float(0.0), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -5423,12 +4649,14 @@ mod tests {
 
     #[tokio::test]
     async fn div_float_negative_zero() {
+        let ctx = test_ctx();
         let r = mat(builtin_div_float(BuiltinArgs {
-            args: vec![thunk(Value::Float(-0.0)), thunk(Value::Float(1.0))],
+            args: vec![alloc(Value::Float(-0.0), &ctx), alloc(Value::Float(1.0), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Float(0.0));
@@ -5436,12 +4664,14 @@ mod tests {
 
     #[tokio::test]
     async fn eq_int_int_equal() {
+        let ctx = test_ctx();
         let r = mat(builtin_eq_int(BuiltinArgs {
-            args: vec![thunk(Value::Int(5)), thunk(Value::Int(5))],
+            args: vec![alloc(Value::Int(5), &ctx), alloc(Value::Int(5), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Int(1));
@@ -5449,12 +4679,14 @@ mod tests {
 
     #[tokio::test]
     async fn eq_int_int_not_equal() {
+        let ctx = test_ctx();
         let r = mat(builtin_eq_int(BuiltinArgs {
-            args: vec![thunk(Value::Int(5)), thunk(Value::Int(6))],
+            args: vec![alloc(Value::Int(5), &ctx), alloc(Value::Int(6), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -5463,12 +4695,14 @@ mod tests {
     // ── builtin-eq-float tests ──────────────────────────────────────────────────────────
     #[tokio::test]
     async fn eq_float_float_equal() {
+        let ctx = test_ctx();
         let r = mat(builtin_eq_float(BuiltinArgs {
-            args: vec![thunk(Value::Float(3.14)), thunk(Value::Float(3.14))],
+            args: vec![alloc(Value::Float(3.14), &ctx), alloc(Value::Float(3.14), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Int(1));
@@ -5476,12 +4710,14 @@ mod tests {
 
     #[tokio::test]
     async fn eq_float_float_not_equal() {
+        let ctx = test_ctx();
         let r = mat(builtin_eq_float(BuiltinArgs {
-            args: vec![thunk(Value::Float(3.14)), thunk(Value::Float(2.71))],
+            args: vec![alloc(Value::Float(3.14), &ctx), alloc(Value::Float(2.71), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -5489,12 +4725,14 @@ mod tests {
 
     #[tokio::test]
     async fn eq_nan_not_equal_to_self() {
+        let ctx = test_ctx();
         let r = mat(builtin_eq_float(BuiltinArgs {
-            args: vec![thunk(Value::Float(f64::NAN)), thunk(Value::Float(f64::NAN))],
+            args: vec![alloc(Value::Float(f64::NAN), &ctx), alloc(Value::Float(f64::NAN), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -5502,12 +4740,14 @@ mod tests {
 
     #[tokio::test]
     async fn eq_negative_zero_float() {
+        let ctx = test_ctx();
         let r = mat(builtin_eq_float(BuiltinArgs {
-            args: vec![thunk(Value::Float(-0.0)), thunk(Value::Float(0.0))],
+            args: vec![alloc(Value::Float(-0.0), &ctx), alloc(Value::Float(0.0), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Int(1));
@@ -5516,15 +4756,17 @@ mod tests {
     // ── builtin-eq-string tests ─────────────────────────────────────────────────────────
     #[tokio::test]
     async fn eq_string_equal() {
+        let ctx = test_ctx();
         let r = mat(builtin_eq_string(BuiltinArgs {
             args: vec![
-                thunk(string_val("hello".into())),
-                thunk(string_val("hello".into())),
+                alloc(string_val("hello"), &ctx),
+                alloc(string_val("hello"), &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Int(1));
@@ -5532,15 +4774,17 @@ mod tests {
 
     #[tokio::test]
     async fn eq_string_not_equal() {
+        let ctx = test_ctx();
         let r = mat(builtin_eq_string(BuiltinArgs {
             args: vec![
-                thunk(string_val("hello".into())),
-                thunk(string_val("world".into())),
+                alloc(string_val("hello"), &ctx),
+                alloc(string_val("world"), &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -5548,12 +4792,14 @@ mod tests {
 
     #[tokio::test]
     async fn eq_arity_error() {
+        let ctx = test_ctx();
         let e = run(builtin_eq_int(BuiltinArgs {
-            args: vec![thunk(Value::Int(1))],
+            args: vec![alloc(Value::Int(1), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -5566,12 +4812,14 @@ mod tests {
 
     #[tokio::test]
     async fn lt_int_int_true() {
+        let ctx = test_ctx();
         let r = mat(builtin_lt(BuiltinArgs {
-            args: vec![thunk(Value::Int(3)), thunk(Value::Int(5))],
+            args: vec![alloc(Value::Int(3), &ctx), alloc(Value::Int(5), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Int(1));
@@ -5579,12 +4827,14 @@ mod tests {
 
     #[tokio::test]
     async fn lt_int_int_false() {
+        let ctx = test_ctx();
         let r = mat(builtin_lt(BuiltinArgs {
-            args: vec![thunk(Value::Int(5)), thunk(Value::Int(3))],
+            args: vec![alloc(Value::Int(5), &ctx), alloc(Value::Int(3), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -5592,12 +4842,14 @@ mod tests {
 
     #[tokio::test]
     async fn lt_int_int_equal_is_false() {
+        let ctx = test_ctx();
         let r = mat(builtin_lt(BuiltinArgs {
-            args: vec![thunk(Value::Int(5)), thunk(Value::Int(5))],
+            args: vec![alloc(Value::Int(5), &ctx), alloc(Value::Int(5), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -5605,12 +4857,14 @@ mod tests {
 
     #[tokio::test]
     async fn lt_float_float() {
+        let ctx = test_ctx();
         let r = mat(builtin_lt(BuiltinArgs {
-            args: vec![thunk(Value::Float(2.5)), thunk(Value::Float(3.5))],
+            args: vec![alloc(Value::Float(2.5), &ctx), alloc(Value::Float(3.5), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Int(1));
@@ -5618,15 +4872,17 @@ mod tests {
 
     #[tokio::test]
     async fn lt_string_lexicographic() {
+        let ctx = test_ctx();
         let r = mat(builtin_lt(BuiltinArgs {
             args: vec![
-                thunk(string_val("apple".into())),
-                thunk(string_val("banana".into())),
+                alloc(string_val("apple"), &ctx),
+                alloc(string_val("banana"), &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Int(1));
@@ -5634,15 +4890,17 @@ mod tests {
 
     #[tokio::test]
     async fn lt_string_lexicographic_reverse() {
+        let ctx = test_ctx();
         let r = mat(builtin_lt(BuiltinArgs {
             args: vec![
-                thunk(string_val("banana".into())),
-                thunk(string_val("apple".into())),
+                alloc(string_val("banana"), &ctx),
+                alloc(string_val("apple"), &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -5650,15 +4908,17 @@ mod tests {
 
     #[tokio::test]
     async fn lt_string_equal_is_false() {
+        let ctx = test_ctx();
         let r = mat(builtin_lt(BuiltinArgs {
             args: vec![
-                thunk(string_val("same".into())),
-                thunk(string_val("same".into())),
+                alloc(string_val("same"), &ctx),
+                alloc(string_val("same"), &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -5666,15 +4926,17 @@ mod tests {
 
     #[tokio::test]
     async fn lt_string_prefix() {
+        let ctx = test_ctx();
         let r = mat(builtin_lt(BuiltinArgs {
             args: vec![
-                thunk(string_val("ab".into())),
-                thunk(string_val("abc".into())),
+                alloc(string_val("ab"), &ctx),
+                alloc(string_val("abc"), &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Int(1));
@@ -5682,12 +4944,14 @@ mod tests {
 
     #[tokio::test]
     async fn lt_cross_type_int_float() {
+        let ctx = test_ctx();
         let r = mat(builtin_lt(BuiltinArgs {
-            args: vec![thunk(Value::Int(3)), thunk(Value::Float(3.5))],
+            args: vec![alloc(Value::Int(3), &ctx), alloc(Value::Float(3.5), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Int(1));
@@ -5695,12 +4959,14 @@ mod tests {
 
     #[tokio::test]
     async fn lt_cross_type_float_int() {
+        let ctx = test_ctx();
         let r = mat(builtin_lt(BuiltinArgs {
-            args: vec![thunk(Value::Float(2.5)), thunk(Value::Int(3))],
+            args: vec![alloc(Value::Float(2.5), &ctx), alloc(Value::Int(3), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Int(1));
@@ -5708,12 +4974,14 @@ mod tests {
 
     #[tokio::test]
     async fn lt_cross_type_equal_values() {
+        let ctx = test_ctx();
         let r = mat(builtin_lt(BuiltinArgs {
-            args: vec![thunk(Value::Int(5)), thunk(Value::Float(5.0))],
+            args: vec![alloc(Value::Int(5), &ctx), alloc(Value::Float(5.0), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -5721,12 +4989,14 @@ mod tests {
 
     #[tokio::test]
     async fn lt_incompatible_types_error() {
+        let ctx = test_ctx();
         let e = run(builtin_lt(BuiltinArgs {
-            args: vec![thunk(Value::Int(1)), thunk(string_val("hello".into()))],
+            args: vec![alloc(Value::Int(1), &ctx), alloc(string_val("hello"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -5736,12 +5006,14 @@ mod tests {
     #[tokio::test]
     async fn lt_int_false_lt_true() {
         // Int(0) < Int(1) — canonical false < true
+        let ctx = test_ctx();
         let r = mat(builtin_lt(BuiltinArgs {
-            args: vec![thunk(Value::Int(0)), thunk(Value::Int(1))],
+            args: vec![alloc(Value::Int(0), &ctx), alloc(Value::Int(1), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Int(1));
@@ -5750,12 +5022,14 @@ mod tests {
     #[tokio::test]
     async fn lt_int_true_not_lt_false() {
         // Int(1) < Int(0) is false — canonical true is not less than false
+        let ctx = test_ctx();
         let r = mat(builtin_lt(BuiltinArgs {
-            args: vec![thunk(Value::Int(1)), thunk(Value::Int(0))],
+            args: vec![alloc(Value::Int(1), &ctx), alloc(Value::Int(0), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -5764,12 +5038,14 @@ mod tests {
     #[tokio::test]
     async fn lt_int_false_not_lt_false() {
         // Int(0) < Int(0) is false
+        let ctx = test_ctx();
         let r = mat(builtin_lt(BuiltinArgs {
-            args: vec![thunk(Value::Int(0)), thunk(Value::Int(0))],
+            args: vec![alloc(Value::Int(0), &ctx), alloc(Value::Int(0), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -5778,12 +5054,14 @@ mod tests {
     #[tokio::test]
     async fn lt_int_true_not_lt_true() {
         // Int(1) < Int(1) is false
+        let ctx = test_ctx();
         let r = mat(builtin_lt(BuiltinArgs {
-            args: vec![thunk(Value::Int(1)), thunk(Value::Int(1))],
+            args: vec![alloc(Value::Int(1), &ctx), alloc(Value::Int(1), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -5791,15 +5069,17 @@ mod tests {
 
     #[tokio::test]
     async fn lt_dict_error() {
+        let ctx = test_ctx();
         let e = run(builtin_lt(BuiltinArgs {
             args: vec![
-                thunk(Value::Dict(IndexMap::new())),
-                thunk(Value::Dict(IndexMap::new())),
+                alloc(Value::Dict(IndexMap::new()), &ctx),
+                alloc(Value::Dict(IndexMap::new()), &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -5808,12 +5088,14 @@ mod tests {
 
     #[tokio::test]
     async fn lt_arity_error() {
+        let ctx = test_ctx();
         let e = run(builtin_lt(BuiltinArgs {
-            args: vec![thunk(Value::Int(1))],
+            args: vec![alloc(Value::Int(1), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -5826,12 +5108,14 @@ mod tests {
 
     #[tokio::test]
     async fn lt_negative_numbers() {
+        let ctx = test_ctx();
         let r = mat(builtin_lt(BuiltinArgs {
-            args: vec![thunk(Value::Int(-10)), thunk(Value::Int(-5))],
+            args: vec![alloc(Value::Int(-10), &ctx), alloc(Value::Int(-5), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Int(1));
@@ -5839,12 +5123,14 @@ mod tests {
 
     #[tokio::test]
     async fn lt_nan_float() {
+        let ctx = test_ctx();
         let r = mat(builtin_lt(BuiltinArgs {
-            args: vec![thunk(Value::Float(f64::NAN)), thunk(Value::Float(1.0))],
+            args: vec![alloc(Value::Float(f64::NAN), &ctx), alloc(Value::Float(1.0), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -5855,14 +5141,16 @@ mod tests {
     async fn build_core_env_has_builtins() {
         let env = build_core_env();
         let env_ref = env.read().unwrap();
-        // Should have core builtins
+        // After T-1557, Env is type-metadata only. Check that builtin names are
+        // registered in the slotted IndexMap (so the resolver can assign coordinates).
+        let slot_names = env_ref.slot_names();
         assert!(
-            env_ref.get_value_by_name("builtin-raise").is_some(),
-            "missing builtin builtin-raise"
+            slot_names.iter().any(|n| n == "builtin-raise"),
+            "missing builtin builtin-raise in core env slots"
         );
         // Prelude functions are NOT in core_env — they are loaded via run_loader_pipeline.
         assert!(
-            env_ref.get_value_by_name("map").is_none(),
+            !slot_names.iter().any(|n| n == "map"),
             "map should not be in core env (requires run_loader_pipeline)"
         );
     }
@@ -5880,11 +5168,12 @@ mod tests {
         let dict_val = thunk_dict(map, &ctx);
 
         let result = mat(builtin_take(BuiltinArgs {
-            args: vec![thunk(Value::Int(2)), dict_val],
+            args: vec![alloc(Value::Int(2), &ctx), dict_val],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         match result {
@@ -5912,11 +5201,12 @@ mod tests {
         let dict_val = thunk_dict(map, &ctx);
 
         let result = mat(builtin_take(BuiltinArgs {
-            args: vec![thunk(Value::Int(0)), dict_val],
+            args: vec![alloc(Value::Int(0), &ctx), dict_val],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         match result {
@@ -5934,11 +5224,12 @@ mod tests {
         let dict_val = thunk_dict(map, &ctx);
 
         let result = mat(builtin_take(BuiltinArgs {
-            args: vec![thunk(Value::Int(-5)), dict_val],
+            args: vec![alloc(Value::Int(-5), &ctx), dict_val],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         match result {
@@ -5957,11 +5248,12 @@ mod tests {
         let dict_val = thunk_dict(map, &ctx);
 
         let result = mat(builtin_take(BuiltinArgs {
-            args: vec![thunk(Value::Int(10)), dict_val],
+            args: vec![alloc(Value::Int(10), &ctx), dict_val],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         match result {
@@ -5974,12 +5266,14 @@ mod tests {
 
     #[tokio::test]
     async fn take_n_non_int() {
+        let ctx = test_ctx();
         let result = run(builtin_take(BuiltinArgs {
-            args: vec![thunk(string_val("not int".into())), thunk(Value::Int(1))],
+            args: vec![alloc(string_val("not int"), &ctx), alloc(Value::Int(1), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert!(result.is_err());
@@ -5987,15 +5281,17 @@ mod tests {
 
     #[tokio::test]
     async fn take_xs_non_dict_or_seq() {
+        let ctx = test_ctx();
         let result = run(builtin_take(BuiltinArgs {
             args: vec![
-                thunk(Value::Int(5)),
-                thunk(string_val("not dict or seq".into())),
+                alloc(Value::Int(5), &ctx),
+                alloc(string_val("not dict or seq"), &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert!(result.is_err());
@@ -6003,12 +5299,14 @@ mod tests {
 
     #[tokio::test]
     async fn take_arity_one() {
+        let ctx = test_ctx();
         let result = run(builtin_take(BuiltinArgs {
-            args: vec![thunk(Value::Int(5))],
+            args: vec![alloc(Value::Int(5), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert!(result.is_err());
@@ -6018,7 +5316,7 @@ mod tests {
     async fn concat_dict_empty_xs_returns_ys() {
         // concat({}, ys) returns ys unchanged (empty xs short-circuit)
         let ctx = test_ctx();
-        let xs = thunk(Value::Dict(IndexMap::new()));
+        let xs = alloc(Value::Dict(IndexMap::new()), &ctx);
         let mut ys_map = IndexMap::new();
         ys_map.insert(HashableValue::Int(0), thunk(Value::Int(1)));
         let ys = thunk_dict(ys_map, &ctx);
@@ -6028,7 +5326,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
 
@@ -6052,14 +5351,15 @@ mod tests {
         xs_map.insert(HashableValue::Int(0), thunk(Value::Int(1)));
         xs_map.insert(HashableValue::Int(1), thunk(Value::Int(2)));
         let xs = thunk_dict(xs_map, &ctx);
-        let ys = thunk(Value::Dict(IndexMap::new()));
+        let ys = alloc(Value::Dict(IndexMap::new()), &ctx);
 
         let result = mat(builtin_concat(BuiltinArgs {
             args: vec![xs, ys],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
 
@@ -6098,7 +5398,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
 
@@ -6129,21 +5430,20 @@ mod tests {
     #[tokio::test]
     async fn concat_variant_xs_is_type_error() {
         // concat(Variant, anything) → type error: builtin_concat is Dict-only.
-        let xs = Arc::new(Thunk::new_materialized(
-            Value::Variant {
-                tag: "Color.Red".to_string(),
-                payload: None,
-            },
-            test_span(1, 1, 1, 5),
-        ));
-        let ys = thunk(Value::Dict(IndexMap::new()));
+        let ctx = test_ctx();
+        let xs = alloc(Value::Variant {
+            tag: "Color.Red".to_string(),
+            payload: None,
+        }, &ctx);
+        let ys = alloc(Value::Dict(IndexMap::new()), &ctx);
 
         let err = run(builtin_concat(BuiltinArgs {
             args: vec![xs, ys],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -6173,7 +5473,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
 
@@ -6206,7 +5507,7 @@ mod tests {
     async fn concat_empty_xs_dict_ys_valid_dict_succeeds() {
         // Task 2: When xs is empty Dict and ys is a valid Dict, concat should succeed.
         let ctx = test_ctx();
-        let xs = thunk(Value::Dict(IndexMap::new())); // empty dict
+        let xs = alloc(Value::Dict(IndexMap::new()), &ctx); // empty dict
         let mut ys_map = IndexMap::new();
         ys_map.insert(HashableValue::Int(0), thunk(Value::Int(99)));
         let ys = thunk_dict(ys_map, &ctx);
@@ -6217,7 +5518,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
 
@@ -6238,13 +5540,14 @@ mod tests {
     #[tokio::test]
     async fn test_proxy_returns_proxy_value() {
         let ctx = test_ctx();
-        let handler = thunk(Value::Int(42));
+        let handler = alloc(Value::Int(42), &ctx);
         let result = run(builtin_proxy(BuiltinArgs {
-            args: vec![handler.clone()],
+            args: vec![handler],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap();
@@ -6263,12 +5566,14 @@ mod tests {
     #[tokio::test]
     async fn test_proxy_arity_error() {
         // Zero args
+        let ctx = test_ctx();
         let err = run(builtin_proxy(BuiltinArgs {
             args: vec![],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -6280,11 +5585,12 @@ mod tests {
 
         // Two args
         let err = run(builtin_proxy(BuiltinArgs {
-            args: vec![thunk(Value::Int(1)), thunk(Value::Int(2))],
+            args: vec![alloc(Value::Int(1), &ctx), alloc(Value::Int(2), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -6297,14 +5603,15 @@ mod tests {
         // Three args
         let err = run(builtin_proxy(BuiltinArgs {
             args: vec![
-                thunk(Value::Int(1)),
-                thunk(Value::Int(2)),
-                thunk(Value::Int(3)),
+                alloc(Value::Int(1), &ctx),
+                alloc(Value::Int(2), &ctx),
+                alloc(Value::Int(3), &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -6317,15 +5624,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_proxy_named_arg_error() {
+        let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert("handler".to_string(), thunk(Value::Int(42)));
+        named.insert("handler".to_string(), alloc(Value::Int(42), &ctx));
 
         let err = run(builtin_proxy(BuiltinArgs {
             args: vec![],
             named: Some(named),
             call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            ctx,
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await
         .unwrap_err();
@@ -6347,7 +5656,13 @@ mod tests {
         let core_env = build_core_env();
         let env = core_env.read().unwrap();
 
-        // Core builtins that must exist (from builtin_module("core"))
+        // After T-1557, Env is type-metadata only. Verify builtin names are present
+        // in the slotted IndexMap (resolver coordinate assignment).
+        let slot_names = env.slot_names();
+
+        // Core builtins that must exist in the slotted IndexMap.
+        // These are the names that the resolver maps to (level, slot) coordinates
+        // so that eval can look them up in the root FlatEnv.
         let required_names: &[&str] = &[
             "builtin-raise",
             "builtin-type-of",
@@ -6362,203 +5677,20 @@ mod tests {
 
         for name in required_names {
             assert!(
-                env.get_value_by_name(*name).is_some(),
-                "core env is missing expected builtin: {name}"
+                slot_names.iter().any(|n| n == name),
+                "core env slots are missing expected builtin: {name}"
             );
         }
 
         // Prelude functions must NOT be in core env (they come from run_loader_pipeline).
         assert!(
-            env.get_value_by_name("map").is_none(),
-            "map should not be in core env"
+            !slot_names.iter().any(|n| n == "map"),
+            "map should not be in core env slots"
         );
         assert!(
-            env.get_value_by_name("filter").is_none(),
-            "filter should not be in core env"
+            !slot_names.iter().any(|n| n == "filter"),
+            "filter should not be in core env slots"
         );
-    }
-
-    // -------------------------------------------------------------------------
-    // Unit tests: builtin_rest, builtin_reverse, builtin_sort
-    // -------------------------------------------------------------------------
-
-    fn make_int_dict(vals: &[i64], ctx: &Arc<crate::eval::EvalContext>) -> Value {
-        let mut rc_map: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-        for (i, &v) in vals.iter().enumerate() {
-            rc_map.insert(HashableValue::Int(i as i64), thunk(Value::Int(v)));
-        }
-        let mut id_map: IndexMap<HashableValue, ThunkId> = IndexMap::with_capacity(rc_map.len());
-        for (k, v) in rc_map {
-            id_map.insert(k, ctx.alloc_thunk(v));
-        }
-        Value::Dict(id_map)
-    }
-
-    async fn extract_int_at(
-        map: &IndexMap<HashableValue, ThunkId>,
-        idx: i64,
-        ctx: &Arc<crate::eval::EvalContext>,
-    ) -> i64 {
-        let thunk = ctx.get_thunk(*map.get(&HashableValue::Int(idx)).unwrap());
-        match materialize_sync(&thunk, None, ctx).await.unwrap() {
-            Value::Int(n) => n,
-            other => panic!("expected Int at index {idx}, got {:?}", other),
-        }
-    }
-
-    #[tokio::test]
-    async fn rest_three_elements_drops_first() {
-        let ctx = test_ctx();
-        let result = mat(builtin_rest(BuiltinArgs {
-            args: vec![thunk(make_int_dict(&[10, 20, 30], &ctx))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await;
-        let m = match result {
-            Value::Dict(m) => m,
-            other => panic!("expected Dict, got {:?}", other),
-        };
-        assert_eq!(m.len(), 2);
-        assert_eq!(extract_int_at(&m, 0, &ctx).await, 20);
-        assert_eq!(extract_int_at(&m, 1, &ctx).await, 30);
-    }
-
-    #[tokio::test]
-    async fn rest_single_element_returns_empty() {
-        let ctx = test_ctx();
-        let result = mat(builtin_rest(BuiltinArgs {
-            args: vec![thunk(make_int_dict(&[42], &ctx))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await;
-        match result {
-            Value::Dict(m) => assert!(m.is_empty()),
-            other => panic!("expected Dict, got {:?}", other),
-        }
-    }
-
-    #[tokio::test]
-    async fn rest_empty_dict_returns_empty() {
-        let result = mat(builtin_rest(BuiltinArgs {
-            args: vec![thunk(Value::Dict(IndexMap::new()))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await;
-        match result {
-            Value::Dict(m) => assert!(m.is_empty()),
-            other => panic!("expected Dict, got {:?}", other),
-        }
-    }
-
-    #[tokio::test]
-    async fn reverse_three_elements() {
-        let ctx = test_ctx();
-        let result = mat(builtin_reverse(BuiltinArgs {
-            args: vec![thunk(make_int_dict(&[10, 20, 30], &ctx))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await;
-        let m = match result {
-            Value::Dict(m) => m,
-            other => panic!("expected Dict, got {:?}", other),
-        };
-        assert_eq!(m.len(), 3);
-        assert_eq!(extract_int_at(&m, 0, &ctx).await, 30);
-        assert_eq!(extract_int_at(&m, 1, &ctx).await, 20);
-        assert_eq!(extract_int_at(&m, 2, &ctx).await, 10);
-    }
-
-    #[tokio::test]
-    async fn reverse_empty_dict() {
-        let result = mat(builtin_reverse(BuiltinArgs {
-            args: vec![thunk(Value::Dict(IndexMap::new()))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await;
-        match result {
-            Value::Dict(m) => assert!(m.is_empty()),
-            other => panic!("expected Dict, got {:?}", other),
-        }
-    }
-
-    #[tokio::test]
-    async fn sort_integers_ascending() {
-        let ctx = test_ctx();
-        let result = mat(builtin_sort(BuiltinArgs {
-            args: vec![thunk(make_int_dict(&[3, 1, 4, 1, 5], &ctx))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await;
-        let m = match result {
-            Value::Dict(m) => m,
-            other => panic!("expected Dict, got {:?}", other),
-        };
-        assert_eq!(m.len(), 5);
-        let expected = [1i64, 1, 3, 4, 5];
-        for (i, &exp) in expected.iter().enumerate() {
-            assert_eq!(
-                extract_int_at(&m, i as i64, &ctx).await,
-                exp,
-                "at index {i}"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn sort_strings_lexicographic() {
-        let ctx = test_ctx();
-        let mut map = IndexMap::new();
-        for (i, s) in ["banana", "apple", "cherry"].iter().enumerate() {
-            map.insert(HashableValue::Int(i as i64), thunk(string_val(s)));
-        }
-        let result = mat(builtin_sort(BuiltinArgs {
-            args: vec![thunk_dict(map, &ctx)],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await;
-        let m = match result {
-            Value::Dict(m) => m,
-            other => panic!("expected Dict, got {:?}", other),
-        };
-        let v0 = mat_id(*m.get(&HashableValue::Int(0)).unwrap(), &ctx).await;
-        assert_eq!(v0, string_val("apple".into()));
-    }
-
-    #[tokio::test]
-    async fn sort_empty_dict() {
-        let result = mat(builtin_sort(BuiltinArgs {
-            args: vec![thunk(Value::Dict(IndexMap::new()))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await;
-        match result {
-            Value::Dict(m) => assert!(m.is_empty()),
-            other => panic!("expected Dict, got {:?}", other),
-        }
     }
 
     // ========== dict-nth/dict-key-nth/dict-kv-nth tests ==========
@@ -6571,11 +5703,12 @@ mod tests {
         map.insert(HashableValue::Str("b".into()), thunk(Value::Int(20)));
         map.insert(HashableValue::Str("c".into()), thunk(Value::Int(30)));
         let result = mat(builtin_dict_nth(BuiltinArgs {
-            args: vec![thunk_dict(map, &ctx), thunk(Value::Int(1))],
+            args: vec![thunk_dict(map, &ctx), alloc(Value::Int(1), &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Int(20));
@@ -6589,11 +5722,12 @@ mod tests {
         let mut map = IndexMap::new();
         map.insert(HashableValue::Str("a".into()), thunk(Value::Int(10)));
         let result = run(builtin_dict_nth(BuiltinArgs {
-            args: vec![thunk_dict(map, &ctx), thunk(Value::Int(5))],
+            args: vec![thunk_dict(map, &ctx), alloc(Value::Int(5), &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert!(
@@ -6609,11 +5743,12 @@ mod tests {
         map.insert(HashableValue::Str("foo".into()), thunk(Value::Int(1)));
         map.insert(HashableValue::Str("bar".into()), thunk(Value::Int(2)));
         let result = mat(builtin_dict_key_nth(BuiltinArgs {
-            args: vec![thunk_dict(map, &ctx), thunk(Value::Int(0))],
+            args: vec![thunk_dict(map, &ctx), alloc(Value::Int(0), &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert!(matches!(result, Value::String { .. }));
@@ -6625,11 +5760,12 @@ mod tests {
         let mut map = IndexMap::new();
         map.insert(HashableValue::Str("x".into()), thunk(Value::Int(42)));
         let result = mat(builtin_dict_kv_nth(BuiltinArgs {
-            args: vec![thunk_dict(map, &ctx), thunk(Value::Int(0))],
+            args: vec![thunk_dict(map, &ctx), alloc(Value::Int(0), &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         match result {
@@ -6649,11 +5785,12 @@ mod tests {
         map.insert(HashableValue::Int(1), thunk(string_val("second".into())));
         map.insert(HashableValue::Int(2), thunk(string_val("third".into())));
         let result = mat(builtin_get(BuiltinArgs {
-            args: vec![thunk(Value::Int(1)), thunk_dict(map, &ctx)],
+            args: vec![alloc(Value::Int(1), &ctx), thunk_dict(map, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, string_val("second".into()));
@@ -6666,11 +5803,12 @@ mod tests {
         map.insert(HashableValue::Str("a".into()), thunk(Value::Int(10)));
         map.insert(HashableValue::Str("b".into()), thunk(Value::Int(20)));
         let result = run(builtin_get(BuiltinArgs {
-            args: vec![thunk(string_val("z".into())), thunk_dict(map, &ctx)],
+            args: vec![alloc(string_val("z"), &ctx), thunk_dict(map, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         assert!(result.is_err());
@@ -6711,7 +5849,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         let result_thunk = result.unwrap_or_else(|e| {
@@ -6753,7 +5892,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
+            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            caller_env_id: 0,
         }))
         .await;
         let result_thunk = result.unwrap_or_else(|e| {
@@ -6766,49 +5906,4 @@ mod tests {
         assert_eq!(val, Value::Int(4), "expected length 4, got {:?}", val);
     }
 
-    /// Body test: `builtin_append` (force_count=0) must NOT force the appended VALUE.
-    ///
-    /// After T-776, `$append` takes `(value, dict)` — args[0]=value, args[1]=dict.
-    /// The VALUE being appended (args[0]) must stay as an unevaluated thunk — only
-    /// the dict structure (args[1]) needs to be materialized to determine the next key.
-    ///
-    /// If `builtin_append` were to force args[0], the undef thunk would produce an
-    /// "undefined variable" error. Passing this test proves args[0] is never forced
-    /// by the builtin body (body test — not testing the pos_strictness dispatch mechanism).
-    #[tokio::test]
-    async fn builtin_append_does_not_force_appended_value() {
-        let ctx = test_ctx();
-        // Start with an empty dict and append a bomb thunk as the value.
-        let dict = thunk(Value::Dict(IndexMap::new()));
-        let bomb = make_undef_thunk(&ctx);
-
-        // builtin_append should succeed: it inserts the thunk by Rc::clone, never forcing it.
-        let result = run(builtin_append(BuiltinArgs {
-            args: vec![bomb, dict],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(Env::new())),
-        }))
-        .await;
-        let result_thunk = result.unwrap_or_else(|e| {
-            panic!(
-                "builtin_append must not force the appended value; got error: {:?}",
-                e
-            )
-        });
-        // The result should be a dict with exactly one entry at key 0.
-        let val = mat_val(result_thunk).await;
-        match val {
-            Value::Dict(ref m) => {
-                assert_eq!(m.len(), 1, "expected 1 entry after append, got {}", m.len());
-                assert!(
-                    m.contains_key(&HashableValue::Int(0)),
-                    "expected integer key 0, got {:?}",
-                    m.keys().collect::<Vec<_>>()
-                );
-            }
-            other => panic!("expected Dict from builtin_append, got {:?}", other),
-        }
-    }
 }

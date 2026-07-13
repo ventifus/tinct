@@ -1,14 +1,11 @@
 //! Function call evaluation: argument binding, default parameters, and variadic support.
 
-use std::rc::Rc;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use indexmap::IndexMap;
-use smallvec::SmallVec;
-
 use crate::ast::{CoreExpr, CoreNamedArg, Param, Span, Spanned, SurfaceNode};
 use crate::error::{ArityBound, EvalError, EvalResult};
-use crate::value::{HashableValue, Thunk, ThunkId, Value};
+use crate::value::{Thunk, ThunkId};
 
 // Import eval function and context from eval module
 // Note: this creates a circular dependency, but it's safe because
@@ -51,55 +48,54 @@ pub(crate) async fn eval_call_core(
     func_expr: &Spanned<CoreExpr>,
     args: &[Arc<Spanned<CoreExpr>>],
     named_args: &[Spanned<CoreNamedArg>],
-    env: &Arc<RwLock<crate::env::Env>>,
     ctx: &Arc<EvalContext>,
     call_span: &Span,
     original_call: Arc<Spanned<CoreExpr>>,
 ) -> EvalResult<Arc<Thunk>> {
     // Evaluate the function as a thunk using eval_core_expr directly.
-    // This keeps the CoreExpr path end-to-end without round-tripping through Expr,
-    // preserving de Bruijn coordinates and other CoreExpr-specific data.
-    let func_thunk = eval_core_expr(func_expr, env, ctx).await?;
+    // Variable lookup uses ctx.current_env_id (FlatEnv T-1558).
+    let func_thunk = eval_core_expr(func_expr, ctx).await?;
+    let func_id = ctx.alloc_thunk(func_thunk);
 
-    // Wrap positional arguments as Unevaluated CoreExpr thunks (lazy).
-    let pos_thunks: SmallVec<[Arc<Thunk>; 4]> = args
+    // Wrap positional arguments as Unevaluated CoreExpr thunks, allocated as ThunkIds.
+    let caller_env_id = ctx.current_env_id;
+    let pos_ids: Vec<ThunkId> = args
         .iter()
         .map(|arg| {
-            Arc::new(Thunk::new_unevaluated_core(
+            let t = Arc::new(Thunk::new_unevaluated_core(
                 Arc::clone(arg),
-                Arc::clone(env),
+                caller_env_id,
                 Arc::clone(ctx),
                 arg.span.clone(),
-            ))
+            ));
+            ctx.alloc_thunk(t)
         })
         .collect();
 
-    // Wrap named arguments as Unevaluated CoreExpr thunks (lazy).
-    let named_thunks = if named_args.is_empty() {
+    // Wrap named arguments as Unevaluated CoreExpr thunks, allocated as ThunkIds.
+    let named_ids = if named_args.is_empty() {
         IndexMap::new()
     } else {
         let mut m = IndexMap::with_capacity(named_args.len());
         for na in named_args {
-            m.insert(
-                na.node.name.clone(),
-                Arc::new(Thunk::new_unevaluated_core(
-                    Arc::clone(&na.node.value),
-                    Arc::clone(env),
-                    Arc::clone(ctx),
-                    na.node.value.span.clone(),
-                )),
-            );
+            let t = Arc::new(Thunk::new_unevaluated_core(
+                Arc::clone(&na.node.value),
+                caller_env_id,
+                Arc::clone(ctx),
+                na.node.value.span.clone(),
+            ));
+            m.insert(na.node.name.clone(), ctx.alloc_thunk(t));
         }
         m
     };
 
     // Return PendingCall thunk — function dispatch deferred to PendingCallDispatch in run().
     Ok(Arc::new(Thunk::new_pending_call(
-        func_thunk,
-        pos_thunks.into_vec(),
-        named_thunks,
+        func_id,
+        pos_ids,
+        named_ids,
         call_span.clone(),
-        Arc::clone(env), // caller_env: used for default param evaluation
+        caller_env_id,
         call_span.clone(),
         func_label_core(&func_expr.node),
         Arc::clone(ctx),
@@ -115,10 +111,12 @@ pub(crate) async fn eval_call_core(
 pub struct CallContext<'a> {
     pub params: &'a [Param],
     pub body: &'a Arc<Spanned<CoreExpr>>,
-    pub closure_env: &'a Arc<RwLock<crate::env::Env>>,
-    pub positional: &'a [Arc<Thunk>],
-    pub named: Option<&'a IndexMap<String, Arc<Thunk>>>,
-    pub default_env: &'a Arc<RwLock<crate::env::Env>>,
+    /// FlatEnv env_id for the closure scope (replaces Arc<RwLock<Env>>).
+    pub closure_env_id: u32,
+    pub positional: &'a [ThunkId],
+    pub named: Option<&'a IndexMap<String, ThunkId>>,
+    /// FlatEnv env_id for the caller's scope (replaces Arc<RwLock<Env>>).
+    pub default_env_id: u32,
     pub call_span: Span,
     /// Label for stack traces (e.g. "call $f"). `None` for anonymous calls.
     pub origin: Option<Arc<str>>,
@@ -131,12 +129,13 @@ pub struct CallContext<'a> {
 /// variadics), then wraps the body as an unevaluated thunk. This is the shared
 /// call path for both `eval_call` and `builtin_apply`.
 pub async fn invoke_function(ctx: &CallContext<'_>) -> EvalResult<Arc<Thunk>> {
-    let call_env = bind_args_thunks(
+    // bind_args_thunks allocates a child FlatEnv for the call frame and fills all param slots.
+    let call_env_id = bind_args_thunks(
         ctx.params,
         ctx.positional,
         ctx.named,
-        ctx.default_env,
-        ctx.closure_env,
+        ctx.default_env_id,
+        ctx.closure_env_id,
         ctx.ctx,
         &ctx.call_span,
     )
@@ -147,7 +146,7 @@ pub async fn invoke_function(ctx: &CallContext<'_>) -> EvalResult<Arc<Thunk>> {
     })?;
     let mut thunk = Thunk::new_unevaluated_core(
         Arc::clone(ctx.body),
-        call_env,
+        call_env_id,
         Arc::clone(ctx.ctx),
         ctx.call_span.clone(),
     );
@@ -157,20 +156,21 @@ pub async fn invoke_function(ctx: &CallContext<'_>) -> EvalResult<Arc<Thunk>> {
     Ok(Arc::new(thunk))
 }
 
-/// TCO variant of `invoke_function` that returns the body expression and call environment
+/// TCO variant of `invoke_function` that returns the body expression and call environment id
 /// directly instead of creating a thunk. This allows the caller to reuse the current
 /// continuation frame instead of pushing a new Memoize continuation.
 ///
-/// Returns `(body_expr, call_env)` so the caller can construct `Action::EvalCore`.
+/// Returns `(body_expr, call_env_id: u32)` so the caller can construct `Action::EvalCore`.
 pub(crate) async fn invoke_function_tco(
     ctx: &CallContext<'_>,
-) -> EvalResult<(Arc<Spanned<CoreExpr>>, Arc<RwLock<crate::env::Env>>)> {
-    let call_env = bind_args_thunks(
+) -> EvalResult<(Arc<Spanned<CoreExpr>>, u32)> {
+    // bind_args_thunks allocates a child FlatEnv for the call frame and fills all param slots.
+    let call_env_id = bind_args_thunks(
         ctx.params,
         ctx.positional,
         ctx.named,
-        ctx.default_env,
-        ctx.closure_env,
+        ctx.default_env_id,
+        ctx.closure_env_id,
         ctx.ctx,
         &ctx.call_span,
     )
@@ -180,26 +180,24 @@ pub(crate) async fn invoke_function_tco(
         e
     })?;
 
-    Ok((Arc::clone(ctx.body), call_env))
+    Ok((Arc::clone(ctx.body), call_env_id))
 }
 
-/// Bind pre-evaluated thunks to function parameters. Returns the new call environment.
+/// Validate function arguments, allocate a child FlatEnv for the call frame,
+/// fill each parameter slot, and return the call frame env_id.
 ///
-/// Handles positional args, named args (params with `default:` annotation),
-/// and variadic params (`...name`).
+/// Handles arity validation, default params, variadic params, and system-injected
+/// named args. The returned env_id is a child of the closure scope and inherits
+/// the full display chain, enabling VarRef dispatch at any level.
 pub(crate) async fn bind_args_thunks(
     params: &[Param],
-    positional: &[Arc<Thunk>],
-    named: Option<&IndexMap<String, Arc<Thunk>>>,
-    default_env: &Arc<RwLock<crate::env::Env>>,
-    closure_env: &Arc<RwLock<crate::env::Env>>,
+    positional: &[ThunkId],
+    named: Option<&IndexMap<String, ThunkId>>,
+    default_env_id: u32,
+    closure_env_id: u32,
     ctx: &Arc<EvalContext>,
     call_span: &Span,
-) -> EvalResult<Arc<RwLock<crate::env::Env>>> {
-    let call_env = Arc::new(RwLock::new(crate::env::Env::with_parent(Arc::clone(
-        closure_env,
-    ))));
-
+) -> EvalResult<u32> {
     // BIND-SPLIT: Separate the variadic param (if any) from regular params
     let (regular_params, variadic_param) = split_variadic(params);
     let max_positional = regular_params.len();
@@ -238,80 +236,20 @@ pub(crate) async fn bind_args_thunks(
         return Err(err.into());
     }
 
-    // BIND-POSITIONAL: Bind args to params following C-PRIORITY chain
-    for (i, param) in regular_params.iter().enumerate() {
-        let thunk = if i < positional.len() {
-            // Case (i): positional arg at index i
-            Arc::clone(&positional[i])
-        } else if let Some(named_thunk) = named.and_then(|n| n.get(&param.name)) {
-            // Case (ii): named arg fills gap beyond positional args
-            // (Kotlin model: ANY param can be named, not just optional)
-            Arc::clone(named_thunk)
-        } else if let Some(default_node) = get_default(param) {
-            // Case (iii): use default value — wrap as a lazy Surface thunk.
-            // Resolution is inline on the default node (written by the resolver when the
-            // function definition was resolved).
-            let span = default_node.span.clone();
-            Arc::new(Thunk::new_surface(
-                default_node,
-                Arc::clone(default_env),
-                Arc::clone(ctx),
-                span,
-            ))
-        } else {
-            // Unreachable: BIND-ARITY guarantees every required param is covered
-            unreachable!(
-                "BIND-ARITY should have caught missing required param '{}'",
-                param.name
-            );
-        };
-        call_env
-            .write()
-            .unwrap()
-            .insert_value(param.name.clone(), thunk);
-    }
-
-    // BIND-SYSTEM: System-injected named args (names containing '∷') are bound directly
-    // into call_env and excluded from all user-visible named-arg validation.
+    // BIND-NAMED-VALIDATE: Check named args against params before filling slots.
     //
-    // The '∷' separator is a Unicode character that cannot appear in parser-produced
-    // identifiers, so these names can only originate from Rust runtime code (e.g. the
-    // @Expr macro implicit-arg injection in eval_materialize.rs PendingCallDispatch).
-    // This makes the binding unconditional and invisible to tinct code — macro functions
-    // do not need to declare them as params, and they do not pollute variadic dicts.
-    //
-    // This allows builtin-eval-macro-ast to find ᴍᴀᴄʀᴏ∷env and ᴍᴀᴄʀᴏ∷span in the
-    // caller_env of any tinct function invoked in a macro context.
+    // BIND-SYSTEM: System-injected named args (names containing '∷') are excluded from
+    // all user-visible named-arg validation. The '∷' separator is a Unicode character
+    // that cannot appear in parser-produced identifiers, so these names can only
+    // originate from Rust runtime code (e.g. the @Expr macro implicit-arg injection).
+    // This makes the binding unconditional and invisible to tinct code.
     if let Some(named_args) = named {
-        for (name, thunk) in named_args {
-            if name.contains('∷') {
-                call_env
-                    .write()
-                    .unwrap()
-                    .insert_value(name.clone(), Arc::clone(thunk));
-            }
-        }
-    }
-
-    // BIND-NAMED: Validation and collection for variadic
-    //
-    // Why two checks? BIND-POSITIONAL silently resolves conflicts via priority
-    // (positional wins over named), but the caller likely made a mistake if they
-    // supplied both. This second pass detects that mistake and reports it as an
-    // error (C-NO-OVERLAP), while also catching named args that don't match any
-    // parameter at all (C-NAMED-VALID).
-    //
-    // NEW (B-277): If a variadic param exists, collect unmatched named args into
-    // a separate collection for merging into the variadic dict (C-NAMED-VALID amended:
-    // named args must match explicit param OR variadic param exists → flows into ...args).
-    let mut unmatched_named: Option<IndexMap<String, Arc<Thunk>>> = None;
-    if let Some(named_args) = named {
-        for (name, thunk) in named_args {
-            // Skip system-injected args — already handled by BIND-SYSTEM above.
+        for (name, _thunk_id) in named_args {
+            // Skip system-injected args (contain '∷').
             if name.contains('∷') {
                 continue;
             }
-            // Single scan: C-NO-OVERLAP and C-NAMED-VALID in one position() call
+            // C-NO-OVERLAP and C-NAMED-VALID in one position() call
             match regular_params.iter().position(|p| &p.name == name) {
                 Some(idx) if idx < positional.len() => {
                     // C-NO-OVERLAP: named arg targets a positionally-bound parameter
@@ -321,20 +259,13 @@ pub(crate) async fn bind_args_thunks(
                     )));
                 }
                 Some(_) => {
-                    // Valid: named arg targets an existing param that wasn't positionally bound
-                    // (idx >= positional.len(), verified by guard above). Continue to next arg.
-                    continue;
+                    // Valid: named arg targets an existing param that wasn't positionally bound.
                 }
                 None => {
-                    // C-NAMED-VALID (amended): named arg must target an existing parameter
-                    // OR variadic param exists (collects unmatched named args).
                     if variadic_param.is_some() {
-                        // Collect into unmatched_named for later merging into variadic dict
-                        unmatched_named
-                            .get_or_insert_with(IndexMap::new)
-                            .insert(name.clone(), Arc::clone(thunk));
+                        // Unmatched named arg goes into variadic.
                     } else {
-                        // No variadic param: raise E022 (Kotlin model: ANY param can be named)
+                        // No variadic param: raise E022
                         let valid_params: Vec<String> =
                             regular_params.iter().map(|p| p.name.clone()).collect();
                         return Err(Box::new(EvalError::unknown_named_arg(
@@ -348,38 +279,110 @@ pub(crate) async fn bind_args_thunks(
         }
     }
 
-    // BIND-VARIADIC: Collect excess positional args + unmatched named args into the variadic binding.
-    // Always uses integer-keyed Dict for positional args and string-keyed Dict for named args.
-    // Empty variadic = Value::Dict({}).
-    if let Some(var_param) = variadic_param {
-        let start = max_positional.min(positional.len());
-        let variadic_positional = &positional[start..];
+    // Allocate a child FlatEnv for the call frame. The display vector inherits all
+    // ancestor scopes from closure_env_id plus this new scope, enabling O(1) VarRef
+    // dispatch at any level (level=0 hits this frame; level=1 hits the closure scope, etc.).
+    let slot_count = params.len(); // one slot per param (regular + variadic)
+    let call_env_id = ctx
+        .env_arena
+        .borrow_mut()
+        .alloc_child(crate::arena::EnvId(closure_env_id), slot_count);
 
-        let mut dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+    // BIND-POSITIONAL + BIND-NAMED: Fill each regular param slot.
+    // Slot index matches the param position (de Bruijn slot assigned by the resolver).
+    //
+    // For positional and named args that are already ThunkIds, use fill_letrec_slot directly
+    // to copy the Arc<Thunk> reference without allocating a redundant intermediate slot.
+    // For defaults (SurfaceNode), allocate a new Thunk::new_surface and then fill.
+    for (i, param) in regular_params.iter().enumerate() {
+        if i < positional.len() {
+            // Positional arg: copy the ThunkId's Arc<Thunk> directly into the call frame slot.
+            ctx.env_arena
+                .borrow_mut()
+                .fill_letrec_slot(call_env_id, i as u32, positional[i]);
+        } else if let Some(named_args) = named {
+            if let Some(&named_id) = named_args.get(&param.name) {
+                // Named arg: copy directly.
+                ctx.env_arena
+                    .borrow_mut()
+                    .fill_letrec_slot(call_env_id, i as u32, named_id);
+            } else if let Some(default_node) = get_default(param) {
+                // Default param: evaluate lazily in the default_env scope.
+                // Use empty res/types tables — defaults are surface nodes whose variable
+                // references resolve by name lookup in the default_env chain at force time.
+                let default_thunk = Arc::new(Thunk::new_surface(
+                    default_node,
+                    Arc::new(std::collections::HashMap::new()),
+                    Arc::new(std::collections::HashMap::new()),
+                    default_env_id,
+                    Arc::clone(ctx),
+                    call_span.clone(),
+                ));
+                let default_id = ctx.alloc_thunk(default_thunk);
+                ctx.env_arena
+                    .borrow_mut()
+                    .fill_letrec_slot(call_env_id, i as u32, default_id);
+            }
+            // else: required param with no coverage — already caught by arity check.
+        } else if let Some(default_node) = get_default(param) {
+            // Default param (no named args provided).
+            let default_thunk = Arc::new(Thunk::new_surface(
+                default_node,
+                Arc::new(std::collections::HashMap::new()),
+                Arc::new(std::collections::HashMap::new()),
+                default_env_id,
+                Arc::clone(ctx),
+                call_span.clone(),
+            ));
+            let default_id = ctx.alloc_thunk(default_thunk);
+            ctx.env_arena
+                .borrow_mut()
+                .fill_letrec_slot(call_env_id, i as u32, default_id);
+        }
+        // else: required param with no arg — already caught by arity check.
+    }
 
-        for (i, arg) in variadic_positional.iter().enumerate() {
-            let id = ctx.alloc_thunk(Arc::clone(arg));
-            dict.insert(HashableValue::Int(i as i64), id);
+    // BIND-VARIADIC: Build the variadic dict from remaining positionals and unmatched named.
+    // The variadic param receives a Dict with integer keys for extra positionals and
+    // string keys for named args that didn't match any regular param.
+    if let Some(variadic) = variadic_param {
+        let mut variadic_dict: IndexMap<crate::value::HashableValue, ThunkId> = IndexMap::new();
+
+        // Remaining positional args beyond regular_params.len()
+        let extra_positionals = &positional[max_positional.min(positional.len())..];
+        for (j, &tid) in extra_positionals.iter().enumerate() {
+            variadic_dict.insert(crate::value::HashableValue::Int(j as i64), tid);
         }
 
-        if let Some(named_map) = unmatched_named {
-            for (name, thunk) in named_map {
-                let id = ctx.alloc_thunk(thunk);
-                dict.insert(HashableValue::Str(Rc::from(name.as_str())), id);
+        // Unmatched named args (excluding system-injected '∷' names)
+        if let Some(named_args) = named {
+            for (name, &tid) in named_args {
+                if name.contains('∷') {
+                    continue;
+                }
+                if regular_params.iter().any(|p| &p.name == name) {
+                    continue; // already bound as a regular param
+                }
+                variadic_dict.insert(
+                    crate::value::HashableValue::Str(std::rc::Rc::from(name.as_str())),
+                    tid,
+                );
             }
         }
 
-        let dict_thunk = Arc::new(Thunk::new_materialized(
-            Value::Dict(dict),
+        let variadic_slot = regular_params.len() as u32;
+        let variadic_thunk = Arc::new(Thunk::new_materialized(
+            crate::value::Value::Dict(variadic_dict),
             call_span.clone(),
         ));
-        call_env
-            .write()
-            .unwrap()
-            .insert_value(var_param.name.clone(), dict_thunk);
+        let variadic_id = ctx.alloc_thunk(variadic_thunk);
+        ctx.env_arena
+            .borrow_mut()
+            .fill_letrec_slot(call_env_id, variadic_slot, variadic_id);
+        let _ = variadic; // name available for doc purposes
     }
 
-    Ok(call_env)
+    Ok(call_env_id.0)
 }
 
 /// Split params into (regular, optional variadic).

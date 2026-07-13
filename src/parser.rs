@@ -2358,6 +2358,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             let mut determines = Vec::new();
                             let mut resolver = None;
                             let mut resolver_injective = false;
+                            let mut structural = String::new();
                             // superclasses comes from stack frame; may be extended by metadata
                             let mut superclasses = superclasses;
 
@@ -2449,6 +2450,18 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                                             }
                                                         }
                                                     }
+                                                    "structural" => {
+                                                        // `structural: "closed-dict"` sets the structural discharge rule.
+                                                        match &entry.node.value.expr {
+                                                            SurfaceExpression::Str(s) => {
+                                                                structural = s.clone();
+                                                            }
+                                                            SurfaceExpression::VarRef { name, .. } => {
+                                                                structural = name.clone();
+                                                            }
+                                                            _ => {}
+                                                        }
+                                                    }
                                                     _ => {} // Ignore unknown metadata keys
                                                 }
                                             }
@@ -2479,6 +2492,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                 determines,
                                 resolver,
                                 resolver_injective,
+                                structural,
                             };
                             let spanned_decl = Spanned::new(decl, dict_span(span_start));
                             if stack.is_empty() {
@@ -6195,6 +6209,7 @@ fn inject_class_name_from_key(node: &Arc<SurfaceNode>, key: &Arc<SurfaceNode>) -
                         determines,
                         resolver,
                         resolver_injective,
+                        structural,
                         ..
                     } = decl_box.as_ref().clone()
                     {
@@ -6206,6 +6221,7 @@ fn inject_class_name_from_key(node: &Arc<SurfaceNode>, key: &Arc<SurfaceNode>) -
                             determines,
                             resolver,
                             resolver_injective,
+                            structural,
                         };
                         return mk(
                             SurfaceExpression::Decl(Box::new(new_decl)),

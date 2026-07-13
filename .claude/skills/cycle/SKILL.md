@@ -54,7 +54,7 @@ After `/groom` completes, the backlog is ready for Phase 3.
 ### Phase 4: Commit
 
 1. Check if there are any changes to commit (`git status --short`). If no changes, skip the commit.
-2. Run `just ci` to confirm everything is green (cargo check + tests + lint). If it fails, fix every failure before committing — including pre-existing ones. Investigate root causes; never work around failures by skipping tests, suppressing warnings, or using `--no-verify`. Pre-existing failures are not a pass. If a pre-existing failure is too large to fix inline, create a tracker sprint/item for it and fix it before committing.
+2. Run `just build` then `just test-lib` to confirm everything compiles and unit tests pass. If either fails, fix every failure before committing — including pre-existing ones. Investigate root causes; never work around failures by skipping tests, suppressing warnings, or using `--no-verify`. Pre-existing failures are not a pass. If a pre-existing failure is too large to fix inline, create a tracker sprint/item for it and fix it before committing.
 3. Stage all changes: `git add -u` for tracked files, then `git add -A --ignore-errors` to pick up any new files (gitignore already excludes .tmp/, .training/, etc.)
 4. Create a single commit. The sprint reports its slug and description — use them for the message:
    - Analysis + sprint: `"[slug]: [description]"`

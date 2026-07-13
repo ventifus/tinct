@@ -2601,6 +2601,7 @@ mod help_suggestion_tests {
             determines: vec![],
             resolver: None,
             resolver_injective: false,
+            structural_discharge: crate::type_class::StructuralDischarge::None,
             method_signatures: vec![],
         });
 
@@ -2696,6 +2697,7 @@ mod help_suggestion_tests {
             determines: vec![],
             resolver: None,
             resolver_injective: false,
+            structural_discharge: crate::type_class::StructuralDischarge::None,
             method_signatures: vec![],
         });
 

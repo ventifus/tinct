@@ -1,4 +1,4 @@
-//! Runtime value types: `Value`, `Thunk` (lazy memoization). Lexical scope is provided by `crate::env::Env`.
+//! Runtime value types: `Value`, `Thunk` (lazy memoization), `Environment` (lexical scope chain).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -21,7 +21,8 @@ pub use crate::arena::ThunkId;
 
 /// Type alias for the optional default expression + environment pair in guarded thunks.
 /// Reduces type_complexity in UnevaluatedState::Guarded and Thunk constructors.
-type GuardDefault = (Arc<Spanned<CoreExpr>>, Arc<RwLock<crate::env::Env>>);
+/// `env_id` is the u32 index into EnvArena for the environment in which the default is evaluated.
+type GuardDefault = (Arc<Spanned<CoreExpr>>, u32);
 
 /// Runtime metadata for user-defined functions — stored on `Value::Function`.
 /// Enables runtime reflection via `ast-of` builtin and LSP features (hover, go-to-def).
@@ -29,18 +30,16 @@ type GuardDefault = (Arc<Spanned<CoreExpr>>, Arc<RwLock<crate::env::Env>>);
 pub struct FnAnnotation {
     /// Doc string extracted from function's annotation metadata dict.
     pub doc: Option<String>,
-    /// The full function-level annotation (fn@[...]), if present.
-    /// Stores the return type, constraints, and other metadata entries.
-    pub return_ann: Option<crate::ast::Annotation>,
     /// Source file path where the function was defined (if available).
     pub source_file: Option<String>,
-    /// Span of the `fn` expression itself — always available at eval time.
+    /// Return type annotation from the function's `@[...]` declaration.
+    /// None for unannotated functions.
+    pub return_ann: Option<crate::ast::Annotation>,
+    /// Source span of the function definition (for AST-of and LSP go-to-definition).
     pub source_span: crate::ast::Span,
-    /// All non-standard @[...] annotation fields, stored uniformly.
-    /// Well-known fields (doc:, return:) have dedicated typed fields above;
-    /// everything else lands here. `annotation-of` returns this dict as the
-    /// canonical annotation representation for Function values.
-    pub extra: IndexMap<String, Value>,
+    /// Extra annotation fields from `@[key: val ...]` that are not standard (doc, return, etc.).
+    /// Evaluated at definition time. Used by TypeNode protocol (as-type:, etc.).
+    pub extra: indexmap::IndexMap<String, crate::value::Value>,
 }
 
 /// Arguments passed to built-in functions.
@@ -50,15 +49,17 @@ pub struct FnAnnotation {
 /// into `Box<dyn Future>` (which has an implicit `'static` bound). Using owned `Vec`
 /// avoids allocating lifetimes in the async state machine.
 pub struct BuiltinArgs {
-    pub args: Vec<Arc<Thunk>>,
-    pub named: Option<IndexMap<String, Arc<Thunk>>>,
+    pub args: Vec<ThunkId>,
+    pub named: Option<IndexMap<String, ThunkId>>,
     pub call_span: Span,
     pub ctx: Arc<crate::eval::EvalContext>,
-    /// The lexical environment at the call site. For user-code calls via PendingCall
-    /// dispatch, this is the caller's environment — enabling `builtin-current-env` to
-    /// capture it. For internal builtin-to-builtin calls (not via PendingCall), this is
-    /// an empty environment and should not be used as a meaningful scope.
-    pub caller_env: Arc<RwLock<crate::env::Env>>,
+    /// Caller's environment — retained for builtins that need to look up variables
+    /// in the calling scope. Not replaced by env_id because builtins interact with
+    /// the legacy Environment chain directly.
+    pub caller_env: Arc<RwLock<Environment>>,
+    /// Caller's FlatEnv env_id — enables FlatEnv-based variable lookup in builtins.
+    /// Copied from UnevaluatedState::Builtin.caller_env_id at materialization time.
+    pub caller_env_id: u32,
 }
 
 /// Signature for built-in functions: receives a `BuiltinArgs` struct containing
@@ -94,13 +95,6 @@ pub struct BuiltinDef {
     /// Number of positional args to pre-materialize unconditionally before dispatch.
     /// Independent of pos_strictness W1 scanning. Default 0 (no forced args).
     pub force_count: usize,
-    /// Parameter names for arity mismatch error messages. Empty slice means no names shown.
-    pub params: &'static [&'static str],
-    /// Named kwargs this builtin accepts (e.g. ["env"] for builtin-resolve).
-    /// Non-empty means the builtin is variadic in the type system — callers may pass
-    /// these names as named arguments without triggering "unknown named argument" warnings.
-    /// Empty slice means no named kwargs declared.
-    pub named_params: &'static [&'static str],
 }
 
 impl PartialEq for BuiltinDef {
@@ -122,122 +116,13 @@ impl fmt::Debug for BuiltinDef {
     }
 }
 
-/// A fully-materialised tinct value that implements Hash + Eq.
-/// Only these Value variants may appear as dict keys.
-///
-/// Currently only Int and Str are produced by the evaluator — the Dict
-/// and Variant arms exist to accommodate future key types without a breaking
-/// enum change.
-#[derive(Clone, Debug)]
+/// Dict key type: either an integer (auto-indexed) or a string (bare word / quoted).
+/// This is the canonical hashable key used in `Value::Dict` and `IndexMap<HashableValue, ThunkId>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HashableValue {
     Int(i64),
     Str(Rc<str>),
-    /// Dict key — pairs in insertion order, compared order-insensitively.
-    Dict(Vec<(HashableValue, HashableValue)>),
-    /// Nominal variant key.
-    Variant {
-        tag: Rc<str>,
-        payload: Option<Box<HashableValue>>,
-    },
 }
-
-/// splitmix64 finaliser — used to mix pair hashes for Dict keys so that
-/// swapping key and value produces a different hash.
-#[inline]
-fn splitmix64_mix(h: u64) -> u64 {
-    let h = h.wrapping_add(0x9e3779b97f4a7c15);
-    let h = (h ^ (h >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
-    let h = (h ^ (h >> 27)).wrapping_mul(0x94d049bb133111eb);
-    h ^ (h >> 31)
-}
-
-impl Hash for HashableValue {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        // Use explicit u8 discriminants so that the StrHashableValue wrapper
-        // can hash the same way without constructing a full HashableValue.
-        // Discriminants: Int=0, Str=2, Dict=3, Variant=4
-        match self {
-            HashableValue::Int(n) => {
-                0u8.hash(state);
-                n.hash(state);
-            }
-            HashableValue::Str(s) => {
-                2u8.hash(state);
-                s.hash(state);
-            }
-            HashableValue::Dict(pairs) => {
-                3u8.hash(state);
-                // Commutative sum of pair hashes so that insertion order does not affect
-                // the hash. Each pair's contribution is non-commutative between key and
-                // value: v_mixed depends on k_mixed, so {a: b} and {b: a} produce
-                // different hashes when a != b.
-                let mut acc: u64 = 0;
-                for (k, v) in pairs {
-                    use std::collections::hash_map::DefaultHasher;
-                    let mut kh = DefaultHasher::new();
-                    k.hash(&mut kh);
-                    let mut vh = DefaultHasher::new();
-                    v.hash(&mut vh);
-                    // Non-linear: key and value have different "roles" in the hash.
-                    // v_mixed feeds k_mixed as addend so that swapping key and value
-                    // changes the result (XOR would make k_mixed ^ v_mixed symmetric).
-                    let k_mixed = splitmix64_mix(kh.finish());
-                    let v_mixed = splitmix64_mix(vh.finish().wrapping_add(k_mixed));
-                    acc = acc.wrapping_add(k_mixed.wrapping_add(v_mixed));
-                }
-                acc.hash(state);
-            }
-            HashableValue::Variant { tag, payload } => {
-                4u8.hash(state);
-                tag.hash(state);
-                payload.hash(state);
-            }
-        }
-    }
-}
-
-impl PartialEq for HashableValue {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (HashableValue::Int(a), HashableValue::Int(b)) => a == b,
-            (HashableValue::Str(a), HashableValue::Str(b)) => a == b,
-            (HashableValue::Dict(a), HashableValue::Dict(b)) => {
-                // Order-insensitive comparison.
-                // Strategy: for each pair in `a`, find a matching pair in `b`.
-                if a.len() != b.len() {
-                    return false;
-                }
-                // For each (k, v) in `a`, there must be exactly one (k, v) in `b`
-                // where k == k and v == v. We do this via a matching scan.
-                // This is O(n²) but Dict keys are generally small in tinct usage.
-                let mut matched = vec![false; b.len()];
-                'outer: for (ak, av) in a {
-                    for (i, (bk, bv)) in b.iter().enumerate() {
-                        if !matched[i] && ak == bk && av == bv {
-                            matched[i] = true;
-                            continue 'outer;
-                        }
-                    }
-                    return false; // No match found for this pair
-                }
-                true
-            }
-            (
-                HashableValue::Variant {
-                    tag: ta,
-                    payload: pa,
-                },
-                HashableValue::Variant {
-                    tag: tb,
-                    payload: pb,
-                },
-            ) => ta == tb && pa == pb,
-            _ => false,
-        }
-    }
-}
-
-impl Eq for HashableValue {}
 
 impl PartialOrd for HashableValue {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
@@ -249,26 +134,29 @@ impl PartialOrd for HashableValue {
     }
 }
 
+impl Hash for HashableValue {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // Use explicit u8 discriminants (Int=0u8, Str=2u8) instead of
+        // std::mem::discriminant so that StrHashableValue::hash can use the same
+        // literal without allocating a temporary Rc<str>.
+        match self {
+            HashableValue::Int(n) => {
+                0u8.hash(state);
+                n.hash(state);
+            }
+            HashableValue::Str(s) => {
+                2u8.hash(state);
+                s.hash(state);
+            }
+        }
+    }
+}
+
 impl fmt::Display for HashableValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             HashableValue::Int(n) => write!(f, "{n}"),
             HashableValue::Str(s) => write!(f, "{s}"),
-            HashableValue::Dict(pairs) => {
-                write!(f, "[")?;
-                for (i, (k, v)) in pairs.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, " ")?;
-                    }
-                    write!(f, "{k}: {v}")?;
-                }
-                write!(f, "]")
-            }
-            HashableValue::Variant { tag, payload: None } => write!(f, "{tag}"),
-            HashableValue::Variant {
-                tag,
-                payload: Some(p),
-            } => write!(f, "{tag}({p})"),
         }
     }
 }
@@ -276,26 +164,25 @@ impl fmt::Display for HashableValue {
 /// A wrapper type for `&str` that hashes the same way as `HashableValue::Str`.
 /// This enables zero-allocation lookups in `IndexMap<HashableValue, V>`.
 #[derive(Debug)]
-#[allow(dead_code)] // used in tests; prod code routes through field-get builtin instead
+#[allow(dead_code)]
 pub(crate) struct StrHashableValue<'a>(pub &'a str);
 
 impl Hash for StrHashableValue<'_> {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        // HashableValue::Str is discriminant 2. Using 2u8 directly avoids the
-        // Rc::from("") allocation that constructing a full HashableValue would require.
+        // HashableValue::Str is discriminant 2u8 (Int=0, Str=2).
+        // Using 2u8 directly avoids the Rc::from("") allocation that the
+        // std::mem::discriminant approach required on every hash call.
         2u8.hash(state);
+        // Then hash the string content
         self.0.hash(state);
     }
 }
-
-// If HashableValue gains new variants, update the StrHashableValue::hash discriminant
-// literal (currently 2u8 for HashableValue::Str).
 
 impl Equivalent<HashableValue> for StrHashableValue<'_> {
     fn equivalent(&self, key: &HashableValue) -> bool {
         match key {
             HashableValue::Str(s) => self.0 == s.as_ref(),
-            _ => false,
+            HashableValue::Int(_) => false,
         }
     }
 }
@@ -495,7 +382,7 @@ impl Builder {
     pub fn new() -> Self {
         Self {
             frozen: AtomicBool::new(false),
-            inner: Mutex::new(Some(IndexMap::<HashableValue, ThunkId>::new())),
+            inner: Mutex::new(Some(IndexMap::new())),
         }
     }
 
@@ -503,9 +390,7 @@ impl Builder {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             frozen: AtomicBool::new(false),
-            inner: Mutex::new(Some(IndexMap::<HashableValue, ThunkId>::with_capacity(
-                capacity,
-            ))),
+            inner: Mutex::new(Some(IndexMap::with_capacity(capacity))),
         }
     }
 
@@ -569,6 +454,10 @@ impl Builder {
     /// Atomically get-or-insert: if `key` exists, return its ThunkId; otherwise
     /// insert `default_id` at `key` and return `default_id`.
     /// Returns error if the builder is frozen.
+    ///
+    /// This eliminates the `builder-has?` + `builder-get` + `builder-set` triple
+    /// that `group-by` previously used, reducing locking overhead and avoiding the
+    /// race window between the has? check and the set.
     pub fn get_or(&self, key: HashableValue, default_id: ThunkId) -> Result<ThunkId, String> {
         // Fast-path: frozen builder cannot be mutated.
         if self.frozen.load(Ordering::Relaxed) {
@@ -643,6 +532,8 @@ pub enum Value {
         start: usize,
         end: usize,
     },
+    /// Boolean (`true` or `false`)
+    Bool(bool),
     /// Ordered key-value map with lazy (thunked) values
     Dict(IndexMap<HashableValue, ThunkId>),
     /// Transient builder for efficient mutable dict construction.
@@ -651,18 +542,17 @@ pub enum Value {
     Builder(Arc<Builder>),
     /// User-defined function (closure capturing its defining environment).
     /// `body` is stored as `Arc<Spanned<CoreExpr>>` (Parts-E migration: no Expr round-trip).
+    /// `closure_env_id` is the FlatEnv EnvId index into EvalContext.env_arena for the closure scope.
     Function {
         params: Rc<Vec<Param>>,
         body: Arc<Spanned<CoreExpr>>,
-        env: Arc<RwLock<crate::env::Env>>,
+        closure_env_id: u32,
         annotation: Option<Box<FnAnnotation>>,
-        /// Return type annotation from the `fn@Annotation` form.
-        /// For named-field constructors, this carries `Annotation::Simple(qualified_tag)`,
-        /// enabling pattern matching to identify the constructor tag at runtime.
-        return_ann: Option<crate::ast::Spanned<crate::ast::Annotation>>,
     },
     /// Rust-native built-in function
     Builtin(BuiltinDef),
+    /// Lazy linked-list sequence (head element, tail sequence)
+    Seq { head: ThunkId, tail: ThunkId },
     /// Proxy object — field access calls the handler function with the field name
     Proxy { handler: ThunkId },
     /// Lazy overlay: R overrides L (right-biased merge). Flattened to Dict on demand.
@@ -675,12 +565,23 @@ pub enum Value {
     },
     /// Network capability — authority to connect to specified hosts/subnets
     NetCap(Rc<Vec<NetCapEntry>>),
-    /// Raw file handle — the OS primitive, nothing more.
-    /// Created by `builtin-file-open`. Read, write, seek via `builtin-file-read`,
-    /// `builtin-file-write`, `builtin-file-seek`. All protocol (open/read/write/close)
-    /// is built in tinct (prelude.llt `open` wraps this in a protocol dict).
-    /// cap_std::fs::File implements Read + Write + Seek — no buffering added here.
-    File(Rc<RefCell<cap_std::fs::File>>),
+    /// Open file/stream handle with capability metadata.
+    Handle {
+        caps: HashMap<String, Value>,
+        inner: Rc<std::cell::RefCell<Box<dyn std::io::BufRead>>>,
+        write_inner: Option<Rc<std::cell::RefCell<Box<dyn std::io::Write>>>>,
+        seek_inner: Option<Rc<std::cell::RefCell<Box<dyn std::io::Seek>>>>,
+        raw_tcp: Option<Rc<RefCell<Option<std::net::TcpStream>>>>,
+        creation_span: Span,
+    },
+    /// Write-only file/stream handle with capability metadata.
+    WriteHandle {
+        caps: HashMap<String, Value>,
+        inner: Rc<std::cell::RefCell<Box<dyn std::io::Write>>>,
+    },
+    /// Raw OS file handle (thin wrapper over cap_std::fs::File, no buffering).
+    /// Opened via `builtin-file-open`; read/written/sought via `builtin-file-*` builtins.
+    File(Rc<std::cell::RefCell<cap_std::fs::File>>),
     /// Revocable directory capability
     RevocableDirCap {
         inner: Rc<cap_std::fs::Dir>,
@@ -693,255 +594,153 @@ pub enum Value {
         payload: Option<ThunkId>,
     },
     /// Exact base-10 decimal (rust_decimal::Decimal, 96-bit software decimal).
-    /// Created via `decimal` builtin. No lossy cross-type with Float.
     Decimal(rust_decimal::Decimal),
     /// Arbitrary-precision integer (num_bigint::BigInt).
-    /// Created via `big-int` builtin or arithmetic overflow promotion.
     BigInt(num_bigint::BigInt),
     /// Byte sequence (opaque binary data).
-    /// Stored as a shared slice with byte offsets, enabling zero-copy subslicing.
-    /// Used for binary I/O, cryptographic operations, and encoding conversions.
     Bytes {
         source: Rc<[u8]>,
         start: usize,
         end: usize,
     },
     /// URI — a uniform resource identifier with scheme and URI string.
-    /// Used for capability-tagged URLs (e.g., http://, file://, mailto:).
     Uri { scheme: String, uri: String },
     /// UTC timestamp (nanoseconds since Unix epoch).
-    /// Range: approximately 1678–2262 CE (±292 years from epoch).
-    /// RFC 5280 certificate sentinel dates (9999-12-31) are clamped to i64::MAX.
     Timestamp(i64),
     /// Signed duration (nanoseconds).
-    /// Not calendar-aware — no months/years, only seconds/minutes/hours/days.
     Duration(i64),
     /// Clock capability for reading current time (object capability model).
     ClockCap(Rc<ClockCapInner>),
     /// Timezone (parsed IANA TZ rules from zoneinfo file).
-    /// Opaque — not serializable, consumed by timezone conversion builtins.
     Timezone(Rc<jiff::tz::TimeZone>),
     /// QUIC session — multiplexed connection over UDP (RFC 9000).
-    /// Wraps a `quinn::Connection`. Created by `quic-session`, consumed by
-    /// `quic-open-stream` and `quic-open-datagram`.
     QuicSession(Rc<quinn::Connection>),
     /// HTTP/2 session — multiplexed HTTP connection (RFC 9113).
-    /// Wraps a `reqwest::Client` (async) configured to prefer HTTP/2 via ALPN.
-    /// Using the async client avoids creating a nested tokio runtime inside the blocking
-    /// wrapper — dropping `reqwest::blocking::Client` from within an async context panics
-    /// with "Cannot drop a runtime in a context where blocking is not allowed."
-    /// Created by `http2-session`, consumed by `http-request`.
-    /// `base_url` is the `scheme://host:port` origin used to resolve relative paths.
     Http2Session {
         client: Rc<reqwest::Client>,
         base_url: String,
     },
     /// HTTP/3 session — HTTP over QUIC (RFC 9114).
-    /// Wraps an `Http3SessionState` containing the `h3::client::SendRequest` and the
-    /// background driver `JoinHandle`. Created by `http3-session`, consumed by `http-request`.
     Http3Session(Rc<RefCell<Http3SessionState>>),
     /// QUIC datagram handle — unreliable message delivery over QUIC (RFC 9221).
-    /// Wraps a `quinn::Connection` for datagram send/recv operations.
-    /// Created by `quic-open-datagram`, consumed by `send-datagram` and `recv-datagram`.
     QuicDatagramHandle(Rc<quinn::Connection>),
     /// Message-oriented datagram socket (UDP or Unix datagram).
-    /// Uses `send`/`recv` semantics (message boundaries preserved), not stream I/O.
-    /// Created by `connect cap Udp host port` or `connect cap UnixDatagram path`.
-    /// Consumed by `send-datagram` and `recv-datagram`.
     DatagramHandle {
         socket: DatagramSocket,
         creation_span: Span,
     },
-    /// An annotated non-function value. Wraps any value with an @[...] annotation dict.
-    /// `annotation-of` returns the `annotation` field directly for this variant.
-    /// All other Value operations (pattern matching, equality, display) should unwrap
-    /// `inner` transparently — `annotation-of` is the only way to observe the annotation.
-    ///
-    /// `inner` is a materialized Value. The wrapped value is forced at annotation time,
-    /// eliminating async context requirements in sync operations (type_name, Debug, Display).
-    /// `annotation` is a materialized `Value::Dict` carrying the annotation fields as key-value pairs.
-    Annotated {
-        /// The annotated value (materialized).
-        inner: Box<Value>,
-        /// The annotation dict (Value::Dict). Materialized at annotation time.
-        annotation: Box<Value>,
-    },
 
     // =========================================================================
-    // runtime-v2 native AST value types (Sprint 1, Part F)
+    // runtime-v2 native AST value types
     // =========================================================================
-    //
-    // These variants replace the old Dict-schema representation of AST nodes.
-    // `load` returns Value::Program; `expand` takes and returns Value::Program;
-    // `eval` takes [Seq Expr.*]; `ast-of` returns `Value::Variant { tag: "Expr.*", .. }`.
-    //
-    // Type predicates return false for Program and Document — they are nominal types, not plain Dicts.
-    // AST expression nodes are represented as `Expr.*` Variants (e.g. Expr.VarRef, Expr.Call).
-    // Match dispatch on AST nodes uses the standard Variant tag mechanism.
     /// A complete tinct program — the type returned by `load` and `expand`.
-    /// Wraps an Arc<SurfaceProgram> for Send+Sync compatibility (future async runtime).
-    /// All type annotations are stored inline on AST nodes (TypeAnnotation OnceLock fields).
-    /// expects_resolved carries the pipeline expects contract types from the typecheck pass.
     Program {
         program: Arc<SurfaceProgram>,
+        resolutions: Arc<crate::ast::ResolutionTable>,
+        types: Arc<crate::ast::TypeAnnotationTable>,
         expects_resolved: Arc<HashMap<crate::ast::Span, crate::types::Type>>,
-        /// Type warnings/errors produced by `builtin-typecheck`. Empty for pre-typecheck programs.
-        /// Stored as raw TypeErrors; materialized as structured dicts by eval_materialize.rs
-        /// so tinct code can format them (file, line, col, message) — not Rust.
-        warnings: Arc<Vec<crate::types::TypeError>>,
     },
 
     /// A single document within a program — accessible via `program.documents`.
-    /// Contains expressions and declarations.
-    /// Resolution is done separately via `builtin-resolve doc env: E` which returns a
-    /// Resolution is inline on AST nodes (via Resolution::OnceLock fields).
     Document(Arc<SurfaceDocument>),
 
+    /// A single AST expression node — the type returned by `ast-of` and `[quote ...]`.
+    Expression(Arc<SurfaceNode>),
+
     // =========================================================================
-    // runtime-v2 async primitives (Sprint 2, Part B — real implementations)
+    // runtime-v2 async primitives
     // =========================================================================
-    //
     /// Async task handle — returned by `task` builtin, consumed by `await`.
-    /// Uses tokio::task::spawn_local for !Send futures within a LocalSet.
     Task(Arc<tokio::sync::Mutex<TaskState>>),
 
     /// Channel for inter-task communication — created by `channel` builtin.
-    /// Uses tokio::sync::mpsc for async send/recv operations.
     Channel(Arc<ChannelInner>),
 
     /// Broadcast channel — created by `broadcast-channel` builtin.
-    /// Each subscriber receives all values. Uses tokio::sync::broadcast.
     BroadcastChannel(Arc<BroadcastChannelInner>),
 
     /// Oneshot sender half — created by `oneshot-channel` builtin.
-    /// Can send exactly one value. Uses tokio::sync::oneshot.
     OneshotSender(Arc<OneshotSenderInner>),
 
     /// Oneshot receiver half — created by `oneshot-channel` builtin.
-    /// Can recv exactly one value. Uses tokio::sync::oneshot.
     OneshotReceiver(Arc<OneshotReceiverInner>),
 
-    /// Cancellation context — created by `context` builtin, consumed by `with-cancel`,
-    /// `with-timeout`, `with-deadline`, `cancelled?`, and `cancel-task`.
-    /// Backed by `tokio_util::sync::CancellationToken` which is `Clone` (cheap Arc internally).
-    /// A root context is created by `[context]`; child contexts from `[with-cancel ctx]` etc.
+    /// Cancellation context — created by `context` builtin.
     Context(tokio_util::sync::CancellationToken),
 
     /// Reactive cell — created by `reactive-cell` builtin.
-    /// Last-write-wins broadcast: all readers always see the most recently set value.
-    /// Backed by `tokio::sync::watch::channel`. Stores both Sender and Receiver in an Arc
-    /// so that `cell-get` can borrow the latest value without requiring exclusive access.
     ReactiveCell(Arc<ReactiveCellInner>),
 
-    /// Opaque type-checker context handle — returned by `builtin-make-type-ctx` and
-    /// `builtin-get-type-context`, consumed by `builtin-typecheck` and `builtin-fork-type-ctx`.
-    /// Not serializable. Interior state is mutated in place by `builtin-typecheck` calls
-    /// (type declarations accumulate monotonically).
-    TypeContext(Arc<Mutex<crate::eval::TypeContextData>>),
-
-    /// A live evaluation environment — returned by `builtin-eval` when evaluating a full
-    /// document, and by `builtin-extend-env` when constructing layered environments.
-    /// Passed as `env:` to `builtin-eval` to set the starting environment for evaluation,
-    /// enabling method arms and bindings to flow through the env chain rather than being
-    /// flattened into a dict.
-    Environment(Arc<RwLock<crate::env::Env>>),
+    /// Arena view handle — wraps an EnvId for the scope managed by this arena.
+    Arena {
+        name: Arc<str>,
+        env_id: u32,
+    },
+    /// Value annotated with runtime metadata (e.g. constructor annotation dict).
+    /// Used by `make-annotated` and annotated unit constructors.
+    /// `annotation` is a materialized `Value::Dict` of annotation key-value pairs.
+    Annotated {
+        inner: Box<Value>,
+        annotation: Box<Value>,
+    },
+    /// Type-checker context handle — wraps `TypeContextData` for passing between tinct builtins.
+    /// Created by `builtin-get-type-context`; consumed by `builtin-typecheck`, `builtin-resolve`, etc.
+    TypeContext(std::sync::Arc<std::sync::Mutex<crate::eval::TypeContextData>>),
+    /// Lexical environment handle — wraps a type-metadata `Env` for macro-evaluation builtins.
+    /// Created by `builtin-current-env`, `builtin-extend-env`; consumed by `builtin-eval`, etc.
+    Environment(std::sync::Arc<std::sync::RwLock<crate::env::Env>>),
 }
 
 /// State of an async task spawned via `task` builtin.
-/// Tracks the JoinHandle while pending, caches the result once completed.
 pub enum TaskState {
-    /// Task is running — holds the JoinHandle.
-    /// When awaited, polls the handle and transitions to Done.
     Pending(tokio::task::JoinHandle<EvalResult<Value>>),
-    /// Task has completed — result is cached for subsequent awaits.
-    /// Clone the Value when returning; keeps the cache intact.
     Done(EvalResult<Value>),
 }
 
 /// Inner state for a channel created via `channel` builtin.
-/// Uses tokio::sync::mpsc for async send/recv operations.
 pub struct ChannelInner {
-    /// Sender half — cloned for each send operation.
     pub sender: tokio::sync::mpsc::Sender<Value>,
-    /// Receiver half — wrapped in Mutex for exclusive access.
-    /// Only one task can recv at a time.
     pub receiver: tokio::sync::Mutex<tokio::sync::mpsc::Receiver<Value>>,
-    /// Channel capacity (for debugging/introspection).
     pub capacity: i64,
 }
 
 /// Inner state for a broadcast channel created via `broadcast-channel` builtin.
-/// Uses tokio::sync::broadcast for multi-subscriber semantics.
-/// Each subscriber gets a clone of the sender and calls `subscribe()` to get a receiver.
 pub struct BroadcastChannelInner {
-    /// Sender half — cloned for each send operation.
-    /// Also used via `subscribe()` to create new receivers.
     pub sender: tokio::sync::broadcast::Sender<Value>,
-    /// Channel capacity (for debugging/introspection).
     pub capacity: i64,
 }
 
 /// Inner state for the sender half of a oneshot channel created via `oneshot-channel` builtin.
-/// Uses tokio::sync::oneshot::Sender wrapped in Mutex+Option for exclusive single-use semantics.
 pub struct OneshotSenderInner {
-    /// Sender half — wrapped in Mutex+Option so it can be taken on first send.
-    /// After the first send, the Option is None and subsequent sends fail.
     pub sender: tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<Value>>>,
 }
 
 /// Inner state for the receiver half of a oneshot channel created via `oneshot-channel` builtin.
-/// Uses tokio::sync::oneshot::Receiver wrapped in Mutex+Option for exclusive single-use semantics.
 pub struct OneshotReceiverInner {
-    /// Receiver half — wrapped in Mutex+Option so it can be taken on first recv.
-    /// After the first recv, the Option is None and subsequent recvs fail.
     pub receiver: tokio::sync::Mutex<Option<tokio::sync::oneshot::Receiver<Value>>>,
 }
 
 /// Inner state for a reactive cell created via `reactive-cell` builtin.
-/// Backed by `tokio::sync::watch` for last-write-wins broadcast semantics.
-/// The Sender is behind a Mutex so that concurrent `cell-set` calls are serialized.
-/// The Receiver is cloned cheaply (watch receivers share the same backing cell).
 pub struct ReactiveCellInner {
-    /// Sender half — wrapped in Mutex so concurrent writers serialize naturally.
     pub sender: tokio::sync::Mutex<tokio::sync::watch::Sender<Value>>,
-    /// Receiver half — kept here so `cell-get` can borrow the latest value.
-    /// `watch::Receiver` is `Clone` (cheap reference increment on the shared state).
     pub receiver: tokio::sync::watch::Receiver<Value>,
 }
 
-/// State for an HTTP/3 session: the request sender and the background driver task.
-///
-/// The h3 protocol requires a connection-level "driver" future to be polled
-/// concurrently with request streams — it processes incoming QUIC frames (SETTINGS,
-/// GOAWAY, server push, etc.). We spawn it as a local task via `async_rt::spawn_local`
-/// so it is polled every time `async_rt::block_on` drives the runtime.
-///
-/// Dropping the `_driver` `JoinHandle` would detach the task; keeping it here ensures
-/// the driver is aborted when the session is dropped (all `Rc` clones released).
+/// State for an HTTP/3 session.
 pub struct Http3SessionState {
-    /// The request sender half — used by `http-request` to issue HTTP/3 requests.
     pub send_request: h3::client::SendRequest<h3_quinn::OpenStreams, bytes::Bytes>,
-    /// Background driver task handle. Dropped (and task aborted) when the session is dropped.
     pub _driver: tokio::task::JoinHandle<()>,
 }
 
 /// Socket variant carried inside `Value::DatagramHandle`.
-///
-/// Both arms expose the same `send`/`recv` API after connection, so dispatch
-/// is done once at construction time and builtins operate uniformly.
-///
-/// `Clone` is derived — `Arc::clone` is a shallow reference-count increment, not a socket copy.
 #[derive(Clone, Debug)]
 pub enum DatagramSocket {
-    /// UDP socket, connected to a remote address via `UdpSocket::connect`.
     Udp(Rc<RefCell<std::net::UdpSocket>>),
-    /// Unix-domain datagram socket (Linux/macOS), connected to a remote path.
     #[cfg(unix)]
     UnixDgram(Rc<RefCell<std::os::unix::net::UnixDatagram>>),
 }
 
 /// Helper function to construct a `Value::String` from a string slice.
-/// Creates a new `Rc<str>` and uses the full range (0..len).
 pub fn string_val(s: &str) -> Value {
     Value::String {
         source: Rc::from(s),
@@ -951,7 +750,6 @@ pub fn string_val(s: &str) -> Value {
 }
 
 /// Helper function to construct a `Value::Bytes` from a byte slice.
-/// Creates a new `Rc<[u8]>` and uses the full range (0..len).
 pub fn bytes_val(data: &[u8]) -> Value {
     Value::Bytes {
         source: Rc::from(data),
@@ -961,55 +759,28 @@ pub fn bytes_val(data: &[u8]) -> Value {
 }
 
 impl Value {
-    /// Normalize a materialized value by peeling transparent wrappers:
-    /// - `Annotated { inner }` → recurse into inner (annotations are metadata, not type identity)
-    /// - `Overlay(L, R)` is left as-is here — callers that need a plain Dict should call
-    ///   `flatten_overlay` explicitly, since flattening requires async context.
-    ///
-    /// Called after strict-arg materialization so builtins see the canonical variant
-    /// rather than annotation wrappers. Overlay flattening is handled per-builtin.
-    pub fn peel_annotations(self) -> Value {
-        let mut v = self;
-        while let Value::Annotated { inner, .. } = v {
-            v = *inner;
-        }
-        v
-    }
-
-    /// Check if this value is truthy using the Rust-native Int protocol ONLY.
-    ///
-    /// Only `Value::Int(n)` is checked: nonzero = true, zero = false.
-    /// All other types must go through tinct-side `to-match` dispatch via `call_to_match`.
-    /// AST metadata fields (variadic, implied, etc.) are stored as `Value::Int(1/0)`.
-    pub fn is_truthy(&self) -> bool {
-        matches!(self, Value::Int(n) if *n != 0)
-    }
-
-    /// Returns a human-readable type name for error messages, diagnostics, and dispatch.
-    ///
-    /// For user-defined nominal types (variants), returns the full qualified tag
-    /// e.g. "Vec2.Vec2", "Color.Red", "Option.Some" — preserving the actual type identity.
-    /// Previously returned the useless string "Variant" for all variant values.
-    pub fn type_name(&self) -> &str {
+    /// Returns a human-readable type name for error messages and diagnostics.
+    pub fn type_name(&self) -> &'static str {
         match self {
             Value::Int(_) => "Int",
-            Value::U64(_) => "U64",
+            Value::U64(_) => "Int",
             Value::Float(_) => "Float",
             Value::String { .. } => "String",
+            Value::Bool(_) => "Bool",
             Value::Dict(_) => "Dict",
             Value::Builder(_) => "Builder",
             Value::Function { .. } => "Function",
             Value::Builtin(_) => "Builtin",
+            Value::Seq { .. } => "Seq",
             Value::Proxy { .. } => "Proxy",
             Value::Overlay(..) => "Dict",
             Value::DirCap { .. } => "DirCap",
             Value::NetCap(_) => "NetCap",
+            Value::Handle { .. } => "Handle",
+            Value::WriteHandle { .. } => "WriteHandle",
             Value::File(_) => "File",
             Value::RevocableDirCap { .. } => "DirCap",
-            // Return the full qualified tag — "Color.Red", "Option.Some", etc.
-            // Preserves the actual type identity. Dispatch strips the constructor
-            // suffix at match time, so @Color matches Color.Red and @Option matches Option.Some.
-            Value::Variant { tag, .. } => tag.as_str(),
+            Value::Variant { .. } => "Variant",
             Value::Decimal(_) => "Decimal",
             Value::BigInt(_) => "BigInt",
             Value::Bytes { .. } => "Bytes",
@@ -1025,6 +796,7 @@ impl Value {
             Value::DatagramHandle { .. } => "DatagramHandle",
             Value::Program { .. } => "Program",
             Value::Document(_) => "Document",
+            Value::Expression(_) => "Expression",
             Value::Task(_) => "Task",
             Value::Channel(_) => "Channel",
             Value::BroadcastChannel(_) => "BroadcastChannel",
@@ -1032,7 +804,7 @@ impl Value {
             Value::OneshotReceiver(_) => "OneshotReceiver",
             Value::Context(_) => "Context",
             Value::ReactiveCell(_) => "ReactiveCell",
-            // Annotated is transparent — delegate to the inner value's type.
+            Value::Arena { .. } => "Arena",
             Value::Annotated { inner, .. } => inner.type_name(),
             Value::TypeContext(_) => "TypeContext",
             Value::Environment(_) => "Environment",
@@ -1066,6 +838,7 @@ impl fmt::Debug for Value {
                 let s = &source[*start..*end];
                 f.debug_tuple("String").field(&s).finish()
             }
+            Value::Bool(b) => f.debug_tuple("Bool").field(b).finish(),
             Value::Dict(map) => {
                 let keys: Vec<&HashableValue> = map.keys().collect();
                 f.debug_tuple("Dict").field(&keys).finish()
@@ -1082,11 +855,14 @@ impl fmt::Debug for Value {
                 write!(f, "Function({})", names.join(", "))
             }
             Value::Builtin(def) => write!(f, "Builtin({})", def.name),
+            Value::Seq { .. } => write!(f, "Seq(...)"),
             Value::Proxy { .. } => write!(f, "Proxy"),
             Value::Overlay(..) => write!(f, "Overlay(...)"),
             Value::DirCap { .. } => write!(f, "DirCap"),
             Value::NetCap(entries) => write!(f, "NetCap({} entries)", entries.len()),
-            Value::File(_) => write!(f, "File(...)"),
+            Value::Handle { caps, .. } => write!(f, "Handle({} caps)", caps.len()),
+            Value::WriteHandle { caps, .. } => write!(f, "WriteHandle({} caps)", caps.len()),
+            Value::File(_) => write!(f, "File"),
             Value::RevocableDirCap { revoked, .. } => {
                 if revoked.get() {
                     write!(f, "DirCap(revoked)")
@@ -1122,6 +898,11 @@ impl fmt::Debug for Value {
             Value::DatagramHandle { .. } => write!(f, "DatagramHandle"),
             Value::Program { .. } => write!(f, "Program(...)"),
             Value::Document(_) => write!(f, "Document(...)"),
+            Value::Expression(node) => write!(
+                f,
+                "Expression({})",
+                crate::surface_fields::surface_expr_tag(&node.expr)
+            ),
             Value::Task(_) => write!(f, "Task"),
             Value::Channel(_) => write!(f, "Channel"),
             Value::Context(_) => write!(f, "Context"),
@@ -1129,8 +910,8 @@ impl fmt::Debug for Value {
             Value::BroadcastChannel(_) => write!(f, "BroadcastChannel"),
             Value::OneshotSender(_) => write!(f, "OneshotSender"),
             Value::OneshotReceiver(_) => write!(f, "OneshotReceiver"),
-            // Annotated is transparent — delegate to inner value's Debug.
-            Value::Annotated { inner, .. } => write!(f, "{inner:?}"),
+            Value::Arena { name, env_id } => write!(f, "Arena({name} @ {env_id})"),
+            Value::Annotated { inner, .. } => write!(f, "Annotated({inner:?})"),
             Value::TypeContext(_) => write!(f, "TypeContext"),
             Value::Environment(_) => write!(f, "Environment"),
         }
@@ -1141,12 +922,13 @@ impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Value::Int(n) => write!(f, "{n}"),
-            Value::U64(n) => write!(f, "{n}u"),
+            Value::U64(n) => write!(f, "{n}"),
             Value::Float(n) => write!(f, "{n}"),
             Value::String { source, start, end } => {
                 let s = &source[*start..*end];
                 write!(f, "{s:?}")
             }
+            Value::Bool(b) => write!(f, "{b}"),
             Value::Dict(map) => {
                 write!(f, "[")?;
                 for (i, (key, _)) in map.iter().enumerate() {
@@ -1172,10 +954,13 @@ impl fmt::Display for Value {
                 write!(f, "] ...]")
             }
             Value::Builtin(def) => write!(f, "<builtin {}>", def.name),
+            Value::Seq { .. } => write!(f, "Seq(...)"),
             Value::Proxy { .. } => write!(f, "<proxy>"),
             Value::Overlay(..) => write!(f, "[<overlay>]"),
             Value::DirCap { .. } => write!(f, "<DirCap>"),
             Value::NetCap(_) => write!(f, "<NetCap>"),
+            Value::Handle { .. } => write!(f, "<Handle>"),
+            Value::WriteHandle { .. } => write!(f, "<WriteHandle>"),
             Value::File(_) => write!(f, "<File>"),
             Value::RevocableDirCap { revoked, .. } => {
                 if revoked.get() {
@@ -1199,14 +984,12 @@ impl fmt::Display for Value {
             }
             Value::Uri { uri, .. } => write!(f, "{uri}"),
             Value::Timestamp(nanos) => {
-                // Convert nanoseconds to jiff::Timestamp for display
                 match jiff::Timestamp::from_nanosecond(*nanos as i128) {
                     Ok(ts) => write!(f, "{ts}"),
                     Err(_) => write!(f, "<invalid timestamp>"),
                 }
             }
             Value::Duration(nanos) => {
-                // Display as signed nanoseconds
                 write!(f, "{nanos}ns")
             }
             Value::ClockCap(_) => write!(f, "<ClockCap>"),
@@ -1218,6 +1001,11 @@ impl fmt::Display for Value {
             Value::DatagramHandle { .. } => write!(f, "<DatagramHandle>"),
             Value::Program { .. } => write!(f, "<program>"),
             Value::Document(_) => write!(f, "<document>"),
+            Value::Expression(node) => write!(
+                f,
+                "<expression:{}>",
+                crate::surface_fields::surface_expr_tag(&node.expr)
+            ),
             Value::Task(_) => write!(f, "<task>"),
             Value::Channel(_) => write!(f, "<channel>"),
             Value::Context(_) => write!(f, "<context>"),
@@ -1225,42 +1013,14 @@ impl fmt::Display for Value {
             Value::BroadcastChannel(_) => write!(f, "<broadcast-channel>"),
             Value::OneshotSender(_) => write!(f, "<oneshot-sender>"),
             Value::OneshotReceiver(_) => write!(f, "<oneshot-receiver>"),
-            // Annotated is transparent — delegate to inner value's Display.
-            Value::Annotated { inner, .. } => write!(f, "{inner}"),
+            Value::Arena { name, env_id } => write!(f, "<arena:{name}@{env_id}>"),
+            Value::Annotated { inner, .. } => fmt::Display::fmt(inner, f),
             Value::TypeContext(_) => write!(f, "<TypeContext>"),
             Value::Environment(_) => write!(f, "<Environment>"),
         }
     }
 }
 
-/// Compares primitives (Int, Float, String, Bool) by value; cross-variant
-/// comparison always returns false (e.g. `Int(1) != Float(1.0)`). Float uses
-/// IEEE 754 semantics (NaN != NaN). Dict, Function, Builtin, Seq, and Proxy are
-/// intentionally non-comparable and always return false, even to themselves.
-///
-/// # Hash Consistency Invariant
-///
-/// **REQUIREMENT:** For Dict key equality, `hash(a) == hash(b)` whenever
-/// `Value::PartialEq` returns `a == b`.
-///
-/// **CURRENT STATUS:** This invariant is SATISFIED. Int and Float use separate
-/// hash paths in `HashableValue::hash()` (via discriminant-based hashing), so
-/// `HashableValue::Int(1)` and a hypothetical float key produce different hashes.
-/// Cross-variant comparisons return `false` in `HashableValue::PartialEq`, so
-/// distinct hash values are required.
-///
-/// **CONSEQUENCE:** Dict keys `[1: x]` (Int key) are distinct from string keys.
-/// This is intentional: the type system treats `Int` and `String` as separate types.
-/// Future Dict key deduplication or Set types must preserve this separation.
-///
-/// **CROSS-REFERENCE:** `HashableValue::hash()` enforces discriminant-based hashing
-/// to maintain this invariant. See also: `HashableValue::PartialEq` and `$=` builtin
-/// semantics (src/builtins_math.rs) which allow cross-type Int/Float comparison
-/// (separate from HashableValue equality used for Dict keys).
-///
-/// Structural equality for thunk memoization. Note: differs from `$=` (which promotes
-/// Int→Float for cross-type comparison). `Value::PartialEq` uses structural equality;
-/// `$=` uses arithmetic promotion.
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
@@ -1279,6 +1039,7 @@ impl PartialEq for Value {
                     end: end_b,
                 },
             ) => src_a[*start_a..*end_a] == src_b[*start_b..*end_b],
+            (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Decimal(a), Value::Decimal(b)) => a == b,
             (Value::BigInt(a), Value::BigInt(b)) => a == b,
             (
@@ -1312,50 +1073,10 @@ impl PartialEq for Value {
             }
             (Value::Http3Session(a), Value::Http3Session(b)) => Rc::ptr_eq(a, b),
             (Value::QuicDatagramHandle(a), Value::QuicDatagramHandle(b)) => Rc::ptr_eq(a, b),
-            // Annotated is transparent — delegate to inner value equality.
-            (Value::Annotated { inner: a, .. }, Value::Annotated { inner: b, .. }) => a == b,
-            (Value::Annotated { inner, .. }, other) | (other, Value::Annotated { inner, .. }) => {
-                inner.as_ref() == other
-            }
-            // TypeContext is identity-comparable (pointer equality).
-            (Value::TypeContext(a), Value::TypeContext(b)) => Arc::ptr_eq(a, b),
-            // Unit Variant (payload: None) — compare by tag string.
-            // Payload variants fall through to false: comparing dicts inside payloads
-            // would require materializing thunks, breaking laziness.
-            (
-                Value::Variant {
-                    tag: ta,
-                    payload: None,
-                },
-                Value::Variant {
-                    tag: tb,
-                    payload: None,
-                },
-            ) => ta == tb,
-            // Timezone is not comparable — opaque data
-            // Dict, Function, Builtin, Seq, Proxy, Overlay, File, payload Variant are not structurally compared.
-            // Overlay would require materializing both sides, breaking laziness.
-            // File: pointer equality — same RefCell means same open file descriptor.
-            (Value::File(a), Value::File(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
     }
 }
-
-// Size assertion: ensure Value::Dict (IndexMap) remains the dominant variant.
-// Value enum size is dominated by Dict(IndexMap). BuiltinDef is Copy (40 bytes:
-// 8-byte fn ptr + 2 fat ptrs for &str and &[Strictness]). IndexMap size varies
-// by version; indexmap 2.x uses ~72 bytes on 64-bit platforms.
-// Value::File adds one Rc<RefCell<cap_std::fs::File>> (16 bytes on 64-bit).
-// Handle/WriteHandle were removed in the File redesign — size reduced.
-const _: () = {
-    const EXPECTED_MAX: usize = 144; // Retained from before Handle removal; actual size may be smaller
-    const ACTUAL: usize = std::mem::size_of::<Value>();
-    assert!(
-        ACTUAL <= EXPECTED_MAX,
-        "Value size increased beyond expected maximum"
-    );
-};
 
 // ============================================================================
 // Runtime v2 — Sprint 2B: ThunkInner + UnevaluatedState
@@ -1366,11 +1087,12 @@ const _: () = {
 #[derive(Debug, Clone)]
 pub enum UnevaluatedState {
     /// Pre-lowering Surface thunk — created by the `eval` builtin.
-    /// All cross-phase data (resolution, type annotations, field slots) is stored
-    /// inline on the AST nodes — no external tables needed.
     Surface {
         node: Arc<SurfaceNode>,
-        env: Arc<RwLock<crate::env::Env>>,
+        res: Arc<crate::ast::ResolutionTable>,
+        types: Arc<crate::ast::TypeAnnotationTable>,
+        /// Index into EvalContext.env_arena for the evaluation environment.
+        env_id: u32,
         ctx: Arc<crate::eval::EvalContext>,
     },
     /// Lazy AST node field access via `surface_node_get_field`.
@@ -1382,33 +1104,35 @@ pub enum UnevaluatedState {
     /// CoreExpr body thunk — created by invoke_function when body is Arc<Spanned<CoreExpr>>.
     CoreExpr {
         expr: Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
-        env: Arc<RwLock<crate::env::Env>>,
+        /// Index into EvalContext.env_arena for the evaluation environment.
+        env_id: u32,
         ctx: Arc<crate::eval::EvalContext>,
     },
     /// Deferred builtin call (was PendingBuiltin).
     Builtin {
         def: BuiltinDef,
-        args: Vec<Arc<Thunk>>,
-        named: Option<IndexMap<String, Arc<Thunk>>>,
+        args: Vec<ThunkId>,
+        named: Option<IndexMap<String, ThunkId>>,
         call_span: Span,
-        caller_env: Arc<RwLock<crate::env::Env>>,
+        /// Index into EvalContext.env_arena for the caller's environment.
+        caller_env_id: u32,
         ctx: Arc<crate::eval::EvalContext>,
     },
     /// Deferred function call (was PendingCall).
     Call {
-        func: Arc<Thunk>,
-        args: Vec<Arc<Thunk>>,
-        named: Option<Box<IndexMap<String, Arc<Thunk>>>>,
+        func: ThunkId,
+        args: Vec<ThunkId>,
+        named: Option<Box<IndexMap<String, ThunkId>>>,
         call_span: Span,
-        caller_env: Arc<RwLock<crate::env::Env>>,
+        /// Index into EvalContext.env_arena for the caller's environment.
+        caller_env_id: u32,
         ctx: Arc<crate::eval::EvalContext>,
         /// Original CoreExpr::Call node for DepthExceeded retry path.
-        /// Enables CoreExpr-based restore (no Arc<Thunk> references held).
         original_call: Arc<Spanned<CoreExpr>>,
     },
     /// Type guard wrapping an inner thunk (was Guarded).
     Guarded {
-        inner: Arc<Thunk>,
+        inner: ThunkId,
         expected: Type,
         field_path: Vec<String>,
         guard_span: Span,
@@ -1421,41 +1145,12 @@ pub enum UnevaluatedState {
 /// Replaces Mutex<ThunkState> with a two-field pair:
 /// - unevaluated: taken (set to None) when evaluation starts
 /// - result: set exactly once when evaluation completes
-///
-/// This is ADDITIVE — Thunk still uses Mutex<ThunkState> during the transition.
-///
-/// ## Three-state lifecycle
-///
-/// A thunk transitions through three states during evaluation:
-///
-/// 1. **Unevaluated**: `unevaluated` is `Some(state)`, `result` is empty.
-///    The thunk has not yet been forced. The `state` variant determines
-///    what needs to be evaluated (CoreExpr, Call, Guarded, etc.).
-///
-/// 2. **InProgress**: `unevaluated` is `None`, `result` is empty.
-///    The thunk is currently being evaluated. Re-entering an InProgress
-///    thunk indicates a circular dependency and triggers a cycle error.
-///    Note: Placeholder thunks (created via `new_placeholder`) are also
-///    represented as (unevaluated=None, result=empty) and are thus
-///    indistinguishable from InProgress. Forcing a Placeholder produces
-///    a circular dependency error, which is acceptable — it indicates
-///    a letrec construction bug.
-///
-/// 3. **Materialized/Failed**: `unevaluated` is `None`, `result` is set.
-///    Evaluation has completed. The result is either `Ok(Value)` for
-///    success or `Err(Arc<EvalError>)` for cached errors.
-///
-/// The transition from Unevaluated → InProgress is atomic via `take_*`
-/// methods that use `Mutex::lock().unwrap().take()`. The transition from
-/// InProgress → Materialized/Failed is atomic via `OnceCell::set()`.
 #[derive(Debug)]
 pub struct ThunkInner {
     /// Pre-evaluation state. Set to Some initially, taken (set to None) when evaluation starts.
-    /// Taking this field atomically transitions the thunk to "InProgress" state.
     pub unevaluated: Mutex<Option<UnevaluatedState>>,
 
     /// Post-evaluation result. Set exactly once when evaluation completes (success or failure).
-    /// Cycle detection: if unevaluated is None and result is not yet set → circular dependency.
     pub result: tokio::sync::OnceCell<Result<Value, Arc<EvalError>>>,
 }
 
@@ -1464,35 +1159,28 @@ pub struct ThunkInner {
 pub struct Thunk {
     inner: ThunkInner,
     pub(crate) span: Span,
-    /// Label describing this thunk's origin (e.g. "call $f").
-    /// `None` for anonymous thunks (the common case); eliminates per-thunk String allocation.
-    /// Used for stack trace construction when materialization fails.
     pub(crate) origin: Option<Arc<str>>,
-    /// Profiling: ID of the span that was active when this thunk was created (allocation context).
-    /// None when profiling is disabled or for bootstrap thunks created before profiling starts.
     pub(crate) create_parent: Option<u64>,
-    /// Profiling: wall-clock microseconds when this thunk was created (for flow arrows in traces).
-    /// 0 when profiling is disabled.
     pub(crate) create_time_us: u64,
 }
 
 /// Return type of `Thunk::take_pending_builtin`.
 pub type PendingBuiltinParts = (
     BuiltinDef,
-    Vec<Arc<Thunk>>,
-    Option<IndexMap<String, Arc<Thunk>>>,
+    Vec<ThunkId>,
+    Option<IndexMap<String, ThunkId>>,
     Span,
-    Arc<RwLock<crate::env::Env>>,
+    u32, // caller_env_id
     Arc<crate::eval::EvalContext>,
 );
 
 /// Return type of `Thunk::take_pending_call`.
 pub type PendingCallParts = (
-    Arc<Thunk>,
-    Vec<Arc<Thunk>>,
-    Option<IndexMap<String, Arc<Thunk>>>,
+    ThunkId, // func
+    Vec<ThunkId>,
+    Option<IndexMap<String, ThunkId>>,
     Span,
-    Arc<RwLock<crate::env::Env>>,
+    u32, // caller_env_id
     Arc<crate::eval::EvalContext>,
     Arc<Spanned<CoreExpr>>,
 );
@@ -1500,24 +1188,26 @@ pub type PendingCallParts = (
 /// Return type of `Thunk::take_core_expr`.
 pub type CoreExprParts = (
     Arc<Spanned<CoreExpr>>,
-    Arc<RwLock<crate::env::Env>>,
+    u32, // env_id
     Arc<crate::eval::EvalContext>,
 );
 
 /// Return type of `Thunk::take_guarded`.
 pub type GuardedParts = (
-    Arc<Thunk>,
+    ThunkId, // inner
     Type,
     Vec<String>,
     Span,
     Option<crate::error::BlameLabel>,
-    Option<(Arc<Spanned<CoreExpr>>, Arc<RwLock<crate::env::Env>>)>,
+    Option<(Arc<Spanned<CoreExpr>>, u32)>, // default: (expr, env_id)
 );
 
 /// Return type of `Thunk::take_surface`.
 pub type SurfaceParts = (
     Arc<SurfaceNode>,
-    Arc<RwLock<crate::env::Env>>,
+    Arc<crate::ast::ResolutionTable>,
+    Arc<crate::ast::TypeAnnotationTable>,
+    u32, // env_id
     Arc<crate::eval::EvalContext>,
 );
 
@@ -1536,12 +1226,11 @@ impl Thunk {
         }
     }
 
-    /// Create a placeholder thunk for letrec pre-allocation. Must be filled via
-    /// `set_state()` before use. Panics at materialization if still in Placeholder state.
+    /// Create a placeholder thunk for letrec pre-allocation.
     pub fn new_placeholder(span: Span) -> Self {
         Self {
             inner: ThunkInner {
-                unevaluated: Mutex::new(None), // Placeholder: no unevaluated state, no result
+                unevaluated: Mutex::new(None),
                 result: tokio::sync::OnceCell::new(),
             },
             span,
@@ -1552,19 +1241,16 @@ impl Thunk {
     }
 
     /// Create an unevaluated thunk from a CoreExpr body (no Expr round-trip).
-    ///
-    /// Used by `invoke_function` when `Value::Function.body` is `Arc<Spanned<CoreExpr>>`.
-    /// On first force, `eval_core_expr_pub` is called directly — no conversion to Expr needed.
     pub fn new_unevaluated_core(
         expr: Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
-        env: Arc<RwLock<crate::env::Env>>,
+        env_id: u32,
         ctx: Arc<crate::eval::EvalContext>,
         span: Span,
     ) -> Self {
         let (create_parent, create_time_us) = Self::profiling_data(&ctx);
         Self {
             inner: ThunkInner {
-                unevaluated: Mutex::new(Some(UnevaluatedState::CoreExpr { expr, env, ctx })),
+                unevaluated: Mutex::new(Some(UnevaluatedState::CoreExpr { expr, env_id, ctx })),
                 result: tokio::sync::OnceCell::new(),
             },
             span,
@@ -1579,7 +1265,6 @@ impl Thunk {
             unevaluated: Mutex::new(None),
             result: tokio::sync::OnceCell::new(),
         };
-        // Set the result directly (fast-path for literals)
         let _ = inner.result.set(Ok(value));
         Self {
             inner,
@@ -1591,20 +1276,24 @@ impl Thunk {
     }
 
     /// Create a Surface thunk — wraps a SurfaceNode for lazy evaluation.
-    ///
-    /// All cross-phase data (type annotations, field slots) is stored inline on AST nodes.
-    /// On first force, the Surface thunk is lowered (reading inline fields from nodes)
-    /// and evaluated.
     pub fn new_surface(
         node: std::sync::Arc<crate::ast::SurfaceNode>,
-        env: Arc<RwLock<crate::env::Env>>,
+        res: std::sync::Arc<crate::ast::ResolutionTable>,
+        types: std::sync::Arc<crate::ast::TypeAnnotationTable>,
+        env_id: u32,
         ctx: Arc<crate::eval::EvalContext>,
         span: Span,
     ) -> Self {
         let (create_parent, create_time_us) = Self::profiling_data(&ctx);
         Self {
             inner: ThunkInner {
-                unevaluated: Mutex::new(Some(UnevaluatedState::Surface { node, env, ctx })),
+                unevaluated: Mutex::new(Some(UnevaluatedState::Surface {
+                    node,
+                    res,
+                    types,
+                    env_id,
+                    ctx,
+                })),
                 result: tokio::sync::OnceCell::new(),
             },
             span,
@@ -1614,10 +1303,7 @@ impl Thunk {
         }
     }
 
-    /// Create a lazy AstNodeField thunk — evaluates a single named field from a SurfaceNode.
-    ///
-    /// `field` must be a `'static str` (a literal field name like "name", "args", "span").
-    /// `ctx` is needed to allocate ThunkIds for sequence-typed fields.
+    /// Create a lazy AstNodeField thunk.
     pub fn new_ast_node_field(
         node: std::sync::Arc<crate::ast::SurfaceNode>,
         field: &'static str,
@@ -1637,20 +1323,13 @@ impl Thunk {
         }
     }
 
-    /// `named`: pass `None` when there are no named args (the common case for internal
-    /// thunks); pass `Some(map)` only when named args are actually present.
-    ///
-    /// `caller_env`: the lexical environment at the call site. Pass the actual caller
-    /// environment when creating a PendingBuiltin from a user-code call (PendingCall
-    /// dispatch). For internal builtin-to-builtin calls with no meaningful call site,
-    /// pass `Arc::new(RwLock::new(crate::env::Env::new()))`.
     pub fn new_pending_builtin(
         def: BuiltinDef,
-        args: Vec<Arc<Thunk>>,
-        named: Option<IndexMap<String, Arc<Thunk>>>,
+        args: Vec<ThunkId>,
+        named: Option<IndexMap<String, ThunkId>>,
         span: Span,
         origin: Option<Arc<str>>,
-        caller_env: Arc<RwLock<crate::env::Env>>,
+        caller_env_id: u32,
         ctx: Arc<crate::eval::EvalContext>,
     ) -> Self {
         let (create_parent, create_time_us) = Self::profiling_data(&ctx);
@@ -1661,7 +1340,7 @@ impl Thunk {
                     args,
                     named,
                     call_span: span.clone(),
-                    caller_env,
+                    caller_env_id,
                     ctx,
                 })),
                 result: tokio::sync::OnceCell::new(),
@@ -1673,13 +1352,13 @@ impl Thunk {
         }
     }
 
-    #[allow(clippy::too_many_arguments)] // PendingCall requires all 8 fields for full call semantics
+    #[allow(clippy::too_many_arguments)]
     pub fn new_pending_call(
-        func: Arc<Thunk>,
-        args: Vec<Arc<Thunk>>,
-        named: IndexMap<String, Arc<Thunk>>,
+        func: ThunkId,
+        args: Vec<ThunkId>,
+        named: IndexMap<String, ThunkId>,
         call_span: Span,
-        caller_env: Arc<RwLock<crate::env::Env>>,
+        caller_env_id: u32,
         span: Span,
         origin: Option<Arc<str>>,
         ctx: Arc<crate::eval::EvalContext>,
@@ -1698,7 +1377,7 @@ impl Thunk {
                     args,
                     named: named_opt,
                     call_span,
-                    caller_env,
+                    caller_env_id,
                     ctx,
                     original_call,
                 })),
@@ -1712,7 +1391,7 @@ impl Thunk {
     }
 
     pub fn new_guarded(
-        inner: Arc<Thunk>,
+        inner: ThunkId,
         expected: Type,
         field_path: Vec<String>,
         guard_span: Span,
@@ -1721,7 +1400,7 @@ impl Thunk {
     }
 
     pub fn new_guarded_with_blame(
-        inner: Arc<Thunk>,
+        inner: ThunkId,
         expected: Type,
         field_path: Vec<String>,
         guard_span: Span,
@@ -1731,15 +1410,13 @@ impl Thunk {
     }
 
     pub fn new_guarded_full(
-        inner: Arc<Thunk>,
+        inner: ThunkId,
         expected: Type,
         field_path: Vec<String>,
         guard_span: Span,
         blame_label: Option<crate::error::BlameLabel>,
         default: Option<GuardDefault>,
     ) -> Self {
-        // Guarded thunks don't have a ctx to extract profiling data from
-        // (they wrap an existing thunk). Use no profiling data.
         Self {
             inner: ThunkInner {
                 unevaluated: Mutex::new(Some(UnevaluatedState::Guarded {
@@ -1771,47 +1448,39 @@ impl Thunk {
     }
 
     /// Restore unevaluated state after a non-cacheable error.
-    /// Used only for error recovery in eval.rs and eval_materialize.rs.
     pub(crate) fn restore_unevaluated(&self, state: UnevaluatedState) {
         *self.inner.unevaluated.lock().unwrap() = Some(state);
     }
 
     /// Create a new `Arc<Thunk>` that is identical to `self` but with `new_ctx` replacing
-    /// the birth context in the unevaluated state. Used by `builtin_with_context` to rebirth
-    /// a thunk under a non-cancellable (or otherwise overridden) context before materializing.
-    ///
-    /// Handles all unevaluated state variants that carry a `ctx` field (`CoreExpr`, `Surface`,
-    /// `AstNodeField`, `Builtin`, `Call`). For `Guarded` (which wraps an inner thunk rather
-    /// than carrying its own ctx), the inner thunk is reborn recursively.
-    ///
-    /// Returns `None` if the thunk is already taken (in-progress) or already materialized
-    /// (i.e., its unevaluated state has already been taken). The caller should fall back
-    /// to using the original thunk in that case.
-    ///
-    /// This method **clones** the unevaluated state from `self` rather than taking it.
-    /// `UnevaluatedState` derives `Clone`; all constituent fields are `Arc<>` (cheap
-    /// reference-count increments), `Vec<Arc<Thunk>>`, `Span` (Clone via Arc<SourceFile>),
-    /// or other `Clone` types. The original thunk is left intact and continues to be
-    /// evaluatable normally.
+    /// the birth context in the unevaluated state.
     pub(crate) fn with_replaced_ctx(
         &self,
         new_ctx: Arc<crate::eval::EvalContext>,
     ) -> Option<Arc<Thunk>> {
         let guard = self.inner.unevaluated.lock().unwrap();
         let state = match guard.as_ref() {
-            None => return None, // already taken (in-progress) or already materialized
+            None => return None,
             Some(s) => s.clone(),
         };
         drop(guard);
         let new_state = match state {
-            UnevaluatedState::CoreExpr { expr, env, ctx: _ } => UnevaluatedState::CoreExpr {
+            UnevaluatedState::CoreExpr { expr, env_id, ctx: _ } => UnevaluatedState::CoreExpr {
                 expr,
-                env,
+                env_id,
                 ctx: new_ctx,
             },
-            UnevaluatedState::Surface { node, env, ctx: _ } => UnevaluatedState::Surface {
+            UnevaluatedState::Surface {
                 node,
-                env,
+                res,
+                types,
+                env_id,
+                ctx: _,
+            } => UnevaluatedState::Surface {
+                node,
+                res,
+                types,
+                env_id,
                 ctx: new_ctx,
             },
             UnevaluatedState::AstNodeField {
@@ -1828,14 +1497,14 @@ impl Thunk {
                 args,
                 named,
                 call_span,
-                caller_env,
+                caller_env_id,
                 ctx: _,
             } => UnevaluatedState::Builtin {
                 def,
                 args,
                 named,
                 call_span,
-                caller_env,
+                caller_env_id,
                 ctx: new_ctx,
             },
             UnevaluatedState::Call {
@@ -1843,7 +1512,7 @@ impl Thunk {
                 args,
                 named,
                 call_span,
-                caller_env,
+                caller_env_id,
                 ctx: _,
                 original_call,
             } => UnevaluatedState::Call {
@@ -1851,7 +1520,7 @@ impl Thunk {
                 args,
                 named,
                 call_span,
-                caller_env,
+                caller_env_id,
                 ctx: new_ctx,
                 original_call,
             },
@@ -1863,12 +1532,8 @@ impl Thunk {
                 blame_label,
                 default,
             } => {
-                // Guarded has no direct ctx — rebirth the inner thunk recursively.
-                let reborn_inner = inner
-                    .with_replaced_ctx(Arc::clone(&new_ctx))
-                    .unwrap_or(inner);
                 UnevaluatedState::Guarded {
-                    inner: reborn_inner,
+                    inner,
                     expected,
                     field_path,
                     guard_span,
@@ -1902,25 +1567,19 @@ impl Thunk {
     }
 
     /// Set the thunk to materialized state with the given value.
-    /// Clears the unevaluated slot and writes `Ok(value)` to the result OnceCell.
     pub fn set_materialized(&self, value: Value) {
         *self.inner.unevaluated.lock().unwrap() = None;
         let _ = self.inner.result.set(Ok(value));
     }
 
     /// Atomically take the CoreExpr state (if present), transitioning to InProgress.
-    ///
-    /// Returns `Some((expr, env, ctx))` if the thunk was in CoreExpr state.
-    /// Returns `None` if the thunk was in any other state (state is restored).
     pub fn take_core_expr(&self) -> Option<CoreExprParts> {
         let mut guard = self.inner.unevaluated.lock().unwrap();
         match guard.take() {
-            Some(UnevaluatedState::CoreExpr { expr, env, ctx }) => {
-                // State is now InProgress
-                Some((expr, env, ctx))
+            Some(UnevaluatedState::CoreExpr { expr, env_id, ctx }) => {
+                Some((expr, env_id, ctx))
             }
             other => {
-                // Restore the state
                 *guard = other;
                 None
             }
@@ -1935,14 +1594,12 @@ impl Thunk {
                 args,
                 named,
                 call_span,
-                caller_env,
+                caller_env_id,
                 ctx,
             }) => {
-                // State is now InProgress
-                Some((def, args, named, call_span, caller_env, ctx))
+                Some((def, args, named, call_span, caller_env_id, ctx))
             }
             other => {
-                // Restore the state
                 *guard = other;
                 None
             }
@@ -1957,17 +1614,14 @@ impl Thunk {
                 args,
                 named,
                 call_span,
-                caller_env,
+                caller_env_id,
                 ctx,
                 original_call,
             }) => {
-                // State is now InProgress
-                // Convert Option<Box<IndexMap>> to Option<IndexMap>
                 let named = named.map(|b| *b);
-                Some((func, args, named, call_span, caller_env, ctx, original_call))
+                Some((func, args, named, call_span, caller_env_id, ctx, original_call))
             }
             other => {
-                // Restore the state
                 *guard = other;
                 None
             }
@@ -1975,13 +1629,6 @@ impl Thunk {
     }
 
     /// Extract Guarded state components and transition thunk to InProgress.
-    ///
-    /// This is NOT a simple accessor - it has side effects:
-    /// - If the thunk is Guarded, it transitions to InProgress and returns the components.
-    ///   The caller is responsible for transitioning to Materialized or Failed after processing.
-    /// - If the thunk is NOT Guarded, the state is restored unchanged and None is returned.
-    ///
-    /// The InProgress transition prevents re-entrance during guard materialization.
     pub fn take_guarded(&self) -> Option<GuardedParts> {
         let mut guard = self.inner.unevaluated.lock().unwrap();
         match guard.take() {
@@ -1993,7 +1640,6 @@ impl Thunk {
                 blame_label,
                 default,
             }) => {
-                // State is now InProgress
                 Some((
                     inner,
                     expected,
@@ -2004,7 +1650,6 @@ impl Thunk {
                 ))
             }
             other => {
-                // Restore the state
                 *guard = other;
                 None
             }
@@ -2012,18 +1657,19 @@ impl Thunk {
     }
 
     /// Atomically take the Surface state (if present), transitioning to InProgress.
-    ///
-    /// Returns `Some((node, env, ctx))` if the thunk was in Surface state.
-    /// Returns `None` if the thunk was in any other state (state is restored).
     pub fn take_surface(&self) -> Option<SurfaceParts> {
         let mut guard = self.inner.unevaluated.lock().unwrap();
         match guard.take() {
-            Some(UnevaluatedState::Surface { node, env, ctx }) => {
-                // State is now InProgress
-                Some((node, env, ctx))
+            Some(UnevaluatedState::Surface {
+                node,
+                res,
+                types,
+                env_id,
+                ctx,
+            }) => {
+                Some((node, res, types, env_id, ctx))
             }
             other => {
-                // Restore the state
                 *guard = other;
                 None
             }
@@ -2031,9 +1677,6 @@ impl Thunk {
     }
 
     /// Atomically take the AstNodeField state (if present), transitioning to InProgress.
-    ///
-    /// Returns `Some((node, field))` if the thunk was in AstNodeField state.
-    /// Returns `None` if the thunk was in any other state (state is restored).
     pub fn take_ast_node_field(
         &self,
     ) -> Option<(
@@ -2044,24 +1687,16 @@ impl Thunk {
         let mut guard = self.inner.unevaluated.lock().unwrap();
         match guard.take() {
             Some(UnevaluatedState::AstNodeField { node, field, ctx }) => {
-                // State is now InProgress
                 Some((node, field, ctx))
             }
             other => {
-                // Restore the state
                 *guard = other;
                 None
             }
         }
     }
 
-    /// Return the cached error if the thunk is in Failed state, without holding a ThunkStateGuard.
-    ///
-    /// Returns `Some(err)` if the thunk has a cached error (Failed state).
-    /// Returns `None` for all other states (Materialized, InProgress, or any deferred state).
-    ///
-    /// Prefer this over `thunk.state()` when only the error case needs to be checked,
-    /// as it avoids the ThunkStateGuard aliasing hazard.
+    /// Return the cached error if the thunk is in Failed state.
     pub fn get_cached_error(&self) -> Option<Box<EvalError>> {
         self.inner.result.get().and_then(|r| {
             r.as_ref()
@@ -2071,53 +1706,29 @@ impl Thunk {
     }
 
     /// Return true if the thunk is currently in the InProgress (blackhole) state.
-    ///
-    /// The InProgress state means `unevaluated` is `None` (taken atomically) and
-    /// `result` has not yet been set. This is the cycle-detection sentinel.
-    ///
-    /// Note: `Placeholder` thunks (created via `new_placeholder`) are also represented
-    /// as (unevaluated=None, result=empty) in `ThunkInner`, so they are indistinguishable
-    /// from `InProgress` at the storage level. The cycle-detection path is correct for both:
-    /// a Placeholder that gets forced is a letrec construction bug, and returning a
-    /// circular-dependency error (rather than panicking) is acceptable.
     pub fn is_in_progress(&self) -> bool {
-        // InProgress = unevaluated slot is empty AND result is not yet set.
-        // We check result first (cheapest: no lock) then unevaluated.
         if self.inner.result.get().is_some() {
-            return false; // Materialized or Failed
+            return false;
         }
         self.inner.unevaluated.lock().unwrap().is_none()
     }
 
     /// Cache a failed evaluation by transitioning to the Failed state.
-    /// Used to memoize errors so failed thunks don't re-evaluate on subsequent access.
-    ///
-    /// One-shot: uses `OnceCell::set` internally, so a second call on an already-Failed
-    /// thunk is a no-op (the cell is already set). Callers need not guard against
-    /// double-caching, but the first call wins — subsequent calls with different errors
-    /// are silently dropped.
-    ///
-    /// Skips the clone and state write if the thunk is already in the Failed state
-    /// (e.g., when a shared thunk is encountered a second time during error propagation).
     pub fn cache_failure_once(&self, err: &EvalError) {
-        // Fast path: if already Failed, no work needed — avoid the clone.
         if let Some(result) = self.inner.result.get() {
             if result.is_err() {
                 return;
             }
         }
-
-        // Clear unevaluated state and set error result
         *self.inner.unevaluated.lock().unwrap() = None;
         let _ = self.inner.result.set(Err(Arc::new(err.clone())));
     }
 
     // ========================================================================
-    // Non-destructive introspection methods (for builtin_ast_of, debugging)
+    // Non-destructive introspection methods
     // ========================================================================
 
     /// Peek at the builtin def if this thunk is in Unevaluated Builtin state.
-    /// Does not force or transition the thunk.
     pub fn peek_builtin_def(&self) -> Option<BuiltinDef> {
         let guard = self.inner.unevaluated.lock().unwrap();
         match &*guard {
@@ -2127,21 +1738,18 @@ impl Thunk {
     }
 
     /// Check if this thunk is in Guarded state.
-    /// Does not force or transition the thunk.
     pub fn is_guarded(&self) -> bool {
         let guard = self.inner.unevaluated.lock().unwrap();
         matches!(&*guard, Some(UnevaluatedState::Guarded { .. }))
     }
 
     /// Check if this thunk is in PendingCall state.
-    /// Does not force or transition the thunk.
     pub fn is_pending_call(&self) -> bool {
         let guard = self.inner.unevaluated.lock().unwrap();
         matches!(&*guard, Some(UnevaluatedState::Call { .. }))
     }
 
     /// Peek at the SurfaceNode if this thunk is in Surface state.
-    /// Does not force or transition the thunk.
     pub fn peek_surface_node(&self) -> Option<std::sync::Arc<crate::ast::SurfaceNode>> {
         let guard = self.inner.unevaluated.lock().unwrap();
         match &*guard {
@@ -2151,8 +1759,6 @@ impl Thunk {
     }
 
     /// Peek at the AstNodeField if this thunk is in AstNodeField state.
-    /// Returns (node, field_name) tuple.
-    /// Does not force or transition the thunk.
     pub fn peek_ast_node_field(
         &self,
     ) -> Option<(std::sync::Arc<crate::ast::SurfaceNode>, &'static str)> {
@@ -2170,7 +1776,6 @@ impl fmt::Debug for Thunk {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut s = f.debug_struct("Thunk");
 
-        // Try to get the state without blocking
         match self.inner.unevaluated.try_lock() {
             Ok(guard) => {
                 if let Some(result) = self.inner.result.get() {
@@ -2199,1204 +1804,116 @@ impl fmt::Debug for Thunk {
     }
 }
 
+/// Lexical scope chain: bindings in the current scope plus an optional parent link.
+#[derive(Debug, Clone)]
+pub struct Environment {
+    pub(crate) bindings: IndexMap<String, Arc<Thunk>>,
+    pub(crate) parent: Option<Arc<RwLock<Environment>>>,
+}
+
+/// Profiling counters for slot-based lookup hit rate measurement.
 #[cfg(test)]
-#[allow(clippy::approx_constant)] // test values like 3.14 are intentional, not PI approximations
-mod tests {
-    use super::*;
-    use crate::test_util::test_span;
+pub(crate) static SLOT_HIT_COUNT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
-    fn test_ctx() -> Arc<crate::eval::EvalContext> {
-        let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
-        let env = Arc::new(RwLock::new(crate::env::Env::new()));
-        crate::eval::EvalContext::new(base_dir, Arc::clone(&env), Arc::clone(&env), false)
-    }
+#[cfg(test)]
+pub(crate) static SLOT_MISS_COUNT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
-    // -----------------------------------------------------------------------
-    // HashableValue property tests (T-1303 / T-1304)
-    // -----------------------------------------------------------------------
+/// Reset profiling counters between tests.
+#[cfg(test)]
+#[allow(dead_code)]
+pub(crate) fn reset_slot_counters() {
+    use std::sync::atomic::Ordering;
+    SLOT_HIT_COUNT.store(0, Ordering::Relaxed);
+    SLOT_MISS_COUNT.store(0, Ordering::Relaxed);
+}
 
-    /// eq_implies_hash_eq: two equal HashableValues must have identical hashes.
-    #[test]
-    fn test_hashable_value_eq_implies_hash_eq() {
-        use std::collections::hash_map::DefaultHasher;
-
-        let hash = |k: &HashableValue| {
-            let mut h = DefaultHasher::new();
-            k.hash(&mut h);
-            h.finish()
-        };
-
-        // Int
-        let k1 = HashableValue::Int(42);
-        let k2 = HashableValue::Int(42);
-        assert_eq!(k1, k2);
-        assert_eq!(hash(&k1), hash(&k2));
-
-        // Str
-        let s1 = HashableValue::Str("hello".into());
-        let s2 = HashableValue::Str("hello".into());
-        assert_eq!(s1, s2);
-        assert_eq!(hash(&s1), hash(&s2));
-
-        // Dict (order-insensitive)
-        let d1 = HashableValue::Dict(vec![
-            (HashableValue::Str("a".into()), HashableValue::Int(1)),
-            (HashableValue::Str("b".into()), HashableValue::Int(2)),
-        ]);
-        let d2 = HashableValue::Dict(vec![
-            (HashableValue::Str("b".into()), HashableValue::Int(2)),
-            (HashableValue::Str("a".into()), HashableValue::Int(1)),
-        ]);
-        assert_eq!(d1, d2);
-        assert_eq!(hash(&d1), hash(&d2));
-    }
-
-    /// dict_order_invariant: Dict([a,b]) == Dict([b,a]) and hashes match.
-    #[test]
-    fn test_hashable_value_dict_order_invariant() {
-        use std::collections::hash_map::DefaultHasher;
-
-        let hash = |k: &HashableValue| {
-            let mut h = DefaultHasher::new();
-            k.hash(&mut h);
-            h.finish()
-        };
-
-        let pair_a = (HashableValue::Int(1), HashableValue::Str("x".into()));
-        let pair_b = (HashableValue::Int(2), HashableValue::Str("y".into()));
-
-        let d_ab = HashableValue::Dict(vec![pair_a.clone(), pair_b.clone()]);
-        let d_ba = HashableValue::Dict(vec![pair_b, pair_a]);
-
-        assert_eq!(d_ab, d_ba, "Dict equality must be order-insensitive");
-        assert_eq!(
-            hash(&d_ab),
-            hash(&d_ba),
-            "Dict hashes must match when equal"
-        );
-    }
-
-    /// dict_key_value_swap_produces_different_hash: {a: b} must not hash the same as {b: a}.
-    ///
-    /// Regression test for the XOR collision bug: `kh.finish() ^ vh.finish()` is commutative,
-    /// so {a: b} and {b: a} would hash identically when a and b have the same type.
-    /// The fix uses a non-commutative chain: v_mixed depends on k_mixed.
-    #[test]
-    fn test_hashable_value_dict_key_value_swap_hash() {
-        use std::collections::hash_map::DefaultHasher;
-
-        let hash = |k: &HashableValue| {
-            let mut h = DefaultHasher::new();
-            k.hash(&mut h);
-            h.finish()
-        };
-
-        let key = HashableValue::Str("key".into());
-        let val = HashableValue::Str("val".into());
-
-        // {key: val} — key in key position, val in value position
-        let d_kv = HashableValue::Dict(vec![(key.clone(), val.clone())]);
-        // {val: key} — swapped
-        let d_vk = HashableValue::Dict(vec![(val.clone(), key.clone())]);
-
-        // They must be unequal (PartialEq is correct already — just confirming)
-        assert_ne!(d_kv, d_vk, "{{key: val}} must not equal {{val: key}}");
-        // They must hash differently (was the bug: XOR made them collide)
-        assert_ne!(
-            hash(&d_kv),
-            hash(&d_vk),
-            "{{key: val}} and {{val: key}} must have different hashes (key-value swap collision)"
-        );
-    }
-
-    /// cross_type_inequality: distinct types must be unequal.
-    #[test]
-    fn test_hashable_value_cross_type_inequality() {
-        assert_ne!(HashableValue::Int(1), HashableValue::Str("1".into()));
-    }
-
-    /// Str hash consistency — same string, different Rc, same hash.
-    #[test]
-    fn test_hashable_value_str_hash_consistency() {
-        use std::collections::hash_map::DefaultHasher;
-
-        let k1 = HashableValue::Str("x".into());
-        let k2 = HashableValue::Str("x".into());
-
-        let hash = |k: &HashableValue| {
-            let mut h = DefaultHasher::new();
-            k.hash(&mut h);
-            h.finish()
-        };
-
-        assert_eq!(hash(&k1), hash(&k2));
-    }
-
-    /// Display formatting for HashableValue.
-    #[test]
-    fn test_hashable_value_display() {
-        assert_eq!(format!("{}", HashableValue::Int(42)), "42");
-        assert_eq!(format!("{}", HashableValue::Str("hello".into())), "hello");
-    }
-
-    #[test]
-    fn test_value_partial_eq_primitives() {
-        assert_eq!(Value::Int(1), Value::Int(1));
-        assert_ne!(Value::Int(1), Value::Int(2));
-        // 3.14 tests float equality — intentionally not PI.
-        #[allow(clippy::approx_constant)]
-        {
-            assert_eq!(Value::Float(3.14), Value::Float(3.14));
+impl Environment {
+    pub fn new() -> Self {
+        Self {
+            bindings: IndexMap::new(),
+            parent: None,
         }
-        assert_eq!(string_val("a"), string_val("a"));
-        assert_ne!(string_val("a"), string_val("b"));
-        assert_eq!(Value::Int(1), Value::Int(1));
-        assert_ne!(Value::Int(1), Value::Int(0));
     }
 
-    #[test]
-    fn test_value_partial_eq_cross_variant() {
-        assert_ne!(Value::Int(1), Value::Float(1.0));
-        assert_ne!(string_val("1"), Value::Int(1));
-    }
-
-    #[test]
-    fn test_value_partial_eq_dict_always_false() {
-        let d1 = Value::Dict(IndexMap::new());
-        let d2 = Value::Dict(IndexMap::new());
-        assert_ne!(d1, d2);
-    }
-
-    #[test]
-    fn test_value_partial_eq_nan() {
-        assert_ne!(Value::Float(f64::NAN), Value::Float(f64::NAN));
-    }
-
-    #[test]
-    fn test_value_partial_eq_function_always_false() {
-        // Function values are intentionally non-comparable
-        let f = Value::Function {
-            params: Rc::new(vec![]),
-            body: Arc::new(Spanned::new(CoreExpr::Int(0), test_span(1, 1, 1, 1))),
-            env: Arc::new(RwLock::new(crate::env::Env::new())),
-            annotation: None,
-            return_ann: None,
-        };
-        assert_ne!(f.clone(), f);
-    }
-
-    #[test]
-    fn test_value_partial_eq_builtin_always_false() {
-        fn dummy(ctx: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-            Box::pin(async move {
-                Ok(Arc::new(Thunk::new_materialized(
-                    Value::Int(0),
-                    ctx.call_span,
-                )))
-            })
+    pub fn with_parent(parent: Arc<RwLock<Environment>>) -> Self {
+        Self {
+            bindings: IndexMap::new(),
+            parent: Some(parent),
         }
-        let b = Value::Builtin(BuiltinDef {
-            func: dummy,
-            name: "test",
-            pos_strictness: &[],
-            force_count: 0,
-            params: &[],
-            named_params: &[],
-        });
-        assert_ne!(b.clone(), b);
     }
 
-    #[test]
-    fn test_builtin_def_partial_eq_by_name() {
-        // BuiltinDef equality is name-based, not function-pointer-based.
-        // Two BuiltinDefs with the same name must compare equal regardless of their
-        // function pointers; two with different names must compare unequal.
-        fn func_a(ctx: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-            Box::pin(async move {
-                Ok(Arc::new(Thunk::new_materialized(
-                    Value::Int(1),
-                    ctx.call_span,
-                )))
-            })
+    /// Look up a binding by name, searching this environment then ancestors.
+    pub fn get(&self, name: &str) -> Option<Arc<Thunk>> {
+        if let Some(thunk) = self.bindings.get(name) {
+            return Some(Arc::clone(thunk));
         }
-        fn func_b(ctx: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-            Box::pin(async move {
-                Ok(Arc::new(Thunk::new_materialized(
-                    Value::Int(2),
-                    ctx.call_span,
-                )))
-            })
+        let mut current = self.parent.as_ref().map(Arc::clone);
+        while let Some(env_rc) = current {
+            let env = env_rc.read().unwrap();
+            if let Some(thunk) = env.bindings.get(name) {
+                return Some(Arc::clone(thunk));
+            }
+            current = env.parent.as_ref().map(Arc::clone);
         }
-
-        let same_name_a = BuiltinDef {
-            func: func_a,
-            name: "my-builtin",
-            pos_strictness: &[],
-            force_count: 0,
-            params: &[],
-            named_params: &[],
-        };
-        let same_name_b = BuiltinDef {
-            func: func_b, // different function pointer, same name
-            name: "my-builtin",
-            pos_strictness: &[Strictness::Seq],
-            force_count: 0,
-            params: &[],
-            named_params: &[],
-        };
-        let different_name = BuiltinDef {
-            func: func_a,
-            name: "other-builtin",
-            pos_strictness: &[],
-            force_count: 0,
-            params: &[],
-            named_params: &[],
-        };
-
-        assert_eq!(
-            same_name_a, same_name_b,
-            "BuiltinDefs with the same name must compare equal regardless of function pointer"
-        );
-        assert_ne!(
-            same_name_a, different_name,
-            "BuiltinDefs with different names must compare unequal"
-        );
+        None
     }
 
-    #[test]
-    fn test_variant_payload_type_name() {
-        // Payload variants return their full qualified tag from type_name().
-        let ctx = test_ctx();
-        let payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Int(42),
-            test_span(1, 1, 1, 1),
-        )));
-        let v = Value::Variant {
-            tag: "Color.Red".to_string(),
-            payload: Some(payload_id),
-        };
-        assert_eq!(v.type_name(), "Color.Red");
+    pub fn insert(&mut self, name: String, thunk: Arc<Thunk>) {
+        self.bindings.insert(name, thunk);
     }
 
-    #[test]
-    fn test_variant_unit_type_name() {
-        let v = Value::Variant {
-            tag: "Color.Blue".to_string(),
-            payload: None,
-        };
-        assert_eq!(v.type_name(), "Color.Blue");
-    }
-
-    #[test]
-    fn test_variant_payload_debug() {
-        let ctx = test_ctx();
-        let payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Int(1),
-            test_span(1, 1, 1, 1),
-        )));
-        let v = Value::Variant {
-            tag: "Option.Some".to_string(),
-            payload: Some(payload_id),
-        };
-        let debug_str = format!("{:?}", v);
-        assert!(
-            debug_str.contains("Option.Some"),
-            "debug should contain tag, got: {}",
-            debug_str
-        );
-    }
-
-    #[test]
-    fn test_variant_payload_display() {
-        let ctx = test_ctx();
-        let payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Int(1),
-            test_span(1, 1, 1, 1),
-        )));
-        let v = Value::Variant {
-            tag: "Option.Some".to_string(),
-            payload: Some(payload_id),
-        };
-        assert_eq!(format!("{}", v), "Option.Some(<payload>)");
-    }
-
-    #[test]
-    fn test_variant_not_equal_to_itself() {
-        // Unit Variant PartialEq compares by tag string.
-        let v = Value::Variant {
-            tag: "Color.Red".to_string(),
-            payload: None,
-        };
-        assert_eq!(v.clone(), v);
-    }
-
-    #[test]
-    fn test_thunk_new_materialized() {
-        let span = test_span(1, 1, 1, 5);
-        let thunk = Thunk::new_materialized(Value::Int(7), span);
-        let val = thunk
-            .try_get_materialized()
-            .expect("expected Materialized state");
-        assert_eq!(val, Value::Int(7));
-    }
-
-    #[test]
-    fn test_thunk_debug_unevaluated_state() {
-        // Verify that Debug output works for an Unevaluated thunk without panicking.
-        let span = test_span(1, 1, 1, 5);
-        let expr = Arc::new(Spanned::new(CoreExpr::Int(0), span.clone()));
-        let env = Arc::new(RwLock::new(crate::env::Env::new()));
-        let thunk = Thunk::new_unevaluated_core(expr, env, test_ctx(), span);
-
-        // Debug should not panic for an Unevaluated thunk
-        let debug_str = format!("{:?}", thunk);
-
-        // Should contain some indication of the Unevaluated state
-        assert!(
-            !debug_str.is_empty(),
-            "expected non-empty debug output, got empty string"
-        );
-    }
-
-    #[test]
-    fn test_value_display_int() {
-        assert_eq!(format!("{}", Value::Int(42)), "42");
-        assert_eq!(format!("{}", Value::Int(-10)), "-10");
-        assert_eq!(format!("{}", Value::Int(0)), "0");
-    }
-
-    #[test]
-    fn test_value_display_float() {
-        assert_eq!(format!("{}", Value::Float(3.14)), "3.14");
-        assert_eq!(format!("{}", Value::Float(-2.5)), "-2.5");
-        assert_eq!(format!("{}", Value::Float(0.0)), "0");
-    }
-
-    #[test]
-    fn test_value_display_string() {
-        assert_eq!(format!("{}", string_val("hello")), "\"hello\"");
-        assert_eq!(
-            format!("{}", string_val("with \"quotes\"")),
-            "\"with \\\"quotes\\\"\""
-        );
-        assert_eq!(format!("{}", string_val("")), "\"\"");
-    }
-
-    #[test]
-    fn test_value_display_int_as_bool() {
-        // Booleans are represented as Int(1) for true, Int(0) for false.
-        assert_eq!(format!("{}", Value::Int(1)), "1");
-        assert_eq!(format!("{}", Value::Int(0)), "0");
-    }
-
-    #[test]
-    fn test_value_display_dict_empty() {
-        let dict = Value::Dict(IndexMap::new());
-        assert_eq!(format!("{dict}"), "[]");
-    }
-
-    #[test]
-    fn test_value_display_dict_with_entries() {
-        let ctx = test_ctx();
-        let mut map: IndexMap<HashableValue, ThunkId> = IndexMap::new();
-        let span = test_span(1, 1, 1, 5);
-        map.insert(
-            HashableValue::Str("x".into()),
-            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Int(1),
-                span.clone(),
-            ))),
-        );
-        map.insert(
-            HashableValue::Int(0),
-            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(2), span))),
-        );
-        let dict = Value::Dict(map);
-        assert_eq!(format!("{dict}"), "[x: <thunk> 0: <thunk>]");
-    }
-
-    #[test]
-    fn test_value_display_function() {
-        let span = test_span(1, 1, 1, 5);
-        let params = Rc::new(vec![
-            Param {
-                name: "x".into(),
-                annotation: None,
-                variadic: false,
-            },
-            Param {
-                name: "y".into(),
-                annotation: None,
-                variadic: false,
-            },
-        ]);
-        let body = Arc::new(Spanned::new(CoreExpr::Int(0), span));
-        let env = Arc::new(RwLock::new(crate::env::Env::new()));
-        let func = Value::Function {
-            params,
-            body,
-            env,
-            annotation: None,
-            return_ann: None,
-        };
-        assert_eq!(format!("{func}"), "[fn [let x y] ...]");
-    }
-
-    #[test]
-    fn test_value_display_builtin() {
-        fn dummy_builtin(
-            ctx: BuiltinArgs,
-        ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-            Box::pin(async move {
-                Ok(Arc::new(Thunk::new_materialized(
-                    Value::Int(0),
-                    ctx.call_span,
-                )))
-            })
+    /// O(1) slot-based lookup with De Bruijn level-based parent chain walking.
+    pub fn get_by_slot(&self, level: u32, slot: u32, expected_name: &str) -> Option<Arc<Thunk>> {
+        if level == 0 {
+            if let Some((key, thunk)) = self.bindings.get_index(slot as usize) {
+                if key == expected_name {
+                    #[cfg(test)]
+                    SLOT_HIT_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    return Some(Arc::clone(thunk));
+                } else {
+                    #[cfg(test)]
+                    SLOT_MISS_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    return self.bindings.get(expected_name).map(Arc::clone);
+                }
+            }
+            #[cfg(test)]
+            SLOT_MISS_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return None;
         }
-        let builtin = Value::Builtin(BuiltinDef {
-            func: dummy_builtin,
-            name: "test_fn",
-            pos_strictness: &[],
-            force_count: 0,
-            params: &[],
-            named_params: &[],
-        });
-        assert_eq!(format!("{builtin}"), "<builtin test_fn>");
-    }
-
-    #[test]
-    fn test_value_debug_int() {
-        assert_eq!(format!("{:?}", Value::Int(42)), "Int(42)");
-    }
-
-    #[test]
-    fn test_value_debug_float() {
-        assert_eq!(format!("{:?}", Value::Float(3.14)), "Float(3.14)");
-    }
-
-    #[test]
-    fn test_value_debug_string() {
-        assert_eq!(format!("{:?}", string_val("test")), "String(\"test\")");
-    }
-
-    #[test]
-    fn test_value_debug_int_as_bool() {
-        // Booleans are Int(1)/Int(0) — no special debug representation.
-        assert_eq!(format!("{:?}", Value::Int(1)), "Int(1)");
-        assert_eq!(format!("{:?}", Value::Int(0)), "Int(0)");
-    }
-
-    #[test]
-    fn test_value_debug_dict() {
-        let ctx = test_ctx();
-        let mut map: IndexMap<HashableValue, ThunkId> = IndexMap::new();
-        let span = test_span(1, 1, 1, 5);
-        map.insert(
-            HashableValue::Str("x".into()),
-            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Int(1),
-                span.clone(),
-            ))),
-        );
-        map.insert(
-            HashableValue::Int(0),
-            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(2), span))),
-        );
-        let dict = Value::Dict(map);
-        let debug_str = format!("{dict:?}");
-        // Dict shows keys only
-        assert!(debug_str.starts_with("Dict("));
-        assert!(debug_str.contains("Str(\"x\")"));
-        assert!(debug_str.contains("Int(0)"));
-    }
-
-    #[test]
-    fn test_value_debug_function() {
-        let span = test_span(1, 1, 1, 5);
-        let params = Rc::new(vec![
-            Param {
-                name: "a".into(),
-                annotation: None,
-                variadic: false,
-            },
-            Param {
-                name: "b".into(),
-                annotation: None,
-                variadic: false,
-            },
-        ]);
-        let body = Arc::new(Spanned::new(CoreExpr::Int(0), span));
-        let env = Arc::new(RwLock::new(crate::env::Env::new()));
-        let func = Value::Function {
-            params,
-            body,
-            env,
-            annotation: None,
-            return_ann: None,
-        };
-        assert_eq!(format!("{func:?}"), "Function(a, b)");
-    }
-
-    #[test]
-    fn test_value_debug_builtin() {
-        fn dummy_builtin(
-            ctx: BuiltinArgs,
-        ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-            Box::pin(async move {
-                Ok(Arc::new(Thunk::new_materialized(
-                    Value::Int(0),
-                    ctx.call_span,
-                )))
-            })
+        let mut steps_remaining = level;
+        let mut current = self.parent.as_ref().map(Arc::clone);
+        while let Some(env_rc) = current {
+            steps_remaining -= 1;
+            if steps_remaining == 0 {
+                let env = env_rc.read().unwrap();
+                if let Some((key, thunk)) = env.bindings.get_index(slot as usize) {
+                    if key == expected_name {
+                        #[cfg(test)]
+                        SLOT_HIT_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        return Some(Arc::clone(thunk));
+                    } else {
+                        #[cfg(test)]
+                        SLOT_MISS_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        return env.bindings.get(expected_name).map(Arc::clone);
+                    }
+                }
+                #[cfg(test)]
+                SLOT_MISS_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                return None;
+            }
+            let next = env_rc.read().unwrap().parent.as_ref().map(Arc::clone);
+            current = next;
         }
-        let builtin = Value::Builtin(BuiltinDef {
-            func: dummy_builtin,
-            name: "test_builtin",
-            pos_strictness: &[],
-            force_count: 0,
-            params: &[],
-            named_params: &[],
-        });
-        assert_eq!(format!("{builtin:?}"), "Builtin(test_builtin)");
+        #[cfg(test)]
+        SLOT_MISS_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        None
     }
-
-    #[test]
-    fn test_thunk_unevaluated_preserves_ctx_across_materialization() {
-        // Create ctx1 with a distinct base_dir
-        let base_dir1 = crate::test_util::test_caps().root.try_clone().unwrap();
-        let env1 = Arc::new(RwLock::new(crate::env::Env::new()));
-        let ctx1 =
-            crate::eval::EvalContext::new(base_dir1, Arc::clone(&env1), Arc::clone(&env1), false);
-
-        // Create a thunk that captures ctx1
-        let span = test_span(1, 1, 1, 5);
-        let expr = Arc::new(Spanned::new(CoreExpr::Int(42), span.clone()));
-        let env = Arc::new(RwLock::new(crate::env::Env::new()));
-        let thunk = Thunk::new_unevaluated_core(
-            Arc::clone(&expr),
-            Arc::clone(&env),
-            Arc::clone(&ctx1),
-            span,
-        );
-
-        // Verify the thunk is in Unevaluated state (not yet InProgress or materialized)
-        assert!(
-            !thunk.is_in_progress() && !thunk.is_materialized(),
-            "thunk should be in Unevaluated state before take_core_expr"
-        );
-
-        // Materialize the thunk using ctx1 (simulating normal evaluation)
-        // take_core_expr atomically transitions to InProgress and returns (expr, env, ctx)
-        let taken = thunk.take_core_expr();
-        assert!(
-            taken.is_some(),
-            "take_core_expr should succeed on CoreExpr thunk"
-        );
-
-        let (_taken_expr, _taken_env, taken_ctx) = taken.unwrap();
-
-        // Verify the taken ctx is the same Arc as ctx1
-        assert!(
-            Arc::ptr_eq(&taken_ctx, &ctx1),
-            "thunk should evaluate using the ctx it captured at creation (ctx1)"
-        );
-
-        // Verify that the thunk is now InProgress (after take_core_expr)
-        assert!(
-            thunk.is_in_progress(),
-            "thunk should be InProgress after take_core_expr"
-        );
-    }
-
-    #[test]
-    fn test_thunk_pending_builtin_preserves_ctx() {
-        fn dummy_builtin(
-            ctx: BuiltinArgs,
-        ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-            Box::pin(async move {
-                Ok(Arc::new(Thunk::new_materialized(
-                    Value::Int(0),
-                    ctx.call_span,
-                )))
-            })
-        }
-
-        // Create ctx1
-        let base_dir1 = crate::test_util::test_caps().root.try_clone().unwrap();
-        let env1 = Arc::new(RwLock::new(crate::env::Env::new()));
-        let ctx1 =
-            crate::eval::EvalContext::new(base_dir1, Arc::clone(&env1), Arc::clone(&env1), false);
-
-        let span = test_span(1, 1, 1, 5);
-        let dummy_def = BuiltinDef {
-            func: dummy_builtin,
-            name: "test-builtin",
-            pos_strictness: &[],
-            force_count: 0,
-            params: &[],
-            named_params: &[],
-        };
-        let thunk = Thunk::new_pending_builtin(
-            dummy_def,
-            vec![],
-            None,
-            span,
-            Some(Arc::from("test builtin call")),
-            Arc::clone(&env1),
-            Arc::clone(&ctx1),
-        );
-
-        // Verify the thunk is in PendingBuiltin state (peek_builtin_def returns Some)
-        assert!(
-            thunk.peek_builtin_def().is_some(),
-            "thunk should be in PendingBuiltin state"
-        );
-
-        // Take the pending builtin and verify ctx is preserved
-        let taken = thunk.take_pending_builtin();
-        assert!(taken.is_some(), "take_pending_builtin should succeed");
-
-        let (_def, _args, _named, _call_span, _caller_env, taken_ctx) = taken.unwrap();
-        assert!(
-            Arc::ptr_eq(&taken_ctx, &ctx1),
-            "PendingBuiltin should evaluate using captured ctx1"
-        );
-    }
-
-    #[test]
-    fn test_thunk_pending_call_preserves_ctx() {
-        // Create ctx1
-        let base_dir1 = crate::test_util::test_caps().root.try_clone().unwrap();
-        let env1 = Arc::new(RwLock::new(crate::env::Env::new()));
-        let ctx1 =
-            crate::eval::EvalContext::new(base_dir1, Arc::clone(&env1), Arc::clone(&env1), false);
-
-        let span = test_span(1, 1, 1, 5);
-        let func_thunk = Arc::new(Thunk::new_materialized(
-            Value::Function {
-                params: Rc::new(vec![]),
-                body: Arc::new(Spanned::new(
-                    crate::ast::CoreExpr::Int(0),
-                    test_span(1, 1, 1, 1),
-                )),
-                env: Arc::new(RwLock::new(crate::env::Env::new())),
-                annotation: None,
-                return_ann: None,
-            },
-            span.clone(),
-        ));
-
-        let thunk = Thunk::new_pending_call(
-            Arc::clone(&func_thunk),
-            vec![],
-            IndexMap::new(),
-            span.clone(),
-            Arc::new(RwLock::new(crate::env::Env::new())), // caller_env
-            span.clone(),
-            Some(Arc::from("test call")),
-            Arc::clone(&ctx1),
-            Arc::new(crate::ast::Spanned {
-                node: crate::ast::CoreExpr::Int(0),
-                span,
-            }),
-        );
-
-        // Verify the thunk is in PendingCall state
-        assert!(
-            thunk.is_pending_call(),
-            "thunk should be in PendingCall state"
-        );
-
-        // Take the pending call and verify ctx is preserved
-        let taken = thunk.take_pending_call();
-        assert!(taken.is_some(), "take_pending_call should succeed");
-
-        let (_func, _args, _named, _call_span, _caller_env, taken_ctx, _original_call) =
-            taken.unwrap();
-        assert!(
-            Arc::ptr_eq(&taken_ctx, &ctx1),
-            "PendingCall should evaluate using captured ctx1"
-        );
-    }
-
-    #[test]
-    fn test_str_hashable_value_lookup() {
-        // Test StrHashableValue hash/equivalent for zero-allocation lookups
-        let mut map: IndexMap<HashableValue, i32> = IndexMap::new();
-        map.insert(HashableValue::Str("foo".into()), 42);
-        map.insert(HashableValue::Str("bar".into()), 99);
-        map.insert(HashableValue::Int(0), 100);
-
-        // Positive case: lookup with StrHashableValue should work
-        assert_eq!(map.get(&StrHashableValue("foo")), Some(&42));
-        assert_eq!(map.get(&StrHashableValue("bar")), Some(&99));
-
-        // Negative case: non-matching key should return None
-        assert_eq!(map.get(&StrHashableValue("baz")), None);
-
-        // StrHashableValue should not match Int keys
-        assert_eq!(map.get(&StrHashableValue("0")), None);
-    }
-
-    #[test]
-    fn test_proxy_type_name() {
-        let ctx = test_ctx();
-        let span = test_span(1, 1, 1, 1);
-        let proxy = Value::Proxy {
-            handler: ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(42), span))),
-        };
-        assert_eq!(proxy.type_name(), "Proxy");
-    }
-
-    #[test]
-    fn test_proxy_debug() {
-        let ctx = test_ctx();
-        let span = test_span(1, 1, 1, 1);
-        let proxy = Value::Proxy {
-            handler: ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(42), span))),
-        };
-        let debug_str = format!("{:?}", proxy);
-        assert_eq!(debug_str, "Proxy");
-    }
-
-    #[test]
-    fn test_proxy_display() {
-        let ctx = test_ctx();
-        let span = test_span(1, 1, 1, 1);
-        let proxy = Value::Proxy {
-            handler: ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(42), span))),
-        };
-        let display_str = format!("{}", proxy);
-        assert_eq!(display_str, "<proxy>");
-    }
-
-    #[test]
-    fn test_value_partial_eq_proxy_always_false() {
-        let ctx = test_ctx();
-        let span = test_span(1, 1, 1, 1);
-        let p = Value::Proxy {
-            handler: ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(42), span))),
-        };
-        assert_ne!(p.clone(), p);
-    }
-
-    #[test]
-    fn test_thunk_new_guarded_state() {
-        let span = test_span(1, 1, 1, 5);
-        let inner = Arc::new(Thunk::new_materialized(Value::Int(42), span.clone()));
-        let thunk = Thunk::new_guarded(
-            Arc::clone(&inner),
-            Type::Int,
-            vec!["field".to_string()],
-            span,
-        );
-        assert!(
-            thunk.is_guarded(),
-            "expected Guarded state (is_guarded should return true)"
-        );
-        // Verify the components by taking them
-        let taken = thunk.take_guarded();
-        assert!(taken.is_some(), "should be able to take guarded state");
-        let (_inner, expected, field_path, _span, _blame, _default) = taken.unwrap();
-        assert_eq!(expected, Type::Int);
-        assert_eq!(field_path, vec!["field".to_string()]);
-    }
-
-    #[test]
-    fn test_take_guarded_returns_components() {
-        let span = test_span(1, 1, 1, 5);
-        let inner = Arc::new(Thunk::new_materialized(Value::Int(99), span.clone()));
-        let thunk = Thunk::new_guarded(Arc::clone(&inner), Type::Int, vec!["x".to_string()], span);
-
-        let result = thunk.take_guarded();
-        assert!(
-            result.is_some(),
-            "take_guarded should succeed on Guarded thunk"
-        );
-
-        let (taken_inner, taken_expected, taken_path, _taken_span, _blame, taken_default) =
-            result.unwrap();
-        assert!(
-            Arc::ptr_eq(&taken_inner, &inner),
-            "inner thunk should be the same Rc"
-        );
-        assert_eq!(taken_expected, Type::Int);
-        assert_eq!(taken_path, vec!["x".to_string()]);
-        assert!(
-            taken_default.is_none(),
-            "default should be None when not provided"
-        );
-
-        // After take_guarded, thunk should be InProgress
-        assert!(
-            thunk.is_in_progress(),
-            "expected InProgress after take_guarded"
-        );
-    }
-
-    #[test]
-    fn test_take_guarded_on_non_guarded_returns_none() {
-        let span = test_span(1, 1, 1, 5);
-        let thunk = Thunk::new_materialized(Value::Int(7), span);
-
-        let result = thunk.take_guarded();
-        assert!(
-            result.is_none(),
-            "take_guarded on Materialized thunk should return None"
-        );
-
-        // State should be unchanged (still Materialized)
-        assert_eq!(
-            thunk.try_get_materialized(),
-            Some(Value::Int(7)),
-            "expected Materialized state to be preserved"
-        );
-    }
-
-    #[test]
-    fn test_thunk_new_guarded_fields() {
-        let span = test_span(1, 1, 1, 5);
-        let inner = Arc::new(Thunk::new_materialized(Value::Int(42), span.clone()));
-        let thunk = Arc::new(Thunk::new_guarded(
-            Arc::clone(&inner),
-            Type::Int,
-            vec!["foo".to_string()],
-            span,
-        ));
-        let result = thunk.take_guarded();
-        assert!(result.is_some());
-        let (got_inner, got_type, got_path, _got_span, _blame, _default) = result.unwrap();
-        assert_eq!(got_path, vec!["foo".to_string()]);
-        assert!(matches!(got_type, Type::Int));
-        assert!(Arc::ptr_eq(&got_inner, &inner));
-    }
-
-    #[test]
-    fn test_guarded_materialized_state_is_stable() {
-        // Verifies that once a Guarded thunk is transitioned to Materialized,
-        // the state is stable on re-access. Tests the state machine directly;
-        // the full guard validation path (parse→eval→materialize) is covered
-        // by test_guarded_thunk_preserves_inner_origin in eval.rs.
-        let span = test_span(1, 1, 1, 5);
-        let inner = Arc::new(Thunk::new_materialized(Value::Int(100), span.clone()));
-        let thunk = Thunk::new_guarded(Arc::clone(&inner), Type::Int, vec![], span);
-
-        // Verify initial state is Guarded
-        assert!(thunk.is_guarded(), "initial state should be Guarded");
-
-        // Directly transition to Materialized to verify state is stable on re-access.
-        thunk.set_materialized(Value::Int(100));
-
-        // Re-access: should return cached Materialized value
-        assert_eq!(
-            thunk.try_get_materialized(),
-            Some(Value::Int(100)),
-            "expected Materialized after guard success"
-        );
-
-        // try_get_materialized should also work
-        let cached = thunk.try_get_materialized();
-        assert_eq!(cached, Some(Value::Int(100)));
-    }
-
-    #[test]
-    fn test_pending_builtin_lifecycle() {
-        // Verify PendingBuiltin thunk can be created and transitions correctly
-        use crate::eval::EvalContext;
-        use crate::test_util::test_span;
-
-        let span = test_span(1, 1, 1, 10);
-        let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
-        let env = Arc::new(RwLock::new(crate::env::Env::new()));
-        let ctx = EvalContext::new(base_dir, Arc::clone(&env), Arc::clone(&env), false);
-
-        // Create a PendingBuiltin thunk (using a dummy builtin function)
-        fn dummy_builtin(
-            args: BuiltinArgs,
-        ) -> Pin<Box<dyn Future<Output = crate::error::EvalResult<Arc<Thunk>>>>> {
-            Box::pin(async move {
-                let _ = args; // silence unused warning
-                Ok(Arc::new(Thunk::new_materialized(
-                    Value::Int(42),
-                    test_span(1, 1, 1, 1),
-                )))
-            })
-        }
-
-        let dummy_def = BuiltinDef {
-            func: dummy_builtin,
-            name: "dummy",
-            pos_strictness: &[],
-            force_count: 0,
-            params: &[],
-            named_params: &[],
-        };
-        let thunk = Thunk::new_pending_builtin(
-            dummy_def,
-            vec![],
-            None,
-            span,
-            Some(Arc::from("test")),
-            Arc::clone(&env),
-            Arc::clone(&ctx),
-        );
-
-        // Verify initial state is PendingBuiltin
-        assert!(
-            thunk.peek_builtin_def().is_some(),
-            "initial state should be PendingBuiltin"
-        );
-
-        // Transition to Materialized
-        thunk.set_materialized(Value::Int(42));
-
-        // Verify final state is Materialized
-        assert_eq!(
-            thunk.try_get_materialized(),
-            Some(Value::Int(42)),
-            "expected Materialized after builtin execution"
-        );
-    }
-
-    #[test]
-    fn test_pending_builtin_error_recovery() {
-        // Verify PendingBuiltin thunk transitions to Failed state on error
-        use crate::error::EvalError;
-        use crate::eval::EvalContext;
-        use crate::test_util::test_span;
-
-        let span = test_span(1, 1, 1, 10);
-        let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
-        let env = Arc::new(RwLock::new(crate::env::Env::new()));
-        let ctx = EvalContext::new(base_dir, Arc::clone(&env), Arc::clone(&env), false);
-
-        fn error_builtin(
-            args: BuiltinArgs,
-        ) -> Pin<Box<dyn Future<Output = crate::error::EvalResult<Arc<Thunk>>>>> {
-            Box::pin(async move {
-                Err(Box::new(EvalError::internal(
-                    "test error".into(),
-                    args.call_span,
-                )))
-            })
-        }
-
-        let error_def = BuiltinDef {
-            func: error_builtin,
-            name: "error_builtin",
-            pos_strictness: &[],
-            force_count: 0,
-            params: &[],
-            named_params: &[],
-        };
-        let thunk = Thunk::new_pending_builtin(
-            error_def,
-            vec![],
-            None,
-            span.clone(),
-            Some(Arc::from("test")),
-            Arc::clone(&env),
-            Arc::clone(&ctx),
-        );
-
-        // Transition to Failed
-        let err = EvalError::internal("test error".into(), span);
-        thunk.cache_failure_once(&err);
-
-        // Verify final state is Failed
-        let cached = thunk.get_cached_error();
-        assert!(cached.is_some(), "expected Failed state");
-        assert!(
-            cached.unwrap().kind.to_string().contains("test error"),
-            "cached error should contain 'test error'"
-        );
-    }
-
-    #[test]
-    fn test_string_val_helper() {
-        let s = string_val("hello");
-        assert_eq!(s.as_str(), Some("hello"));
-        assert_eq!(format!("{s}"), "\"hello\"");
-        assert_eq!(format!("{s:?}"), "String(\"hello\")");
-    }
-
-    #[test]
-    fn test_string_val_empty() {
-        let s = string_val("");
-        assert_eq!(s.as_str(), Some(""));
-        assert_eq!(format!("{s}"), "\"\"");
-    }
-
-    #[test]
-    fn test_string_equality() {
-        // Same content, different Rc instances
-        let s1 = string_val("test");
-        let s2 = string_val("test");
-        assert_eq!(s1, s2);
-
-        // Different content
-        let s3 = string_val("other");
-        assert_ne!(s1, s3);
-    }
-
-    #[test]
-    fn test_as_str_on_non_string() {
-        assert_eq!(Value::Int(42).as_str(), None);
-        assert_eq!(Value::Int(1).as_str(), None);
-        assert_eq!(Value::Float(3.14).as_str(), None);
-    }
-
-    // --- get_cached_error() contract ---
-
-    #[test]
-    fn test_get_cached_error_failed_returns_some() {
-        // Failed thunk: cache_failure_once() sets the error; get_cached_error() must return Some.
-        // Start from Unevaluated so the OnceCell result is unset, then transition to Failed.
-        let span = test_span(1, 1, 1, 5);
-        let expr = Arc::new(Spanned::new(CoreExpr::Int(0), span.clone()));
-        let env = Arc::new(RwLock::new(crate::env::Env::new()));
-        let thunk = Thunk::new_unevaluated_core(expr, env, test_ctx(), span.clone());
-        let err = crate::error::EvalError::internal("sentinel error".into(), span);
-        thunk.cache_failure_once(&err);
-
-        let result = thunk.get_cached_error();
-        assert!(
-            result.is_some(),
-            "get_cached_error() must return Some for Failed thunk"
-        );
-        let got = result.unwrap();
-        // Error identity: the message matches the one we put in.
-        assert!(
-            got.kind.to_string().contains("sentinel error"),
-            "returned error should contain 'sentinel error', got: {}",
-            got.kind
-        );
-    }
-
-    #[test]
-    fn test_get_cached_error_materialized_returns_none() {
-        let span = test_span(1, 1, 1, 5);
-        let thunk = Thunk::new_materialized(Value::Int(42), span);
-        assert!(
-            thunk.get_cached_error().is_none(),
-            "get_cached_error() must return None for Materialized thunk"
-        );
-    }
-
-    #[test]
-    fn test_get_cached_error_unevaluated_returns_none() {
-        let span = test_span(1, 1, 1, 5);
-        let expr = Arc::new(Spanned::new(CoreExpr::Int(0), span.clone()));
-        let env = Arc::new(RwLock::new(crate::env::Env::new()));
-        let thunk = Thunk::new_unevaluated_core(expr, env, test_ctx(), span);
-        assert!(
-            thunk.get_cached_error().is_none(),
-            "get_cached_error() must return None for Unevaluated thunk"
-        );
-    }
-
-    #[test]
-    fn test_get_cached_error_in_progress_returns_none() {
-        // InProgress: take_core_expr() transitions to InProgress; result not yet set.
-        let span = test_span(1, 1, 1, 5);
-        let expr = Arc::new(Spanned::new(CoreExpr::Int(0), span.clone()));
-        let env = Arc::new(RwLock::new(crate::env::Env::new()));
-        let thunk = Thunk::new_unevaluated_core(expr, env, test_ctx(), span);
-        let _taken = thunk.take_core_expr(); // transitions to InProgress
-        assert!(
-            thunk.get_cached_error().is_none(),
-            "get_cached_error() must return None for InProgress thunk"
-        );
-    }
-
-    // --- is_in_progress() contract ---
-
-    #[test]
-    fn test_is_in_progress_true_after_take_core_expr() {
-        // After take_core_expr(), thunk is InProgress: is_in_progress() must return true.
-        let span = test_span(1, 1, 1, 5);
-        let expr = Arc::new(Spanned::new(CoreExpr::Int(0), span.clone()));
-        let env = Arc::new(RwLock::new(crate::env::Env::new()));
-        let thunk = Thunk::new_unevaluated_core(expr, env, test_ctx(), span);
-        thunk.take_core_expr(); // transitions to InProgress
-        assert!(
-            thunk.is_in_progress(),
-            "is_in_progress() must return true after take_core_expr()"
-        );
-    }
-
-    #[test]
-    fn test_is_in_progress_false_for_unevaluated() {
-        let span = test_span(1, 1, 1, 5);
-        let expr = Arc::new(Spanned::new(CoreExpr::Int(0), span.clone()));
-        let env = Arc::new(RwLock::new(crate::env::Env::new()));
-        let thunk = Thunk::new_unevaluated_core(expr, env, test_ctx(), span);
-        assert!(
-            !thunk.is_in_progress(),
-            "is_in_progress() must return false for Unevaluated thunk"
-        );
-    }
-
-    #[test]
-    fn test_is_in_progress_false_for_materialized() {
-        let span = test_span(1, 1, 1, 5);
-        let thunk = Thunk::new_materialized(Value::Int(7), span);
-        assert!(
-            !thunk.is_in_progress(),
-            "is_in_progress() must return false for Materialized thunk"
-        );
-    }
-
-    #[test]
-    fn test_is_in_progress_false_for_failed() {
-        // Start from Unevaluated so cache_failure_once() can write to the OnceCell.
-        let span = test_span(1, 1, 1, 5);
-        let expr = Arc::new(Spanned::new(CoreExpr::Int(0), span.clone()));
-        let env = Arc::new(RwLock::new(crate::env::Env::new()));
-        let thunk = Thunk::new_unevaluated_core(expr, env, test_ctx(), span.clone());
-        let err = crate::error::EvalError::internal("test".into(), span);
-        thunk.cache_failure_once(&err);
-        assert!(
-            !thunk.is_in_progress(),
-            "is_in_progress() must return false for Failed thunk"
-        );
-    }
-
-    #[test]
-    fn test_is_in_progress_false_for_guarded() {
-        let span = test_span(1, 1, 1, 5);
-        let inner = Arc::new(Thunk::new_materialized(Value::Int(42), span.clone()));
-        let thunk = Thunk::new_guarded(Arc::clone(&inner), Type::Int, vec![], span);
-        assert!(
-            !thunk.is_in_progress(),
-            "is_in_progress() must return false for Guarded thunk"
-        );
-    }
-
-    // --- Thunk sequential access test ---
-
-    #[test]
-    fn test_thunk_sequential_materialized_access() {
-        // Verify that two separate materialized thunks can be accessed sequentially
-        // without interference. In the new Mutex-based ThunkInner design, each thunk
-        // holds its own Mutex so there is no shared-lock contention between distinct thunks.
-        let span = test_span(1, 1, 1, 5);
-        let thunk1 = Thunk::new_materialized(Value::Int(1), span.clone());
-        let thunk2 = Thunk::new_materialized(Value::Int(2), span);
-
-        // First access: verify thunk1 is materialized.
-        assert_eq!(
-            thunk1.try_get_materialized(),
-            Some(Value::Int(1)),
-            "expected Materialized(Int(1))"
-        );
-
-        // Second access: verify thunk2 is still accessible (no cross-thunk locking issues).
-        assert_eq!(
-            thunk2.try_get_materialized(),
-            Some(Value::Int(2)),
-            "expected Materialized(Int(2))"
-        );
+}
+
+impl Default for Environment {
+    fn default() -> Self {
+        Self::new()
     }
 }

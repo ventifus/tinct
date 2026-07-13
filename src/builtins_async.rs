@@ -45,9 +45,10 @@ use crate::value::{BuiltinArgs, ClockCapInner, HashableValue, Thunk, ThunkId, Va
 /// distinguish from `builtins::expect_one_arg` which forces and returns a `Value`.
 fn take_one_thunk(
     name: &str,
-    args: &[Arc<Thunk>],
-    named: Option<&IndexMap<String, Arc<Thunk>>>,
+    args: &[ThunkId],
+    named: Option<&IndexMap<String, ThunkId>>,
     call_span: Span,
+    ctx: &Arc<crate::eval::EvalContext>,
 ) -> EvalResult<Arc<Thunk>> {
     if !named.as_ref().is_none_or(|n| n.is_empty()) {
         return Err(EvalError::user_error(
@@ -63,7 +64,7 @@ fn take_one_thunk(
         )
         .into());
     }
-    Ok(Arc::clone(&args[0]))
+    Ok(ctx.get_thunk(args[0]))
 }
 
 /// Helper to check argument count for two arguments and extract them as thunks.
@@ -71,9 +72,10 @@ fn take_one_thunk(
 /// distinguish from `builtins::expect_one_arg` which forces and returns a `Value`.
 fn take_two_thunks(
     name: &str,
-    args: &[Arc<Thunk>],
-    named: Option<&IndexMap<String, Arc<Thunk>>>,
+    args: &[ThunkId],
+    named: Option<&IndexMap<String, ThunkId>>,
     call_span: Span,
+    ctx: &Arc<crate::eval::EvalContext>,
 ) -> EvalResult<(Arc<Thunk>, Arc<Thunk>)> {
     if !named.as_ref().is_none_or(|n| n.is_empty()) {
         return Err(EvalError::user_error(
@@ -89,14 +91,15 @@ fn take_two_thunks(
         )
         .into());
     }
-    Ok((Arc::clone(&args[0]), Arc::clone(&args[1])))
+    Ok((ctx.get_thunk(args[0]), ctx.get_thunk(args[1])))
 }
 
 fn take_three_thunks(
     name: &str,
-    args: &[Arc<Thunk>],
-    named: Option<&IndexMap<String, Arc<Thunk>>>,
+    args: &[ThunkId],
+    named: Option<&IndexMap<String, ThunkId>>,
     call_span: Span,
+    ctx: &Arc<crate::eval::EvalContext>,
 ) -> EvalResult<(Arc<Thunk>, Arc<Thunk>, Arc<Thunk>)> {
     if !named.as_ref().is_none_or(|n| n.is_empty()) {
         return Err(EvalError::user_error(
@@ -113,9 +116,9 @@ fn take_three_thunks(
         .into());
     }
     Ok((
-        Arc::clone(&args[0]),
-        Arc::clone(&args[1]),
-        Arc::clone(&args[2]),
+        ctx.get_thunk(args[0]),
+        ctx.get_thunk(args[1]),
+        ctx.get_thunk(args[2]),
     ))
 }
 
@@ -189,7 +192,7 @@ pub(crate) fn builtin_task(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let func_thunk = take_one_thunk("task", &args, named.as_ref(), call_span.clone())?;
+        let func_thunk = take_one_thunk("task", &args, named.as_ref(), call_span.clone(), &ctx)?;
 
         // Clone what we need for the 'static async block
         let ctx_clone = Arc::clone(&ctx);
@@ -207,9 +210,8 @@ pub(crate) fn builtin_task(
                 Value::Function {
                     params,
                     body,
-                    env,
+                    closure_env_id,
                     annotation: _,
-                    return_ann: _,
                 } => {
                     // Check for zero-arg function
                     if !params.is_empty() {
@@ -222,12 +224,9 @@ pub(crate) fn builtin_task(
                         )
                         .into());
                     }
-                    // Create a call environment
-                    let call_env =
-                        Arc::new(std::sync::RwLock::new(crate::env::Env::with_parent(env)));
-                    // Evaluate the body
-                    let thunk = eval_core_expr(&body, &call_env, &ctx_clone).await?;
-                    // Materialize the result
+                    // T-1558: Use closure_env_id as the call scope.
+                    let scoped_ctx = ctx_clone.with_eval_scope(closure_env_id);
+                    let thunk = eval_core_expr(&body, &scoped_ctx).await?;
                     materialize(&thunk, None, &ctx_clone).await
                 }
                 Value::Builtin(def) => {
@@ -236,7 +235,8 @@ pub(crate) fn builtin_task(
                         args: vec![],
                         named: None,
                         call_span: call_span_clone,
-                        caller_env: Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
+                        caller_env: Arc::new(std::sync::RwLock::new(crate::value::Environment::new())),
+                        caller_env_id: 0,
                         ctx: Arc::clone(&ctx_clone),
                     })
                     .await?;
@@ -277,7 +277,7 @@ pub(crate) fn builtin_await(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let task_thunk = take_one_thunk("await", &args, named.as_ref(), call_span.clone())?;
+        let task_thunk = take_one_thunk("await", &args, named.as_ref(), call_span.clone(), &ctx)?;
         let task_val = materialize(&task_thunk, Some(&call_span), &ctx).await?;
 
         match task_val {
@@ -362,7 +362,7 @@ pub(crate) fn builtin_channel(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let capacity_thunk = take_one_thunk("channel", &args, named.as_ref(), call_span.clone())?;
+        let capacity_thunk = take_one_thunk("channel", &args, named.as_ref(), call_span.clone(), &ctx)?;
         let capacity_val = materialize(&capacity_thunk, Some(&call_span), &ctx).await?;
 
         match capacity_val {
@@ -403,7 +403,7 @@ pub(crate) fn builtin_send(
     } = ctx_arg;
     Box::pin(async move {
         let (chan_thunk, val_thunk) =
-            take_two_thunks("send", &args, named.as_ref(), call_span.clone())?;
+            take_two_thunks("send", &args, named.as_ref(), call_span.clone(), &ctx)?;
         let chan_val = materialize(&chan_thunk, Some(&call_span), &ctx).await?;
 
         match chan_val {
@@ -498,7 +498,7 @@ pub(crate) fn builtin_recv(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let chan_thunk = take_one_thunk("recv", &args, named.as_ref(), call_span.clone())?;
+        let chan_thunk = take_one_thunk("recv", &args, named.as_ref(), call_span.clone(), &ctx)?;
         let chan_val = materialize(&chan_thunk, Some(&call_span), &ctx).await?;
 
         match chan_val {
@@ -659,6 +659,7 @@ pub(crate) fn builtin_broadcast_channel(
             &args,
             named.as_ref(),
             call_span.clone(),
+            &ctx,
         )?;
         let capacity_val = materialize(&capacity_thunk, Some(&call_span), &ctx).await?;
 
@@ -758,7 +759,7 @@ pub(crate) fn builtin_try_send(
     } = ctx_arg;
     Box::pin(async move {
         let (chan_thunk, val_thunk) =
-            take_two_thunks("try-send", &args, named.as_ref(), call_span.clone())?;
+            take_two_thunks("try-send", &args, named.as_ref(), call_span.clone(), &ctx)?;
         let chan_val = materialize(&chan_thunk, Some(&call_span), &ctx).await?;
 
         match chan_val {
@@ -850,7 +851,7 @@ pub(crate) fn builtin_select_once(
         }
 
         // Materialize and validate the context argument.
-        let user_ctx_thunk = args[0].clone();
+        let user_ctx_thunk = ctx.get_thunk(args[0]);
         let user_ctx_val = materialize(&user_ctx_thunk, Some(&call_span), &ctx).await?;
         let user_token = match user_ctx_val {
             Value::Context(token) => token,
@@ -861,7 +862,7 @@ pub(crate) fn builtin_select_once(
             }
         };
 
-        let sources_thunk = args[1].clone();
+        let sources_thunk = ctx.get_thunk(args[1]);
         let sources_val = materialize(&sources_thunk, Some(&call_span), &ctx).await?;
 
         // Collect the sequence of sources into a vec
@@ -1109,9 +1110,8 @@ pub(crate) fn builtin_select_once(
                         Value::Function {
                             params,
                             body,
-                            env,
+                            closure_env_id,
                             annotation: _,
-                            return_ann: _,
                         } => {
                             if params.len() != 1 {
                                 return Err(EvalError::user_error(
@@ -1124,28 +1124,24 @@ pub(crate) fn builtin_select_once(
                                 .into());
                             }
 
-                            // Bind the received value to the parameter.
-                            let call_env =
-                                Arc::new(std::sync::RwLock::new(crate::env::Env::with_parent(env)));
-                            call_env.write().unwrap().insert_value(
-                                params[0].name.clone(),
-                                Arc::new(Thunk::new_materialized(value, call_span.clone())),
-                            );
-
-                            // Evaluate the body — return the thunk directly (lazy, no force).
-                            eval_core_expr(&body, &call_env, &ctx).await?
+                            // T-1558: Use closure_env_id as call scope.
+                            // T-1555 gap: par-map closures skip bind_args_thunks — single-param function body evaluated
+                            // directly in closure_env_id rather than a dedicated call frame. Pattern variables not bound
+                            // in FlatEnv. Tracked as T-1555 match-arm-closures gap.
+                            let scoped_ctx = ctx.with_eval_scope(closure_env_id);
+                            eval_core_expr(&body, &scoped_ctx).await?
                         }
                         Value::Builtin(def) => {
                             // Call builtin with the value — return result thunk directly.
                             let arg_thunk =
                                 Arc::new(Thunk::new_materialized(value, call_span.clone()));
+                            let arg_id = ctx.alloc_thunk(arg_thunk);
                             (def.func)(BuiltinArgs {
-                                args: vec![arg_thunk],
+                                args: vec![arg_id],
                                 named: None,
                                 call_span: call_span.clone(),
-                                caller_env: Arc::new(
-                                    std::sync::RwLock::new(crate::env::Env::new()),
-                                ),
+                                caller_env: Arc::new(std::sync::RwLock::new(crate::value::Environment::new())),
+                                caller_env_id: 0,
                                 ctx: Arc::clone(&ctx),
                             })
                             .await?
@@ -1213,7 +1209,7 @@ pub(crate) fn builtin_par_map(
     } = ctx_arg;
     Box::pin(async move {
         let (func_thunk, seq_thunk) =
-            take_two_thunks("par-map", &args, named.as_ref(), call_span.clone())?;
+            take_two_thunks("par-map", &args, named.as_ref(), call_span.clone(), &ctx)?;
 
         // Materialize the sequence
         let seq_val = materialize(&seq_thunk, Some(&call_span), &ctx).await?;
@@ -1243,9 +1239,8 @@ pub(crate) fn builtin_par_map(
                     Value::Function {
                         params,
                         body,
-                        env,
+                        closure_env_id,
                         annotation: _,
-                        return_ann: _,
                     } => {
                         if params.len() != 1 {
                             return Err(EvalError::user_error(
@@ -1258,27 +1253,25 @@ pub(crate) fn builtin_par_map(
                             .into());
                         }
 
-                        // Bind the item to the parameter
-                        let call_env =
-                            Arc::new(std::sync::RwLock::new(crate::env::Env::with_parent(env)));
-                        call_env.write().unwrap().insert_value(
-                            params[0].name.clone(),
-                            Arc::new(Thunk::new_materialized(item_val, call_span_clone)),
-                        );
-
-                        // Evaluate the body
-                        let result_thunk = eval_core_expr(&body, &call_env, &ctx_clone).await?;
+                        // T-1558: Use closure_env_id as call scope.
+                        // T-1555 gap: par-map closures skip bind_args_thunks — single-param function body evaluated
+                        // directly in closure_env_id rather than a dedicated call frame. Pattern variables not bound
+                        // in FlatEnv. Tracked as T-1555 match-arm-closures gap.
+                        let scoped_ctx = ctx_clone.with_eval_scope(closure_env_id);
+                        let result_thunk = eval_core_expr(&body, &scoped_ctx).await?;
                         materialize(&result_thunk, None, &ctx_clone).await
                     }
                     Value::Builtin(def) => {
                         // Call builtin with the item
                         let item_thunk_arg =
                             Arc::new(Thunk::new_materialized(item_val, call_span_clone.clone()));
+                        let item_arg_id = ctx_clone.alloc_thunk(item_thunk_arg);
                         let result = (def.func)(BuiltinArgs {
-                            args: vec![item_thunk_arg],
+                            args: vec![item_arg_id],
                             named: None,
                             call_span: call_span_clone,
-                            caller_env: Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
+                            caller_env: Arc::new(std::sync::RwLock::new(crate::value::Environment::new())),
+                            caller_env_id: 0,
                             ctx: ctx_clone.clone(),
                         })
                         .await?;
@@ -1345,17 +1338,18 @@ pub(crate) fn builtin_par_filter(
         call_span,
         ctx,
         caller_env,
+        caller_env_id: _,
     } = ctx_arg;
     Box::pin(async move {
         let (pred_thunk, seq_thunk) =
-            take_two_thunks("par-filter", &args, named.as_ref(), call_span.clone())?;
+            take_two_thunks("par-filter", &args, named.as_ref(), call_span.clone(), &ctx)?;
 
         // Pre-materialize the predicate to extract its return type annotation once.
         // This lets us pre-resolve the Matchable binding name before spawning tasks,
         // avoiding repeated runtime type derivation on every predicate invocation.
         let pred_fn_val = materialize(&pred_thunk, Some(&call_span), &ctx).await?;
         let pred_matchable_binding =
-            crate::eval::resolve_matchable_binding_from_fn(&pred_fn_val, &caller_env);
+            crate::eval::resolve_matchable_binding_from_fn(&pred_fn_val);
         // Re-wrap as a materialized thunk so tasks can still use the standard call path.
         let pred_thunk = Arc::new(Thunk::new_materialized(pred_fn_val, call_span.clone()));
 
@@ -1390,9 +1384,8 @@ pub(crate) fn builtin_par_filter(
                     Value::Function {
                         params,
                         body,
-                        env,
+                        closure_env_id,
                         annotation: _,
-                        return_ann: _,
                     } => {
                         if params.len() != 1 {
                             return Err(Box::new(EvalError::user_error(
@@ -1404,19 +1397,12 @@ pub(crate) fn builtin_par_filter(
                             )));
                         }
 
-                        // Bind the item to the parameter
-                        let call_env =
-                            Arc::new(std::sync::RwLock::new(crate::env::Env::with_parent(env)));
-                        call_env.write().unwrap().insert_value(
-                            params[0].name.clone(),
-                            Arc::new(Thunk::new_materialized(
-                                item_val.clone(),
-                                call_span_clone.clone(),
-                            )),
-                        );
-
-                        // Evaluate the body
-                        let result_thunk = eval_core_expr(&body, &call_env, &ctx_clone).await?;
+                        // T-1558: Use closure_env_id as call scope.
+                        // T-1555 gap: par-filter closures skip bind_args_thunks — single-param function body evaluated
+                        // directly in closure_env_id rather than a dedicated call frame. Pattern variables not bound
+                        // in FlatEnv. Tracked as T-1555 match-arm-closures gap.
+                        let scoped_ctx = ctx_clone.with_eval_scope(closure_env_id);
+                        let result_thunk = eval_core_expr(&body, &scoped_ctx).await?;
                         materialize(&result_thunk, None, &ctx_clone).await?
                     }
                     Value::Builtin(def) => {
@@ -1424,11 +1410,13 @@ pub(crate) fn builtin_par_filter(
                             item_val.clone(),
                             call_span_clone.clone(),
                         ));
+                        let arg_id = ctx_clone.alloc_thunk(arg_thunk);
                         let result_thunk = (def.func)(BuiltinArgs {
-                            args: vec![arg_thunk],
+                            args: vec![arg_id],
                             named: None,
                             call_span: call_span_clone.clone(),
-                            caller_env: Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
+                            caller_env: Arc::new(std::sync::RwLock::new(crate::value::Environment::new())),
+                            caller_env_id: 0,
                             ctx: ctx_clone.clone(),
                         })
                         .await?;
@@ -1524,7 +1512,7 @@ pub(crate) fn builtin_signal_channel(
     } = ctx_arg;
     Box::pin(async move {
         let signals_thunk =
-            take_one_thunk("signal-channel", &args, named.as_ref(), call_span.clone())?;
+            take_one_thunk("signal-channel", &args, named.as_ref(), call_span.clone(), &ctx)?;
         let signals_val = materialize(&signals_thunk, Some(&call_span), &ctx).await?;
 
         // Collect signal names from an integer-keyed Dict of Signal variants.
@@ -1661,7 +1649,7 @@ pub(crate) fn builtin_timer_channel(
     } = ctx_arg;
     Box::pin(async move {
         let (clock_thunk, interval_thunk) =
-            take_two_thunks("timer-channel", &args, named.as_ref(), call_span.clone())?;
+            take_two_thunks("timer-channel", &args, named.as_ref(), call_span.clone(), &ctx)?;
 
         // Validate ClockCap (force_count=1 in builtin registry pre-materializes it)
         let clock_val = clock_thunk
@@ -1788,7 +1776,7 @@ pub(crate) fn builtin_watch_channel(
     } = ctx_arg;
     Box::pin(async move {
         let (dir_cap_thunk, path_thunk) =
-            take_two_thunks("watch-channel", &args, named.as_ref(), call_span.clone())?;
+            take_two_thunks("watch-channel", &args, named.as_ref(), call_span.clone(), &ctx)?;
         let dir_cap_val = materialize(&dir_cap_thunk, Some(&call_span), &ctx).await?;
         let path_val = materialize(&path_thunk, Some(&call_span), &ctx).await?;
 
@@ -1946,7 +1934,7 @@ pub(crate) fn builtin_with_cancel(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let parent_thunk = take_one_thunk("with-cancel", &args, named.as_ref(), call_span.clone())?;
+        let parent_thunk = take_one_thunk("with-cancel", &args, named.as_ref(), call_span.clone(), &ctx)?;
         let parent_val = materialize(&parent_thunk, Some(&call_span), &ctx).await?;
 
         let parent_token = match parent_val {
@@ -2019,7 +2007,7 @@ pub(crate) fn builtin_with_timeout(
     } = ctx_arg;
     Box::pin(async move {
         let (clock_thunk, parent_thunk, ms_thunk) =
-            take_three_thunks("with-timeout", &args, named.as_ref(), call_span.clone())?;
+            take_three_thunks("with-timeout", &args, named.as_ref(), call_span.clone(), &ctx)?;
 
         // Validate ClockCap (force_count=1 in builtin registry pre-materializes it)
         let clock_val = clock_thunk
@@ -2119,7 +2107,7 @@ pub(crate) fn builtin_with_deadline(
     } = ctx_arg;
     Box::pin(async move {
         let (clock_thunk, parent_thunk, ts_thunk) =
-            take_three_thunks("with-deadline", &args, named.as_ref(), call_span.clone())?;
+            take_three_thunks("with-deadline", &args, named.as_ref(), call_span.clone(), &ctx)?;
 
         // Validate ClockCap (force_count=1 in builtin registry pre-materializes it)
         let clock_val = clock_thunk
@@ -2209,7 +2197,7 @@ pub(crate) fn builtin_cancelled_q(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let ctx_thunk = take_one_thunk("cancelled?", &args, named.as_ref(), call_span.clone())?;
+        let ctx_thunk = take_one_thunk("cancelled?", &args, named.as_ref(), call_span.clone(), &ctx)?;
         let ctx_val = materialize(&ctx_thunk, Some(&call_span), &ctx).await?;
 
         match ctx_val {
@@ -2241,7 +2229,7 @@ pub(crate) fn builtin_cancel_task(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let ctx_thunk = take_one_thunk("cancel-task", &args, named.as_ref(), call_span.clone())?;
+        let ctx_thunk = take_one_thunk("cancel-task", &args, named.as_ref(), call_span.clone(), &ctx)?;
         let ctx_val = materialize(&ctx_thunk, Some(&call_span), &ctx).await?;
 
         match ctx_val {
@@ -2405,8 +2393,8 @@ pub(crate) fn builtin_exit_now(
             .into());
         }
 
-        let code_thunk = &args[0];
-        let code_val = materialize(code_thunk, Some(&call_span), &ctx).await?; // H1: exit code must be known to terminate process
+        let code_thunk = ctx.get_thunk(args[0]);
+        let code_val = materialize(&code_thunk, Some(&call_span), &ctx).await?; // H1: exit code must be known to terminate process
 
         let exit_code = match code_val {
             Value::Int(n) => n.clamp(0, 255) as i32,
@@ -2487,7 +2475,7 @@ pub(crate) fn builtin_with_context(
     } = ctx_arg;
     Box::pin(async move {
         let (context_thunk, expr_thunk) =
-            take_two_thunks("with-context", &args, named.as_ref(), call_span.clone())?;
+            take_two_thunks("with-context", &args, named.as_ref(), call_span.clone(), &ctx)?;
         let context_val = context_thunk
             .try_get_materialized()
             // force_count=1 guarantees arg 0 is pre-materialized before this builtin runs
@@ -2552,7 +2540,7 @@ pub(crate) fn builtin_reactive_cell(
     } = ctx_arg;
     Box::pin(async move {
         let initial_thunk =
-            take_one_thunk("reactive-cell", &args, named.as_ref(), call_span.clone())?;
+            take_one_thunk("reactive-cell", &args, named.as_ref(), call_span.clone(), &ctx)?;
         // Materialize the initial value — the watch sender must hold a concrete Value.
         let initial_val = materialize(&initial_thunk, Some(&call_span), &ctx).await?;
 
@@ -2582,7 +2570,7 @@ pub(crate) fn builtin_cell_get(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let cell_thunk = take_one_thunk("cell-get", &args, named.as_ref(), call_span.clone())?;
+        let cell_thunk = take_one_thunk("cell-get", &args, named.as_ref(), call_span.clone(), &ctx)?;
         let cell_val = materialize(&cell_thunk, Some(&call_span), &ctx).await?;
 
         match cell_val {
@@ -2620,7 +2608,7 @@ pub(crate) fn builtin_cell_set(
     } = ctx_arg;
     Box::pin(async move {
         let (val_thunk, cell_thunk) =
-            take_two_thunks("cell-set", &args, named.as_ref(), call_span.clone())?;
+            take_two_thunks("cell-set", &args, named.as_ref(), call_span.clone(), &ctx)?;
         let cell_val = materialize(&cell_thunk, Some(&call_span), &ctx).await?;
 
         match cell_val {

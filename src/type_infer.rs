@@ -298,6 +298,11 @@ pub struct InferState {
     /// Main runtime environment (from HEAD~1 InferState design).
     /// Cross-stage bridge: type-stage can resolve types from main env.
     pub main_env: Option<std::sync::Arc<std::sync::RwLock<crate::env::Env>>>,
+    /// EvalContext from tinct's evaluation pipeline — passed in when type-checking runs
+    /// within a program evaluation (e.g. via builtin-typecheck). Used by resolve_type_head
+    /// to materialize type-stage thunks without ambient filesystem access. Never created
+    /// inside the type checker; always provided by the caller that has proper capabilities.
+    pub eval_ctx: Option<std::sync::Arc<crate::eval::EvalContext>>,
     /// Pending param narrowings from the most recently inferred function (compatibility field).
     pub pending_param_narrowings: Vec<Option<Type>>,
     /// Unified TypeVar table (from HEAD~1 design).
@@ -352,6 +357,7 @@ impl InferState {
             resolution_table: None,
             type_stage_env: None,
             main_env: None,
+            eval_ctx: None,
             pending_param_narrowings: Vec::new(),
             type_vars: indexmap::IndexMap::new(),
             bounds: std::collections::HashMap::new(),

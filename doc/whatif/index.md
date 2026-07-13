@@ -46,6 +46,7 @@ Proposals formally accepted into the project. Implementation sprints exist in th
 | Proposal | Summary |
 |----------|---------|
 | [Type-Stage Programming as the Foundation for Constructors, Typeclasses, and Pattern Matching](type-stage-foundation.md) | Replace hardwired Rust implementations of `[type ...]`, `[class ...]`, `[instance ...]`, and constructor pattern matching with type-stage tinct programs. Constructors become functions with a specific return type; the Constructor protocol unifies construction and deconstruction; pattern matching dispatches on the runtime value type with no AST heuristics; typeclasses are dict-passing macros; Rust runtime reduced to ~20 primitives plus CEK machine |
+| [Types as First-Class Runtime Values](runtime-types.md) | `builtin-tc-add-type tc DirCap` — type values passed directly to TypeContext operations; `fundamental-tc` built by selectively injecting type values from loader's scope; pre-populated master tycon registry; `[builtin-make-type-ctx]` starts empty; `builtin-tc-add-type` uses `typenode_value_to_type` to extract name and copy TyConDef from master registry |
 
 ## Reflection and Metaprogramming
 

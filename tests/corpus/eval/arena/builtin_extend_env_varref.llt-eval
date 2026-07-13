@@ -1,0 +1,22 @@
+# Test that bindings added via builtin-extend-env are VarRef-accessible.
+# T-1571 regression gate: if FlatEnv slots aren't populated, this fails.
+#
+# This test verifies that:
+# 1. builtin-extend-env populates FlatEnv slots with thunk values
+# 2. VarRef resolution via display vector works for extended bindings
+# 3. The display chain is correctly threaded when flat-env: is provided
+
+[
+  # Create a base environment with a binding
+  base-result: [builtin-extend-env [] [x: 42]]
+  base-env:    base-result.env
+  base-flat-env-id: base-result.flat-env-id
+
+  # Evaluate a program that references x via VarRef (not name lookup).
+  # After resolver assigns coordinates, eval uses display[level].slots[slot].
+  program: "[result: x]"
+  eval-result: [builtin-eval program env: base-env flat-env: base-flat-env-id]
+  final:       eval-result.result
+]
+=== out
+Dict({"base-result": Dict({"env": Environment(...), "flat-env-id": Int(...)}), "base-env": Environment(...), "base-flat-env-id": Int(...), "program": String("[result: x]"), "eval-result": Dict({"result": Dict({"result": Int(42)}), "flat-env-id": Int(...), "error": String(""), "doc-name": String("")}), "final": Dict({"result": Int(42)})})

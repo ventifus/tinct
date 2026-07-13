@@ -40,7 +40,7 @@ pub(crate) fn builtin_replace(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
         reject_named("replace", named.as_ref(), call_span.clone())?;
@@ -48,19 +48,22 @@ pub(crate) fn builtin_replace(
             return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
         }
         // All args pre-materialized by force_count=3
-        let pattern_val = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk2 = ctx.get_thunk(args[2]);
+        let pattern_val = thunk0
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let replacement_val = args[1]
+        let replacement_val = thunk1
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let input_val = args[2]
+        let input_val = thunk2
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
-        let pattern = require_string("replace", pattern_val, args[0].span.clone())?;
-        let replacement = require_string("replace", replacement_val, args[1].span.clone())?;
-        let input = require_string("replace", input_val, args[2].span.clone())?;
+        let pattern = require_string("replace", pattern_val, thunk0.span.clone())?;
+        let replacement = require_string("replace", replacement_val, thunk1.span.clone())?;
+        let input = require_string("replace", input_val, thunk2.span.clone())?;
 
         // Pre-check output size to prevent memory exhaustion.
         // Empty pattern inserts replacement between every character.
@@ -118,7 +121,7 @@ pub(crate) fn builtin_trim(
             ..
         } = ctx_arg;
         let val = expect_one_arg("trim", &args, named.as_ref(), &ctx, call_span.clone())?;
-        let s = require_string("trim", val, args[0].span.clone())?;
+        let s = require_string("trim", val, ctx.get_thunk(args[0]).span.clone())?;
         ok_val(string_val(s.trim()), call_span)
     })
 }
@@ -139,7 +142,7 @@ pub(crate) fn builtin_str_length(
             ..
         } = ctx_arg;
         let val = expect_one_arg("str-length", &args, named.as_ref(), &ctx, call_span.clone())?;
-        let s = require_string("str-length", val, args[0].span.clone())?;
+        let s = require_string("str-length", val, ctx.get_thunk(args[0]).span.clone())?;
         let len = s.chars().count();
         let len_i64 = i64::try_from(len).map_err(|_| {
             EvalError::resource_limit_exceeded(
@@ -172,7 +175,7 @@ pub(crate) fn builtin_str_byte_count(
             &ctx,
             call_span.clone(),
         )?;
-        let s = require_string("str-byte-count", val, args[0].span.clone())?;
+        let s = require_string("str-byte-count", val, ctx.get_thunk(args[0]).span.clone())?;
         ok_val(Value::Int(s.len() as i64), call_span)
     })
 }
@@ -188,7 +191,7 @@ pub(crate) fn builtin_str_has_nth_byte(
             args,
             named,
             call_span,
-            ctx: _ctx,
+            ctx,
             ..
         } = ctx_arg;
         if args.len() != 2 {
@@ -199,14 +202,16 @@ pub(crate) fn builtin_str_has_nth_byte(
             named.as_ref(),
             call_span.clone(),
         )?;
-        let s_val = args[0].try_get_materialized().expect("pre-materialized");
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let s_val = thunk0.try_get_materialized().expect("pre-materialized");
         let (str_start, str_end) = match s_val {
             Value::String { start, end, .. } => (start, end),
             other => {
                 return Err(EvalError::type_mismatch("String", other.type_name(), call_span).into())
             }
         };
-        let idx = match args[1].try_get_materialized().expect("pre-materialized") {
+        let idx = match thunk1.try_get_materialized().expect("pre-materialized") {
             Value::Int(n) => n,
             other => {
                 return Err(EvalError::type_mismatch("Int", other.type_name(), call_span).into())
@@ -231,21 +236,23 @@ pub(crate) fn builtin_str_nth_byte(
             args,
             named,
             call_span,
-            ctx: _ctx,
+            ctx,
             ..
         } = ctx_arg;
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
         reject_named("builtin-str-nth-byte", named.as_ref(), call_span.clone())?;
-        let s_val = args[0].try_get_materialized().expect("pre-materialized");
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let s_val = thunk0.try_get_materialized().expect("pre-materialized");
         let (source, str_start, str_end) = match s_val {
             Value::String { source, start, end } => (source, start, end),
             other => {
                 return Err(EvalError::type_mismatch("String", other.type_name(), call_span).into())
             }
         };
-        let idx = match args[1].try_get_materialized().expect("pre-materialized") {
+        let idx = match thunk1.try_get_materialized().expect("pre-materialized") {
             Value::Int(n) => n,
             other => {
                 return Err(EvalError::type_mismatch("Int", other.type_name(), call_span).into())
@@ -276,7 +283,7 @@ pub(crate) fn builtin_str_slice(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
         reject_named("str-slice", named.as_ref(), call_span.clone())?;
@@ -285,13 +292,16 @@ pub(crate) fn builtin_str_slice(
         }
 
         // Get pre-materialized arguments — calling convention: (string, start, end)
-        let input_val = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk2 = ctx.get_thunk(args[2]);
+        let input_val = thunk0
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let start_val = args[1]
+        let start_val = thunk1
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let end_val = args[2]
+        let end_val = thunk2
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
@@ -303,7 +313,7 @@ pub(crate) fn builtin_str_slice(
                     "str-slice".to_string(),
                     "String",
                     input_val.type_name(),
-                    args[0].span.clone(),
+                    thunk0.span.clone(),
                 )
                 .into());
             }
@@ -317,7 +327,7 @@ pub(crate) fn builtin_str_slice(
                     "str-slice".to_string(),
                     "non-negative Int",
                     &format!("Int({n})"),
-                    args[1].span.clone(),
+                    thunk1.span.clone(),
                 )
                 .into());
             }
@@ -326,7 +336,7 @@ pub(crate) fn builtin_str_slice(
                     "str-slice".to_string(),
                     "Int",
                     start_val.type_name(),
-                    args[1].span.clone(),
+                    thunk1.span.clone(),
                 )
                 .into());
             }
@@ -339,7 +349,7 @@ pub(crate) fn builtin_str_slice(
                     "str-slice".to_string(),
                     "non-negative Int",
                     &format!("Int({n})"),
-                    args[2].span.clone(),
+                    thunk2.span.clone(),
                 )
                 .into());
             }
@@ -348,7 +358,7 @@ pub(crate) fn builtin_str_slice(
                     "str-slice".to_string(),
                     "Int",
                     end_val.type_name(),
-                    args[2].span.clone(),
+                    thunk2.span.clone(),
                 )
                 .into());
             }
@@ -410,7 +420,7 @@ pub(crate) fn builtin_str_has_nth(
             args,
             named,
             call_span,
-            ctx: _ctx,
+            ctx,
             ..
         } = ctx_arg;
         if args.len() != 2 {
@@ -418,7 +428,9 @@ pub(crate) fn builtin_str_has_nth(
         }
         reject_named("builtin-str-has-nth?", named.as_ref(), call_span.clone())?;
 
-        let s_val = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let s_val = thunk0
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness[0]=Seq");
         let (source, str_start, str_end) = match s_val {
@@ -428,7 +440,7 @@ pub(crate) fn builtin_str_has_nth(
             }
         };
 
-        let idx = match args[1]
+        let idx = match thunk1
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness[1]=Seq")
         {
@@ -467,7 +479,7 @@ pub(crate) fn builtin_str_nth_char(
             args,
             named,
             call_span,
-            ctx: _ctx,
+            ctx,
             ..
         } = ctx_arg;
         if args.len() != 2 {
@@ -475,7 +487,9 @@ pub(crate) fn builtin_str_nth_char(
         }
         reject_named("builtin-str-nth-char", named.as_ref(), call_span.clone())?;
 
-        let s_val = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let s_val = thunk0
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness[0]=Seq");
         let (source, str_start, str_end) = match s_val {
@@ -485,7 +499,7 @@ pub(crate) fn builtin_str_nth_char(
             }
         };
 
-        let idx = match args[1]
+        let idx = match thunk1
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness[1]=Seq")
         {
@@ -554,7 +568,7 @@ pub(crate) fn builtin_char_code(
                     "char-code".to_string(),
                     "String",
                     val.type_name(),
-                    args[0].span.clone(),
+                    ctx.get_thunk(args[0]).span.clone(),
                 )
                 .into());
             }
@@ -605,7 +619,7 @@ pub(crate) fn builtin_chr(
                 "chr".to_string(),
                 "Int",
                 val.type_name(),
-                args[0].span.clone(),
+                ctx.get_thunk(args[0]).span.clone(),
             )
             .into()),
         }
@@ -650,7 +664,7 @@ pub(crate) fn builtin_str_bytes(
                 "str-bytes".to_string(),
                 "String",
                 val.type_name(),
-                args[0].span.clone(),
+                ctx.get_thunk(args[0]).span.clone(),
             )
             .into()),
         }
@@ -673,7 +687,7 @@ pub(crate) fn builtin_str_index_of(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
         reject_named("str-index-of", named.as_ref(), call_span.clone())?;
@@ -681,15 +695,17 @@ pub(crate) fn builtin_str_index_of(
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
 
-        let needle_val = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let needle_val = thunk0
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let haystack_val = args[1]
+        let haystack_val = thunk1
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
-        let needle = require_string("str-index-of", needle_val, args[0].span.clone())?;
-        let haystack = require_string("str-index-of", haystack_val, args[1].span.clone())?;
+        let needle = require_string("str-index-of", needle_val, thunk0.span.clone())?;
+        let haystack = require_string("str-index-of", haystack_val, thunk1.span.clone())?;
 
         let index: i64 = match haystack.find(needle.as_str()) {
             Some(byte_idx) => i64::try_from(byte_idx).map_err(|_| {
@@ -721,7 +737,7 @@ pub(crate) fn builtin_trim_start(
             ..
         } = ctx_arg;
         let val = expect_one_arg("trim-start", &args, named.as_ref(), &ctx, call_span.clone())?;
-        let s = require_string("trim-start", val, args[0].span.clone())?;
+        let s = require_string("trim-start", val, ctx.get_thunk(args[0]).span.clone())?;
         ok_val(string_val(s.trim_start()), call_span)
     })
 }
@@ -742,7 +758,7 @@ pub(crate) fn builtin_trim_end(
             ..
         } = ctx_arg;
         let val = expect_one_arg("trim-end", &args, named.as_ref(), &ctx, call_span.clone())?;
-        let s = require_string("trim-end", val, args[0].span.clone())?;
+        let s = require_string("trim-end", val, ctx.get_thunk(args[0]).span.clone())?;
         ok_val(string_val(s.trim_end()), call_span)
     })
 }
@@ -792,7 +808,7 @@ pub(crate) fn builtin_bytes_str(
                 "bytes-str".to_string(),
                 "Bytes",
                 val.type_name(),
-                args[0].span.clone(),
+                ctx.get_thunk(args[0]).span.clone(),
             )
             .into()),
         }
@@ -824,7 +840,7 @@ pub(crate) fn builtin_str_to_upper_char(
             &ctx,
             call_span.clone(),
         )?;
-        let s = require_string("str-to-upper-char", val, args[0].span.clone())?;
+        let s = require_string("str-to-upper-char", val, ctx.get_thunk(args[0]).span.clone())?;
         ok_val(string_val(&s.to_uppercase()), call_span)
     })
 }
@@ -854,7 +870,7 @@ pub(crate) fn builtin_str_to_lower_char(
             &ctx,
             call_span.clone(),
         )?;
-        let s = require_string("str-to-lower-char", val, args[0].span.clone())?;
+        let s = require_string("str-to-lower-char", val, ctx.get_thunk(args[0]).span.clone())?;
         ok_val(string_val(&s.to_lowercase()), call_span)
     })
 }
@@ -883,14 +899,16 @@ pub(crate) fn builtin_str_map_chars(
         }
 
         // Get pre-materialized function (arg 0) and the input string (arg 1).
-        let func_val = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let func_val = thunk0
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let input_val = args[1]
+        let input_val = thunk1
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
-        let s = require_string("str-map-chars", input_val, args[1].span.clone())?;
+        let s = require_string("str-map-chars", input_val, thunk1.span.clone())?;
 
         // For an empty string, return empty string immediately.
         if s.is_empty() {
@@ -902,28 +920,29 @@ pub(crate) fn builtin_str_map_chars(
 
         for ch in s.chars() {
             let ch_str = ch.to_string();
-            // Wrap each char as a materialized thunk.
+            // Wrap each char as a materialized thunk, then register it in the arena.
             let char_thunk = Arc::new(Thunk::new_materialized(
                 string_val(&ch_str),
                 call_span.clone(),
             ));
+            let char_tid = ctx.alloc_thunk(char_thunk);
 
-            // Call f(char_thunk) — dispatch on Value::Function vs Value::Builtin.
+            // Call f(char_tid) — dispatch on Value::Function vs Value::Builtin.
             let call_result_thunk = match &func_val {
                 Value::Function {
                     params,
                     body,
-                    env: closure_env,
+                    closure_env_id,
                     ..
                 } => {
-                    let pos_args = vec![Arc::clone(&char_thunk)];
+                    let pos_args = vec![char_tid];
                     crate::eval_call::invoke_function(&CallContext {
                         params,
                         body,
-                        closure_env,
+                        closure_env_id: *closure_env_id,
                         positional: &pos_args,
                         named: None,
-                        default_env: closure_env,
+                        default_env_id: *closure_env_id,
                         call_span: call_span.clone(),
                         origin: Some(Arc::from("str-map-chars")),
                         ctx: &ctx,
@@ -932,10 +951,11 @@ pub(crate) fn builtin_str_map_chars(
                 }
                 Value::Builtin(def) => {
                     let builtin_args = BuiltinArgs {
-                        args: vec![Arc::clone(&char_thunk)],
+                        args: vec![char_tid],
                         named: None,
                         call_span: call_span.clone(),
-                        caller_env: Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
+                        caller_env: Arc::new(std::sync::RwLock::new(crate::value::Environment::new())),
+                        caller_env_id: 0,
                         ctx: Arc::clone(&ctx),
                     };
                     (def.func)(builtin_args).await?
@@ -945,7 +965,7 @@ pub(crate) fn builtin_str_map_chars(
                         "str-map-chars".to_string(),
                         "Function",
                         other.type_name(),
-                        args[0].span.clone(),
+                        thunk0.span.clone(),
                     )
                     .into());
                 }
@@ -988,15 +1008,16 @@ pub(crate) fn builtin_int_to_string(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
         reject_named("int->string", named.as_ref(), call_span.clone())?;
-        let val = args
+        let tid = args
             .into_iter()
             .next()
             .ok_or_else(|| EvalError::arity_mismatch(1, 0, call_span.clone()))?;
-        let materialized = val
+        let thunk0 = ctx.get_thunk(tid);
+        let materialized = thunk0
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
         match materialized {
@@ -1026,15 +1047,16 @@ pub(crate) fn builtin_float_to_string(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
         reject_named("float->string", named.as_ref(), call_span.clone())?;
-        let val = args
+        let tid = args
             .into_iter()
             .next()
             .ok_or_else(|| EvalError::arity_mismatch(1, 0, call_span.clone()))?;
-        let materialized = val
+        let thunk0 = ctx.get_thunk(tid);
+        let materialized = thunk0
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
         match materialized {
@@ -1065,7 +1087,7 @@ pub(crate) fn builtin_regex_match(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
         reject_named("regex-match?", named.as_ref(), call_span.clone())?;
@@ -1073,15 +1095,17 @@ pub(crate) fn builtin_regex_match(
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
 
-        let pattern_val = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let pattern_val = thunk0
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let haystack_val = args[1]
+        let haystack_val = thunk1
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
-        let pattern = require_string("regex-match?", pattern_val, args[0].span.clone())?;
-        let haystack = require_string("regex-match?", haystack_val, args[1].span.clone())?;
+        let pattern = require_string("regex-match?", pattern_val, thunk0.span.clone())?;
+        let haystack = require_string("regex-match?", haystack_val, thunk1.span.clone())?;
 
         match regex::Regex::new(&pattern) {
             Ok(re) => ok_val(
@@ -1112,7 +1136,7 @@ pub(crate) fn builtin_string_concat(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
         reject_named("builtin-string-concat", named.as_ref(), call_span.clone())?;
@@ -1120,15 +1144,17 @@ pub(crate) fn builtin_string_concat(
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
 
-        let s1_val = args[0]
+        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk1 = ctx.get_thunk(args[1]);
+        let s1_val = thunk0
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let s2_val = args[1]
+        let s2_val = thunk1
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
-        let s1 = require_string("builtin-string-concat", s1_val, args[0].span.clone())?;
-        let s2 = require_string("builtin-string-concat", s2_val, args[1].span.clone())?;
+        let s1 = require_string("builtin-string-concat", s1_val, thunk0.span.clone())?;
+        let s2 = require_string("builtin-string-concat", s2_val, thunk1.span.clone())?;
 
         // Pre-check output size to prevent memory exhaustion
         let output_len = s1.len().saturating_add(s2.len());

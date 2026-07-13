@@ -1,9 +1,10 @@
 //! Unified environment: merged `TypeEnv` (type checker) and `Environment` (evaluator)
 //! into a single `Env` struct used by both.
 //!
-//! Each slot holds an optional value (populated at eval time) and an optional type scheme
-//! (populated at typecheck time). De Bruijn (level, slot) indices address the same
-//! `IndexMap` position for both subsystems — no coordinate-system mismatch.
+//! After T-1557, `Env` is **type-metadata only**. Runtime values are stored exclusively
+//! in `FlatEnv` (arena-complete). Each slot holds an optional type scheme (populated at
+//! typecheck time). De Bruijn (level, slot) indices address the same `IndexMap` position
+//! for both subsystems — no coordinate-system mismatch.
 //!
 //! Parent chain uses `Arc<RwLock<Env>>` (no `Rc` anywhere).
 
@@ -14,16 +15,17 @@ use indexmap::IndexMap;
 
 use crate::type_class::{ClassDecl, InstanceDecl};
 use crate::types::{Type, TypeAlias, TypeScheme};
-use crate::value::Thunk;
 
 // ---------------------------------------------------------------------------
 // EnvSlot
 // ---------------------------------------------------------------------------
 
-/// A single binding slot: value side (evaluator) and scheme side (type checker).
+/// A single binding slot: scheme side (type checker) only.
+///
+/// After T-1557, runtime values are stored exclusively in `FlatEnv` (arena-complete).
+/// `Env` is type-metadata only.
 #[derive(Debug, Clone)]
 pub struct EnvSlot {
-    pub value: Option<Arc<Thunk>>,
     pub scheme: Option<TypeScheme>,
 }
 
@@ -31,20 +33,19 @@ pub struct EnvSlot {
 // Env
 // ---------------------------------------------------------------------------
 
-/// Unified scope frame used by both the evaluator and type checker.
+/// Unified scope frame used by the type checker (type-metadata only after T-1557).
 ///
-/// `slots` is an `IndexMap` so that position N is the same for the evaluator
-/// (`EnvSlot.value`) and the type checker (`EnvSlot.scheme`). The resolver
-/// assigns de Bruijn (level, slot) coordinates that index directly into this
-/// map.
+/// `slots` is an `IndexMap` so that position N aligns with the type checker
+/// (`EnvSlot.scheme`). The resolver assigns de Bruijn (level, slot) coordinates
+/// that index directly into this map.
 ///
 /// `extras` holds name-only entries with no resolver-assigned slot (builtins,
-/// injected names). These are reachable via `get_value_by_name` /
-/// `get_scheme` but never via `get_value_at` / `get_scheme_at`.
+/// injected names). These are reachable via `get_scheme` but never via
+/// `get_scheme_at`.
 #[derive(Clone)]
 pub struct Env {
-    /// Slot-indexed entries: position N is the same for evaluator (EnvSlot.value)
-    /// and type checker (EnvSlot.scheme). Resolver de Bruijn (level, slot) indexes this.
+    /// Slot-indexed entries: position N is the same for the type checker
+    /// (EnvSlot.scheme). Resolver de Bruijn (level, slot) indexes this.
     pub(crate) slots: IndexMap<String, EnvSlot>,
     /// Name-only entries with no resolver-assigned slot (builtins, injected names).
     pub(crate) extras: HashMap<String, EnvSlot>,
@@ -87,101 +88,6 @@ impl Env {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // VALUE SIDE (from Environment)
-    // -----------------------------------------------------------------------
-
-    /// Insert a value into the environment.
-    ///
-    /// If a slot already exists for `name`, sets its `.value`; otherwise creates
-    /// a new slot with value only (scheme = None).
-    pub fn insert_value(&mut self, name: String, thunk: Arc<Thunk>) {
-        if let Some(slot) = self.slots.get_mut(&name) {
-            slot.value = Some(thunk);
-        } else {
-            self.slots.insert(
-                name,
-                EnvSlot {
-                    value: Some(thunk),
-                    scheme: None,
-                },
-            );
-        }
-    }
-
-    /// Look up a value by name, walking slots then extras then the parent chain.
-    ///
-    /// # Lock safety
-    ///
-    /// Acquires a read lock on each ancestor `RwLock<Env>` as it walks up the
-    /// scope chain. Callers **must not** hold a write lock on any ancestor
-    /// environment while calling this method, or the program will deadlock.
-    pub fn get_value_by_name(&self, name: &str) -> Option<Arc<Thunk>> {
-        // Check slots in current frame
-        if let Some(slot) = self.slots.get(name) {
-            if let Some(ref v) = slot.value {
-                return Some(Arc::clone(v));
-            }
-        }
-        // Check extras in current frame
-        if let Some(slot) = self.extras.get(name) {
-            if let Some(ref v) = slot.value {
-                return Some(Arc::clone(v));
-            }
-        }
-        // Walk parent chain iteratively
-        let mut current = self.parent.as_ref().map(Arc::clone);
-        while let Some(env_arc) = current {
-            let env = env_arc.read().unwrap();
-            if let Some(slot) = env.slots.get(name) {
-                if let Some(ref v) = slot.value {
-                    return Some(Arc::clone(v));
-                }
-            }
-            if let Some(slot) = env.extras.get(name) {
-                if let Some(ref v) = slot.value {
-                    return Some(Arc::clone(v));
-                }
-            }
-            current = env.parent.as_ref().map(Arc::clone);
-        }
-        None
-    }
-
-    /// O(1) slot-based value lookup with de Bruijn level-based parent chain walking.
-    ///
-    /// `level` is a de Bruijn index: 0 = current environment, 1 = parent, N = Nth ancestor.
-    /// NO name check — this is intentional (the old name check was the bug causing class
-    /// method type-warning false positives).
-    ///
-    /// Returns `None` if the level or slot is out of bounds, or if the slot has no value.
-    pub fn get_value_at(&self, level: u32, slot: u32) -> Option<Arc<Thunk>> {
-        if level == 0 {
-            return self
-                .slots
-                .get_index(slot as usize)
-                .and_then(|(_, s)| s.value.as_ref().map(Arc::clone));
-        }
-        let mut steps = level;
-        let mut current = self.parent.as_ref().map(Arc::clone);
-        while let Some(env_arc) = current {
-            steps -= 1;
-            if steps == 0 {
-                let env = env_arc.read().unwrap();
-                return env
-                    .slots
-                    .get_index(slot as usize)
-                    .and_then(|(_, s)| s.value.as_ref().map(Arc::clone));
-            }
-            let next = {
-                let env = env_arc.read().unwrap();
-                env.parent.as_ref().map(Arc::clone)
-            };
-            current = next;
-        }
-        None
-    }
-
     /// Return the keys of the slots IndexMap as a `Vec<String>`.
     ///
     /// Used by the resolver to seed scope frames.
@@ -192,6 +98,28 @@ impl Env {
     /// Iterate over all slot entries in the current frame.
     pub fn iter_slots(&self) -> impl Iterator<Item = (&str, &EnvSlot)> {
         self.slots.iter().map(|(k, v)| (k.as_str(), v))
+    }
+
+    /// Check whether a name is present in this environment (slots or extras), walking the
+    /// parent chain.
+    ///
+    /// Returns `true` if the name was registered with `insert_slot_name_only`,
+    /// `insert_scheme`, or `insert_scheme_named_only` — regardless of whether a
+    /// `TypeScheme` is associated. This is a name-presence test only; it does not force
+    /// any runtime thunk.
+    pub fn has_name(&self, name: &str) -> bool {
+        if self.slots.contains_key(name) || self.extras.contains_key(name) {
+            return true;
+        }
+        let mut current = self.parent.as_ref().map(Arc::clone);
+        while let Some(env_arc) = current {
+            let env = env_arc.read().unwrap();
+            if env.slots.contains_key(name) || env.extras.contains_key(name) {
+                return true;
+            }
+            current = env.parent.as_ref().map(Arc::clone);
+        }
+        false
     }
 
     /// Find the first slot key ending with `suffix`, walking the parent chain.
@@ -219,23 +147,32 @@ impl Env {
     // SCHEME SIDE (from TypeEnv)
     // -----------------------------------------------------------------------
 
+    /// Insert a name-only slot (no TypeScheme) into the slotted IndexMap.
+    ///
+    /// This is used by `build_core_env` to register builtin names so the resolver
+    /// can assign de Bruijn (level, slot) coordinates without requiring a TypeScheme
+    /// at bootstrap time. The runtime thunk goes in the root FlatEnv at the same
+    /// slot position (see `EvalContext::new_env_arena`).
+    ///
+    /// If a slot already exists for `name`, this is a no-op (the existing entry,
+    /// including any scheme, is preserved). If no slot exists, inserts
+    /// `EnvSlot { scheme: None }`.
+    pub fn insert_slot_name_only(&mut self, name: String) {
+        if !self.slots.contains_key(&name) {
+            self.slots.insert(name, EnvSlot { scheme: None });
+        }
+    }
+
     /// Insert a TypeScheme into the slotted IndexMap.
     ///
     /// If a slot already exists for `name`, sets its `.scheme`; otherwise creates
-    /// a new slot with scheme only (value = None). IndexMap preserves insertion
-    /// order and updates in-place on duplicate keys, so the slot index of an
-    /// existing entry is stable.
+    /// a new slot. IndexMap preserves insertion order and updates in-place on
+    /// duplicate keys, so the slot index of an existing entry is stable.
     pub fn insert_scheme(&mut self, name: String, scheme: TypeScheme) {
         if let Some(slot) = self.slots.get_mut(&name) {
             slot.scheme = Some(scheme);
         } else {
-            self.slots.insert(
-                name,
-                EnvSlot {
-                    value: None,
-                    scheme: Some(scheme),
-                },
-            );
+            self.slots.insert(name, EnvSlot { scheme: Some(scheme) });
         }
     }
 
@@ -247,19 +184,12 @@ impl Env {
     /// - Narrowing overrides
     /// - Builtin bindings
     ///
-    /// These entries are visible via `get_scheme` / `get_value_by_name` but
-    /// are never reached via `get_scheme_at` / `get_value_at`.
+    /// These entries are visible via `get_scheme` but never reached via `get_scheme_at`.
     pub fn insert_scheme_named_only(&mut self, name: String, scheme: TypeScheme) {
         if let Some(slot) = self.extras.get_mut(&name) {
             slot.scheme = Some(scheme);
         } else {
-            self.extras.insert(
-                name,
-                EnvSlot {
-                    value: None,
-                    scheme: Some(scheme),
-                },
-            );
+            self.extras.insert(name, EnvSlot { scheme: Some(scheme) });
         }
     }
 
@@ -356,20 +286,14 @@ impl Env {
     // COMBINED
     // -----------------------------------------------------------------------
 
-    /// Insert both a value and a scheme into a single slot.
-    pub fn insert_both(&mut self, name: String, thunk: Arc<Thunk>, scheme: TypeScheme) {
-        if let Some(slot) = self.slots.get_mut(&name) {
-            slot.value = Some(thunk);
-            slot.scheme = Some(scheme);
-        } else {
-            self.slots.insert(
-                name,
-                EnvSlot {
-                    value: Some(thunk),
-                    scheme: Some(scheme),
-                },
-            );
-        }
+    /// Insert a scheme into a slot (formerly also stored the value; after T-1557, type-only).
+    ///
+    /// Callers that previously supplied a `thunk` argument should switch to `insert_scheme`.
+    /// This signature is retained for callers that were already passing both; the thunk is
+    /// no longer stored here — values go into `FlatEnv` (T-1559).
+    #[allow(unused_variables)]
+    pub fn insert_both(&mut self, name: String, thunk: std::sync::Arc<crate::value::Thunk>, scheme: TypeScheme) {
+        self.insert_scheme(name, scheme);
     }
 
     // -----------------------------------------------------------------------
@@ -555,9 +479,6 @@ impl Env {
         for (name, slot) in other.slots {
             if let Some(existing) = self.slots.get_mut(&name) {
                 // Merge: fill in whichever side the incoming slot provides.
-                if slot.value.is_some() {
-                    existing.value = slot.value;
-                }
                 if slot.scheme.is_some() {
                     existing.scheme = slot.scheme;
                 }
@@ -567,9 +488,6 @@ impl Env {
         }
         for (name, slot) in other.extras {
             if let Some(existing) = self.extras.get_mut(&name) {
-                if slot.value.is_some() {
-                    existing.value = slot.value;
-                }
                 if slot.scheme.is_some() {
                     existing.scheme = slot.scheme;
                 }

@@ -45,19 +45,19 @@
 # Irreducible builtins used (the minimal set):
 #   Control: match (keyword — always available)
 #   I/O:     builtin-file-read, builtin-file-open, builtin-write-stdout, builtin-write-stderr, builtin-channel, builtin-send
-#   Bytes:   builtin-bytes, builtin-bytes-concat, builtin-length
+#   Bytes:   builtin-bytes, builtin-bytes-concat, builtin-dict-length
 #   AST:     builtin-parse, builtin-resolve, builtin-typecheck
-#   Type:    builtin-get-type-context, builtin-make-type-ctx, builtin-fork-type-ctx,
+#   Type:    builtin-make-type-ctx, builtin-fork-type-ctx,
 #            builtin-tc-with-type-stage-env
 #   Meta:    builtin-module, builtin-eval
 #   String:  builtin-str, builtin-str-bytes, builtin-str-hash, builtin-str-lt
 #   Dict:    builtin-reduce (Dict fold only — NOT Seq; Seq reduce is tinct),
-#            builtin-merge, builtin-get, builtin-keys, builtin-length, builtin-build-dict
+#            merge, builtin-get, builtin-keys, builtin-dict-length, builtin-build-dict
 #   Variant: builtin-tag-of (reads Variant tag string — Variant internals, not Dict)
 #   Path:    builtin-path-dir (String → DirCap; extracts dir from a file path)
 #
 # Eliminated (reducible — derivable in tinct from the irreducibles above):
-#   builtin-bytes-empty?  → [match [= [builtin-length x] 0] ...]
+#   builtin-bytes-empty?  → [match [= [builtin-dict-length x] 0] ...]
 #   builtin-map           → fused into builtin-reduce in uses-scope
 #   builtin-dict-get      → builtin-get
 #   builtin-dict-length   → eliminated by passing formatter separately
@@ -84,8 +84,21 @@
 
 [
   # bytes-empty? is a runtime function (not a macro): macro bodies receive AST
-  # nodes, not byte values, so builtin-length on an AST node would fail.
-  bytes-empty?: [fn [let b] [builtin-eq-int [builtin-length b] 0]]
+  # nodes, not byte values, so builtin-dict-length on an AST node would fail.
+  bytes-empty?: [fn [let b] [builtin-eq-int [builtin-bytes-length b] 0]]
+
+  # merge: right-biased dict union using the builder API — no Rust merge needed.
+  # _copy helper is private (inside the function's letrec scope).
+  merge: [fn [let a b]
+    [_copy: [fn [let builder d n i]
+      [match [builtin-int-gte i n]
+        0: builder
+        _: [_copy
+              [builtin-builder-set builder [builtin-dict-nth d i] [builtin-dict-key-nth d i]]
+              d n [builtin-int-add i 1]]]]]
+    [builtin-builder-finish
+      [_copy [_copy [builtin-make-builder] a [builtin-dict-length a] 0]
+             b [builtin-dict-length b] 0]]]
 
   read-file: [fn [let f acc]
     [chunk: [builtin-file-read f 65536]]
@@ -95,20 +108,20 @@
 
   # reduce and join defined with core builtins only (prelude not yet loaded).
   _reduce-loop: [fn [let f acc xs i len]
-    [match [builtin-gte i len]
-      0: [_reduce-loop f [f acc [builtin-get i xs]] xs [builtin-add i 1] len]
+    [match [builtin-int-gte i len]
+      0: [_reduce-loop f [f acc [builtin-get i xs]] xs [builtin-int-add i 1] len]
       _: acc]]
-  reduce: [fn [let f init xs] [_reduce-loop f init xs 0 [builtin-length xs]]]
+  reduce: [fn [let f init xs] [_reduce-loop f init xs 0 [builtin-dict-length xs]]]
 
   _join-loop: [fn [let sep acc xs i len]
-    [match [builtin-gte i len]
+    [match [builtin-int-gte i len]
       0: [_join-loop sep
            [match [builtin-eq-int i 0]
              0: [builtin-string-concat acc [builtin-string-concat sep [builtin-get i xs]]]
              _: [builtin-get 0 xs]]
-           xs [builtin-add i 1] len]
+           xs [builtin-int-add i 1] len]
       _: acc]]
-  join: [fn [let sep xs] [_join-loop sep "" xs 0 [builtin-length xs]]]
+  join: [fn [let sep xs] [_join-loop sep "" xs 0 [builtin-dict-length xs]]]
 
   # make-entry: construct single-entry dict from key and value.
   # Defined here for Dict 1 because it runs before prelude is loaded.
@@ -118,7 +131,10 @@
   # Used as the base for all seed envs built by bare-eval and eval-file so that
   # any derived env has these VM-level dot-access primitives in its parent chain.
   # Leading-dot captures them from the initial core env without injecting anything else.
-  dot-access-env: [builtin-extend-env [] [field-get: .field-get  slot-get: .slot-get]]
+  # T-1571: builtin-extend-env now returns {env, flat-env-id}; extract .env and flat-env-id
+  dot-access-env-result: [builtin-extend-env [] [field-get: .field-get  slot-get: .slot-get]]
+  dot-access-env: dot-access-env-result.env
+  dot-access-flat-env-id: dot-access-env-result.flat-env-id
 ]
 
 # ============================================================================
@@ -192,11 +208,12 @@
             [parse-result:   [builtin-parse decl-bytes decl-path]]
             # builtin-resolve requires Value::Environment for env: — use empty root env.
             # Declaration files are typechecked only (no eval); OnceLock coords unused.
-            [decl-env:       [builtin-extend-env dot-access-env []]]
+            [decl-env-result: [builtin-extend-env dot-access-env [] flat-env: dot-access-flat-env-id]]
+            [decl-env:        decl-env-result.env]
             [resolve-errors: [reduce
               [fn [let acc doc]
                 [r: [builtin-resolve doc env: decl-env]]
-                [builtin-add acc [builtin-length r.errors]]]
+                [builtin-int-add acc [builtin-dict-length r.errors]]]
               0
               parse-result.program.documents]]
             [typed:          [builtin-typecheck parse-result.program seed-tc]]
@@ -206,16 +223,21 @@
         [warnings:   [match [builtin-has-key? "ok" tc-result]
             0: []
             _: [builtin-get "ok" tc-result]]]
-        [builtin-merge [emit-diagnostics warnings] [builtin-merge acc [builtin-module name]]]]
+        [merge [emit-diagnostics warnings] [merge acc [builtin-module name]]]]
       []
       module-names]]
 
   # ── Fundamental-types TypeContext ─────────────────────────────────────────
-  # A fresh TypeContext passed to uses-scope. DirCap, NetCap etc. accumulate
-  # naturally as uses-scope processes "core" first — the same seed-tc Arc is
-  # shared across all reduce iterations so core types are visible to later modules.
-  # No types leak from ctx.type_context — all propagation is through this value.
-  fundamental-tc: [builtin-make-type-ctx]
+  # Start from an empty TypeContext and populate it by type-checking
+  # builtin_core.llt. This gives fundamental-tc the type declarations from
+  # core (DirCap, Int, Bytes, etc.) with no implicit Rust back-channel.
+  # The builtin-dict-length data dependency forces uses-scope before returning
+  # _fundamental-base-tc, ensuring core types are in place before any
+  # downstream module type-checks run.
+  _fundamental-base-tc: [builtin-make-type-ctx]
+  fundamental-tc: [match [builtin-int-gte [builtin-dict-length [uses-scope ["core"] _fundamental-base-tc]] 0]
+    0: _fundamental-base-tc
+    _: _fundamental-base-tc]
 
   # ── Named section accumulation ────────────────────────────────────────────
 
@@ -224,7 +246,7 @@
   update-named: [fn [let state val doc]
     [match [builtin-eq-string [builtin-tag-of doc.name] "Named"]
       0: state.named
-      _: [builtin-merge state.named [make-entry [builtin-string-concat "%" [builtin-variant-payload doc.name]] val]]]]
+      _: [merge state.named [make-entry [builtin-string-concat "%" [builtin-variant-payload doc.name]] val]]]]
 
   # ── Diagnostic formatting ─────────────────────────────────────────────────
   # Each diagnostic is a unified error dict:
@@ -234,7 +256,7 @@
   # Uses only core builtins — safe to call before prelude is loaded.
   format-diagnostic: [fn [let d]
     [s: d.span]
-    [file-part: [match [builtin-eq-int [builtin-length s.file] 0]
+    [file-part: [match [builtin-eq-int [builtin-dict-length s.file] 0]
       0: [builtin-string-concat s.file ":"]
       _: "<unknown>:"]]
     [join "" [0: file-part  1: [builtin-int->string s.start-line]  2: ":"  3: [builtin-int->string s.start-col]  4: ": "  5: d.kind  6: " — "  7: d.message  8: "\n"]]]
@@ -255,60 +277,79 @@
   # Stage 4: builtin-eval     — execution
   #
   # include does NOT take include-dir or prelude — it IS what loads prelude.
-  # Uses zero-arg [builtin-get-type-context] (it is building the context).
+  # Uses fundamental-tc (built from builtin_core.llt); it is building the context.
 
   include: [fn [let cap path extras@[default: []]]
     [handle:        [builtin-file-open cap path "read"]]
     [bytes:         [read-file handle [builtin-bytes]]]
     [parse-result:  [builtin-parse bytes path]]
-    # Stop on parse errors. Emit first (data dependency via builtin-add), then raise.
-    [n-parse:       [builtin-length parse-result.errors]]
-    [_pe:           [builtin-length [emit-diagnostics parse-result.errors]]]
-    [seed-env:      [match [builtin-eq-int [builtin-add n-parse _pe] 0]
+    # Stop on parse errors. Emit first (data dependency via builtin-int-add), then raise.
+    [n-parse:       [builtin-dict-length parse-result.errors]]
+    [_pe:           [builtin-dict-length [emit-diagnostics parse-result.errors]]]
+    [seed-env-result: [match [builtin-eq-int [builtin-int-add n-parse _pe] 0]
       0: [builtin-raise [join "" [[builtin-int->string n-parse] " parse error(s) in " path]]]
-      _: [builtin-extend-env dot-access-env extras]]]
-    # Per-document reduce fn: extend env with the document's evaluated result.
+      _: [builtin-extend-env dot-access-env extras flat-env: dot-access-flat-env-id]]]
+    [seed-env:       seed-env-result.env]
+    [seed-flat-env-id: seed-env-result.flat-env-id]
+    # Per-document reduce fn: extend env and thread flat-env-id for T-1563 display chaining.
+    # acc is {env: Value::Environment, flat-env-id: Int (or [] for first doc)}.
+    # Each builtin-eval call receives flat-env: from the prior call's flat-env-id result,
+    # building the display ancestry so stdlib VarRefs resolve at level > 0.
     # Identical body used for both the type-stage pass and the runtime pass.
-    [eval-doc: [fn [let env doc]
+    [eval-doc: [fn [let acc doc]
       [call [fn [let]
-        [doc-env:  [builtin-extend-env env [uses-scope doc.uses fundamental-tc]]]
-        [resolved: [builtin-resolve doc env: doc-env]]
-        [n-re:     [builtin-length resolved.errors]]
-        [_re:      [builtin-length [emit-diagnostics resolved.errors]]]
-        [eval-result: [match [builtin-eq-int [builtin-add n-re _re] 0]
+        [env:            acc.env]
+        [doc-env-result: [builtin-extend-env env [uses-scope doc.uses fundamental-tc] flat-env: acc.flat-env-id]]
+        [doc-env:        doc-env-result.env]
+        [doc-flat-env-id: doc-env-result.flat-env-id]
+        [resolved:       [builtin-resolve doc env: doc-env]]
+        [n-re:     [builtin-dict-length resolved.errors]]
+        [_re:      [builtin-dict-length [emit-diagnostics resolved.errors]]]
+        [eval-result: [match [builtin-eq-int [builtin-int-add n-re _re] 0]
           0: [builtin-raise [join "" [[builtin-int->string n-re] " resolve error(s) in " path]]]
-          _: [builtin-eval resolved.doc env: doc-env]]]
+          _: [match [builtin-eq-string [builtin-type-of acc.flat-env-id] "Int"]
+               0: [builtin-eval resolved.doc env: doc-env]
+               _: [builtin-eval resolved.doc env: doc-env flat-env: acc.flat-env-id]]]]
         [match [builtin-eq-string [builtin-type-of eval-result.error] "String"]
-          0: [builtin-extend-env eval-result.env
-               [make-entry
-                 [match [builtin-eq-string eval-result.doc-name ""]
-                   0: eval-result.doc-name
-                   _: "%"]
-                 eval-result.result]]
+          0: [env-result:  [builtin-extend-env eval-result.env
+                             [make-entry
+                               [match [builtin-eq-string eval-result.doc-name ""]
+                                 0: eval-result.doc-name
+                                 _: "%"]
+                               eval-result.result]
+                             flat-env: doc-flat-env-id]
+              env:         env-result.env
+              flat-env-id: eval-result.flat-env-id]
           _: [builtin-raise eval-result.error]]]]]]
+    # Seed accumulator: {env: seed-env, flat-env-id: seed-flat-env-id}.
+    [seed-acc: [env: seed-env  flat-env-id: seed-flat-env-id]]
     # Split documents by stage using reduce (filter is not available before prelude loads).
     [split: [reduce
       [fn [let acc doc]
         [match [builtin-eq-string [builtin-tag-of doc.stage] "DocStage.Type"]
-          0: [ts: acc.ts  rt: [builtin-merge acc.rt [make-entry [builtin-length acc.rt] doc]]]
-          _: [ts: [builtin-merge acc.ts [make-entry [builtin-length acc.ts] doc]]  rt: acc.rt]]]
+          0: [ts: acc.ts  rt: [merge acc.rt [make-entry [builtin-dict-length acc.rt] doc]]]
+          _: [ts: [merge acc.ts [make-entry [builtin-dict-length acc.ts] doc]]  rt: acc.rt]]]
       [ts: []  rt: []]
       parse-result.program.documents]]
     # Pass 1: evaluate type-stage documents to build ts-env (for mutual recursion in type stage).
-    [ts-env: [reduce eval-doc seed-env split.ts]]
+    # ts-acc is {env: ..., flat-env-id: ...}
+    [ts-acc: [reduce eval-doc seed-acc split.ts]]
     # Wire ts-env into the TypeContext so type-stage functions (or, all, etc.) are visible
     # during type-checking of runtime documents.
-    [tc: [builtin-tc-with-type-stage-env fundamental-tc ts-env]]
-    # Pass 2: evaluate runtime documents, starting from ts-env so runtime docs see type-stage defs.
-    [final-env: [reduce eval-doc ts-env split.rt]]
-    # Typecheck the now-resolved program. Use tc (updated TypeContext) and final-env.
+    [tc: [builtin-tc-with-type-stage-env fundamental-tc ts-acc.env]]
+    # Pass 2: evaluate runtime documents, starting from ts-acc so runtime docs see type-stage defs.
+    # final-acc is {env: ..., flat-env-id: ...} — the flat-env-id from the last doc evaluated.
+    [final-acc: [reduce eval-doc ts-acc split.rt]]
+    # Typecheck the now-resolved program. Use tc (updated TypeContext) and final-acc.env.
     # The second resolve pass was removed — OnceLocks are write-once, so a second
     # [builtin-resolve doc env: final-env] call would be a no-op.
-    [typed:  [builtin-typecheck parse-result.program tc env: final-env]]
-    [n-warn: [builtin-length [emit-diagnostics typed.warnings]]]
-    [match [builtin-gte n-warn 0]
-      0: final-env
-      _: final-env]]
+    [typed:  [builtin-typecheck parse-result.program tc env: final-acc.env]]
+    [n-warn: [builtin-dict-length [emit-diagnostics typed.warnings]]]
+    # Return {env, flat-env-id} so callers can thread the flat-env-id into subsequent
+    # builtin-eval calls for T-1563 display-chain ancestry.
+    [match [builtin-int-gte n-warn 0]
+      0: final-acc
+      _: final-acc]]
 
   # ── Document-level evaluation ─────────────────────────────────────────────
   # Builds the env for one user document via builtin-extend-env layers.
@@ -327,7 +368,7 @@
   #
   # mod-scope: the Value::Environment of module builtins from uses-scope.
   # Computed once per file in eval-file and threaded into each document.
-  eval-document-runtime: [fn [let state mod-scope doc include-dir prelude emit-ch]
+  eval-document-runtime: [fn [let state mod-scope doc include-dir prelude prelude-flat-env-id emit-ch]
     [emit-fn: [fn [let v] [builtin-send emit-ch v]]]
     # Build full-env: start from prelude (Value::Environment), add per-doc bindings.
     # Scope priority (highest → lowest):
@@ -336,51 +377,69 @@
     #   emit/channel, include, %include-dir — loader-injected
     #   known caps  — %cwd, %libdir, %stdout, %stderr, %args from closure
     #   prelude     — standard library (lowest; shadowed by everything above)
-    [full-env: [builtin-extend-env prelude
-                 [%:            state.percent
-                  %include-dir:  include-dir
-                  emit:          emit-fn
-                  %emit-channel: emit-ch
-                  %cwd:          %cwd
-                  %libdir:       %libdir
-                  %stdout:       %stdout
-                  %stderr:       %stderr
-                  %args:         %args]]]
-    [full-env: [builtin-extend-env full-env state.named]]
-    [full-env: [builtin-extend-env full-env mod-scope]]
+    [full-env-r1: [builtin-extend-env prelude
+                    [%:            state.percent
+                     %include-dir:  include-dir
+                     emit:          emit-fn
+                     %emit-channel: emit-ch
+                     %cwd:          %cwd
+                     %libdir:       %libdir
+                     %stdout:       %stdout
+                     %stderr:       %stderr
+                     %args:         %args]
+                    flat-env: prelude-flat-env-id]]
+    [full-env-r2: [builtin-extend-env full-env-r1.env state.named flat-env: full-env-r1.flat-env-id]]
+    [full-env-r3: [builtin-extend-env full-env-r2.env mod-scope flat-env: full-env-r2.flat-env-id]]
+    [full-env:    full-env-r3.env]
+    [full-flat-env-id: full-env-r3.flat-env-id]
     # ctx-include: a prelude-carrying version of include injected into document scope.
     # When user code calls [include cap path], it gets this version, which evaluates
     # the included file with prelude in scope. The bare include in loader dict 2
     # evaluates in loader's closure (no prelude) — used only for bootstrapping.
+    # prelude-flat-env-id is captured from the outer eval-document-runtime scope and
+    # threaded as flat-env: to each builtin-eval call for T-1563 display-chain ancestry.
     [ctx-include: [fn [let cap path]
       [handle:        [builtin-file-open cap path "read"]]
       [bytes:         [read-file handle [builtin-bytes]]]
       [parse-result:  [builtin-parse bytes path]]
-      # Emit parse errors as a data dependency (no >> needed).
-      [_pe:           [builtin-length [emit-diagnostics parse-result.errors]]]
+      # Stop on parse errors. Emit first (data dependency via builtin-int-add), then raise.
+      [n-parse:       [builtin-dict-length parse-result.errors]]
+      [_pe:           [builtin-dict-length [emit-diagnostics parse-result.errors]]]
       # Seed with prelude (the base environment for included files).
       # No mod-scope from uses-scope — ctx-include is for nested user includes
       # where the base env already has prelude's bindings available.
-      [match [builtin-eq-int _pe _pe]
-        0: prelude
+      # acc is {env, flat-env-id} to thread display ancestry through each doc.
+      [match [builtin-eq-int [builtin-int-add n-parse _pe] 0]
+        0: [builtin-raise [join "" [[builtin-int->string n-parse] " parse error(s) in " path]]]
         _: [reduce
-              [fn [let env sub-doc]
-                [sub-resolved:   [builtin-resolve sub-doc env: env]]
-                [eval-result:    [builtin-eval sub-resolved.doc env: env]]
+              [fn [let acc sub-doc]
+                [sub-env: acc.env]
+                [sub-resolved:   [builtin-resolve sub-doc env: sub-env]]
+                [eval-result:    [match [builtin-eq-string [builtin-type-of acc.flat-env-id] "Int"]
+                  0: [builtin-eval sub-resolved.doc env: sub-env]
+                  _: [builtin-eval sub-resolved.doc env: sub-env flat-env: acc.flat-env-id]]]
                 [match [builtin-eq-string [builtin-type-of eval-result.error] "String"]
-                  0: [builtin-extend-env eval-result.env
-                       [make-entry
-                         [match [builtin-eq-string eval-result.doc-name ""]
-                           0: eval-result.doc-name
-                           _: "%"]
-                         eval-result.result]]
+                  0: [env-result:  [builtin-extend-env eval-result.env
+                                     [make-entry
+                                       [match [builtin-eq-string eval-result.doc-name ""]
+                                         0: eval-result.doc-name
+                                         _: "%"]
+                                       eval-result.result]
+                                     flat-env: eval-result.flat-env-id]
+                      env:         env-result.env
+                      flat-env-id: eval-result.flat-env-id]
                   _: [builtin-raise eval-result.error]]]
-              prelude
-              parse-result.program.documents]]]]
-    [full-env: [builtin-extend-env full-env [include: ctx-include]]]
+              [env: prelude  flat-env-id: prelude-flat-env-id]
+              parse-result.program.documents].env]]]
+    [full-env-r4: [builtin-extend-env full-env [include: ctx-include] flat-env: full-flat-env-id]]
+    [full-env:    full-env-r4.env]
     # Per-document resolve against the fully-constructed env for correct de Bruijn coords.
     [doc-resolved: [builtin-resolve doc env: full-env]]
-    [eval-result: [builtin-eval doc-resolved.doc env: full-env]]
+    # T-1563: pass prelude-flat-env-id as flat-env: so the user document's display chain
+    # includes stdlib scope levels. VarRefs to stdlib names at level > 0 resolve correctly.
+    [eval-result: [match [builtin-eq-string [builtin-type-of prelude-flat-env-id] "Int"]
+      0: [builtin-eval doc-resolved.doc env: full-env]
+      _: [builtin-eval doc-resolved.doc env: full-env flat-env: prelude-flat-env-id]]]
     [match [builtin-eq-string [builtin-type-of eval-result.error] "String"]
       0: # Success path: run caps + expects validation, then merge state.
          # Wrapped in call [fn [let] ...] so the intermediate dicts provide local scope.
@@ -398,11 +457,11 @@
          # T-1506: Validate --- expects: annotation against incoming %. doc.expects is "" if absent.
          # The inner match has identical branches — both return Boolean.True.
          # The purpose is to FORCE [builtin-check-type doc.expects state.percent] for its
-         # raise side-effect (type mismatch). builtin-type-of materializes it; builtin-length
+         # raise side-effect (type mismatch). builtin-type-of materializes it; builtin-dict-length
          # is always ≥ 0. The result is always Boolean.True; raises on type mismatch.
          _expects-ok: [match [builtin-eq-string [builtin-type-of doc.expects] "String"]
            0: Boolean.True
-           _: [match [builtin-gte [builtin-length [builtin-type-of [builtin-check-type doc.expects state.percent]]] 0]
+           _: [match [builtin-int-gte [builtin-dict-length [builtin-type-of [builtin-check-type doc.expects state.percent]]] 0]
                 0: Boolean.True
                 _: Boolean.True]]]
         # Force both checks via builtin-tag-of (forces the lazy thunks).
@@ -410,19 +469,19 @@
           0: [builtin-raise "unreachable"]
           _: [match [builtin-eq-string [builtin-tag-of _expects-ok] "Boolean.True"]
                0: [builtin-raise "unreachable"]
-               _: [builtin-merge state
+               _: [merge state
                     [percent: eval-result.result
                      named:   [update-named state eval-result.result doc]]]]]]]
       _: [builtin-raise eval-result.error]]]
 
   # ── Pipeline item dispatch ────────────────────────────────────────────────
 
-  eval-pipeline-item: [fn [let item prev include-dir prelude emit-ch]
+  eval-pipeline-item: [fn [let item prev include-dir prelude prelude-flat-env-id emit-ch]
     [match item
-      [case [let p] [ProgramItem.File p] [eval-file p prev include-dir prelude emit-ch]]
-      [case [let p] [ProgramItem.Expr p] [eval-expr p.src prev include-dir prelude emit-ch]]]]
+      [case [let p] [ProgramItem.File p] [eval-file p prev include-dir prelude prelude-flat-env-id emit-ch]]
+      [case [let p] [ProgramItem.Expr p] [eval-expr p.src prev include-dir prelude prelude-flat-env-id emit-ch]]]]
 
-  eval-file: [fn [let item prev include-dir prelude emit-ch]
+  eval-file: [fn [let item prev include-dir prelude prelude-flat-env-id emit-ch]
     # %include-dir for this file's documents = the directory containing item.path.
     # %cwd is fixed (CLI working directory) and comes from the closure unchanged.
     # builtin-path-dir: String → DirCap
@@ -430,76 +489,76 @@
     [bytes:        [read-file item.handle [builtin-bytes]]]
     [parse-result: [builtin-parse bytes item.path]]
     # Emit parse errors as a data dependency (no >> needed).
-    [_pe:          [builtin-length [emit-diagnostics parse-result.errors]]]
+    [_pe:          [builtin-dict-length [emit-diagnostics parse-result.errors]]]
     # mod-scope: module builtins for --- uses: headers declared in the file.
     [mod-scope: [uses-scope parse-result.program.uses fundamental-tc]]
     # Typecheck: pass fundamental-tc after ensuring mod-scope is computed (so uses-scope has
     # populated fundamental-tc with all the module type schemes).
-    # [builtin-length mod-scope] is the data dependency that forces uses-scope first.
+    # [builtin-dict-length mod-scope] is the data dependency that forces uses-scope first.
     [typed: [builtin-typecheck parse-result.program
-              [match [builtin-gte [builtin-length mod-scope] 0]
+              [match [builtin-int-gte [builtin-dict-length mod-scope] 0]
                 0: fundamental-tc
                 _: fundamental-tc]
               env: prelude]]
     # Emit all typecheck diagnostics as a data dependency (no >> needed).
-    [_te:    [builtin-length [emit-diagnostics typed.warnings]]]
+    [_te:    [builtin-dict-length [emit-diagnostics typed.warnings]]]
     # Force emission of all diagnostics before evaluating documents.
     # match with identical branches always returns the reduce result
     # while ensuring _pe, _te are forced (their sum is the condition).
     # Use typed.documents to ensure typecheck call_dispatch annotations are
     # written before the lowerer reads them during builtin-eval.
-    [match [builtin-eq-int [builtin-add _pe _te] 0]
+    [match [builtin-eq-int [builtin-int-add _pe _te] 0]
       0: [reduce
            [fn [let state doc]
-             [eval-document-runtime state mod-scope doc file-include-dir prelude emit-ch]]
+             [eval-document-runtime state mod-scope doc file-include-dir prelude prelude-flat-env-id emit-ch]]
            [percent: prev  named: []]
            typed.documents].percent
       _: [reduce
            [fn [let state doc]
-             [eval-document-runtime state mod-scope doc file-include-dir prelude emit-ch]]
+             [eval-document-runtime state mod-scope doc file-include-dir prelude prelude-flat-env-id emit-ch]]
            [percent: prev  named: []]
            typed.documents].percent]]
 
-  eval-expr: [fn [let src prev include-dir prelude emit-ch]
+  eval-expr: [fn [let src prev include-dir prelude prelude-flat-env-id emit-ch]
     [bytes:        [builtin-str-bytes src]]
     [parse-result: [builtin-parse bytes "<expr>"]]
     # Emit parse errors as a data dependency (no >> needed).
-    [_pe:          [builtin-length [emit-diagnostics parse-result.errors]]]
+    [_pe:          [builtin-dict-length [emit-diagnostics parse-result.errors]]]
     # No pre-resolve pass here — eval-document-runtime resolves with full-env.
     # A pre-resolve would write OnceLocks with wrong coordinates (prelude-relative)
     # that block the correct full-env resolve (OnceLocks are write-once).
     # -e expressions rarely declare --- uses:, but uniform handling costs nothing.
     [mod-scope: [uses-scope parse-result.program.uses fundamental-tc]]
     [typed: [builtin-typecheck parse-result.program
-              [match [builtin-gte [builtin-length mod-scope] 0]
+              [match [builtin-int-gte [builtin-dict-length mod-scope] 0]
                 0: fundamental-tc
                 _: fundamental-tc]
               env: prelude]]
-    [_te:    [builtin-length [emit-diagnostics typed.warnings]]]
-    [match [builtin-eq-int [builtin-add _pe _te] 0]
+    [_te:    [builtin-dict-length [emit-diagnostics typed.warnings]]]
+    [match [builtin-eq-int [builtin-int-add _pe _te] 0]
       0: [reduce
            [fn [let state doc]
-             [eval-document-runtime state mod-scope doc include-dir prelude emit-ch]]
+             [eval-document-runtime state mod-scope doc include-dir prelude prelude-flat-env-id emit-ch]]
            [percent: prev  named: []]
            typed.documents].percent
       _: [reduce
            [fn [let state doc]
-             [eval-document-runtime state mod-scope doc include-dir prelude emit-ch]]
+             [eval-document-runtime state mod-scope doc include-dir prelude prelude-flat-env-id emit-ch]]
            [percent: prev  named: []]
            typed.documents].percent]]
 
   # ── CLI pipeline ──────────────────────────────────────────────────────────
-  # Threads include-dir, prelude, and emit-ch — the only things that vary.
+  # Threads include-dir, prelude, prelude-flat-env-id, and emit-ch — the only things that vary.
   # %cwd, %libdir, %stdout, %stderr, %args flow via closure, not as parameters.
   # The formatter is passed separately and run last.
 
-  cli-pipeline: [fn [let programs formatter initial include-dir prelude emit-ch]
+  cli-pipeline: [fn [let programs formatter initial include-dir prelude prelude-flat-env-id emit-ch]
     [result: [reduce
       [fn [let prev item]
-        [eval-pipeline-item item prev include-dir prelude emit-ch]]
+        [eval-pipeline-item item prev include-dir prelude prelude-flat-env-id emit-ch]]
       initial
       programs]]
-    [eval-pipeline-item formatter result include-dir prelude emit-ch]]
+    [eval-pipeline-item formatter result include-dir prelude prelude-flat-env-id emit-ch]]
 ]
 
 # ============================================================================
@@ -512,8 +571,13 @@
 [
   # Thread Boolean/True/False from loader scope so prelude can use them unqualified.
   # %prelude is a lazy forward reference — safe because prelude only forces it at call time.
-  _prelude: [include %libdir "prelude.llt"
-    [%prelude: _prelude  Boolean: Boolean  True: True  False: False]]
+  # include now returns {env, flat-env-id} — extract both for T-1563 display-chain threading.
+  # `prelude` is a letrec entry in this dict, so `%prelude: prelude` is a lazy forward ref
+  # (prelude is not forced during the include call — only when prelude.llt code accesses %prelude).
+  _prelude-acc:        [include %libdir "prelude.llt"
+                         [%prelude: prelude  Boolean: Boolean  True: True  False: False]]
+  prelude:             _prelude-acc.env
+  prelude-flat-env-id: _prelude-acc.flat-env-id
 
   emit-ch: [builtin-channel]
 
@@ -529,6 +593,6 @@
 # match on programs count: raises on empty, runs pipeline otherwise.
 # No >> needed — the error branch raises, the success branch returns the pipeline result.
 
-[match [builtin-eq-int [builtin-length %programs] 0]
-  0: [cli-pipeline %programs formatter [] %cwd _prelude emit-ch]
+[match [builtin-eq-int [builtin-dict-length %programs] 0]
+  0: [cli-pipeline %programs formatter [] %cwd prelude prelude-flat-env-id emit-ch]
   _: [builtin-raise "no input files or expressions specified"]]

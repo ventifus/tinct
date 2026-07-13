@@ -15,10 +15,10 @@
 
   parse:  [builtin-parse [builtin-str-bytes src] "repro.llt"]
   result: [builtin-resolve parse.program]
-  n:      [builtin-length result.errors]
+  n:      [builtin-dict-length result.errors]
 
   _loop: [fn [let i errors h]
-    [done: [builtin-gte i [builtin-length errors]]
+    [done: [builtin-int-gte i [builtin-dict-length errors]]
      e:    [builtin-get i errors]
      s:    e.span
      line: [builtin-string-concat s.file
@@ -27,7 +27,7 @@
               [builtin-string-concat ":" [builtin-string-concat e.message "\n"]]]]]
      h2:   [%stderr.write line h]]
     [match done
-      0: [_loop [builtin-add i 1] errors h2]
+      0: [_loop [builtin-int-add i 1] errors h2]
       _: h]]
 ]
 
@@ -36,6 +36,6 @@
   h2: [%stderr.write [builtin-string-concat [builtin-int->string n] " resolve errors\n"] h1]
 ]
 
-[match [builtin-gte [builtin-length h2] 0]
+[match [builtin-int-gte [builtin-dict-length h2] 0]
   0: 0
   _: n]

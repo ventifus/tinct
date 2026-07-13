@@ -19,7 +19,8 @@ use tinct::{
 const EXIT_OK: i32 = 0;
 const EXIT_ERROR: i32 = 1;
 const EXIT_TIMEOUT: i32 = 2;
-// Note: RLIMIT_AS violations cause SIGSEGV/SIGKILL from the kernel, not a clean exit code.
+// tinct::limit_alloc::EXIT_OOM (3): soft heap-limit exceeded — diagnostics printed, clean exit.
+// Note: RLIMIT_AS violations (hard backstop) cause abort via handle_alloc_error, not a clean exit.
 // RLIMIT_CPU violations cause SIGXCPU (soft) or SIGKILL (hard). Both terminate without EXIT_ERROR.
 
 /// A pipeline stage: either a file path or an inline expression.
@@ -335,17 +336,23 @@ async fn async_main() -> i32 {
 
     let cli = Cli::parse();
 
-    // Apply resource limits globally (before subcommand dispatch).
-    // Skipped in debug builds: the default 512 MB RLIMIT_AS causes OOM when
-    // running CLI tests under `cargo test` (debug mode uses more virtual memory).
-    #[cfg(all(unix, not(debug_assertions)))]
+    // Soft heap limit: fires before RLIMIT_AS, prints diagnostics, exits cleanly.
+    // Works on all platforms; no-op when --max-memory is not passed.
+    if let Some(max_bytes) = cli.max_memory {
+        if max_bytes > 0 {
+            tinct::limit_alloc::set_limit(max_bytes);
+        }
+    }
+
+    // Hard RLIMIT_AS backstop: catches anything that bypasses the allocator
+    // (direct mmap, stack growth, shared-library mappings).
+    #[cfg(unix)]
     if let Err(e) = setup_rlimits(cli.max_memory, cli.max_cpu, cli.max_fds) {
         eprintln!("error: {e}");
         return EXIT_ERROR;
     }
-    // On non-Unix platforms (or debug builds), rlimit flags are accepted for CLI
-    // compatibility but have no effect.
-    #[cfg(any(not(unix), debug_assertions))]
+    // On non-Unix platforms rlimit flags are accepted for CLI compatibility but have no effect.
+    #[cfg(not(unix))]
     {
         let _ = cli.max_memory;
         let _ = cli.max_cpu;
@@ -671,15 +678,13 @@ fn install_sigint_profile_handler() -> Result<(), String> {
 /// limits enforced by the kernel and cannot be raised by the process after being
 /// set.
 ///
-/// Default values are applied when the caller passes `None`:
-/// - `max_memory`: 512 MB RLIMIT_AS limit (controls virtual address space; also
-///   caps the maximum heap size the process can mmap).
-/// - `max_cpu`: No limit by default (must be explicitly requested).
-/// - `max_fds`: 64 RLIMIT_NOFILE (prevents FD exhaustion from crafted $include
-///   chains; still leaves room for stdin/stdout/stderr + eval fds).
-///
-/// A value of `Some(0)` disables that particular limit.
-#[cfg(all(unix, not(debug_assertions)))]
+/// Limits are only applied when explicitly requested (`Some(N)` where N > 0).
+/// `None` or `Some(0)` disables that particular limit.
+/// - `max_memory`: RLIMIT_AS — no default; container/OS is the backstop.
+/// - `max_cpu`: RLIMIT_CPU — no default; must be explicitly requested.
+/// - `max_fds`: RLIMIT_NOFILE — default 64 (prevents FD exhaustion from crafted
+///   $include chains; still leaves room for stdin/stdout/stderr + eval fds).
+#[cfg(unix)]
 fn setup_rlimits(
     max_memory: Option<u64>,
     max_cpu: Option<u64>,
@@ -709,10 +714,10 @@ fn setup_rlimits(
         Ok(())
     };
 
-    // RLIMIT_AS: virtual address space limit.
-    // Default: 512 MB. Prevents heap exhaustion from crafted inputs.
+    // RLIMIT_AS: virtual address space limit. Only applied when explicitly requested.
+    // Default is disabled — the container or OS is the resource enforcement layer.
     // Value of 0 means: caller explicitly disabled this limit.
-    let memory_limit = max_memory.unwrap_or(512 * 1024 * 1024) as libc::rlim_t;
+    let memory_limit = max_memory.unwrap_or(0) as libc::rlim_t;
     if memory_limit > 0 {
         apply_rlimit(libc::RLIMIT_AS, memory_limit, "RLIMIT_AS (max-memory)")?;
     }
@@ -1451,6 +1456,12 @@ async fn run_eval(
     // after all capability thunks have been injected into this env.
     let env = build_core_env();
 
+    // T-1557: Env is type-metadata only; runtime thunks go into the FlatEnv arena.
+    // Collect (name, thunk) cap entries here; inject into arena after eval_ctx is created.
+    // Slot names are registered in env immediately (for the resolver's De Bruijn coordinates);
+    // the matching thunks are appended to FlatEnv[0] in the same order after construction.
+    let mut deferred_cap_thunks: Vec<(String, Arc<tinct::Thunk>)> = Vec::new();
+
     // Apply Landlock filesystem ACL enforcement (Linux only, defense-in-depth).
     // Auto-triggered when --cap-fs entries are present (unless --no-landlock is set).
     // Derives Landlock roots from the --cap-fs directory paths.
@@ -1534,11 +1545,13 @@ async fn run_eval(
             dir: Rc::new(cwd_dir),
             perms: tinct::DirPerms::full(),
         };
-        let cwd_thunk = tinct::Thunk::new_materialized(cwd_value, tinct::rust_span!());
-        env.write()
-            .unwrap()
-            .insert_value("%cwd".to_string(), Arc::new(cwd_thunk));
+        let cwd_thunk = Arc::new(tinct::Thunk::new_materialized(cwd_value, tinct::rust_span!()));
+        env.write().unwrap().insert_slot_name_only("%cwd".to_string());
+        deferred_cap_thunks.push(("%cwd".to_string(), cwd_thunk));
     }
+
+    // TODO T-1559: inject %arena as Value::Arena { name: "root", env_id: 0 } so that
+    // tinct programs can access the root evaluation arena as a named capability.
 
     // %stdin: Handle/WriteHandle removed. When -i is specified, %stdin is not injected.
     // The input formatter (cli/in/*.llt) must be updated to use builtin-read-stdin instead.
@@ -1593,10 +1606,9 @@ async fn run_eval(
                     perms: tinct::DirPerms::full(),
                 };
                 let libdir_thunk =
-                    tinct::Thunk::new_materialized(libdir_value, tinct::rust_span!());
-                env.write()
-                    .unwrap()
-                    .insert_value("%libdir".to_string(), Arc::new(libdir_thunk));
+                    Arc::new(tinct::Thunk::new_materialized(libdir_value, tinct::rust_span!()));
+                env.write().unwrap().insert_slot_name_only("%libdir".to_string());
+                deferred_cap_thunks.push(("%libdir".to_string(), libdir_thunk));
                 libdir_rc_for_ctx = Some(libdir_arc);
             }
             // If the dir can't be opened, silently skip — stdlib is embedded anyway.
@@ -1618,16 +1630,15 @@ async fn run_eval(
                 dir: dir_for_cap,
                 perms,
             };
-            let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::rust_span!());
+            let cap_thunk = Arc::new(tinct::Thunk::new_materialized(cap_value, tinct::rust_span!()));
             // Inject as `%NAME` (auto-prefix %).
             let scoped_name = if name.starts_with('%') {
                 name.to_string()
             } else {
                 format!("%{name}")
             };
-            env.write()
-                .unwrap()
-                .insert_value(scoped_name, Arc::new(cap_thunk));
+            env.write().unwrap().insert_slot_name_only(scoped_name.clone());
+            deferred_cap_thunks.push((scoped_name, cap_thunk));
         }
     }
 
@@ -1670,8 +1681,9 @@ async fn run_eval(
         // Create NetCap values and inject them as `%NAME`.
         for (name, entries) in net_caps {
             let cap_value = Value::NetCap(Rc::new(entries));
-            let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::rust_span!());
-            env.write().unwrap().insert_value(name, Arc::new(cap_thunk));
+            let cap_thunk = Arc::new(tinct::Thunk::new_materialized(cap_value, tinct::rust_span!()));
+            env.write().unwrap().insert_slot_name_only(name.clone());
+            deferred_cap_thunks.push((name, cap_thunk));
         }
     }
 
@@ -1702,10 +1714,9 @@ async fn run_eval(
             Value::ClockCap(Rc::new(ClockCapInner::Real))
         };
 
-        let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::rust_span!());
-        env.write()
-            .unwrap()
-            .insert_value("%clock".to_string(), Arc::new(cap_thunk));
+        let cap_thunk = Arc::new(tinct::Thunk::new_materialized(cap_value, tinct::rust_span!()));
+        env.write().unwrap().insert_slot_name_only("%clock".to_string());
+        deferred_cap_thunks.push(("%clock".to_string(), cap_thunk));
     }
 
     // Inject --cap-file NAME=PATH[:MODE] entries into the root environment as `%NAME`.
@@ -1826,7 +1837,7 @@ async fn run_eval(
         None // unrestricted
     };
 
-    // Arena sharing invariant: all stages in the pipeline share the same ThunkArena so that
+    // Arena sharing invariant: all stages in the pipeline share the same EnvArena so that
     // ThunkIds allocated for %programs entries remain valid throughout evaluation.
     // The eval_ctx created below owns the arena; fallback pipeline stages derive from it.
 
@@ -1905,7 +1916,7 @@ async fn run_eval(
     // "ProgramItem.Expr" — the same tags declared in loader.llt dict 2. This is the
     // one Rust↔tinct bootstrap contract for %programs (see doc/whatif/type-foundations.md).
 
-    // Create the base eval context (owns the ThunkArena used by all %programs thunks).
+    // Create the base eval context (owns the EnvArena used by all %programs thunks).
     let cwd_for_ctx = {
         // AMBIENT-OK: CWD at startup, operator-controlled.
         #[allow(clippy::disallowed_methods)]
@@ -1944,6 +1955,16 @@ async fn run_eval(
         });
         ctx
     };
+
+    // T-1557: Inject deferred cap thunks into the root FlatEnv arena slot-by-slot.
+    // Slot names were registered in `env` (via insert_slot_name_only) before eval_ctx was
+    // created, so the resolver can assign De Bruijn coordinates. Now that eval_ctx exists,
+    // inject the corresponding thunks into FlatEnv[0] at the next available slots.
+    // The ordering of alloc_thunk calls MUST match the ordering of insert_slot_name_only
+    // calls above so that slot indices align with the resolver's coordinate assignments.
+    for (_name, thunk) in deferred_cap_thunks {
+        eval_ctx.alloc_thunk(thunk);
+    }
 
     // Helper: allocate a value as a materialized thunk in the eval_ctx arena and return its ThunkId.
     // Used to build Value::Dict entries (which use ThunkId, not Arc<Thunk>).
@@ -2061,21 +2082,20 @@ async fn run_eval(
     };
 
     // Inject %programs and %args into the stdlib environment so loader.llt can see them.
+    // T-1557: Register slot names in env (for resolver) and thunks in arena (for evaluator).
     {
         let programs_thunk = std::sync::Arc::new(tinct::Thunk::new_materialized(
             programs_dict,
             tinct::rust_span!(),
         ));
-        env.write()
-            .unwrap()
-            .insert_value("%programs".to_string(), programs_thunk);
+        env.write().unwrap().insert_slot_name_only("%programs".to_string());
+        eval_ctx.alloc_thunk(programs_thunk);
         let args_thunk = std::sync::Arc::new(tinct::Thunk::new_materialized(
             args_dict,
             tinct::rust_span!(),
         ));
-        env.write()
-            .unwrap()
-            .insert_value("%args".to_string(), args_thunk);
+        env.write().unwrap().insert_slot_name_only("%args".to_string());
+        eval_ctx.alloc_thunk(args_thunk);
     }
 
     // Wrap the evaluation section in an async block so profiling cleanup runs unconditionally

@@ -133,27 +133,23 @@ pub(crate) async fn check_dot_access(
             // (the field may be present in the concrete value via extra fields)
             None => Ok(Type::Unknown),
         },
-        // TypeVar α: generate constraint α = Record({field: β}).
-        // Under BAS, no row variable needed — empty record type covers the requirement.
-        Type::TypeVar(ref alpha, alpha_level) => {
-            // Create fresh β for the field type — named after the field for diagnostics
-            let beta = state
-                .fresh_type_var_with(Some(field_str), None, Kind::Type, &span)
-                .1;
-
-            // Build the record type to unify α with (BAS: no RowVar tail)
-            let mut fields = indexmap::IndexMap::new();
-            fields.insert(field_str.to_string(), beta.clone());
-            let record_ty = Type::Dict(Row {
-                fields,
-                tail: crate::type_def::RowTail::Empty,
+        // TypeVar α: emit HasField constraint — [GET] rule from hkt-monads design.
+        // Do NOT unify α with a single-field closed record: that would fail when the
+        // caller passes {name: String, age: Int} because α would be constrained to
+        // {name: β} (missing age). Row-polymorphic field access requires that α
+        // remain free to be any closed record that HAS the field.
+        //
+        // HasField "name" α β — deferred until α is bound to a concrete type.
+        // resolve_has_field fires (via check_constraints_on_var) when α is bound,
+        // looks up "name" in the bound type, and unifies β with the field type.
+        Type::TypeVar(ref alpha, _alpha_level) => {
+            // β: fresh TypeVar for the field type
+            let (beta_name, beta) = state.fresh_type_var_with(Some(field_str), None, Kind::Type, &span);
+            constraints.push(Constraint::HasField {
+                label: crate::type_def::Label::Concrete(field_str.to_string()),
+                dict_var: alpha.clone(),
+                field_var: beta_name,
             });
-
-            // Unify TypeVar(α) with Record({field: β})
-            let alpha_ty = Type::TypeVar(alpha.clone(), alpha_level);
-            let result = Box::pin(unify(&alpha_ty, &record_ty, state, constraints, span)).await;
-            result.map_err(|e| vec![e])?;
-
             Ok(beta)
         }
         // Gradual: Unknown dict — field type Unknown
@@ -512,7 +508,7 @@ pub(crate) async fn check_call_with_scheme(
 /// so `got_types` in the `ArityMismatch` error is naturally populated with the actual
 /// argument types instead of being left empty.
 #[allow(clippy::too_many_arguments)]
-async fn check_call_args(
+pub(crate) async fn check_call_args(
     params: &[(Option<String>, Type)],
     ret: &Type,
     variadic: bool,
