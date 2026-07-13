@@ -388,6 +388,10 @@ pub(crate) struct SequentialStepData {
     pub(crate) exprs: Arc<Vec<Arc<Spanned<CoreExpr>>>>,
     /// FlatEnv env_id — current scope for evaluating the next expression.
     pub(crate) env_id: u32,
+    /// Arena length before evaluating exprs[idx]. If the expression allocated new FlatEnvs,
+    /// the first new FlatEnv is at index `arena_len_before` — that is the intermediate dict's
+    /// letrec root scope. Used by T-1558 to advance env_id for the next expression.
+    pub(crate) arena_len_before: u32,
     pub(crate) ctx: Arc<EvalContext>,
     pub(crate) seq_span: Span,
 }
@@ -404,6 +408,8 @@ pub(crate) struct VariantUnpackForSeqData {
     pub(crate) exprs: Arc<Vec<Arc<Spanned<CoreExpr>>>>,
     /// FlatEnv env_id — current scope for evaluating subsequent expressions.
     pub(crate) env_id: u32,
+    /// Arena length before evaluating this expression — same as SequentialStepData.arena_len_before.
+    pub(crate) arena_len_before: u32,
     pub(crate) ctx: Arc<EvalContext>,
     pub(crate) seq_span: Span,
     /// Span of the current expression (for error reporting)
@@ -1409,11 +1415,13 @@ pub(crate) async fn force_step(
 
             // Evaluate the first expression and push a SequentialStep to handle the result
             let first_expr = &exprs[0];
+            let arena_len_before_first = thunk_ctx.env_arena.borrow().envs.len() as u32;
             stack.push(Cont::SequentialStep(Box::new(
                 crate::eval_materialize::SequentialStepData {
                     idx: 0,
                     exprs: Arc::new(exprs.clone()),
                     env_id,
+                    arena_len_before: arena_len_before_first,
                     ctx: Arc::clone(&thunk_ctx),
                     seq_span: core_expr.span.clone(),
                 },
@@ -2760,6 +2768,7 @@ pub(crate) async fn apply_cont(
                 idx,
                 exprs,
                 env_id,
+                arena_len_before,
                 ctx,
                 seq_span,
             } = *data;
@@ -2882,6 +2891,7 @@ pub(crate) async fn apply_cont(
                                             next_idx,
                                             exprs: Arc::clone(&exprs),
                                             env_id,
+                                            arena_len_before,
                                             ctx: Arc::clone(&ctx),
                                             seq_span: seq_span.clone(),
                                             current_expr_span: current_expr.span.clone(),
@@ -2905,31 +2915,48 @@ pub(crate) async fn apply_cont(
                             }
                         };
 
-                        // T-1558: FlatEnv slot filling for dict bindings is T-1559.
-                        // Pass env_id unchanged until child FlatEnv scopes are wired.
-                        // T-1557: Env is type-metadata only. Values go into FlatEnv.
+                        // T-1558 complete: advance env_id to the intermediate dict's FlatEnv root.
+                        // The resolver's Sequential handler calls enter_scope for each intermediate
+                        // dict with static keys, so the next expression is resolved one scope level
+                        // deeper than the call frame. The evaluator must match by advancing env_id
+                        // to the first new FlatEnv allocated during this expression's evaluation
+                        // (arena_len_before = that first new env = the dict's letrec root scope).
+                        // This ensures VarRef level coordinates from the resolver align with the
+                        // FlatEnv display chain at evaluation time.
+                        let current_arena_len = ctx.env_arena.borrow().envs.len() as u32;
+                        let seq_env_id = if current_arena_len > arena_len_before {
+                            arena_len_before // first new FlatEnv = intermediate dict's letrec root
+                        } else {
+                            env_id // no new FlatEnv allocated (empty dict or all literals)
+                        };
+
+                        // Record arena length for the NEXT expression's SequentialStepData.
+                        let next_arena_len = ctx.env_arena.borrow().envs.len() as u32;
 
                         // Proceed to the next expression.
                         let next_expr = &exprs[next_idx];
                         stack.push(Cont::SequentialStep(Box::new(SequentialStepData {
                             idx: next_idx,
                             exprs: Arc::clone(&exprs),
-                            env_id,
+                            env_id: seq_env_id,
+                            arena_len_before: next_arena_len,
                             ctx: Arc::clone(&ctx),
                             seq_span,
                         })));
                         Action::EvalCore {
                             expr: Arc::clone(next_expr),
-                            env_id,
+                            env_id: seq_env_id,
                             ctx,
                         }
                     } else {
                         // No static keys — continue with same env_id.
+                        let next_arena_len = ctx.env_arena.borrow().envs.len() as u32;
                         let next_expr = &exprs[next_idx];
                         stack.push(Cont::SequentialStep(Box::new(SequentialStepData {
                             idx: next_idx,
                             exprs: Arc::clone(&exprs),
                             env_id,
+                            arena_len_before: next_arena_len,
                             ctx: Arc::clone(&ctx),
                             seq_span,
                         })));
@@ -2948,6 +2975,7 @@ pub(crate) async fn apply_cont(
                 next_idx,
                 exprs,
                 env_id,
+                arena_len_before,
                 ctx,
                 seq_span,
                 current_expr_span,
@@ -2974,21 +3002,28 @@ pub(crate) async fn apply_cont(
                         Err(e) => return Action::Continue(Err(e)),
                     };
 
-                    // T-1558: FlatEnv slot filling for variant payload bindings is T-1559.
-                    // Pass env_id unchanged until child FlatEnv scopes are wired.
-                    let _ = static_key_set; // will be used by T-1559
+                    // T-1558: FlatEnv scope advancement for variant payloads.
+                    let _ = static_key_set;
+                    let current_arena_len = ctx.env_arena.borrow().envs.len() as u32;
+                    let seq_env_id = if current_arena_len > arena_len_before {
+                        arena_len_before
+                    } else {
+                        env_id
+                    };
+                    let next_arena_len = ctx.env_arena.borrow().envs.len() as u32;
 
                     let next_expr = &exprs[next_idx];
                     stack.push(Cont::SequentialStep(Box::new(SequentialStepData {
                         idx: next_idx,
                         exprs: Arc::clone(&exprs),
-                        env_id,
+                        env_id: seq_env_id,
+                        arena_len_before: next_arena_len,
                         ctx: Arc::clone(&ctx),
                         seq_span,
                     })));
                     Action::EvalCore {
                         expr: Arc::clone(next_expr),
-                        env_id,
+                        env_id: seq_env_id,
                         ctx,
                     }
                 }

@@ -37,25 +37,36 @@ pub struct NormCtxt {
     /// when type-stage env creation fails, or when resolver evaluation is
     /// not needed (e.g., in tests that only normalize concrete types).
     pub type_stage_env: Option<Arc<RwLock<Env>>>,
+    /// EvalContext for accessing the FlatEnv arena and type-stage function thunks.
+    ///
+    /// Needed by `evaluate_resolver` to construct ThunkIds from the type_stage_flat_env_id
+    /// stored in the TypeContext. `None` when normalizing outside of an evaluation context
+    /// (e.g., in tests).
+    pub eval_ctx: Option<Arc<crate::eval::EvalContext>>,
     /// If false, disable resolver evaluation (prevents runtime errors from propagating into type inference).
     /// Set to false inside unify() to prevent evaluation failures from causing type errors.
     pub allow_eval: bool,
 }
 
 impl NormCtxt {
-    /// Create a normalization context with the given type-stage env.
+    /// Create a normalization context with the given type-stage env and eval context.
     ///
-    /// Production callers pass `state.type_stage_env.clone()` so that resolver functions
-    /// defined in `--- stage: type` sections of prelude.llt are available.  Test callers
-    /// and bootstrap contexts where no env has been built yet pass `None`, which causes
-    /// `TypeStageApp` nodes to remain stuck (resolver evaluation is skipped).
-    pub fn new(type_stage_env: Option<Arc<RwLock<Env>>>) -> Self {
+    /// Production callers pass `state.type_stage_env.clone()` and `state.eval_ctx.clone()`
+    /// so that resolver functions defined in `--- stage: type` sections of prelude.llt are
+    /// available. Test callers and bootstrap contexts where no env has been built yet pass
+    /// `None` for both, which causes `TypeStageApp` nodes to remain stuck (resolver
+    /// evaluation is skipped).
+    pub fn new(
+        type_stage_env: Option<Arc<RwLock<Env>>>,
+        eval_ctx: Option<Arc<crate::eval::EvalContext>>,
+    ) -> Self {
         Self {
             cache: HashMap::new(),
             depth: 0,
             max_depth: 64,
             call_stack: Vec::new(),
             type_stage_env,
+            eval_ctx,
             allow_eval: true,
         }
     }
@@ -123,9 +134,9 @@ pub fn normalize<'a>(
                     ctx.call_stack.push(fn_name.clone());
 
                     let result = if ctx.allow_eval {
-                        if let Some(env) = ctx.type_stage_env.clone() {
+                        if let (Some(env), Some(eval_ctx)) = (ctx.type_stage_env.clone(), ctx.eval_ctx.clone()) {
                             if let Some(resolved) =
-                                evaluate_resolver(fn_name, &normalized_args, &env).await
+                                evaluate_resolver(fn_name, &normalized_args, &env, &eval_ctx).await
                             {
                                 resolved
                             } else {
@@ -136,7 +147,7 @@ pub fn normalize<'a>(
                                 }
                             }
                         } else {
-                            // No type-stage env available — return stuck TypeStageApp
+                            // No type-stage env or eval_ctx available — return stuck TypeStageApp
                             Type::TypeStageApp {
                                 fn_name: fn_name.clone(),
                                 args: normalized_args,
@@ -182,8 +193,7 @@ pub fn normalize<'a>(
 /// Resolver functions receive TypeNode Variant values as arguments.
 ///
 /// Handles primitive types. Complex types (App, Union, Record, etc.) return `None`.
-/// Currently unused: evaluate_resolver is disabled pending T-1564 (type-stage FlatEnv).
-#[allow(dead_code)]
+/// Called directly by `evaluate_resolver`.
 fn type_to_typenode(ty: &Type) -> Option<Value> {
     // Build a leaf TypeNode Variant (no payload) for the given tag name.
     let leaf = |tag: &str| -> Value {
@@ -199,7 +209,7 @@ fn type_to_typenode(ty: &Type) -> Option<Value> {
         Type::Str | Type::StringLiteral(_) => Some(leaf("TypeNode.String")),
         Type::Unknown => Some(leaf("TypeNode.Unknown")),
         Type::Never => Some(leaf("TypeNode.Never")),
-        Type::Any => Some(leaf("TypeNode.Unknown")),
+        Type::Any => Some(leaf("TypeNode.Any")),
         // Complex types — arithmetic resolvers never receive these.
         // Return None so evaluate_resolver returns None (resolver returns None → Unknown fallback).
         _ => None,
@@ -218,15 +228,158 @@ fn type_to_typenode(ty: &Type) -> Option<Value> {
 /// - Runtime error during evaluation
 /// - Result cannot be converted back to a `Type`
 pub(crate) async fn evaluate_resolver(
-    _fn_name: &str,
-    _args: &[Type],
-    _env: &Arc<RwLock<Env>>,
+    fn_name: &str,
+    args: &[Type],
+    env: &Arc<RwLock<Env>>,
+    eval_ctx: &Arc<crate::eval::EvalContext>,
 ) -> Option<Type> {
-    // T-1557: Env no longer stores runtime values — thunks live exclusively in FlatEnv
-    // (EvalContext.env_arena). Name-based thunk lookup from Env is no longer possible.
-    // Resolver evaluation via this path is defunct; callers that need resolver dispatch
-    // must use a ThunkId-based path through EvalContext.
-    None
+    // Step 1: Walk the Env parent chain to find fn_name and its depth.
+    //
+    // Depth 0 = leaf Env (the one pointed to by type_stage_flat_env_id).
+    // Depth 1 = its parent, depth 2 = grandparent, etc.
+    //
+    // This handles the general case where type-stage docs span multiple sequential
+    // dicts (each creating a child Env). The leaf Env only holds the LAST doc's
+    // bindings; earlier docs are in ancestor Envs.
+    let (slot_index, depth) = {
+        let env_read = env.read().unwrap();
+        if let Some(idx) = env_read.slots.get_index_of(fn_name) {
+            // Found in the leaf Env (depth 0)
+            (idx, 0usize)
+        } else {
+            // Walk the parent chain
+            let mut current_parent = env_read.parent.as_ref().map(Arc::clone);
+            drop(env_read);
+            let mut depth = 1usize;
+            loop {
+                let parent_arc = current_parent?;
+                let parent_read = parent_arc.read().unwrap();
+                if let Some(idx) = parent_read.slots.get_index_of(fn_name) {
+                    break (idx, depth);
+                }
+                depth += 1;
+                current_parent = parent_read.parent.as_ref().map(Arc::clone);
+                drop(parent_read);
+            }
+        }
+    };
+
+    // Step 2: Get the type_stage_flat_env_id from the TypeContext.
+    // This is the FlatEnv EnvId of the leaf (last-evaluated) type-stage doc.
+    let type_stage_flat_env_id = {
+        let tc_guard = eval_ctx.type_context.lock().unwrap();
+        let tc_data = tc_guard.as_ref()?;
+        tc_data.type_stage_flat_env_id?
+    };
+
+    // Step 3: Construct a ThunkId for the resolver function.
+    //
+    // The display vector in the leaf FlatEnv encodes the full ancestor chain:
+    //   display[0] = root (depth = display.len()-1 from leaf)
+    //   display[display.len()-1] = self (depth 0)
+    //   display[display.len()-1-depth] = ancestor at `depth` levels up
+    //
+    // ThunkId.env_id is a u32 (raw EnvArena index), not an EnvId wrapper.
+    //
+    // Invariant — Env parent chain depth equals FlatEnv display depth:
+    //   Each builtin-eval call allocates exactly one FlatEnv (via builtin-extend-env with
+    //   flat-env: set to the prior call's flat-env-id). The Env chain grows one hop per
+    //   builtin-eval call, and the FlatEnv display vector grows one entry per alloc_child
+    //   call. These two parallel chains are always kept in sync by the loader: every
+    //   builtin-eval → builtin-extend-env pair produces exactly one Env hop and one
+    //   FlatEnv display entry. Therefore `display[display_len - 1 - depth]` always
+    //   maps correctly to the FlatEnv at Env depth `depth`.
+    //
+    //   This mapping would break only if builtin-extend-env were called without flat-env:
+    //   (causing an alloc_root instead of alloc_child, breaking the display chain). The
+    //   loader and test-loader always pass flat-env: — verified by code review of
+    //   loader.llt and test-loader.llt. The type-stage evaluation path does not omit
+    //   flat-env: for any document after the initial bootstrap.
+    let resolver_thunk_id = {
+        let arena_borrow = eval_ctx.env_arena.borrow();
+        let leaf_env = &arena_borrow.envs[type_stage_flat_env_id as usize];
+        let display_len = leaf_env.display.len();
+        if depth >= display_len {
+            // Depth exceeds display chain — fn_name not reachable
+            return None;
+        }
+        let target_env_id = leaf_env.display[display_len - 1 - depth];
+        crate::arena::ThunkId {
+            env_id: target_env_id.0,
+            slot: slot_index as u32,
+        }
+    };
+
+    // Step 4: Get the resolver function thunk from the arena
+    let resolver_thunk = eval_ctx.env_arena.borrow().get_thunk(resolver_thunk_id);
+
+    // Step 5: Convert Type args to TypeNode values
+    let type_args: Vec<Value> = args
+        .iter()
+        .filter_map(|ty| type_to_typenode(ty))
+        .collect();
+    if type_args.len() != args.len() {
+        // At least one type couldn't be converted to a TypeNode value
+        return None;
+    }
+
+    // Step 6: Allocate arg ThunkIds in the arena and call the resolver
+    let arg_thunk_ids: Vec<crate::arena::ThunkId> = type_args
+        .into_iter()
+        .map(|val| {
+            eval_ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
+                val,
+                crate::rust_span!(),
+            )))
+        })
+        .collect();
+
+    // Materialize the resolver thunk to get the Function value
+    let resolver_val = crate::eval::materialize(&resolver_thunk, None, eval_ctx).await.ok()?;
+
+    // Dispatch: resolver must be a Function
+    let (params, body, closure_env_id) = match resolver_val {
+        Value::Function { params, body, closure_env_id, .. } => (params, body, closure_env_id),
+        _ => return None,
+    };
+
+    // Call the resolver function via invoke_function
+    use crate::eval_call::{invoke_function, CallContext};
+    let call_ctx = CallContext {
+        params: &params,
+        body: &body,
+        closure_env_id,
+        positional: &arg_thunk_ids,
+        named: None,
+        default_env_id: closure_env_id,
+        call_span: crate::rust_span!(),
+        origin: None,
+        ctx: eval_ctx,
+    };
+    let result_thunk = invoke_function(&call_ctx).await.ok()?;
+
+    // Force the result
+    let result_val = crate::eval::materialize(&result_thunk, None, eval_ctx).await.ok()?;
+
+    // Step 7: Convert result TypeNode Value back to Type
+    match &result_val {
+        Value::Variant { tag, payload: None } => {
+            match tag.as_str() {
+                "TypeNode.Int" | "TypeNode.Integer" => Some(Type::Int),
+                "TypeNode.Float" => Some(Type::Float),
+                "TypeNode.String" | "TypeNode.Str" => Some(Type::Str),
+                // TypeNode.Bool has no direct Type equivalent — fall through to None
+                "TypeNode.Never" => Some(Type::Never),
+                // TypeNode.Unknown → Type::Unknown (gradual ?); TypeNode.Any → Type::Any (top).
+                // Distinct semantics: Unknown is the gradual type (bottom of the info lattice),
+                // Any is the unconstrained top (τ <: Any for all τ). Keep them separate.
+                "TypeNode.Unknown" => Some(Type::Unknown),
+                "TypeNode.Any" => Some(Type::Any),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
 }
 
 impl fmt::Display for Type {
@@ -440,7 +593,7 @@ mod tests {
     #[tokio::test]
     async fn test_normalize_identity_concrete_type() {
         let tv = empty_type_vars();
-        let mut ctx = NormCtxt::new(None);
+        let mut ctx = NormCtxt::new(None, None);
         let ty = Type::Int;
         let result = norm(&ty, &tv, &mut ctx).await;
         assert_eq!(result, Type::Int);
@@ -455,7 +608,7 @@ mod tests {
             entry.binding = Some(Type::Str);
             tv.insert("a".to_string(), entry);
         }
-        let mut ctx = NormCtxt::new(None);
+        let mut ctx = NormCtxt::new(None, None);
         let ty = Type::TypeVar("a".to_string(), 0);
         let result = norm(&ty, &tv, &mut ctx).await;
         assert_eq!(result, Type::Str);
@@ -465,7 +618,7 @@ mod tests {
     #[tokio::test]
     async fn test_normalize_cache() {
         let tv = empty_type_vars();
-        let mut ctx = NormCtxt::new(None);
+        let mut ctx = NormCtxt::new(None, None);
         let ty = Type::Int;
 
         // First call - populates cache
@@ -484,7 +637,7 @@ mod tests {
     #[tokio::test]
     async fn test_normalize_cycle_detection() {
         let tv = empty_type_vars();
-        let mut ctx = NormCtxt::new(None);
+        let mut ctx = NormCtxt::new(None, None);
 
         // Manually push "Recursive" to call_stack to simulate cycle
         ctx.call_stack.push("Recursive".to_string());
@@ -510,7 +663,7 @@ mod tests {
     #[tokio::test]
     async fn test_normalize_depth_guard() {
         let tv = empty_type_vars();
-        let mut ctx = NormCtxt::new(None);
+        let mut ctx = NormCtxt::new(None, None);
 
         // Set depth to max_depth
         ctx.depth = ctx.max_depth;
@@ -649,7 +802,7 @@ mod tests {
     #[tokio::test]
     async fn test_normalize_type_stage_app_non_ground_args() {
         let subst = empty_type_vars();
-        let mut ctx = NormCtxt::new(None);
+        let mut ctx = NormCtxt::new(None, None);
         let ty = Type::TypeStageApp {
             fn_name: "AddResult".to_string(),
             args: vec![Type::TypeVar("a".to_string(), 0), Type::Float],
@@ -668,7 +821,7 @@ mod tests {
     /// Test: NormCtxt::new() initializes with correct defaults
     #[tokio::test]
     async fn test_norm_ctxt_new_defaults() {
-        let ctx = NormCtxt::new(None);
+        let ctx = NormCtxt::new(None, None);
 
         assert!(ctx.cache.is_empty());
         assert_eq!(ctx.depth, 0);
@@ -680,7 +833,7 @@ mod tests {
     #[tokio::test]
     async fn test_normalize_cache_only_ground_types() {
         let subst = empty_type_vars();
-        let mut ctx = NormCtxt::new(None);
+        let mut ctx = NormCtxt::new(None, None);
 
         // Normalize a type with inference variables
         let ty_with_var = Type::App(
@@ -744,7 +897,7 @@ mod tests {
     #[tokio::test]
     async fn test_unknown_resolver_returns_stuck() {
         let subst = empty_type_vars();
-        let mut ctx = NormCtxt::new(None);
+        let mut ctx = NormCtxt::new(None, None);
         let ty = Type::TypeStageApp {
             fn_name: "UnknownResolver".to_string(),
             args: vec![Type::Int, Type::Float],

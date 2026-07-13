@@ -269,9 +269,7 @@
          _re:        [emit-diagnostics resolved.errors]
          eval-result:[match [builtin-eq-int [builtin-int-add n-re _re] 0]
            0: [builtin-raise [join "" [[builtin-int->string n-re] " resolve error(s) in " path]]]
-           _: [match [builtin-eq-string [builtin-type-of acc.flat-env-id] "Int"]
-                0: [builtin-eval resolved.doc env: doc-env]
-                _: [builtin-eval resolved.doc env: doc-env flat-env: acc.flat-env-id]]]]
+           _: [builtin-eval resolved.doc env: doc-env flat-env: acc.flat-env-id]]]
         [match [builtin-eq-string [builtin-type-of eval-result.error] "String"]
           0: [env-result:  [builtin-extend-env eval-result.env
                              [make-entry
@@ -291,10 +289,9 @@
             _: [merge acc [make-entry [builtin-dict-length acc] doc]]]]
         []
         parse-result.program.documents]]]
-    # ts-env: the env built from the type-stage pass. ts-acc carries both env + flat-env-id.
-    [ts-env: ts-acc.env]
-    # Wire ts-env into the TypeContext so type-stage functions are available during type-checking.
-    [_tc: [builtin-tc-with-type-stage-env fundamental-tc ts-env]]
+    # Wire ts-acc (with both env and flat-env-id) into the TypeContext so type-stage
+    # functions are available during type-checking.
+    [_tc: [builtin-tc-with-type-stage-env fundamental-tc ts-acc]]
     # Pass 2 (runtime): evaluate all non-type-stage documents starting from ts-acc.
     # state is {env, flat-env-id, last-result} to thread display ancestry (T-1563).
     [final-state: [reduce
@@ -309,9 +306,7 @@
          _re:        [emit-diagnostics resolved.errors]
          eval-result:[match [builtin-eq-int [builtin-int-add n-re _re] 0]
            0: [builtin-raise [join "" [[builtin-int->string n-re] " resolve error(s) in " path]]]
-           _: [match [builtin-eq-string [builtin-type-of state.flat-env-id] "Int"]
-                0: [builtin-eval resolved.doc env: doc-env]
-                _: [builtin-eval resolved.doc env: doc-env flat-env: state.flat-env-id]]]
+           _: [builtin-eval resolved.doc env: doc-env flat-env: state.flat-env-id]]
          new-env-result: [builtin-extend-env eval-result.env
            [make-entry
              [match [builtin-eq-string eval-result.doc-name ""]
@@ -325,7 +320,7 @@
                0: [env: new-env  flat-env-id: eval-result.flat-env-id  last-result: eval-result.result]
                _: [builtin-raise eval-result.error]]
           _: state]]
-      [env: ts-env  flat-env-id: ts-acc.flat-env-id  last-result: []]
+      [env: ts-acc.env  flat-env-id: ts-acc.flat-env-id  last-result: []]
       parse-result.program.documents]]
     # Promote last document's exported dict entries into the env so bare names resolve.
     [final-env: final-state.env]
@@ -468,10 +463,16 @@
     # Parse the test source (no expand step).
     [parse-result:  [builtin-parse [builtin-str-bytes source] path]]
 
+    # Per-test arena: all thunks from evaluating this test's documents live here.
+    # After the test completes, the result is migrated to the root arena, stats are
+    # printed, and the arena is dropped — reclaiming all intermediate memory.
+    [test-arena: [builtin-arena-new path]]
+
     # Combined resolve+eval loop: resolve each document against the env it will be
     # evaluated with, then evaluate it. Threading the env ensures de Bruijn coordinates
     # from the resolve pass match the evaluation env for each document.
     # state is {env, flat-env-id, last-result} to thread display ancestry (T-1563).
+    # test-arena is captured from the enclosing scope — all builtin-eval calls use it.
     #
     # Errors (both resolve and eval) surface immediately via emit-diagnostics and raise.
     [test-state: [reduce
@@ -481,9 +482,7 @@
          _re:         [emit-diagnostics r.errors]]
         [eval-result: [match [builtin-eq-int [builtin-int-add n-re _re] 0]
           0: [builtin-raise [join "" [[builtin-int->string n-re] " resolve error(s) in " path]]]
-          _: [match [builtin-eq-string [builtin-type-of state.flat-env-id] "Int"]
-               0: [builtin-eval r.doc env: state.env]
-               _: [builtin-eval r.doc env: state.env flat-env: state.flat-env-id]]]]
+          _: [builtin-eval r.doc env: state.env flat-env: state.flat-env-id arena: test-arena]]]
         [match [builtin-eq-string [builtin-type-of eval-result.error] "String"]
           0: [call [fn [let]
                 # T-1507: caps check against current eval env.
@@ -519,6 +518,28 @@
       [env: base-env  flat-env-id: prelude-flat-env-id  last-result: []]
       parse-result.program.documents]]
 
+    # Migrate the final test result to the root arena before dropping the test arena.
+    # _migrated-forced ensures migrate completes before drop — data dependency via type-of.
+    [migrated-result: [builtin-arena-migrate test-state.last-result test-arena %arena]]
+    [_migrated-forced: [builtin-int-gte [builtin-dict-length [builtin-type-of migrated-result]] 0]]
+    # Print stats to stderr before dropping. _migrated-forced is the data dependency.
+    [stats: [match _migrated-forced
+      0: [builtin-arena-stats test-arena]
+      _: [builtin-arena-stats test-arena]]]
+    [_stats-written: [%stderr.write
+      [join ""
+        [stats.name ": "
+         [builtin-int->string stats.thunks-live] " live / "
+         [builtin-int->string stats.thunks-allocated] " alloc, "
+         [builtin-int->string stats.heap-bytes] " heap\n"]]
+      %stderr]]
+    # Drop the arena after stats are written. _stats-written is the data dependency.
+    [_drop: [match [builtin-int-gte [builtin-dict-length [builtin-type-of _stats-written]] 0]
+      0: [builtin-arena-drop test-arena]
+      _: [builtin-arena-drop test-arena]]]
+    # _drop-forced: data dependency ensuring arena is dropped before result-val is read.
+    [_drop-forced: [builtin-int-gte [builtin-dict-length [builtin-type-of _drop]] 0]]
+
     # Typecheck for call_dispatch annotations and warnings.
     # Depends on test-state.env so typecheck only runs after the combined loop above
     # has fully resolved and evaluated all documents (OnceLocks set, eval thunks created).
@@ -539,7 +560,11 @@
 
     # Format the test result directly using builtin-llt-repr (core builtin, always available).
     # Avoids llt.llt formatter which needs prelude functions not available in bare-eval scope.
-    [result-val: test-state.last-result]
+    # Use migrated-result (from root arena) instead of test-state.last-result (now in dropped arena).
+    # _drop-forced is the data dependency that ensures the arena is dropped before we read the result.
+    [result-val: [match _drop-forced
+      0: migrated-result
+      _: migrated-result]]
     [output: [builtin-string-concat [builtin-llt-repr result-val] "\n"]]
     [wrote: [capture.write output capture]]
     [match [builtin-int-gte [builtin-int-add _wb-forced [match [builtin-int-gte [builtin-dict-length wrote] 0]

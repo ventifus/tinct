@@ -639,7 +639,7 @@ pub(crate) fn eval_core_expr<'a>(
                     if level_idx >= n {
                         drop(arena);
                         return Err(EvalError::internal(
-                            format!("VarRef '{name}': level={level} >= display depth={n}"),
+                            format!("'{name}' — resolver level {level} out of range for scope chain depth {n} (valid: 0..{n})"),
                             span.clone(),
                         )
                         .into());

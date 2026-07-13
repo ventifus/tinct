@@ -2782,7 +2782,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_type_of_variant() {
-        // Nominal variants return their full qualified tag from $type-of.
+        // type-of on a Variant returns "Variant" (the generic kind).
+        // Use builtin_tag_of to get the specific qualified tag.
         let ctx = test_ctx();
         let variant = alloc(Value::Variant {
             tag: "Color.Red".to_string(),
@@ -2797,7 +2798,7 @@ mod tests {
             caller_env_id: 0,
         }))
         .await;
-        assert_eq!(result, string_val("Color.Red".into()));
+        assert_eq!(result, string_val("Variant".into()));
     }
 
     #[tokio::test]
@@ -5668,11 +5669,11 @@ mod tests {
             "builtin-type-of",
             "builtin-keys",
             "builtin-get",
-            "builtin-merge",
-            "builtin-add",
-            "builtin-sub",
-            "builtin-mul",
-            "builtin-div",
+            "builtin-int-add",
+            "builtin-float-add",
+            "builtin-int-sub",
+            "builtin-int-mul",
+            "builtin-dict-length",
         ];
 
         for name in required_names {

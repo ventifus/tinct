@@ -2441,6 +2441,7 @@ pub(crate) fn builtin_make_type_ctx(
         // it returns the TypeContext that main.rs pre-populated from builtin_core.llt.
         let tc = TypeContextData {
             type_stage_env: Arc::new(RwLock::new(Env::new())),
+            type_stage_flat_env_id: None,
             inference_env: crate::imports::get_builtin_core_type_env()
                 .await
                 .expect("builtin_core type env unavailable"),
@@ -2507,14 +2508,15 @@ pub(crate) fn builtin_fork_type_ctx(
 ///   - arg 0: `Value::TypeContext` — the TypeContext to update
 ///   - arg 1: `Value::Environment` — the env produced by evaluating type-stage documents
 ///
-/// Locks the TypeContext mutex, replaces `tc.type_stage_env` with the provided env (wrapped
-/// in a fresh `Arc<RwLock<_>>`), and returns the **same** `Value::TypeContext` value.
-/// The mutation is in-place — the caller's handle already points to the same underlying data.
+/// Locks the TypeContext mutex, replaces `tc.type_stage_env` with the provided env, and
+/// stores the `flat-env-id` on the EvalContext for resolver lookup. Returns the **same**
+/// `Value::TypeContext` value (the mutation is in-place).
 ///
-/// This is a thin wrapper with no logic beyond the field update. Used by loader.llt and
-/// test-loader.llt to wire the type-stage env into the TypeContext before type-checking.
+/// Used by loader.llt and test-loader.llt to wire the type-stage env into the TypeContext
+/// before type-checking.
 ///
-/// Signature: `[builtin-tc-with-type-stage-env type-ctx ts-env]`
+/// Signature: `[builtin-tc-with-type-stage-env type-ctx ts-acc-dict]`
+/// where `ts-acc-dict` is `{env: Environment, flat-env-id: Int}`.
 pub(crate) fn builtin_tc_with_type_stage_env(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -2537,7 +2539,7 @@ pub(crate) fn builtin_tc_with_type_stage_env(
         let tc_val = ctx.get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let env_val = ctx.get_thunk(args[1])
+        let ts_acc_val = ctx.get_thunk(args[1])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
@@ -2553,11 +2555,38 @@ pub(crate) fn builtin_tc_with_type_stage_env(
                 .into())
             }
         };
+
+        // Extract {env: Environment, flat-env-id: Int} from ts-acc dict
+        let ts_acc_dict = match ts_acc_val {
+            Value::Dict(ref m) => m,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-tc-with-type-stage-env".to_string(),
+                    "Dict with {env: Environment, flat-env-id: Int}",
+                    other.type_name(),
+                    call_span,
+                )
+                .into())
+            }
+        };
+
+        // Get env field
+        let env_thunk_id = ts_acc_dict
+            .get(&HashableValue::Str("env".into()))
+            .ok_or_else(|| {
+                EvalError::type_mismatch_ctx(
+                    "builtin-tc-with-type-stage-env".to_string(),
+                    "Dict with 'env:' field",
+                    "missing env field",
+                    call_span.clone(),
+                )
+            })?;
+        let env_val = materialize(&ctx.get_thunk(*env_thunk_id), Some(&call_span), &ctx).await?;
         let env_arc = match env_val {
             Value::Environment(arc) => arc,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
-                    "builtin-tc-with-type-stage-env".to_string(),
+                    "builtin-tc-with-type-stage-env env:".to_string(),
                     "Environment",
                     other.type_name(),
                     call_span,
@@ -2566,9 +2595,41 @@ pub(crate) fn builtin_tc_with_type_stage_env(
             }
         };
 
+        // Get flat-env-id field
+        let flat_env_id_thunk_id = ts_acc_dict
+            .get(&HashableValue::Str("flat-env-id".into()))
+            .ok_or_else(|| {
+                EvalError::type_mismatch_ctx(
+                    "builtin-tc-with-type-stage-env".to_string(),
+                    "Dict with 'flat-env-id:' field",
+                    "missing flat-env-id field",
+                    call_span.clone(),
+                )
+            })?;
+        let flat_env_id_val = materialize(
+            &ctx.get_thunk(*flat_env_id_thunk_id),
+            Some(&call_span),
+            &ctx,
+        )
+        .await?;
+        let flat_env_id = match flat_env_id_val {
+            Value::Int(n) => n as u32,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-tc-with-type-stage-env flat-env-id:".to_string(),
+                    "Int (EnvId)",
+                    other.type_name(),
+                    call_span,
+                )
+                .into())
+            }
+        };
+
+        // Update TypeContext's type_stage_env and type_stage_flat_env_id
         {
             let mut guard = tc_arc.lock().unwrap();
             guard.type_stage_env = Arc::clone(&env_arc);
+            guard.type_stage_flat_env_id = Some(flat_env_id);
         }
 
         ok_val(Value::TypeContext(tc_arc), call_span)
@@ -4802,9 +4863,10 @@ pub(crate) fn builtin_cap_env_has(
 
 /// `builtin-arena-new`: create a named evaluation scope (arena).
 ///
-/// Takes 1 positional arg (String name). Returns `Value::Arena { name, env_id }`.
-/// The arena's env_id can be used with `builtin-arena-drop` and `builtin-arena-stats`.
-/// Scope is created in the arena's `EnvArena` with zero initial slot capacity.
+/// Takes 1 positional arg (String name). Returns `Value::Arena { name, start_env_id }`.
+/// The arena tracks a named scope starting at `start_env_id`; the dynamic end is always
+/// `envs.len()` at drop/migrate time. Scope is created in the arena's `EnvArena` with
+/// zero initial slot capacity.
 pub(crate) fn builtin_arena_new(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -4834,18 +4896,21 @@ pub(crate) fn builtin_arena_new(
                 .into())
             }
         };
-        let env_id = ctx.env_arena.borrow_mut().alloc_root(0);
+        let start_env_id = ctx.env_arena.borrow_mut().alloc_root(0);
         Ok(Arc::new(Thunk::new_materialized(
-            Value::Arena { name, env_id: env_id.0 },
+            Value::Arena {
+                name,
+                start_env_id: start_env_id.0,
+            },
             call_span,
         )))
     })
 }
 
-/// `builtin-arena-drop`: drop a scope, freeing all its thunks.
+/// `builtin-arena-drop`: drop all scopes in the arena range, freeing all their thunks.
 ///
-/// Takes 1 positional arg (`Value::Arena`). Clears all slots in the arena's FlatEnv,
-/// releasing all `Arc<Thunk>` references. Returns empty dict `[]`.
+/// Takes 1 positional arg (`Value::Arena`). Clears all slots in every FlatEnv in the range
+/// [start_env_id, envs.len()), releasing all `Arc<Thunk>` references. Returns empty dict `[]`.
 pub(crate) fn builtin_arena_drop(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -4863,8 +4928,8 @@ pub(crate) fn builtin_arena_drop(
         reject_named("arena-drop", named.as_ref(), call_span.clone())?;
         let arena_thunk = ctx.get_thunk(args[0]);
         let arena_val = materialize(&arena_thunk, Some(&call_span), &ctx).await?;
-        let env_id = match arena_val {
-            Value::Arena { env_id, .. } => env_id,
+        let start_env_id = match arena_val {
+            Value::Arena { start_env_id, .. } => start_env_id,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "arena-drop".to_string(),
@@ -4875,9 +4940,28 @@ pub(crate) fn builtin_arena_drop(
                 .into())
             }
         };
-        ctx.env_arena
-            .borrow_mut()
-            .drop_scope(crate::arena::EnvId(env_id));
+        // Drop all scopes from start_env_id up to the current arena length.
+        // The dynamic end is always envs.len() — this captures all FlatEnvs allocated
+        // during builtin-eval that belong to this arena. This matches how
+        // builtin_arena_migrate computes its src_end.
+        //
+        // Stack-top contract: the arena being dropped must be the most recently allocated
+        // arena; no other arenas may have been created after this one. For the standard
+        // usage pattern (arena-new → builtin-eval → arena-migrate → arena-drop), this
+        // always holds. The debug_assert below catches violations in debug builds.
+        let end_env_id = ctx.env_arena.borrow().envs.len() as u32;
+        debug_assert!(
+            end_env_id >= start_env_id,
+            "arena-drop: end_env_id ({end_env_id}) < start_env_id ({start_env_id}) — double-drop or corrupt arena handle"
+        );
+        let mut arena_mut = ctx.env_arena.borrow_mut();
+        for eid in start_env_id..end_env_id {
+            arena_mut.drop_scope(crate::arena::EnvId(eid));
+        }
+        // Truncate the arena vec to free the empty FlatEnv shells.
+        // LIFO invariant: start_env_id is the stack top, so everything from
+        // start_env_id onward belongs to this arena and can be reclaimed.
+        arena_mut.envs.truncate(start_env_id as usize);
         Ok(Arc::new(Thunk::new_materialized(
             Value::Dict(indexmap::IndexMap::new()),
             call_span,
@@ -4887,8 +4971,12 @@ pub(crate) fn builtin_arena_drop(
 
 /// `builtin-arena-stats`: return stats dict for an arena scope.
 ///
-/// Takes 1 positional arg (`Value::Arena`). Returns `{name: String, thunks: Int}`.
-/// `thunks` is the number of thunks ever allocated in the scope (monotonically increasing).
+/// Takes 1 positional arg (`Value::Arena`). Returns a dict with:
+/// - `name`: String — the arena's name
+/// - `thunks-allocated`: Int — total thunks ever allocated across all scopes in [start_env_id, envs.len())
+/// - `thunks-live`: Int — thunks currently live (slot is Some) across the same range
+/// - `scopes`: Int — number of FlatEnv scopes in the arena's range
+/// - `heap-bytes`: Int — current process heap allocation in bytes
 pub(crate) fn builtin_arena_stats(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -4906,8 +4994,10 @@ pub(crate) fn builtin_arena_stats(
         reject_named("arena-stats", named.as_ref(), call_span.clone())?;
         let arena_thunk = ctx.get_thunk(args[0]);
         let arena_val = materialize(&arena_thunk, Some(&call_span), &ctx).await?;
-        let (name, env_id) = match arena_val {
-            Value::Arena { name, env_id } => (name, env_id),
+        let (name, start_env_id) = match arena_val {
+            Value::Arena {
+                name, start_env_id, ..
+            } => (name, start_env_id),
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "arena-stats".to_string(),
@@ -4918,44 +5008,40 @@ pub(crate) fn builtin_arena_stats(
                 .into())
             }
         };
-        let alloc_count = ctx
-            .env_arena
-            .borrow()
-            .scope_alloc_count(crate::arena::EnvId(env_id));
+        let (thunks_allocated, thunks_live, scope_count) = {
+            let arena = ctx.env_arena.borrow();
+            let end = arena.envs.len() as u32;
+            let mut allocated = 0u64;
+            let mut live = 0i64;
+            let mut scopes = 0u32;
+            for eid in start_env_id..end {
+                let env = &arena.envs[eid as usize];
+                allocated += env.alloc_count.load(std::sync::atomic::Ordering::Relaxed);
+                live += env.slots.iter().filter(|s| s.is_some()).count() as i64;
+                scopes += 1;
+            }
+            (allocated, live, scopes)
+        };
+        let heap_bytes = crate::limit_alloc::allocated_bytes();
         let mut result_map: indexmap::IndexMap<HashableValue, ThunkId> = indexmap::IndexMap::new();
-        let name_str = name.to_string();
-        result_map.insert(
-            HashableValue::Str("name".into()),
-            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                string_val(&name_str),
-                call_span.clone(),
-            ))),
-        );
-        result_map.insert(
-            HashableValue::Str("thunks".into()),
-            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Int(alloc_count as i64),
-                call_span.clone(),
-            ))),
-        );
-        Ok(Arc::new(Thunk::new_materialized(
-            Value::Dict(result_map),
-            call_span,
-        )))
+        let alloc_str = |v: Value| ctx.alloc_thunk(Arc::new(Thunk::new_materialized(v, call_span.clone())));
+        result_map.insert(HashableValue::Str("name".into()), alloc_str(string_val(&name.to_string())));
+        result_map.insert(HashableValue::Str("thunks-allocated".into()), alloc_str(Value::Int(thunks_allocated as i64)));
+        result_map.insert(HashableValue::Str("thunks-live".into()), alloc_str(Value::Int(thunks_live)));
+        result_map.insert(HashableValue::Str("scopes".into()), alloc_str(Value::Int(scope_count as i64)));
+        result_map.insert(HashableValue::Str("heap-bytes".into()), alloc_str(Value::Int(heap_bytes)));
+        Ok(Arc::new(Thunk::new_materialized(Value::Dict(result_map), call_span)))
     })
 }
 
-/// `builtin-arena-migrate`: register a thunk in a destination arena without forcing it.
+/// `builtin-arena-migrate`: recursively migrate a thunk tree from source to destination arena.
 ///
 /// Takes 3 positional args: value (any), source arena (`Value::Arena`), destination arena (`Value::Arena`).
-/// Forces only the destination arena to obtain its `env_id`. The value thunk is copied
-/// as-is via `Arc::clone` — if it is unevaluated it remains unevaluated; if it is already
-/// materialized the cached value is shared. Laziness is fully preserved.
-///
-/// Note: ThunkIds embedded inside `Value::Dict` entries within the migrated thunk still
-/// point to the source arena. Full recursive migration (walking nested ThunkIds) is
-/// deferred — the outer thunk carries its value and nested ThunkIds remain addressable
-/// by their original IDs as long as the source arena is not dropped.
+/// Recursively walks the value's structure, migrating all ThunkIds in the source arena's range
+/// [start_env_id, envs.len()) to the destination arena. ThunkIds outside this range are permanent
+/// and left unchanged. Materialized values are deeply copied; unevaluated thunks are shallow-copied
+/// (the Arc is cloned, preserving laziness). After migration, the caller can safely drop the source
+/// arena — all reachable thunks have been copied to the destination.
 pub(crate) fn builtin_arena_migrate(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -4971,13 +5057,11 @@ pub(crate) fn builtin_arena_migrate(
             return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
         }
         reject_named("arena-migrate", named.as_ref(), call_span.clone())?;
-        // args[0] is the ThunkId of the value to migrate — get the Arc<Thunk> without forcing.
-        let src_thunk = ctx.get_thunk(args[0]);
-        // args[1] is the source arena — validate that it is a Value::Arena.
+        // Force the source arena (args[1]) to get its env_id range.
         let src_arena_thunk = ctx.get_thunk(args[1]);
         let src_arena_val = materialize(&src_arena_thunk, Some(&call_span), &ctx).await?;
-        match src_arena_val {
-            Value::Arena { .. } => {} // valid source arena
+        let src_start = match src_arena_val {
+            Value::Arena { start_env_id, .. } => start_env_id,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "arena-migrate".to_string(),
@@ -4987,12 +5071,17 @@ pub(crate) fn builtin_arena_migrate(
                 )
                 .into())
             }
-        }
-        // Force only the destination arena (args[2]) to obtain its env_id.
+        };
+        // The source range is [start, current arena length) — captures all scopes allocated
+        // during evaluation in the source arena.
+        let src_end = ctx.env_arena.borrow().envs.len() as u32;
+        let src_range = src_start..src_end;
+
+        // Force the destination arena (args[2]) to get its env_id.
         let dst_thunk = ctx.get_thunk(args[2]);
         let dst_val = materialize(&dst_thunk, Some(&call_span), &ctx).await?;
         let dst_env_id = match dst_val {
-            Value::Arena { env_id, .. } => env_id,
+            Value::Arena { start_env_id, .. } => start_env_id,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "arena-migrate".to_string(),
@@ -5003,13 +5092,31 @@ pub(crate) fn builtin_arena_migrate(
                 .into())
             }
         };
-        // Copy the Arc<Thunk> handle into the destination arena without forcing it.
-        // If the thunk is unevaluated it stays unevaluated; if materialized the cached
-        // value is shared. This is the only correct path — no materialization here.
-        let migrated_id = ctx
-            .env_arena
-            .borrow_mut()
-            .alloc_slot_thunk(crate::arena::EnvId(dst_env_id), Arc::clone(&src_thunk));
+
+        // Enforce the parent-first convention: dst must have been created before src.
+        // src_range = [src_start, envs.len()) is only correct when dst_env_id < src_start
+        // (dst is a "parent" arena that predates the src "child" arena).
+        debug_assert!(
+            dst_env_id < src_start,
+            "arena-migrate: dst arena (id={dst_env_id}) must be created before src arena (id={src_start}). \
+             Create the destination arena first, then create the source arena for temporary evaluation, \
+             then migrate, then drop src."
+        );
+
+        // Recursively migrate the value from args[0].
+        let mut thunk_map = std::collections::HashMap::new();
+        let mut env_map = std::collections::HashMap::new();
+        let migrated_id = {
+            let mut arena_mut = ctx.env_arena.borrow_mut();
+            crate::arena::migrate_thunk_id(
+                args[0],
+                &src_range,
+                crate::arena::EnvId(dst_env_id),
+                &mut thunk_map,
+                &mut env_map,
+                &mut arena_mut,
+            )
+        };
         Ok(ctx.get_thunk(migrated_id))
     })
 }

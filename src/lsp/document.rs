@@ -450,6 +450,7 @@ impl DocumentStore {
         // Initialize TypeContext so loader.llt builtins don't error on type context access.
         base_eval_ctx.init_type_context(crate::eval::TypeContextData {
             type_stage_env: Arc::new(std::sync::RwLock::new(Env::new())),
+            type_stage_flat_env_id: None,
             inference_env: crate::imports::get_builtin_core_type_env()
                 .await
                 .expect("builtin_core type env unavailable"),

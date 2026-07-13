@@ -4852,11 +4852,119 @@ pub(crate) async fn eval_type_stage_expr(
 
     // Attempt TypeNode.as-type dispatch (T-1059 hook).
     //
-    // T-1557: Env no longer stores runtime values; TypeNode thunks cannot be retrieved
-    // from Env by name. The as-type dispatch path is disabled until the FlatEnv-based
-    // type-stage lookup is implemented (T-1559). Fall through to direct
-    // typenode_value_to_type conversion.
-    let as_type_dispatch: Option<Type> = None;
+    // Look up the TypeNode dict in the type-stage FlatEnv, extract its `as-type` field
+    // (a function), and call it with `typenode_val`. Built-in TypeNode constructors carry
+    // identity as-type functions — they return t unchanged. User-defined constructors may
+    // carry a custom as-type to reduce to an existing TypeNode form.
+    //
+    // Dispatch path:
+    //   1. Look up "TypeNode" in the type-stage Env chain (slot_index, depth).
+    //   2. Resolve the FlatEnv EnvId for that depth via the display vector.
+    //   3. Materialize the TypeNode ThunkId → Value::Dict.
+    //   4. Get the "as-type" field ThunkId from the dict.
+    //   5. Materialize the "as-type" thunk → Value::Function.
+    //   6. Call eval_type_stage_value with typenode_val as the argument.
+    //
+    // Failures at any step fall through to the direct typenode_value_to_type conversion.
+    let as_type_dispatch: Option<Type> = 'dispatch: {
+        // Require both type_stage_env and eval_ctx
+        let ts_env = match state.type_stage_env.clone() {
+            Some(e) => e,
+            None => break 'dispatch None,
+        };
+        let eval_ctx = match state.eval_ctx.clone() {
+            Some(c) => c,
+            None => break 'dispatch None,
+        };
+
+        // Step 1: Walk the Env parent chain to find "TypeNode" and its depth.
+        let (typenode_slot, typenode_depth) = {
+            let env_read = ts_env.read().unwrap();
+            if let Some(idx) = env_read.slots.get_index_of("TypeNode") {
+                (idx, 0usize)
+            } else {
+                let mut current_parent = env_read.parent.as_ref().map(Arc::clone);
+                drop(env_read);
+                let mut depth = 1usize;
+                let found = loop {
+                    let parent_arc = match current_parent {
+                        Some(p) => p,
+                        None => break None,
+                    };
+                    let parent_read = parent_arc.read().unwrap();
+                    if let Some(idx) = parent_read.slots.get_index_of("TypeNode") {
+                        break Some((idx, depth));
+                    }
+                    depth += 1;
+                    current_parent = parent_read.parent.as_ref().map(Arc::clone);
+                    drop(parent_read);
+                };
+                match found {
+                    Some((idx, d)) => (idx, d),
+                    None => break 'dispatch None,
+                }
+            }
+        };
+
+        // Step 2: Get the type_stage_flat_env_id from the TypeContext and resolve the FlatEnv.
+        let typenode_thunk_id = {
+            // Extract flat_env_id under the lock, then drop the lock before borrowing arena.
+            let flat_env_id = {
+                let tc_guard = eval_ctx.type_context.lock().unwrap();
+                let flat = tc_guard
+                    .as_ref()
+                    .and_then(|d| d.type_stage_flat_env_id);
+                match flat {
+                    Some(id) => id,
+                    None => break 'dispatch None,
+                }
+            }; // tc_guard dropped here
+
+            let arena_borrow = eval_ctx.env_arena.borrow();
+            let leaf_env = &arena_borrow.envs[flat_env_id as usize];
+            let display_len = leaf_env.display.len();
+            if typenode_depth >= display_len {
+                break 'dispatch None;
+            }
+            let target_env_id = leaf_env.display[display_len - 1 - typenode_depth];
+            crate::arena::ThunkId {
+                env_id: target_env_id.0,
+                slot: typenode_slot as u32,
+            }
+        };
+
+        // Step 3: Materialize the TypeNode ThunkId to get the TypeNode Dict value.
+        let typenode_thunk = eval_ctx.env_arena.borrow().get_thunk(typenode_thunk_id);
+        let typenode_dict_val = match crate::eval::materialize(&typenode_thunk, None, &eval_ctx).await {
+            Ok(v) => v,
+            Err(_) => break 'dispatch None,
+        };
+
+        // Step 4: Get the "as-type" field ThunkId from the TypeNode dict.
+        let as_type_thunk_id = match &typenode_dict_val {
+            Value::Dict(map) => {
+                match map.get(&crate::value::HashableValue::Str("as-type".into())) {
+                    Some(&tid) => tid,
+                    None => break 'dispatch None,
+                }
+            }
+            _ => break 'dispatch None,
+        };
+
+        // Step 5: Materialize the as-type function.
+        let as_type_thunk = eval_ctx.env_arena.borrow().get_thunk(as_type_thunk_id);
+        let as_type_fn_val = match crate::eval::materialize(&as_type_thunk, None, &eval_ctx).await {
+            Ok(v) => v,
+            Err(_) => break 'dispatch None,
+        };
+
+        // Step 6: Call eval_type_stage_value(as_type_fn, [typenode_val], state).
+        // If dispatch fails (function call error, unrecognized result), fall through.
+        match eval_type_stage_value(&as_type_fn_val, &[typenode_val.clone()], state).await {
+            Ok(ty) => Some(ty),
+            Err(_) => None,
+        }
+    };
 
     // If as-type dispatch succeeded, return its result (the normalized Type).
     if let Some(ty) = as_type_dispatch {

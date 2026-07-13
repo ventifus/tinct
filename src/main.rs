@@ -1550,8 +1550,20 @@ async fn run_eval(
         deferred_cap_thunks.push(("%cwd".to_string(), cwd_thunk));
     }
 
-    // TODO T-1559: inject %arena as Value::Arena { name: "root", env_id: 0 } so that
-    // tinct programs can access the root evaluation arena as a named capability.
+    // Inject %arena as Value::Arena { name: "root", start_env_id: 0 } so that tinct
+    // programs can access the root evaluation arena as a named capability.
+    // start_env_id: 0 is the root FlatEnv allocated by EvalContext at construction.
+    // T-1559: this was deferred; now implemented.
+    {
+        let arena_value = Value::Arena {
+            name: "root".into(),
+            start_env_id: 0,
+        };
+        let arena_thunk =
+            Arc::new(tinct::Thunk::new_materialized(arena_value, tinct::rust_span!()));
+        env.write().unwrap().insert_slot_name_only("%arena".to_string());
+        deferred_cap_thunks.push(("%arena".to_string(), arena_thunk));
+    }
 
     // %stdin: Handle/WriteHandle removed. When -i is specified, %stdin is not injected.
     // The input formatter (cli/in/*.llt) must be updated to use builtin-read-stdin instead.
@@ -1948,6 +1960,7 @@ async fn run_eval(
         // for each module in the --- uses: header (core first, then io, etc.).
         ctx.init_type_context(tinct::TypeContextData {
             type_stage_env: std::sync::Arc::new(std::sync::RwLock::new(tinct::Env::new())),
+            type_stage_flat_env_id: None,
             inference_env: tinct::get_builtin_core_type_env()
                 .await
                 .expect("builtin_core type env unavailable at startup"),

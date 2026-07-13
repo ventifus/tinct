@@ -396,8 +396,8 @@ fn lower_expr(
         ),
 
         SurfaceExpression::Dict(entries) => {
-            // Check for spread entries (...expr) — desugar to builtin-merge calls.
-            // [a: 1  b: 2  ...rest  c: 3] → builtin-merge(builtin-merge([a: 1  b: 2], rest), [c: 3])
+            // Check for spread entries (...expr) — desugar to merge calls.
+            // [a: 1  b: 2  ...rest  c: 3] → merge(merge([a: 1  b: 2], rest), [c: 3])
             let has_rest = entries.iter().any(|e| {
                 e.node.key.is_none()
                     && matches!(&e.node.value.expr, SurfaceExpression::Rest(..))
@@ -438,7 +438,7 @@ fn lower_expr(
                     }};
                 }
 
-                // Build nested builtin-merge calls left-associatively.
+                // Build nested merge calls left-associatively.
                 // acc starts as the first segment dict, then folds over (rest, next_seg) pairs.
                 let span = arc.span.clone();
                 let mut acc = lower_seg!(&segments[0]);
@@ -448,7 +448,7 @@ fn lower_expr(
                     // merge(acc, rest)
                     acc = CoreExpr::Call {
                         func: Arc::new(Spanned::new(
-                            CoreExpr::Var { name: "builtin-merge".to_string(), level: u32::MAX, slot: u32::MAX, annotation: None },
+                            CoreExpr::Var { name: "merge".to_string(), level: u32::MAX, slot: u32::MAX, annotation: None },
                             span.clone(),
                         )),
                         args: vec![
@@ -463,7 +463,7 @@ fn lower_expr(
                         let seg = lower_seg!(&segments[i + 1]);
                         acc = CoreExpr::Call {
                             func: Arc::new(Spanned::new(
-                                CoreExpr::Var { name: "builtin-merge".to_string(), level: u32::MAX, slot: u32::MAX, annotation: None },
+                                CoreExpr::Var { name: "merge".to_string(), level: u32::MAX, slot: u32::MAX, annotation: None },
                                 span.clone(),
                             )),
                             args: vec![

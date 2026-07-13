@@ -324,9 +324,6 @@ pub(crate) async fn eval_dict_core(
 
         // Values go into FlatEnv slots only (T-1557: Env is type-metadata only).
         // The letrec scope is maintained via FlatEnv fill_letrec_slot calls below.
-
-        // Task 1: Move key into dict_map instead of cloning (saves Rc::from allocation per entry).
-        // If duplicate, reconstruct key string from entry (rare error path).
         let thunk_id = ctx.alloc_thunk(thunk);
         if dict_map.insert(key, thunk_id).is_some() {
             // key was moved; reconstruct string representation from entry for error message

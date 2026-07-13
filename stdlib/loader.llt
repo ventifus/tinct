@@ -307,9 +307,7 @@
         [_re:      [builtin-dict-length [emit-diagnostics resolved.errors]]]
         [eval-result: [match [builtin-eq-int [builtin-int-add n-re _re] 0]
           0: [builtin-raise [join "" [[builtin-int->string n-re] " resolve error(s) in " path]]]
-          _: [match [builtin-eq-string [builtin-type-of acc.flat-env-id] "Int"]
-               0: [builtin-eval resolved.doc env: doc-env]
-               _: [builtin-eval resolved.doc env: doc-env flat-env: acc.flat-env-id]]]]
+          _: [builtin-eval resolved.doc env: doc-env flat-env: acc.flat-env-id]]]
         [match [builtin-eq-string [builtin-type-of eval-result.error] "String"]
           0: [env-result:  [builtin-extend-env eval-result.env
                              [make-entry
@@ -336,7 +334,7 @@
     [ts-acc: [reduce eval-doc seed-acc split.ts]]
     # Wire ts-env into the TypeContext so type-stage functions (or, all, etc.) are visible
     # during type-checking of runtime documents.
-    [tc: [builtin-tc-with-type-stage-env fundamental-tc ts-acc.env]]
+    [tc: [builtin-tc-with-type-stage-env fundamental-tc ts-acc]]
     # Pass 2: evaluate runtime documents, starting from ts-acc so runtime docs see type-stage defs.
     # final-acc is {env: ..., flat-env-id: ...} — the flat-env-id from the last doc evaluated.
     [final-acc: [reduce eval-doc ts-acc split.rt]]
@@ -415,9 +413,7 @@
               [fn [let acc sub-doc]
                 [sub-env: acc.env]
                 [sub-resolved:   [builtin-resolve sub-doc env: sub-env]]
-                [eval-result:    [match [builtin-eq-string [builtin-type-of acc.flat-env-id] "Int"]
-                  0: [builtin-eval sub-resolved.doc env: sub-env]
-                  _: [builtin-eval sub-resolved.doc env: sub-env flat-env: acc.flat-env-id]]]
+                [eval-result:    [builtin-eval sub-resolved.doc env: sub-env flat-env: acc.flat-env-id]]
                 [match [builtin-eq-string [builtin-type-of eval-result.error] "String"]
                   0: [env-result:  [builtin-extend-env eval-result.env
                                      [make-entry
@@ -435,25 +431,46 @@
     [full-env:    full-env-r4.env]
     # Per-document resolve against the fully-constructed env for correct de Bruijn coords.
     [doc-resolved: [builtin-resolve doc env: full-env]]
+    # Per-document arena: allocate, evaluate, migrate result to root arena, then drop.
+    # The arena name is the document's named path if available, otherwise "doc".
+    [doc-arena-name: [match [builtin-eq-string [builtin-tag-of doc.name] "Named"]
+      0: [builtin-variant-payload doc.name]
+      _: "doc"]]
+    [doc-arena: [builtin-arena-new doc-arena-name]]
     # T-1563: pass prelude-flat-env-id as flat-env: so the user document's display chain
     # includes stdlib scope levels. VarRefs to stdlib names at level > 0 resolve correctly.
-    [eval-result: [match [builtin-eq-string [builtin-type-of prelude-flat-env-id] "Int"]
-      0: [builtin-eval doc-resolved.doc env: full-env]
-      _: [builtin-eval doc-resolved.doc env: full-env flat-env: prelude-flat-env-id]]]
+    [eval-result: [builtin-eval doc-resolved.doc env: full-env flat-env: prelude-flat-env-id arena: doc-arena]]
     [match [builtin-eq-string [builtin-type-of eval-result.error] "String"]
-      0: # Success path: run caps + expects validation, then merge state.
+      0: # Success path: migrate result to root arena, drop per-doc arena, then validate.
          # Wrapped in call [fn [let] ...] so the intermediate dicts provide local scope.
          [call [fn [let]
+        [migrated-result: [builtin-arena-migrate eval-result.result doc-arena %arena]]
+        # _migrated-forced ensures migrate completes before drop — data dependency via type-of.
+        [_migrated-forced: [builtin-int-gte [builtin-dict-length [builtin-type-of migrated-result]] 0]]
+        [_drop: [match _migrated-forced
+          0: [builtin-arena-drop doc-arena]
+          _: [builtin-arena-drop doc-arena]]]
         # T-1507: Validate --- caps: declarations. builtin-keys gives integer-keyed dict of cap names.
         # reduce raises if any required cap is absent; returns Boolean.True on success.
-        [_caps-ok: [reduce
-          [fn [let ok cap-name]
-            [full-name: [builtin-string-concat "%" cap-name]]
-            [match [builtin-cap-env-has? full-name full-env]
-              0: [builtin-raise [join "" [full-name " is required but not provided"]]]
-              _: ok]]
-          Boolean.True
-          [builtin-keys doc.caps]]
+        # _drop forces the arena drop (data dependency via builtin-int-gte) before caps validation.
+        [_drop-forced: [builtin-int-gte [builtin-dict-length [builtin-type-of _drop]] 0]]
+        [_caps-ok: [match _drop-forced
+          0: [reduce
+               [fn [let ok cap-name]
+                 [full-name: [builtin-string-concat "%" cap-name]]
+                 [match [builtin-cap-env-has? full-name full-env]
+                   0: [builtin-raise [join "" [full-name " is required but not provided"]]]
+                   _: ok]]
+               Boolean.True
+               [builtin-keys doc.caps]]
+          _: [reduce
+               [fn [let ok cap-name]
+                 [full-name: [builtin-string-concat "%" cap-name]]
+                 [match [builtin-cap-env-has? full-name full-env]
+                   0: [builtin-raise [join "" [full-name " is required but not provided"]]]
+                   _: ok]]
+               Boolean.True
+               [builtin-keys doc.caps]]]
          # T-1506: Validate --- expects: annotation against incoming %. doc.expects is "" if absent.
          # The inner match has identical branches — both return Boolean.True.
          # The purpose is to FORCE [builtin-check-type doc.expects state.percent] for its
@@ -470,9 +487,13 @@
           _: [match [builtin-eq-string [builtin-tag-of _expects-ok] "Boolean.True"]
                0: [builtin-raise "unreachable"]
                _: [merge state
-                    [percent: eval-result.result
-                     named:   [update-named state eval-result.result doc]]]]]]]
-      _: [builtin-raise eval-result.error]]]
+                    [percent: migrated-result
+                     named:   [update-named state migrated-result doc]]]]]]]
+      _: [call [fn [let]
+           [_drop: [builtin-arena-drop doc-arena]]
+           [match [builtin-int-gte [builtin-dict-length [builtin-type-of _drop]] 0]
+             0: [builtin-raise eval-result.error]
+             _: [builtin-raise eval-result.error]]]]]]
 
   # ── Pipeline item dispatch ────────────────────────────────────────────────
 

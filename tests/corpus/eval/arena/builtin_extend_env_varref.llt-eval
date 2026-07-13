@@ -5,18 +5,20 @@
 # 1. builtin-extend-env populates FlatEnv slots with thunk values
 # 2. VarRef resolution via display vector works for extended bindings
 # 3. The display chain is correctly threaded when flat-env: is provided
+#
+# Wrapped in [call [fn [let] ...]] so only a serializable Int comparison
+# result appears in the output — builtin-llt-repr cannot serialize Environment.
 
-[
-  # Create a base environment with a binding
-  base-result: [builtin-extend-env [] [x: 42]]
-  base-env:    base-result.env
-  base-flat-env-id: base-result.flat-env-id
+[call [fn [let]
+  # Create a base environment with a binding x: 42.
+  [base-result:     [builtin-extend-env [] [x: 42]]]
+  [base-flat-env-id: base-result.flat-env-id]
 
-  # Evaluate a program that references x via VarRef (not name lookup).
+  # Evaluate a program that references x via VarRef.
   # After resolver assigns coordinates, eval uses display[level].slots[slot].
-  program: "[result: x]"
-  eval-result: [builtin-eval program env: base-env flat-env: base-flat-env-id]
-  final:       eval-result.result
-]
+  [eval-result: [builtin-eval "[result: x]" env: base-result.env flat-env: base-flat-env-id]]
+
+  # Verify the result equals 42.
+  [result-ok: [builtin-eq-int eval-result.result.result 42]]]]
 === out
-Dict({"base-result": Dict({"env": Environment(...), "flat-env-id": Int(...)}), "base-env": Environment(...), "base-flat-env-id": Int(...), "program": String("[result: x]"), "eval-result": Dict({"result": Dict({"result": Int(42)}), "flat-env-id": Int(...), "error": String(""), "doc-name": String("")}), "final": Dict({"result": Int(42)})})
+Dict({"result-ok": Int(1)})

@@ -1,0 +1,25 @@
+# Test builtin-arena-migrate: migrate values between arenas and verify post-drop access.
+#
+# Convention: dst (parent) must be created BEFORE src (child). Migration goes src→dst.
+# After builtin-arena-drop src, all migrated ThunkIds must remain valid via dst.
+#
+# This test uses global-arena values (allocated before either arena) — migration
+# returns them unchanged since their env_ids are outside src's range. This verifies
+# the basic migrate+drop lifecycle without needing builtin-eval machinery.
+
+[call [fn [let]
+  [dst:    [builtin-arena-new "dst"]]   # parent arena (created first)
+  [src:    [builtin-arena-new "src"]]   # child arena (created second, dropped after migrate)
+  # Migrate an integer — ThunkId is in global arena (outside src range), returned unchanged.
+  [migrated-int: [builtin-arena-migrate 42 src dst]]
+  # Migrate a dict with nested values — same: dict ThunkIds are in global arena.
+  [migrated-dict: [builtin-arena-migrate [x: 10  y: 20  z: 30] src dst]]
+  [drop-ok: [builtin-arena-drop src]]
+  # After drop: integer is unchanged, dict entries are accessible.
+  [int-ok:  [builtin-eq-int migrated-int 42]
+   x-ok:    [builtin-eq-int migrated-dict.x 10]
+   y-ok:    [builtin-eq-int migrated-dict.y 20]
+   z-ok:    [builtin-eq-int migrated-dict.z 30]
+   drop-ok: [builtin-eq-int [builtin-dict-length drop-ok] 0]]]]
+=== out
+Dict({"int-ok": Int(1), "x-ok": Int(1), "y-ok": Int(1), "z-ok": Int(1), "drop-ok": Int(1)})

@@ -671,10 +671,13 @@ pub enum Value {
     /// Reactive cell — created by `reactive-cell` builtin.
     ReactiveCell(Arc<ReactiveCellInner>),
 
-    /// Arena view handle — wraps an EnvId for the scope managed by this arena.
+    /// Arena view handle — wraps a named scope managed by this arena.
+    /// `start_env_id` is the root scope allocated by `arena-new`.
+    /// The actual end of the arena is always computed dynamically from `envs.len()` at
+    /// drop/migrate time; there is no stored end field (it would be stale immediately).
     Arena {
         name: Arc<str>,
-        env_id: u32,
+        start_env_id: u32,
     },
     /// Value annotated with runtime metadata (e.g. constructor annotation dict).
     /// Used by `make-annotated` and annotated unit constructors.
@@ -910,7 +913,10 @@ impl fmt::Debug for Value {
             Value::BroadcastChannel(_) => write!(f, "BroadcastChannel"),
             Value::OneshotSender(_) => write!(f, "OneshotSender"),
             Value::OneshotReceiver(_) => write!(f, "OneshotReceiver"),
-            Value::Arena { name, env_id } => write!(f, "Arena({name} @ {env_id})"),
+            Value::Arena {
+                name,
+                start_env_id,
+            } => write!(f, "Arena({name}@{start_env_id})"),
             Value::Annotated { inner, .. } => write!(f, "Annotated({inner:?})"),
             Value::TypeContext(_) => write!(f, "TypeContext"),
             Value::Environment(_) => write!(f, "Environment"),
@@ -1013,7 +1019,10 @@ impl fmt::Display for Value {
             Value::BroadcastChannel(_) => write!(f, "<broadcast-channel>"),
             Value::OneshotSender(_) => write!(f, "<oneshot-sender>"),
             Value::OneshotReceiver(_) => write!(f, "<oneshot-receiver>"),
-            Value::Arena { name, env_id } => write!(f, "<arena:{name}@{env_id}>"),
+            Value::Arena {
+                name,
+                start_env_id,
+            } => write!(f, "<arena:{name}@{start_env_id}>"),
             Value::Annotated { inner, .. } => fmt::Display::fmt(inner, f),
             Value::TypeContext(_) => write!(f, "<TypeContext>"),
             Value::Environment(_) => write!(f, "<Environment>"),
@@ -1769,6 +1778,18 @@ impl Thunk {
             }
             _ => None,
         }
+    }
+
+    /// Clone the current unevaluated state without consuming it (non-destructive peek).
+    ///
+    /// Returns `None` if the thunk is InProgress (unevaluated=None, result=empty),
+    /// Materialized, or Failed. Returns `Some(state.clone())` if unevaluated.
+    ///
+    /// Used by arena migration to inspect env_id / ThunkId fields in an unevaluated
+    /// thunk without taking ownership of the state.
+    pub fn peek_unevaluated_state(&self) -> Option<UnevaluatedState> {
+        let guard = self.inner.unevaluated.lock().unwrap();
+        guard.as_ref().cloned()
     }
 }
 

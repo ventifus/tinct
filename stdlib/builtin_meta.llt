@@ -32,7 +32,7 @@
   # fork-type-ctx: create child TypeContext inheriting parent; mutations don't propagate up.
   builtin-fork-type-ctx:          [fn@TypeContext [let ctx@TypeContext] ...]
   # tc-with-type-stage-env: replace the TypeContext's type-stage env, return updated ctx.
-  builtin-tc-with-type-stage-env: [fn@TypeContext [let ctx@TypeContext env@Any] ...]
+  builtin-tc-with-type-stage-env: [fn@TypeContext [let ctx@TypeContext ts-acc@Any] ...]
   # validate: validate program AST structure; returns Program or error.
   builtin-validate:               [fn@Program    [let prog@Any ctx@TypeContext] ...]
 

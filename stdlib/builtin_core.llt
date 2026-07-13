@@ -153,7 +153,7 @@
   # ── TypeContext bootstrap ──────────────────────────────────────────────────
   builtin-get-type-context:       [fn@TypeContext [] ...]
   builtin-make-type-ctx:          [fn@TypeContext [] ...]
-  builtin-tc-with-type-stage-env: [fn@TypeContext [let ctx@TypeContext env@Any] ...]
+  builtin-tc-with-type-stage-env: [fn@TypeContext [let ctx@TypeContext ts-acc@Any] ...]
 
   # ── Sequences (core collection ops) ───────────────────────────────────────
   builtin-take:    [fn@Dict [let n@Integer xs@Dict] ...]

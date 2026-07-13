@@ -374,6 +374,15 @@ pub struct TypeContextData {
     /// Mirrors `EvalConfig.type_stage_env` but owned by TypeContext so it can be updated
     /// as new type declarations are registered.
     pub type_stage_env: Arc<RwLock<Env>>,
+    /// FlatEnv ID for type-stage function thunks (resolver evaluation).
+    ///
+    /// When `builtin-tc-with-type-stage-env` populates `type_stage_env` (after evaluating
+    /// prelude type declarations), it also records the FlatEnv ID where those type-stage
+    /// function thunks are stored. `evaluate_resolver` uses this ID to construct ThunkIds
+    /// for type-stage function lookup.
+    ///
+    /// `None` until populated by the type-stage initialization path (loader.llt Pass 1).
+    pub type_stage_flat_env_id: Option<u32>,
     /// Accumulated Hindley-Milner inference environment.
     /// Initialized to the builtin_core TypeEnv at startup (via `init_type_context` callers).
     /// Each `builtin-typecheck` call seeds from this env and writes the resulting `final_env`
