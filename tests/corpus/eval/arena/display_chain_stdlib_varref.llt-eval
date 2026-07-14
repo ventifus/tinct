@@ -1,0 +1,24 @@
+# T-1563 acceptance gate: scope-frames threading enables VarRef resolution across scope levels.
+#
+# Uses the current API:
+#   builtin-extend-env parent-feid bindings → Int (child flat-env-id)
+#   builtin-resolve doc flat-env: N scope-frames: frames → {doc, errors, scope-frames}
+#   builtin-eval doc flat-env: N → {result, flat-env-id, ...}
+#
+# Two-level scope chain:
+#   level 0: base env with x: 10
+#   level 1: extended env with y: 20 (parent = level 0)
+# Evaluates [sum: [builtin-int-add x y]] where x and y are at different scope levels.
+# Both VarRefs must resolve correctly via the display chain.
+#
+# NOTE: Currently blocked on OOM (prelude loading ~3.5 GB).
+# T-1586 tracks verification once OOM is resolved.
+[call [fn [let]
+  [base-feid:  [builtin-extend-env 0 [x: 10]]]
+  [ext-feid:   [builtin-extend-env base-feid [y: 20]]]
+  [parsed:     [builtin-parse "[sum: [builtin-int-add x y]]" "test"]]
+  [resolved:   [builtin-resolve parsed.documents.0 flat-env: ext-feid scope-frames: []]]
+  [result:     [builtin-eval resolved.doc flat-env: ext-feid]]
+  [sum-ok:     [builtin-eq-int result.result.sum 30]]]]
+=== out
+Dict({"sum-ok": Int(1)})

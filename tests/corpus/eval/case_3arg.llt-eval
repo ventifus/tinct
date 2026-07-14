@@ -1,0 +1,41 @@
+# Comprehensive 3-arg [case [let bindings] pattern body] coverage:
+# binding, pin, wildcard, multi-arm, guard, is-predicate, dot-access pin,
+# structural dict patterns, nested destructuring, multi-body arms, nested match.
+[
+  run: [fn []
+    # Helpers — in letrec scope but not in the returned dict.
+    [pin-val: 42
+     ref:     [x: 5]]
+
+    # Tests — this dict is the return value.
+    [bind:     [match 42 [case [let n] n [+ n 1]] [case [let _] _ 0]]
+     pin-hit:  [match 42 [case [let] pin-val "hit"] [case [let] _ "miss"]]
+     pin-miss: [match 99 [case [let] pin-val "hit"] [case [let] _ "miss"]]
+     wild:     [match "x" [case [let] _ "caught"]]
+     multi:    [match 2 [case [let] 1 "one"] [case [let] 2 "two"] [case [let _] _ "other"]]
+     guard:    [match 5 [case [let n] [> n 0] "pos"] [case [let _] _ "other"]]
+     pred:     [match 42 [case [let n@[is: [fn [let x] [> x 10]]]] _ n] [case [let _] _ "small"]]
+     dotpin:   [match 5 [case [let] ref.x "matched"] [case [let] _ "other"]]
+     struct:   [match [tag: "ok" val: 42]
+                  [case [let v] [tag: "ok" val: v] v]
+                  [case [let _] _ "other"]]
+     nested:   [match [outer: [inner: 7]]
+                  [case [let v] [outer: [inner: v]] [* v v]]
+                  [case [let _] _ 0]]
+     binpin:   [match [tag: "ok" value: 99]
+                  [case [let result] [tag: "ok" value: result] [+ result 1]]
+                  [case [let _] _ 0]]
+     dotbody:  [match [x: 1] [case [let d] d d.x]]
+     dictval:  [match 42 [case [let] 0 "zero"] [case [let] 42 "answer"] [case [let _] _ "other"]]
+     nested-m: [match 1
+                  [case [let] 1 [match 2 [case [let] 2 "inner"] [case [let _] _ "other"]]]
+                  [case [let _] _ "outer"]]
+     mbody:    [match 42
+                  [case [let n] n
+                    [doubled: [* n 2]]
+                    [+ doubled 1]]
+                  [case [let _] _ 0]]]]
+  [run]
+]
+=== out
+Dict({"bind": Int(43), "pin-hit": String("hit"), "pin-miss": String("miss"), "wild": String("caught"), "multi": String("two"), "guard": String("pos"), "pred": Int(42), "dotpin": String("matched"), "struct": Int(42), "nested": Int(49), "binpin": Int(100), "dotbody": Int(1), "dictval": String("answer"), "nested-m": String("inner"), "mbody": Int(85)})

@@ -2,25 +2,21 @@
 
 [slice 0 2 x]
 === error
-each-kv: expected Dict, got Int (defined at stdlib/prelude.llt:1484:82-1484:84)
-  --> stdlib/prelude.llt:1484:82-1484:84
+each-kv: expected Dict, got Int (defined at stdlib/prelude.llt:1569:23-1569:25)
+  --> stdlib/prelude.llt:1569:23-1569:25
    |
-  1484 |   [build-dict [builtin-take [builtin-sub end start] [builtin-drop start [each-kv xs]]]]]
-       |                                                                                  ^^
-  in [each-kv ...] at stdlib/prelude.llt:1484:73-1484:85
+  1569 |   [build-dict [take [- end start] [drop start [each-kv xs]]]]]
+       |                                               ^^
+  in [each-kv ...] at stdlib/prelude.llt:1569:14-1569:26
    |
-  1484 |   [build-dict [builtin-take [builtin-sub end start] [builtin-drop start [each-kv xs]]]]]
-       |                                                                         ^^^^^^^^^^^^
-  in [builtin-drop ...] at stdlib/prelude.llt:1484:53-1484:86
+  1569 |   [build-dict [take [- end start] [drop start [each-kv xs]]]]]
+       |                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in [drop ...] at stdlib/prelude.llt:1569:14-1569:26
    |
-  1484 |   [build-dict [builtin-take [builtin-sub end start] [builtin-drop start [each-kv xs]]]]]
-       |                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-take ...] at stdlib/prelude.llt:1484:15-1484:87
+  1569 |   [build-dict [take [- end start] [drop start [each-kv xs]]]]]
+       |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in [take ...] at stdlib/prelude.llt:1569:3-1569:47
    |
-  1484 |   [build-dict [builtin-take [builtin-sub end start] [builtin-drop start [each-kv xs]]]]]
-       |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [build-dict ...] at stdlib/prelude.llt:1484:3-1484:88
-   |
-  1484 |   [build-dict [builtin-take [builtin-sub end start] [builtin-drop start [each-kv xs]]]]]
-       |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  1569 |   [build-dict [take [- end start] [drop start [each-kv xs]]]]]
+       |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   in [slice ...] at 3:1-3:14

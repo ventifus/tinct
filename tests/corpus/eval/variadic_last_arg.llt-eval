@@ -1,0 +1,11 @@
+# Variadic ...rest collects args after the first param.
+# [fn [let _first ...rest] body] called with multiple args:
+# _first=first arg, rest={0: second, ...}. Last of rest via dict-length - 1.
+[call [fn [let]
+  [last: [fn [let _first ...rest]
+    [n: [builtin-dict-length rest]]
+    [builtin-dict-nth rest [builtin-int-sub n 1]]]]
+  [r: [last "ignored" "a" "b" "target"]]
+  [builtin-eq-string r "target"]]]
+=== out
+Int(1)

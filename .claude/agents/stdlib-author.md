@@ -205,7 +205,7 @@ Action: [type [Fn@Null []]]
 
 Read `core_builtins()` in `src/builtins_core.rs` for the authoritative list. Key categories:
 
-**Arithmetic**: `+`, `-`, `*`, `/` (auto-promotion: Int+Int=Int, mixed=Float); also `builtin-add`, `builtin-sub`, `builtin-mul`, `builtin-div` (stable aliases used inside prelude to allow shadowing)
+**Arithmetic**: `+`, `-`, `*`, `/` (auto-promotion: Int+Int=Int, mixed=Float); also `builtin-add`, `builtin-int-sub`, `builtin-mul`, `builtin-div` (stable aliases used inside prelude to allow shadowing; `builtin-int-sub` is the registered integer subtraction alias — `builtin-sub` does not exist)
 **Comparison**: `<`, `=` (cross-type, dict equality always false); also `builtin-lt`, `builtin-eq`
 **Control**: `if` (selective materialization: only chosen branch evaluated); also `builtin-if`
 **Dict**: `keys`, `length`, `merge` (right-biased), `append`

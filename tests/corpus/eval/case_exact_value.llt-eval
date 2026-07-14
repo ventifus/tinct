@@ -1,0 +1,10 @@
+# Exact-value match arms (2-arg keyed form): int, string, bool, miss, computed scrutinee.
+[
+  int-hit:  [match 42    42: "hit"    _: "miss"]
+  int-miss: [match 43    42: "hit"    _: "miss"]
+  str-hit:  [match "x"   "x": "hit"  _: "miss"]
+  bool-hit: [match True  True: "yes"  False: "no"  _: "other"]
+  expr:     [match [+ 1 1]  2: "two"  _: "other"]
+]
+=== out
+Dict({"int-hit": String("hit"), "int-miss": String("miss"), "str-hit": String("hit"), "bool-hit": String("yes"), "expr": String("two")})

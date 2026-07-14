@@ -1,0 +1,12 @@
+# Multi-body [case]: intermediate letrec dict followed by return expression.
+# Regression test for B-515: case arm variable bindings allocated in FlatEnv.
+# n is bound from the scrutinee (42), used in intermediate dict and final expression.
+[call [fn [let]
+  [result: [match 42
+    [case [let n] n
+      [doubled: [* n 2]]
+      [+ doubled 1]]
+    [case [let _] _ 0]]]
+  [builtin-eq-int result 85]]]
+=== out
+Int(1)

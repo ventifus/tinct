@@ -61,7 +61,7 @@ parse-doc-line: [fn@Dict [let line@String]
     [name: key-name  doc: doc-text  sig: sig-text]]]
 
 # Test lines — one that appears, one that should but doesn't
-line-abs:   "abs@[doc: \"Absolute value\"]: [fn@Number [x@Number] [builtin-if [builtin-lt x 0] [builtin-sub 0 x] x]]"
+line-abs:   "abs@[doc: \"Absolute value\"]: [fn@Number [x@Number] [builtin-if [builtin-lt x 0] [- 0 x] x]]"
 line-sign:  "sign@[doc: \"Sign of number (-1, 0, or 1)\"]: [fn@Integer [x@Number]"
 line-uint8: "UInt8@[doc: \"Unsigned 8-bit integer (0-255)\"]:  [type Int@[is: [between 0 255]]]"
 line-pi:    "pi@[doc: \"Pi: ratio of a circle's circumference to its diameter\"]: 3.141592653589793"

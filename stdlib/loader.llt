@@ -323,8 +323,9 @@
       parse-result.program.documents]]
     # Pass 1: evaluate type-stage documents to build ts flat-env-id (for mutual recursion in type stage).
     # ts-acc is {flat-env-id: Int  scope-frames: Dict} after evaluating all type-stage docs.
-    # Initial scope-frames: [] — no outer scope for the first document of this include; correct.
-    [ts-acc: [reduce eval-doc [flat-env-id: seed-flat-env-id  scope-frames: []] split.ts]]
+    # seed-frames: scope frame built from extras names so builtin-resolve sees them (e.g. %prelude).
+    [seed-frames: [make-entry 0 [builtin-keys extras]]]
+    [ts-acc: [reduce eval-doc [flat-env-id: seed-flat-env-id  scope-frames: seed-frames] split.ts]]
     # Wire ts flat-env-id into the TypeContext so type-stage functions (or, all, etc.) are visible
     # during type-checking of runtime documents.
     [tc: [builtin-tc-with-type-stage-env fundamental-tc ts-acc.flat-env-id]]

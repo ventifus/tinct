@@ -18,13 +18,13 @@ key not found: c (defined at stdlib/prelude.llt:2471:28-2471:47)
   1233 |     [builtin-if [builtin-eq-int [length path] 0]
   1234 |         xs
   1235 |         [builtin-if [has? path.0 xs]
-  1236 |             [get-in [builtin-rest path] [get path.0 xs]]
+  1236 |             [get-in [tail path] [get path.0 xs]]
   1237 |             [error [str "key not found: " path.0]]]]]
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   in [builtin-if ...] at stdlib/prelude.llt:1235:9-1237:52
    |
   1235 |         [builtin-if [has? path.0 xs]
-  1236 |             [get-in [builtin-rest path] [get path.0 xs]]
+  1236 |             [get-in [tail path] [get path.0 xs]]
   1237 |             [error [str "key not found: " path.0]]]]]
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   in [builtin-if ...] at stdlib/prelude.llt:1233:5-1237:53
@@ -32,7 +32,7 @@ key not found: c (defined at stdlib/prelude.llt:2471:28-2471:47)
   1233 |     [builtin-if [builtin-eq-int [length path] 0]
   1234 |         xs
   1235 |         [builtin-if [has? path.0 xs]
-  1236 |             [get-in [builtin-rest path] [get path.0 xs]]
+  1236 |             [get-in [tail path] [get path.0 xs]]
   1237 |             [error [str "key not found: " path.0]]]]]
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   in [get-in ...] at 4:1-4:32

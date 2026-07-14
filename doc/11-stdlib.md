@@ -226,7 +226,7 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 
 | Group | Stable alias | Primary name | Rationale |
 |-------|-------------|--------------|-----------|
-| Arithmetic | `builtin-add`, `builtin-sub`, `builtin-mul`, `builtin-div` | `+`, `-`, `*`, `/` | Host numeric types (i64, f64). |
+| Arithmetic | `builtin-add`, `builtin-int-sub`, `builtin-mul`, `builtin-div` | `+`, `-`, `*`, `/` | Host numeric types (i64, f64). `builtin-int-sub` is the stable alias for integer subtraction. |
 | Comparison | `builtin-lt`, `builtin-eq`, `builtin-gt`, `builtin-lte`, `builtin-gte` | `<`, `=`, `>`, `<=`, `>=` | Cross-type Int/Float coercion at host level. All five comparison operators have stable `builtin-*` aliases. |
 | Control | `builtin-if` | `if` | Selective materialization — only the chosen branch is materialized. |
 | Field intercept | — | `proxy` | Takes a handler `fn [field-name] value`; returns `Value::Proxy`. Any field access `.field` calls `handler(field-name)`. Enables proxy rows, mock objects, virtual namespaces. |
@@ -239,7 +239,7 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 | Parsing | — | `to-int`, `to-float` | String-to-number only. |
 | Evaluation control | `builtin-raise` | `materialize`, `raise`, `try`, `apply` | `materialize` forces to WHNF; `raise` constructs EvalError; `try` catches materialization errors; `apply` spreads dict (Key::String → named args, Key::Int sorted → positional args). The prelude exports `error` as an alias for `raise`. `builtin-raise` is the stable alias for `raise`. |
 | Type introspection | — | `type-of`, `int?`, `float?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?` | Inspect the Value enum variant. (`num?`, `record?`, `map?` are LLT stdlib aliases derived from these primitives.) |
-| Sequences | `builtin-seq`, `builtin-head`, `builtin-tail`, `builtin-collect`, `builtin-range`, `builtin-repeat`, `builtin-cycle`, `builtin-iterate`, `builtin-unfold`, `builtin-filter`, `builtin-map`, `builtin-reduce`, `builtin-take`, `builtin-drop`, `builtin-join`, `builtin-concat`, `builtin-first`, `builtin-last`, `builtin-rest`, `builtin-cons`, `builtin-reverse`, `builtin-sort` | `seq`, `head`, `tail`, `collect`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `filter`, `map`, `reduce`, `take`, `drop`, `join`, `concat`, `first`, `last`, `rest`, `cons`, `reverse`, `sort`, `seq?` | Dual-dispatch on Dict/Seq; require `Rc<Thunk>` manipulation. All sequence/list functions have stable aliases for shadowability except `seq?`. |
+| Sequences | `builtin-seq`, `builtin-head`, `builtin-tail`, `builtin-collect`, `builtin-range`, `builtin-repeat`, `builtin-cycle`, `builtin-iterate`, `builtin-unfold`, `builtin-filter`, `builtin-map`, `builtin-reduce`, `builtin-take`, `builtin-drop`, `builtin-join`, `builtin-concat`, `builtin-first`, `builtin-last`, `builtin-cons`, `builtin-reverse`, `builtin-sort` | `seq`, `head`, `tail`, `collect`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `filter`, `map`, `reduce`, `take`, `drop`, `join`, `concat`, `first`, `last`, `rest`, `cons`, `reverse`, `sort`, `seq?` | Dual-dispatch on Dict/Seq; require `Rc<Thunk>` manipulation. All sequence/list functions have stable aliases for shadowability except `seq?`. `rest` is implemented in tinct prelude via `tail`. |
 | Include primitives | — | `load`, `expand`, `eval`, `eval-types`, `blake3`, `cap-identity`, `include-cache-get`, `include-cache-put` | Thin Rust primitives for the self-hosted include pipeline. `load` parses source text; `expand` runs macro expansion; `eval` evaluates document expressions in the runtime env; `eval-types` evaluates in the type-stage env; `blake3` hashes content; `cap-identity` extracts DirCap identity; `include-cache-get`/`include-cache-put` manage the content-addressed include cache. Prelude implements `include`, `eval-file`, and the document pipeline using these primitives. |
 
 **Tinct-implemented stdlib (wrappers and derived functions):**
@@ -251,7 +251,7 @@ The prelude wraps every primary-name operator that has a stable alias, making it
 | `<` | `[fn [a b] [builtin-lt a b]]` | Shadowable; calls stable alias `builtin-lt` |
 | `=` | `[fn [a b] [builtin-eq a b]]` | Shadowable; calls stable alias `builtin-eq` |
 | `+` | `[fn [a b] [builtin-add a b]]` | Shadowable; calls `builtin-add` |
-| `-` | `[fn [a b] [builtin-sub a b]]` | Shadowable; calls `builtin-sub` |
+| `-` | `[fn [a b] [- a b]]` | Shadowable; calls raw `-` (generic subtraction) |
 | `*` | `[fn [a b] [builtin-mul a b]]` | Shadowable; calls `builtin-mul` |
 | `/` | `[fn [a b] [builtin-div a b]]` | Shadowable; calls `builtin-div` |
 | `if` | `[fn [c t e] [builtin-if c t e]]` | Shadowable; calls `builtin-if` |
@@ -267,8 +267,8 @@ The prelude wraps every primary-name operator that has a stable alias, making it
 | `and` | `[fn@[a Bool] [p b@a] [builtin-if p b false]]` | Short-circuit via lazy args; returns `b` or `false` |
 | `or` | `[fn [a b] [builtin-if a a b]]` | Pass-through: returns `a` if truthy |
 | `quot` | `[fn [a b] [trunc [builtin-div a b]]]` | Truncation toward zero |
-| `mod` | `[fn [a b] [builtin-sub a [builtin-mul [quot a b] b]]]` | Algebraic identity |
-| `ceil` | `[fn [x] [builtin-sub 0 [floor [builtin-sub 0 x]]]]` | `ceil(x) = -floor(-x)` |
+| `mod` | `[fn [a b] [- a [* [quot a b] b]]]` | Algebraic identity |
+| `ceil` | `[fn [x] [- 0 [floor [- 0 x]]]]` | `ceil(x) = -floor(-x)` |
 | `trunc` | `[fn [x] [builtin-if [>= x 0] [floor x] [ceil x]]]` | Conditional floor/ceil |
 | `words` | `[builtin-filter [fn [w] [not [builtin-eq w ""]]] [split " " s]]` | Uses stable `builtin-filter`, `builtin-eq` |
 
@@ -310,7 +310,7 @@ Core env: builtin_module("core") (builtin-lt, builtin-add, eval, raise, load, bl
                     └── User predicates and programs
 ```
 
-The prelude wraps builtins with stable `builtin-*` aliases (`builtin-add`, `builtin-sub`, `builtin-mul`, `builtin-div`, `builtin-eq`, `builtin-lt`, `builtin-if`, `builtin-seq`, `builtin-head`, `builtin-tail`, `builtin-collect`, `builtin-range`, `builtin-repeat`, `builtin-cycle`, `builtin-iterate`, `builtin-unfold`, `builtin-map`, `builtin-filter`, `builtin-take`, `builtin-drop`, `builtin-reduce`, `builtin-join`, `builtin-concat`, `builtin-first`, `builtin-last`, `builtin-rest`, `builtin-cons`, `builtin-reverse`, `builtin-sort`, `builtin-get`, `builtin-length`, `builtin-append`, `builtin-str`, `builtin-split`, `builtin-str-length`, `builtin-str-slice`, `builtin-raise`) so domain modules can shadow the primary names while still calling the original implementation. All other builtins (e.g., `eval`, `load`) are used directly by name.
+The prelude wraps builtins with stable `builtin-*` aliases (`builtin-add`, `builtin-int-sub`, `builtin-mul`, `builtin-div`, `builtin-eq`, `builtin-lt`, `builtin-if`, `builtin-seq`, `builtin-head`, `builtin-tail`, `builtin-collect`, `builtin-range`, `builtin-repeat`, `builtin-cycle`, `builtin-iterate`, `builtin-unfold`, `builtin-map`, `builtin-filter`, `builtin-take`, `builtin-drop`, `builtin-reduce`, `builtin-join`, `builtin-concat`, `builtin-first`, `builtin-last`, `builtin-cons`, `builtin-reverse`, `builtin-sort`, `builtin-get`, `builtin-length`, `builtin-append`, `builtin-str`, `builtin-split`, `builtin-str-length`, `builtin-str-slice`, `builtin-raise`) so domain modules can shadow the primary names while still calling the original implementation. All other builtins (e.g., `eval`, `load`) are used directly by name.
 
 **Optional stdlib modules** — load with `[include libdir "<module>.llt"]`. The `libdir` variable is a `DirCap` injected at startup pointing to the installed stdlib directory (resolves to `stdlib/` in dev builds, `<prefix>/share/tinct/stdlib/` in installed builds):
 

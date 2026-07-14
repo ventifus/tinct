@@ -1,0 +1,31 @@
+# Test that match arm bodies evaluate in the correct scope when nested
+# inside a function with multiple intermediate sequential dicts.
+# Regression test for MatchDispatch scope fix (T-1584).
+#
+# The bug: MatchDispatchData was pushed with ctx: Arc::clone(&thunk_ctx)
+# (the OUTER context before with_eval_scope), so match arm bodies were
+# evaluated with body_env_id = ctx.current_env_id = the outer caller's env_id,
+# not the match thunk's own env_id.
+#
+# This test creates a function with 3 intermediate sequential dicts before
+# a match expression. The match arm body references outer-val (from the
+# outermost dict scope, requiring high-level VarRef lookup) and c (from the
+# immediately preceding intermediate dict). If the MatchDispatch scope is
+# wrong, outer-val lookup fails because the outer caller's scope doesn't
+# have enough depth for the VarRef's de Bruijn level.
+[
+  outer-val: 42
+
+  deep-match: [fn [let x]
+    [a: [+ x 1]]
+    [b: [+ a 1]]
+    [c: [+ b 1]]
+    [result: [match c
+      3: [+ outer-val c]
+      _: 0]]
+    result]
+
+  answer: [deep-match 0]
+]
+=== out
+Dict({"outer-val": Int(42), "deep-match": Function(x), "answer": Int(45)})

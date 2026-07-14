@@ -296,17 +296,18 @@
                                    "" resolved.errors]]
          _: [builtin-eval resolved.doc flat-env: doc-flat-env-id]]]
       [match [builtin-eq-string [builtin-type-of eval-result.error] "String"]
-        0: [builtin-raise eval-result.error]
-        _: [call [fn [let]
+        0: [call [fn [let]
              [new-env-id: [builtin-extend-env eval-result.flat-env-id
                             [make-entry
                               [match [builtin-eq-string eval-result.doc-name ""]
                                 0: eval-result.doc-name
                                 _: "%"]
                               eval-result.result]]]
-             [flat-env-id: new-env-id  scope-frames: resolved.scope-frames]]]]]]
+             [flat-env-id: new-env-id  scope-frames: resolved.scope-frames]]]
+        _: [builtin-raise eval-result.error]]]]
+    [seed-frames: [make-entry 0 [builtin-keys extras]]]
     [ts-acc: [reduce eval-doc-ts
-      [flat-env-id: ts-seed  scope-frames: []]
+      [flat-env-id: ts-seed  scope-frames: seed-frames]
       [reduce
         [fn [let acc doc]
           [match [builtin-eq-string [builtin-tag-of doc.stage] "DocStage.Type"]
@@ -337,17 +338,22 @@
              eval-result.result]]]
         [match done
           0: [match [builtin-eq-string [builtin-type-of eval-result.error] "String"]
-               0: [builtin-raise eval-result.error]
-               _: [flat-env-id: eval-result.flat-env-id  last-result: eval-result.result  scope-frames: resolved.scope-frames]]
+               0: [flat-env-id: eval-result.flat-env-id  last-result: eval-result.result  scope-frames: resolved.scope-frames]
+               _: [builtin-raise eval-result.error]]
           _: st]]
       [flat-env-id: ts-acc.flat-env-id  last-result: []  scope-frames: ts-acc.scope-frames]
       state.parsed.program.documents]]
+    # Capture ts-acc and _tc before the merge dict to avoid letrec self-reference.
+    # In a letrec dict, [key: key] resolves 'key' to the dict's own entry (level=0),
+    # not the outer sequential binding (level=1), causing a circular dependency.
+    [_ts-acc-val: ts-acc]
+    [_tc-val:     _tc]
     [merge state
-      [ts-acc:       ts-acc
+      [ts-acc:       _ts-acc-val
        flat-env-id:  final-state.flat-env-id
        scope-frames: final-state.scope-frames
        last-result:  final-state.last-result
-       _tc:          _tc]]]
+       _tc:          _tc-val]]]
 
   # ── Stage: export ─────────────────────────────────────────────────────────────
   # Promotes the last document's exported dict entries into the env.

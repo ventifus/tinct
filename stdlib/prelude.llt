@@ -102,15 +102,26 @@
   # builtin-int-add) so it is available in the type-stage evaluator.
   # Uses match for branching (Boolean.True/False not available at type stage).
   # Uses [$k: v] dynamic key syntax to preserve string keys.
-  object-map-step: [fn@Dict [let obj f keys i n acc]
+  object-map-step: [fn@Dict [let obj f keys i n builder]
     [match [builtin-eq-int i n]
-      0: [>> [k: [builtin-get i keys]]
-             [object-map-step obj f keys [builtin-int-add i 1] n
-               [dict-merge acc [$k: [f k [builtin-get k obj]]]]]]
-      _: acc]]
+      0: [call [fn [let]
+            [k: [builtin-get i keys]]
+            [object-map-step obj f keys [builtin-int-add i 1] n
+              [builtin-builder-set builder [f k [builtin-get k obj]] k]]]]
+      _: [builtin-builder-finish builder]]]
   object-map: [fn [let obj f]
     [keys: [builtin-keys obj]]
-    [object-map-step obj f keys 0 [builtin-dict-length keys] []]]
+    [object-map-step obj f keys 0 [builtin-dict-length keys] [builtin-make-builder]]]
+
+  # dict-merge: right-biased dict union using builder builtins.
+  # Defined here (not imported) so it is available in the type-stage scope.
+  dict-merge: [fn [let a b]
+    [_step: [fn [let builder d i n]
+      [match [builtin-int-gte i n]
+        0: [_step [builtin-builder-set builder [builtin-dict-nth d i] [builtin-dict-key-nth d i]] d [builtin-int-add i 1] n]
+        _: builder]]]
+    [builtin-builder-finish
+      [_step [_step [builtin-make-builder] a 0 [builtin-dict-length a]] b 0 [builtin-dict-length b]]]]
 
 # ============================================================================
   # TypeNode: Primary Type Representation (T-1058, equirecursive-types)
@@ -299,13 +310,14 @@
     # match on string role values — stored as "One"/"MapValues" in field-annotations.
     children-step: [fn@Dict [let t ctor fields i n acc]
       [match [builtin-eq-int i n]
-        0: [>> [field: [builtin-dict-nth fields i]]
-               [val:   [builtin-get field t]]
-               [children-step t ctor fields [builtin-int-add i 1] n
-                 [builtin-concat acc
-                   [match [child-role ctor field]
-                     "One":       [0: val]
-                     "MapValues": val]]]]
+        0: [call [fn [let]
+              [field: [builtin-dict-nth fields i]]
+              [val:   [builtin-get field t]]
+              [children-step t ctor fields [builtin-int-add i 1] n
+                [builtin-concat acc
+                  [match [child-role ctor field]
+                    "One":       [0: val]
+                    "MapValues": val]]]]]
         _: acc]]
     children: [fn [let t]
       [ctor:   [TypeNode-ctor t]]
@@ -452,10 +464,10 @@
 # in scope via the parent environment chain.
 #
 #   Stable builtin-* aliases (used internally; pre-injected into bootstrap env):
-#     builtin-lt  builtin-eq-int  builtin-eq-string  builtin-int-add  builtin-sub  builtin-mul  builtin-div
+#     builtin-lt  builtin-eq-int  builtin-eq-string  builtin-int-add  builtin-mul  builtin-div
 #     builtin-get  map  reduce
 #     builtin-filter  builtin-take  builtin-drop
-#     builtin-concat  builtin-join  builtin-rest
+#     builtin-concat  builtin-join
 #     (builtin-seq, builtin-head, builtin-tail, builtin-collect removed in S-893/S-896 — use Seq.Cons/head/tail/collect)
 #     (builtin-range, builtin-repeat, builtin-cycle, builtin-iterate, builtin-unfold removed in T-1380 — generators are pure tinct)
 #     sort-asc  (and other builtin-NAME forms from the collection module)
@@ -728,7 +740,7 @@ retry-impl: [fn@[bind: [a]  return: a] [let n@Integer thunk@[Fn@a []]]
         [case [let v] [Result.Ok v]    v]
         [case [let _] [Result.Error]   [match [builtin-int-gte n 1]
                        0: [builtin-raise "retry limit exceeded"]
-                       _: [retry-impl [builtin-sub n 1] thunk]]]]]
+                       _: [retry-impl [builtin-int-sub n 1] thunk]]]]]
 
 # select-impl: recursive event-loop body.
 # Calls select-once on sources, passes result to handler, then loops.
@@ -746,7 +758,7 @@ select-impl: [fn@Any [let ctx sources@[Seq Dict] handler@[Fn@Any [Any]]]
                 Closed.Closed:
                     Closed.Closed
                 [case [let v] _
-                    [>> [handler v] [select-impl ctx sources handler]]]]
+                    [call [fn [let _ignored] [select-impl ctx sources handler]] [handler v]]]]
         _: []]]
 
 # Indexable declared here (dict 1) so it is in scope when type-checking dict 1 helpers
@@ -1086,10 +1098,10 @@ Example: [mod -7 3] => -1
 Example: [mod 7 -3] => 1
 
 Note: Uses the algebraic identity: mod(a, b) = a - (quot(a, b) * b). Clojure/Haskell-rem semantics. Contrast with Python `%` / Haskell `mod` (sign of divisor). Inherently materializing: derived from arithmetic operations.
-"""] [let a@Number b@Number] [builtin-sub a [builtin-mul [quot a b] b]]]
+"""] [let a@Number b@Number] [- a [* [quot a b] b]]]
 
 # ============================================================================
-# Numeric Conversion (derived from floor, round, builtin-int-add, builtin-sub)
+# Numeric Conversion (derived from floor, round, builtin-int-add, -, *)
 # ============================================================================
 
 ceil: [fn@[return: Int  doc: """
@@ -1099,7 +1111,7 @@ Example: [ceil 3.2] => 4
 Example: [ceil -3.2] => -3
 
 Note: Derived as -floor(-x). Inherently materializing: derived from arithmetic operations.
-"""] [let x@Number] [builtin-sub 0 [floor [builtin-sub 0 x]]]]
+"""] [let x@Number] [- 0 [floor [- 0 x]]]]
 
 trunc: [fn@[return: Int  doc: """
 Truncate toward zero.
@@ -1117,7 +1129,7 @@ Example: [abs -5] => 5
 Example: [abs 3.14] => 3.14
 
 Note: Returns -x for negative, x otherwise. Inherently materializing: derived from comparison and arithmetic.
-"""] [let x@Number] [match [builtin-lt x 0] 0: x _: [builtin-sub 0 x]]]
+"""] [let x@Number] [match [builtin-lt x 0] 0: x _: [- 0 x]]]
 
 sign: [fn@[return: Integer  doc: """
 Sign of number (-1, 0, or 1).
@@ -1286,7 +1298,7 @@ Returns error when any intermediate key is missing. Use get-in-or for a default 
     [if [= [length path] 0]
         xs
         [if [has? path.0 xs]
-            [get-in [builtin-rest path] [get path.0 xs]]
+            [get-in [tail path] [get path.0 xs]]
             [error [join "" ["key not found: " path.0]]]]]]
 
 get-in-or: [fn@[bind: [a]  return: a  doc: """
@@ -1301,7 +1313,7 @@ Returns default when any intermediate key is missing. Inherently materializing: 
     [if [= [length path] 0]
         xs
         [if [has? path.0 xs]
-            [get-in-or [builtin-rest path] default [get path.0 xs]]
+            [get-in-or [tail path] default [get path.0 xs]]
             default]]]
 
 get-in?: [fn@[bind: [a]  return: [or a Absent]  doc: """
@@ -1411,7 +1423,7 @@ nth@[doc: "Get nth element (supports negative indices)"]: [fn@[bind: [a]  return
 # assert: [last "hello"] => "o"
 # assert: [last (str-bytes "Z")] => 90
 
-# rest: delegates to builtin-rest (see wrappers section at bottom of this dict).
+# rest: delegates to tail (see wrappers section at bottom of this dict).
 
 # Append an element to the end of a list.
 # Type: (a -> Dict a -> Dict a)
@@ -1801,7 +1813,7 @@ Note: Errors on empty collection (no sensible default for polymorphic min).
     [reduce
         [fn [let a b] [match [builtin-lt a b] 0: b _: a]]
         [dict-first [@Dict xs]]
-        [@Dict [builtin-rest [@Dict xs]]]]]
+        [@Dict [tail [@Dict xs]]]]]
 
 max: [fn@[bind: [a]  return: a  constraint: [a: Comparable]  doc: """
 Maximum element.
@@ -1814,7 +1826,7 @@ Note: Errors on empty collection (no sensible default for polymorphic max).
     [reduce
         [fn [let a b] [match [builtin-lt a b] 0: a _: b]]
         [dict-first [@Dict xs]]
-        [@Dict [builtin-rest [@Dict xs]]]]]
+        [@Dict [tail [@Dict xs]]]]]
 
 # Count elements satisfying pred.
 # Uses reduce to count, avoiding the Seq→length issue (filter on Dict returns Seq).
@@ -3025,9 +3037,10 @@ split-impl: [fn@[bind: [a]  return: [Seq String]] [let sep@String sep-len@Intege
   [found-rel: [builtin-str-index-of sep sub]]
   [if [= found-rel -1]
     [Seq.Cons head: sub  tail: Seq.End]
-    [>> [found: [+ pos found-rel]]
-        [Seq.Cons head: [str-slice s pos found]
-                  tail: [split-impl sep sep-len s s-len [+ found sep-len]]]]]]
+    [call [fn [let]
+      [found: [+ pos found-rel]]
+      [Seq.Cons head: [str-slice s pos found]
+                tail: [split-impl sep sep-len s s-len [+ found sep-len]]]]]]]
 
 split: [fn@[bind: [a]  return: [Seq String]  doc: """
 Split string by separator. Returns a lazy Seq of segments.

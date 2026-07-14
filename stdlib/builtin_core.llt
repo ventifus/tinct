@@ -161,7 +161,7 @@
   builtin-concat:  [fn@Any  [let a@Any b@Any] ...]
   # builtin-dict-first, builtin-dict-last, builtin-str-first, builtin-str-last:
   # Implemented in tinct prelude (derived from builtin-dict-nth, builtin-str-slice).
-  # builtin-rest, builtin-reverse, builtin-sort: implemented in tinct prelude.
+  # builtin-reverse, builtin-sort: implemented in tinct prelude. rest is a tinct alias for tail.
 
   # ── Async ─────────────────────────────────────────────────────────────────
   builtin-channel: [fn@[Channel Any] [] ...]

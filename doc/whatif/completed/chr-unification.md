@@ -1146,10 +1146,10 @@ Subtractable: [class [a b c]  [determines: [[[a b] c]]  resolver: SubResult]
   -: [fn@c [a b]]]
 
 [instance Subtractable
-  [pattern [a@Integer   b@Integer   c@Integer  ]]: [-: [fn@Integer   [x@Integer   y@Integer  ] [builtin-sub x y]]]
-  [pattern [a@Float b@Float c@Float]]: [-: [fn@Float [x@Float y@Float] [builtin-sub x y]]]
-  [pattern [a@Integer   b@Float c@Float]]: [-: [fn@Float [x@Integer   y@Float] [builtin-sub x y]]]
-  [pattern [a@Float b@Integer   c@Float]]: [-: [fn@Float [x@Float y@Integer  ] [builtin-sub x y]]]]
+  [pattern [a@Integer   b@Integer   c@Integer  ]]: [-: [fn@Integer   [x@Integer   y@Integer  ] [builtin-int-sub x y]]]
+  [pattern [a@Float b@Float c@Float]]: [-: [fn@Float [x@Float y@Float] [builtin-int-sub x y]]]
+  [pattern [a@Integer   b@Float c@Float]]: [-: [fn@Float [x@Integer   y@Float] [builtin-int-sub x y]]]
+  [pattern [a@Float b@Integer   c@Float]]: [-: [fn@Float [x@Float y@Integer  ] [builtin-int-sub x y]]]]
 
 Multipliable: [class [a b c]  [determines: [[[a b] c]]  resolver: MulResult]
   *: [fn@c [a b]]]
@@ -1460,7 +1460,7 @@ fn unify(a: Type, b: Type, subst: &mut Substitution, state: &mut InferState, spa
 ### `stdlib/prelude.llt` — Arithmetic class migration
 
 **Current:** `Add`, `Sub`, `Mul`, `Div` pre-registered in Rust (`src/types.rs:1686-1707`) with no methods and a hardcoded lookup table (`lookup_arithmetic_instance`).  
-**Proposed:** Declare in `stdlib/prelude.llt` with `determines:`, `resolver:`, and method declarations. Arithmetic instances declared as `[instance ...]` blocks using match-arm syntax. The 9 primitive instances become arms under `[instance Addable ...]`, `[instance Subtractable ...]`, etc., using `builtin-add`/`builtin-sub`/`builtin-mul`/`builtin-div` as implementations. The Rust lookup table (`lookup_arithmetic_instance`) is **retained as a performance fast path** — when the class is a known built-in arithmetic class, the O(1) match table is used instead of calling `eval()`. The resolver call path is used only for user-declared classes.  
+**Proposed:** Declare in `stdlib/prelude.llt` with `determines:`, `resolver:`, and method declarations. Arithmetic instances declared as `[instance ...]` blocks using match-arm syntax. The 9 primitive instances become arms under `[instance Addable ...]`, `[instance Subtractable ...]`, etc., using `builtin-add`/`builtin-int-sub`/`builtin-mul`/`builtin-div` as implementations. The Rust lookup table (`lookup_arithmetic_instance`) is **retained as a performance fast path** — when the class is a known built-in arithmetic class, the O(1) match table is used instead of calling `eval()`. The resolver call path is used only for user-declared classes.  
 **Impact:** Major structurally (moves class/instance to tinct); Minor for runtime performance (fast path preserved for arithmetic).
 
 ### `src/typecheck.rs` — Post-inference boundary guard elaboration pass
