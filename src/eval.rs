@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use indexmap::IndexMap;
 
-use crate::arena::{EnvArena, EnvId, ThunkId};
+use crate::arena::{ScopeArena, ScopeId, ThunkId};
 use crate::ast::{Annotation, LiteralPattern, Pattern, Span, Spanned, SurfaceNode, SurfaceProgram};
 use crate::error::{EvalError, EvalResult};
 use crate::rust_span;
@@ -125,15 +125,15 @@ pub(crate) async fn eval_document_exprs_with_env(
 
         // Record the arena size before evaluating this node so we can detect newly
         // allocated FlatEnvs (the first such env is the scope for this expression).
-        let arena_len_before = eval_ctx.env_arena.borrow().envs.len() as u32;
+        let arena_len_before = eval_ctx.scope_arena.borrow().scopes.len() as u32;
 
         if i == last_idx {
             // Last expression: return its thunk lazily (no materialization).
             let thunk = crate::eval_core::eval_core_expr(&core_spanned, &eval_ctx).await?;
             // Capture the root env_id: first new env allocated for this document.
             let new_env_id = {
-                let arena = eval_ctx.env_arena.borrow();
-                if arena.envs.len() as u32 > arena_len_before {
+                let arena = eval_ctx.scope_arena.borrow();
+                if arena.scopes.len() as u32 > arena_len_before {
                     arena_len_before
                 } else {
                     fallback_env_id
@@ -150,8 +150,8 @@ pub(crate) async fn eval_document_exprs_with_env(
         // Detect which FlatEnv was allocated for this dict expression.
         // The first new env in the arena (at index arena_len_before) is this dict's scope.
         let node_env_id = {
-            let arena = eval_ctx.env_arena.borrow();
-            if arena.envs.len() as u32 > arena_len_before {
+            let arena = eval_ctx.scope_arena.borrow();
+            if arena.scopes.len() as u32 > arena_len_before {
                 Some(arena_len_before) // first newly allocated env is this node's root scope
             } else {
                 None
@@ -254,9 +254,9 @@ pub async fn eval_surface_file_with_input(
         // At runtime we allocate a matching child FlatEnv with the input thunk at slot 0.
         // core builtins remain at the root FlatEnv (env_id=0), accessible at level=1.
         let child_env_id = {
-            let mut arena = ctx.env_arena.borrow_mut();
-            let child_id = arena.alloc_child(EnvId(ctx.current_env_id), 1);
-            arena.alloc_slot_thunk(child_id, input, "%");
+            let mut arena = ctx.scope_arena.borrow_mut();
+            let child_id = arena.alloc_child(ScopeId(ctx.current_env_id), 1);
+            arena.push_slot(child_id, "%", input);
             child_id
         };
         // Evaluate in the child scope so all VarRef lookups see % at the correct level.
@@ -276,7 +276,7 @@ pub(crate) const IS_ANNOTATION_KEY: &str = "is";
 
 /// Type alias for the optional default expression + FlatEnv env_id used by guarded thunks.
 /// Matches value.rs GuardDefault: (Arc<Spanned<CoreExpr>>, u32).
-/// The u32 is an EnvId index into EvalContext.env_arena for default expression evaluation.
+/// The u32 is an EnvId index into EvalContext.scope_arena for default expression evaluation.
 type GuardDefault = (Arc<Spanned<crate::ast::CoreExpr>>, u32);
 
 /// Type alias for the return type of `match_pattern` — an async fn returning an optional env.
@@ -427,19 +427,19 @@ pub struct EvalState {
 /// Evaluation infrastructure context: separates session config from variable bindings.
 ///
 /// Config is immutable (Arc without Mutex); state is mutable (Arc<Mutex>).
-/// env_arena is Rc<RefCell<>> (single-threaded only).
+/// scope_arena is Rc<RefCell<>> (single-threaded only).
 /// Thread as `&Arc<EvalContext>` through eval/materialize; thunks capture `Arc::clone(ctx)`.
 #[derive(Debug)]
 pub struct EvalContext {
     pub config: Arc<EvalConfig>,
     pub state: Arc<Mutex<EvalState>>,
-    /// Environment arena registry. Populated by `eval_dict` (alloc_root +
-    /// fill_letrec_slot per dict scope) and `alloc_thunk` (anonymous slot allocation).
-    /// Env IDs enable O(1) variable lookup in the CoreExpr force path.
+    /// Scope arena registry. Populated by `eval_dict` (alloc_root +
+    /// fill_slot per dict scope) and `alloc_thunk` (anonymous slot allocation).
+    /// Scope IDs enable O(1) variable lookup in the CoreExpr force path.
     /// **Shared ownership:** Rc<RefCell<>> allows child contexts to share the parent's arena.
     /// Safe because the eval runtime is strictly single-threaded (LocalSet + current_thread).
-    pub(crate) env_arena: Rc<RefCell<EnvArena>>,
-    /// The EnvId for new anonymous slot allocations. Points to the root scope (index 0)
+    pub(crate) scope_arena: Rc<RefCell<ScopeArena>>,
+    /// The ScopeId for new anonymous slot allocations. Points to the root scope (index 0)
     /// by default. Updated by `with_eval_scope` when evaluating within a specific scope.
     pub(crate) current_env_id: u32,
     /// Env variable allowlist. None = unrestricted (all allowed), Some(set) = only those in set.
@@ -524,33 +524,33 @@ pub struct EvalContext {
     ///
     /// Propagated unchanged to all child contexts (with_base_dir, with_cancel_token, etc.)
     /// because scope frames are read-only after initialization.
-    pub scope_frames: Option<Arc<Vec<indexmap::IndexMap<String, ()>>>>,
+    pub scope_frames: Option<Arc<Vec<indexmap::IndexMap<String, u32>>>>,
 }
 
 impl EvalContext {
-    /// Create a fresh EnvArena pre-populated with a root scope at index 0.
+    /// Create a fresh ScopeArena pre-populated with a root scope at index 0.
     /// All EvalContext constructors that create a new arena use this helper
     /// so that `current_env_id: 0` is always valid for `alloc_thunk`.
     ///
-    /// The root FlatEnv (env_id=0) is pre-populated with one `Value::Builtin` thunk
-    /// per entry in `core_builtins()`, in iteration order. Slot K in the root FlatEnv
+    /// The root scope (scope_id=0) is pre-populated with one `Value::Builtin` thunk
+    /// per entry in `core_builtins()`, in iteration order. Slot K in the root scope
     /// holds the K-th builtin, which is the SAME slot coordinate that the resolver
     /// assigns when it sees that builtin's name in `build_core_env`'s IndexMap.
     /// The two orderings MUST stay in sync: both call `core_builtins()` directly,
     /// which is a deterministic `Vec` — so the ordering is guaranteed.
-    fn new_env_arena() -> Rc<RefCell<EnvArena>> {
+    fn new_scope_arena() -> Rc<RefCell<ScopeArena>> {
         use crate::builtins_core::core_builtins;
 
-        let mut arena = EnvArena::new();
-        let root_id = arena.alloc_root(0); // root scope at EnvId(0)
+        let mut arena = ScopeArena::new();
+        let root_id = arena.alloc_root(0); // root scope at ScopeId(0)
 
-        // Pre-populate root FlatEnv with builtin thunks.
+        // Pre-populate root scope with builtin thunks.
         // Slot order MUST match build_core_env()'s insert_slot_name_only order.
         for def in core_builtins() {
-            arena.alloc_slot_thunk(
+            arena.push_slot(
                 root_id,
-                Arc::new(Thunk::new_materialized(Value::Builtin(def), rust_span!())),
                 def.name,
+                Arc::new(Thunk::new_materialized(Value::Builtin(def), rust_span!())),
             );
         }
 
@@ -584,7 +584,7 @@ impl EvalContext {
                 include_chain: Vec::new(),
                 eval_stack: Vec::new(),
             })),
-            env_arena: Self::new_env_arena(),
+            scope_arena: Self::new_scope_arena(),
             current_env_id: 0,
             env_allowed: None,
             blame_map: Mutex::new(HashMap::new()),
@@ -619,7 +619,7 @@ impl EvalContext {
                 include_chain: Vec::new(),
                 eval_stack: Vec::new(),
             })),
-            env_arena: Self::new_env_arena(),
+            scope_arena: Self::new_scope_arena(),
             current_env_id: 0,
             env_allowed,
             blame_map: Mutex::new(HashMap::new()),
@@ -655,7 +655,7 @@ impl EvalContext {
                 source_file: self.config.source_file.clone(),
             }),
             state: Arc::clone(&self.state),
-            env_arena: Rc::clone(&self.env_arena),
+            scope_arena: Rc::clone(&self.scope_arena),
             current_env_id: self.current_env_id,
             env_allowed: self.env_allowed.clone(),
             blame_map: Mutex::new(self.blame_map.lock().unwrap().clone()),
@@ -702,7 +702,7 @@ impl EvalContext {
         let child_ctx = Arc::new(Self {
             config: Arc::clone(&self.config),
             state: Arc::clone(&self.state),
-            env_arena: Rc::clone(&self.env_arena),
+            scope_arena: Rc::clone(&self.scope_arena),
             current_env_id: self.current_env_id,
             env_allowed: self.env_allowed.clone(),
             blame_map: Mutex::new(self.blame_map.lock().unwrap().clone()),
@@ -741,7 +741,7 @@ impl EvalContext {
         Arc::new(Self {
             config: Arc::clone(&self.config),
             state: Arc::clone(&self.state),
-            env_arena: Rc::clone(&self.env_arena),
+            scope_arena: Rc::clone(&self.scope_arena),
             current_env_id: self.current_env_id,
             env_allowed: self.env_allowed.clone(),
             blame_map: Mutex::new(self.blame_map.lock().unwrap().clone()),
@@ -782,7 +782,7 @@ impl EvalContext {
         Arc::new(Self {
             config: Arc::clone(&self.config),
             state: Arc::clone(&self.state),
-            env_arena: Rc::clone(&self.env_arena),
+            scope_arena: Rc::clone(&self.scope_arena),
             current_env_id: self.current_env_id,
             env_allowed: self.env_allowed.clone(),
             blame_map: Mutex::new(self.blame_map.lock().unwrap().clone()),
@@ -805,26 +805,26 @@ impl EvalContext {
     }
 
     /// Allocate a named binding thunk in the arena's current scope and return its ID.
-    /// The name is stored in FlatEnv.slot_names so the resolver can assign de Bruijn
+    /// The name is stored in Scope.slot_names so the resolver can assign de Bruijn
     /// coordinates for it. Use this for all named bindings (capabilities, dict entries, etc.).
     pub fn alloc_named_thunk(&self, name: &str, thunk: Arc<Thunk>) -> ThunkId {
-        self.env_arena
+        self.scope_arena
             .borrow_mut()
-            .alloc_slot_thunk(EnvId(self.current_env_id), thunk, name)
+            .push_slot(ScopeId(self.current_env_id), name, thunk)
     }
 
     /// Allocate an anonymous thunk in the arena's current scope and return its ID.
-    /// The slot gets an empty name — it is NOT accessible by name from the resolver.
+    /// The slot gets a gensym name — it is NOT accessible by name from the resolver.
     /// Use only for intermediate computation thunks that are never bound to a name.
     pub fn alloc_thunk(&self, thunk: Arc<Thunk>) -> ThunkId {
-        self.env_arena
+        self.scope_arena
             .borrow_mut()
-            .alloc_slot_thunk(EnvId(self.current_env_id), thunk, "")
+            .push_slot(ScopeId(self.current_env_id), "#anon", thunk)
     }
 
     /// Get a cloned Arc<Thunk> from the arena by ID.
     pub fn get_thunk(&self, id: ThunkId) -> Arc<Thunk> {
-        self.env_arena.borrow().get_thunk(id)
+        self.scope_arena.borrow().get_thunk(id)
     }
 
     /// Create a child EvalContext that allocates new thunks into the given scope.
@@ -835,7 +835,7 @@ impl EvalContext {
         Arc::new(Self {
             config: Arc::clone(&self.config),
             state: Arc::clone(&self.state),
-            env_arena: Rc::clone(&self.env_arena),
+            scope_arena: Rc::clone(&self.scope_arena),
             current_env_id: env_id,
             env_allowed: self.env_allowed.clone(),
             blame_map: Mutex::new(self.blame_map.lock().unwrap().clone()),
@@ -867,12 +867,12 @@ impl EvalContext {
     /// Child contexts created from this context inherit the frames unchanged.
     pub fn with_scope_frames(
         self: &Arc<Self>,
-        frames: Arc<Vec<indexmap::IndexMap<String, ()>>>,
+        frames: Arc<Vec<indexmap::IndexMap<String, u32>>>,
     ) -> Arc<Self> {
         Arc::new(Self {
             config: Arc::clone(&self.config),
             state: Arc::clone(&self.state),
-            env_arena: Rc::clone(&self.env_arena),
+            scope_arena: Rc::clone(&self.scope_arena),
             current_env_id: self.current_env_id,
             env_allowed: self.env_allowed.clone(),
             blame_map: Mutex::new(self.blame_map.lock().unwrap().clone()),
@@ -1843,16 +1843,14 @@ pub(crate) fn match_pattern<'a>(
                 let var_thunk = match pin_resolution.get() {
                     Some(Some((level, slot))) => {
                         // FlatEnv dispatch via parent-chain traversal.
-                        let arena = ctx.env_arena.borrow();
+                        let arena = ctx.scope_arena.borrow();
                         let level_idx = level as usize;
                         let target_result = arena.walk_parent_chain(ctx.current_env_id, level_idx);
                         let t = match target_result {
                             Ok(target_env_id) => {
                                 let slot_idx = slot as usize;
-                                arena.envs[target_env_id.0 as usize]
-                                    .slots
-                                    .get(slot_idx)
-                                    .and_then(|s| s.as_ref())
+                                arena.scopes[target_env_id.0 as usize]
+                                    .get(slot_idx as u32)
                                     .map(Arc::clone)
                             }
                             Err(depth_reached) => {
@@ -2263,8 +2261,8 @@ mod tests {
         // Type annotation names (String, Int, etc.) in test expressions are resolved
         // by the type checker, not the runtime resolver — ignore resolve errors here.
         let root_frame: indexmap::IndexMap<String, ()> = {
-            let arena = ctx.env_arena.borrow();
-            arena.envs[0]
+            let arena = ctx.scope_arena.borrow();
+            arena.scopes[0]
                 .slot_names
                 .iter()
                 .map(|n| (n.clone(), ()))
@@ -7001,7 +6999,7 @@ mod tests {
     /// B-427: tail-recursive LLT function evaluates correctly using builtin names.
     ///
     /// Tests a tail-recursive accumulator function. Uses `builtin-eq-int`,
-    /// `builtin-add`, `builtin-sub` directly — no prelude aliases needed.
+    /// `builtin-add`, `builtin-int-sub` directly — no prelude aliases needed.
     /// The function sums 1..=100 using an accumulator; result must be 5050.
     #[tokio::test]
     async fn test_tco_tail_recursive_function() {
@@ -7014,7 +7012,7 @@ mod tests {
             sum-to: [fn [let n acc]
                 [match [builtin-eq-int n 0]
                     1: acc
-                    0: [sum-to [builtin-sub n 1] [builtin-add acc n]]]]
+                    0: [sum-to [builtin-int-sub n 1] [builtin-add acc n]]]]
             result: [sum-to 100 0]
         ]"#;
 

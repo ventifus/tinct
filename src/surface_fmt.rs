@@ -115,9 +115,9 @@ pub fn fmt_fn(
     // Step 1: Collect all free (non-stdlib, non-param-bound) variable names.
     // Build a minimal stdlib name set from the FlatEnv root (env_id=0) slot names.
     let stdlib_name_set: HashSet<String> = {
-        let arena = ctx.env_arena.borrow();
-        if !arena.envs.is_empty() {
-            arena.envs[0].slot_names.iter().cloned().collect()
+        let arena = ctx.scope_arena.borrow();
+        if !arena.scopes.is_empty() {
+            arena.scopes[0].iter_named().map(|(n, _)| n.to_string()).collect()
         } else {
             HashSet::new()
         }

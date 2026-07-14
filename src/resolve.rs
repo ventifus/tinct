@@ -28,10 +28,10 @@ use std::sync::Arc;
 /// This replaces the old `resolve_file()` mutation of `VarRef.resolved: RefCell<...>`.
 /// The SurfaceExpression tree is immutable; all resolution data lives in the table.
 struct SurfaceResolver {
-    /// Each scope frame is an IndexMap<String, ()> where the slot index of a name
-    /// is its position in the map: `scope.get_index_of(name) -> slot`.
+    /// Each scope frame is an IndexMap<String, u32> mapping name → actual slot index.
+    /// The stored u32 is the real FlatEnv slot, not the IndexMap ordinal position.
     /// The explicit u32 value is dropped — position IS the slot.
-    scopes: Vec<indexmap::IndexMap<String, ()>>,
+    scopes: Vec<indexmap::IndexMap<String, u32>>,
     table: ResolutionTable,
     /// Unresolved VarRefs in expression position: (name, span).
     /// Populated only when suppress_depth == 0.  Positions that are NOT runtime
@@ -55,15 +55,15 @@ impl SurfaceResolver {
     }
 
     fn enter_scope(&mut self, keys: &[String]) {
-        let mut scope: indexmap::IndexMap<String, ()> =
+        let mut scope: indexmap::IndexMap<String, u32> =
             indexmap::IndexMap::with_capacity(keys.len());
-        for key in keys {
-            scope.insert(key.clone(), ());
+        for (slot, key) in keys.iter().enumerate() {
+            scope.insert(key.clone(), slot as u32);
         }
         self.scopes.push(scope);
     }
 
-    fn enter_scope_from_frame(&mut self, frame: &indexmap::IndexMap<String, ()>) {
+    fn enter_scope_from_frame(&mut self, frame: &indexmap::IndexMap<String, u32>) {
         self.scopes.push(frame.clone());
     }
 
@@ -75,9 +75,8 @@ impl SurfaceResolver {
 
     fn resolve_name(&self, name: &str) -> Option<(u32, u32)> {
         for (offset, scope) in self.scopes.iter().rev().enumerate() {
-            if let Some(slot) = scope.get_index_of(name) {
+            if let Some(&slot) = scope.get(name) {
                 let level = u32::try_from(offset).expect("scope depth overflow");
-                let slot = u32::try_from(slot).expect("slot index overflow");
                 return Some((level, slot));
             }
         }
@@ -518,7 +517,7 @@ impl SurfaceResolver {
     fn walk_surface_document(
         &mut self,
         doc: &SurfaceDocument,
-    ) -> Vec<indexmap::IndexMap<String, ()>> {
+    ) -> Vec<indexmap::IndexMap<String, u32>> {
         let mut injected = 0usize;
         let items: Vec<&SurfaceItem> = doc.items.iter().collect();
         let expr_count = items
@@ -589,11 +588,11 @@ impl SurfaceResolver {
 /// ADDED by this document (not including `initial_frames`).
 pub fn resolve_surface_document_inplace(
     doc: &crate::ast::SurfaceDocument,
-    initial_frames: &[indexmap::IndexMap<String, ()>],
+    initial_frames: &[indexmap::IndexMap<String, u32>],
 ) -> (
     ResolutionTable,
     Vec<(String, crate::ast::Span)>,
-    Vec<indexmap::IndexMap<String, ()>>,
+    Vec<indexmap::IndexMap<String, u32>>,
 ) {
     let mut resolver = SurfaceResolver::new();
 
@@ -622,8 +621,8 @@ pub fn resolve_surface_document_inplace(
 /// ADDED by this program (not including `initial_frames`).
 pub fn resolve_surface_program(
     program: &SurfaceProgram,
-    initial_frames: &[indexmap::IndexMap<String, ()>],
-) -> (ResolutionTable, Vec<indexmap::IndexMap<String, ()>>) {
+    initial_frames: &[indexmap::IndexMap<String, u32>],
+) -> (ResolutionTable, Vec<indexmap::IndexMap<String, u32>>) {
     let mut resolver = SurfaceResolver::new();
 
     // Seed from initial_frames (outermost first)

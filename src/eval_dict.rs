@@ -223,9 +223,9 @@ pub(crate) async fn eval_dict_core(
     // the wrong level. Use alloc_child so the display vector inherits all ancestor scopes —
     // this is required for VarRef dispatch at level > 0 (cross-scope variable references).
     let env_id = ctx
-        .env_arena
+        .scope_arena
         .borrow_mut()
-        .alloc_child(crate::arena::EnvId(ctx.current_env_id), entries.len());
+        .alloc_child(crate::arena::ScopeId(ctx.current_env_id), entries.len());
     let mut slot_idx: u32 = 0;
     // Collect (slot_idx, thunk_id, name) tuples for static-key entries so we can
     // batch-acquire the arena lock once after the loop instead of once per entry.
@@ -322,8 +322,8 @@ pub(crate) async fn eval_dict_core(
             value_thunk
         };
 
-        // Values go into FlatEnv slots only (T-1557: Env is type-metadata only).
-        // The letrec scope is maintained via FlatEnv fill_letrec_slot calls below.
+        // Values go into arena slots (T-1557: Env is type-metadata only).
+        // The letrec scope is maintained via arena reserve_slot + fill_slot calls below.
         let thunk_id = ctx.alloc_thunk(thunk);
         if dict_map.insert(key, thunk_id).is_some() {
             // key was moved; reconstruct string representation from entry for error message
@@ -361,10 +361,18 @@ pub(crate) async fn eval_dict_core(
     // Batch-fill letrec slots: acquire the arena borrow once for all static-key entries
     // instead of once per entry. This avoids repeated borrow overhead for
     // dicts with many string-keyed fields.
+    //
+    // Two-phase letrec: first reserve all named slots in the child scope (in order),
+    // then fill each reserved slot from the corresponding source ThunkId.
+    // This ensures child scope slots exist before any are filled, maintaining letrec semantics.
     if !letrec_slots.is_empty() {
-        let mut arena_guard = ctx.env_arena.borrow_mut();
-        for (idx, thunk_id, name) in letrec_slots {
-            arena_guard.fill_letrec_slot(env_id, idx, thunk_id, &name);
+        let mut arena_guard = ctx.scope_arena.borrow_mut();
+        for (idx, _thunk_id, name) in &letrec_slots {
+            let reserved_idx = arena_guard.reserve_slot(env_id, name);
+            debug_assert_eq!(reserved_idx, *idx, "letrec slot index must match reservation order");
+        }
+        for (idx, thunk_id, _name) in letrec_slots {
+            arena_guard.fill_slot(env_id, idx, thunk_id);
         }
     }
 

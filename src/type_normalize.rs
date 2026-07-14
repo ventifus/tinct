@@ -279,7 +279,7 @@ pub(crate) async fn evaluate_resolver(
     // Walk the parent chain `depth` hops from the leaf FlatEnv to reach the ancestor scope
     // that owns the resolver function at `slot_index`.
     //
-    // ThunkId.env_id is a u32 (raw EnvArena index), not an EnvId wrapper.
+    // ThunkId.scope_id is a u32 (raw ScopeArena index), not a ScopeId wrapper.
     //
     // Invariant — Env parent chain depth equals FlatEnv parent chain depth:
     //   Each builtin-eval call allocates exactly one FlatEnv (via builtin-extend-env with
@@ -296,21 +296,21 @@ pub(crate) async fn evaluate_resolver(
     //   loader.llt and test-loader.llt. The type-stage evaluation path does not omit
     //   flat-env: for any document after the initial bootstrap.
     let resolver_thunk_id = {
-        let arena_borrow = eval_ctx.env_arena.borrow();
+        let arena_borrow = eval_ctx.scope_arena.borrow();
         match arena_borrow.walk_parent_chain(type_stage_flat_env_id, depth) {
             Err(_) => {
                 // Depth exceeds parent chain — fn_name not reachable
                 return None;
             }
             Ok(target_env_id) => crate::arena::ThunkId {
-                env_id: target_env_id.0,
+                scope_id: target_env_id.0,
                 slot: slot_index as u32,
             },
         }
     };
 
     // Step 4: Get the resolver function thunk from the arena
-    let resolver_thunk = eval_ctx.env_arena.borrow().get_thunk(resolver_thunk_id);
+    let resolver_thunk = eval_ctx.scope_arena.borrow().get_thunk(resolver_thunk_id);
 
     // Step 5: Convert Type args to TypeNode values
     let type_args: Vec<Value> = args.iter().filter_map(|ty| type_to_typenode(ty)).collect();

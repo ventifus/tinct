@@ -1501,7 +1501,7 @@ pub(crate) fn builtin_str_gte(
 /// Returns all "math" module Rust builtins.
 ///
 /// These are the arithmetic, comparison, bitwise, and numeric conversion builtins that
-/// are NOT in the Core-46 set. The Core-46 items (builtin-add, builtin-sub, builtin-gt,
+/// are NOT in the Core-46 set. The Core-46 items (builtin-add, builtin-int-sub, builtin-gt,
 /// builtin-gte, builtin-lt, builtin-eq-int, builtin-eq-string) stay in core_builtins()
 /// for loader.llt which only has `--- uses: ["core"]`.
 ///

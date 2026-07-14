@@ -92,11 +92,11 @@ impl Drop for ProfilingSpanGuard {
 }
 
 /// Type alias for the optional default expression + FlatEnv environment id pair carried by
-/// guarded thunks. The u32 is an EnvId index into EvalContext.env_arena. Matches value.rs
+/// guarded thunks. The u32 is an EnvId index into EvalContext.scope_arena. Matches value.rs
 /// GuardDefault, enabling lossless round-trip through UnevaluatedState::Guarded.
 type GuardDefault = (
     Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
-    u32, // env_id into EvalContext.env_arena
+    u32, // env_id into EvalContext.scope_arena
 );
 
 /// Collect all lower errors into a single EvalError, combining their messages.
@@ -170,7 +170,7 @@ pub(crate) fn attach_materialization_context(
 /// Snapshot of a thunk's pre-materialization state, used to restore the thunk
 /// when a non-cacheable error occurs.
 ///
-/// After T-1557: args/named use ThunkId; env ids use u32 into EvalContext.env_arena.
+/// After T-1557: args/named use ThunkId; env ids use u32 into EvalContext.scope_arena.
 pub(crate) enum RestoreState {
     PendingBuiltin {
         def: crate::value::BuiltinDef,
@@ -308,7 +308,7 @@ pub(crate) struct MemoizeData {
 
 /// Payload for Cont::PendingCallDispatch. Boxed to keep the Cont enum ≤96 bytes.
 ///
-/// After T-1557: args/named use ThunkId; caller_env_id is u32 into EvalContext.env_arena.
+/// After T-1557: args/named use ThunkId; caller_env_id is u32 into EvalContext.scope_arena.
 /// func_thunk is still Arc<Thunk> since we resolve it immediately from the func ThunkId.
 pub(crate) struct PendingCallDispatchData {
     pub(crate) thunk: Arc<Thunk>,
@@ -368,7 +368,7 @@ pub(crate) struct TypeAssertCheckData {
 
 /// Payload for Cont::BuiltinForceArg. Boxed to keep the Cont enum ≤96 bytes.
 ///
-/// After T-1557: args/named use ThunkId; caller_env_id is u32 into EvalContext.env_arena.
+/// After T-1557: args/named use ThunkId; caller_env_id is u32 into EvalContext.scope_arena.
 pub(crate) struct BuiltinForceArgData {
     pub(crate) thunk: Arc<Thunk>,
     pub(crate) def: crate::value::BuiltinDef,
@@ -1423,7 +1423,7 @@ pub(crate) async fn force_step(
 
             // Evaluate the first expression and push a SequentialStep to handle the result
             let first_expr = &exprs[0];
-            let arena_len_before_first = thunk_ctx.env_arena.borrow().envs.len() as u32;
+            let arena_len_before_first = thunk_ctx.scope_arena.borrow().scopes.len() as u32;
             stack.push(Cont::SequentialStep(Box::new(
                 crate::eval_materialize::SequentialStepData {
                     idx: 0,
@@ -2954,7 +2954,7 @@ pub(crate) async fn apply_cont(
                         // (arena_len_before = that first new env = the dict's letrec root scope).
                         // This ensures VarRef level coordinates from the resolver align with the
                         // FlatEnv display chain at evaluation time.
-                        let current_arena_len = ctx.env_arena.borrow().envs.len() as u32;
+                        let current_arena_len = ctx.scope_arena.borrow().scopes.len() as u32;
                         let seq_env_id = if current_arena_len > arena_len_before {
                             arena_len_before // first new FlatEnv = intermediate dict's letrec root
                         } else {
@@ -2962,7 +2962,7 @@ pub(crate) async fn apply_cont(
                         };
 
                         // Record arena length for the NEXT expression's SequentialStepData.
-                        let next_arena_len = ctx.env_arena.borrow().envs.len() as u32;
+                        let next_arena_len = ctx.scope_arena.borrow().scopes.len() as u32;
 
                         // Proceed to the next expression.
                         let next_expr = &exprs[next_idx];
@@ -2981,7 +2981,7 @@ pub(crate) async fn apply_cont(
                         }
                     } else {
                         // No static keys — continue with same env_id.
-                        let next_arena_len = ctx.env_arena.borrow().envs.len() as u32;
+                        let next_arena_len = ctx.scope_arena.borrow().scopes.len() as u32;
                         let next_expr = &exprs[next_idx];
                         stack.push(Cont::SequentialStep(Box::new(SequentialStepData {
                             idx: next_idx,
@@ -3035,13 +3035,13 @@ pub(crate) async fn apply_cont(
 
                     // T-1558: FlatEnv scope advancement for variant payloads.
                     let _ = static_key_set;
-                    let current_arena_len = ctx.env_arena.borrow().envs.len() as u32;
+                    let current_arena_len = ctx.scope_arena.borrow().scopes.len() as u32;
                     let seq_env_id = if current_arena_len > arena_len_before {
                         arena_len_before
                     } else {
                         env_id
                     };
-                    let next_arena_len = ctx.env_arena.borrow().envs.len() as u32;
+                    let next_arena_len = ctx.scope_arena.borrow().scopes.len() as u32;
 
                     let next_expr = &exprs[next_idx];
                     stack.push(Cont::SequentialStep(Box::new(SequentialStepData {
@@ -3680,12 +3680,22 @@ async fn eval_case_arm_structural_pattern(
     // The resolver assigned (level=0, slot=K) coordinates to uses of these names
     // in the arm body, where K is the declaration-order index matching binding_map.
     let arm_env_id = ctx
-        .env_arena
+        .scope_arena
         .borrow_mut()
-        .alloc_child(crate::arena::EnvId(ctx.current_env_id), binding_map.len());
+        .alloc_child(crate::arena::ScopeId(ctx.current_env_id), binding_map.len());
+
+    // Reserve one slot per named binding in declaration order.
+    // bind_or_pin_name fills these via fill_slot(arm_env_id, slot, thunk_id).
+    {
+        let mut arena = ctx.scope_arena.borrow_mut();
+        for (name, expected_slot) in binding_map {
+            let reserved = arena.reserve_slot(arm_env_id, name);
+            debug_assert_eq!(reserved, *expected_slot, "arm slot reservation order must match binding_map");
+        }
+    }
 
     // Legacy placeholder — eval_structural_pattern_inner no longer inserts into this env;
-    // all bindings go into the FlatEnv slots allocated above.
+    // all bindings go into the arena slots allocated above.
     let arm_env_legacy = Arc::new(RwLock::new(crate::env::Env::new()));
 
     if eval_structural_pattern_inner(
@@ -3716,7 +3726,7 @@ async fn eval_case_arm_structural_pattern(
 fn eval_structural_pattern_inner<'a>(
     pattern: &'a CoreExpr,
     binding_map: &'a IndexMap<String, u32>,
-    arm_env_id: crate::arena::EnvId,
+    arm_env_id: crate::arena::ScopeId,
     scrutinee_value: &'a Value,
     arm_env_legacy: &'a Arc<RwLock<crate::env::Env>>,
     match_span: Span,
@@ -4104,7 +4114,7 @@ fn eval_structural_pattern_inner<'a>(
 async fn bind_or_pin_name(
     name: &str,
     binding_map: &IndexMap<String, u32>,
-    arm_env_id: crate::arena::EnvId,
+    arm_env_id: crate::arena::ScopeId,
     scrutinee_value: &Value,
     match_span: &Span,
     ctx: &Arc<EvalContext>,
@@ -4120,9 +4130,9 @@ async fn bind_or_pin_name(
             match_span.clone(),
         ));
         let thunk_id = ctx.alloc_thunk(thunk);
-        ctx.env_arena
+        ctx.scope_arena
             .borrow_mut()
-            .fill_letrec_slot(arm_env_id, slot, thunk_id, name);
+            .fill_slot(arm_env_id, slot, thunk_id);
         Ok(true)
     } else {
         // Pin: look up name via de Bruijn coordinates in env, compare with scrutinee.
@@ -4135,7 +4145,7 @@ async fn bind_or_pin_name(
         // FlatEnv dispatch for pin lookup: look up (pin_level, pin_slot) via parent chain.
         // walk_parent_chain walks `pin_level` hops from current_env_id to reach the target scope.
         let pin_thunk = {
-            let arena = ctx.env_arena.borrow();
+            let arena = ctx.scope_arena.borrow();
             let level_idx = pin_level as usize;
             match arena.walk_parent_chain(ctx.current_env_id, level_idx) {
                 Err(depth_reached) => {
@@ -4150,10 +4160,8 @@ async fn bind_or_pin_name(
                 }
                 Ok(target_env_id) => {
                     let slot_idx = pin_slot as usize;
-                    arena.envs[target_env_id.0 as usize]
-                        .slots
-                        .get(slot_idx)
-                        .and_then(|s| s.as_ref())
+                    arena.scopes[target_env_id.0 as usize]
+                        .get(slot_idx as u32)
                         .map(Arc::clone)
                 }
             }

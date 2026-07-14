@@ -279,39 +279,43 @@ pub(crate) async fn bind_args_thunks(
         }
     }
 
-    // Allocate a child FlatEnv for the call frame. The display vector inherits all
+    // Allocate a child scope for the call frame. The display vector inherits all
     // ancestor scopes from closure_env_id plus this new scope, enabling O(1) VarRef
     // dispatch at any level (level=0 hits this frame; level=1 hits the closure scope, etc.).
     let slot_count = params.len(); // one slot per param (regular + variadic)
     let call_env_id = ctx
-        .env_arena
+        .scope_arena
         .borrow_mut()
-        .alloc_child(crate::arena::EnvId(closure_env_id), slot_count);
+        .alloc_child(crate::arena::ScopeId(closure_env_id), slot_count);
+
+    // Phase 1: Reserve all param slots in the call frame scope, in declaration order.
+    // This establishes the correct slot indices (matching de Bruijn slot coordinates from
+    // the resolver) before any slots are filled.
+    {
+        let mut arena = ctx.scope_arena.borrow_mut();
+        for param in params.iter() {
+            arena.reserve_slot(call_env_id, &param.name);
+        }
+    }
 
     // BIND-POSITIONAL + BIND-NAMED: Fill each regular param slot.
     // Slot index matches the param position (de Bruijn slot assigned by the resolver).
     //
-    // For positional and named args that are already ThunkIds, use fill_letrec_slot directly
+    // For positional and named args that are already ThunkIds, use fill_slot directly
     // to copy the Arc<Thunk> reference without allocating a redundant intermediate slot.
     // For defaults (SurfaceNode), allocate a new Thunk::new_surface and then fill.
     for (i, param) in regular_params.iter().enumerate() {
         if i < positional.len() {
             // Positional arg: copy the ThunkId's Arc<Thunk> directly into the call frame slot.
-            ctx.env_arena.borrow_mut().fill_letrec_slot(
-                call_env_id,
-                i as u32,
-                positional[i],
-                &param.name,
-            );
+            ctx.scope_arena
+                .borrow_mut()
+                .fill_slot(call_env_id, i as u32, positional[i]);
         } else if let Some(named_args) = named {
             if let Some(&named_id) = named_args.get(&param.name) {
                 // Named arg: copy directly.
-                ctx.env_arena.borrow_mut().fill_letrec_slot(
-                    call_env_id,
-                    i as u32,
-                    named_id,
-                    &param.name,
-                );
+                ctx.scope_arena
+                    .borrow_mut()
+                    .fill_slot(call_env_id, i as u32, named_id);
             } else if let Some(default_node) = get_default(param) {
                 // Default param: evaluate lazily in the default_env scope.
                 // Use empty res/types tables — defaults are surface nodes whose variable
@@ -325,12 +329,9 @@ pub(crate) async fn bind_args_thunks(
                     call_span.clone(),
                 ));
                 let default_id = ctx.alloc_thunk(default_thunk);
-                ctx.env_arena.borrow_mut().fill_letrec_slot(
-                    call_env_id,
-                    i as u32,
-                    default_id,
-                    &param.name,
-                );
+                ctx.scope_arena
+                    .borrow_mut()
+                    .fill_slot(call_env_id, i as u32, default_id);
             }
             // else: required param with no coverage — already caught by arity check.
         } else if let Some(default_node) = get_default(param) {
@@ -344,12 +345,9 @@ pub(crate) async fn bind_args_thunks(
                 call_span.clone(),
             ));
             let default_id = ctx.alloc_thunk(default_thunk);
-            ctx.env_arena.borrow_mut().fill_letrec_slot(
-                call_env_id,
-                i as u32,
-                default_id,
-                &param.name,
-            );
+            ctx.scope_arena
+                .borrow_mut()
+                .fill_slot(call_env_id, i as u32, default_id);
         }
         // else: required param with no arg — already caught by arity check.
     }
@@ -357,7 +355,7 @@ pub(crate) async fn bind_args_thunks(
     // BIND-VARIADIC: Build the variadic dict from remaining positionals and unmatched named.
     // The variadic param receives a Dict with integer keys for extra positionals and
     // string keys for named args that didn't match any regular param.
-    if let Some(variadic) = variadic_param {
+    if let Some(_variadic) = variadic_param {
         let mut variadic_dict: IndexMap<crate::value::HashableValue, ThunkId> = IndexMap::new();
 
         // Remaining positional args beyond regular_params.len()
@@ -388,12 +386,9 @@ pub(crate) async fn bind_args_thunks(
             call_span.clone(),
         ));
         let variadic_id = ctx.alloc_thunk(variadic_thunk);
-        ctx.env_arena.borrow_mut().fill_letrec_slot(
-            call_env_id,
-            variadic_slot,
-            variadic_id,
-            &variadic.name,
-        );
+        ctx.scope_arena
+            .borrow_mut()
+            .fill_slot(call_env_id, variadic_slot, variadic_id);
     }
 
     Ok(call_env_id.0)

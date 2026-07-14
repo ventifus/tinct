@@ -645,15 +645,13 @@ pub(crate) fn eval_core_expr<'a>(
                 // level=0 is innermost (current scope — no hops needed)
                 // level=N is N scopes outward → walk N parent pointers
                 let thunk = {
-                    let arena = ctx.env_arena.borrow();
+                    let arena = ctx.scope_arena.borrow();
                     let level_idx = *level as usize;
                     match arena.walk_parent_chain(ctx.current_env_id, level_idx) {
                         Ok(target_env_id) => {
                             let slot_idx = *slot as usize;
-                            arena.envs[target_env_id.0 as usize]
-                                .slots
-                                .get(slot_idx)
-                                .and_then(|s| s.as_ref())
+                            arena.scopes[target_env_id.0 as usize]
+                                .get(slot_idx as u32)
                                 .map(Arc::clone)
                         }
                         Err(depth_reached) => {
@@ -667,15 +665,18 @@ pub(crate) fn eval_core_expr<'a>(
                                     // chain[0] is root (outermost), chain[N-1] is innermost.
                                     // level 0 = innermost = chain[N-1], level k = chain[N-1-k].
                                     let scope_level = scope_depth - 1 - chain_idx;
-                                    let names = &arena.envs[env_id.0 as usize].slot_names;
-                                    let preview: Vec<&str> = names
-                                        .iter()
-                                        .filter(|s| !s.is_empty())
+                                    let preview: Vec<&str> = arena.scopes[env_id.0 as usize]
+                                        .iter_named()
+                                        .filter(|(n, _)| !n.is_empty())
                                         .take(5)
-                                        .map(|s| s.as_str())
+                                        .map(|(n, _)| n)
                                         .collect();
+                                    let total_names = arena.scopes[env_id.0 as usize]
+                                        .iter_named()
+                                        .filter(|(n, _)| !n.is_empty())
+                                        .count();
                                     let ellipsis =
-                                        if names.iter().filter(|s| !s.is_empty()).count() > 5 {
+                                        if total_names > 5 {
                                             ", ..."
                                         } else {
                                             ""

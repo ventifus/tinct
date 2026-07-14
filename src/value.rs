@@ -1,4 +1,4 @@
-//! Runtime value types: `Value`, `Thunk` (lazy memoization), `Environment` (legacy name chain), `FlatEnv` (runtime scope via `EnvArena`).
+//! Runtime value types: `Value`, `Thunk` (lazy memoization), `Environment` (legacy name chain), `Scope` (runtime scope via `ScopeArena`).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -21,7 +21,7 @@ pub use crate::arena::ThunkId;
 
 /// Type alias for the optional default expression + environment pair in guarded thunks.
 /// Reduces type_complexity in UnevaluatedState::Guarded and Thunk constructors.
-/// `env_id` is the u32 index into EnvArena for the environment in which the default is evaluated.
+/// `env_id` is the u32 index into ScopeArena for the environment in which the default is evaluated.
 type GuardDefault = (Arc<Spanned<CoreExpr>>, u32);
 
 /// Runtime metadata for user-defined functions — stored on `Value::Function`.
@@ -53,7 +53,7 @@ pub struct BuiltinArgs {
     pub named: Option<IndexMap<String, ThunkId>>,
     pub call_span: Span,
     pub ctx: Arc<crate::eval::EvalContext>,
-    /// Caller's FlatEnv env_id — enables FlatEnv-based variable lookup in builtins.
+    /// Caller's scope id — enables scope-based variable lookup in builtins.
     /// Copied from UnevaluatedState::Builtin.caller_env_id at materialization time.
     pub caller_env_id: u32,
 }
@@ -538,7 +538,7 @@ pub enum Value {
     Builder(Arc<Builder>),
     /// User-defined function (closure capturing its defining environment).
     /// `body` is stored as `Arc<Spanned<CoreExpr>>` (Parts-E migration: no Expr round-trip).
-    /// `closure_env_id` is the FlatEnv EnvId index into EvalContext.env_arena for the closure scope.
+    /// `closure_env_id` is the ScopeId index into EvalContext.scope_arena for the closure scope.
     Function {
         params: Rc<Vec<Param>>,
         body: Arc<Spanned<CoreExpr>>,
@@ -1079,7 +1079,7 @@ pub enum UnevaluatedState {
         node: Arc<SurfaceNode>,
         res: Arc<crate::ast::ResolutionTable>,
         types: Arc<crate::ast::TypeAnnotationTable>,
-        /// Index into EvalContext.env_arena for the evaluation environment.
+        /// Index into EvalContext.scope_arena (ScopeArena) for the evaluation environment.
         env_id: u32,
         ctx: Arc<crate::eval::EvalContext>,
     },
@@ -1092,7 +1092,7 @@ pub enum UnevaluatedState {
     /// CoreExpr body thunk — created by invoke_function when body is Arc<Spanned<CoreExpr>>.
     CoreExpr {
         expr: Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
-        /// Index into EvalContext.env_arena for the evaluation environment.
+        /// Index into EvalContext.scope_arena (ScopeArena) for the evaluation environment.
         env_id: u32,
         ctx: Arc<crate::eval::EvalContext>,
     },
@@ -1102,7 +1102,7 @@ pub enum UnevaluatedState {
         args: Vec<ThunkId>,
         named: Option<IndexMap<String, ThunkId>>,
         call_span: Span,
-        /// Index into EvalContext.env_arena for the caller's environment.
+        /// Index into EvalContext.scope_arena (ScopeArena) for the caller's environment.
         caller_env_id: u32,
         ctx: Arc<crate::eval::EvalContext>,
     },
@@ -1112,7 +1112,7 @@ pub enum UnevaluatedState {
         args: Vec<ThunkId>,
         named: Option<Box<IndexMap<String, ThunkId>>>,
         call_span: Span,
-        /// Index into EvalContext.env_arena for the caller's environment.
+        /// Index into EvalContext.scope_arena (ScopeArena) for the caller's environment.
         caller_env_id: u32,
         ctx: Arc<crate::eval::EvalContext>,
         /// Original CoreExpr::Call node for DepthExceeded retry path.

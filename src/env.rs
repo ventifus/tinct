@@ -152,7 +152,7 @@ impl Env {
     /// This is used by `build_core_env` to register builtin names so the resolver
     /// can assign de Bruijn (level, slot) coordinates without requiring a TypeScheme
     /// at bootstrap time. The runtime thunk goes in the root FlatEnv at the same
-    /// slot position (see `EvalContext::new_env_arena`).
+    /// slot position (see `EvalContext::new_scope_arena`).
     ///
     /// If a slot already exists for `name`, this is a no-op (the existing entry,
     /// including any scheme, is preserved). If no slot exists, inserts
@@ -537,7 +537,6 @@ impl Env {
             ("builtin-lte", "<="),
             ("builtin-eq", "="),
             ("builtin-add", "+"),
-            ("builtin-sub", "-"),
             ("builtin-mul", "*"),
             ("builtin-div", "/"),
             ("builtin-filter", "filter"),

@@ -263,12 +263,12 @@ pub async fn typecheck_surface_program_with_env(
     // to their letrec slots. T-1576: When an eval_ctx is provided, use its current_env_id
     // and arena to seed the resolver from FlatEnv. Otherwise use bootstrap mode (empty initial_frames).
     state.resolution_table = if let Some(ref ctx) = state.eval_ctx {
-        let root_frame: indexmap::IndexMap<String, ()> = {
-            let arena = ctx.env_arena.borrow();
-            arena.envs[0]
-                .slot_names
-                .iter()
-                .map(|n| (n.clone(), ()))
+        let root_frame: indexmap::IndexMap<String, u32> = {
+            let arena = ctx.scope_arena.borrow();
+            arena.scopes[0]
+                .iter_named()
+                .filter(|(n, _)| !n.is_empty() && !n.starts_with('#'))
+                .map(|(n, slot)| (n.to_string(), slot))
                 .collect()
         };
         let (table, _frames) = crate::resolve::resolve_surface_program(program, &[root_frame]);

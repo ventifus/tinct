@@ -215,18 +215,21 @@ pub async fn run_loader_pipeline(
     // coordinates at eval time, so typeclass method dispatch works in the production loader
     // path where typecheck precedes eval.
     let eval_ctx_with_frames: Arc<eval::EvalContext> = {
-        let root_frame: indexmap::IndexMap<String, ()> = {
-            let arena = eval_ctx.env_arena.borrow();
-            arena.envs[0]
-                .slot_names
-                .iter()
-                .map(|n| (n.clone(), ()))
+        // Build root_frame as name→actual_slot_index (not IndexMap ordinal position).
+        // iter_named() yields (name, slot_idx) pairs with the real slot index,
+        // avoiding the deduplication bug where "" names collapse in IndexMap.
+        let root_frame: indexmap::IndexMap<String, u32> = {
+            let arena = eval_ctx.scope_arena.borrow();
+            arena.scopes[0]
+                .iter_named()
+                .filter(|(n, _)| !n.is_empty() && !n.starts_with('#'))
+                .map(|(n, slot)| (n.to_string(), slot))
                 .collect()
         };
         let (_table, new_frames) =
             resolve::resolve_surface_program(&loader_program, &[root_frame.clone()]);
         // Combine: root_frame (outermost) followed by frames introduced by the program.
-        let all_frames: Vec<indexmap::IndexMap<String, ()>> =
+        let all_frames: Vec<indexmap::IndexMap<String, u32>> =
             std::iter::once(root_frame).chain(new_frames).collect();
         eval_ctx.with_scope_frames(Arc::new(all_frames))
     };

@@ -2116,7 +2116,7 @@ pub(crate) fn builtin_resolve(
                 // scope-frames: is an auto-indexed dict of auto-indexed dicts of strings:
                 // {0: {0: "field-get", 1: "slot-get", ...}, 1: {...}, ...}.
                 // An empty dict (scope-frames: []) is valid and means resolve with no outer scope.
-                let initial_frames: Vec<indexmap::IndexMap<String, ()>> = if let Some(sf_thunk_id) =
+                let initial_frames: Vec<indexmap::IndexMap<String, u32>> = if let Some(sf_thunk_id) =
                     opt_scope_frames_thunk
                 {
                     // Decode scope-frames: — an auto-indexed dict of auto-indexed dicts of
@@ -2161,9 +2161,9 @@ pub(crate) fn builtin_resolve(
                                             .collect();
                                         name_entries.sort_by_key(|(i, _)| *i);
 
-                                        let mut frame: indexmap::IndexMap<String, ()> =
+                                        let mut frame: indexmap::IndexMap<String, u32> =
                                             indexmap::IndexMap::new();
-                                        for (_, name_tid) in name_entries {
+                                        for (slot_i64, name_tid) in name_entries {
                                             let name_thunk = ctx.get_thunk(name_tid);
                                             let name_val = crate::eval::materialize(
                                                 &name_thunk,
@@ -2173,7 +2173,7 @@ pub(crate) fn builtin_resolve(
                                             .await?;
                                             match name_val.as_str() {
                                                 Some(s) => {
-                                                    frame.insert(s.to_string(), ());
+                                                    frame.insert(s.to_string(), slot_i64 as u32);
                                                 }
                                                 None => {
                                                     return Err(EvalError::type_mismatch_ctx(
@@ -2266,8 +2266,8 @@ pub(crate) fn builtin_resolve(
                     for (i, frame) in initial_frames.iter().chain(new_frames.iter()).enumerate() {
                         let mut inner: indexmap::IndexMap<HashableValue, ThunkId> =
                             indexmap::IndexMap::new();
-                        for (j, (name, ())) in frame.iter().enumerate() {
-                            inner.insert(HashableValue::Int(j as i64), alloc(string_val(name)));
+                        for (name, &slot) in frame.iter() {
+                            inner.insert(HashableValue::Int(slot as i64), alloc(string_val(name)));
                         }
                         outer.insert(HashableValue::Int(i as i64), alloc(Value::Dict(inner)));
                     }
@@ -3435,23 +3435,27 @@ pub(crate) fn builtin_extend_env(
                     .filter(|(k, _)| matches!(k, HashableValue::Str(_)))
                     .count();
 
-                // Allocate child FlatEnv as child of parent to chain the display vector.
+                // Allocate child scope as child of parent to chain the display vector.
                 let child_env_id = ctx
-                    .env_arena
+                    .scope_arena
                     .borrow_mut()
-                    .alloc_child(crate::arena::EnvId(parent_flat_env_id), binding_count);
+                    .alloc_child(crate::arena::ScopeId(parent_flat_env_id), binding_count);
 
-                // Fill FlatEnv slots with named thunk values.
-                let mut slot_idx = 0u32;
-                for (key, thunk_id) in bindings.iter() {
-                    if let HashableValue::Str(name) = key {
-                        ctx.env_arena.borrow_mut().fill_letrec_slot(
-                            child_env_id,
-                            slot_idx,
-                            *thunk_id,
-                            name,
-                        );
-                        slot_idx += 1;
+                // Fill scope slots with named thunk values.
+                // Two-phase: first reserve all slots in order, then fill from source ThunkIds.
+                let string_bindings: Vec<(&std::rc::Rc<str>, crate::arena::ThunkId)> = bindings
+                    .iter()
+                    .filter_map(|(k, &tid)| {
+                        if let HashableValue::Str(name) = k { Some((name, tid)) } else { None }
+                    })
+                    .collect();
+                {
+                    let mut arena = ctx.scope_arena.borrow_mut();
+                    for (name, _) in &string_bindings {
+                        arena.reserve_slot(child_env_id, name);
+                    }
+                    for (slot_idx, (_, thunk_id)) in string_bindings.iter().enumerate() {
+                        arena.fill_slot(child_env_id, slot_idx as u32, *thunk_id);
                     }
                 }
 
@@ -3595,17 +3599,17 @@ pub(crate) fn builtin_eval_macro_ast(
         // de Bruijn coordinates rather than falling back to name-based lookup via MAX/MAX.
         // Using the FlatEnv parent chain here is correct for macros: they are generated at
         // runtime and need to see the same lexical scope as the call site.
-        let initial_frames: Vec<indexmap::IndexMap<String, ()>> = {
-            let arena = ctx.env_arena.borrow();
+        let initial_frames: Vec<indexmap::IndexMap<String, u32>> = {
+            let arena = ctx.scope_arena.borrow();
             let chain = arena.collect_parent_chain(call_site_env_id);
             chain
                 .iter()
                 .map(|&id| {
-                    arena.envs[id.0 as usize]
-                        .slot_names
-                        .iter()
-                        .map(|n| (n.clone(), ()))
-                        .collect()
+                    arena.scopes[id.0 as usize]
+                        .iter_named()
+                        .filter(|(n, _)| !n.is_empty() && !n.starts_with('#'))
+                        .map(|(n, slot)| (n.to_string(), slot))
+                        .collect::<indexmap::IndexMap<String, u32>>()
                 })
                 .collect()
         };
@@ -4788,15 +4792,14 @@ pub(crate) fn builtin_cap_env_has(
         let found = match env_val {
             Value::Int(flat_env_id) => {
                 // Look up the name in the FlatEnv parent chain slot_names.
-                let arena = ctx.env_arena.borrow();
+                let arena = ctx.scope_arena.borrow();
                 let env_id = flat_env_id as u32;
-                if (env_id as usize) < arena.envs.len() {
+                if (env_id as usize) < arena.scopes.len() {
                     let chain = arena.collect_parent_chain(env_id);
                     chain.iter().any(|eid| {
-                        arena.envs[eid.0 as usize]
-                            .slot_names
-                            .iter()
-                            .any(|n| n.as_str() == name)
+                        arena.scopes[eid.0 as usize]
+                            .iter_named()
+                            .any(|(n, _)| n == name)
                     })
                 } else {
                     false
@@ -4824,7 +4827,7 @@ pub(crate) fn builtin_cap_env_has(
 ///
 /// Takes 1 positional arg (String name). Returns `Value::Arena { name, start_env_id }`.
 /// The arena tracks a named scope starting at `start_env_id`; the dynamic end is always
-/// `envs.len()` at drop/migrate time. Scope is created in the arena's `EnvArena` with
+/// `scopes.len()` at drop/migrate time. Scope is created in the `ScopeArena` with
 /// zero initial slot capacity.
 pub(crate) fn builtin_arena_new(
     ctx_arg: BuiltinArgs,
@@ -4859,7 +4862,7 @@ pub(crate) fn builtin_arena_new(
                 .into())
             }
         };
-        let start_env_id = ctx.env_arena.borrow_mut().alloc_root(0);
+        let start_env_id = ctx.scope_arena.borrow_mut().alloc_root(0);
         Ok(Arc::new(Thunk::new_materialized(
             Value::Arena {
                 name,
@@ -4912,19 +4915,19 @@ pub(crate) fn builtin_arena_drop(
         // arena; no other arenas may have been created after this one. For the standard
         // usage pattern (arena-new → builtin-eval → arena-migrate → arena-drop), this
         // always holds. The debug_assert below catches violations in debug builds.
-        let end_env_id = ctx.env_arena.borrow().envs.len() as u32;
+        let end_env_id = ctx.scope_arena.borrow().scopes.len() as u32;
         debug_assert!(
             end_env_id >= start_env_id,
             "arena-drop: end_env_id ({end_env_id}) < start_env_id ({start_env_id}) — double-drop or corrupt arena handle"
         );
-        let mut arena_mut = ctx.env_arena.borrow_mut();
+        let mut arena_mut = ctx.scope_arena.borrow_mut();
         for eid in start_env_id..end_env_id {
-            arena_mut.drop_scope(crate::arena::EnvId(eid));
+            arena_mut.drop_scope(crate::arena::ScopeId(eid));
         }
         // Truncate the arena vec to free the empty FlatEnv shells.
         // LIFO invariant: start_env_id is the stack top, so everything from
         // start_env_id onward belongs to this arena and can be reclaimed.
-        arena_mut.envs.truncate(start_env_id as usize);
+        arena_mut.scopes.truncate(start_env_id as usize);
         Ok(Arc::new(Thunk::new_materialized(
             Value::Dict(indexmap::IndexMap::new()),
             call_span,
@@ -4972,15 +4975,15 @@ pub(crate) fn builtin_arena_stats(
             }
         };
         let (thunks_allocated, thunks_live, scope_count) = {
-            let arena = ctx.env_arena.borrow();
-            let end = arena.envs.len() as u32;
+            let arena = ctx.scope_arena.borrow();
+            let end = arena.scopes.len() as u32;
             let mut allocated = 0u64;
             let mut live = 0i64;
             let mut scopes = 0u32;
             for eid in start_env_id..end {
-                let env = &arena.envs[eid as usize];
+                let env = &arena.scopes[eid as usize];
                 allocated += env.alloc_count.load(std::sync::atomic::Ordering::Relaxed);
-                live += env.slots.iter().filter(|s| s.is_some()).count() as i64;
+                live += env.count_live() as i64;
                 scopes += 1;
             }
             (allocated, live, scopes)
@@ -5056,7 +5059,7 @@ pub(crate) fn builtin_arena_migrate(
         };
         // The source range is [start, current arena length) — captures all scopes allocated
         // during evaluation in the source arena.
-        let src_end = ctx.env_arena.borrow().envs.len() as u32;
+        let src_end = ctx.scope_arena.borrow().scopes.len() as u32;
         let src_range = src_start..src_end;
 
         // Force the destination arena (args[2]) to get its env_id.
@@ -5089,11 +5092,11 @@ pub(crate) fn builtin_arena_migrate(
         let mut thunk_map = std::collections::HashMap::new();
         let mut env_map = std::collections::HashMap::new();
         let migrated_id = {
-            let mut arena_mut = ctx.env_arena.borrow_mut();
+            let mut arena_mut = ctx.scope_arena.borrow_mut();
             crate::arena::migrate_thunk_id(
                 args[0],
                 &src_range,
-                crate::arena::EnvId(dst_env_id),
+                crate::arena::ScopeId(dst_env_id),
                 &mut thunk_map,
                 &mut env_map,
                 &mut arena_mut,

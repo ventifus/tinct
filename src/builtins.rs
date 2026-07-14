@@ -675,7 +675,7 @@ pub fn build_core_env() -> Arc<RwLock<crate::env::Env>> {
     // T-1557: Env is type-metadata only. Runtime values are stored in FlatEnv/arena.
     // Insert each builtin name into the slotted IndexMap so the resolver can assign
     // de Bruijn (level, slot) coordinates. The actual Value::Builtin thunks are placed
-    // in the root FlatEnv (slot 0, 1, 2, …) by EvalContext::new_env_arena, in the SAME
+    // in the root scope (slot 0, 1, 2, …) by EvalContext::new_scope_arena, in the SAME
     // iteration order as core_builtins(). The two orderings must stay in sync.
     use crate::builtins_core::core_builtins;
     let env = crate::env::Env::new();
@@ -769,8 +769,8 @@ mod tests {
         crate::desugar::desugar_surface_program(&mut program);
         // Seed resolver from FlatEnv so builtin names resolve to de Bruijn coords.
         let root_frame: indexmap::IndexMap<String, ()> = {
-            let arena = ctx.env_arena.borrow();
-            arena.envs[0]
+            let arena = ctx.scope_arena.borrow();
+            arena.scopes[0]
                 .slot_names
                 .iter()
                 .map(|n| (n.clone(), ()))

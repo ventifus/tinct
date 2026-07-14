@@ -52,14 +52,14 @@ pub struct LowerDiagnostic {
 ///
 /// Returns `None` if the name is not found in any frame.
 fn resolve_name_in_frames(
-    frames: &[indexmap::IndexMap<String, ()>],
+    frames: &[indexmap::IndexMap<String, u32>],
     name: &str,
 ) -> Option<(u32, u32)> {
     // frames[0] = outermost, frames[n-1] = innermost
     // level 0 = innermost → frames[n-1]; level k = frames[n-1-k]
     for (offset, frame) in frames.iter().rev().enumerate() {
-        if let Some(slot) = frame.get_index_of(name) {
-            return Some((offset as u32, slot as u32));
+        if let Some(&slot) = frame.get(name) {
+            return Some((offset as u32, slot));
         }
     }
     None
@@ -85,7 +85,7 @@ fn resolve_name_in_frames(
 /// initialized via `with_scope_frames()` (test contexts, bootstrap paths).
 pub fn lower(
     arc: &Arc<SurfaceNode>,
-    scope_frames: Option<&[indexmap::IndexMap<String, ()>]>,
+    scope_frames: Option<&[indexmap::IndexMap<String, u32>]>,
 ) -> (Spanned<CoreExpr>, Vec<LowerDiagnostic>) {
     let mut diagnostics = Vec::new();
     let spanned = lower_inner(arc, &mut diagnostics, scope_frames);
@@ -105,7 +105,7 @@ pub fn lower(
 pub(crate) fn lower_inner(
     arc: &Arc<SurfaceNode>,
     diagnostics: &mut Vec<LowerDiagnostic>,
-    scope_frames: Option<&[indexmap::IndexMap<String, ()>]>,
+    scope_frames: Option<&[indexmap::IndexMap<String, u32>]>,
 ) -> Spanned<CoreExpr> {
     let span = arc.span.clone();
     let core_expr = lower_expr(arc, &arc.expr, diagnostics, scope_frames);
@@ -243,7 +243,7 @@ fn lower_expr(
     arc: &Arc<SurfaceNode>,
     expr: &SurfaceExpression,
     diagnostics: &mut Vec<LowerDiagnostic>,
-    scope_frames: Option<&[indexmap::IndexMap<String, ()>]>,
+    scope_frames: Option<&[indexmap::IndexMap<String, u32>]>,
 ) -> CoreExpr {
     match expr {
         SurfaceExpression::Int(n) => CoreExpr::Int(*n),
@@ -318,11 +318,18 @@ fn lower_expr(
             // diagnostic so the caller fails loudly rather than silently emitting MAX/MAX.
             let (field_get_level, field_get_slot) = match resolution.get() {
                 Some(Some((level, slot))) => (level, slot),
-                Some(None) | None => {
-                    debug_assert!(false, "field-get: resolver coordinates missing — resolver did not run on this node");
+                state @ (Some(None) | None) => {
+                    let why = if state.is_none() {
+                        "resolver did not run on this node"
+                    } else {
+                        "field-get not found in any scope (resolver ran but returned None)"
+                    };
                     diagnostics.push(LowerDiagnostic {
                         kind: LowerDiagnosticKind::Error,
-                        message: "field-get: resolver coordinates missing — resolver did not run on this node".to_string(),
+                        message: format!(
+                            "field-get: missing resolver coordinates for `.{}` — {}",
+                            field, why
+                        ),
                         span: arc.span.clone(),
                     });
                     return CoreExpr::Placeholder;
@@ -1225,7 +1232,7 @@ fn lower_type_alias_to_constructor_dict(
     type_name_opt: Option<String>,
     body: &Arc<SurfaceNode>,
     diagnostics: &mut Vec<LowerDiagnostic>,
-    scope_frames: Option<&[indexmap::IndexMap<String, ()>]>,
+    scope_frames: Option<&[indexmap::IndexMap<String, u32>]>,
 ) -> CoreExpr {
     use crate::ast::CoreEntry;
 

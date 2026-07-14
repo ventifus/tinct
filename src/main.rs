@@ -1875,7 +1875,7 @@ async fn run_eval(
         None // unrestricted
     };
 
-    // Arena sharing invariant: all stages in the pipeline share the same EnvArena so that
+    // Arena sharing invariant: all stages in the pipeline share the same ScopeArena so that
     // ThunkIds allocated for %programs entries remain valid throughout evaluation.
     // The eval_ctx created below owns the arena; fallback pipeline stages derive from it.
 
@@ -1954,7 +1954,7 @@ async fn run_eval(
     // "ProgramItem.Expr" — the same tags declared in loader.llt dict 2. This is the
     // one Rust↔tinct bootstrap contract for %programs (see doc/whatif/type-foundations.md).
 
-    // Create the base eval context (owns the EnvArena used by all %programs thunks).
+    // Create the base eval context (owns the ScopeArena used by all %programs thunks).
     let cwd_for_ctx = {
         // AMBIENT-OK: CWD at startup, operator-controlled.
         #[allow(clippy::disallowed_methods)]

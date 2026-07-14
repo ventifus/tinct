@@ -1,143 +1,96 @@
-//! Arena allocation for thunks and environments.
+//! Arena allocation for thunks and lexical scope frames.
 //!
-//! This module provides index-based arenas for environments, replacing the
-//! `Arc<RwLock<Environment>>` chain model with `EnvId` handles that index into
-//! `Vec<FlatEnv>` backing stores. Thunks are owned directly by `FlatEnv` slots,
-//! addressed by `ThunkId { env_id, slot }`.
+//! A `Scope` is one lexical scope frame in a de Bruijn scope chain. Named bindings
+//! are stored in insertion order; variables are addressed by `(level, slot)` pairs
+//! where level = parent-chain hops and slot = ordinal position within that Scope.
+//!
+//! `ScopeArena` holds all Scopes indexed by `ScopeId`. `ThunkId { scope_id, slot }`
+//! is a stable address into the arena for the lifetime of the program.
 
 use std::sync::Arc;
 
 /// A handle to a thunk in the arena. Copy-cheap (8 bytes).
-/// `env_id` indexes into `EnvArena.envs`; `slot` indexes into that FlatEnv's slots.
+/// `scope_id` indexes into `ScopeArena.scopes`; `slot` is the ordinal position within that Scope.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ThunkId {
-    /// Which FlatEnv owns this thunk (absolute index into EnvArena.envs).
-    pub env_id: u32,
-    /// Which slot within that FlatEnv.
+    /// Which Scope owns this thunk (absolute index into ScopeArena.scopes).
+    pub scope_id: u32,
+    /// Ordinal position within that Scope's slots.
     pub slot: u32,
 }
 
-/// A handle to an environment in the arena. Copy-cheap (4 bytes), indexes into `EnvArena`.
+/// A handle to a Scope in the arena. Copy-cheap (4 bytes), indexes into `ScopeArena`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct EnvId(pub u32);
+pub struct ScopeId(pub u32);
 
-/// Arena for environment allocation. Stores `FlatEnv` indexed by `EnvId`.
+/// Arena for Scope allocation. Stores `Scope` frames indexed by `ScopeId`.
 ///
-/// `FlatEnv` slots directly own `Arc<Thunk>` values — thunks are addressed by
-/// `ThunkId { env_id, slot }` which indexes into the owning FlatEnv.
+/// Each `Scope` directly owns its `Arc<Thunk>` values — thunks are addressed by
+/// `ThunkId { scope_id, slot }` which indexes into the owning Scope.
 #[derive(Debug)]
-pub struct EnvArena {
-    pub(crate) envs: Vec<FlatEnv>,
+pub struct ScopeArena {
+    pub(crate) scopes: Vec<Scope>,
 }
 
-impl EnvArena {
+impl ScopeArena {
     /// Create a new empty environment arena.
     pub fn new() -> Self {
-        Self { envs: Vec::new() }
+        Self { scopes: Vec::new() }
     }
 
     /// Allocate a root environment (no parent) with the given slot capacity.
-    pub fn alloc_root(&mut self, slot_count: usize) -> EnvId {
-        let len = self.envs.len();
+    pub fn alloc_root(&mut self, slot_count: usize) -> ScopeId {
+        let len = self.scopes.len();
         assert!(
             len < u32::MAX as usize,
-            "EnvArena overflow: more than {} environments allocated",
+            "ScopeArena overflow: more than {} environments allocated",
             u32::MAX
         );
-        let id = EnvId(len as u32);
-        let env = FlatEnv {
-            slots: Vec::with_capacity(slot_count),
-            parent: None,
-            slot_names: Vec::with_capacity(slot_count),
-            alloc_count: std::sync::atomic::AtomicU64::new(0),
-        };
-        self.envs.push(env);
+        let id = ScopeId(len as u32);
+        self.scopes.push(Scope::new(None, slot_count));
         id
     }
 
     /// Allocate a child environment with the given parent.
-    pub fn alloc_child(&mut self, parent_id: EnvId, slot_count: usize) -> EnvId {
-        let len = self.envs.len();
+    pub fn alloc_child(&mut self, parent_id: ScopeId, slot_count: usize) -> ScopeId {
+        let len = self.scopes.len();
         assert!(
             len < u32::MAX as usize,
-            "EnvArena overflow: more than {} environments allocated",
+            "ScopeArena overflow: more than {} environments allocated",
             u32::MAX
         );
-        let id = EnvId(len as u32);
-        let env = FlatEnv {
-            slots: Vec::with_capacity(slot_count),
-            parent: Some(parent_id),
-            slot_names: Vec::with_capacity(slot_count),
-            alloc_count: std::sync::atomic::AtomicU64::new(0),
-        };
-        self.envs.push(env);
+        let id = ScopeId(len as u32);
+        self.scopes.push(Scope::new(Some(parent_id), slot_count));
         id
     }
 
-    /// Fill a pre-allocated slot with an Arc<Thunk>.
-    #[cfg(test)]
-    pub fn fill_slot_thunk(&mut self, id: ThunkId, thunk: Arc<crate::value::Thunk>) {
-        let env = &mut self.envs[EnvId(id.env_id).0 as usize];
-        let slot_idx = id.slot as usize;
-        if slot_idx >= env.slots.len() {
-            env.slots.resize_with(slot_idx + 1, || None);
-        }
-        env.slots[slot_idx] = Some(thunk);
-    }
-
-    /// Fill a pre-allocated letrec slot with a thunk (for dict letrec scoping).
-    ///
-    /// The slot must have been pre-allocated via `alloc_child`. This method fills
-    /// slot `slot_idx` in the environment identified by `env_id` with the given thunk.
-    /// Used by `eval_dict_core` to batch-fill letrec slots after all entries are created,
-    /// and by `bind_args_thunks` to fill function call frame parameter slots.
-    pub fn fill_letrec_slot(
+    /// Allocate a named slot in env_id, returning its ThunkId.
+    /// Every binding must have a name — use gensym for synthetic slots.
+    pub fn push_slot(
         &mut self,
-        env_id: EnvId,
-        slot_idx: u32,
-        thunk_id: ThunkId,
+        env_id: ScopeId,
         name: &str,
-    ) {
-        let thunk = {
-            // Get the thunk from the ThunkId's source env. The thunk was just allocated
-            // in this same arena, so the lookup is always valid.
-            let src_env = &self.envs[thunk_id.env_id as usize];
-            src_env.slots[thunk_id.slot as usize]
-                .clone()
-                .expect("fill_letrec_slot: source ThunkId points to an unfilled slot — alloc_slot_thunk must be called before fill_letrec_slot")
-        };
-        let env = &mut self.envs[env_id.0 as usize];
-        let idx = slot_idx as usize;
-        // Extend slots if needed (letrec group may not have pre-sized)
-        if idx >= env.slots.len() {
-            env.slots.resize_with(idx + 1, || None);
-        }
-        env.slots[idx] = Some(thunk);
-        // Extend slot_names to match slots vec, filling gaps with empty strings
-        if idx >= env.slot_names.len() {
-            env.slot_names.resize(idx + 1, String::new());
-        }
-        env.slot_names[idx] = name.to_string();
-    }
-
-    /// Allocate a new slot in an existing scope, returning its ThunkId.
-    /// Named slots pass the name; anonymous slots pass "".
-    pub fn alloc_slot_thunk(
-        &mut self,
-        env_id: EnvId,
         thunk: Arc<crate::value::Thunk>,
-        name: &str,
     ) -> ThunkId {
-        let env = &mut self.envs[env_id.0 as usize];
-        let slot = env.slots.len() as u32;
-        env.slots.push(Some(thunk));
-        env.slot_names.push(name.to_string());
-        env.alloc_count
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        ThunkId {
-            env_id: env_id.0,
-            slot,
-        }
+        let slot = self.scopes[env_id.0 as usize].push(name, thunk);
+        ThunkId { scope_id: env_id.0, slot }
+    }
+
+    /// Reserve a named slot for letrec phase 1 (None placeholder, filled later by fill_slot).
+    pub fn reserve_slot(&mut self, env_id: ScopeId, name: &str) -> u32 {
+        self.scopes[env_id.0 as usize].reserve(name)
+    }
+
+    /// Fill a reserved slot (letrec phase 2). Fetches the thunk from src_thunk_id.
+    pub fn fill_slot(&mut self, env_id: ScopeId, slot_idx: u32, src_thunk_id: ThunkId) {
+        let thunk = {
+            let src_env = &self.scopes[src_thunk_id.scope_id as usize];
+            src_env
+                .get(src_thunk_id.slot)
+                .cloned()
+                .expect("fill_slot: source ThunkId points to an unfilled slot")
+        };
+        self.scopes[env_id.0 as usize].fill(slot_idx, thunk);
     }
 
     /// Walk the parent chain `level` hops from `start_env_id`.
@@ -147,10 +100,10 @@ impl EnvArena {
     ///
     /// `level=0` returns `start_env_id` immediately (no hops). `level=1` returns
     /// the immediate parent, `level=2` the grandparent, and so on.
-    pub fn walk_parent_chain(&self, start_env_id: u32, level: usize) -> Result<EnvId, usize> {
-        let mut current = EnvId(start_env_id);
+    pub fn walk_parent_chain(&self, start_env_id: u32, level: usize) -> Result<ScopeId, usize> {
+        let mut current = ScopeId(start_env_id);
         for hop in 0..level {
-            match self.envs[current.0 as usize].parent {
+            match self.scopes[current.0 as usize].parent {
                 Some(p) => current = p,
                 None => return Err(hop),
             }
@@ -162,12 +115,12 @@ impl EnvArena {
     /// index 0 is the root (outermost) and the last element is `start_env_id` (innermost).
     ///
     /// Used by the resolver to seed scope levels outermost-first.
-    pub fn collect_parent_chain(&self, start_env_id: u32) -> Vec<EnvId> {
+    pub fn collect_parent_chain(&self, start_env_id: u32) -> Vec<ScopeId> {
         let mut chain = Vec::new();
-        let mut current = EnvId(start_env_id);
+        let mut current = ScopeId(start_env_id);
         loop {
             chain.push(current);
-            match self.envs[current.0 as usize].parent {
+            match self.scopes[current.0 as usize].parent {
                 Some(p) => current = p,
                 None => break,
             }
@@ -182,35 +135,31 @@ impl EnvArena {
     ///
     /// Panics if the ThunkId is out of bounds or points to a dropped slot.
     pub fn get_thunk(&self, id: ThunkId) -> Arc<crate::value::Thunk> {
-        let env = &self.envs[EnvId(id.env_id).0 as usize];
-        env.slots
-            .get(id.slot as usize)
-            .expect("use-after-free: ThunkId accessed after arena scope was dropped")
-            .as_ref()
-            .expect("use-after-free: ThunkId slot is empty after scope drop")
+        self.scopes[id.scope_id as usize]
+            .get(id.slot)
+            .expect("use-after-free: ThunkId accessed after arena scope was dropped or slot is empty")
             .clone()
     }
 
     /// Drop a scope: clear all thunk slots, freeing Arc<Thunk> references.
-    pub fn drop_scope(&mut self, env_id: EnvId) {
-        let env = &mut self.envs[env_id.0 as usize];
-        env.slots.clear();
+    pub fn drop_scope(&mut self, env_id: ScopeId) {
+        self.scopes[env_id.0 as usize].clear();
     }
 
     /// Get a reference to the environment at the given handle.
     #[cfg(test)]
-    fn get(&self, id: EnvId) -> &FlatEnv {
-        &self.envs[id.0 as usize]
+    fn get(&self, id: ScopeId) -> &Scope {
+        &self.scopes[id.0 as usize]
     }
 
     /// Get a mutable reference to the environment at the given handle.
     #[cfg(test)]
-    pub fn get_mut(&mut self, id: EnvId) -> &mut FlatEnv {
-        &mut self.envs[id.0 as usize]
+    pub fn get_mut(&mut self, id: ScopeId) -> &mut Scope {
+        &mut self.scopes[id.0 as usize]
     }
 }
 
-impl Default for EnvArena {
+impl Default for ScopeArena {
     fn default() -> Self {
         Self::new()
     }
@@ -219,126 +168,159 @@ impl Default for EnvArena {
 /// Flat environment representation: slot-based variable lookup via parent-chain traversal.
 ///
 /// Slots directly own `Arc<Thunk>` values. Variables are assigned `(level, slot)` pairs
-/// by the variable resolution pass (de Bruijn levels). Lookup walks the parent chain
-/// `level` times from the current scope to reach the target environment, then indexes
-/// into that environment's slots vector.
+/// by the resolver (de Bruijn levels). Lookup walks the parent chain `level` times from
+/// the current scope, then indexes into that environment's slots by ordinal position.
 ///
-/// **Parent chain:** `parent` stores the immediate parent `EnvId`. Walking the chain
-/// `level` times from the current scope gives the target environment. Root environments
-/// have `parent: None`. Typical scope depth is 3-8 levels, making O(level) traversal
-/// equivalent in practice to O(1) display-vector access.
+/// All slots are named. Anonymous intermediates must use gensym'd names. Access to
+/// `slots` and `slot_names` is exclusively through the methods below — these two
+/// parallel Vecs are always kept in sync by the API.
 #[derive(Debug)]
-pub struct FlatEnv {
-    /// Named slots (dict entries, function params) + anonymous slots.
-    /// Indexed by slot number. Named slots filled via fill_slot_thunk; anonymous via alloc_slot_thunk.
-    pub(crate) slots: Vec<Option<Arc<crate::value::Thunk>>>,
-    /// Immediate parent environment. `None` for root environments.
-    /// Variable lookup walks this chain `level` times to reach the target scope.
-    pub(crate) parent: Option<EnvId>,
-    /// Slot names: aligned with slots vec. Named slots have their name here; anonymous slots get "".
-    /// Used by the resolver to seed from FlatEnv when Env is eliminated.
-    pub(crate) slot_names: Vec<String>,
-    /// Stats counters for builtin-arena-stats.
+pub struct Scope {
+    slots: Vec<Option<Arc<crate::value::Thunk>>>,
+    slot_names: Vec<String>,
+    pub(crate) parent: Option<ScopeId>,
     pub(crate) alloc_count: std::sync::atomic::AtomicU64,
 }
 
-impl FlatEnv {
-    /// Get a thunk by slot index (static key, assigned by the resolver).
-    ///
-    /// Returns `None` if the slot is out of bounds or unfilled.
-    #[cfg(test)]
-    pub fn get_slot(&self, slot: u32) -> Option<Arc<crate::value::Thunk>> {
-        self.slots.get(slot as usize).and_then(|opt| opt.clone())
-    }
-
-    /// Insert a thunk into a slot. Extends the slot vec if necessary.
-    ///
-    /// Used during FlatEnv construction when filling slots in order.
-    #[cfg(test)]
-    pub fn set_slot(&mut self, slot: u32, thunk: Arc<crate::value::Thunk>) {
-        let slot_idx = slot as usize;
-        if slot_idx >= self.slots.len() {
-            self.slots.resize_with(slot_idx + 1, || None);
+impl Scope {
+    fn new(parent: Option<ScopeId>, capacity: usize) -> Self {
+        Self {
+            slots: Vec::with_capacity(capacity),
+            slot_names: Vec::with_capacity(capacity),
+            parent,
+            alloc_count: std::sync::atomic::AtomicU64::new(0),
         }
-        self.slots[slot_idx] = Some(thunk);
     }
 
-    /// Get the parent environment ID, if any.
-    #[cfg(test)]
-    pub fn parent(&self) -> Option<EnvId> {
-        self.parent
+    /// Append a named binding. Returns the slot index.
+    /// Panics in debug builds if name is empty — all bindings must be named.
+    pub(crate) fn push(&mut self, name: &str, thunk: Arc<crate::value::Thunk>) -> u32 {
+        debug_assert!(!name.is_empty(), "Scope::push: all bindings must be named; use gensym for synthetic slots");
+        debug_assert_eq!(self.slots.len(), self.slot_names.len());
+        let slot = self.slots.len() as u32;
+        self.slots.push(Some(thunk));
+        self.slot_names.push(name.to_string());
+        self.alloc_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        slot
+    }
+
+    /// Reserve a named slot for letrec phase 1 (None placeholder, filled later by fill()).
+    pub(crate) fn reserve(&mut self, name: &str) -> u32 {
+        debug_assert!(!name.is_empty(), "Scope::reserve: slots must be named");
+        let slot = self.slots.len() as u32;
+        self.slots.push(None);
+        self.slot_names.push(name.to_string());
+        slot
+    }
+
+    /// Fill a previously reserved slot (letrec phase 2). slot_names[slot] set by reserve().
+    pub(crate) fn fill(&mut self, slot: u32, thunk: Arc<crate::value::Thunk>) {
+        self.slots[slot as usize] = Some(thunk);
+    }
+
+    /// Hot path: O(1) ordinal lookup by slot index.
+    pub(crate) fn get(&self, slot: u32) -> Option<&Arc<crate::value::Thunk>> {
+        self.slots.get(slot as usize)?.as_ref()
+    }
+
+    /// Number of slots (named + reserved).
+    pub(crate) fn len(&self) -> usize {
+        self.slots.len()
+    }
+
+    /// Cold path: iterate (name, slot_index) pairs in insertion order.
+    pub(crate) fn iter_named(&self) -> impl Iterator<Item = (&str, u32)> {
+        self.slot_names.iter().enumerate().map(|(i, n)| (n.as_str(), i as u32))
+    }
+
+    /// Count live (filled) slots — for builtin-arena-stats.
+    pub(crate) fn count_live(&self) -> usize {
+        self.slots.iter().filter(|s| s.is_some()).count()
+    }
+
+    /// Clear all slots, freeing Arc<Thunk> references (for drop_scope).
+    pub(crate) fn clear(&mut self) {
+        self.slots.clear();
+        // slot_names preserved for post-drop diagnostics
     }
 }
 
-/// Migrate a FlatEnv from the source range to the destination scope.
+/// Migrate a Scope from the source range to the destination scope.
 ///
-/// Allocates a new FlatEnv in the destination arena, migrates all slot ThunkIds,
-/// and recursively migrates any parent FlatEnvs in the source range (via the display chain).
+/// Allocates a new Scope in the destination arena, migrates all slot ThunkIds,
+/// and recursively migrates any parent Scopes in the source range (via the display chain).
 ///
-/// The two-phase pattern is applied at the FlatEnv level too: the new destination EnvId is
+/// The two-phase pattern is applied at the Scope level too: the new destination ScopeId is
 /// inserted into `env_map` BEFORE slots are migrated, so that cycles (e.g., a slot value
-/// containing a closure referencing this same FlatEnv) do not loop infinitely.
+/// containing a closure referencing this same Scope) do not loop infinitely.
 ///
-/// Returns the destination EnvId for the migrated FlatEnv.
+/// Returns the destination ScopeId for the migrated Scope.
 pub fn migrate_flat_env(
     src_env_id_u32: u32,
     src_range: &std::ops::Range<u32>,
-    dst_env_id: EnvId,
+    dst_env_id: ScopeId,
     thunk_map: &mut std::collections::HashMap<ThunkId, ThunkId>,
     env_map: &mut std::collections::HashMap<u32, u32>,
-    arena: &mut EnvArena,
+    arena: &mut ScopeArena,
 ) -> u32 {
     // Already migrated? Return cached result.
     if let Some(&mapped) = env_map.get(&src_env_id_u32) {
         return mapped;
     }
 
-    // Collect the slot count and parent of the source FlatEnv.
+    // Collect the slot count and parent of the source Scope.
     let (slot_count, src_parent) = {
-        let src_env = &arena.envs[src_env_id_u32 as usize];
-        (src_env.slots.len(), src_env.parent)
+        let src_env = &arena.scopes[src_env_id_u32 as usize];
+        (src_env.len(), src_env.parent)
     };
 
-    // Allocate the new destination FlatEnv.
+    // Allocate the new destination Scope.
     // Use alloc_root temporarily; the parent pointer is translated and set below after slots migrate.
     let new_env_id = arena.alloc_root(slot_count);
 
     // Pre-insert into env_map BEFORE migrating slots (two-phase cycle safety at env level).
     env_map.insert(src_env_id_u32, new_env_id.0);
 
-    // Migrate each slot ThunkId from the source FlatEnv into new_env_id.
+    // Migrate each slot ThunkId from the source Scope into new_env_id.
     //
     // Thunks are allocated directly into new_env_id (not dst_env_id), so each source
-    // FlatEnv maps 1:1 to exactly one destination FlatEnv. This eliminates ThunkId
+    // Scope maps 1:1 to exactly one destination Scope. This eliminates ThunkId
     // aliasing that would arise if two different env_ids held the same logical thunk.
     //
     // Two-phase per-slot: first allocate all placeholder slots in new_env_id (establishing
     // the correct slot indices and inserting into thunk_map), then recurse to fill values.
     // This preserves slot ordering even when migrated values contain nested ThunkIds that
-    // trigger additional allocations into other FlatEnvs.
+    // trigger additional allocations into other Scopes.
 
     // Phase 1: allocate placeholders and populate thunk_map for all filled slots.
     // None slots get a None pushed to preserve slot numbering.
-    let src_thunks: Vec<Option<Arc<crate::value::Thunk>>> = {
-        (0..slot_count)
-            .map(|i| arena.envs[src_env_id_u32 as usize].slots[i].clone())
+    // Collect the source slot names and thunks for migration.
+    let src_slots: Vec<(String, Option<Arc<crate::value::Thunk>>)> = {
+        let src_env = &arena.scopes[src_env_id_u32 as usize];
+        src_env.slot_names.iter().zip(src_env.slots.iter())
+            .map(|(n, s)| (n.clone(), s.clone()))
             .collect()
     };
-    for (slot_idx, slot_opt) in src_thunks.iter().enumerate() {
+    for (slot_idx, (slot_name, slot_opt)) in src_slots.iter().enumerate() {
         let src_tid = ThunkId {
-            env_id: src_env_id_u32,
+            scope_id: src_env_id_u32,
             slot: slot_idx as u32,
+        };
+        let mig_name = if slot_name.is_empty() {
+            format!("#mig_{slot_idx}")
+        } else {
+            slot_name.clone()
         };
         match slot_opt {
             None => {
-                // Preserve slot index by pushing None.
-                arena.envs[new_env_id.0 as usize].slots.push(None);
+                // Preserve slot index with a reserved slot.
+                arena.scopes[new_env_id.0 as usize].reserve(&mig_name);
             }
             Some(src_arc) => {
                 // Allocate a placeholder into new_env_id at the next slot (= slot_idx).
                 let placeholder =
                     Arc::new(crate::value::Thunk::new_placeholder(src_arc.span.clone()));
-                let new_tid = arena.alloc_slot_thunk(new_env_id, Arc::clone(&placeholder), "");
+                let new_tid = arena.push_slot(new_env_id, &mig_name, Arc::clone(&placeholder));
                 debug_assert_eq!(
                     new_tid.slot, slot_idx as u32,
                     "slot ordering must match source"
@@ -352,9 +334,9 @@ pub fn migrate_flat_env(
     // Phase 2: fill each placeholder by recursing into migrate_value or translating
     // unevaluated state. The placeholder Arc is already in new_env_id.slots[slot_idx]
     // and registered in thunk_map from Phase 1; we write into it here.
-    for (slot_idx, slot_opt) in src_thunks.iter().enumerate() {
+    for (slot_idx, (_, slot_opt)) in src_slots.iter().enumerate() {
         if let Some(src_arc) = slot_opt {
-            let placeholder = arena.envs[new_env_id.0 as usize].slots[slot_idx]
+            let placeholder = arena.scopes[new_env_id.0 as usize].slots[slot_idx]
                 .clone()
                 .expect("placeholder must exist after phase 1");
             if let Some(value) = src_arc.try_get_materialized() {
@@ -364,7 +346,7 @@ pub fn migrate_flat_env(
                 placeholder.set_materialized(migrated);
             } else if let Some(state) = src_arc.peek_unevaluated_state() {
                 // Unevaluated: translate all env_id / ThunkId fields so the migrated thunk
-                // does not reference dropped FlatEnvs after arena-drop src.
+                // does not reference dropped Scopes after arena-drop src.
                 let translated = translate_unevaluated_state(
                     state, src_range, dst_env_id, thunk_map, env_map, arena,
                 );
@@ -378,21 +360,21 @@ pub fn migrate_flat_env(
 
     // Translate the parent pointer: if the source parent is in src_range, migrate it
     // recursively; otherwise keep it as-is (permanent env outside the migrated range).
-    let new_parent: Option<EnvId> = src_parent.map(|p| {
+    let new_parent: Option<ScopeId> = src_parent.map(|p| {
         if src_range.contains(&p.0) {
             // Recursively migrate (env_map prevents infinite recursion)
             let migrated_id =
                 migrate_flat_env(p.0, src_range, dst_env_id, thunk_map, env_map, arena);
-            EnvId(migrated_id)
+            ScopeId(migrated_id)
         } else {
             // Outside src_range — permanent, keep as-is
             p
         }
     });
 
-    // Set the translated parent on the new FlatEnv.
+    // Set the translated parent on the new Scope.
     // Override the None set by alloc_root.
-    arena.envs[new_env_id.0 as usize].parent = new_parent;
+    arena.scopes[new_env_id.0 as usize].parent = new_parent;
 
     new_env_id.0
 }
@@ -401,14 +383,14 @@ pub fn migrate_flat_env(
 ///
 /// ThunkIds in [src_range.start, src_range.end) are copied to dst; others are permanent.
 /// `Value::Function.closure_env_id` values in src_range are translated via `env_map`,
-/// which maps source FlatEnv EnvIds to their destination counterparts.
+/// which maps source Scope ScopeIds to their destination counterparts.
 pub fn migrate_value(
     value: &crate::value::Value,
     src_range: &std::ops::Range<u32>,
-    dst_env_id: EnvId,
+    dst_env_id: ScopeId,
     thunk_map: &mut std::collections::HashMap<ThunkId, ThunkId>,
     env_map: &mut std::collections::HashMap<u32, u32>,
-    arena: &mut EnvArena,
+    arena: &mut ScopeArena,
 ) -> crate::value::Value {
     use crate::value::Value;
     match value {
@@ -437,8 +419,8 @@ pub fn migrate_value(
             migrate_thunk_id(*l, src_range, dst_env_id, thunk_map, env_map, arena),
             migrate_thunk_id(*r, src_range, dst_env_id, thunk_map, env_map, arena),
         ),
-        // Value::Function carries closure_env_id: u32 — an EnvArena index.
-        // If closure_env_id is in src_range, migrate the closure FlatEnv to the dst arena
+        // Value::Function carries closure_env_id: u32 — an ScopeArena index.
+        // If closure_env_id is in src_range, migrate the closure Scope to the dst arena
         // so calling the function after drop does not reference dropped scopes.
         Value::Function {
             params,
@@ -480,10 +462,10 @@ pub fn migrate_value(
 fn translate_unevaluated_state(
     state: crate::value::UnevaluatedState,
     src_range: &std::ops::Range<u32>,
-    dst_env_id: EnvId,
+    dst_env_id: ScopeId,
     thunk_map: &mut std::collections::HashMap<ThunkId, ThunkId>,
     env_map: &mut std::collections::HashMap<u32, u32>,
-    arena: &mut EnvArena,
+    arena: &mut ScopeArena,
 ) -> crate::value::UnevaluatedState {
     use crate::value::UnevaluatedState;
 
@@ -649,13 +631,13 @@ fn translate_unevaluated_state(
 pub fn migrate_thunk_id(
     thunk_id: ThunkId,
     src_range: &std::ops::Range<u32>,
-    dst_env_id: EnvId,
+    dst_env_id: ScopeId,
     thunk_map: &mut std::collections::HashMap<ThunkId, ThunkId>,
     env_map: &mut std::collections::HashMap<u32, u32>,
-    arena: &mut EnvArena,
+    arena: &mut ScopeArena,
 ) -> ThunkId {
     // ThunkIds outside src_range are permanent — no copy needed
-    if !src_range.contains(&thunk_id.env_id) {
+    if !src_range.contains(&thunk_id.scope_id) {
         return thunk_id;
     }
     // Already migrated? Return the mapped ThunkId
@@ -673,7 +655,7 @@ pub fn migrate_thunk_id(
         //   2. Recurse into migrate_value (safe — thunk_map already has our entry).
         //   3. Fill the placeholder with the fully-migrated value via set_materialized.
         let placeholder = Arc::new(crate::value::Thunk::new_placeholder(src_thunk.span.clone()));
-        let new_tid = arena.alloc_slot_thunk(dst_env_id, Arc::clone(&placeholder), "");
+        let new_tid = arena.push_slot(dst_env_id, "#mig", Arc::clone(&placeholder));
         thunk_map.insert(thunk_id, new_tid);
         // Recurse now that thunk_map has the cycle-breaking entry.
         let migrated_value =
@@ -683,7 +665,7 @@ pub fn migrate_thunk_id(
         new_tid
     } else {
         // Unevaluated thunk — translate all env_id / ThunkId fields in the UnevaluatedState
-        // so the migrated thunk does not reference dropped FlatEnvs after arena-drop src.
+        // so the migrated thunk does not reference dropped Scopes after arena-drop src.
         //
         // Two-phase cycle-safe pattern (same as the materialized branch above):
         //   1. Pre-allocate a placeholder in dst_env_id and insert into thunk_map BEFORE
@@ -693,7 +675,7 @@ pub fn migrate_thunk_id(
         //      remapped through migrate_flat_env / migrate_thunk_id.
         //   3. Replace the placeholder's unevaluated field with the translated state.
         let placeholder = Arc::new(crate::value::Thunk::new_placeholder(src_thunk.span.clone()));
-        let new_tid = arena.alloc_slot_thunk(dst_env_id, Arc::clone(&placeholder), "");
+        let new_tid = arena.push_slot(dst_env_id, "#mig", Arc::clone(&placeholder));
         thunk_map.insert(thunk_id, new_tid);
 
         // Peek the unevaluated state WITHOUT consuming it (source thunk stays intact).
@@ -727,40 +709,35 @@ mod tests {
     }
 
     #[test]
-    fn test_env_arena_alloc_get() {
-        let mut arena = EnvArena::new();
+    fn test_scope_arena_alloc_get() {
+        let mut arena = ScopeArena::new();
         let id = arena.alloc_root(0);
-        let retrieved = arena.get(id);
-        assert_eq!(retrieved.slots.len(), 0);
-        assert!(retrieved.parent().is_none());
+        assert_eq!(arena.scopes[id.0 as usize].len(), 0);
+        assert!(arena.scopes[id.0 as usize].parent.is_none());
     }
 
     #[test]
-    fn test_env_arena_multiple_allocs() {
-        let mut arena = EnvArena::new();
+    fn test_scope_arena_multiple_allocs() {
+        let mut arena = ScopeArena::new();
         let id1 = arena.alloc_root(1);
         let id2 = arena.alloc_root(2);
         let id3 = arena.alloc_root(3);
 
-        assert_eq!(arena.get(id1).slots.capacity(), 1);
-        assert_eq!(arena.get(id2).slots.capacity(), 2);
-        assert_eq!(arena.get(id3).slots.capacity(), 3);
-
-        // EnvId values should be distinct
+        // ScopeId values should be distinct
         assert_ne!(id1, id2);
         assert_ne!(id2, id3);
         assert_ne!(id1, id3);
     }
 
     #[test]
-    fn test_alloc_slot_thunk_and_get_thunk() {
-        let mut arena = EnvArena::new();
+    fn test_push_slot_and_get_thunk() {
+        let mut arena = ScopeArena::new();
         let env_id = arena.alloc_root(0);
 
         let thunk = Arc::new(Thunk::new_materialized(Value::Int(42), test_span()));
-        let id = arena.alloc_slot_thunk(env_id, Arc::clone(&thunk), "");
+        let id = arena.push_slot(env_id, "x", Arc::clone(&thunk));
 
-        assert_eq!(id.env_id, env_id.0);
+        assert_eq!(id.scope_id, env_id.0);
         assert_eq!(id.slot, 0);
 
         let retrieved = arena.get_thunk(id);
@@ -768,17 +745,17 @@ mod tests {
     }
 
     #[test]
-    fn test_alloc_slot_thunk_multiple() {
-        let mut arena = EnvArena::new();
+    fn test_push_slot_multiple() {
+        let mut arena = ScopeArena::new();
         let env_id = arena.alloc_root(0);
 
         let t1 = Arc::new(Thunk::new_materialized(Value::Int(1), test_span()));
         let t2 = Arc::new(Thunk::new_materialized(Value::Int(2), test_span()));
         let t3 = Arc::new(Thunk::new_materialized(Value::Int(3), test_span()));
 
-        let id1 = arena.alloc_slot_thunk(env_id, Arc::clone(&t1), "");
-        let id2 = arena.alloc_slot_thunk(env_id, Arc::clone(&t2), "");
-        let id3 = arena.alloc_slot_thunk(env_id, Arc::clone(&t3), "");
+        let id1 = arena.push_slot(env_id, "a", Arc::clone(&t1));
+        let id2 = arena.push_slot(env_id, "b", Arc::clone(&t2));
+        let id3 = arena.push_slot(env_id, "c", Arc::clone(&t3));
 
         assert_eq!(id1.slot, 0);
         assert_eq!(id2.slot, 1);
@@ -799,103 +776,113 @@ mod tests {
     }
 
     #[test]
-    fn test_fill_slot_thunk() {
-        let mut arena = EnvArena::new();
-        let env_id = arena.alloc_root(3);
+    fn test_fill_slot_via_reserve_and_fill() {
+        let mut arena = ScopeArena::new();
+        let env_id = arena.alloc_root(0);
 
-        // Pre-allocate a ThunkId (env_id=0, slot=0)
-        let tid = ThunkId {
-            env_id: env_id.0,
-            slot: 0,
-        };
+        // Reserve a slot, then fill it from another scope's ThunkId.
+        let slot_idx = arena.reserve_slot(env_id, "x");
+
+        // Allocate a source thunk in a separate scope.
+        let src_env = arena.alloc_root(0);
         let thunk = Arc::new(Thunk::new_materialized(Value::Int(99), test_span()));
-        arena.fill_slot_thunk(tid, Arc::clone(&thunk));
+        let src_tid = arena.push_slot(src_env, "src", Arc::clone(&thunk));
 
+        arena.fill_slot(env_id, slot_idx, src_tid);
+
+        let tid = ThunkId { scope_id: env_id.0, slot: 0 };
         let retrieved = arena.get_thunk(tid);
         assert_eq!(retrieved.try_get_materialized(), Some(Value::Int(99)));
     }
 
     #[test]
-    fn test_flat_env_parent_chain() {
-        let mut env_arena = EnvArena::new();
+    fn test_scope_arena_parent_chain() {
+        let mut scope_arena = ScopeArena::new();
 
-        // Create a root env (no parent)
-        let root_id = env_arena.alloc_root(0);
+        // Create a root scope (no parent)
+        let root_id = scope_arena.alloc_root(0);
 
-        // Create a child env with root as parent
-        let child_id = env_arena.alloc_child(root_id, 0);
+        // Create a child scope with root as parent
+        let child_id = scope_arena.alloc_child(root_id, 0);
 
-        let child = env_arena.get(child_id);
-        assert_eq!(child.parent(), Some(root_id));
+        let child = scope_arena.get(child_id);
+        assert_eq!(child.parent, Some(root_id));
 
-        let root = env_arena.get(root_id);
-        assert_eq!(root.parent(), None);
+        let root = scope_arena.get(root_id);
+        assert_eq!(root.parent, None);
 
         // Verify parent chain via walk_parent_chain
         // From child: 0 hops → child itself; 1 hop → root
-        assert_eq!(env_arena.walk_parent_chain(child_id.0, 0), Ok(child_id));
-        assert_eq!(env_arena.walk_parent_chain(child_id.0, 1), Ok(root_id));
-        assert!(env_arena.walk_parent_chain(child_id.0, 2).is_err());
+        assert_eq!(scope_arena.walk_parent_chain(child_id.0, 0), Ok(child_id));
+        assert_eq!(scope_arena.walk_parent_chain(child_id.0, 1), Ok(root_id));
+        assert!(scope_arena.walk_parent_chain(child_id.0, 2).is_err());
         // From root: 0 hops → root itself; 1 hop → out of chain
-        assert_eq!(env_arena.walk_parent_chain(root_id.0, 0), Ok(root_id));
-        assert!(env_arena.walk_parent_chain(root_id.0, 1).is_err());
+        assert_eq!(scope_arena.walk_parent_chain(root_id.0, 0), Ok(root_id));
+        assert!(scope_arena.walk_parent_chain(root_id.0, 1).is_err());
     }
 
     #[test]
-    fn test_flat_env_set_slot() {
-        let mut arena = EnvArena::new();
+    fn test_scope_push_and_get() {
+        let mut arena = ScopeArena::new();
         let id = arena.alloc_root(3);
-        let env = arena.get_mut(id);
 
         let t0 = Arc::new(Thunk::new_materialized(Value::Int(10), rust_span!()));
         let t1 = Arc::new(Thunk::new_materialized(Value::Int(20), rust_span!()));
         let t2 = Arc::new(Thunk::new_materialized(Value::Int(30), rust_span!()));
 
-        env.set_slot(0, Arc::clone(&t0));
-        env.set_slot(1, Arc::clone(&t1));
-        env.set_slot(2, Arc::clone(&t2));
+        let tid0 = arena.push_slot(id, "a", Arc::clone(&t0));
+        let tid1 = arena.push_slot(id, "b", Arc::clone(&t1));
+        let tid2 = arena.push_slot(id, "c", Arc::clone(&t2));
 
         assert_eq!(
-            env.get_slot(0).and_then(|t| t.try_get_materialized()),
+            arena.get_thunk(tid0).try_get_materialized(),
             Some(Value::Int(10))
         );
         assert_eq!(
-            env.get_slot(1).and_then(|t| t.try_get_materialized()),
+            arena.get_thunk(tid1).try_get_materialized(),
             Some(Value::Int(20))
         );
         assert_eq!(
-            env.get_slot(2).and_then(|t| t.try_get_materialized()),
+            arena.get_thunk(tid2).try_get_materialized(),
             Some(Value::Int(30))
         );
-        assert!(env.get_slot(3).is_none());
+        // Slot 3 is out of bounds (only 3 slots pushed).
+        let env = arena.get(id);
+        assert!(env.get(3).is_none());
     }
 
     #[test]
-    fn test_set_slot_extends_vec() {
-        let mut arena = EnvArena::new();
+    fn test_reserve_slot_sequential() {
+        let mut arena = ScopeArena::new();
         let id = arena.alloc_root(0);
-        let env = arena.get_mut(id);
 
-        // Setting slot 5 should extend the vec to hold slots 0..=5
-        let thunk = Arc::new(Thunk::new_materialized(Value::Int(42), rust_span!()));
-        env.set_slot(5, Arc::clone(&thunk));
+        // Reserve three named slots without filling them.
+        let s0 = arena.reserve_slot(id, "x");
+        let s1 = arena.reserve_slot(id, "y");
+        let s2 = arena.reserve_slot(id, "z");
+        assert_eq!(s0, 0);
+        assert_eq!(s1, 1);
+        assert_eq!(s2, 2);
 
-        assert!(env.slots.len() >= 6);
-        assert!(env.get_slot(5).is_some());
+        // All slots are None (unfilled).
+        let env = arena.get(id);
+        assert!(env.get(0).is_none());
+        assert!(env.get(1).is_none());
+        assert!(env.get(2).is_none());
     }
 
     #[test]
     fn test_thunk_id_struct_copy() {
-        let id = ThunkId { env_id: 3, slot: 7 };
+        let id = ThunkId { scope_id: 3, slot: 7 };
         let id_copy = id; // Copy — not moved
         assert_eq!(id, id_copy);
-        assert_eq!(id.env_id, 3);
+        assert_eq!(id.scope_id, 3);
         assert_eq!(id.slot, 7);
     }
 
     #[test]
-    fn test_env_id_copy_semantics() {
-        let id = EnvId(456);
+    fn test_scope_id_copy_semantics() {
+        let id = ScopeId(456);
         let id_copy = id; // Should be a Copy, not a move
 
         assert_eq!(id, id_copy);
@@ -905,11 +892,11 @@ mod tests {
 
     #[test]
     fn test_scope_alloc_count() {
-        let mut arena = EnvArena::new();
+        let mut arena = ScopeArena::new();
         let env_id = arena.alloc_root(0);
 
         assert_eq!(
-            arena.envs[env_id.0 as usize]
+            arena.scopes[env_id.0 as usize]
                 .alloc_count
                 .load(std::sync::atomic::Ordering::Relaxed),
             0
@@ -917,11 +904,11 @@ mod tests {
 
         let t1 = Arc::new(Thunk::new_materialized(Value::Int(1), test_span()));
         let t2 = Arc::new(Thunk::new_materialized(Value::Int(2), test_span()));
-        arena.alloc_slot_thunk(env_id, t1, "");
-        arena.alloc_slot_thunk(env_id, t2, "");
+        arena.push_slot(env_id, "a", t1);
+        arena.push_slot(env_id, "b", t2);
 
         assert_eq!(
-            arena.envs[env_id.0 as usize]
+            arena.scopes[env_id.0 as usize]
                 .alloc_count
                 .load(std::sync::atomic::Ordering::Relaxed),
             2
@@ -930,11 +917,11 @@ mod tests {
 
     #[test]
     fn test_drop_scope() {
-        let mut arena = EnvArena::new();
+        let mut arena = ScopeArena::new();
         let env_id = arena.alloc_root(0);
 
         let thunk = Arc::new(Thunk::new_materialized(Value::Int(42), test_span()));
-        let id = arena.alloc_slot_thunk(env_id, Arc::clone(&thunk), "");
+        let id = arena.push_slot(env_id, "x", Arc::clone(&thunk));
 
         // Verify thunk is present
         assert_eq!(
@@ -951,14 +938,14 @@ mod tests {
 
     #[test]
     fn test_empty_arena() {
-        let env_arena = EnvArena::new();
+        let scope_arena = ScopeArena::new();
         // Empty arena should be safe (no panics on construction)
-        assert_eq!(env_arena.envs.len(), 0);
+        assert_eq!(scope_arena.scopes.len(), 0);
     }
 
     #[test]
-    fn test_alloc_slot_returns_stable_thunkid() {
-        let mut arena = EnvArena::new();
+    fn test_push_slot_returns_stable_thunkid() {
+        let mut arena = ScopeArena::new();
         let env_id = arena.alloc_root(0);
         let thunk1 = Arc::new(crate::value::Thunk::new_materialized(
             crate::value::Value::Int(1),
@@ -968,8 +955,8 @@ mod tests {
             crate::value::Value::Int(2),
             rust_span!(),
         ));
-        let id1 = arena.alloc_slot_thunk(env_id, thunk1, "");
-        let id2 = arena.alloc_slot_thunk(env_id, thunk2, "");
+        let id1 = arena.push_slot(env_id, "a", thunk1);
+        let id2 = arena.push_slot(env_id, "b", thunk2);
         assert_ne!(id1, id2);
         assert_eq!(id1.slot, 0);
         assert_eq!(id2.slot, 1);
@@ -985,28 +972,28 @@ mod tests {
 
     #[test]
     fn test_drop_scope_clears_slots() {
-        let mut arena = EnvArena::new();
+        let mut arena = ScopeArena::new();
         let env_id = arena.alloc_root(0);
         let thunk = Arc::new(crate::value::Thunk::new_materialized(
             crate::value::Value::Int(42),
             rust_span!(),
         ));
-        let _id = arena.alloc_slot_thunk(env_id, Arc::clone(&thunk), "");
-        assert_eq!(arena.envs[env_id.0 as usize].slots.len(), 1);
+        let _id = arena.push_slot(env_id, "x", Arc::clone(&thunk));
+        assert_eq!(arena.scopes[env_id.0 as usize].slots.len(), 1);
         arena.drop_scope(env_id);
-        assert_eq!(arena.envs[env_id.0 as usize].slots.len(), 0);
+        assert_eq!(arena.scopes[env_id.0 as usize].slots.len(), 0);
     }
 
     #[test]
     fn test_drop_scope_leaves_other_scopes_intact() {
-        let mut arena = EnvArena::new();
+        let mut arena = ScopeArena::new();
         let env0 = arena.alloc_root(0);
         let env1 = arena.alloc_child(env0, 0);
         let thunk = Arc::new(crate::value::Thunk::new_materialized(
             crate::value::Value::Int(99),
             rust_span!(),
         ));
-        let id = arena.alloc_slot_thunk(env1, thunk, "");
+        let id = arena.push_slot(env1, "x", thunk);
         arena.drop_scope(env0);
         // env1 still intact
         assert_eq!(
@@ -1016,32 +1003,33 @@ mod tests {
     }
 
     #[test]
-    fn test_fill_slot_before_alloc_slot() {
-        // Verify that fill_letrec_slot (named/static slots) and alloc_slot_thunk
-        // (anonymous/dynamic slots) coexist correctly in one FlatEnv.
-        let mut arena = EnvArena::new();
+    fn test_reserve_and_fill_slot() {
+        // Verify that reserve_slot + fill_slot work correctly with push_slot in one Scope.
+        let mut arena = ScopeArena::new();
         let env_id = arena.alloc_root(0);
 
-        // Allocate an anonymous slot to serve as the thunk source for fill_letrec_slot.
+        // Push a named slot first (slot 0).
         let named_thunk = Arc::new(Thunk::new_materialized(Value::Int(100), rust_span!()));
-        let src_id = arena.alloc_slot_thunk(env_id, Arc::clone(&named_thunk), "");
+        let src_id = arena.push_slot(env_id, "first", Arc::clone(&named_thunk));
+        assert_eq!(src_id.slot, 0);
 
-        // Fill slot 0 of the same env with the thunk via fill_letrec_slot.
-        // fill_letrec_slot reads the thunk from src_id's slot and writes it to slot 0.
-        // Since src_id.slot == 0 already, use a second env to hold the canonical src thunk.
+        // Reserve slot 1 for a letrec-style binding, filled from a second scope.
+        let slot1 = arena.reserve_slot(env_id, "second");
+        assert_eq!(slot1, 1);
+
         let env2 = arena.alloc_root(0);
-        let src2_id = arena.alloc_slot_thunk(
+        let src2_id = arena.push_slot(
             env2,
+            "src2",
             Arc::new(Thunk::new_materialized(Value::Int(200), rust_span!())),
-            "",
         );
 
-        // Fill slot 1 of env_id from env2 slot 0
-        arena.fill_letrec_slot(env_id, 1, src2_id, "test");
+        // Fill slot 1 of env_id from env2 slot 0.
+        arena.fill_slot(env_id, slot1, src2_id);
 
-        // Also allocate an anonymous slot after the letrec fill
+        // Push another named slot (slot 2).
         let anon_thunk = Arc::new(Thunk::new_materialized(Value::Int(300), rust_span!()));
-        let anon_id = arena.alloc_slot_thunk(env_id, anon_thunk, "");
+        let anon_id = arena.push_slot(env_id, "third", anon_thunk);
 
         // All three ThunkIds must be distinct and retrieve the correct values.
         assert_eq!(
@@ -1056,31 +1044,31 @@ mod tests {
             arena.get_thunk(anon_id).try_get_materialized(),
             Some(Value::Int(300))
         );
-        // env_id slot 1 was filled via fill_letrec_slot from env2 slot 0
+        // env_id slot 1 was filled via fill_slot from env2 slot 0.
         let letrec_thunk_id = ThunkId {
-            env_id: env_id.0,
+            scope_id: env_id.0,
             slot: 1,
         };
         assert_eq!(
             arena.get_thunk(letrec_thunk_id).try_get_materialized(),
             Some(Value::Int(200))
         );
-        // anon_id landed in env_id slot 2 (after slot 0 from src_id alloc, slot 1 from letrec fill)
-        assert_eq!(anon_id.env_id, env_id.0);
+        // anon_id landed in env_id slot 2 (slot 0 = named, slot 1 = reserved+filled, slot 2 = pushed).
+        assert_eq!(anon_id.scope_id, env_id.0);
         assert_eq!(anon_id.slot, 2);
     }
 
     #[test]
     fn test_parent_chain_depth_three() {
-        let mut arena = EnvArena::new();
+        let mut arena = ScopeArena::new();
         let root = arena.alloc_root(0);
         let child = arena.alloc_child(root, 0);
         let grandchild = arena.alloc_child(child, 0);
 
         // Parent pointers
-        assert_eq!(arena.envs[root.0 as usize].parent, None);
-        assert_eq!(arena.envs[child.0 as usize].parent, Some(root));
-        assert_eq!(arena.envs[grandchild.0 as usize].parent, Some(child));
+        assert_eq!(arena.scopes[root.0 as usize].parent, None);
+        assert_eq!(arena.scopes[child.0 as usize].parent, Some(root));
+        assert_eq!(arena.scopes[grandchild.0 as usize].parent, Some(child));
 
         // walk_parent_chain from grandchild: 0→grandchild, 1→child, 2→root, 3→err
         assert_eq!(arena.walk_parent_chain(grandchild.0, 0), Ok(grandchild));
@@ -1099,13 +1087,13 @@ mod tests {
     #[test]
     #[should_panic(expected = "use-after-free")]
     fn test_use_after_free_panics() {
-        let mut arena = EnvArena::new();
+        let mut arena = ScopeArena::new();
         let env_id = arena.alloc_root(0);
         let thunk = Arc::new(crate::value::Thunk::new_materialized(
             crate::value::Value::Int(1),
             rust_span!(),
         ));
-        let id = arena.alloc_slot_thunk(env_id, thunk, "");
+        let id = arena.push_slot(env_id, "x", thunk);
         arena.drop_scope(env_id);
         let _ = arena.get_thunk(id); // should panic
     }
@@ -1137,7 +1125,7 @@ mod tests {
         use crate::value::{HashableValue, Value};
         use std::collections::HashMap;
 
-        let mut arena = EnvArena::new();
+        let mut arena = ScopeArena::new();
         // Create source scope
         let src_env_id = arena.alloc_root(0);
         // Allocate two dict entries in the source scope
@@ -1145,8 +1133,8 @@ mod tests {
         let key2 = HashableValue::Str("b".into());
         let thunk1 = Arc::new(Thunk::new_materialized(Value::Int(1), test_span()));
         let thunk2 = Arc::new(Thunk::new_materialized(Value::Int(2), test_span()));
-        let tid1 = arena.alloc_slot_thunk(src_env_id, thunk1, "");
-        let tid2 = arena.alloc_slot_thunk(src_env_id, thunk2, "");
+        let tid1 = arena.push_slot(src_env_id, "a", thunk1);
+        let tid2 = arena.push_slot(src_env_id, "b", thunk2);
 
         let mut dict_map = indexmap::IndexMap::new();
         dict_map.insert(key1.clone(), tid1);
@@ -1174,11 +1162,11 @@ mod tests {
             let migrated_tid1 = migrated_map.get(&key1).expect("key 'a' missing");
             let migrated_tid2 = migrated_map.get(&key2).expect("key 'b' missing");
             assert_eq!(
-                migrated_tid1.env_id, dst_env_id.0,
+                migrated_tid1.scope_id, dst_env_id.0,
                 "migrated thunk1 should be in dst scope"
             );
             assert_eq!(
-                migrated_tid2.env_id, dst_env_id.0,
+                migrated_tid2.scope_id, dst_env_id.0,
                 "migrated thunk2 should be in dst scope"
             );
 
@@ -1211,7 +1199,7 @@ mod tests {
     ///
     /// This is the unit test for the core T-1573 path: migrating a function whose closure
     /// scope is inside the source arena so that the closure_env_id is remapped to a new
-    /// FlatEnv in the destination scope.
+    /// Scope in the destination scope.
     #[test]
     fn test_migrate_function_closure_env_id() {
         use crate::ast::{CoreExpr, Param};
@@ -1219,7 +1207,7 @@ mod tests {
         use std::collections::HashMap;
         use std::sync::Arc;
 
-        let mut arena = EnvArena::new();
+        let mut arena = ScopeArena::new();
 
         // dst_env_id: the destination root scope (allocated before src so it is outside src_range)
         let dst_env_id = arena.alloc_root(0);
@@ -1259,7 +1247,7 @@ mod tests {
         );
 
         // The migrated function must have a closure_env_id outside src_range (pointing to
-        // the new FlatEnv allocated by migrate_flat_env in the destination).
+        // the new Scope allocated by migrate_flat_env in the destination).
         match migrated {
             Value::Function { closure_env_id, .. } => {
                 assert!(
@@ -1284,16 +1272,16 @@ mod tests {
 
     #[test]
     fn test_slot_names_populated() {
-        let mut arena = EnvArena::new();
+        let mut arena = ScopeArena::new();
         let env_id = arena.alloc_root(3);
 
         let t1 = Arc::new(Thunk::new_materialized(Value::Int(1), test_span()));
         let t2 = Arc::new(Thunk::new_materialized(Value::Int(2), test_span()));
 
-        let _tid1 = arena.alloc_slot_thunk(env_id, t1, "x");
-        let _tid2 = arena.alloc_slot_thunk(env_id, t2, "y");
+        let _tid1 = arena.push_slot(env_id, "x", t1);
+        let _tid2 = arena.push_slot(env_id, "y", t2);
 
-        assert_eq!(arena.envs[env_id.0 as usize].slot_names, vec!["x", "y"]);
+        assert_eq!(arena.scopes[env_id.0 as usize].slot_names, vec!["x", "y"]);
     }
 
     /// Verify that migrate_thunk_id correctly translates the env_id inside a CoreExpr
@@ -1301,7 +1289,7 @@ mod tests {
     ///
     /// Before the fix, unevaluated thunks were Arc::clone'd — leaving stale env_ids
     /// pointing into the source arena. After the fix, translate_unevaluated_state rewrites
-    /// the env_id through migrate_flat_env so the migrated thunk references a valid FlatEnv
+    /// the env_id through migrate_flat_env so the migrated thunk references a valid Scope
     /// in the destination arena.
     #[test]
     fn test_migrate_unevaluated_thunk_env_id_translation() {
@@ -1314,7 +1302,7 @@ mod tests {
         // Thunk::new_guarded (which has no env_id) to test the Guarded path,
         // and verify the inner ThunkId is translated.
 
-        let mut arena = EnvArena::new();
+        let mut arena = ScopeArena::new();
 
         // dst_env_id: destination scope (outside src_range)
         let dst_env_id = arena.alloc_root(0);
@@ -1325,9 +1313,9 @@ mod tests {
 
         // Allocate a materialized thunk in src_env_id (the inner target for Guarded).
         let inner_thunk = Arc::new(Thunk::new_materialized(Value::Int(77), rust_span!()));
-        let inner_tid = arena.alloc_slot_thunk(src_env_id, Arc::clone(&inner_thunk), "");
+        let inner_tid = arena.push_slot(src_env_id, "inner", Arc::clone(&inner_thunk));
         assert!(
-            src_range.contains(&inner_tid.env_id),
+            src_range.contains(&inner_tid.scope_id),
             "inner_tid must be in src_range for this test"
         );
 
@@ -1338,7 +1326,7 @@ mod tests {
             vec![],
             rust_span!(),
         ));
-        let guarded_tid = arena.alloc_slot_thunk(src_env_id, Arc::clone(&guarded_thunk), "");
+        let guarded_tid = arena.push_slot(src_env_id, "guarded", Arc::clone(&guarded_thunk));
 
         // Migrate guarded_tid from src to dst.
         let mut thunk_map = HashMap::new();
@@ -1354,7 +1342,7 @@ mod tests {
 
         // The migrated ThunkId must be in dst_env_id.
         assert_eq!(
-            new_tid.env_id, dst_env_id.0,
+            new_tid.scope_id, dst_env_id.0,
             "migrated guarded thunk must be in dst"
         );
 
@@ -1366,12 +1354,12 @@ mod tests {
         match state {
             UnevaluatedState::Guarded { inner, .. } => {
                 assert!(
-                    !src_range.contains(&inner.env_id),
+                    !src_range.contains(&inner.scope_id),
                     "migrated Guarded.inner ({:?}) must be outside src_range after translation",
                     inner
                 );
                 assert_eq!(
-                    inner.env_id, dst_env_id.0,
+                    inner.scope_id, dst_env_id.0,
                     "migrated Guarded.inner must point to dst_env_id"
                 );
                 // The inner thunk at the translated location must hold the materialized value.

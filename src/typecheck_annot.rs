@@ -2300,7 +2300,7 @@ async fn resolve_type_head(
     }
 
     // Step 3: type_stage_env — After T-1557, Env no longer stores runtime values; thunks
-    // live exclusively in FlatEnv (EvalContext.env_arena). Name-based thunk lookup via
+    // live exclusively in FlatEnv (EvalContext.scope_arena). Name-based thunk lookup via
     // get_value_by_name is no longer possible from Env. This step falls through to
     // tycon_env (Step 4) for type resolution.
 
@@ -4934,19 +4934,19 @@ pub(crate) async fn eval_type_stage_expr(
                 }
             }; // tc_guard dropped here
 
-            let arena_borrow = eval_ctx.env_arena.borrow();
+            let arena_borrow = eval_ctx.scope_arena.borrow();
             let target_env_id = match arena_borrow.walk_parent_chain(flat_env_id, typenode_depth) {
                 Ok(env_id) => env_id,
                 Err(_) => break 'dispatch None,
             };
             crate::arena::ThunkId {
-                env_id: target_env_id.0,
+                scope_id: target_env_id.0,
                 slot: typenode_slot as u32,
             }
         };
 
         // Step 3: Materialize the TypeNode ThunkId to get the TypeNode Dict value.
-        let typenode_thunk = eval_ctx.env_arena.borrow().get_thunk(typenode_thunk_id);
+        let typenode_thunk = eval_ctx.scope_arena.borrow().get_thunk(typenode_thunk_id);
         let typenode_dict_val =
             match crate::eval::materialize(&typenode_thunk, None, &eval_ctx).await {
                 Ok(v) => v,
@@ -4965,7 +4965,7 @@ pub(crate) async fn eval_type_stage_expr(
         };
 
         // Step 5: Materialize the as-type function.
-        let as_type_thunk = eval_ctx.env_arena.borrow().get_thunk(as_type_thunk_id);
+        let as_type_thunk = eval_ctx.scope_arena.borrow().get_thunk(as_type_thunk_id);
         let as_type_fn_val = match crate::eval::materialize(&as_type_thunk, None, &eval_ctx).await {
             Ok(v) => v,
             Err(_) => break 'dispatch None,

@@ -1726,7 +1726,6 @@ impl TypeEnv {
             ("builtin-lte", "<="),
             ("builtin-eq", "="),
             ("builtin-add", "+"),
-            ("builtin-sub", "-"),
             ("builtin-mul", "*"),
             ("builtin-div", "/"),
             ("builtin-filter", "filter"),
