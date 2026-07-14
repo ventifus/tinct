@@ -21,22 +21,31 @@
 use crate::builtins::builtin;
 // Arithmetic and comparison implementations — Core-46 only.
 use crate::builtins_math::{
-    builtin_eq_int, builtin_eq_string, builtin_lt,
+    builtin_eq_int,
+    builtin_eq_string,
+    builtin_float_add,
+    builtin_float_gt,
+    builtin_float_gte,
+    builtin_float_mul,
+    builtin_float_sub,
     // Monomorphic typed variants.
-    builtin_int_add, builtin_float_add, builtin_int_to_float,
-    builtin_int_sub, builtin_float_sub,
-    builtin_int_mul, builtin_float_mul,
-    builtin_int_gt, builtin_float_gt, builtin_str_gt,
-    builtin_int_gte, builtin_float_gte, builtin_str_gte,
+    builtin_int_add,
+    builtin_int_gt,
+    builtin_int_gte,
+    builtin_int_mul,
+    builtin_int_sub,
+    builtin_int_to_float,
+    builtin_lt,
+    builtin_str_gt,
+    builtin_str_gte,
 };
 // Dict/access implementations — all stay in core.
 use crate::builtins_dict::{
-    builtin_build_dict, builtin_builder_delete, builtin_builder_finish,
-    builtin_builder_get, builtin_builder_get_or, builtin_builder_has, builtin_builder_set,
-    builtin_builder_snapshot, builtin_dict_has_key_nth, builtin_dict_has_kv_nth,
-    builtin_dict_has_nth, builtin_dict_key_nth, builtin_dict_kv_nth, builtin_dict_nth,
-    builtin_field_get, builtin_get, builtin_get_by_field, builtin_has_key, builtin_keys,
-    builtin_length, builtin_make_builder, builtin_slot_get,
+    builtin_build_dict, builtin_builder_delete, builtin_builder_finish, builtin_builder_get,
+    builtin_builder_get_or, builtin_builder_has, builtin_builder_set, builtin_builder_snapshot,
+    builtin_dict_has_key_nth, builtin_dict_has_kv_nth, builtin_dict_has_nth, builtin_dict_key_nth,
+    builtin_dict_kv_nth, builtin_dict_nth, builtin_field_get, builtin_get, builtin_get_by_field,
+    builtin_has_key, builtin_keys, builtin_length, builtin_make_builder, builtin_slot_get,
 };
 // String implementations — Core-46 only.
 use crate::builtins_string::{
@@ -90,20 +99,98 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             ["slot", "dict"]
         ),
         // ── Arithmetic — monomorphic typed variants ───────────────────────────────────
-        builtin!("builtin-int-add",      builtin_int_add,      [Strictness::Seq, Strictness::Seq], 2, ["a", "b"]),
-        builtin!("builtin-float-add",    builtin_float_add,    [Strictness::Seq, Strictness::Seq], 2, ["a", "b"]),
-        builtin!("builtin-int-to-float", builtin_int_to_float, [Strictness::Seq], 1, ["n"]),
-        builtin!("builtin-int-sub",      builtin_int_sub,      [Strictness::Seq, Strictness::Seq], 2, ["a", "b"]),
-        builtin!("builtin-float-sub",    builtin_float_sub,    [Strictness::Seq, Strictness::Seq], 2, ["a", "b"]),
-        builtin!("builtin-int-mul",      builtin_int_mul,      [Strictness::Seq, Strictness::Seq], 2, ["a", "b"]),
-        builtin!("builtin-float-mul",    builtin_float_mul,    [Strictness::Seq, Strictness::Seq], 2, ["a", "b"]),
+        builtin!(
+            "builtin-int-add",
+            builtin_int_add,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["a", "b"]
+        ),
+        builtin!(
+            "builtin-float-add",
+            builtin_float_add,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["a", "b"]
+        ),
+        builtin!(
+            "builtin-int-to-float",
+            builtin_int_to_float,
+            [Strictness::Seq],
+            1,
+            ["n"]
+        ),
+        builtin!(
+            "builtin-int-sub",
+            builtin_int_sub,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["a", "b"]
+        ),
+        builtin!(
+            "builtin-float-sub",
+            builtin_float_sub,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["a", "b"]
+        ),
+        builtin!(
+            "builtin-int-mul",
+            builtin_int_mul,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["a", "b"]
+        ),
+        builtin!(
+            "builtin-float-mul",
+            builtin_float_mul,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["a", "b"]
+        ),
         // ── Comparison — monomorphic typed variants ───────────────────────────────────
-        builtin!("builtin-int-gt",   builtin_int_gt,   [Strictness::Seq, Strictness::Seq], 2, ["a", "b"]),
-        builtin!("builtin-float-gt", builtin_float_gt, [Strictness::Seq, Strictness::Seq], 2, ["a", "b"]),
-        builtin!("builtin-str-gt",   builtin_str_gt,   [Strictness::Seq, Strictness::Seq], 2, ["a", "b"]),
-        builtin!("builtin-int-gte",  builtin_int_gte,  [Strictness::Seq, Strictness::Seq], 2, ["a", "b"]),
-        builtin!("builtin-float-gte",builtin_float_gte,[Strictness::Seq, Strictness::Seq], 2, ["a", "b"]),
-        builtin!("builtin-str-gte",  builtin_str_gte,  [Strictness::Seq, Strictness::Seq], 2, ["a", "b"]),
+        builtin!(
+            "builtin-int-gt",
+            builtin_int_gt,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["a", "b"]
+        ),
+        builtin!(
+            "builtin-float-gt",
+            builtin_float_gt,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["a", "b"]
+        ),
+        builtin!(
+            "builtin-str-gt",
+            builtin_str_gt,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["a", "b"]
+        ),
+        builtin!(
+            "builtin-int-gte",
+            builtin_int_gte,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["a", "b"]
+        ),
+        builtin!(
+            "builtin-float-gte",
+            builtin_float_gte,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["a", "b"]
+        ),
+        builtin!(
+            "builtin-str-gte",
+            builtin_str_gte,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["a", "b"]
+        ),
         // ── Comparison ───────────────────────────────────────────────────────────────
         builtin!(
             "builtin-eq-int",
@@ -128,8 +215,20 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
         ),
         // ── Dict primitives ──────────────────────────────────────────────────────────
         builtin!("builtin-keys", builtin_keys, [Strictness::Spine], 1, ["xs"]),
-        builtin!("builtin-dict-length",  builtin_length, [Strictness::Spine], 1, ["xs"]),
-        builtin!("builtin-bytes-length", builtin_length, [Strictness::Spine], 1, ["xs"]),
+        builtin!(
+            "builtin-dict-length",
+            builtin_length,
+            [Strictness::Spine],
+            1,
+            ["xs"]
+        ),
+        builtin!(
+            "builtin-bytes-length",
+            builtin_length,
+            [Strictness::Spine],
+            1,
+            ["xs"]
+        ),
         builtin!(
             "builtin-get",
             builtin_get,
@@ -417,7 +516,12 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
         ),
         // TypeContext primitives
         builtin!("builtin-get-type-context", builtin_get_type_context, [], 0),
-        builtin!("builtin-make-type-ctx", crate::builtins_meta::builtin_make_type_ctx, [], 0),
+        builtin!(
+            "builtin-make-type-ctx",
+            crate::builtins_meta::builtin_make_type_ctx,
+            [],
+            0
+        ),
         builtin!(
             "builtin-tc-with-type-stage-env",
             builtin_tc_with_type_stage_env,

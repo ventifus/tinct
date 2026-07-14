@@ -1,8 +1,0 @@
-# 3-arg [case [let bindings] pattern body] — bind name to int scrutinee, use in body.
-# The pattern is `n` (in binding set), so n is bound to the scrutinee value.
-# Tests that the bound name is accessible in the body.
-[match 7
-  [case [let n] n [* n n]]
-  [case [let _] _ 0]]
-=== out
-Int(49)

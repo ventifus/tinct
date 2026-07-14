@@ -362,10 +362,7 @@ async fn field_get_on_value(
                 }
             }
         }
-        Value::Program {
-            program: prog,
-            ..
-        } => {
+        Value::Program { program: prog, .. } => {
             let val = match key_str.as_str() {
                 "documents" => {
                     let mut dict = indexmap::IndexMap::new();
@@ -379,7 +376,7 @@ async fn field_get_on_value(
                     Value::Dict(dict)
                 }
                 "warnings" => {
-                    // Value::Program.warnings was removed from the Value enum (T-1559).
+                    // Value::Program.warnings was removed from the Value enum.
                     // Return an empty list — no warnings are accessible via this path.
                     Value::Dict(indexmap::IndexMap::new())
                 }
@@ -768,7 +765,8 @@ pub(crate) fn builtin_dict_has_nth(
             call_span.clone(),
         )
         .await?;
-        let idx = match ctx.get_thunk(args[1])
+        let idx = match ctx
+            .get_thunk(args[1])
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness[1]=Seq")
         {
@@ -823,7 +821,8 @@ pub(crate) fn builtin_dict_nth(
             call_span.clone(),
         )
         .await?;
-        let idx = match ctx.get_thunk(args[1])
+        let idx = match ctx
+            .get_thunk(args[1])
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness[1]=Seq")
         {
@@ -882,7 +881,8 @@ pub(crate) fn builtin_dict_has_key_nth(
             call_span.clone(),
         )
         .await?;
-        let idx = match ctx.get_thunk(args[1])
+        let idx = match ctx
+            .get_thunk(args[1])
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness[1]=Seq")
         {
@@ -936,7 +936,8 @@ pub(crate) fn builtin_dict_key_nth(
             call_span.clone(),
         )
         .await?;
-        let idx = match ctx.get_thunk(args[1])
+        let idx = match ctx
+            .get_thunk(args[1])
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness[1]=Seq")
         {
@@ -1001,7 +1002,8 @@ pub(crate) fn builtin_dict_has_kv_nth(
             call_span.clone(),
         )
         .await?;
-        let idx = match ctx.get_thunk(args[1])
+        let idx = match ctx
+            .get_thunk(args[1])
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness[1]=Seq")
         {
@@ -1055,7 +1057,8 @@ pub(crate) fn builtin_dict_kv_nth(
             call_span.clone(),
         )
         .await?;
-        let idx = match ctx.get_thunk(args[1])
+        let idx = match ctx
+            .get_thunk(args[1])
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness[1]=Seq")
         {
@@ -1810,7 +1813,8 @@ pub(crate) fn builtin_get_by_field(
         };
 
         // arg[1]: field-value (Any) — pre-forced by pos_strictness
-        let field_value = ctx.get_thunk(args[1])
+        let field_value = ctx
+            .get_thunk(args[1])
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness");
 
@@ -1961,7 +1965,8 @@ pub(crate) fn builtin_take(
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
 
-        let n = ctx.get_thunk(args[0])
+        let n = ctx
+            .get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
         let n_int = match n {
@@ -1977,7 +1982,8 @@ pub(crate) fn builtin_take(
             }
         };
 
-        let xs = ctx.get_thunk(args[1])
+        let xs = ctx
+            .get_thunk(args[1])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
@@ -2035,7 +2041,8 @@ pub(crate) fn builtin_drop(
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
 
-        let n = ctx.get_thunk(args[0])
+        let n = ctx
+            .get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
         let n_int = match n {
@@ -2055,7 +2062,8 @@ pub(crate) fn builtin_drop(
             return Ok(ctx.get_thunk(args[1]));
         }
 
-        let xs = ctx.get_thunk(args[1])
+        let xs = ctx
+            .get_thunk(args[1])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
@@ -2184,4 +2192,3 @@ pub(crate) fn builtin_concat(
         }
     })
 }
-

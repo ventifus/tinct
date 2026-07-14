@@ -1,9 +1,0 @@
-# Multiple case arms — 3-arg [case [let] literal body] for literal matching,
-# [case [let _] _ body] for wildcard fallback. Scrutinee 2 matches second arm.
-[match 2
-  [case [let] 1 "one"]
-  [case [let] 2 "two"]
-  [case [let] 3 "three"]
-  [case [let _] _ "other"]]
-=== out
-String("two")

@@ -1,9 +1,0 @@
-# 3-arg [case [let bindings] pattern body] — pin mismatch causes soft-skip.
-# `expected` is pinned (not in binding set). Scrutinee is 42, expected is 99.
-# The first arm does not match (pin mismatch), so the second arm fires.
-[expected: 99]
-[match 42
-  [case [let] expected "pin-hit"]
-  [case [let] _ "pin-miss"]]
-=== out
-String("pin-miss")

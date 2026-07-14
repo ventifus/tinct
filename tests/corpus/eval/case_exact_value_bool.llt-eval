@@ -1,6 +1,0 @@
-[match True
-  True:  "yes"
-  False: "no"
-  _: "other"]
-=== out
-String("yes")

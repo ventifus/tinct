@@ -43,6 +43,28 @@ pub struct LowerDiagnostic {
     pub span: crate::ast::Span,
 }
 
+/// Resolve a mangled instance binding name to (level, slot) De Bruijn coordinates
+/// by searching the accumulated resolver scope frames.
+///
+/// `frames[0]` is the outermost scope (root builtins); `frames[n-1]` is the innermost.
+/// De Bruijn level 0 is the innermost scope (closest ancestor), so we search from the
+/// innermost frame outward and return the offset as the level.
+///
+/// Returns `None` if the name is not found in any frame.
+fn resolve_name_in_frames(
+    frames: &[indexmap::IndexMap<String, ()>],
+    name: &str,
+) -> Option<(u32, u32)> {
+    // frames[0] = outermost, frames[n-1] = innermost
+    // level 0 = innermost → frames[n-1]; level k = frames[n-1-k]
+    for (offset, frame) in frames.iter().rev().enumerate() {
+        if let Some(slot) = frame.get_index_of(name) {
+            return Some((offset as u32, slot as u32));
+        }
+    }
+    None
+}
+
 /// Lower a single surface node to a CoreExpr, collecting diagnostics.
 ///
 /// This is the entry point for per-thunk lowering. Called from `eval_materialize.rs`
@@ -56,24 +78,37 @@ pub struct LowerDiagnostic {
 ///
 /// All cross-phase data (type annotations, field slots, provenance) is read from inline
 /// fields on the AST nodes — no external tables are consulted.
-pub fn lower(arc: &Arc<SurfaceNode>) -> (Spanned<CoreExpr>, Vec<LowerDiagnostic>) {
+///
+/// `scope_frames` — when `Some`, provides the accumulated resolver scope frames from the
+/// init program's resolver run. Used to resolve `call_dispatch` mangled instance binding
+/// names to correct De Bruijn coordinates. Pass `None` when the EvalContext was not
+/// initialized via `with_scope_frames()` (test contexts, bootstrap paths).
+pub fn lower(
+    arc: &Arc<SurfaceNode>,
+    scope_frames: Option<&[indexmap::IndexMap<String, ()>]>,
+) -> (Spanned<CoreExpr>, Vec<LowerDiagnostic>) {
     let mut diagnostics = Vec::new();
-    let spanned = lower_inner(arc, &mut diagnostics);
+    let spanned = lower_inner(arc, &mut diagnostics, scope_frames);
     (spanned, diagnostics)
 }
 
-/// Internal lowering entry point that threads the diagnostics accumulator.
+/// Internal lowering entry point that threads the diagnostics accumulator and scope frames.
 ///
 /// Used by recursive calls within lower.rs and by eval machinery that does not need the
 /// diagnostic Vec. When a VarRef or parse error is encountered, a `LowerDiagnostic` is
 /// pushed and `CoreExpr::Placeholder` is emitted. Produces the same `Spanned<CoreExpr>`
 /// as the public `lower()`.
+///
+/// `scope_frames` is threaded through all recursive calls so that `call_dispatch` rewrites
+/// anywhere in the AST subtree can resolve the mangled instance binding name to correct
+/// De Bruijn coordinates. Pass `None` when scope frames are not available.
 pub(crate) fn lower_inner(
     arc: &Arc<SurfaceNode>,
     diagnostics: &mut Vec<LowerDiagnostic>,
+    scope_frames: Option<&[indexmap::IndexMap<String, ()>]>,
 ) -> Spanned<CoreExpr> {
     let span = arc.span.clone();
-    let core_expr = lower_expr(arc, &arc.expr, diagnostics);
+    let core_expr = lower_expr(arc, &arc.expr, diagnostics, scope_frames);
 
     // Apply type guard if the type checker set one on this node.
     let core_expr = if let Some(guard_type) = arc.type_guard.get() {
@@ -208,6 +243,7 @@ fn lower_expr(
     arc: &Arc<SurfaceNode>,
     expr: &SurfaceExpression,
     diagnostics: &mut Vec<LowerDiagnostic>,
+    scope_frames: Option<&[indexmap::IndexMap<String, ()>]>,
 ) -> CoreExpr {
     match expr {
         SurfaceExpression::Int(n) => CoreExpr::Int(*n),
@@ -278,24 +314,31 @@ fn lower_expr(
             // The resolver writes (level, slot) for field-get into Field.resolution.
             // field-get and slot-get live in the same env frame; slot-get is always one
             // slot after field-get (by construction in dot-access-env and build_core_env).
-            // When resolution is unset (resolver had no env), fall back to MAX/MAX.
+            // When resolution is unset, the resolver did not run on this node — emit a
+            // diagnostic so the caller fails loudly rather than silently emitting MAX/MAX.
             let (field_get_level, field_get_slot) = match resolution.get() {
                 Some(Some((level, slot))) => (level, slot),
-                _ => (u32::MAX, u32::MAX), // resolver had no env (e.g. type-stage docs) — MAX signals unresolved coordinates; eval will error with internal error if forced
+                Some(None) | None => {
+                    debug_assert!(false, "field-get: resolver coordinates missing — resolver did not run on this node");
+                    diagnostics.push(LowerDiagnostic {
+                        kind: LowerDiagnosticKind::Error,
+                        message: "field-get: resolver coordinates missing — resolver did not run on this node".to_string(),
+                        span: arc.span.clone(),
+                    });
+                    return CoreExpr::Placeholder;
+                }
             };
 
             let (getter_name, getter_level, getter_slot, key_arg) =
                 if let Some(typed_slot) = field_slot.get() {
                     // Typed: use slot-get (positional O(1) access).
                     // slot-get is always one slot after field-get in the same env frame.
+                    // field_get_slot is always a real slot here: the Some(None) | None arm
+                    // above already returned CoreExpr::Placeholder for missing coordinates.
                     (
                         "slot-get",
                         field_get_level,
-                        if field_get_slot == u32::MAX {
-                            u32::MAX
-                        } else {
-                            field_get_slot + 1
-                        },
+                        field_get_slot + 1,
                         CoreExpr::Int(typed_slot as i64),
                     )
                 } else {
@@ -317,7 +360,7 @@ fn lower_expr(
                 arc.span.clone(),
             ));
             let key_node = Arc::new(crate::ast::Spanned::new(key_arg, arc.span.clone()));
-            let target_node = Arc::new(lower_inner(inner, diagnostics));
+            let target_node = Arc::new(lower_inner(inner, diagnostics, scope_frames));
 
             CoreExpr::Call {
                 func: getter_var,
@@ -382,8 +425,8 @@ fn lower_expr(
         // Pipe is syntactic sugar — rewrite to Call(rhs, [lhs]) so the evaluator
         // sees only Call nodes. Equivalent to: f |> g  ==  g(f).
         SurfaceExpression::Pipe { lhs, rhs } => CoreExpr::Call {
-            func: Arc::new(lower_inner(rhs, diagnostics)),
-            args: vec![Arc::new(lower_inner(lhs, diagnostics))],
+            func: Arc::new(lower_inner(rhs, diagnostics, scope_frames)),
+            args: vec![Arc::new(lower_inner(lhs, diagnostics, scope_frames))],
             named_args: vec![],
             implied: true,
         },
@@ -391,7 +434,7 @@ fn lower_expr(
         SurfaceExpression::Sequential(exprs) => CoreExpr::Sequential(
             exprs
                 .iter()
-                .map(|e| Arc::new(lower_inner(e, diagnostics)))
+                .map(|e| Arc::new(lower_inner(e, diagnostics, scope_frames)))
                 .collect(),
         ),
 
@@ -399,8 +442,7 @@ fn lower_expr(
             // Check for spread entries (...expr) — desugar to merge calls.
             // [a: 1  b: 2  ...rest  c: 3] → merge(merge([a: 1  b: 2], rest), [c: 3])
             let has_rest = entries.iter().any(|e| {
-                e.node.key.is_none()
-                    && matches!(&e.node.value.expr, SurfaceExpression::Rest(..))
+                e.node.key.is_none() && matches!(&e.node.value.expr, SurfaceExpression::Rest(..))
             });
             if has_rest {
                 // Collect entry indices between rest markers.
@@ -426,12 +468,17 @@ fn lower_expr(
                             let se = &entries[i];
                             let key = se.node.key.as_ref().map(|k| {
                                 let lowered = match &k.expr {
-                                    SurfaceExpression::VarRef { name, escaped: false, .. } => CoreExpr::Str(name.clone()),
-                                    _ => lower_expr(k, &k.expr, diagnostics),
+                                    SurfaceExpression::VarRef {
+                                        name,
+                                        escaped: false,
+                                        ..
+                                    } => CoreExpr::Str(name.clone()),
+                                    _ => lower_expr(k, &k.expr, diagnostics, scope_frames),
                                 };
                                 Arc::new(Spanned::new(lowered, k.span.clone()))
                             });
-                            let value = Arc::new(lower_inner(&se.node.value, diagnostics));
+                            let value =
+                                Arc::new(lower_inner(&se.node.value, diagnostics, scope_frames));
                             ces.push(Spanned::new(CoreEntry { key, value }, se.span.clone()));
                         }
                         CoreExpr::Dict(ces)
@@ -444,11 +491,17 @@ fn lower_expr(
                 let mut acc = lower_seg!(&segments[0]);
                 for (i, &ri) in rest_indices.iter().enumerate() {
                     // lower_inner returns Spanned<CoreExpr> — wrap in Arc directly.
-                    let rest_spanned = lower_inner(&entries[ri].node.value, diagnostics);
+                    let rest_spanned =
+                        lower_inner(&entries[ri].node.value, diagnostics, scope_frames);
                     // merge(acc, rest)
                     acc = CoreExpr::Call {
                         func: Arc::new(Spanned::new(
-                            CoreExpr::Var { name: "merge".to_string(), level: u32::MAX, slot: u32::MAX, annotation: None },
+                            CoreExpr::Var {
+                                name: "merge".to_string(),
+                                level: u32::MAX,
+                                slot: u32::MAX,
+                                annotation: None,
+                            },
                             span.clone(),
                         )),
                         args: vec![
@@ -463,7 +516,12 @@ fn lower_expr(
                         let seg = lower_seg!(&segments[i + 1]);
                         acc = CoreExpr::Call {
                             func: Arc::new(Spanned::new(
-                                CoreExpr::Var { name: "merge".to_string(), level: u32::MAX, slot: u32::MAX, annotation: None },
+                                CoreExpr::Var {
+                                    name: "merge".to_string(),
+                                    level: u32::MAX,
+                                    slot: u32::MAX,
+                                    annotation: None,
+                                },
                                 span.clone(),
                             )),
                             args: vec![
@@ -487,8 +545,12 @@ fn lower_expr(
                                 // Named instance: emit outer key binding only.
                                 // Binding names are NOT flattened to avoid duplicate key errors
                                 // when multiple instances of the same class exist in the dict.
-                                let lowered =
-                                    lower_expr(&se.node.value, &se.node.value.expr, diagnostics);
+                                let lowered = lower_expr(
+                                    &se.node.value,
+                                    &se.node.value.expr,
+                                    diagnostics,
+                                    scope_frames,
+                                );
                                 // Named instance keys are always static string keys.
                                 // Use the same pattern as regular dict entries: VarRef (plain or
                                 // annotated like `FunctorResult@[doc: "..."]`) → Str(name).
@@ -499,7 +561,7 @@ fn lower_expr(
                                             escaped: false,
                                             ..
                                         } => CoreExpr::Str(name.clone()),
-                                        _ => lower_expr(k, &k.expr, diagnostics),
+                                        _ => lower_expr(k, &k.expr, diagnostics, scope_frames),
                                     };
                                     Arc::new(Spanned::new(key_expr, k.span.clone()))
                                 });
@@ -535,8 +597,11 @@ fn lower_expr(
                                             CoreExpr::Str(binding_name),
                                             se.span.clone(),
                                         )));
-                                        let value =
-                                            Arc::new(lower_inner(&me.node.value, diagnostics));
+                                        let value = Arc::new(lower_inner(
+                                            &me.node.value,
+                                            diagnostics,
+                                            scope_frames,
+                                        ));
                                         core_entries.push(Spanned::new(
                                             CoreEntry { key, value },
                                             se.span.clone(),
@@ -551,6 +616,7 @@ fn lower_expr(
                                 type_name_opt,
                                 body,
                                 diagnostics,
+                                scope_frames,
                             );
                             let key = se.node.key.as_ref().map(|k| {
                                 let lowered = match &k.expr {
@@ -558,7 +624,7 @@ fn lower_expr(
                                     SurfaceExpression::VarRef { name, .. } => {
                                         CoreExpr::Str(name.clone())
                                     }
-                                    _ => lower_expr(k, &k.expr, diagnostics),
+                                    _ => lower_expr(k, &k.expr, diagnostics, scope_frames),
                                 };
                                 Arc::new(Spanned::new(lowered, k.span.clone()))
                             });
@@ -582,7 +648,7 @@ fn lower_expr(
                                         SurfaceExpression::VarRef { name, .. } => {
                                             CoreExpr::Str(name.clone())
                                         }
-                                        _ => lower_expr(k, &k.expr, diagnostics),
+                                        _ => lower_expr(k, &k.expr, diagnostics, scope_frames),
                                     };
                                     Arc::new(Spanned::new(lowered, k.span.clone()))
                                 });
@@ -615,11 +681,11 @@ fn lower_expr(
                                 escaped: false,
                                 ..
                             } => CoreExpr::Str(name.clone()),
-                            _ => lower_expr(k, &k.expr, diagnostics),
+                            _ => lower_expr(k, &k.expr, diagnostics, scope_frames),
                         };
                         Arc::new(Spanned::new(lowered, k.span.clone()))
                     });
-                    let value = Arc::new(lower_inner(&se.node.value, diagnostics));
+                    let value = Arc::new(lower_inner(&se.node.value, diagnostics, scope_frames));
                     core_entries.push(Spanned::new(CoreEntry { key, value }, se.span.clone()));
                 }
             }
@@ -638,33 +704,42 @@ fn lower_expr(
             let lowered_func = if let SurfaceExpression::VarRef { call_dispatch, .. } = &func.expr {
                 if let Some(mangled_name) = call_dispatch.get() {
                     // The type checker resolved this typeclass method call to a concrete instance
-                    // binding.  Emit a Var with the mangled instance binding name and
-                    // level = u32::MAX, slot = u32::MAX as a placeholder — resolver coordinates
-                    // were not available at lower time.  At eval time, eval_core_expr returns
-                    // EvalError::internal if this Var is forced.  See B-513 (call_dispatch
-                    // FlatEnv gap: typeclass method dispatch fails in the production loader path
-                    // where typecheck precedes eval).
-                    Arc::new(Spanned::new(
-                        CoreExpr::Var {
-                            name: mangled_name.to_string(),
-                            level: u32::MAX,
-                            slot: u32::MAX,
-                            annotation: None,
-                        },
-                        func.span.clone(),
-                    ))
+                    // binding. Resolve the mangled name to De Bruijn coordinates using the
+                    // accumulated scope frames from the resolver run.
+                    match scope_frames.and_then(|f| resolve_name_in_frames(f, &mangled_name)) {
+                        Some((level, slot)) => Arc::new(Spanned::new(
+                            CoreExpr::Var {
+                                name: mangled_name.to_string(),
+                                level,
+                                slot,
+                                annotation: None,
+                            },
+                            func.span.clone(),
+                        )),
+                        None => {
+                            diagnostics.push(LowerDiagnostic {
+                                kind: LowerDiagnosticKind::Error,
+                                message: format!(
+                                    "call_dispatch: scope frames not available or instance binding '{}' not found — resolver did not run on this node",
+                                    mangled_name
+                                ),
+                                span: func.span.clone(),
+                            });
+                            Arc::new(Spanned::new(CoreExpr::Placeholder, func.span.clone()))
+                        }
+                    }
                 } else {
-                    Arc::new(lower_inner(func, diagnostics))
+                    Arc::new(lower_inner(func, diagnostics, scope_frames))
                 }
             } else {
-                Arc::new(lower_inner(func, diagnostics))
+                Arc::new(lower_inner(func, diagnostics, scope_frames))
             };
 
             CoreExpr::Call {
                 func: lowered_func,
                 args: args
                     .iter()
-                    .map(|a| Arc::new(lower_inner(a, diagnostics)))
+                    .map(|a| Arc::new(lower_inner(a, diagnostics, scope_frames)))
                     .collect(),
                 named_args: named_args
                     .iter()
@@ -672,7 +747,11 @@ fn lower_expr(
                         Spanned::new(
                             CoreNamedArg {
                                 name: na.node.name.clone(),
-                                value: Arc::new(lower_inner(&na.node.value, diagnostics)),
+                                value: Arc::new(lower_inner(
+                                    &na.node.value,
+                                    diagnostics,
+                                    scope_frames,
+                                )),
                             },
                             na.span.clone(),
                         )
@@ -702,7 +781,7 @@ fn lower_expr(
                     )
                 })
                 .collect(),
-            body: Arc::new(lower_inner(body, diagnostics)),
+            body: Arc::new(lower_inner(body, diagnostics, scope_frames)),
             desugared: *desugared,
         },
 
@@ -720,7 +799,7 @@ fn lower_expr(
             };
             CoreExpr::TypeAssert {
                 annotation: annotation.clone(),
-                expr: Arc::new(lower_inner(inner, diagnostics)),
+                expr: Arc::new(lower_inner(inner, diagnostics, scope_frames)),
                 resolved_type: ty,
                 pipeline_blame: None,
             }
@@ -729,7 +808,7 @@ fn lower_expr(
         SurfaceExpression::Rest(name, _) => CoreExpr::Rest(name.clone()),
 
         SurfaceExpression::Match { scrutinee, arms } => CoreExpr::Match {
-            scrutinee: Arc::new(lower_inner(scrutinee, diagnostics)),
+            scrutinee: Arc::new(lower_inner(scrutinee, diagnostics, scope_frames)),
             arms: arms
                 .iter()
                 .map(|arm| CoreMatchArm {
@@ -740,8 +819,8 @@ fn lower_expr(
                     guard: arm
                         .guard
                         .as_ref()
-                        .map(|g| Arc::new(lower_inner(g, diagnostics))),
-                    body: Arc::new(lower_inner(&arm.body, diagnostics)),
+                        .map(|g| Arc::new(lower_inner(g, diagnostics, scope_frames))),
+                    body: Arc::new(lower_inner(&arm.body, diagnostics, scope_frames)),
                     guard_matchable_binding: arm.guard_matchable_binding.clone(),
                 })
                 .collect(),
@@ -751,22 +830,24 @@ fn lower_expr(
             // Quote captures AST data — VarRefs inside are symbols, not runtime bindings.
             // The resolver intentionally skips Quote bodies, so VarRefs inside will have
             // OnceLock=None. We must not emit "undefined variable" diagnostics for them.
+            // scope_frames is passed as None inside Quote: any call_dispatch in a quoted
+            // expression is a symbol reference, not a runtime dispatch — coordinates are irrelevant.
             let mut quote_diags = Vec::new();
-            CoreExpr::Quote(Arc::new(lower_inner(inner, &mut quote_diags)))
+            CoreExpr::Quote(Arc::new(lower_inner(inner, &mut quote_diags, None)))
         }
 
         SurfaceExpression::Unquote(inner) => {
-            CoreExpr::Unquote(Arc::new(lower_inner(inner, diagnostics)))
+            CoreExpr::Unquote(Arc::new(lower_inner(inner, diagnostics, scope_frames)))
         }
 
         SurfaceExpression::UnquoteSplice(inner) => {
-            CoreExpr::UnquoteSplice(Arc::new(lower_inner(inner, diagnostics)))
+            CoreExpr::UnquoteSplice(Arc::new(lower_inner(inner, diagnostics, scope_frames)))
         }
 
         SurfaceExpression::PatternDecl { bindings } => CoreExpr::PatternDecl {
             bindings: bindings
                 .iter()
-                .map(|b| lower_inner(b, diagnostics))
+                .map(|b| lower_inner(b, diagnostics, scope_frames))
                 .collect(),
         },
 
@@ -778,7 +859,7 @@ fn lower_expr(
                     if i % 2 == 0 {
                         lower_let_decl_binding(b, diagnostics)
                     } else {
-                        lower_inner(b, diagnostics)
+                        lower_inner(b, diagnostics, scope_frames)
                     }
                 })
                 .collect(),
@@ -789,9 +870,9 @@ fn lower_expr(
             pattern,
             body,
         } => CoreExpr::CaseArm {
-            let_bindings: Arc::new(lower_inner(let_bindings, diagnostics)),
-            pattern: Arc::new(lower_inner(pattern, diagnostics)),
-            body: Arc::new(lower_inner(body, diagnostics)),
+            let_bindings: Arc::new(lower_inner(let_bindings, diagnostics, scope_frames)),
+            pattern: Arc::new(lower_inner(pattern, diagnostics, scope_frames)),
+            body: Arc::new(lower_inner(body, diagnostics, scope_frames)),
         },
 
         SurfaceExpression::Placeholder => CoreExpr::Placeholder,
@@ -827,7 +908,8 @@ fn lower_expr(
                             CoreExpr::Str(binding_name),
                             syn_span.clone(),
                         )));
-                        let value = Arc::new(lower_inner(&me.node.value, diagnostics));
+                        let value =
+                            Arc::new(lower_inner(&me.node.value, diagnostics, scope_frames));
                         core_entries.push(Spanned::new(CoreEntry { key, value }, syn_span.clone()));
                     }
                 }
@@ -1031,8 +1113,10 @@ fn lower_let_decl_binding(
         SurfaceExpression::Rest(Some(name), _) => CoreExpr::Str(name.clone()),
         // Wildcard / unnamed rest: use empty string (skipped by LetDecl eval arm)
         SurfaceExpression::Rest(None, _) => CoreExpr::Str(String::new()),
-        // All other forms: lower normally (will produce Error if unresolvable)
-        _ => lower_expr(arc, &arc.expr, diagnostics),
+        // All other forms: lower normally (will produce Error if unresolvable).
+        // No scope_frames needed here: LetDecl binding names are not call sites and
+        // cannot contain call_dispatch annotations.
+        _ => lower_expr(arc, &arc.expr, diagnostics, None),
     };
     Spanned::new(core_expr, span)
 }
@@ -1141,6 +1225,7 @@ fn lower_type_alias_to_constructor_dict(
     type_name_opt: Option<String>,
     body: &Arc<SurfaceNode>,
     diagnostics: &mut Vec<LowerDiagnostic>,
+    scope_frames: Option<&[indexmap::IndexMap<String, ()>]>,
 ) -> CoreExpr {
     use crate::ast::CoreEntry;
 
@@ -1186,8 +1271,9 @@ fn lower_type_alias_to_constructor_dict(
                             .node
                             .key
                             .as_ref()
-                            .map(|k| Arc::new(lower_inner(k, diagnostics)));
-                        let value = Arc::new(lower_inner(&se.node.value, diagnostics));
+                            .map(|k| Arc::new(lower_inner(k, diagnostics, scope_frames)));
+                        let value =
+                            Arc::new(lower_inner(&se.node.value, diagnostics, scope_frames));
                         Spanned::new(CoreEntry { key, value }, se.span.clone())
                     })
                     .collect();
@@ -1307,8 +1393,9 @@ fn lower_type_alias_to_constructor_dict(
                             .node
                             .key
                             .as_ref()
-                            .map(|k| Arc::new(lower_inner(k, diagnostics)));
-                        let value = Arc::new(lower_inner(&se.node.value, diagnostics));
+                            .map(|k| Arc::new(lower_inner(k, diagnostics, scope_frames)));
+                        let value =
+                            Arc::new(lower_inner(&se.node.value, diagnostics, scope_frames));
                         Spanned::new(CoreEntry { key, value }, se.span.clone())
                     })
                     .collect();
@@ -1568,7 +1655,7 @@ mod tests {
         let span = rust_span!();
         let node = make_node(SurfaceExpression::Int(42), span.clone());
 
-        let (lowered, diags) = lower(&node);
+        let (lowered, diags) = lower(&node, None);
 
         assert_eq!(lowered.span, span);
         assert!(matches!(lowered.node, CoreExpr::Int(42)));
@@ -1592,7 +1679,7 @@ mod tests {
             span,
         );
 
-        let (lowered, diags) = lower(&node);
+        let (lowered, diags) = lower(&node, None);
 
         assert!(diags.is_empty(), "unexpected diagnostics: {:?}", diags);
         match lowered.node {
@@ -1622,7 +1709,7 @@ mod tests {
             span.clone(),
         );
 
-        let (lowered, diags) = lower(&node);
+        let (lowered, diags) = lower(&node, None);
 
         // Unresolvable VarRef produces CoreExpr::Placeholder and a diagnostic.
         assert!(
@@ -1677,7 +1764,7 @@ mod tests {
             span,
         );
 
-        let (lowered, _diags) = lower(&node);
+        let (lowered, _diags) = lower(&node, None);
 
         match lowered.node {
             CoreExpr::Dict(entries) => assert!(
@@ -1736,7 +1823,7 @@ mod tests {
             span,
         );
 
-        let (lowered, _diags) = lower(&node);
+        let (lowered, _diags) = lower(&node, None);
 
         match lowered.node {
             CoreExpr::Dict(entries) => assert!(

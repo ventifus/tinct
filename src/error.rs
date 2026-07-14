@@ -1691,7 +1691,9 @@ impl fmt::Display for EvalError {
         {
             let sf = &self.definition_span.file;
             if is_real_source_file(sf) {
-                if let Some(snippet) = render_span_snippet(&sf.content, self.definition_span.clone()) {
+                if let Some(snippet) =
+                    render_span_snippet(&sf.content, self.definition_span.clone())
+                {
                     write!(f, "\n  --> {}:{}", sf.path, self.definition_span)?;
                     write!(f, "\n   |")?;
                     // render_span_snippet returns lines like "  N | line" and "  N | ^^^"

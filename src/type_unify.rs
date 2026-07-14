@@ -279,14 +279,14 @@ async fn check_constraints_on_var(
                     resolver_injective: class.resolver_injective,
                 })
             }
-            Constraint::HasField { label, dict_var, field_var }
-                if dict_var.as_str() == var_name =>
-            {
-                Some(ApplicableConstraint::HasField {
-                    label: label.clone(),
-                    field_var: field_var.clone(),
-                })
-            }
+            Constraint::HasField {
+                label,
+                dict_var,
+                field_var,
+            } if dict_var.as_str() == var_name => Some(ApplicableConstraint::HasField {
+                label: label.clone(),
+                field_var: field_var.clone(),
+            }),
             _ => None,
         })
         .collect();
@@ -303,7 +303,15 @@ async fn check_constraints_on_var(
                         // Found the field — unify the field TypeVar with the resolved type.
                         let field_var_ty = Type::TypeVar(field_var.clone(), state.level);
                         let mut sub_constraints = Vec::new();
-                        if let Err(e) = Box::pin(unify(&field_var_ty, &field_ty, state, &mut sub_constraints, span.clone())).await {
+                        if let Err(e) = Box::pin(unify(
+                            &field_var_ty,
+                            &field_ty,
+                            state,
+                            &mut sub_constraints,
+                            span.clone(),
+                        ))
+                        .await
+                        {
                             return Err(e);
                         }
                         constraints.extend(sub_constraints);
@@ -313,7 +321,10 @@ async fn check_constraints_on_var(
                     }
                 }
             }
-            ApplicableConstraint::SingleParam { class, structural_discharge } => {
+            ApplicableConstraint::SingleParam {
+                class,
+                structural_discharge,
+            } => {
                 // Structural discharge: typeclass declared with a StructuralDischarge rule
                 // is satisfied by structural inspection rather than instance lookup.
                 // This is a general mechanism — no class names hardcoded here.
@@ -321,11 +332,17 @@ async fn check_constraints_on_var(
                 match &structural_discharge {
                     StructuralDischarge::ClosedDict => {
                         match concrete_ty {
-                            Type::Dict(crate::type_def::Row { tail: crate::type_def::RowTail::Empty, .. }) => {
+                            Type::Dict(crate::type_def::Row {
+                                tail: crate::type_def::RowTail::Empty,
+                                ..
+                            }) => {
                                 // Closed dict — constraint satisfied.
                                 continue;
                             }
-                            Type::Dict(crate::type_def::Row { tail: crate::type_def::RowTail::Uniform { .. }, .. }) => {
+                            Type::Dict(crate::type_def::Row {
+                                tail: crate::type_def::RowTail::Uniform { .. },
+                                ..
+                            }) => {
                                 // Open dict — constraint violated.
                                 return Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                                     message: format!(
@@ -759,8 +776,10 @@ async fn improve_functional_dependency_inner(
                     fn_name: resolver_name.clone(),
                     args: det_arg_types,
                 };
-                let mut norm_ctx =
-                    crate::type_normalize::NormCtxt::new(state.type_stage_env.clone(), state.eval_ctx.clone());
+                let mut norm_ctx = crate::type_normalize::NormCtxt::new(
+                    state.type_stage_env.clone(),
+                    state.eval_ctx.clone(),
+                );
                 let resolved =
                     crate::type_normalize::normalize(&stage_app, &state.type_vars, &mut norm_ctx)
                         .await;
@@ -2077,7 +2096,8 @@ pub async fn unify(
     // allow_eval is set to false inside unify to prevent runtime errors from propagating
     // into type inference (e.g., a failing resolver should produce a stuck TypeStageApp, not
     // a type error).
-    let mut norm_ctx = crate::type_normalize::NormCtxt::new(state.type_stage_env.clone(), state.eval_ctx.clone());
+    let mut norm_ctx =
+        crate::type_normalize::NormCtxt::new(state.type_stage_env.clone(), state.eval_ctx.clone());
     norm_ctx.allow_eval = false;
     let a = crate::type_normalize::normalize(&a_substituted, &state.type_vars, &mut norm_ctx).await;
     let b = crate::type_normalize::normalize(&b_substituted, &state.type_vars, &mut norm_ctx).await;
@@ -3121,7 +3141,8 @@ pub async fn constrain(
     let sup_substituted = state.apply_with_visited(sup, &mut visited_types, &mut visited_rows);
 
     // Normalize both types.
-    let mut norm_ctx = crate::type_normalize::NormCtxt::new(state.type_stage_env.clone(), state.eval_ctx.clone());
+    let mut norm_ctx =
+        crate::type_normalize::NormCtxt::new(state.type_stage_env.clone(), state.eval_ctx.clone());
     norm_ctx.allow_eval = false;
     let sub =
         crate::type_normalize::normalize(&sub_substituted, &state.type_vars, &mut norm_ctx).await;
@@ -3280,7 +3301,10 @@ pub async fn process_deferred_equalities(
         }
         // One NormCtxt per outer iteration: the resolver cache is shared across all
         // equality pairs in this pass, amortizing the HashMap allocation cost.
-        let mut norm_ctx = crate::type_normalize::NormCtxt::new(state.type_stage_env.clone(), state.eval_ctx.clone());
+        let mut norm_ctx = crate::type_normalize::NormCtxt::new(
+            state.type_stage_env.clone(),
+            state.eval_ctx.clone(),
+        );
         for (a, b) in deferred {
             // Normalize both sides
             let a_norm =

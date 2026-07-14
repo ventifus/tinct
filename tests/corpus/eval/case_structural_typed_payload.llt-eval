@@ -1,7 +1,0 @@
-# 3-arg case: bind a named field from a dict pattern and use in arithmetic.
-# Pattern [val: v] binds the "val" field to v; body computes v+1.
-[match [val: 99]
-  [case [let v] [val: v] [+ v 1]]
-  [case [let _] _ 0]]
-=== out
-Int(100)

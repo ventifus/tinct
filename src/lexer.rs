@@ -352,8 +352,10 @@ impl<'a> Lexer<'a> {
                 self.bracket_depth = self.bracket_depth.saturating_sub(1);
                 // Note: Lexer doesn't validate bracket matching (parser's job)
                 let end = self.current_position();
-                self.tokens
-                    .push(Spanned::new(Token::CloseBracket, self.make_span(start, end)));
+                self.tokens.push(Spanned::new(
+                    Token::CloseBracket,
+                    self.make_span(start, end),
+                ));
                 Ok(())
             }
             ':' => {
@@ -387,7 +389,8 @@ impl<'a> Lexer<'a> {
                 };
 
                 self.last_was_identifier = false;
-                self.tokens.push(Spanned::new(token, self.make_span(start, end)));
+                self.tokens
+                    .push(Spanned::new(token, self.make_span(start, end)));
                 Ok(())
             }
             '"' => {
@@ -525,8 +528,10 @@ impl<'a> Lexer<'a> {
         let text = self.input[comment_start..comment_end].to_string();
 
         let end = self.current_position();
-        self.tokens
-            .push(Spanned::new(Token::Comment(text), self.make_span(start, end)));
+        self.tokens.push(Spanned::new(
+            Token::Comment(text),
+            self.make_span(start, end),
+        ));
         Ok(())
     }
 
@@ -593,7 +598,10 @@ impl<'a> Lexer<'a> {
         }
 
         let end = self.current_position();
-        Err(LexError::new("unterminated string", self.make_span(start, end)))
+        Err(LexError::new(
+            "unterminated string",
+            self.make_span(start, end),
+        ))
     }
 
     fn lex_interpolated_string(&mut self) -> Result<(), LexError> {
@@ -1054,8 +1062,10 @@ impl<'a> Lexer<'a> {
 
         let name = self.input[ident_start..ident_end].to_string();
         let end = self.current_position();
-        self.tokens
-            .push(Spanned::new(Token::EscapedRef(name), self.make_span(start, end)));
+        self.tokens.push(Spanned::new(
+            Token::EscapedRef(name),
+            self.make_span(start, end),
+        ));
         Ok(())
     }
 
@@ -1074,8 +1084,10 @@ impl<'a> Lexer<'a> {
         self.advance();
         self.advance();
         let end = self.current_position();
-        self.tokens
-            .push(Spanned::new(Token::DocSeparator, self.make_span(start, end)));
+        self.tokens.push(Spanned::new(
+            Token::DocSeparator,
+            self.make_span(start, end),
+        ));
         Ok(())
     }
 
@@ -1134,8 +1146,10 @@ impl<'a> Lexer<'a> {
                 .push(Spanned::new(Token::Case, self.make_span(start, end)));
             self.last_was_identifier = false; // Keywords do not trigger ImmediateAt
         } else {
-            self.tokens
-                .push(Spanned::new(Token::Identifier(word), self.make_span(start, end)));
+            self.tokens.push(Spanned::new(
+                Token::Identifier(word),
+                self.make_span(start, end),
+            ));
             // Only plain (non-access-field) identifiers trigger ImmediateAt for annotations.
             // Access-field identifiers (after `.`) never have `@` immediately after them in
             // valid syntax — the annotation always follows the bare word in parameter position.

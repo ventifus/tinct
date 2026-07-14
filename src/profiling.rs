@@ -453,8 +453,7 @@ mod tests {
 
     async fn test_ctx() -> Arc<EvalContext> {
         let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
-        let env = crate::builtins::build_core_env();
-        crate::eval::EvalContext::new_empty(base_dir, Arc::clone(&env), false)
+        crate::eval::EvalContext::new_empty(base_dir, false)
     }
 
     #[tokio::test]

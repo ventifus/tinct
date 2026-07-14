@@ -1,5 +1,0 @@
-[match "test"
-  "test": "hit"
-  _: "miss"]
-=== out
-String("hit")

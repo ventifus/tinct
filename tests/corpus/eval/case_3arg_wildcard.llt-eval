@@ -1,6 +1,0 @@
-# 3-arg [case [let bindings] pattern body] — wildcard pattern always matches.
-# `_` as the pattern succeeds for any scrutinee. No binding needed.
-[match "anything"
-  [case [let] _ "caught"]]
-=== out
-String("caught")

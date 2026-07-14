@@ -188,7 +188,6 @@ pub use value::{
 /// Returns `Ok(())` on success. Any parse, expansion, typecheck, or eval error is
 /// returned as `Err(String)` with a human-readable message.
 pub async fn run_loader_pipeline(
-    env: Arc<std::sync::RwLock<env::Env>>,
     eval_ctx: &Arc<eval::EvalContext>,
     _libdir_dir: &cap_std::fs::Dir,
     _no_fs: bool,
@@ -205,10 +204,32 @@ pub async fn run_loader_pipeline(
 
     desugar::desugar_surface_program(&mut loader_program);
 
-    // Resolve the loader program. Seeded from the runtime env so that builtin names
+    // Resolve the loader program. Seeded from FlatEnv so that builtin names
     // (builtin-parse, etc.) resolve to de Bruijn coordinates instead of
     // falling back to name-based lookup via the MAX/MAX sentinel.
-    let _ = resolve::resolve_surface_program(&loader_program, Some(&env));
+    // Borrow is scoped so it's dropped before eval_surface_file borrows_mut the arena.
+    //
+    // B-513: Capture the combined scope frames (root_frame + new_frames produced by the
+    // resolver) and thread them into a new eval_ctx via with_scope_frames(). This allows
+    // lower() to resolve call_dispatch mangled instance binding names to correct De Bruijn
+    // coordinates at eval time, so typeclass method dispatch works in the production loader
+    // path where typecheck precedes eval.
+    let eval_ctx_with_frames: Arc<eval::EvalContext> = {
+        let root_frame: indexmap::IndexMap<String, ()> = {
+            let arena = eval_ctx.env_arena.borrow();
+            arena.envs[0]
+                .slot_names
+                .iter()
+                .map(|n| (n.clone(), ()))
+                .collect()
+        };
+        let (_table, new_frames) =
+            resolve::resolve_surface_program(&loader_program, &[root_frame.clone()]);
+        // Combine: root_frame (outermost) followed by frames introduced by the program.
+        let all_frames: Vec<indexmap::IndexMap<String, ()>> =
+            std::iter::once(root_frame).chain(new_frames).collect();
+        eval_ctx.with_scope_frames(Arc::new(all_frames))
+    };
 
     // Typecheck writes type annotations inline on AST nodes. Errors are advisory only.
     // The returned tycon_env maps type constructor names (e.g. "Boolean", "Seq") to their
@@ -222,7 +243,7 @@ pub async fn run_loader_pipeline(
     // Evaluate loader.llt. env already contains all stdlib builtins, %programs, %args,
     // %cwd, %libdir, and any other caps injected by the caller.
     // %stdout and %stderr are defined in loader.llt Dict 2 as protocol dicts.
-    let loader_thunk = eval::eval_surface_file(&loader_program, Arc::clone(&env), eval_ctx)
+    let loader_thunk = eval::eval_surface_file(&loader_program, &eval_ctx_with_frames)
         .await
         .map_err(|e| format!("{e}"))?;
 
@@ -230,7 +251,7 @@ pub async fn run_loader_pipeline(
     // pipeline execution (a top-level [>> ...] Sequential node, not a dict entry),
     // so materialize() drives all side effects directly: stdout writes, emit
     // channel drains, formatter execution.
-    eval::materialize(&loader_thunk, None, eval_ctx)
+    eval::materialize(&loader_thunk, None, &eval_ctx_with_frames)
         .await
         .map_err(|e| format!("{e}"))?;
 
@@ -531,9 +552,6 @@ pub fn visit_value<'a, V: ValueVisitor + 'a>(
             }
             value::Value::TypeContext(_) => Err(Box::new(
                 error::EvalError::value_not_serializable("TypeContext".to_string(), span),
-            )),
-            value::Value::Environment(_) => Err(Box::new(
-                error::EvalError::value_not_serializable("Environment".to_string(), span),
             )),
             value::Value::Bool(_) => Err(Box::new(error::EvalError::value_not_serializable(
                 "Bool".to_string(),
@@ -839,8 +857,7 @@ mod tests {
 
     async fn test_ctx() -> Arc<eval::EvalContext> {
         let base_dir = test_util::test_caps().root.try_clone().unwrap();
-        let env = builtins::build_core_env();
-        eval::EvalContext::new_empty(base_dir, env, false)
+        eval::EvalContext::new_empty(base_dir, false)
     }
 
     #[test]
@@ -941,14 +958,14 @@ mod tests {
         // counts and cause `desugar_surface_program`'s `Arc::get_mut` to panic.
         let mut program = parse(source).expect("parse should succeed").program;
         desugar::desugar_surface_program(&mut program);
-        let env = builtins::build_core_env();
-        let _ = resolve::resolve_surface_program(&program, Some(&env));
+        // T-1576: test path uses bootstrap mode (no arena yet).
+        let (_table, _frames) = resolve::resolve_surface_program(&program, &[]);
         let (_type_errors, _inferred, _tycon_env) =
             typecheck::typecheck_surface_program_annotation_table(&program).await;
         let ctx = test_ctx().await;
 
         // Evaluate: this should fail because $undefined_var is not defined.
-        let eval_result = eval::eval_surface_file(&program, Arc::clone(&env), &ctx).await;
+        let eval_result = eval::eval_surface_file(&program, &ctx).await;
         assert!(
             eval_result.is_err(),
             "expected eval to fail for undefined variable"

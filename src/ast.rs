@@ -91,9 +91,7 @@ pub struct Span {
 // rust_span!() spans carry Rust file paths; user spans carry source file paths.
 impl PartialEq for Span {
     fn eq(&self, other: &Self) -> bool {
-        self.start == other.start
-            && self.end == other.end
-            && self.file.path == other.file.path
+        self.start == other.start && self.end == other.end && self.file.path == other.file.path
     }
 }
 
@@ -663,7 +661,6 @@ impl SurfaceExpression {
     }
 }
 
-
 /// Returns true if `ann` is an `@Expr` annotation — `Simple("Expr")`.
 ///
 /// Used by the evaluator (eval_materialize.rs) and type checker (typecheck_match.rs) to
@@ -1142,9 +1139,10 @@ pub struct MacroProvenance {
 
 /// Inline call dispatch — written once by the type checker for typeclass method VarRef nodes.
 ///
-/// Stores the mangled instance binding name (e.g., `ɪɴꜱᴛᴀɴᴄᴇ⧼Addable∷+⟨Int,Int,Int⟩⧽`)
-/// so the lowerer can emit a `CoreExpr::Var` with `level = u32::MAX, slot = u32::MAX`
-/// and the mangled name, which the runtime resolves via name-based env chain lookup.
+/// Stores the mangled instance binding name (e.g., `ɪɴꜱᴛᴀɴᴄᴇ⧼Addable∷+⟨Int,Int,Int⟩⧽`).
+/// The lowerer calls `resolve_name_in_frames` to look up the mangled name in the accumulated
+/// resolver scope frames and emit a `CoreExpr::Var` with correct de Bruijn coordinates.
+/// If the name is not found in the frames, a `LowerDiagnostic::Error` is emitted instead.
 ///
 /// Written at most once by the type checker (after argument-type unification determines the
 /// concrete instance). Read once by the lowerer when emitting the Call's function sub-expression.

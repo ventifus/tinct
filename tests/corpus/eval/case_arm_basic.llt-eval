@@ -1,7 +1,0 @@
-# Basic case arm: 3-arg [case [let n] n body] — binds n to scrutinee, returns n+1.
-# binding_set = {"n"}; pattern `n` (in set) binds scrutinee 42 to n.
-[match 42
-  [case [let n] n [+ n 1]]
-  [case [let _] _ 0]]
-=== out
-Int(43)

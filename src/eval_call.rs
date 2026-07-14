@@ -2,10 +2,10 @@
 
 use std::sync::Arc;
 
-use indexmap::IndexMap;
 use crate::ast::{CoreExpr, CoreNamedArg, Param, Span, Spanned, SurfaceNode};
 use crate::error::{ArityBound, EvalError, EvalResult};
 use crate::value::{Thunk, ThunkId};
+use indexmap::IndexMap;
 
 // Import eval function and context from eval module
 // Note: this creates a circular dependency, but it's safe because
@@ -297,15 +297,21 @@ pub(crate) async fn bind_args_thunks(
     for (i, param) in regular_params.iter().enumerate() {
         if i < positional.len() {
             // Positional arg: copy the ThunkId's Arc<Thunk> directly into the call frame slot.
-            ctx.env_arena
-                .borrow_mut()
-                .fill_letrec_slot(call_env_id, i as u32, positional[i]);
+            ctx.env_arena.borrow_mut().fill_letrec_slot(
+                call_env_id,
+                i as u32,
+                positional[i],
+                &param.name,
+            );
         } else if let Some(named_args) = named {
             if let Some(&named_id) = named_args.get(&param.name) {
                 // Named arg: copy directly.
-                ctx.env_arena
-                    .borrow_mut()
-                    .fill_letrec_slot(call_env_id, i as u32, named_id);
+                ctx.env_arena.borrow_mut().fill_letrec_slot(
+                    call_env_id,
+                    i as u32,
+                    named_id,
+                    &param.name,
+                );
             } else if let Some(default_node) = get_default(param) {
                 // Default param: evaluate lazily in the default_env scope.
                 // Use empty res/types tables — defaults are surface nodes whose variable
@@ -319,9 +325,12 @@ pub(crate) async fn bind_args_thunks(
                     call_span.clone(),
                 ));
                 let default_id = ctx.alloc_thunk(default_thunk);
-                ctx.env_arena
-                    .borrow_mut()
-                    .fill_letrec_slot(call_env_id, i as u32, default_id);
+                ctx.env_arena.borrow_mut().fill_letrec_slot(
+                    call_env_id,
+                    i as u32,
+                    default_id,
+                    &param.name,
+                );
             }
             // else: required param with no coverage — already caught by arity check.
         } else if let Some(default_node) = get_default(param) {
@@ -335,9 +344,12 @@ pub(crate) async fn bind_args_thunks(
                 call_span.clone(),
             ));
             let default_id = ctx.alloc_thunk(default_thunk);
-            ctx.env_arena
-                .borrow_mut()
-                .fill_letrec_slot(call_env_id, i as u32, default_id);
+            ctx.env_arena.borrow_mut().fill_letrec_slot(
+                call_env_id,
+                i as u32,
+                default_id,
+                &param.name,
+            );
         }
         // else: required param with no arg — already caught by arity check.
     }
@@ -376,10 +388,12 @@ pub(crate) async fn bind_args_thunks(
             call_span.clone(),
         ));
         let variadic_id = ctx.alloc_thunk(variadic_thunk);
-        ctx.env_arena
-            .borrow_mut()
-            .fill_letrec_slot(call_env_id, variadic_slot, variadic_id);
-        let _ = variadic; // name available for doc purposes
+        ctx.env_arena.borrow_mut().fill_letrec_slot(
+            call_env_id,
+            variadic_slot,
+            variadic_id,
+            &variadic.name,
+        );
     }
 
     Ok(call_env_id.0)

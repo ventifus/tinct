@@ -4901,11 +4901,8 @@ async fn test_or_annotation_in_fn_return() {
 async fn test_union_type_assert_success() {
     // value_matches_type: Int matches Union(Int, Str)
     let union = Type::normalize_union(vec![Type::Int, Type::Str]);
-    let env = std::sync::Arc::new(std::sync::RwLock::new(crate::env::Env::new()));
     let ctx = crate::eval::EvalContext::new(
         crate::test_util::test_caps().root.try_clone().unwrap(),
-        std::sync::Arc::clone(&env),
-        std::sync::Arc::clone(&env),
         false,
     );
     assert!(crate::eval::value_matches_type(
@@ -4919,11 +4916,8 @@ async fn test_union_type_assert_success() {
 async fn test_union_type_assert_failure_float() {
     // value_matches_type: Float does NOT match Union(Int, Str)
     let union = Type::normalize_union(vec![Type::Int, Type::Str]);
-    let env = std::sync::Arc::new(std::sync::RwLock::new(crate::env::Env::new()));
     let ctx = crate::eval::EvalContext::new(
         crate::test_util::test_caps().root.try_clone().unwrap(),
-        std::sync::Arc::clone(&env),
-        std::sync::Arc::clone(&env),
         false,
     );
     assert!(!crate::eval::value_matches_type(

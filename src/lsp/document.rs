@@ -443,9 +443,7 @@ impl DocumentStore {
             }
         };
         let base_eval_ctx = crate::eval::EvalContext::new_empty(
-            base_dir,
-            Arc::clone(&stdlib_env),
-            true, // no_fs=true prevents $include path traversal (CWE-22)
+            base_dir, true, // no_fs=true prevents $include path traversal (CWE-22)
         );
         // Initialize TypeContext so loader.llt builtins don't error on type context access.
         base_eval_ctx.init_type_context(crate::eval::TypeContextData {
@@ -676,8 +674,7 @@ pub async fn load_doc_from_uri(uri: &Uri) -> Option<DocumentState> {
     // Clone the parent_dir handle to give ownership to the EvalContext
     // (open_dir(".") duplicates the fd without acquiring new ambient authority).
     let eval_base_dir = parent_dir.open_dir(".").ok()?;
-    let eval_ctx =
-        crate::eval::EvalContext::new_empty(eval_base_dir, Arc::clone(&stdlib_env), false);
+    let eval_ctx = crate::eval::EvalContext::new_empty(eval_base_dir, false);
 
     // Create document state with the file's directory as base_dir for include resolution
     let is_markdown = uri.as_str().ends_with(".md");
@@ -699,12 +696,11 @@ mod tests {
     }
 
     async fn test_ctx() -> Arc<crate::eval::EvalContext> {
-        let env = test_env().await;
         // AMBIENT-OK: LSP test helper — no prior Dir available, test context only.
         #[allow(clippy::disallowed_methods)]
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
-        crate::eval::EvalContext::new_empty(base_dir, Arc::clone(&env), false)
+        crate::eval::EvalContext::new_empty(base_dir, false)
     }
 
     #[tokio::test]

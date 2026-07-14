@@ -1,4 +1,4 @@
-//! Runtime value types: `Value`, `Thunk` (lazy memoization), `Environment` (lexical scope chain).
+//! Runtime value types: `Value`, `Thunk` (lazy memoization), `Environment` (legacy name chain), `FlatEnv` (runtime scope via `EnvArena`).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -53,10 +53,6 @@ pub struct BuiltinArgs {
     pub named: Option<IndexMap<String, ThunkId>>,
     pub call_span: Span,
     pub ctx: Arc<crate::eval::EvalContext>,
-    /// Caller's environment — retained for builtins that need to look up variables
-    /// in the calling scope. Not replaced by env_id because builtins interact with
-    /// the legacy Environment chain directly.
-    pub caller_env: Arc<RwLock<Environment>>,
     /// Caller's FlatEnv env_id — enables FlatEnv-based variable lookup in builtins.
     /// Copied from UnevaluatedState::Builtin.caller_env_id at materialization time.
     pub caller_env_id: u32,
@@ -675,10 +671,7 @@ pub enum Value {
     /// `start_env_id` is the root scope allocated by `arena-new`.
     /// The actual end of the arena is always computed dynamically from `envs.len()` at
     /// drop/migrate time; there is no stored end field (it would be stale immediately).
-    Arena {
-        name: Arc<str>,
-        start_env_id: u32,
-    },
+    Arena { name: Arc<str>, start_env_id: u32 },
     /// Value annotated with runtime metadata (e.g. constructor annotation dict).
     /// Used by `make-annotated` and annotated unit constructors.
     /// `annotation` is a materialized `Value::Dict` of annotation key-value pairs.
@@ -689,9 +682,6 @@ pub enum Value {
     /// Type-checker context handle — wraps `TypeContextData` for passing between tinct builtins.
     /// Created by `builtin-get-type-context`; consumed by `builtin-typecheck`, `builtin-resolve`, etc.
     TypeContext(std::sync::Arc<std::sync::Mutex<crate::eval::TypeContextData>>),
-    /// Lexical environment handle — wraps a type-metadata `Env` for macro-evaluation builtins.
-    /// Created by `builtin-current-env`, `builtin-extend-env`; consumed by `builtin-eval`, etc.
-    Environment(std::sync::Arc<std::sync::RwLock<crate::env::Env>>),
 }
 
 /// State of an async task spawned via `task` builtin.
@@ -810,7 +800,6 @@ impl Value {
             Value::Arena { .. } => "Arena",
             Value::Annotated { inner, .. } => inner.type_name(),
             Value::TypeContext(_) => "TypeContext",
-            Value::Environment(_) => "Environment",
         }
     }
 
@@ -913,13 +902,9 @@ impl fmt::Debug for Value {
             Value::BroadcastChannel(_) => write!(f, "BroadcastChannel"),
             Value::OneshotSender(_) => write!(f, "OneshotSender"),
             Value::OneshotReceiver(_) => write!(f, "OneshotReceiver"),
-            Value::Arena {
-                name,
-                start_env_id,
-            } => write!(f, "Arena({name}@{start_env_id})"),
+            Value::Arena { name, start_env_id } => write!(f, "Arena({name}@{start_env_id})"),
             Value::Annotated { inner, .. } => write!(f, "Annotated({inner:?})"),
             Value::TypeContext(_) => write!(f, "TypeContext"),
-            Value::Environment(_) => write!(f, "Environment"),
         }
     }
 }
@@ -989,12 +974,10 @@ impl fmt::Display for Value {
                 write!(f, "<bytes:{} bytes>", bytes.len())
             }
             Value::Uri { uri, .. } => write!(f, "{uri}"),
-            Value::Timestamp(nanos) => {
-                match jiff::Timestamp::from_nanosecond(*nanos as i128) {
-                    Ok(ts) => write!(f, "{ts}"),
-                    Err(_) => write!(f, "<invalid timestamp>"),
-                }
-            }
+            Value::Timestamp(nanos) => match jiff::Timestamp::from_nanosecond(*nanos as i128) {
+                Ok(ts) => write!(f, "{ts}"),
+                Err(_) => write!(f, "<invalid timestamp>"),
+            },
             Value::Duration(nanos) => {
                 write!(f, "{nanos}ns")
             }
@@ -1019,13 +1002,9 @@ impl fmt::Display for Value {
             Value::BroadcastChannel(_) => write!(f, "<broadcast-channel>"),
             Value::OneshotSender(_) => write!(f, "<oneshot-sender>"),
             Value::OneshotReceiver(_) => write!(f, "<oneshot-receiver>"),
-            Value::Arena {
-                name,
-                start_env_id,
-            } => write!(f, "<arena:{name}@{start_env_id}>"),
+            Value::Arena { name, start_env_id } => write!(f, "<arena:{name}@{start_env_id}>"),
             Value::Annotated { inner, .. } => fmt::Display::fmt(inner, f),
             Value::TypeContext(_) => write!(f, "<TypeContext>"),
-            Value::Environment(_) => write!(f, "<Environment>"),
         }
     }
 }
@@ -1474,7 +1453,11 @@ impl Thunk {
         };
         drop(guard);
         let new_state = match state {
-            UnevaluatedState::CoreExpr { expr, env_id, ctx: _ } => UnevaluatedState::CoreExpr {
+            UnevaluatedState::CoreExpr {
+                expr,
+                env_id,
+                ctx: _,
+            } => UnevaluatedState::CoreExpr {
                 expr,
                 env_id,
                 ctx: new_ctx,
@@ -1540,16 +1523,14 @@ impl Thunk {
                 guard_span,
                 blame_label,
                 default,
-            } => {
-                UnevaluatedState::Guarded {
-                    inner,
-                    expected,
-                    field_path,
-                    guard_span,
-                    blame_label,
-                    default,
-                }
-            }
+            } => UnevaluatedState::Guarded {
+                inner,
+                expected,
+                field_path,
+                guard_span,
+                blame_label,
+                default,
+            },
         };
         Some(Arc::new(Thunk {
             inner: ThunkInner {
@@ -1585,9 +1566,7 @@ impl Thunk {
     pub fn take_core_expr(&self) -> Option<CoreExprParts> {
         let mut guard = self.inner.unevaluated.lock().unwrap();
         match guard.take() {
-            Some(UnevaluatedState::CoreExpr { expr, env_id, ctx }) => {
-                Some((expr, env_id, ctx))
-            }
+            Some(UnevaluatedState::CoreExpr { expr, env_id, ctx }) => Some((expr, env_id, ctx)),
             other => {
                 *guard = other;
                 None
@@ -1605,9 +1584,7 @@ impl Thunk {
                 call_span,
                 caller_env_id,
                 ctx,
-            }) => {
-                Some((def, args, named, call_span, caller_env_id, ctx))
-            }
+            }) => Some((def, args, named, call_span, caller_env_id, ctx)),
             other => {
                 *guard = other;
                 None
@@ -1628,7 +1605,15 @@ impl Thunk {
                 original_call,
             }) => {
                 let named = named.map(|b| *b);
-                Some((func, args, named, call_span, caller_env_id, ctx, original_call))
+                Some((
+                    func,
+                    args,
+                    named,
+                    call_span,
+                    caller_env_id,
+                    ctx,
+                    original_call,
+                ))
             }
             other => {
                 *guard = other;
@@ -1648,16 +1633,14 @@ impl Thunk {
                 guard_span,
                 blame_label,
                 default,
-            }) => {
-                Some((
-                    inner,
-                    expected,
-                    field_path,
-                    guard_span,
-                    blame_label,
-                    default,
-                ))
-            }
+            }) => Some((
+                inner,
+                expected,
+                field_path,
+                guard_span,
+                blame_label,
+                default,
+            )),
             other => {
                 *guard = other;
                 None
@@ -1675,9 +1658,7 @@ impl Thunk {
                 types,
                 env_id,
                 ctx,
-            }) => {
-                Some((node, res, types, env_id, ctx))
-            }
+            }) => Some((node, res, types, env_id, ctx)),
             other => {
                 *guard = other;
                 None
@@ -1695,9 +1676,7 @@ impl Thunk {
     )> {
         let mut guard = self.inner.unevaluated.lock().unwrap();
         match guard.take() {
-            Some(UnevaluatedState::AstNodeField { node, field, ctx }) => {
-                Some((node, field, ctx))
-            }
+            Some(UnevaluatedState::AstNodeField { node, field, ctx }) => Some((node, field, ctx)),
             other => {
                 *guard = other;
                 None
@@ -1826,7 +1805,10 @@ impl fmt::Debug for Thunk {
 }
 
 /// Lexical scope chain: bindings in the current scope plus an optional parent link.
+/// Currently used only as a placeholder in match dispatch (B-515 tracks FlatEnv migration).
+/// Fields and methods are retained for B-515 wiring.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct Environment {
     pub(crate) bindings: IndexMap<String, Arc<Thunk>>,
     pub(crate) parent: Option<Arc<RwLock<Environment>>>,
@@ -1850,6 +1832,7 @@ pub(crate) fn reset_slot_counters() {
     SLOT_MISS_COUNT.store(0, Ordering::Relaxed);
 }
 
+#[allow(dead_code)]
 impl Environment {
     pub fn new() -> Self {
         Self {

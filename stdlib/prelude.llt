@@ -104,10 +104,9 @@
   # Uses [$k: v] dynamic key syntax to preserve string keys.
   object-map-step: [fn@Dict [let obj f keys i n acc]
     [match [builtin-eq-int i n]
-      0: [call [fn [let]
-        [k: [builtin-get i keys]]
-        [object-map-step obj f keys [builtin-int-add i 1] n
-          [dict-merge acc [$k: [f k [builtin-get k obj]]]]]]]
+      0: [>> [k: [builtin-get i keys]]
+             [object-map-step obj f keys [builtin-int-add i 1] n
+               [dict-merge acc [$k: [f k [builtin-get k obj]]]]]]
       _: acc]]
   object-map: [fn [let obj f]
     [keys: [builtin-keys obj]]
@@ -300,14 +299,13 @@
     # match on string role values — stored as "One"/"MapValues" in field-annotations.
     children-step: [fn@Dict [let t ctor fields i n acc]
       [match [builtin-eq-int i n]
-        0: [call [fn [let]
-          [field: [builtin-dict-nth fields i]]
-          [val:   [builtin-get field t]]
-          [children-step t ctor fields [builtin-int-add i 1] n
-            [builtin-concat acc
-              [match [child-role ctor field]
-                "One":       [0: val]
-                "MapValues": val]]]]]
+        0: [>> [field: [builtin-dict-nth fields i]]
+               [val:   [builtin-get field t]]
+               [children-step t ctor fields [builtin-int-add i 1] n
+                 [builtin-concat acc
+                   [match [child-role ctor field]
+                     "One":       [0: val]
+                     "MapValues": val]]]]
         _: acc]]
     children: [fn [let t]
       [ctor:   [TypeNode-ctor t]]
@@ -748,7 +746,7 @@ select-impl: [fn@Any [let ctx sources@[Seq Dict] handler@[Fn@Any [Any]]]
                 Closed.Closed:
                     Closed.Closed
                 [case [let v] _
-                    [[fn [let item] [handler item] [select-impl ctx sources handler]] v]]]
+                    [>> [handler v] [select-impl ctx sources handler]]]]
         _: []]]
 
 # Indexable declared here (dict 1) so it is in scope when type-checking dict 1 helpers
@@ -3027,10 +3025,9 @@ split-impl: [fn@[bind: [a]  return: [Seq String]] [let sep@String sep-len@Intege
   [found-rel: [builtin-str-index-of sep sub]]
   [if [= found-rel -1]
     [Seq.Cons head: sub  tail: Seq.End]
-    [call [fn [let]
-      [found: [+ pos found-rel]]
-      [Seq.Cons head: [str-slice s pos found]
-                tail: [split-impl sep sep-len s s-len [+ found sep-len]]]]]]]
+    [>> [found: [+ pos found-rel]]
+        [Seq.Cons head: [str-slice s pos found]
+                  tail: [split-impl sep sep-len s s-len [+ found sep-len]]]]]]
 
 split: [fn@[bind: [a]  return: [Seq String]  doc: """
 Split string by separator. Returns a lazy Seq of segments.
@@ -3042,7 +3039,7 @@ Example: [collect [split "" "hi"]] => ["h" "i"]
     [each [str-chars s]]
     [split-impl sep [str-length sep] s [str-length s] 0]]]
 
-# Re-export builtins needed by the macro transformers (tmpl, do, begin, etc.)
+# Re-export builtins needed by the macro transformers (tmpl, do, >>, etc.)
 # defined at the end of this file. These are available from builtin_module("core")
 # and must be exported here so the macro transformer bodies can reference them.
 str-slice: builtin-str-slice
@@ -3092,6 +3089,15 @@ try@[doc: "Catch errors from a zero-arg function; returns Result.Ok on success o
     [fn@[bind: [a]  return: [Result a]] [let f@[Fn@a []]]
         [raw-to-result [builtin-try f]]]
 apply@[doc: "Apply function to a dict of arguments"]: builtin-apply
+partial@[doc: "Pre-fill leading arguments of f. Returns a function that accepts the remaining arguments and calls [f bound... extra...]."]:
+    [fn [let f ...bound]
+      [n: [length bound]]
+      [fn [let ...extra]
+        [apply f
+          [reduce
+            [fn [let acc i] [set [+ i n] [get i extra] acc]]
+            bound
+            [keys extra]]]]]
 materialize@[doc: "Force evaluation to weak-head normal form (WHNF). Use with care — lazy evaluation is preferred."]: builtin-materialize
 until@[doc: "Iterative loop primitive: call thunk repeatedly until it returns a non-thunk. Use for fixed-point convergence."]: builtin-until
 
@@ -4400,7 +4406,7 @@ Rust-level EvalErrors bypass finally.
 # str-slice, split, length, append, collect, reduce, map, cons, reindex,
 # slice, tag-of, gensym, Expr.* constructors, etc.).
 #
-# The public transformer functions (tmpl, do, begin, syntax-fn, syntax-class,
+# The public transformer functions (tmpl, do, >>, syntax-fn, syntax-class,
 # syntax-type) are exported from this dict and available in the stdlib env.
 #
 # ============================================================================
@@ -5534,26 +5540,22 @@ do: [fn [let first@Expr ...rest@Expr]
       [do-fold first [collect rest]]]]]
   [eval-macro-ast ast]]
 
-# NOTE: begin and >> are removed from the language (T-1438 / S-906).
-# I/O sequencing now uses handle threading: write returns the handle as a data
-# dependency, enabling pipeline chaining without forced sequencing.
-
-# block macro transformer: lazy multi-body in expression position.
-# [block e1 e2 e3] desugars to [call [fn [let] e1 e2 e3]] — an immediately-invoked
+# >>: lazy multi-body in expression position.
+# [>> e1 e2 e3] desugars to [call [fn [let] e1 e2 e3]] — an immediately-invoked
 # zero-arg lambda. The fn [let] body provides lazy sequential multi-body scoping
 # (intermediate dicts create bindings visible to subsequent expressions).
 # Note: [[fn ...]] is a dict in tinct (bracket-in-head-position → dict entry);
 # [call [fn ...]] is the explicit IIFE form.
-block: [fn [let ...body@Expr]
+>>: [fn [let ...body@Expr]
   [eval-macro-ast
     [quote [call [fn [let] [unquote-splice body]]]]]]
 
 # task macro transformer: multi-body task support.
-# [task e1 e2 e3] desugars to [builtin-task [block e1 e2 e3]].
+# [task e1 e2 e3] desugars to [builtin-task [>> e1 e2 e3]].
 # Single-arg [task e] passes through to builtin-task directly.
 task: [fn [let first@Expr ...rest@Expr]
   [ast: [match [builtin-eq-string [builtin-tag-of rest] "Seq.End"]
-    0: [quote [builtin-task [block [unquote first] [unquote-splice rest]]]]
+    0: [quote [builtin-task [>> [unquote first] [unquote-splice rest]]]]
     _: [quote [builtin-task [unquote first]]]]]
   [eval-macro-ast ast]]
 

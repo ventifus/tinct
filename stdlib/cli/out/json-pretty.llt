@@ -18,13 +18,13 @@
 [drain: [task
   [select [context]
     [seq [ch: %emit-channel  handler: [fn [let v]
-      [write [str [call $json.to-json-pretty v] "\n\n"] %stdout]]] []]
+      [write [str [json.to-json-pretty v] "\n\n"] %stdout]]] []]
     identity]]]
 
 # 2. Force the return value to drive the lazy evaluation cascade.
 [_: [if [seq? %]
-  [reduce [fn [let h x] [write [str [call $json.to-json-pretty x] "\n\n"] h]] %stdout %]
-  [write [str [call $json.to-json-pretty %] "\n\n"] %stdout]]]
+  [reduce [fn [let h x] [write [str [json.to-json-pretty x] "\n\n"] h]] %stdout %]
+  [write [str [json.to-json-pretty %] "\n\n"] %stdout]]]
 
 # 3. Wait for drain to finish consuming any emits triggered during forcing.
 [_: [await drain]]

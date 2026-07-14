@@ -2183,7 +2183,8 @@ pub(crate) async fn resolve_type_name_with_guard(
         // Now that constraints is threaded through, push the Constraint::Class to the caller's
         // collection so the constraint is not dropped.
         let level = state.level;
-        let (fresh, fresh_ty) = state.fresh_type_var_with(Some(name), Some(level), Kind::Type, &span);
+        let (fresh, fresh_ty) =
+            state.fresh_type_var_with(Some(name), Some(level), Kind::Type, &span);
         constraints.push(Constraint::Class {
             class: Arc::new(class_decl),
             vars: vec![ConstraintArg::Var(fresh)],
@@ -2232,7 +2233,8 @@ async fn resolve_type_head(
         "Label" if args.is_empty() => {
             // Anonymous Label-kinded TypeVar.
             let level = state.level;
-            let (fresh, fresh_ty) = state.fresh_type_var_with(Some("_label"), Some(level), Kind::Label, &span);
+            let (fresh, fresh_ty) =
+                state.fresh_type_var_with(Some("_label"), Some(level), Kind::Label, &span);
             state.kind_env.insert(fresh.clone(), Kind::Label);
             return Ok(fresh_ty);
         }
@@ -2281,7 +2283,8 @@ async fn resolve_type_head(
         env_guard.get_class(name)
     } {
         let level = state.level;
-        let (fresh, fresh_ty) = state.fresh_type_var_with(Some(name), Some(level), Kind::Type, &span);
+        let (fresh, fresh_ty) =
+            state.fresh_type_var_with(Some(name), Some(level), Kind::Type, &span);
         // Build ConstraintArg list: [Var(?c), Ground(arg1), Ground(arg2), ...]
         let mut vars = vec![ConstraintArg::Var(fresh)];
         for arg in args {
@@ -4278,18 +4281,19 @@ fn typenode_value_to_type<'a>(
                         {
                             let key_ty = typenode_value_to_type(&key_type_val, ctx).await?;
                             // value-type defaults to Any when absent.
-                            let value_ty = if let Some(vt_val) =
-                                payload_fields.get("value-type").cloned()
-                            {
-                                typenode_value_to_type(&vt_val, ctx).await?
-                            } else {
-                                Type::Any
-                            };
+                            let value_ty =
+                                if let Some(vt_val) = payload_fields.get("value-type").cloned() {
+                                    typenode_value_to_type(&vt_val, ctx).await?
+                                } else {
+                                    Type::Any
+                                };
                             crate::type_def::RowTail::Uniform {
                                 key: Some(Box::new(key_ty)),
                                 value: Box::new(value_ty),
                             }
-                        } else if matches!(&open_val, Value::Bool(true)) || matches!(&open_val, Value::Int(n) if *n != 0) {
+                        } else if matches!(&open_val, Value::Bool(true))
+                            || matches!(&open_val, Value::Int(n) if *n != 0)
+                        {
                             // Open record: any field value is allowed (Top = Any).
                             // Dict <: open-record: Null <: Record <: Dict hierarchy.
                             crate::type_def::RowTail::Uniform {
@@ -4450,19 +4454,27 @@ fn typenode_value_to_type<'a>(
                                     match &prefix {
                                         None => prefix = Some(p.to_string()),
                                         Some(existing) if existing == p => {}
-                                        _ => { all_match = false; break; }
+                                        _ => {
+                                            all_match = false;
+                                            break;
+                                        }
                                     }
                                 } else {
-                                    all_match = false; break;
+                                    all_match = false;
+                                    break;
                                 }
                             }
                             // Function entries (payload constructors) — still count as the same ADT
                             Value::Function { .. } | Value::Builtin(_) => {}
-                            _ => { all_match = false; break; }
+                            _ => {
+                                all_match = false;
+                                break;
+                            }
                         }
                     } else {
                         // Thunk not yet materialized — can't determine
-                        all_match = false; break;
+                        all_match = false;
+                        break;
                     }
                 }
                 if all_match {
@@ -4655,7 +4667,10 @@ pub(crate) async fn eval_type_stage_value(
     let arg_thunks: Vec<crate::arena::ThunkId> = args
         .iter()
         .map(|v| {
-            let t = std::sync::Arc::new(crate::value::Thunk::new_materialized(v.clone(), origin_span.clone()));
+            let t = std::sync::Arc::new(crate::value::Thunk::new_materialized(
+                v.clone(),
+                origin_span.clone(),
+            ));
             ctx.alloc_thunk(t)
         })
         .collect();
@@ -4814,11 +4829,12 @@ pub(crate) async fn eval_type_stage_expr(
                 call_stack: vec![],
             })
         })?;
-    let ctx = crate::eval::EvalContext::new_empty(base_dir, Arc::clone(&eval_env), false);
+    let _ = eval_env; // eval_env no longer needed by EvalContext directly
+    let ctx = crate::eval::EvalContext::new_empty(base_dir, false);
 
     // T-1557: TypeVar bindings can no longer be injected into Env (value storage removed).
     // TypeVar names in annotations (`a`, `b`, etc.) must be resolved through the resolver
-    // pass or via arena-based FlatEnv slots (T-1559). The ann_mapping parameter is retained
+    // pass or via arena-based FlatEnv slots (B-515). The ann_mapping parameter is retained
     // for future use once the FlatEnv injection path is implemented.
     let _ = ann_mapping; // suppress unused-variable warning
 
@@ -4911,9 +4927,7 @@ pub(crate) async fn eval_type_stage_expr(
             // Extract flat_env_id under the lock, then drop the lock before borrowing arena.
             let flat_env_id = {
                 let tc_guard = eval_ctx.type_context.lock().unwrap();
-                let flat = tc_guard
-                    .as_ref()
-                    .and_then(|d| d.type_stage_flat_env_id);
+                let flat = tc_guard.as_ref().and_then(|d| d.type_stage_flat_env_id);
                 match flat {
                     Some(id) => id,
                     None => break 'dispatch None,
@@ -4921,12 +4935,10 @@ pub(crate) async fn eval_type_stage_expr(
             }; // tc_guard dropped here
 
             let arena_borrow = eval_ctx.env_arena.borrow();
-            let leaf_env = &arena_borrow.envs[flat_env_id as usize];
-            let display_len = leaf_env.display.len();
-            if typenode_depth >= display_len {
-                break 'dispatch None;
-            }
-            let target_env_id = leaf_env.display[display_len - 1 - typenode_depth];
+            let target_env_id = match arena_borrow.walk_parent_chain(flat_env_id, typenode_depth) {
+                Ok(env_id) => env_id,
+                Err(_) => break 'dispatch None,
+            };
             crate::arena::ThunkId {
                 env_id: target_env_id.0,
                 slot: typenode_slot as u32,
@@ -4935,10 +4947,11 @@ pub(crate) async fn eval_type_stage_expr(
 
         // Step 3: Materialize the TypeNode ThunkId to get the TypeNode Dict value.
         let typenode_thunk = eval_ctx.env_arena.borrow().get_thunk(typenode_thunk_id);
-        let typenode_dict_val = match crate::eval::materialize(&typenode_thunk, None, &eval_ctx).await {
-            Ok(v) => v,
-            Err(_) => break 'dispatch None,
-        };
+        let typenode_dict_val =
+            match crate::eval::materialize(&typenode_thunk, None, &eval_ctx).await {
+                Ok(v) => v,
+                Err(_) => break 'dispatch None,
+            };
 
         // Step 4: Get the "as-type" field ThunkId from the TypeNode dict.
         let as_type_thunk_id = match &typenode_dict_val {

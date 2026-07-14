@@ -274,7 +274,8 @@ pub(crate) fn builtin_try(
         if args.len() != 1 {
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
-        let func_val = ctx.get_thunk(args[0])
+        let func_val = ctx
+            .get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
@@ -294,22 +295,29 @@ pub(crate) fn builtin_try(
                     )
                     .into());
                 }
-                // T-1558: Use closure_env_id as the call env id.
-                // T-1559 will allocate a proper child FlatEnv scope with param slots.
-                let body_thunk = Arc::new(Thunk::new_unevaluated_core(
-                    Arc::clone(&body),
+                // Use invoke_function for correct scope chain handling.
+                // The fn body must evaluate with a proper call frame (alloc_child of closure),
+                // not directly in the closure scope — the resolver expects one extra scope level.
+                let result_thunk = crate::eval_call::invoke_function(&crate::eval::CallContext {
+                    params: &params,
+                    body: &body,
                     closure_env_id,
-                    Arc::clone(&ctx),
-                    body.span.clone(),
-                ));
-                materialize(&body_thunk, Some(&call_span), &ctx).await
+                    positional: &[],
+                    named: None,
+                    default_env_id: closure_env_id,
+                    call_span: call_span.clone(),
+                    origin: None,
+                    ctx: &ctx,
+                })
+                .await
+                .map_err(|e| e)?;
+                materialize(&result_thunk, Some(&call_span), &ctx).await
             }
             Value::Builtin(def) => {
                 let builtin_args = BuiltinArgs {
                     args: vec![],
                     named: None,
                     call_span: call_span.clone(),
-                    caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
                     caller_env_id: 0,
                     ctx: Arc::clone(&ctx),
                 };
@@ -370,8 +378,7 @@ pub(crate) fn builtin_until(
             named,
             call_span,
             ctx,
-            caller_env,
-            caller_env_id: _,
+            ..
         } = ctx_arg;
         reject_named("until", named.as_ref(), call_span.clone())?;
         if args.len() != 3 {
@@ -386,8 +393,7 @@ pub(crate) fn builtin_until(
         // This lets us pre-resolve the Matchable binding name once before the loop,
         // avoiding repeated runtime type derivation on every iteration.
         let pred_fn_val = materialize(&pred_thunk, Some(&call_span), &ctx).await?;
-        let pred_matchable_binding =
-            crate::eval::resolve_matchable_binding_from_fn(&pred_fn_val);
+        let pred_matchable_binding = crate::eval::resolve_matchable_binding_from_fn(&pred_fn_val);
         // Wrap the materialized predicate back into a thunk for use in pending calls.
         let pred_thunk = Arc::new(Thunk::new_materialized(pred_fn_val, call_span.clone()));
 
@@ -410,9 +416,9 @@ pub(crate) fn builtin_until(
 
             let pred_val = materialize(&pred_result, Some(&call_span), &ctx).await?;
 
-            // T-1558: call_to_match_opt_resolved ignores env (T-1559 will wire FlatEnv lookup).
-            let dummy_env_for_match = std::sync::Arc::new(std::sync::RwLock::new(crate::value::Environment::new()));
-            let _ = &caller_env; // caller_env no longer used for match dispatch
+            // call_to_match_opt_resolved ignores legacy env (B-515 tracks FlatEnv arm binding lookup).
+            let dummy_env_for_match =
+                std::sync::Arc::new(std::sync::RwLock::new(crate::value::Environment::new()));
             if crate::eval::call_to_match_opt_resolved(
                 &pred_val,
                 pred_matchable_binding.as_deref(),
@@ -544,8 +550,7 @@ pub(crate) fn builtin_apply_impl(
                     }
                 }
                 for (i, &s) in def.pos_strictness.iter().enumerate() {
-                    if i < positional_ids.len()
-                        && (s == Strictness::Seq || s == Strictness::Spine)
+                    if i < positional_ids.len() && (s == Strictness::Seq || s == Strictness::Spine)
                     {
                         let arg = ctx.get_thunk(positional_ids[i]);
                         if arg.try_get_materialized().is_none() {
@@ -561,7 +566,6 @@ pub(crate) fn builtin_apply_impl(
                         Some(named_args)
                     },
                     call_span,
-                    caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
                     caller_env_id: 0,
                     ctx: Arc::clone(&ctx),
                 };
@@ -713,7 +717,11 @@ pub(crate) fn builtin_macro_injects(
             &ctx,
             call_span.clone(),
         )?;
-        let macro_name = require_string("macro-injects", macro_name_val, ctx.get_thunk(args[0]).span.clone())?;
+        let macro_name = require_string(
+            "macro-injects",
+            macro_name_val,
+            ctx.get_thunk(args[0]).span.clone(),
+        )?;
 
         // Look up the macro in the inject map
         let inject_names: &[String] = match ctx.config.macro_injects_map.get(&macro_name) {
@@ -1535,10 +1543,12 @@ pub(crate) fn builtin_make_annotated(
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
 
-        let inner_val = ctx.get_thunk(args[0])
+        let inner_val = ctx
+            .get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness[0]=Seq");
-        let ann_val = ctx.get_thunk(args[1])
+        let ann_val = ctx
+            .get_thunk(args[1])
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness[1]=Seq");
 
@@ -1604,7 +1614,6 @@ fn type_name(val: &Value) -> String {
         // Annotated is transparent — delegate to inner value's type_name.
         Value::Annotated { inner, .. } => return type_name(inner),
         Value::TypeContext(_) => "TypeContext",
-        Value::Environment(_) => "Environment",
         Value::Bool(_) => "Bool",
         Value::Handle { .. } => "Handle",
         Value::WriteHandle { .. } => "WriteHandle",
@@ -1970,17 +1979,24 @@ pub(crate) fn builtin_parse(
     })
 }
 
-/// `builtin-resolve`: Desugar and resolve a raw `Value::Program`.
+/// `builtin-resolve`: Resolve a single `Value::Document` in-place.
 ///
-/// Takes a parsed (but unresolved) Program and applies:
-/// 1. `desugar_surface_program` — `$_` desugaring
-/// 2. `resolve_surface_program` (with optional `env:` argument for env-seeded resolution)
-///    — name resolution (De Bruijn levels)
+/// Writes De Bruijn coordinates into the inline `Resolution` OnceLocks on each `VarRef`/`DotAccess`
+/// node of the document's AST. After this call, `builtin-eval` lowers the resolved nodes directly.
 ///
-/// **Optional `env:` argument**: When provided (a `Value::Env`), the resolver is
-/// pre-seeded from the env chain so that prelude/stdlib names resolve to proper de Bruijn
-/// coordinates instead of producing resolution errors. This is the primary path for user code.
-/// When absent, bootstrap mode is used (empty scope stack) — suitable for loader.llt and tests.
+/// **Named arguments:**
+///
+/// - `flat-env:` (Int, required) — the FlatEnv id that establishes the evaluation context.
+///
+/// - `scope-frames:` (Dict, required for Document resolution) — accumulated scope frames from
+///   previous documents in the pipeline, encoded as an auto-indexed dict of auto-indexed dicts
+///   of strings: `{0: {0: "field-get", 1: "slot-get", ...}, 1: {...}, ...}`.
+///   An empty dict (`[]`) is valid and means resolve with no outer scope.
+///   Returns a hard error if absent when resolving a Document.
+///
+/// **Returns** `{doc: Document, errors: Dict<Int, ErrorDict>, scope-frames: Dict}` where
+/// `scope-frames` contains ALL frames (initial + new from this document).
+/// Pass these directly as `scope-frames:` to the next `builtin-resolve` call.
 ///
 /// Does NOT run the type checker. Call `builtin-typecheck` afterwards.
 ///
@@ -1996,12 +2012,12 @@ pub(crate) fn builtin_resolve(
             ctx,
             ..
         } = ctx_arg;
-        // Extract optional env: named argument (Value::Env).
+        // Extract optional flat-env: named argument (Int).
         // Reject any other named arguments.
-        let opt_env = if let Some(ref named_map) = named {
+        let (opt_flat_env_id, opt_scope_frames_thunk) = if let Some(ref named_map) = named {
             let unknown: Vec<&str> = named_map
                 .keys()
-                .filter(|k| k.as_str() != "env")
+                .filter(|k| k.as_str() != "flat-env" && k.as_str() != "scope-frames")
                 .map(|k| k.as_str())
                 .collect();
             if !unknown.is_empty() {
@@ -2014,23 +2030,26 @@ pub(crate) fn builtin_resolve(
                 )
                 .into());
             }
-            named_map.get("env").copied()
+            (
+                named_map.get("flat-env").copied(),
+                named_map.get("scope-frames").copied(),
+            )
         } else {
-            None
+            (None, None)
         };
         if args.len() != 1 {
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
-        // Materialize the env: argument if present
-        let env_arc = if let Some(env_thunk_id) = opt_env {
-            let env_thunk = ctx.get_thunk(env_thunk_id);
-            let env_val = crate::eval::materialize(&env_thunk, Some(&call_span), &ctx).await?;
-            match env_val {
-                Value::Environment(arc) => Some(arc),
+        // Materialize the flat-env: argument if present
+        let flat_env_id = if let Some(fe_thunk_id) = opt_flat_env_id {
+            let fe_thunk = ctx.get_thunk(fe_thunk_id);
+            let fe_val = crate::eval::materialize(&fe_thunk, Some(&call_span), &ctx).await?;
+            match fe_val {
+                Value::Int(n) => Some(n as u32),
                 other => {
                     return Err(EvalError::type_mismatch_ctx(
-                        "builtin-resolve env:".to_string(),
-                        "Environment",
+                        "builtin-resolve flat-env:".to_string(),
+                        "Int",
                         other.type_name(),
                         call_span,
                     )
@@ -2041,7 +2060,8 @@ pub(crate) fn builtin_resolve(
             None
         };
 
-        let val = ctx.get_thunk(args[0])
+        let val = ctx
+            .get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
         match val {
@@ -2065,22 +2085,22 @@ pub(crate) fn builtin_resolve(
             //
             // Resolves a single document with proper scope accumulation for intermediate
             // dict expressions. Returns a dict:
-            //   {doc: Value::Document, errors: Dict<Int, ErrorDict>}
+            //   {doc: Value::Document, errors: Dict<Int, ErrorDict>, scope-frames: Dict}
             //
             // Resolution is written inline to the AST nodes in `doc_arc`. After this call,
             // lowering reads inline resolution directly from each VarRef/DotAccess node.
             // No table: is needed in builtin-eval — the inline resolution is already on the nodes.
             // The `errors:` dict contains resolve errors (undefined variables).
+            // The `scope-frames:` dict contains the NEW frames added by this document.
             Value::Document(doc_arc) => {
-                let env = match env_arc {
-                    Some(ref e) => e,
-                    None => return Err(EvalError::user_error(
-                        "builtin-resolve: env: argument is required when first arg is a Document"
+                if flat_env_id.is_none() {
+                    return Err(EvalError::user_error(
+                        "builtin-resolve: flat-env: argument is required when first arg is a Document"
                             .to_string(),
                         call_span,
                     )
-                    .into()),
-                };
+                    .into());
+                }
 
                 let alloc = |v: Value| {
                     ctx.alloc_thunk(Arc::new(Thunk::new_materialized(v, call_span.clone())))
@@ -2092,12 +2112,116 @@ pub(crate) fn builtin_resolve(
                 // original, so builtin-eval would see empty OnceLocks and lower everything
                 // to CoreExpr::Placeholder (with a LowerDiagnostic for each unresolved name).
                 //
-                // The env chain is walked to populate resolver scopes from outermost to innermost.
-                // Names not found in the env chain have their OnceLock left unset (None) and are
-                // returned in resolve_errors. The resolver MUST be seeded from the same env the
-                // document will be evaluated with — a mismatch causes wrong de Bruijn levels.
-                let (_resolve_table, resolve_errors) =
-                    crate::resolve::resolve_surface_document_inplace(&doc_arc, env);
+                // Build initial_frames from scope-frames: (required for Document resolution).
+                // scope-frames: is an auto-indexed dict of auto-indexed dicts of strings:
+                // {0: {0: "field-get", 1: "slot-get", ...}, 1: {...}, ...}.
+                // An empty dict (scope-frames: []) is valid and means resolve with no outer scope.
+                let initial_frames: Vec<indexmap::IndexMap<String, ()>> = if let Some(sf_thunk_id) =
+                    opt_scope_frames_thunk
+                {
+                    // Decode scope-frames: — an auto-indexed dict of auto-indexed dicts of
+                    // strings. Each outer entry is one scope frame; each inner entry is a
+                    // name visible in that frame.
+                    let sf_thunk = ctx.get_thunk(sf_thunk_id);
+                    let sf_val =
+                        crate::eval::materialize(&sf_thunk, Some(&call_span), &ctx).await?;
+                    match sf_val {
+                        Value::Dict(outer) => {
+                            // Collect integer-keyed frame entries in order.
+                            let mut frame_entries: Vec<(i64, ThunkId)> = outer
+                                .iter()
+                                .filter_map(|(k, v)| {
+                                    if let HashableValue::Int(i) = k {
+                                        Some((*i, *v))
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect();
+                            frame_entries.sort_by_key(|(i, _)| *i);
+
+                            let mut frames = Vec::new();
+                            for (_, frame_tid) in frame_entries {
+                                let frame_thunk = ctx.get_thunk(frame_tid);
+                                let frame_val =
+                                    crate::eval::materialize(&frame_thunk, Some(&call_span), &ctx)
+                                        .await?;
+                                match frame_val {
+                                    Value::Dict(inner) => {
+                                        // Collect integer-keyed name entries in order.
+                                        let mut name_entries: Vec<(i64, ThunkId)> = inner
+                                            .iter()
+                                            .filter_map(|(k, v)| {
+                                                if let HashableValue::Int(i) = k {
+                                                    Some((*i, *v))
+                                                } else {
+                                                    None
+                                                }
+                                            })
+                                            .collect();
+                                        name_entries.sort_by_key(|(i, _)| *i);
+
+                                        let mut frame: indexmap::IndexMap<String, ()> =
+                                            indexmap::IndexMap::new();
+                                        for (_, name_tid) in name_entries {
+                                            let name_thunk = ctx.get_thunk(name_tid);
+                                            let name_val = crate::eval::materialize(
+                                                &name_thunk,
+                                                Some(&call_span),
+                                                &ctx,
+                                            )
+                                            .await?;
+                                            match name_val.as_str() {
+                                                Some(s) => {
+                                                    frame.insert(s.to_string(), ());
+                                                }
+                                                None => {
+                                                    return Err(EvalError::type_mismatch_ctx(
+                                                        "builtin-resolve scope-frames: name"
+                                                            .to_string(),
+                                                        "String",
+                                                        name_val.type_name(),
+                                                        call_span,
+                                                    )
+                                                    .into());
+                                                }
+                                            }
+                                        }
+                                        frames.push(frame);
+                                    }
+                                    other => {
+                                        return Err(EvalError::type_mismatch_ctx(
+                                            "builtin-resolve scope-frames: frame".to_string(),
+                                            "Dict",
+                                            other.type_name(),
+                                            call_span,
+                                        )
+                                        .into());
+                                    }
+                                }
+                            }
+                            // Empty frames is valid — resolve with no outer scope.
+                            frames
+                        }
+                        other => {
+                            return Err(EvalError::type_mismatch_ctx(
+                                "builtin-resolve scope-frames:".to_string(),
+                                "Dict",
+                                other.type_name(),
+                                call_span,
+                            )
+                            .into());
+                        }
+                    }
+                } else {
+                    return Err(EvalError::user_error(
+                        "builtin-resolve: scope-frames: argument is required for Document resolution".to_string(),
+                        call_span,
+                    ).into());
+                };
+
+                let (_resolve_table, resolve_errors, new_frames) =
+                    crate::resolve::resolve_surface_document_inplace(&doc_arc, &initial_frames);
 
                 // Build errors dict from resolve_errors (undefined variables).
                 let mut errors_dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
@@ -2132,7 +2256,25 @@ pub(crate) fn builtin_resolve(
                     errors_dict.insert(HashableValue::Int(i as i64), alloc(Value::Dict(w)));
                 }
 
-                // Return {doc: Value::Document, errors: Dict}
+                // Encode ALL frames (initial + new) as a tinct auto-indexed dict of
+                // auto-indexed dicts of strings: {0: {0: "name-a", ...}, 1: {...}, ...}
+                // Returning all frames lets the caller pass resolved.scope-frames directly
+                // to the next builtin-resolve call without any concatenation.
+                let scope_frames_val = {
+                    let mut outer: indexmap::IndexMap<HashableValue, ThunkId> =
+                        indexmap::IndexMap::new();
+                    for (i, frame) in initial_frames.iter().chain(new_frames.iter()).enumerate() {
+                        let mut inner: indexmap::IndexMap<HashableValue, ThunkId> =
+                            indexmap::IndexMap::new();
+                        for (j, (name, ())) in frame.iter().enumerate() {
+                            inner.insert(HashableValue::Int(j as i64), alloc(string_val(name)));
+                        }
+                        outer.insert(HashableValue::Int(i as i64), alloc(Value::Dict(inner)));
+                    }
+                    Value::Dict(outer)
+                };
+
+                // Return {doc: Value::Document, errors: Dict, scope-frames: Dict}
                 // Resolution is now inline on the document's AST nodes.
                 let doc_thunk_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     Value::Document(std::sync::Arc::clone(&doc_arc)),
@@ -2142,9 +2284,17 @@ pub(crate) fn builtin_resolve(
                     Value::Dict(errors_dict),
                     call_span.clone(),
                 )));
+                let scope_frames_thunk_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    scope_frames_val,
+                    call_span.clone(),
+                )));
                 let mut result_dict = indexmap::IndexMap::new();
                 result_dict.insert(HashableValue::Str("doc".into()), doc_thunk_id);
                 result_dict.insert(HashableValue::Str("errors".into()), errors_thunk_id);
+                result_dict.insert(
+                    HashableValue::Str("scope-frames".into()),
+                    scope_frames_thunk_id,
+                );
                 ok_val(Value::Dict(result_dict), call_span)
             }
 
@@ -2187,16 +2337,11 @@ pub(crate) fn builtin_typecheck(
             ctx,
             ..
         } = ctx_arg;
-        // Extract optional env: named argument. When provided, used as the resolver seed env
-        // so that instance binding names (ɪ-prefixed) visible in the runtime env are also
-        // visible to the type checker's name resolution pass. This fixes false-positive
-        // "undefined variable" warnings for class method VarRefs (cast, +, -, etc.) when
-        // type-checking the prelude.
-        // Reject any unknown named arguments.
-        let opt_env_thunk = if let Some(ref named_map) = named {
+        // Extract optional scope-frames: named argument. Reject any unknown named args.
+        let opt_tc_scope_frames_thunk = if let Some(ref named_map) = named {
             let unknown: Vec<&str> = named_map
                 .keys()
-                .filter(|k| k.as_str() != "env")
+                .filter(|k| k.as_str() != "scope-frames")
                 .map(|k| k.as_str())
                 .collect();
             if !unknown.is_empty() {
@@ -2209,22 +2354,103 @@ pub(crate) fn builtin_typecheck(
                 )
                 .into());
             }
-            named_map.get("env").copied()
+            named_map.get("scope-frames").copied()
         } else {
             None
         };
-        // Materialize and validate the env: argument if provided.
-        // Extract the Arc<RwLock<Env>> for use as resolver seed in typecheck_surface_program_with_env.
+        // Build a resolver seed Env from scope-frames: if provided.
+        // The Env is used by the type checker's name resolution pass to find instance bindings
+        // (ɪ-prefixed mangled names) that are visible in the runtime environment.
         let resolver_seed_env: Option<std::sync::Arc<std::sync::RwLock<crate::env::Env>>> =
-            if let Some(env_thunk_id) = opt_env_thunk {
-                let env_thunk = ctx.get_thunk(env_thunk_id);
-                let env_val = materialize(&env_thunk, Some(&call_span), &ctx).await?;
-                match env_val {
-                    Value::Environment(arc) => Some(arc),
+            if let Some(sf_thunk_id) = opt_tc_scope_frames_thunk {
+                // Decode scope-frames: — same format as builtin-resolve scope-frames:.
+                // An auto-indexed dict of auto-indexed dicts of strings.
+                let sf_thunk = ctx.get_thunk(sf_thunk_id);
+                let sf_val = materialize(&sf_thunk, Some(&call_span), &ctx).await?;
+                match sf_val {
+                    Value::Dict(outer) => {
+                        // Collect integer-keyed frame entries in order.
+                        let mut frame_entries: Vec<(i64, ThunkId)> = outer
+                            .iter()
+                            .filter_map(|(k, v)| {
+                                if let HashableValue::Int(i) = k {
+                                    Some((*i, *v))
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        frame_entries.sort_by_key(|(i, _)| *i);
+
+                        let mut root_env: Option<
+                            std::sync::Arc<std::sync::RwLock<crate::env::Env>>,
+                        > = None;
+                        for (_, frame_tid) in frame_entries {
+                            let frame_thunk = ctx.get_thunk(frame_tid);
+                            let frame_val =
+                                materialize(&frame_thunk, Some(&call_span), &ctx).await?;
+                            match frame_val {
+                                Value::Dict(inner) => {
+                                    // Collect integer-keyed name entries in order.
+                                    let mut name_entries: Vec<(i64, ThunkId)> = inner
+                                        .iter()
+                                        .filter_map(|(k, v)| {
+                                            if let HashableValue::Int(i) = k {
+                                                Some((*i, *v))
+                                            } else {
+                                                None
+                                            }
+                                        })
+                                        .collect();
+                                    name_entries.sort_by_key(|(i, _)| *i);
+
+                                    let mut frame = match &root_env {
+                                        Some(parent) => crate::env::Env::with_parent(
+                                            std::sync::Arc::clone(parent),
+                                        ),
+                                        None => crate::env::Env::new(),
+                                    };
+                                    for (_, name_tid) in name_entries {
+                                        let name_thunk = ctx.get_thunk(name_tid);
+                                        let name_val =
+                                            materialize(&name_thunk, Some(&call_span), &ctx)
+                                                .await?;
+                                        match name_val.as_str() {
+                                            Some(s) => {
+                                                frame.insert_slot_name_only(s.to_string());
+                                            }
+                                            None => {
+                                                return Err(EvalError::type_mismatch_ctx(
+                                                    "builtin-typecheck scope-frames: name"
+                                                        .to_string(),
+                                                    "String",
+                                                    name_val.type_name(),
+                                                    call_span,
+                                                )
+                                                .into());
+                                            }
+                                        }
+                                    }
+                                    root_env =
+                                        Some(std::sync::Arc::new(std::sync::RwLock::new(frame)));
+                                }
+                                other => {
+                                    return Err(EvalError::type_mismatch_ctx(
+                                        "builtin-typecheck scope-frames: frame".to_string(),
+                                        "Dict",
+                                        other.type_name(),
+                                        call_span,
+                                    )
+                                    .into());
+                                }
+                            }
+                        }
+                        root_env
+                    }
                     other => {
                         return Err(EvalError::type_mismatch_ctx(
-                            "builtin-typecheck env:".to_string(),
-                            "Environment",
+                            "builtin-typecheck scope-frames:".to_string(),
+                            "Dict",
                             other.type_name(),
                             call_span,
                         )
@@ -2265,7 +2491,8 @@ pub(crate) fn builtin_typecheck(
                 }
             }
         };
-        let val = ctx.get_thunk(args[0])
+        let val = ctx
+            .get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
         match val {
@@ -2327,7 +2554,10 @@ pub(crate) fn builtin_typecheck(
                     let mut guard = tc_arc.lock().unwrap();
                     guard.inference_env = Arc::clone(&final_env);
                     for (name, def) in &state.tycon_env {
-                        guard.tycon_env.entry(name.clone()).or_insert_with(|| Arc::clone(def));
+                        guard
+                            .tycon_env
+                            .entry(name.clone())
+                            .or_insert_with(|| Arc::clone(def));
                     }
                 }
                 let _ = errors; // type errors are no longer stored in Value::Program
@@ -2476,7 +2706,8 @@ pub(crate) fn builtin_fork_type_ctx(
         if args.len() != 1 {
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
-        let parent_val = ctx.get_thunk(args[0])
+        let parent_val = ctx
+            .get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
         match parent_val {
@@ -2501,22 +2732,22 @@ pub(crate) fn builtin_fork_type_ctx(
     })
 }
 
-/// `builtin-tc-with-type-stage-env`: Inject a runtime `Value::Environment` into a `TypeContext`
-/// as its type-stage environment.
+/// `builtin-tc-with-type-stage-env`: Inject a type-stage FlatEnv id into a `TypeContext`.
 ///
 /// Takes 2 positional args (both forced):
 ///   - arg 0: `Value::TypeContext` — the TypeContext to update
-///   - arg 1: `Value::Environment` — the env produced by evaluating type-stage documents
+///   - arg 1: `Value::Int` — the flat-env-id produced by evaluating type-stage documents
 ///
-/// Locks the TypeContext mutex, replaces `tc.type_stage_env` with the provided env, and
-/// stores the `flat-env-id` on the EvalContext for resolver lookup. Returns the **same**
-/// `Value::TypeContext` value (the mutation is in-place).
+/// Locks the TypeContext mutex, records the flat-env-id for resolver lookup, and initializes
+/// `type_stage_env` to an empty Env (type-stage functions live in FlatEnv now).
+/// Returns the **same** `Value::TypeContext` value (the mutation is in-place).
 ///
 /// Used by loader.llt and test-loader.llt to wire the type-stage env into the TypeContext
 /// before type-checking.
 ///
-/// Signature: `[builtin-tc-with-type-stage-env type-ctx ts-acc-dict]`
-/// where `ts-acc-dict` is `{env: Environment, flat-env-id: Int}`.
+/// Signature: `[builtin-tc-with-type-stage-env type-ctx ts-flat-env-id]`
+/// where `ts-flat-env-id` is the Int returned by the final `builtin-extend-env` call in
+/// the type-stage evaluation reduce.
 pub(crate) fn builtin_tc_with_type_stage_env(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -2536,10 +2767,12 @@ pub(crate) fn builtin_tc_with_type_stage_env(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let tc_val = ctx.get_thunk(args[0])
+        let tc_val = ctx
+            .get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let ts_acc_val = ctx.get_thunk(args[1])
+        let flat_env_id_val = ctx
+            .get_thunk(args[1])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
@@ -2556,68 +2789,13 @@ pub(crate) fn builtin_tc_with_type_stage_env(
             }
         };
 
-        // Extract {env: Environment, flat-env-id: Int} from ts-acc dict
-        let ts_acc_dict = match ts_acc_val {
-            Value::Dict(ref m) => m,
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "builtin-tc-with-type-stage-env".to_string(),
-                    "Dict with {env: Environment, flat-env-id: Int}",
-                    other.type_name(),
-                    call_span,
-                )
-                .into())
-            }
-        };
-
-        // Get env field
-        let env_thunk_id = ts_acc_dict
-            .get(&HashableValue::Str("env".into()))
-            .ok_or_else(|| {
-                EvalError::type_mismatch_ctx(
-                    "builtin-tc-with-type-stage-env".to_string(),
-                    "Dict with 'env:' field",
-                    "missing env field",
-                    call_span.clone(),
-                )
-            })?;
-        let env_val = materialize(&ctx.get_thunk(*env_thunk_id), Some(&call_span), &ctx).await?;
-        let env_arc = match env_val {
-            Value::Environment(arc) => arc,
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "builtin-tc-with-type-stage-env env:".to_string(),
-                    "Environment",
-                    other.type_name(),
-                    call_span,
-                )
-                .into())
-            }
-        };
-
-        // Get flat-env-id field
-        let flat_env_id_thunk_id = ts_acc_dict
-            .get(&HashableValue::Str("flat-env-id".into()))
-            .ok_or_else(|| {
-                EvalError::type_mismatch_ctx(
-                    "builtin-tc-with-type-stage-env".to_string(),
-                    "Dict with 'flat-env-id:' field",
-                    "missing flat-env-id field",
-                    call_span.clone(),
-                )
-            })?;
-        let flat_env_id_val = materialize(
-            &ctx.get_thunk(*flat_env_id_thunk_id),
-            Some(&call_span),
-            &ctx,
-        )
-        .await?;
+        // arg 1: flat-env-id as Int
         let flat_env_id = match flat_env_id_val {
             Value::Int(n) => n as u32,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
-                    "builtin-tc-with-type-stage-env flat-env-id:".to_string(),
-                    "Int (EnvId)",
+                    "builtin-tc-with-type-stage-env".to_string(),
+                    "Int (flat-env-id from type-stage evaluation)",
                     other.type_name(),
                     call_span,
                 )
@@ -2625,10 +2803,11 @@ pub(crate) fn builtin_tc_with_type_stage_env(
             }
         };
 
-        // Update TypeContext's type_stage_env and type_stage_flat_env_id
+        // Update TypeContext: record flat-env-id; type_stage_env is an empty Env
+        // (type-stage functions are stored in FlatEnv, not Env).
         {
             let mut guard = tc_arc.lock().unwrap();
-            guard.type_stage_env = Arc::clone(&env_arc);
+            guard.type_stage_env = Arc::new(std::sync::RwLock::new(crate::env::Env::new()));
             guard.type_stage_flat_env_id = Some(flat_env_id);
         }
 
@@ -2665,7 +2844,8 @@ pub(crate) fn builtin_program(
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
 
-        let val = ctx.get_thunk(args[0])
+        let val = ctx
+            .get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
@@ -2796,23 +2976,18 @@ pub(crate) fn builtin_builtin_module(
 ///
 /// Named args:
 /// - `env:`   (`Value::Env`) — the starting environment (required).
-/// - `table:` (`Value::Dict`) — span-keyed resolution table from `builtin-resolve doc env: E`
-///             (optional; if absent, empty table is used — unresolved VarRefs produce Error at eval time).
-///
-/// The `program:` argument has been removed. Resolution is now done per-document via
-/// `[builtin-resolve doc env: E]` which returns `{doc, table}`. Pass `table:` here for
-/// correct de Bruijn coordinate lookup during lowering.
-///
-/// Returns: `Value::Dict` with two keys:
-/// - `env:` (`Value::Env`) — child env with `%` bound to the last expression's thunk
-///   on success, or the original starting_env on failure.
+/// Returns: `Value::Dict` with keys:
+/// - `flat-env-id:` (`Value::Int`) — the FlatEnv id of the evaluated document scope.
+/// - `result:` — last expression's thunk (on success).
+/// - `doc-name:` (`Value::Str`) — the document name (or empty string if unnamed).
 /// - `error:` (`Value::Dict([])` = null on success, `Value::Str(message)` on failure)
 ///
-/// Callers MUST check `result.error` before using `result.env`. This design ensures
-/// Rust never prints errors — tinct code receives errors as data and decides what to do.
+/// Callers MUST check `result.error` before using `result.flat-env-id`. This design
+/// ensures Rust never prints errors — tinct code receives errors as data.
 ///
-/// The `env:` arg is mandatory. Callers must pass a `Value::Env` (e.g. one constructed
-/// via `builtin-extend-env`). There is no default stdlib_env fallback.
+/// Named args:
+///   flat-env:  (Int, required) — parent FlatEnv id for evaluation scope and display chain.
+///   arena:     (Arena, optional) — arena to allocate thunks into during evaluation.
 pub(crate) fn builtin_eval(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -2830,76 +3005,54 @@ pub(crate) fn builtin_eval(
         }
 
         // Named args:
-        //   env:       (Value::Env) — required
-        //   flat-env:  (Int, optional) — parent EnvId for flat-env evaluation scope
-        //
-        // Resolution is now inline on the AST nodes (written by builtin-resolve).
-        // The `table:` argument has been removed; pass env: only.
-        let (env_thunk_id, flat_env_parent_id) = if let Some(ref named_map) = named {
+        //   flat-env:  (Int, required) — parent EnvId for evaluation scope
+        //   arena:     (Arena, optional) — per-document arena for thunk allocation
+        let (flat_env_parent_id, arena_thunk_id) = if let Some(ref named_map) = named {
             for key in named_map.keys() {
-                if key != "env" && key != "flat-env" {
+                if key != "flat-env" && key != "arena" {
                     return Err(EvalError::named_arg_rejected("eval".to_string(), call_span).into());
                 }
             }
-            let env_id = match named_map.get("env").copied() {
+            // flat-env: is required.
+            let flat_env_thunk_id = match named_map.get("flat-env").copied() {
                 Some(t) => t,
                 None => {
                     return Err(EvalError::type_mismatch_ctx(
                         "eval".to_string(),
-                        "Env (for env: argument — required)",
+                        "Int (for flat-env: argument — required)",
                         "absent",
                         call_span,
                     )
                     .into())
                 }
             };
-            // Extract optional flat-env: argument as a parent EnvId (Int → u32).
-            // The value must be an Int (the flat-env-id returned by a prior builtin-eval call).
-            // A wrong type is a correctness error — silently ignoring it would produce an
-            // incomplete display chain and wrong VarRef resolution for stdlib names at level > 0.
-            let flat_env_id = if let Some(&fe_thunk_id) = named_map.get("flat-env") {
-                let fe_thunk = ctx.get_thunk(fe_thunk_id);
-                let fe_val = materialize(&fe_thunk, Some(&call_span), &ctx).await?;
-                match fe_val {
-                    Value::Int(n) => Some(n as u32),
-                    other => return Err(EvalError::type_mismatch_ctx(
+            let fe_thunk = ctx.get_thunk(flat_env_thunk_id);
+            let fe_val = materialize(&fe_thunk, Some(&call_span), &ctx).await?;
+            let flat_env_id = match fe_val {
+                Value::Int(n) => Some(n as u32),
+                other => {
+                    return Err(EvalError::type_mismatch_ctx(
                         "builtin-eval flat-env:".to_string(),
-                        "Int (EnvId returned from a prior builtin-eval call)",
+                        "Int (FlatEnv id)",
                         other.type_name(),
                         call_span,
                     )
-                    .into()),
+                    .into())
                 }
-            } else {
-                None
             };
-            (env_id, flat_env_id)
+            let arena_id = named_map.get("arena").copied();
+            (flat_env_id, arena_id)
         } else {
-            // No named args at all — env: is missing.
+            // No named args at all — flat-env: is missing.
             return Err(EvalError::type_mismatch_ctx(
                 "eval".to_string(),
-                "Env (for env: argument — required)",
+                "Int (for flat-env: argument — required)",
                 "absent",
                 call_span,
             )
             .into());
         };
-
-        // Force env: — must be Value::Env.
-        let env_thunk = ctx.get_thunk(env_thunk_id);
-        let env_val = materialize(&env_thunk, Some(&call_span), &ctx).await?;
-        let starting_env = match env_val {
-            Value::Environment(e) => e,
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "eval".to_string(),
-                    "Env (for env: argument)",
-                    other.type_name(),
-                    call_span,
-                )
-                .into())
-            }
-        };
+        let _ = arena_thunk_id; // arena: handled by caller's alloc pattern
 
         // arg[0]: Value::Document or Dict of Expr.* nodes.
         //
@@ -2910,7 +3063,8 @@ pub(crate) fn builtin_eval(
         // Dict of Expr.* path (for metaprogramming, quote/unquote):
         //   Deserialises Expr.* variants into new SurfaceNodes. Resolution must have been
         //   written inline to the original nodes; deserialized nodes start unresolved.
-        let input_val = ctx.get_thunk(args[0])
+        let input_val = ctx
+            .get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by Strictness::Seq");
 
@@ -2985,49 +3139,26 @@ pub(crate) fn builtin_eval(
                 }
             };
 
-        // Evaluate the expression sequence. Use the _with_env variant so we get the
-        // leaf env (current_env after all intermediate dict bindings are applied).
-        // This is critical: intermediate dicts add bindings to current_env's chain,
-        // so the result env must be a child of current_env (not of starting_env) to
-        // expose those bindings (e.g. prelude's `=`, `map`) via ancestor lookup.
-        //
+        // Evaluate the expression sequence.
         // Errors are returned as data in the result dict rather than propagated via
         // Rust's ? operator. This ensures Rust never prints errors — the caller (tinct
-        // code) receives {env: ..., error: null_or_string} and decides what to do.
-        //
-        // flat-env: arg is threaded to eval_document_exprs_with_env for scoped arena allocation.
-        let eval_result = crate::eval::eval_document_exprs_with_env(
-            &expression_nodes,
-            Arc::clone(&starting_env),
-            &ctx,
-            flat_env_parent_id,
-        )
-        .await;
+        // code) receives {flat-env-id: ..., error: null_or_string} and decides what to do.
+        let eval_result =
+            crate::eval::eval_document_exprs_with_env(&expression_nodes, &ctx, flat_env_parent_id)
+                .await;
 
         // The flat-env-id is the root EnvId of the FlatEnv scope allocated for this document.
-        // eval_document_exprs_with_env returns the root env_id directly so we do not need to
-        // inspect ctx.current_env_id (which would always be the pre-call value, not the new scope).
         let flat_env_id_val: i64 = match &eval_result {
-            Ok((_, _, root_env_id)) => *root_env_id as i64,
+            Ok((_, root_env_id)) => *root_env_id as i64,
             Err(_) => ctx.current_env_id as i64, // error path: return current (pre-call) env_id
         };
 
         let mut result_map: indexmap::IndexMap<HashableValue, ThunkId> = indexmap::IndexMap::new();
 
         match eval_result {
-            Ok((result_thunk, leaf_env, _root_env_id)) => {
-                // Return {env: leaf_env, result: last_thunk, doc-name: name, error: null,
-                //         flat-env-id: Int}. The flat-env-id was already extracted above.
+            Ok((result_thunk, _root_env_id)) => {
+                // Return {flat-env-id: Int, result: last_thunk, doc-name: name, error: null}.
                 // No % injection — tinct code decides what name to bind the result under.
-                // No dict entry promotion — tinct pipeline loop uses make-entry to bind
-                // result names into the env chain.
-                result_map.insert(
-                    HashableValue::Str("env".into()),
-                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                        Value::Environment(leaf_env),
-                        call_span.clone(),
-                    ))),
-                );
                 result_map.insert(
                     HashableValue::Str("result".into()),
                     ctx.alloc_thunk(result_thunk),
@@ -3056,13 +3187,6 @@ pub(crate) fn builtin_eval(
             }
             Err(e) => {
                 let msg = format!("{}", e);
-                result_map.insert(
-                    HashableValue::Str("env".into()),
-                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                        Value::Environment(starting_env),
-                        call_span.clone(),
-                    ))),
-                );
                 result_map.insert(
                     HashableValue::Str("error".into()),
                     ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
@@ -3106,7 +3230,8 @@ pub(crate) fn builtin_variant_payload(
         if args.len() != 1 {
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
-        let val = ctx.get_thunk(args[0])
+        let val = ctx
+            .get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by Strictness::Seq");
         match val {
@@ -3154,52 +3279,40 @@ pub(crate) fn builtin_eval_repr(
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
 
-        let env_thunk_id = if let Some(ref named_map) = named {
+        let flat_env_id_opt = if let Some(ref named_map) = named {
             for key in named_map.keys() {
-                if key != "env" {
+                if key != "flat-env" {
                     return Err(
                         EvalError::named_arg_rejected("eval-repr".to_string(), call_span).into(),
                     );
                 }
             }
-            match named_map.get("env").copied() {
-                Some(t) => t,
-                None => {
+            named_map.get("flat-env").copied()
+        } else {
+            None
+        };
+
+        let flat_env_parent_id = if let Some(fe_tid) = flat_env_id_opt {
+            let fe_thunk = ctx.get_thunk(fe_tid);
+            let fe_val = materialize(&fe_thunk, Some(&call_span), &ctx).await?;
+            match fe_val {
+                Value::Int(n) => Some(n as u32),
+                other => {
                     return Err(EvalError::type_mismatch_ctx(
-                        "eval-repr".to_string(),
-                        "Env (for env: argument — required)",
-                        "absent",
+                        "eval-repr flat-env:".to_string(),
+                        "Int (flat-env-id)",
+                        other.type_name(),
                         call_span,
                     )
                     .into())
                 }
             }
         } else {
-            return Err(EvalError::type_mismatch_ctx(
-                "eval-repr".to_string(),
-                "Env (for env: argument — required)",
-                "absent",
-                call_span,
-            )
-            .into());
+            None
         };
 
-        let env_thunk = ctx.get_thunk(env_thunk_id);
-        let env_val = materialize(&env_thunk, Some(&call_span), &ctx).await?;
-        let starting_env = match env_val {
-            Value::Environment(e) => e,
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "eval-repr".to_string(),
-                    "Env (for env: argument)",
-                    other.type_name(),
-                    call_span,
-                )
-                .into())
-            }
-        };
-
-        let input_val = ctx.get_thunk(args[0])
+        let input_val = ctx
+            .get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by Strictness::Seq");
 
@@ -3226,13 +3339,9 @@ pub(crate) fn builtin_eval_repr(
             }
         };
 
-        let (result_thunk, _leaf_env, _root_env_id) = crate::eval::eval_document_exprs_with_env(
-            &expression_nodes,
-            Arc::clone(&starting_env),
-            &ctx,
-            None,
-        )
-        .await?;
+        let (result_thunk, _root_env_id) =
+            crate::eval::eval_document_exprs_with_env(&expression_nodes, &ctx, flat_env_parent_id)
+                .await?;
 
         let result_val = materialize(&result_thunk, Some(&call_span), &ctx).await?;
         let repr = crate::value_to_display_string(&result_val, &ctx, call_span.clone())
@@ -3244,25 +3353,19 @@ pub(crate) fn builtin_eval_repr(
     })
 }
 
-/// `builtin-extend-env`: create a child (or fresh) environment with additional bindings.
+/// `builtin-extend-env`: create a child FlatEnv scope with additional bindings.
 ///
-/// arg[0]: `Value::Env` — the parent environment, OR `Value::Dict({})` (empty dict)
-///   to create a fresh environment with no parent chain.
-/// arg[1]: `Value::Dict` — string-keyed bindings to add as a child layer, OR
-///   `Value::Env` — whose own top-level bindings are copied into the child.
+/// arg[0]: `Value::Int` — the parent flat-env-id (u32 as i64). Use 0 for the root scope.
+/// arg[1]: `Value::Dict` — string-keyed bindings to add as a child layer.
 ///   Integer keys in a Dict are silently skipped. The values remain as thunks — no
-///   materialization of dict or env values.
+///   materialization of dict values.
 ///
-/// Full matrix:
-/// - `(Env, Dict)` → child of parent env with dict's string-keyed entries
-/// - `(Dict({}), Dict)`    → fresh env (no parent) with dict's string-keyed entries
-/// - `(Env, Env)` → child of parent env with source env's own bindings
-/// - `(Dict({}), Env)`    → fresh env (no parent) with source env's own bindings
+/// Named args: none accepted.
 ///
-/// Returns: `Value::Dict` with `env` (Value::Environment) and `flat-env-id` (Value::Int) fields.
+/// Returns: `Value::Int` — the child flat-env-id as an i64.
 ///
-/// Useful for injecting additional bindings into an environment before passing it to
-/// `builtin-eval`, without mutating the original env.
+/// The child FlatEnv is allocated as a child of the parent (display chain extended by one).
+/// All string-keyed entries from the bindings dict are written as named slots in the child FlatEnv.
 pub(crate) fn builtin_extend_env(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -3275,57 +3378,22 @@ pub(crate) fn builtin_extend_env(
             ..
         } = ctx_arg;
 
-        // Extract optional flat-env: named arg (parent's flat-env-id for display chain)
-        let parent_flat_env_id: Option<u32> = if let Some(ref named_map) = named {
-            if let Some(&fei_tid) = named_map.get("flat-env") {
-                let fei_thunk = ctx.get_thunk(fei_tid);
-                let fei_val = materialize(&fei_thunk, Some(&call_span), &ctx).await?;
-                match fei_val {
-                    Value::Int(n) => Some(n as u32),
-                    other => {
-                        return Err(EvalError::type_mismatch_ctx(
-                            "extend-env flat-env:".to_string(),
-                            "Int",
-                            other.type_name(),
-                            call_span,
-                        )
-                        .into())
-                    }
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        // Reject any other named args
-        if let Some(ref named_map) = named {
-            for key in named_map.keys() {
-                if key != "flat-env" {
-                    return Err(EvalError::named_arg_rejected(
-                        "extend-env".to_string(),
-                        call_span,
-                    )
-                    .into());
-                }
-            }
-        }
+        // Reject all named args — no named args accepted.
+        crate::builtins::reject_named("extend-env", named.as_ref(), call_span.clone())?;
 
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
 
-        // Force arg[0] — must be Value::Env or Value::Dict({}) (empty dict → fresh env).
+        // Force arg[0] — must be Value::Int (parent flat-env-id).
         let arg0_thunk = ctx.get_thunk(args[0]);
         let parent_val = materialize(&arg0_thunk, Some(&call_span), &ctx).await?;
-        let base_env: Option<Arc<std::sync::RwLock<Env>>> = match parent_val {
-            Value::Environment(e) => Some(e),
-            Value::Dict(ref m) if m.is_empty() => None, // empty dict → fresh env with no parent
+        let parent_flat_env_id: u32 = match parent_val {
+            Value::Int(n) => n as u32,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "extend-env".to_string(),
-                    "Env or empty Dict",
+                    "Int (parent flat-env-id)",
                     other.type_name(),
                     call_span,
                 )
@@ -3333,13 +3401,7 @@ pub(crate) fn builtin_extend_env(
             }
         };
 
-        // Create the child environment (or a fresh env if base_env is None).
-        let child_env = Arc::new(std::sync::RwLock::new(match base_env {
-            Some(ref parent) => Env::with_parent(Arc::clone(parent)),
-            None => Env::new(),
-        }));
-
-        // Force arg[1] — must be Value::Dict or Value::Env.
+        // Force arg[1] — must be Value::Dict.
         // Normalize: peel Annotated wrappers and flatten Overlay into a plain Dict.
         // builtin-merge returns Value::Overlay (lazy); @Any annotations wrap in Annotated.
         // Both have type_name()="Dict" but don't match Value::Dict directly.
@@ -3364,61 +3426,41 @@ pub(crate) fn builtin_extend_env(
             }
             v
         };
-        // T-1571: Allocate FlatEnv and populate slots for Dict bindings.
+
         let child_env_id = match bindings_val {
             Value::Dict(ref bindings) => {
-                let mut env_write = child_env.write().unwrap();
-
-                // Count string-keyed bindings to size the FlatEnv
-                let binding_count = bindings.iter()
+                // Count string-keyed bindings to size the FlatEnv.
+                let binding_count = bindings
+                    .iter()
                     .filter(|(k, _)| matches!(k, HashableValue::Str(_)))
                     .count();
 
-                // Allocate child FlatEnv. If parent flat-env-id is provided via flat-env:,
-                // use alloc_child to chain the display vector. Otherwise alloc_root.
-                let child_env_id = if let Some(parent_id) = parent_flat_env_id {
-                    ctx.env_arena.borrow_mut()
-                        .alloc_child(crate::arena::EnvId(parent_id), binding_count)
-                } else {
-                    ctx.env_arena.borrow_mut()
-                        .alloc_root(binding_count)
-                };
+                // Allocate child FlatEnv as child of parent to chain the display vector.
+                let child_env_id = ctx
+                    .env_arena
+                    .borrow_mut()
+                    .alloc_child(crate::arena::EnvId(parent_flat_env_id), binding_count);
 
-                // Register slot names in Environment (for resolver metadata)
-                // and fill FlatEnv slots with thunk values (for runtime lookup).
+                // Fill FlatEnv slots with named thunk values.
                 let mut slot_idx = 0u32;
                 for (key, thunk_id) in bindings.iter() {
                     if let HashableValue::Str(name) = key {
-                        env_write.insert_slot_name_only(name.to_string());
-
-                        // Fill the FlatEnv slot with the binding's thunk
-                        ctx.env_arena.borrow_mut()
-                            .fill_letrec_slot(child_env_id, slot_idx, *thunk_id);
+                        ctx.env_arena.borrow_mut().fill_letrec_slot(
+                            child_env_id,
+                            slot_idx,
+                            *thunk_id,
+                            name,
+                        );
                         slot_idx += 1;
                     }
                 }
 
                 child_env_id
             }
-            Value::Environment(ref src_env) => {
-                // Env case: register slot names but don't populate FlatEnv slots.
-                // We can't extract ThunkIds from Value::Environment (Env no longer stores thunks).
-                // Callers that need FlatEnv population must use the Dict form.
-                let mut env_write = child_env.write().unwrap();
-                let src_read = src_env.read().unwrap();
-                for (name, _slot) in src_read.iter_slots() {
-                    env_write.insert_slot_name_only(name.to_string());
-                }
-                drop(env_write);
-                drop(src_read);
-
-                // Allocate an empty FlatEnv (no slots populated)
-                ctx.env_arena.borrow_mut().alloc_root(0)
-            }
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "extend-env".to_string(),
-                    "Dict or Env",
+                    "Dict",
                     other.type_name(),
                     call_span,
                 )
@@ -3426,40 +3468,19 @@ pub(crate) fn builtin_extend_env(
             }
         };
 
-        // T-1571: Return a dict with both env and flat-env-id
-        let mut result_map: indexmap::IndexMap<crate::value::HashableValue, crate::value::ThunkId> = indexmap::IndexMap::new();
-        result_map.insert(
-            crate::value::HashableValue::Str("env".into()),
-            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Environment(child_env),
-                call_span.clone(),
-            ))),
-        );
-        result_map.insert(
-            crate::value::HashableValue::Str("flat-env-id".into()),
-            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Int(child_env_id.0 as i64),
-                call_span.clone(),
-            ))),
-        );
+        // Return just the child flat-env-id as an Int.
         Ok(Arc::new(Thunk::new_materialized(
-            Value::Dict(result_map),
+            Value::Int(child_env_id.0 as i64),
             call_span,
         )))
     })
 }
 
-/// `builtin-current-env`: capture and return the calling environment.
+/// `builtin-current-env`: capture and return the calling FlatEnv id.
 ///
-/// Takes zero arguments. Returns the `Value::Env` that was the caller's
-/// lexical environment at the point of the call. This is the environment in scope
-/// at the `[builtin-current-env]` call site — not the environment of `builtin-current-env`
-/// itself (which has no body).
-///
-/// This builtin works because the evaluator threads `caller_env` through `BuiltinArgs`,
-/// capturing it when a `PendingCall` resolves to a `Value::Builtin`. Internal
-/// builtin-to-builtin calls (not via user-code PendingCall dispatch) will produce an
-/// empty environment — `builtin-current-env` is only meaningful when called from user code.
+/// Takes zero arguments. Returns `Value::Int(caller_env_id)` — the FlatEnv id of the
+/// caller's evaluation scope. This is the env_id in scope at the `[builtin-current-env]`
+/// call site.
 pub(crate) fn builtin_current_env(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -3468,20 +3489,15 @@ pub(crate) fn builtin_current_env(
             args,
             named,
             call_span,
-            ctx,
+            caller_env_id,
             ..
         } = ctx_arg;
         crate::builtins::reject_named("current-env", named.as_ref(), call_span.clone())?;
         if !args.is_empty() {
             return Err(EvalError::arity_mismatch(0, args.len(), call_span).into());
         }
-        // T-1558: caller_env is Arc<RwLock<value::Environment>> (legacy binding chain),
-        // but Value::Environment wraps Arc<RwLock<env::Env>> (type-metadata env).
-        // Until T-1559 wires the FlatEnv→Env frame connection, return stdlib_env as the
-        // captured environment. This preserves the return type contract while T-1559
-        // completes the proper call-site env capture.
         Ok(Arc::new(Thunk::new_materialized(
-            Value::Environment(Arc::clone(&ctx.config.stdlib_env)),
+            Value::Int(caller_env_id as i64),
             call_span,
         )))
     })
@@ -3491,22 +3507,18 @@ pub(crate) fn builtin_current_env(
 ///
 /// Takes 1 positional arg: an `Expr.*` Value::Variant representing the AST to evaluate.
 ///
-/// The call-site environment and span are read from the `BuiltinArgs.caller_env` environment
-/// chain, where they were bound by `bind_args_thunks` under the system-injected names
-/// `ᴍᴀᴄʀᴏ∷env` and `ᴍᴀᴄʀᴏ∷span` (injected by the @Expr PendingCallDispatch handler in
-/// eval_materialize.rs).  This allows macro functions to call `[eval-macro-ast ast]` without
-/// explicitly threading `__call-env__` / `__call-span__` through their parameter lists.
+/// The call-site FlatEnv id is provided directly via `BuiltinArgs.caller_env_id`, which is
+/// injected by the @Expr PendingCallDispatch handler in eval_materialize.rs.  This allows
+/// macro functions to call `[eval-macro-ast ast]` without explicitly threading the call
+/// environment through their parameter lists.
 ///
 /// Evaluation pipeline:
-///   1. Read `ᴍᴀᴄʀᴏ∷env` from caller_env → call-site `Value::Env`
+///   1. Use `caller_env_id` directly as the call-site FlatEnv id
 ///   2. Convert the `Expr.*` variant to a `SurfaceNode` using `dict_to_surface_node`
 ///   3. Wrap in a single-expression `SurfaceProgram`
 ///   4. Desugar + resolve in the call-site env
 ///   5. Evaluate via `eval_document_exprs_with_env`
 ///   6. Return the result thunk (the `%` of the resulting environment)
-///
-/// Falls back to `caller_env` as the evaluation environment when `ᴍᴀᴄʀᴏ∷env` is absent
-/// (i.e. when called outside a macro context — useful for testing and direct use).
 pub(crate) fn builtin_eval_macro_ast(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -3516,55 +3528,24 @@ pub(crate) fn builtin_eval_macro_ast(
             named: _,
             call_span,
             ctx,
-            caller_env,
-            caller_env_id: _,
+            caller_env_id,
         } = ctx_arg;
 
         if args.len() != 1 {
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
 
-        // ── Step 1: Extract ᴍᴀᴄʀᴏ∷env from the caller_env chain ─────────────
+        // ── Step 1: Obtain call-site FlatEnv id ───────────────────────────────
         //
-        // bind_args_thunks (eval_call.rs BIND-SYSTEM) unconditionally binds any named arg
-        // whose name contains '∷' into call_env.  The @Expr PendingCallDispatch handler
-        // injects "ᴍᴀᴄʀᴏ∷env" and "ᴍᴀᴄʀᴏ∷span" so they propagate through every
-        // tinct function in the macro call chain down to here.
-        //
-        // T-1558: ᴍᴀᴄʀᴏ∷env is now injected as Value::Int(caller_env_id) — a placeholder
-        // until T-1559 wires the full FlatEnv→Env connection. For now, fall back to
-        // ctx.config.stdlib_env as the macro evaluation scope so the resolver can assign
-        // De Bruijn coordinates based on the stdlib binding set.
-        const MACRO_ENV_NAME: &str = "ᴍᴀᴄʀᴏ∷env";
-
-        let call_site_env: Arc<RwLock<Env>> = {
-            let env_thunk_opt = caller_env.read().unwrap().get(MACRO_ENV_NAME);
-            if let Some(env_thunk) = env_thunk_opt {
-                let env_val = materialize(&env_thunk, Some(&call_span), &ctx).await?;
-                match env_val {
-                    // T-1558: ᴍᴀᴄʀᴏ∷env is now Value::Int(env_id). Use stdlib_env as the
-                    // evaluation scope — T-1559 will wire the proper Env frame here.
-                    Value::Int(_env_id) => Arc::clone(&ctx.config.stdlib_env),
-                    Value::Environment(e) => e,
-                    other => {
-                        return Err(EvalError::type_mismatch_ctx(
-                            "eval-macro-ast".to_string(),
-                            "Env (ᴍᴀᴄʀᴏ∷env)",
-                            other.type_name(),
-                            call_span,
-                        )
-                        .into())
-                    }
-                }
-            } else {
-                // Not in a macro context — use stdlib_env so the resolver has the full
-                // set of builtin names available. (T-1559 will provide the actual call-site env.)
-                Arc::clone(&ctx.config.stdlib_env)
-            }
-        };
+        // The @Expr PendingCallDispatch handler in eval_materialize.rs injects the
+        // call-site env id directly via BuiltinArgs.caller_env_id. bind_args_thunks
+        // (eval_call.rs BIND-SYSTEM) skips names containing '∷' — they are never
+        // stored in the FlatEnv — so caller_env_id is the sole authoritative source.
+        let call_site_env_id: u32 = caller_env_id;
 
         // ── Step 2: Convert Expr.* variant → SurfaceNode ─────────────────────
-        let expr_val = ctx.get_thunk(args[0])
+        let expr_val = ctx
+            .get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by Strictness::Seq");
 
@@ -3609,11 +3590,27 @@ pub(crate) fn builtin_eval_macro_ast(
 
         // ── Step 4: Desugar + resolve in the call-site environment ────────────
         crate::desugar::desugar_surface_program(&mut program);
-        // Seed resolver from the call-site env so that builtin names in the macro
-        // expansion resolve to de Bruijn coordinates rather than falling back to
-        // name-based lookup via the MAX/MAX sentinel.
-        let _resolve_table =
-            crate::resolve::resolve_surface_program(&program, Some(&call_site_env));
+        // Seed resolver from the full parent chain of call_site_env_id so that all names
+        // visible at the macro call site (builtins, prelude, user-defined) resolve to
+        // de Bruijn coordinates rather than falling back to name-based lookup via MAX/MAX.
+        // Using the FlatEnv parent chain here is correct for macros: they are generated at
+        // runtime and need to see the same lexical scope as the call site.
+        let initial_frames: Vec<indexmap::IndexMap<String, ()>> = {
+            let arena = ctx.env_arena.borrow();
+            let chain = arena.collect_parent_chain(call_site_env_id);
+            chain
+                .iter()
+                .map(|&id| {
+                    arena.envs[id.0 as usize]
+                        .slot_names
+                        .iter()
+                        .map(|n| (n.clone(), ()))
+                        .collect()
+                })
+                .collect()
+        };
+        let (_resolve_table, _new_frames) =
+            crate::resolve::resolve_surface_program(&program, &initial_frames);
 
         // ── Step 5: Extract the single expression node ────────────────────────
         let expression_nodes: Vec<Arc<crate::ast::SurfaceNode>> = program
@@ -3630,9 +3627,13 @@ pub(crate) fn builtin_eval_macro_ast(
             .collect();
 
         // ── Step 6: Evaluate and return the result thunk ──────────────────────
-        let (result_thunk, _leaf_env, _root_env_id) =
-            crate::eval::eval_document_exprs_with_env(&expression_nodes, call_site_env, &ctx, None)
-                .await?;
+        let eval_ctx = ctx.with_eval_scope(call_site_env_id);
+        let (result_thunk, _root_env_id) = crate::eval::eval_document_exprs_with_env(
+            &expression_nodes,
+            &eval_ctx,
+            Some(call_site_env_id),
+        )
+        .await?;
 
         Ok(result_thunk)
     })
@@ -3641,7 +3642,7 @@ pub(crate) fn builtin_eval_macro_ast(
 /// `eval-types`: same as `eval` but evaluates in the type-stage environment.
 ///
 /// This is used for evaluating type-level expressions (type aliases, class declarations).
-/// Base environment: ctx.config.type_stage_env (contains type-level bindings).
+/// Base environment: the type_stage_flat_env_id from the current TypeContext.
 pub(crate) fn builtin_eval_types(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -3658,80 +3659,19 @@ pub(crate) fn builtin_eval_types(
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
 
-        // Extract optional env: and %: named args (same as eval)
-        let (env_dict, pipeline_input) = if let Some(named_map) = named {
-            for key in named_map.keys() {
-                if key != "env" && key != "%" {
-                    return Err(
-                        EvalError::named_arg_rejected("eval-types".to_string(), call_span).into(),
-                    );
-                }
-            }
+        // Reject all named args — eval-types takes only the positional document arg.
+        crate::builtins::reject_named("eval-types", named.as_ref(), call_span.clone())?;
 
-            let env_dict = named_map.get("env").copied();
-            let pipeline_input = named_map.get("%").copied();
-            (env_dict, pipeline_input)
-        } else {
-            (None, None)
+        // Get type_stage_flat_env_id from the TypeContext.
+        // This is the FlatEnv scope populated by the type-stage evaluation pass.
+        let type_stage_flat_env_id: Option<u32> = {
+            let tc_guard = ctx.type_context.lock().unwrap();
+            tc_guard.as_ref().and_then(|tc| tc.type_stage_flat_env_id)
         };
 
-        // Use type_stage_env as the base: type-level evaluation builtins only, no IO, no caps, no runtime API.
-        let base_env = Arc::clone(&ctx.config.type_stage_env);
-
-        // Add env: dict bindings if provided
-        let env_with_bindings = if let Some(env_thunk_id) = env_dict {
-            let env_thunk = ctx.get_thunk(env_thunk_id);
-            let env_val = materialize(&env_thunk, Some(&call_span), &ctx).await?;
-            match env_val {
-                Value::Dict(entries) => {
-                    let child_env = Arc::new(std::sync::RwLock::new(Env::with_parent(Arc::clone(
-                        &base_env,
-                    ))));
-                    // T-1557: Env is type-metadata only; register slot names for the resolver.
-                    // Runtime thunks go into the FlatEnv arena (T-1558/T-1559 will complete this).
-                    for (key, _thunk_id) in entries.iter() {
-                        if let HashableValue::Str(name) = key {
-                            child_env
-                                .write()
-                                .unwrap()
-                                .insert_slot_name_only(name.to_string());
-                        }
-                    }
-                    child_env
-                }
-                _ => {
-                    return Err(EvalError::type_mismatch_ctx(
-                        "eval-types".to_string(),
-                        "Dict",
-                        env_val.type_name(),
-                        call_span,
-                    )
-                    .into())
-                }
-            }
-        } else {
-            base_env
-        };
-
-        // Add %: (pipeline input) as % binding if provided
-        let final_env = if let Some(input_thunk_id) = pipeline_input {
-            let _input_thunk = ctx.get_thunk(input_thunk_id);
-            let child_env = Arc::new(std::sync::RwLock::new(Env::with_parent(Arc::clone(
-                &env_with_bindings,
-            ))));
-            // T-1557: Env is type-metadata only; register "%" as a slot name for the resolver.
-            // Runtime thunk goes into the FlatEnv arena (T-1558/T-1559 will complete this).
-            child_env
-                .write()
-                .unwrap()
-                .insert_slot_name_only("%".to_string());
-            child_env
-        } else {
-            env_with_bindings
-        };
-
-        // Materialize the input — accepts Value::Document or integer-keyed Dict of Expression values
-        let input_val = ctx.get_thunk(args[0])
+        // Materialize the input — accepts Value::Document only.
+        let input_val = ctx
+            .get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
@@ -3748,11 +3688,10 @@ pub(crate) fn builtin_eval_types(
                     }
                 })
                 .collect();
-            let (result_thunk, _, _root_env_id) = crate::eval::eval_document_exprs_with_env(
+            let (result_thunk, _root_env_id) = crate::eval::eval_document_exprs_with_env(
                 &expr_nodes,
-                Arc::clone(&final_env),
                 &ctx,
-                None,
+                type_stage_flat_env_id,
             )
             .await?;
             return Ok(result_thunk);
@@ -3841,7 +3780,11 @@ pub(crate) fn builtin_include_cache_get(
             &ctx,
             call_span.clone(),
         )?;
-        let key = require_string("include-cache-get", val, ctx.get_thunk(args[0]).span.clone())?;
+        let key = require_string(
+            "include-cache-get",
+            val,
+            ctx.get_thunk(args[0]).span.clone(),
+        )?;
 
         let entry = ctx
             .state
@@ -4082,10 +4025,12 @@ fn expect_two_args(
         return Err(EvalError::named_arg_rejected(name.to_string(), call_span).into());
     }
 
-    let val1 = ctx.get_thunk(args[0])
+    let val1 = ctx
+        .get_thunk(args[0])
         .try_get_materialized()
         .expect("pre-materialized by force_count/pos_strictness");
-    let val2 = ctx.get_thunk(args[1])
+    let val2 = ctx
+        .get_thunk(args[1])
         .try_get_materialized()
         .expect("pre-materialized by force_count/pos_strictness");
 
@@ -4304,7 +4249,8 @@ fn validate_value(
                             {
                                 let req_thunk = ctx.get_thunk(req_thunk_id);
                                 let req_val = materialize(&req_thunk, Some(&span), &ctx).await?;
-                                matches!(&req_val, Value::Bool(true)) || matches!(&req_val, Value::Int(n) if *n != 0)
+                                matches!(&req_val, Value::Bool(true))
+                                    || matches!(&req_val, Value::Int(n) if *n != 0)
                             } else {
                                 false
                             };
@@ -4681,7 +4627,8 @@ pub(crate) fn builtin_ast_to_program(
         };
 
         // arg[0]: Expr.* Value::Variant
-        let expr_val = ctx.get_thunk(args[0])
+        let expr_val = ctx
+            .get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by Strictness::Seq");
 
@@ -4839,9 +4786,21 @@ pub(crate) fn builtin_cap_env_has(
 
         let env_val = materialize(&arg1_thunk, Some(&call_span), &ctx).await?;
         let found = match env_val {
-            Value::Environment(ref env_arc) => {
-                let env = env_arc.read().unwrap();
-                env.has_name(&name)
+            Value::Int(flat_env_id) => {
+                // Look up the name in the FlatEnv parent chain slot_names.
+                let arena = ctx.env_arena.borrow();
+                let env_id = flat_env_id as u32;
+                if (env_id as usize) < arena.envs.len() {
+                    let chain = arena.collect_parent_chain(env_id);
+                    chain.iter().any(|eid| {
+                        arena.envs[eid.0 as usize]
+                            .slot_names
+                            .iter()
+                            .any(|n| n.as_str() == name)
+                    })
+                } else {
+                    false
+                }
             }
             _ => false,
         };
@@ -4885,7 +4844,11 @@ pub(crate) fn builtin_arena_new(
         let name_thunk = ctx.get_thunk(args[0]);
         let name_val = materialize(&name_thunk, Some(&call_span), &ctx).await?;
         let name: Arc<str> = match name_val {
-            Value::String { ref source, start, end } => source[start..end].into(),
+            Value::String {
+                ref source,
+                start,
+                end,
+            } => source[start..end].into(),
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "arena-new".to_string(),
@@ -5024,13 +4987,32 @@ pub(crate) fn builtin_arena_stats(
         };
         let heap_bytes = crate::limit_alloc::allocated_bytes();
         let mut result_map: indexmap::IndexMap<HashableValue, ThunkId> = indexmap::IndexMap::new();
-        let alloc_str = |v: Value| ctx.alloc_thunk(Arc::new(Thunk::new_materialized(v, call_span.clone())));
-        result_map.insert(HashableValue::Str("name".into()), alloc_str(string_val(&name.to_string())));
-        result_map.insert(HashableValue::Str("thunks-allocated".into()), alloc_str(Value::Int(thunks_allocated as i64)));
-        result_map.insert(HashableValue::Str("thunks-live".into()), alloc_str(Value::Int(thunks_live)));
-        result_map.insert(HashableValue::Str("scopes".into()), alloc_str(Value::Int(scope_count as i64)));
-        result_map.insert(HashableValue::Str("heap-bytes".into()), alloc_str(Value::Int(heap_bytes)));
-        Ok(Arc::new(Thunk::new_materialized(Value::Dict(result_map), call_span)))
+        let alloc_str =
+            |v: Value| ctx.alloc_thunk(Arc::new(Thunk::new_materialized(v, call_span.clone())));
+        result_map.insert(
+            HashableValue::Str("name".into()),
+            alloc_str(string_val(&name.to_string())),
+        );
+        result_map.insert(
+            HashableValue::Str("thunks-allocated".into()),
+            alloc_str(Value::Int(thunks_allocated as i64)),
+        );
+        result_map.insert(
+            HashableValue::Str("thunks-live".into()),
+            alloc_str(Value::Int(thunks_live)),
+        );
+        result_map.insert(
+            HashableValue::Str("scopes".into()),
+            alloc_str(Value::Int(scope_count as i64)),
+        );
+        result_map.insert(
+            HashableValue::Str("heap-bytes".into()),
+            alloc_str(Value::Int(heap_bytes)),
+        );
+        Ok(Arc::new(Thunk::new_materialized(
+            Value::Dict(result_map),
+            call_span,
+        )))
     })
 }
 
@@ -5331,15 +5313,13 @@ pub fn meta_builtins() -> Vec<crate::value::BuiltinDef> {
     ]
 }
 
-
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, RwLock};
+    use std::sync::Arc;
 
     use indexmap::IndexMap;
 
     use super::{builtin_current_env, builtin_tag_of};
-    use crate::env::Env;
     use crate::error::EvalResult;
     use crate::test_util::test_span;
     use crate::value::{string_val, BuiltinArgs, Thunk, Value};
@@ -5349,7 +5329,10 @@ mod tests {
     }
 
     /// Allocate a ThunkId for a Value in the test context. T-1558: BuiltinArgs.args uses ThunkId.
-    fn thunk_id(val: Value, ctx: &std::sync::Arc<crate::eval::EvalContext>) -> crate::arena::ThunkId {
+    fn thunk_id(
+        val: Value,
+        ctx: &std::sync::Arc<crate::eval::EvalContext>,
+    ) -> crate::arena::ThunkId {
         ctx.alloc_thunk(thunk(val))
     }
 
@@ -5359,8 +5342,7 @@ mod tests {
 
     fn test_ctx() -> Arc<crate::eval::EvalContext> {
         let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
-        let env = Arc::new(RwLock::new(Env::new()));
-        crate::eval::EvalContext::new_empty(base_dir, env, false)
+        crate::eval::EvalContext::new_empty(base_dir, false)
     }
 
     fn no_named() -> Option<IndexMap<String, crate::arena::ThunkId>> {
@@ -5392,7 +5374,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: std::sync::Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -5420,7 +5401,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: std::sync::Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -5451,7 +5431,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: std::sync::Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -5460,64 +5439,34 @@ mod tests {
         assert_eq!(val, string_val("Shape.Circle"));
     }
 
-    /// `builtin_current_env` captures the `caller_env` from `BuiltinArgs` and returns it
-    /// as a `Value::Env`. The returned environment must be the exact same
-    /// `Arc<RwLock<Env>>` that was passed in, so bindings inserted before the
-    /// call are accessible via `get_by_name` on the captured env.
+    /// `builtin_current_env` returns the caller's FlatEnv id as `Value::Int(caller_env_id)`.
     #[tokio::test]
     async fn current_env_captures_caller_env() {
-        // Build a caller environment with a known binding: "x" → Int(42).
-        // T-1558: BuiltinArgs.caller_env is crate::value::Environment (runtime binding chain).
-        let caller_env = Arc::new(RwLock::new(crate::value::Environment::new()));
-        {
-            let mut env = caller_env.write().unwrap();
-            let x_thunk = Arc::new(Thunk::new_materialized(Value::Int(42), call_span()));
-            env.bindings.insert("x".to_string(), x_thunk);
-        }
-
         let ctx = test_ctx();
         let result = run(builtin_current_env(BuiltinArgs {
             args: vec![],
             named: no_named(),
             call_span: call_span(),
             ctx: std::sync::Arc::clone(&ctx),
-            caller_env: Arc::clone(&caller_env),
-            caller_env_id: 0,
+            caller_env_id: 42,
         }))
         .await
         .unwrap();
 
-        // The thunk must materialize to Value::Environment.
+        // builtin_current_env now returns Value::Int(caller_env_id).
         let val = materialize_sync(&result, &ctx).await;
-        let captured_env = match val {
-            Value::Environment(env) => env,
-            other => panic!("expected Value::Environment, got {other:?}"),
-        };
-
-        // The captured environment must contain the binding 'x' was registered.
-        // After T-1557, Env stores only type metadata (slot names, no values).
-        // Verify the name is present in the slot registry.
-        let _x_present = captured_env
-            .read()
-            .unwrap()
-            .slots
-            .contains_key("x");
-        assert!(_x_present, "binding 'x' must be present in captured env slots");
-        // After T-1557, runtime values live in FlatEnv, not Env.
-        // The value assertion is deferred to an integration test (T-1567).
+        assert_eq!(val, Value::Int(42), "expected caller_env_id as Int(42)");
     }
 
     /// `builtin_current_env` rejects positional arguments — it takes zero args.
     #[tokio::test]
     async fn current_env_rejects_positional_args() {
-        let caller_env = Arc::new(RwLock::new(crate::value::Environment::new()));
         let ctx = test_ctx();
         let result = run(builtin_current_env(BuiltinArgs {
             args: vec![thunk_id(Value::Int(1), &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env,
             caller_env_id: 0,
         }))
         .await;
@@ -5546,7 +5495,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;

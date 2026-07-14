@@ -114,7 +114,10 @@ pub fn lower_errors_to_eval_error(
     let fmt_loc = |diag: &crate::lower::LowerDiagnostic| -> String {
         let sf = &diag.span.file;
         if !sf.path.starts_with('<') {
-            format!(" (at {}:{}:{})", sf.path, diag.span.start.line, diag.span.start.column)
+            format!(
+                " (at {}:{}:{})",
+                sf.path, diag.span.start.line, diag.span.start.column
+            )
         } else {
             String::new()
         }
@@ -421,7 +424,7 @@ pub(crate) struct MatchDispatchData {
     /// The arms to try matching. Index starts at 0.
     pub(crate) arm_idx: usize,
     pub(crate) arms: Arc<Vec<crate::ast::CoreMatchArm>>,
-    /// The original environment for matching (legacy — T-1559 will switch to FlatEnv).
+    /// The original environment for matching (legacy Env chain; FlatEnv scope used via ctx.current_env_id). B-515: transitional.
     pub(crate) env: Arc<RwLock<crate::env::Env>>,
     pub(crate) ctx: Arc<EvalContext>,
     pub(crate) match_span: Span,
@@ -436,7 +439,7 @@ pub(crate) struct MatchGuardCheckData {
     pub(crate) env_id: u32,
     pub(crate) ctx: Arc<EvalContext>,
     pub(crate) match_span: Span,
-    /// Arm scope environment with pattern bindings (legacy — T-1559 will switch to FlatEnv).
+    /// Arm scope environment with pattern bindings (legacy Env chain; FlatEnv scope via ctx.current_env_id). B-515: transitional.
     pub(crate) arm_env: Arc<RwLock<crate::env::Env>>,
     /// The scrutinee value (needed for predicate invocation and fallback)
     pub(crate) scrutinee_value: Value,
@@ -462,7 +465,7 @@ pub(crate) struct MatchPredicateCheckData {
     /// Current arm index (for continuing to next arm if predicate fails)
     pub(crate) arm_idx: usize,
     pub(crate) arms: Arc<Vec<crate::ast::CoreMatchArm>>,
-    /// The original environment for fallback matching (legacy — T-1559 will switch to FlatEnv).
+    /// The original environment for fallback matching (legacy Env chain; FlatEnv scope via ctx.current_env_id). B-515: transitional.
     pub(crate) env: Arc<RwLock<crate::env::Env>>,
     pub(crate) ctx: Arc<EvalContext>,
     pub(crate) match_span: Span,
@@ -737,8 +740,8 @@ pub(crate) fn apply_predicate_to_subject(
     let pred_thunk = Arc::new(Thunk::new_materialized(predicate, pred_span.clone()));
     let subject_id = ctx.alloc_thunk(subject_thunk);
     let pred_id = ctx.alloc_thunk(pred_thunk);
-    // T-1558: Use ctx.current_env_id as caller_env_id placeholder.
-    // The env parameter is retained for call_to_match compatibility (T-1559).
+    // Uses ctx.current_env_id as caller_env_id (B-515: case arm FlatEnv allocation pending).
+    // The env parameter is retained for call_to_match compatibility (B-515 tracks full FlatEnv migration).
     let _ = env;
     Arc::new(Thunk::new_pending_call(
         pred_id,
@@ -874,12 +877,14 @@ pub(crate) async fn force_step(
                 .force_count
                 .min(args.as_ref().expect("args set above").len()))
                 .find(|&i| {
-                    thunk_ctx.get_thunk(args.as_ref().expect("args set above")[i])
+                    thunk_ctx
+                        .get_thunk(args.as_ref().expect("args set above")[i])
                         .try_get_materialized()
                         .is_none()
                 })
             {
-                let arg_thunk = thunk_ctx.get_thunk(args.as_ref().expect("args set above")[arg_idx]);
+                let arg_thunk =
+                    thunk_ctx.get_thunk(args.as_ref().expect("args set above")[arg_idx]);
                 stack.push(Cont::BuiltinForceArg(Box::new(BuiltinForceArgData {
                     thunk: Arc::clone(thunk),
                     def,
@@ -915,7 +920,8 @@ pub(crate) async fn force_step(
             .find(|(i, &s)| {
                 *i < args.as_ref().expect("args set above").len()
                     && (s == Strictness::Seq || s == Strictness::Spine)
-                    && thunk_ctx.get_thunk(args.as_ref().expect("args set above")[*i])
+                    && thunk_ctx
+                        .get_thunk(args.as_ref().expect("args set above")[*i])
                         .try_get_materialized()
                         .is_none()
             })
@@ -948,15 +954,10 @@ pub(crate) async fn force_step(
         // allocs to after the fast-path check — when the builtin returns a pre-materialized
         // thunk, the originals are simply dropped with no restore clone needed.
 
-        // T-1558: caller_env_id is the FlatEnv env_id. BuiltinArgs.caller_env is the
-        // legacy runtime env chain (crate::value::Environment). Internal PendingBuiltin
-        // dispatch uses an empty env — builtin-current-env is only meaningful from
-        // user-code call sites (PendingCall → PendingBuiltin via dispatch in force_step).
         let builtin_args = crate::value::BuiltinArgs {
             args: args.as_ref().expect("args set above").clone(),
             named: named.as_ref().expect("named set above").clone(),
             call_span: call_span.clone(),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: builtin_caller_env,
             ctx: Arc::clone(&thunk_ctx),
         };
@@ -1129,7 +1130,8 @@ pub(crate) async fn force_step(
         // Create a scoped ctx with the correct FlatEnv env_id for expression evaluation.
         let scoped_ctx = thunk_ctx.with_eval_scope(env_id);
 
-        let (lowered, surface_lower_diags) = crate::lower::lower(&node);
+        let (lowered, surface_lower_diags) =
+            crate::lower::lower(&node, thunk_ctx.scope_frames.as_ref().map(|v| v.as_slice()));
         if let Some(err) = lower_errors_to_eval_error(surface_lower_diags) {
             let decorated = attach_materialization_context(
                 err,
@@ -1160,7 +1162,10 @@ pub(crate) async fn force_step(
             let inner_thunk = if let (crate::ast::CoreExpr::Placeholder, Some(default_node)) =
                 (&inner.node, annotation.node.get_property("default"))
             {
-                let (lowered_default, lower_diags) = crate::lower::lower(default_node);
+                let (lowered_default, lower_diags) = crate::lower::lower(
+                    default_node,
+                    thunk_ctx.scope_frames.as_ref().map(|v| v.as_slice()),
+                );
                 if let Some(err) = lower_errors_to_eval_error(lower_diags) {
                     let decorated = attach_materialization_context(
                         err,
@@ -1311,7 +1316,10 @@ pub(crate) async fn force_step(
             let inner_thunk = if let (crate::ast::CoreExpr::Placeholder, Some(default_node)) =
                 (&inner.node, annotation.node.get_property("default"))
             {
-                let (lowered_default, lower_diags) = crate::lower::lower(default_node);
+                let (lowered_default, lower_diags) = crate::lower::lower(
+                    default_node,
+                    thunk_ctx.scope_frames.as_ref().map(|v| v.as_slice()),
+                );
                 if let Some(err) = lower_errors_to_eval_error(lower_diags) {
                     let decorated = attach_materialization_context(
                         err,
@@ -1472,14 +1480,17 @@ pub(crate) async fn force_step(
             })));
 
             // Push MatchDispatch to try arms after scrutinee is materialized.
-            // T-1558: env is the legacy runtime env chain; pass a placeholder until T-1559
-            // wires FlatEnv (env_id) through match dispatch.
+            // Use scoped_ctx (current_env_id = this thunk's env_id) so that arm bodies
+            // evaluate in the match expression's own scope, not the outer caller's scope.
+            // Using thunk_ctx here (the outer context) causes "level out of range" when
+            // the match is inside a deeply-nested function body with extra sequential scopes
+            // (the outer scope lacks the intermediate FlatEnvs added by those extra dicts).
             stack.push(Cont::MatchDispatch(Box::new(
                 crate::eval_materialize::MatchDispatchData {
                     arm_idx: 0,
                     arms: Arc::new(arms.clone()),
                     env: Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
-                    ctx: Arc::clone(&thunk_ctx),
+                    ctx: Arc::clone(&scoped_ctx),
                     match_span: core_expr.span.clone(),
                 },
             )));
@@ -1634,7 +1645,10 @@ pub(crate) async fn apply_cont(
                 Ok(func_value) => {
                     match func_value {
                         Value::Function {
-                            params, body, closure_env_id, ..
+                            params,
+                            body,
+                            closure_env_id,
+                            ..
                         } => {
                             // TCO path: when tail_hint=true, skip Memoize and return EvalCore directly.
                             //
@@ -1652,7 +1666,7 @@ pub(crate) async fn apply_cont(
                             // @Expr param detection: when any parameter is annotated @Expr, replace
                             // that positional arg with the quoted AST of the original call-site
                             // expression, and inject two implicit named args:
-                            //   ᴍᴀᴄʀᴏ∷env  — the call-site environment (Value::Environment)
+                            //   ᴍᴀᴄʀᴏ∷env  — the call-site FlatEnv id (Value::Int)
                             //   ᴍᴀᴄʀᴏ∷span — the call-site span (a span dict)
                             //
                             // This implements the new macro convention (S-902): macros are ordinary
@@ -1696,10 +1710,12 @@ pub(crate) async fn apply_cont(
                                                         &core_args[i],
                                                         &thunk_ctx,
                                                     );
-                                                args_vec[i] = thunk_ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                                                    expr_value,
-                                                    core_args[i].span.clone(),
-                                                )));
+                                                args_vec[i] = thunk_ctx.alloc_thunk(Arc::new(
+                                                    Thunk::new_materialized(
+                                                        expr_value,
+                                                        core_args[i].span.clone(),
+                                                    ),
+                                                ));
                                             }
                                         }
                                     }
@@ -1707,13 +1723,13 @@ pub(crate) async fn apply_cont(
                                     args = Some(args_vec);
 
                                     // Inject implicit named args: ᴍᴀᴄʀᴏ∷env and ᴍᴀᴄʀᴏ∷span.
-                                    // T-1558: caller_env is now env_id; pass a placeholder for
-                                    // Value::Environment until T-1559 wires the full connection.
+                                    // ᴍᴀᴄʀᴏ∷env is the call-site FlatEnv id (Value::Int(caller_env_id)).
+                                    // ᴍᴀᴄʀᴏ∷span is the call-site span dict.
+                                    // Both are injected via BIND-SYSTEM (eval_call.rs:249) which
+                                    // skips '∷'-named args from normal validation.
                                     let inner_named = named.as_mut().expect("named set above");
                                     let named_map = inner_named
                                         .get_or_insert_with(|| Box::new(IndexMap::new()));
-                                    // T-1558: Value::Environment removed; pass caller_env_id as Int
-                                    // placeholder until T-1559 wires the full FlatEnv connection.
                                     named_map.insert(
                                         MACRO_CALL_ENV_NAME.to_string(),
                                         thunk_ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
@@ -1723,10 +1739,8 @@ pub(crate) async fn apply_cont(
                                     );
                                     let span_thunk_id =
                                         make_span_dict(&call_span, &thunk_ctx, &call_span);
-                                    named_map.insert(
-                                        MACRO_CALL_SPAN_NAME.to_string(),
-                                        span_thunk_id,
-                                    );
+                                    named_map
+                                        .insert(MACRO_CALL_SPAN_NAME.to_string(), span_thunk_id);
                                 }
                                 // If original_call is not CoreExpr::Call (e.g. it is a VarRef or
                                 // literal that resolved to a function), there are no source args to
@@ -1871,14 +1885,21 @@ pub(crate) async fn apply_cont(
                             // force_count specifies how many leading positional args must be
                             // fully materialized (Seq) before the builtin is called.
                             let has_force_count_unevaluated = def.force_count > 0
-                                && (0..def.force_count.min(args_ref.len()))
-                                    .any(|i| thunk_ctx.get_thunk(args_ref[i]).try_get_materialized().is_none());
+                                && (0..def.force_count.min(args_ref.len())).any(|i| {
+                                    thunk_ctx
+                                        .get_thunk(args_ref[i])
+                                        .try_get_materialized()
+                                        .is_none()
+                                });
                             // Check if any W1 Seq/Spine positional args need pre-materialization.
                             let has_strict_unevaluated =
                                 def.pos_strictness.iter().enumerate().any(|(i, &s)| {
                                     i < args_ref.len()
                                         && (s == Strictness::Seq || s == Strictness::Spine)
-                                        && thunk_ctx.get_thunk(args_ref[i]).try_get_materialized().is_none()
+                                        && thunk_ctx
+                                            .get_thunk(args_ref[i])
+                                            .try_get_materialized()
+                                            .is_none()
                                 });
 
                             if has_force_count_unevaluated || has_strict_unevaluated {
@@ -1908,8 +1929,7 @@ pub(crate) async fn apply_cont(
                                         .as_deref()
                                         .cloned(),
                                     call_span: call_span.clone(),
-                                    caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
-                                    caller_env_id: 0,
+                                    caller_env_id,
                                     ctx: Arc::clone(&thunk_ctx),
                                 };
                                 (def.func)(builtin_args).await.map_err(|mut e| {
@@ -2204,10 +2224,7 @@ pub(crate) async fn apply_cont(
                                         field_path: field_path.clone(),
                                         guard_span: guard_span.clone(),
                                         blame_label: blame_label.clone(),
-                                        default: Some((
-                                            Arc::clone(&default_expr),
-                                            default_env_id,
-                                        )),
+                                        default: Some((Arc::clone(&default_expr), default_env_id)),
                                     })
                                 } else {
                                     None
@@ -2286,10 +2303,7 @@ pub(crate) async fn apply_cont(
                                         field_path: field_path.clone(),
                                         guard_span: guard_span.clone(),
                                         blame_label: blame_label.clone(),
-                                        default: Some((
-                                            Arc::clone(&default_expr),
-                                            default_env_id,
-                                        )),
+                                        default: Some((Arc::clone(&default_expr), default_env_id)),
                                     })
                                 } else {
                                     None
@@ -2410,12 +2424,14 @@ pub(crate) async fn apply_cont(
                                 .force_count
                                 .min(args.as_ref().expect("args set above").len()))
                             .find(|&i| {
-                                thunk_ctx.get_thunk(args.as_ref().expect("args set above")[i])
+                                thunk_ctx
+                                    .get_thunk(args.as_ref().expect("args set above")[i])
                                     .try_get_materialized()
                                     .is_none()
                             })
                         {
-                            let next_arg = thunk_ctx.get_thunk(args.as_ref().expect("args set above")[next_idx]);
+                            let next_arg = thunk_ctx
+                                .get_thunk(args.as_ref().expect("args set above")[next_idx]);
                             stack.push(Cont::BuiltinForceArg(Box::new(BuiltinForceArgData {
                                 thunk,
                                 def,
@@ -2447,12 +2463,14 @@ pub(crate) async fn apply_cont(
                         .find(|(i, &s)| {
                             *i < args.as_ref().expect("args set above").len()
                                 && (s == Strictness::Seq || s == Strictness::Spine)
-                                && thunk_ctx.get_thunk(args.as_ref().expect("args set above")[*i])
+                                && thunk_ctx
+                                    .get_thunk(args.as_ref().expect("args set above")[*i])
                                     .try_get_materialized()
                                     .is_none()
                         })
                     {
-                        let next_arg = thunk_ctx.get_thunk(args.as_ref().expect("args set above")[next_idx]);
+                        let next_arg =
+                            thunk_ctx.get_thunk(args.as_ref().expect("args set above")[next_idx]);
                         stack.push(Cont::BuiltinForceArg(Box::new(BuiltinForceArgData {
                             thunk,
                             def,
@@ -2482,8 +2500,7 @@ pub(crate) async fn apply_cont(
                         args: args.as_ref().expect("args set above").clone(),
                         named: named.as_ref().expect("named set above").clone(),
                         call_span: call_span.clone(),
-                        caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
-                        caller_env_id: 0,
+                        caller_env_id: builtin_caller_env,
                         ctx: Arc::clone(&thunk_ctx),
                     };
                     match (def.func)(builtin_args)
@@ -2583,7 +2600,10 @@ pub(crate) async fn apply_cont(
                     // check for `default:` annotation and evaluate it instead of propagating the error.
                     if let Some(default_node) = annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
                     {
-                        let (lowered_default, lower_diags) = crate::lower::lower(default_node);
+                        let (lowered_default, lower_diags) = crate::lower::lower(
+                            default_node,
+                            ctx.scope_frames.as_ref().map(|v| v.as_slice()),
+                        );
                         if let Some(err) = lower_errors_to_eval_error(lower_diags) {
                             Action::Continue(Err(err))
                         } else {
@@ -2623,7 +2643,10 @@ pub(crate) async fn apply_cont(
                             let default_opt = if let Some(node) =
                                 annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
                             {
-                                let (lowered, lower_diags) = crate::lower::lower(node);
+                                let (lowered, lower_diags) = crate::lower::lower(
+                                    node,
+                                    ctx.scope_frames.as_ref().map(|v| v.as_slice()),
+                                );
                                 if let Some(err) = lower_errors_to_eval_error(lower_diags) {
                                     return Action::Continue(Err(err));
                                 }
@@ -2673,8 +2696,10 @@ pub(crate) async fn apply_cont(
                             {
                                 // Evaluate default expression iteratively.
                                 // The result will flow to the next continuation on the stack.
-                                let (lowered_default, lower_diags) =
-                                    crate::lower::lower(default_node);
+                                let (lowered_default, lower_diags) = crate::lower::lower(
+                                    default_node,
+                                    ctx.scope_frames.as_ref().map(|v| v.as_slice()),
+                                );
                                 if let Some(err) = lower_errors_to_eval_error(lower_diags) {
                                     return Action::Continue(Err(err));
                                 }
@@ -2708,7 +2733,10 @@ pub(crate) async fn apply_cont(
                     } else if value_matches_type(&value, &expected, &ctx) {
                         let is_predicate = annotation.node.get_property(IS_ANNOTATION_KEY).cloned();
                         if let Some(predicate_node) = is_predicate {
-                            let (lowered_pred, lower_diags) = crate::lower::lower(&predicate_node);
+                            let (lowered_pred, lower_diags) = crate::lower::lower(
+                                &predicate_node,
+                                ctx.scope_frames.as_ref().map(|v| v.as_slice()),
+                            );
                             if let Some(err) = lower_errors_to_eval_error(lower_diags) {
                                 return Action::Continue(Err(err));
                             }
@@ -2732,7 +2760,10 @@ pub(crate) async fn apply_cont(
                     } else if let Some(default_node) =
                         annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
                     {
-                        let (lowered_default, lower_diags) = crate::lower::lower(default_node);
+                        let (lowered_default, lower_diags) = crate::lower::lower(
+                            default_node,
+                            ctx.scope_frames.as_ref().map(|v| v.as_slice()),
+                        );
                         if let Some(err) = lower_errors_to_eval_error(lower_diags) {
                             return Action::Continue(Err(err));
                         }
@@ -3070,7 +3101,10 @@ pub(crate) async fn apply_cont(
                         } = &arm.pattern.node
                         {
                             let resolved_binding = to_match_binding.get().cloned();
-                            let (lowered_pred, lower_diags) = crate::lower::lower(pred_node);
+                            let (lowered_pred, lower_diags) = crate::lower::lower(
+                                pred_node,
+                                ctx.scope_frames.as_ref().map(|v| v.as_slice()),
+                            );
                             if let Some(err) = lower_errors_to_eval_error(lower_diags) {
                                 return Action::Continue(Err(err));
                             }
@@ -3086,7 +3120,7 @@ pub(crate) async fn apply_cont(
                                     implied,
                                 } => {
                                     // Insert scrutinee into a child env under a gensym name.
-                                    // T-1557: Env is type-metadata only. Values go into FlatEnv (T-1558/T-1559).
+                                    // Env is type-metadata only. Values go into FlatEnv (B-515 tracks arm binding allocation).
                                     // insert_value removed — %pred_subj value binding deferred to FlatEnv.
                                     let subj_name = "%pred_subj".to_string();
                                     let child_env = Arc::new(RwLock::new(
@@ -3139,10 +3173,9 @@ pub(crate) async fn apply_cont(
                                     to_match_binding: resolved_binding.clone(),
                                 },
                             )));
-                            // T-1558: Use ctx.current_env_id as placeholder.
-                            // T-1559 will allocate a proper FlatEnv scope for predicate bindings.
+                            // Uses ctx.current_env_id; B-515 tracks FlatEnv scope allocation for predicate bindings.
                             let eval_env_id = ctx.current_env_id;
-                            let _ = eval_env; // T-1559: legacy env dropped
+                            let _ = eval_env; // legacy env dropped (B-515 tracks FlatEnv arm binding)
                             return Action::EvalCore {
                                 expr: eval_expr,
                                 env_id: eval_env_id,
@@ -3175,28 +3208,35 @@ pub(crate) async fn apply_cont(
                             // evaluation is our responsibility: process the [let ...] pattern or
                             // exact-value match ourselves, and either bind variables and evaluate
                             // the body, or soft-skip to the next arm.
-                            let (final_env, eval_body) = if let CoreExpr::CaseArm {
+                            // Determine the arm body expression and the FlatEnv id to use
+                            // when evaluating the body (and guard). For 3-arg CaseArm forms,
+                            // `eval_case_arm_structural_pattern` allocates a child FlatEnv,
+                            // fills its slots with the bound values, and returns its id.
+                            // For all other arm forms, the parent env id is used unchanged.
+                            let (eval_body, arm_feid, legacy_arm_env) = if let CoreExpr::CaseArm {
                                 let_bindings,
                                 pattern,
                                 body,
                             } = &arm.body.node
                             {
                                 // 3-arg form: [case [let bindings] pattern body]
-                                // Extract the binding name set from the let_bindings node.
-                                // Walk the structural pattern, binding names in the set and
-                                // pin-comparing names not in the set.
-                                let binding_set = extract_let_binding_names(&let_bindings.node);
+                                // Extract the binding name→slot map from the let_bindings node.
+                                // Walk the structural pattern, binding names in the map and
+                                // pin-comparing names not in the map.
+                                let binding_map = extract_let_binding_names(&let_bindings.node);
                                 match eval_case_arm_structural_pattern(
                                     pattern,
-                                    &binding_set,
+                                    &binding_map,
                                     &scrutinee_value,
-                                    &env,
                                     match_span.clone(),
                                     &ctx,
                                 )
                                 .await
                                 {
-                                    Ok(Some(bound_env)) => (bound_env, Arc::clone(body)),
+                                    Ok(Some(feid)) => {
+                                        // Pattern matched: use the allocated arm FlatEnv.
+                                        (Arc::clone(body), feid, Arc::clone(&arm_env))
+                                    }
                                     Ok(None) => {
                                         // Pattern did not match — move to next arm
                                         continue;
@@ -3204,45 +3244,38 @@ pub(crate) async fn apply_cont(
                                     Err(e) => return Action::Continue(Err(e)),
                                 }
                             } else {
-                                // Not a CaseArm body — use the arm environment as-is.
-                                (arm_env, Arc::clone(&arm.body))
+                                // Not a CaseArm body — use the parent env id unchanged.
+                                (Arc::clone(&arm.body), ctx.current_env_id, arm_env)
                             };
 
                             // Pattern matched. If there is a guard, evaluate it.
                             if let Some(guard_expr) = &arm.guard {
                                 // Push a continuation to check the guard result.
                                 let guard_binding = arm.guard_matchable_binding.get().cloned();
-                                let body_env_id = ctx.current_env_id; // T-1559 placeholder
                                 stack.push(Cont::MatchGuardCheck(Box::new(MatchGuardCheckData {
                                     arm_idx: i,
                                     arms: Arc::clone(&arms),
-                                    env_id: ctx.current_env_id, // T-1558: env_id placeholder
+                                    env_id: arm_feid,
                                     ctx: Arc::clone(&ctx),
                                     match_span: match_span.clone(),
-                                    arm_env: Arc::clone(&final_env),
+                                    arm_env: legacy_arm_env,
                                     scrutinee_value: scrutinee_value.clone(),
                                     body: Arc::clone(&eval_body),
                                     callable_invoked: false,
                                     guard_matchable_binding: guard_binding,
                                 })));
 
-                                // T-1558: Use current env_id as placeholder for body env.
-                                // T-1559 will allocate FlatEnv scope for pattern bindings.
-                                let _ = final_env; // legacy env dropped for guard
                                 return Action::EvalCore {
                                     expr: Arc::clone(guard_expr),
-                                    env_id: body_env_id,
+                                    env_id: arm_feid,
                                     ctx,
                                 };
                             }
 
-                            // No guard — arm matched, evaluate body
-                            // T-1558: Use current env_id as placeholder for body env.
-                            let body_env_id = ctx.current_env_id; // T-1559 placeholder
-                            let _ = final_env; // legacy env dropped
+                            // No guard — arm matched, evaluate body in the arm FlatEnv.
                             return Action::EvalCore {
                                 expr: eval_body,
-                                env_id: body_env_id,
+                                env_id: arm_feid,
                                 ctx,
                             };
                         }
@@ -3296,7 +3329,7 @@ pub(crate) async fn apply_cont(
                                 vec![scrutinee_id],
                                 IndexMap::new(),
                                 match_span.clone(),
-                                ctx.current_env_id, // T-1558: env_id placeholder
+                                ctx.current_env_id, // B-515: arm FlatEnv allocation pending
                                 match_span.clone(),
                                 None,
                                 Arc::clone(&ctx),
@@ -3325,8 +3358,9 @@ pub(crate) async fn apply_cont(
                         }
                     }
 
-                    // T-1558: call_to_match/call_to_match_resolved ignore env until T-1559.
-                    let dummy_env = Arc::new(std::sync::RwLock::new(crate::value::Environment::new()));
+                    // call_to_match/call_to_match_resolved ignore legacy env (B-515 tracks FlatEnv arm binding).
+                    let dummy_env =
+                        Arc::new(std::sync::RwLock::new(crate::value::Environment::new()));
                     let guard_passed = if let Some(ref binding_name) = guard_matchable_binding {
                         // Compile-time resolved: use the pre-resolved Matchable instance binding.
                         crate::eval::call_to_match_resolved(
@@ -3339,13 +3373,13 @@ pub(crate) async fn apply_cont(
                         .await
                     } else {
                         // Type checking was skipped — fall back to dynamic dispatch.
-                        crate::eval::call_to_match(&guard_value, &dummy_env, &ctx, &match_span).await
+                        crate::eval::call_to_match(&guard_value, &dummy_env, &ctx, &match_span)
+                            .await
                     };
 
                     if guard_passed {
                         // Guard passed — evaluate the body.
-                        // T-1558: Use ctx.current_env_id as placeholder for arm env.
-                        // T-1559 will allocate FlatEnv scope for arm bindings.
+                        // Uses ctx.current_env_id; B-515 tracks FlatEnv scope allocation for arm bindings.
                         let _ = arm_env; // legacy env dropped
                         Action::EvalCore {
                             expr: body,
@@ -3422,8 +3456,9 @@ pub(crate) async fn apply_cont(
                         }
                     }
 
-                    // T-1558: call_to_match/call_to_match_resolved ignore env until T-1559.
-                    let dummy_env = Arc::new(std::sync::RwLock::new(crate::value::Environment::new()));
+                    // call_to_match/call_to_match_resolved ignore legacy env (B-515 tracks FlatEnv arm binding).
+                    let dummy_env =
+                        Arc::new(std::sync::RwLock::new(crate::value::Environment::new()));
                     let matched = if let Some(ref binding_name) = to_match_binding {
                         // Compile-time resolved: look up the pre-resolved Matchable instance
                         // binding directly, avoiding dynamic dispatch.
@@ -3437,7 +3472,8 @@ pub(crate) async fn apply_cont(
                         .await
                     } else {
                         // Type checking was skipped — fall back to dynamic dispatch.
-                        crate::eval::call_to_match(&predicate_value, &dummy_env, &ctx, &match_span).await
+                        crate::eval::call_to_match(&predicate_value, &dummy_env, &ctx, &match_span)
+                            .await
                     };
 
                     if matched {
@@ -3447,7 +3483,7 @@ pub(crate) async fn apply_cont(
                         if let Some(guard_expr) = &arms[arm_idx].guard {
                             let guard_binding =
                                 arms[arm_idx].guard_matchable_binding.get().cloned();
-                            let guard_env_id = ctx.current_env_id; // T-1558 placeholder
+                            let guard_env_id = ctx.current_env_id; // B-515: arm FlatEnv allocation pending
                             stack.push(Cont::MatchGuardCheck(Box::new(MatchGuardCheckData {
                                 arm_idx,
                                 arms: Arc::clone(&arms),
@@ -3466,7 +3502,7 @@ pub(crate) async fn apply_cont(
                                 ctx,
                             };
                         }
-                        let body_env_id = ctx.current_env_id; // T-1558 placeholder
+                        let body_env_id = ctx.current_env_id; // B-515: arm FlatEnv allocation pending
                         let _ = env; // legacy env dropped
                         Action::EvalCore {
                             expr: body,
@@ -3508,7 +3544,8 @@ pub(crate) async fn apply_cont(
                         if let Value::Function { .. } | Value::Builtin(_) = &predicate_value {
                             // Build a PendingCall thunk for predicate(value) via the helper.
                             // T-1558: apply_predicate_to_subject ignores env (uses ctx.current_env_id).
-                            let dummy_env_pred = Arc::new(std::sync::RwLock::new(crate::env::Env::new()));
+                            let dummy_env_pred =
+                                Arc::new(std::sync::RwLock::new(crate::env::Env::new()));
                             let call_thunk = apply_predicate_to_subject(
                                 predicate_value,
                                 value.clone(),
@@ -3534,10 +3571,12 @@ pub(crate) async fn apply_cont(
                         }
                     }
 
-                    // T-1558: call_to_match ignores env (returns false conservatively until T-1559).
-                    let dummy_env = Arc::new(std::sync::RwLock::new(crate::value::Environment::new()));
+                    // call_to_match ignores legacy env (returns false conservatively; B-515 tracks FlatEnv arm binding).
+                    let dummy_env =
+                        Arc::new(std::sync::RwLock::new(crate::value::Environment::new()));
                     let pred_passed =
-                        crate::eval::call_to_match(&predicate_value, &dummy_env, &ctx, &expr_span).await;
+                        crate::eval::call_to_match(&predicate_value, &dummy_env, &ctx, &expr_span)
+                            .await;
 
                     if pred_passed {
                         // Predicate passed — return the original value
@@ -3548,7 +3587,10 @@ pub(crate) async fn apply_cont(
                             annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
                         {
                             // Evaluate default expression iteratively
-                            let (lowered_default, lower_diags) = crate::lower::lower(default_node);
+                            let (lowered_default, lower_diags) = crate::lower::lower(
+                                default_node,
+                                ctx.scope_frames.as_ref().map(|v| v.as_slice()),
+                            );
                             if let Some(err) = lower_errors_to_eval_error(lower_diags) {
                                 return Action::Continue(Err(err));
                             }
@@ -3578,8 +3620,8 @@ pub(crate) async fn apply_cont(
     }
 }
 
-/// Extract the set of binding-target names from a `[let ...]` expression for a 3-arg
-/// `[case [let bindings] pattern body]` arm.
+/// Extract the binding-target names from a `[let ...]` expression for a 3-arg
+/// `[case [let bindings] pattern body]` arm, returning a name→slot map.
 ///
 /// The `[let ...]` node is the first argument of the 3-arg CaseArm. It declares which
 /// names in the pattern are binding targets (as opposed to pin-comparisons). Any name
@@ -3587,27 +3629,32 @@ pub(crate) async fn apply_cont(
 /// pattern expression will be evaluated from the current environment and compared for
 /// equality (pin semantics).
 ///
-/// Returns a `HashSet<String>` of the binding names. The set is threaded into
-/// `eval_case_arm_structural_pattern` to distinguish bind vs. pin at each name position.
-fn extract_let_binding_names(let_decl: &CoreExpr) -> std::collections::HashSet<String> {
-    let mut names = std::collections::HashSet::new();
+/// Returns an `IndexMap<String, u32>` mapping each binding name to its slot index.
+/// The slot is the declaration-order position (first name → 0, second → 1, …), which
+/// matches the resolver's `enter_scope(&bound_names)` insertion-order slot assignment.
+/// The map is threaded into `eval_case_arm_structural_pattern` to distinguish bind vs.
+/// pin at each name position, and to fill the correct FlatEnv slot when binding.
+fn extract_let_binding_names(let_decl: &CoreExpr) -> IndexMap<String, u32> {
+    let mut map: IndexMap<String, u32> = IndexMap::new();
     if let CoreExpr::LetDecl { bindings } = let_decl {
         for binding in bindings {
             match &binding.node {
                 // lower_let_decl_binding converts declaration-position names to CoreExpr::Str.
                 // The "_" wildcard is excluded — it binds nothing.
                 CoreExpr::Str(name) if name != "_" => {
-                    names.insert(name.clone());
+                    let slot = map.len() as u32;
+                    map.insert(name.clone(), slot);
                 }
                 // Both plain and annotated Var (Var { annotation: Some(_) }) use the name field.
                 CoreExpr::Var { name, .. } if name != "_" => {
-                    names.insert(name.clone());
+                    let slot = map.len() as u32;
+                    map.insert(name.clone(), slot);
                 }
                 _ => {}
             }
         }
     }
-    names
+    map
 }
 
 /// Evaluate the structural pattern of a 3-arg `[case [let bindings] pattern body]` arm.
@@ -3616,32 +3663,43 @@ fn extract_let_binding_names(let_decl: &CoreExpr) -> std::collections::HashSet<S
 /// or `Err(e)` if evaluating the pattern itself produces an error (e.g., unresolvable
 /// pin reference, failed field-get for constructor tag). Errors must not be silently
 /// converted to no-match — that produces misleading diagnostics.
+///
+/// Returns `Ok(Some(arm_env_id))` on match, where `arm_env_id` is the FlatEnv id of
+/// the freshly allocated child scope containing one slot per named binding. The caller
+/// must use `ctx.with_eval_scope(arm_env_id)` when evaluating the arm body so that
+/// VarRef lookups at (level=0, slot=K) resolve into this scope's slots.
 async fn eval_case_arm_structural_pattern(
     pattern: &Arc<Spanned<CoreExpr>>,
-    binding_set: &std::collections::HashSet<String>,
+    binding_map: &IndexMap<String, u32>,
     scrutinee_value: &Value,
-    env: &Arc<RwLock<crate::env::Env>>,
     match_span: Span,
     ctx: &Arc<EvalContext>,
-) -> EvalResult<Option<Arc<RwLock<crate::env::Env>>>> {
-    let arm_env = Arc::new(RwLock::new(crate::env::Env::with_parent(Arc::clone(env))));
+) -> EvalResult<Option<u32>> {
+    // Pre-allocate a child FlatEnv for the arm's bindings.
+    // Slot count = number of named bindings declared in the [let ...] block.
+    // The resolver assigned (level=0, slot=K) coordinates to uses of these names
+    // in the arm body, where K is the declaration-order index matching binding_map.
+    let arm_env_id = ctx
+        .env_arena
+        .borrow_mut()
+        .alloc_child(crate::arena::EnvId(ctx.current_env_id), binding_map.len());
+
+    // Legacy placeholder — eval_structural_pattern_inner no longer inserts into this env;
+    // all bindings go into the FlatEnv slots allocated above.
+    let arm_env_legacy = Arc::new(RwLock::new(crate::env::Env::new()));
+
     if eval_structural_pattern_inner(
         &pattern.node,
-        binding_set,
+        binding_map,
+        arm_env_id,
         scrutinee_value,
-        env,
-        &arm_env,
+        &arm_env_legacy,
         match_span.clone(),
         ctx,
     )
     .await?
     {
-        // Bind any remaining names from binding_set that weren't bound by the pattern.
-        // This ensures [case [let n] _ body] binds n = scrutinee when pattern is wildcard
-        // or when the pattern doesn't reference every declared name.
-        // T-1557: Env is type-metadata only. Values go into FlatEnv (T-1558/T-1559).
-        // insert_value removed — match arm bindings will be stored in FlatEnv.
-        Ok(Some(arm_env))
+        Ok(Some(arm_env_id.0))
     } else {
         Ok(None)
     }
@@ -3657,10 +3715,10 @@ async fn eval_case_arm_structural_pattern(
 /// `async_recursion`).
 fn eval_structural_pattern_inner<'a>(
     pattern: &'a CoreExpr,
-    binding_set: &'a std::collections::HashSet<String>,
+    binding_map: &'a IndexMap<String, u32>,
+    arm_env_id: crate::arena::EnvId,
     scrutinee_value: &'a Value,
-    env: &'a Arc<RwLock<crate::env::Env>>,
-    arm_env: &'a Arc<RwLock<crate::env::Env>>,
+    arm_env_legacy: &'a Arc<RwLock<crate::env::Env>>,
     match_span: Span,
     ctx: &'a Arc<EvalContext>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<bool>> + 'a>> {
@@ -3671,9 +3729,8 @@ fn eval_structural_pattern_inner<'a>(
             // and must do exact-value comparison (handled by the Str arm below).
             CoreExpr::Var { name, .. } if name == "_" => Ok(true),
 
-            // Plain name: bind or pin based on binding_set.
+            // Plain name: bind or pin based on binding_map.
             // level and slot carry de Bruijn coordinates for the pin case.
-            // Plain name (no annotation): bind or pin based on binding_set.
             CoreExpr::Var {
                 name,
                 level,
@@ -3682,10 +3739,9 @@ fn eval_structural_pattern_inner<'a>(
             } => {
                 bind_or_pin_name(
                     name,
-                    binding_set,
+                    binding_map,
+                    arm_env_id,
                     scrutinee_value,
-                    env,
-                    arm_env,
                     &match_span,
                     ctx,
                     *level,
@@ -3705,10 +3761,9 @@ fn eval_structural_pattern_inner<'a>(
                 // First, perform the bind-or-pin operation
                 let bind_result = bind_or_pin_name(
                     name,
-                    binding_set,
+                    binding_map,
+                    arm_env_id,
                     scrutinee_value,
-                    env,
-                    arm_env,
                     &match_span,
                     ctx,
                     *level,
@@ -3722,7 +3777,10 @@ fn eval_structural_pattern_inner<'a>(
 
                 // Check if annotation contains an "is:" property (predicate)
                 if let Some(pred_surface_node) = annotation.node.get_property(IS_ANNOTATION_KEY) {
-                    let (lowered_pred, lower_diags) = crate::lower::lower(pred_surface_node);
+                    let (lowered_pred, lower_diags) = crate::lower::lower(
+                        pred_surface_node,
+                        ctx.scope_frames.as_ref().map(|v| v.as_slice()),
+                    );
                     if let Some(err) = lower_errors_to_eval_error(lower_diags) {
                         return Err(err);
                     }
@@ -3730,18 +3788,16 @@ fn eval_structural_pattern_inner<'a>(
 
                     let pred_thunk = Arc::new(Thunk::new_unevaluated_core(
                         pred_expr_core,
-                        ctx.current_env_id, // T-1555 gap: should be the match arm's own FlatEnv scope (arm_env_id). Using caller scope means closures escaping this arm see wrong bindings for arm-local names (e.g. captured pattern variables).
+                        arm_env_id.0, // Use the arm FlatEnv so the predicate closure sees arm-local bindings.
                         Arc::clone(ctx),
                         match_span.clone(),
                     ));
 
                     let pred_value = materialize(&pred_thunk, Some(&match_span), ctx).await?;
 
-                    // The bound variable holds scrutinee_value: bind_or_pin_name bound `name`
-                    // to scrutinee_value in the arm_env. Since we have the value in scope,
-                    // wrap it directly as a materialized thunk for the predicate call.
-                    // When FlatEnv arm-env binding is wired (T-1559), this becomes a FlatEnv
-                    // slot lookup at (level, slot) coordinates from the arm pattern.
+                    // The bound variable holds scrutinee_value. Wrap directly as a materialized
+                    // thunk — bind_or_pin_name already stored it in the arm FlatEnv slot, but we
+                    // need the value itself to call the predicate.
                     let bound_value_thunk: Arc<Thunk> = Arc::new(Thunk::new_materialized(
                         scrutinee_value.clone(),
                         match_span.clone(),
@@ -3755,15 +3811,17 @@ fn eval_structural_pattern_inner<'a>(
                         bound_value,
                         match_span.clone(),
                         match_span.clone(),
-                        arm_env,
+                        arm_env_legacy,
                         ctx,
                     );
 
                     let pred_result = materialize(&pred_call_thunk, Some(&match_span), ctx).await?;
 
-                    // T-1558: call_to_match ignores env until T-1559.
-                    let dummy_env = Arc::new(std::sync::RwLock::new(crate::value::Environment::new()));
-                    if !crate::eval::call_to_match(&pred_result, &dummy_env, ctx, &match_span).await {
+                    // call_to_match ignores legacy env (B-515 tracks FlatEnv arm binding).
+                    let dummy_env =
+                        Arc::new(std::sync::RwLock::new(crate::value::Environment::new()));
+                    if !crate::eval::call_to_match(&pred_result, &dummy_env, ctx, &match_span).await
+                    {
                         return Ok(false);
                     }
                 }
@@ -3792,10 +3850,13 @@ fn eval_structural_pattern_inner<'a>(
                 named_args,
                 implied,
             } => {
-                // Evaluate the func expression to determine pattern semantics.
+                // Evaluate the func expression (constructor lookup) in the parent scope.
+                // arm_env_id is a child of ctx.current_env_id, so both work via the
+                // parent chain, but using ctx.current_env_id is semantically clearer:
+                // constructors are resolved in the enclosing (non-arm) scope.
                 let func_thunk = Arc::new(Thunk::new_unevaluated_core(
                     Arc::clone(func),
-                    ctx.current_env_id, // T-1558: arm_env_id placeholder
+                    ctx.current_env_id,
                     Arc::clone(ctx),
                     match_span.clone(),
                 ));
@@ -3806,17 +3867,15 @@ fn eval_structural_pattern_inner<'a>(
                 //   (b) a Function with return_ann annotation (named-field ctor)
                 let ctor_tag_opt: Option<String> = match &func_val {
                     Value::Variant { tag, .. } => Some(tag.clone()),
-                    Value::Function { annotation, .. } => {
-                        annotation.as_deref().and_then(|ann| {
-                            ann.return_ann.as_ref().and_then(|ret_ann| {
-                                if let crate::ast::Annotation::Simple(tag) = ret_ann {
-                                    Some(tag.clone())
-                                } else {
-                                    None
-                                }
-                            })
+                    Value::Function { annotation, .. } => annotation.as_deref().and_then(|ann| {
+                        ann.return_ann.as_ref().and_then(|ret_ann| {
+                            if let crate::ast::Annotation::Simple(tag) = ret_ann {
+                                Some(tag.clone())
+                            } else {
+                                None
+                            }
                         })
-                    }
+                    }),
                     _ => None,
                 };
 
@@ -3858,10 +3917,10 @@ fn eval_structural_pattern_inner<'a>(
 
                             if !eval_structural_pattern_inner(
                                 &na.node.value.node,
-                                binding_set,
+                                binding_map,
+                                arm_env_id,
                                 &field_val,
-                                env,
-                                arm_env,
+                                arm_env_legacy,
                                 match_span.clone(),
                                 ctx,
                             )
@@ -3888,10 +3947,10 @@ fn eval_structural_pattern_inner<'a>(
                     if args.len() == 1 {
                         return eval_structural_pattern_inner(
                             &args[0].node,
-                            binding_set,
+                            binding_map,
+                            arm_env_id,
                             &payload_val,
-                            env,
-                            arm_env,
+                            arm_env_legacy,
                             match_span,
                             ctx,
                         )
@@ -3913,10 +3972,10 @@ fn eval_structural_pattern_inner<'a>(
 
                         if !eval_structural_pattern_inner(
                             &arg.node,
-                            binding_set,
+                            binding_map,
+                            arm_env_id,
                             &field_val,
-                            env,
-                            arm_env,
+                            arm_env_legacy,
                             match_span.clone(),
                             ctx,
                         )
@@ -3950,17 +4009,16 @@ fn eval_structural_pattern_inner<'a>(
                             ));
                             let guard_result =
                                 materialize(&guard_thunk, Some(&match_span), ctx).await?;
-                            // T-1558: call_to_match ignores env until T-1559.
-                            let dummy_env = Arc::new(std::sync::RwLock::new(crate::value::Environment::new()));
-                            Ok(
-                                crate::eval::call_to_match(
-                                    &guard_result,
-                                    &dummy_env,
-                                    ctx,
-                                    &match_span,
-                                )
-                                .await,
+                            // call_to_match ignores legacy env (B-515 tracks FlatEnv arm binding).
+                            let dummy_env =
+                                Arc::new(std::sync::RwLock::new(crate::value::Environment::new()));
+                            Ok(crate::eval::call_to_match(
+                                &guard_result,
+                                &dummy_env,
+                                ctx,
+                                &match_span,
                             )
+                            .await)
                         }
 
                         other => Err(EvalError::type_mismatch_ctx(
@@ -3998,10 +4056,10 @@ fn eval_structural_pattern_inner<'a>(
                     let field_val = materialize(&field_thunk, Some(&match_span), ctx).await?;
                     if !eval_structural_pattern_inner(
                         &entry.node.value.node,
-                        binding_set,
+                        binding_map,
+                        arm_env_id,
                         &field_val,
-                        env,
-                        arm_env,
+                        arm_env_legacy,
                         match_span.clone(),
                         ctx,
                     )
@@ -4021,7 +4079,7 @@ fn eval_structural_pattern_inner<'a>(
                 ));
                 let pat_expr_thunk = Arc::new(Thunk::new_unevaluated_core(
                     spanned,
-                    ctx.current_env_id, // T-1558: env_id placeholder
+                    ctx.current_env_id, // B-515: arm FlatEnv allocation pending
                     Arc::clone(ctx),
                     match_span.clone(),
                 ));
@@ -4034,26 +4092,37 @@ fn eval_structural_pattern_inner<'a>(
 
 /// Implement bind-or-pin at a single name position in a 3-arg structural pattern.
 ///
-/// - If `name` is in `binding_set`: insert a new_materialized thunk into `arm_env`
-/// - If `name` is NOT in `binding_set`: look up `name` in `env` via de Bruijn coordinates
-///   (`pin_level`, `pin_slot`), compare with `primitive_eq`; return false (soft skip) if not equal
+/// - If `name` is in `binding_map`: allocate a new_materialized thunk for `scrutinee_value`
+///   and fill the arm FlatEnv slot at `binding_map[name]`.
+/// - If `name` is NOT in `binding_map`: look up `name` via de Bruijn coordinates
+///   (`pin_level`, `pin_slot`) in the enclosing scope, compare with `primitive_eq`;
+///   return false (soft skip) if not equal.
 ///
 /// `pin_level` and `pin_slot` are the de Bruijn coordinates of `name` in the enclosing scope.
 /// `u32::MAX` for both means no resolver coordinates were available (resolver error) —
-/// this is a resolver error and propagates as Err.
+/// this propagates as Err.
 async fn bind_or_pin_name(
     name: &str,
-    binding_set: &std::collections::HashSet<String>,
+    binding_map: &IndexMap<String, u32>,
+    arm_env_id: crate::arena::EnvId,
     scrutinee_value: &Value,
-    _env: &Arc<RwLock<crate::env::Env>>,
-    _arm_env: &Arc<RwLock<crate::env::Env>>,
     match_span: &Span,
     ctx: &Arc<EvalContext>,
     pin_level: u32,
     pin_slot: u32,
 ) -> EvalResult<bool> {
-    if binding_set.contains(name) {
-        // T-1557: Bind goes into FlatEnv, not Env. insert_value removed. Rewired in T-1558.
+    if let Some(&slot) = binding_map.get(name) {
+        // Binding: create a materialized thunk for the scrutinee value and fill the arm
+        // FlatEnv slot. The resolver assigned (level=0, slot=K) to uses of `name` in the
+        // arm body; K matches the slot stored in binding_map.
+        let thunk = Arc::new(Thunk::new_materialized(
+            scrutinee_value.clone(),
+            match_span.clone(),
+        ));
+        let thunk_id = ctx.alloc_thunk(thunk);
+        ctx.env_arena
+            .borrow_mut()
+            .fill_letrec_slot(arm_env_id, slot, thunk_id, name);
         Ok(true)
     } else {
         // Pin: look up name via de Bruijn coordinates in env, compare with scrutinee.
@@ -4063,31 +4132,31 @@ async fn bind_or_pin_name(
                 match_span.clone(),
             ).into());
         }
-        // FlatEnv dispatch for pin lookup: look up (pin_level, pin_slot) via display vector.
-        // display[n-1-level] gives the EnvId for resolver level `pin_level`.
+        // FlatEnv dispatch for pin lookup: look up (pin_level, pin_slot) via parent chain.
+        // walk_parent_chain walks `pin_level` hops from current_env_id to reach the target scope.
         let pin_thunk = {
             let arena = ctx.env_arena.borrow();
-            let current_env = &arena.envs[ctx.current_env_id as usize];
-            let display = &current_env.display;
-            let n = display.len();
             let level_idx = pin_level as usize;
-            if level_idx >= n {
-                drop(arena);
-                return Err(EvalError::internal(
-                    format!(
-                        "pattern pin '{name}': level={pin_level} >= display depth={n}"
-                    ),
-                    match_span.clone(),
-                )
-                .into());
+            match arena.walk_parent_chain(ctx.current_env_id, level_idx) {
+                Err(depth_reached) => {
+                    drop(arena);
+                    return Err(EvalError::internal(
+                        format!(
+                            "pattern pin '{name}': level={pin_level} out of range (chain depth={depth_reached})"
+                        ),
+                        match_span.clone(),
+                    )
+                    .into());
+                }
+                Ok(target_env_id) => {
+                    let slot_idx = pin_slot as usize;
+                    arena.envs[target_env_id.0 as usize]
+                        .slots
+                        .get(slot_idx)
+                        .and_then(|s| s.as_ref())
+                        .map(Arc::clone)
+                }
             }
-            let target_env_id = display[n - 1 - level_idx];
-            let slot_idx = pin_slot as usize;
-            arena.envs[target_env_id.0 as usize]
-                .slots
-                .get(slot_idx)
-                .and_then(|s| s.as_ref())
-                .map(Arc::clone)
         };
         match pin_thunk {
             Some(t) => {
@@ -4185,9 +4254,8 @@ mod tests {
     }
 
     fn test_ctx() -> Arc<EvalContext> {
-        let env = empty_env();
         let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
-        EvalContext::new(base_dir, Arc::clone(&env), Arc::clone(&env), false)
+        EvalContext::new(base_dir, false)
     }
 
     /// Async shadow of `materialize()` for test contexts.
@@ -4686,12 +4754,7 @@ mod tests {
         let inner = Arc::new(Thunk::new_materialized(Value::Int(42), span.clone()));
         let inner_id = ctx.alloc_thunk(inner);
 
-        let guarded = Arc::new(Thunk::new_guarded(
-            inner_id,
-            Type::Int,
-            vec![],
-            span,
-        ));
+        let guarded = Arc::new(Thunk::new_guarded(inner_id, Type::Int, vec![], span));
 
         let result = materialize(&guarded, None, &ctx).await;
         assert!(
@@ -4729,7 +4792,7 @@ mod tests {
         ));
         let inner_id = ctx.alloc_thunk(inner);
 
-        // Default expression: a literal Int(99) since FlatEnv variable binding is T-1559.
+        // Default expression: a literal Int(99) since FlatEnv variable binding is pending (B-515).
         // The default expression evaluates to 99 directly without a variable lookup.
         let default_expr = Arc::new(sp(CoreExpr::Int(99)));
 
@@ -4779,12 +4842,7 @@ mod tests {
         let inner = Arc::new(Thunk::new_materialized(Value::Float(1.0), span.clone()));
         let inner_id = ctx.alloc_thunk(inner);
 
-        let guarded = Arc::new(Thunk::new_guarded(
-            inner_id,
-            Type::Int,
-            vec![],
-            span,
-        ));
+        let guarded = Arc::new(Thunk::new_guarded(inner_id, Type::Int, vec![], span));
 
         // First materialization: guard fires, Float ≠ Int → type assertion failure.
         let result1 = materialize(&guarded, None, &ctx).await;
@@ -4954,10 +5012,14 @@ mod tests {
         // Custom dummy builtin that accepts any arity and checks both args are pre-materialized.
         let dummy_func: BuiltinFn = |args| {
             // Both args must be materialized by force_count=2 before this is called.
-            let _ = args.ctx.get_thunk(args.args[0])
+            let _ = args
+                .ctx
+                .get_thunk(args.args[0])
                 .try_get_materialized()
                 .expect("pre-materialized by force_count");
-            let _ = args.ctx.get_thunk(args.args[1])
+            let _ = args
+                .ctx
+                .get_thunk(args.args[1])
                 .try_get_materialized()
                 .expect("pre-materialized by force_count");
             let span = args.call_span;

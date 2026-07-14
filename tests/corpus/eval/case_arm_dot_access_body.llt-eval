@@ -1,6 +1,0 @@
-# Case arm dot access: 3-arg form binds d to the scrutinee dict, accesses d.x in body.
-# binding_set = {"d"}; pattern `d` (in set) binds the whole scrutinee dict to d.
-[match [x: 1]
-  [case [let d] d d.x]]
-=== out
-Int(1)

@@ -90,19 +90,20 @@ async fn build_builtin_core_type_env_inner() -> Option<Arc<RwLock<Env>>> {
     // in resolve_type_name; types declared within the file resolve via state.tycon_env.
     let parent_env = Arc::new(RwLock::new(crate::env::Env::new()));
 
-    // Resolve (writes inline to AST nodes). Seeded from parent_env so that any builtin
-    // names declared in the parent scope resolve to de Bruijn coordinates correctly.
-    let _ = crate::resolve::resolve_surface_program(&program, Some(&parent_env));
+    // Resolve (writes inline to AST nodes). T-1576: bootstrap path uses empty scope stack.
+    let (_table, _frames) = crate::resolve::resolve_surface_program(&program, &[]);
 
     // Typecheck with builtins env as parent.
     // enable_scheme_map=false (no LSP hover needed for bootstrap).
     let (_errors, _type_map, _doc_map, _scheme_map, _diagnostics, _state, final_env, _annot) =
         typecheck_surface_program_with_env(
-            &program, parent_env, false, // enable_scheme_map
-            None,  // resolver_seed_env: no runtime env available at bootstrap
-            None,  // type_stage_env: not available at bootstrap
+            &program,
+            parent_env,
+            false,                            // enable_scheme_map
+            None, // resolver_seed_env: no runtime env available at bootstrap
+            None, // type_stage_env: not available at bootstrap
             std::collections::HashMap::new(), // seed_tycon_env: empty at bootstrap
-            None,  // eval_ctx: no EvalContext at bootstrap
+            None, // eval_ctx: no EvalContext at bootstrap
         )
         .await;
 
@@ -540,7 +541,16 @@ async fn resolve_includes(
             _state,
             _final_env,
             _annot,
-        ) = typecheck_surface_program_with_env(&program, typecheck_env, false, None, None, std::collections::HashMap::new(), None).await;
+        ) = typecheck_surface_program_with_env(
+            &program,
+            typecheck_env,
+            false,
+            None,
+            None,
+            std::collections::HashMap::new(),
+            None,
+        )
+        .await;
 
         // Stdlib includes are user code — their type errors are surfaced like any other.
         if !type_errors.is_empty() {

@@ -1002,16 +1002,20 @@ pub(crate) fn builtin_quic_session(
         }
 
         // All args pre-materialized by force_count
-        let cap_val = ctx.get_thunk(args[0])
+        let cap_val = ctx
+            .get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let host_val = ctx.get_thunk(args[1])
+        let host_val = ctx
+            .get_thunk(args[1])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let port_val = ctx.get_thunk(args[2])
+        let port_val = ctx
+            .get_thunk(args[2])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let opts_val = ctx.get_thunk(args[3])
+        let opts_val = ctx
+            .get_thunk(args[3])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
@@ -1183,7 +1187,8 @@ pub(crate) fn builtin_quic_open_datagram(
             .into());
         }
 
-        let session_val = ctx.get_thunk(args[0])
+        let session_val = ctx
+            .get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
         let conn = match session_val {
@@ -1243,14 +1248,17 @@ pub(crate) fn builtin_http2_session(
         }
 
         // All args pre-materialized by force_count
-        let cap_val = ctx.get_thunk(args[0])
+        let cap_val = ctx
+            .get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let url_val = ctx.get_thunk(args[1])
+        let url_val = ctx
+            .get_thunk(args[1])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
         // opts reserved for future use (ca, client cert, timeouts, etc.)
-        let _opts_val = ctx.get_thunk(args[2])
+        let _opts_val = ctx
+            .get_thunk(args[2])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
@@ -1395,7 +1403,8 @@ pub(crate) fn builtin_http3_session(
             .into());
         }
 
-        let session_val = ctx.get_thunk(args[0])
+        let session_val = ctx
+            .get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
@@ -1496,19 +1505,24 @@ pub(crate) fn builtin_http_request(
         }
 
         // All args pre-materialized by force_count
-        let session_val = ctx.get_thunk(args[0])
+        let session_val = ctx
+            .get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let method_val = ctx.get_thunk(args[1])
+        let method_val = ctx
+            .get_thunk(args[1])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let path_val = ctx.get_thunk(args[2])
+        let path_val = ctx
+            .get_thunk(args[2])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let headers_val = ctx.get_thunk(args[3])
+        let headers_val = ctx
+            .get_thunk(args[3])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let body_val = ctx.get_thunk(args[4])
+        let body_val = ctx
+            .get_thunk(args[4])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
@@ -1879,13 +1893,16 @@ pub(crate) fn builtin_icmp_ping(
             .into());
         }
 
-        let cap_val = ctx.get_thunk(args[0])
+        let cap_val = ctx
+            .get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let host_val = ctx.get_thunk(args[1])
+        let host_val = ctx
+            .get_thunk(args[1])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let timeout_val = ctx.get_thunk(args[2])
+        let timeout_val = ctx
+            .get_thunk(args[2])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
@@ -2219,10 +2236,12 @@ pub(crate) fn builtin_send_datagram(
         }
         reject_named("send-datagram", named.as_ref(), call_span.clone())?;
 
-        let data_val = ctx.get_thunk(args[0])
+        let data_val = ctx
+            .get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let handle_val = ctx.get_thunk(args[1])
+        let handle_val = ctx
+            .get_thunk(args[1])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 

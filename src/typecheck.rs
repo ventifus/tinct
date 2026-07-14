@@ -100,10 +100,9 @@ pub async fn typecheck_surface_program_annotation_table(
     let mut env: Arc<RwLock<Env>> = Arc::new(RwLock::new(Env::new()));
     let mut state = InferState::new();
     // Compute and store the resolution table for slot-indexed VarRef lookup.
-    // No runtime env at the type-checker path; pass None.
-    state.resolution_table = Some(std::sync::Arc::new(
-        crate::resolve::resolve_surface_program(program, None),
-    ));
+    // No runtime env at the type-checker path; pass empty initial_frames for bootstrap mode.
+    let (resolve_table, _frames) = crate::resolve::resolve_surface_program(program, &[]);
+    state.resolution_table = Some(std::sync::Arc::new(resolve_table));
 
     let mut named_types: HashMap<String, Type> = HashMap::new();
     let mut pipeline_type = Type::Dict(Row {
@@ -168,7 +167,16 @@ pub async fn typecheck_surface_program(
     Vec<crate::error::TypeDiagnostic>,
 ) {
     let (errors, type_map, doc_map, scheme_map, diagnostics, _state, _env, _annotation_table) =
-        typecheck_surface_program_with_env(program, parent_env, true, None, None, std::collections::HashMap::new(), None).await;
+        typecheck_surface_program_with_env(
+            program,
+            parent_env,
+            true,
+            None,
+            None,
+            std::collections::HashMap::new(),
+            None,
+        )
+        .await;
     // type_map is now populated during inference (enable_scheme_map=true path).
     (errors, type_map, doc_map, scheme_map, diagnostics)
 }
@@ -214,7 +222,7 @@ pub async fn typecheck_surface_program_with_env(
     program: &SurfaceProgram,
     parent_env: Arc<RwLock<Env>>,
     enable_scheme_map: bool,
-    resolver_seed_env: Option<Arc<RwLock<Env>>>,
+    _resolver_seed_env: Option<Arc<RwLock<Env>>>,
     type_stage_env: Option<Arc<RwLock<Env>>>,
     seed_tycon_env: std::collections::HashMap<String, std::sync::Arc<crate::type_def::TyConDef>>,
     eval_ctx: Option<std::sync::Arc<crate::eval::EvalContext>>,
@@ -252,15 +260,23 @@ pub async fn typecheck_surface_program_with_env(
     }
     // Seed the resolver so that instance binding names (ɪ-prefixed) are visible
     // in scope and method_to_instance can resolve class method VarRefs (cast, +, -, etc.)
-    // to their letrec slots. When a resolver_seed_env is provided (typically the full
-    // runtime eval env from builtin-typecheck's env: argument), use it — it contains
-    // ɪ-prefixed instance bindings that the type-only parent_env lacks. Otherwise fall
-    // back to parent_env (the prior behavior, used by all non-builtin-typecheck callers).
-    let resolver_seed = resolver_seed_env.as_ref().unwrap_or(&parent_env);
-    state.resolution_table = Some(Arc::new(crate::resolve::resolve_surface_program(
-        program,
-        Some(resolver_seed),
-    )));
+    // to their letrec slots. T-1576: When an eval_ctx is provided, use its current_env_id
+    // and arena to seed the resolver from FlatEnv. Otherwise use bootstrap mode (empty initial_frames).
+    state.resolution_table = if let Some(ref ctx) = state.eval_ctx {
+        let root_frame: indexmap::IndexMap<String, ()> = {
+            let arena = ctx.env_arena.borrow();
+            arena.envs[0]
+                .slot_names
+                .iter()
+                .map(|n| (n.clone(), ()))
+                .collect()
+        };
+        let (table, _frames) = crate::resolve::resolve_surface_program(program, &[root_frame]);
+        Some(Arc::new(table))
+    } else {
+        let (table, _frames) = crate::resolve::resolve_surface_program(program, &[]);
+        Some(Arc::new(table))
+    };
 
     if enable_scheme_map {
         state.scheme_map = Some(SchemeMap::new());
@@ -489,10 +505,10 @@ async fn typecheck_surface_document(
     // The async typecheck path handles them separately.
     let _ = &doc.expects; // acknowledged
     let _ = &doc.caps; // acknowledged
-    // Note: --- uses: headers are processed by loader's uses-scope (tinct code) which
-    // type-checks each builtin_*.llt file and accumulates results into the TypeContext.
-    // The typechecker receives all module type schemes via tc.inference_env (the parent_env
-    // passed to typecheck_surface_program_with_env). No Rust-side injection needed here.
+                       // Note: --- uses: headers are processed by loader's uses-scope (tinct code) which
+                       // type-checks each builtin_*.llt file and accumulates results into the TypeContext.
+                       // The typechecker receives all module type schemes via tc.inference_env (the parent_env
+                       // passed to typecheck_surface_program_with_env). No Rust-side injection needed here.
 
     let mut result_type = Type::Dict(Row {
         fields: indexmap::IndexMap::new(),
@@ -2670,22 +2686,20 @@ pub(crate) async fn infer_surface_expr(
                 // Mirrors the TyCon member handling in ConstructorSignature::from_union so that
                 // the same exhaustiveness analysis applies when a TyCon appears as a scrutinee
                 // directly (not wrapped in a Union).
-                Type::TyCon(name) => {
-                    match tycon_env_ref.get(name.as_str()) {
-                        Some(def) if !def.constructors.is_empty() => {
-                            let constructors = def
-                                .constructors
-                                .iter()
-                                .map(|(tag, arity)| {
-                                    let clamped = if *arity == 0 { 0 } else { 1 };
-                                    (coverage::ConstructorTag::Variant(tag.clone()), clamped)
-                                })
-                                .collect();
-                            Some(coverage::ConstructorSignature { constructors })
-                        }
-                        _ => None,
+                Type::TyCon(name) => match tycon_env_ref.get(name.as_str()) {
+                    Some(def) if !def.constructors.is_empty() => {
+                        let constructors = def
+                            .constructors
+                            .iter()
+                            .map(|(tag, arity)| {
+                                let clamped = if *arity == 0 { 0 } else { 1 };
+                                (coverage::ConstructorTag::Variant(tag.clone()), clamped)
+                            })
+                            .collect();
+                        Some(coverage::ConstructorSignature { constructors })
                     }
-                }
+                    _ => None,
+                },
                 _ => None,
             };
 

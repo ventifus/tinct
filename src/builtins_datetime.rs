@@ -40,7 +40,9 @@ pub fn builtin_parse_timestamp(
             ));
         };
 
-        let s_val = args.ctx.get_thunk(*s_thunk)
+        let s_val = args
+            .ctx
+            .get_thunk(*s_thunk)
             .try_get_materialized()
             .expect("pre-materialized by force_count=1");
         let s = s_val
@@ -78,7 +80,9 @@ pub fn builtin_format_timestamp(
             ));
         };
 
-        let t_val = args.ctx.get_thunk(*t_thunk)
+        let t_val = args
+            .ctx
+            .get_thunk(*t_thunk)
             .try_get_materialized()
             .expect("pre-materialized by force_count=1");
         let nanos = match &t_val {
@@ -115,7 +119,9 @@ pub fn builtin_timestamp_to_unix(
             ));
         };
 
-        let t_val = args.ctx.get_thunk(*t_thunk)
+        let t_val = args
+            .ctx
+            .get_thunk(*t_thunk)
             .try_get_materialized()
             .expect("pre-materialized by force_count=1");
         let nanos = match &t_val {
@@ -150,7 +156,9 @@ pub fn builtin_unix_to_timestamp(
             ));
         };
 
-        let n_val = args.ctx.get_thunk(*n_thunk)
+        let n_val = args
+            .ctx
+            .get_thunk(*n_thunk)
             .try_get_materialized()
             .expect("pre-materialized by force_count=1");
         let seconds = match &n_val {
@@ -177,7 +185,9 @@ pub fn builtin_now(args: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<
             return Err(dt_err("now requires 1 argument", call_span.clone()));
         };
 
-        let cap_val = args.ctx.get_thunk(*cap_thunk)
+        let cap_val = args
+            .ctx
+            .get_thunk(*cap_thunk)
             .try_get_materialized()
             .expect("pre-materialized by force_count=1");
         let clock_cap = match &cap_val {
@@ -211,7 +221,9 @@ pub fn builtin_fixed_clock(
             return Err(dt_err("fixed-clock requires 1 argument", call_span.clone()));
         };
 
-        let t_val = args.ctx.get_thunk(*t_thunk)
+        let t_val = args
+            .ctx
+            .get_thunk(*t_thunk)
             .try_get_materialized()
             .expect("pre-materialized by force_count=1");
         let nanos = match &t_val {
@@ -244,10 +256,14 @@ pub fn builtin_timestamp_add(
             ));
         };
 
-        let t_val = args.ctx.get_thunk(*t_thunk)
+        let t_val = args
+            .ctx
+            .get_thunk(*t_thunk)
             .try_get_materialized()
             .expect("pre-materialized by force_count=2");
-        let d_val = args.ctx.get_thunk(*d_thunk)
+        let d_val = args
+            .ctx
+            .get_thunk(*d_thunk)
             .try_get_materialized()
             .expect("pre-materialized by force_count=2");
 
@@ -295,10 +311,14 @@ pub fn builtin_timestamp_diff(
             ));
         };
 
-        let t1_val = args.ctx.get_thunk(*t1_thunk)
+        let t1_val = args
+            .ctx
+            .get_thunk(*t1_thunk)
             .try_get_materialized()
             .expect("pre-materialized by force_count=2");
-        let t2_val = args.ctx.get_thunk(*t2_thunk)
+        let t2_val = args
+            .ctx
+            .get_thunk(*t2_thunk)
             .try_get_materialized()
             .expect("pre-materialized by force_count=2");
 
@@ -346,10 +366,14 @@ pub fn builtin_timestamp_lt(
             ));
         };
 
-        let t1_val = args.ctx.get_thunk(*t1_thunk)
+        let t1_val = args
+            .ctx
+            .get_thunk(*t1_thunk)
             .try_get_materialized()
             .expect("pre-materialized by force_count=2");
-        let t2_val = args.ctx.get_thunk(*t2_thunk)
+        let t2_val = args
+            .ctx
+            .get_thunk(*t2_thunk)
             .try_get_materialized()
             .expect("pre-materialized by force_count=2");
 
@@ -393,10 +417,14 @@ pub fn builtin_timestamp_gt(
             ));
         };
 
-        let t1_val = args.ctx.get_thunk(*t1_thunk)
+        let t1_val = args
+            .ctx
+            .get_thunk(*t1_thunk)
             .try_get_materialized()
             .expect("pre-materialized by force_count=2");
-        let t2_val = args.ctx.get_thunk(*t2_thunk)
+        let t2_val = args
+            .ctx
+            .get_thunk(*t2_thunk)
             .try_get_materialized()
             .expect("pre-materialized by force_count=2");
 
@@ -440,10 +468,14 @@ pub fn builtin_timestamp_eq(
             ));
         };
 
-        let t1_val = args.ctx.get_thunk(*t1_thunk)
+        let t1_val = args
+            .ctx
+            .get_thunk(*t1_thunk)
             .try_get_materialized()
             .expect("pre-materialized by force_count=2");
-        let t2_val = args.ctx.get_thunk(*t2_thunk)
+        let t2_val = args
+            .ctx
+            .get_thunk(*t2_thunk)
             .try_get_materialized()
             .expect("pre-materialized by force_count=2");
 
@@ -487,7 +519,9 @@ pub fn builtin_timestamp_year(
             ));
         };
 
-        let t_val = args.ctx.get_thunk(*t_thunk)
+        let t_val = args
+            .ctx
+            .get_thunk(*t_thunk)
             .try_get_materialized()
             .expect("pre-materialized by force_count=1");
         let nanos = match &t_val {
@@ -526,7 +560,9 @@ pub fn builtin_timestamp_month(
             ));
         };
 
-        let t_val = args.ctx.get_thunk(*t_thunk)
+        let t_val = args
+            .ctx
+            .get_thunk(*t_thunk)
             .try_get_materialized()
             .expect("pre-materialized by force_count=1");
         let nanos = match &t_val {
@@ -565,7 +601,9 @@ pub fn builtin_timestamp_day(
             ));
         };
 
-        let t_val = args.ctx.get_thunk(*t_thunk)
+        let t_val = args
+            .ctx
+            .get_thunk(*t_thunk)
             .try_get_materialized()
             .expect("pre-materialized by force_count=1");
         let nanos = match &t_val {
@@ -604,7 +642,9 @@ pub fn builtin_timestamp_hour(
             ));
         };
 
-        let t_val = args.ctx.get_thunk(*t_thunk)
+        let t_val = args
+            .ctx
+            .get_thunk(*t_thunk)
             .try_get_materialized()
             .expect("pre-materialized by force_count=1");
         let nanos = match &t_val {
@@ -643,7 +683,9 @@ pub fn builtin_timestamp_minute(
             ));
         };
 
-        let t_val = args.ctx.get_thunk(*t_thunk)
+        let t_val = args
+            .ctx
+            .get_thunk(*t_thunk)
             .try_get_materialized()
             .expect("pre-materialized by force_count=1");
         let nanos = match &t_val {
@@ -682,7 +724,9 @@ pub fn builtin_timestamp_second(
             ));
         };
 
-        let t_val = args.ctx.get_thunk(*t_thunk)
+        let t_val = args
+            .ctx
+            .get_thunk(*t_thunk)
             .try_get_materialized()
             .expect("pre-materialized by force_count=1");
         let nanos = match &t_val {
@@ -721,7 +765,9 @@ pub fn builtin_timestamp_parts(
             ));
         };
 
-        let t_val = args.ctx.get_thunk(*t_thunk)
+        let t_val = args
+            .ctx
+            .get_thunk(*t_thunk)
             .try_get_materialized()
             .expect("pre-materialized by force_count=1");
         let nanos = match &t_val {
@@ -803,7 +849,9 @@ pub fn builtin_duration_nanos(
             ));
         };
 
-        let n_val = args.ctx.get_thunk(*n_thunk)
+        let n_val = args
+            .ctx
+            .get_thunk(*n_thunk)
             .try_get_materialized()
             .expect("pre-materialized by force_count=1");
         let nanos = match &n_val {
@@ -835,7 +883,9 @@ pub fn builtin_timestamp_nanos(
             ));
         };
 
-        let n_val = args.ctx.get_thunk(*n_thunk)
+        let n_val = args
+            .ctx
+            .get_thunk(*n_thunk)
             .try_get_materialized()
             .expect("pre-materialized by force_count=1");
         let nanos = match &n_val {
@@ -863,7 +913,9 @@ pub fn builtin_duration_seconds(
             ));
         };
 
-        let n_val = args.ctx.get_thunk(*n_thunk)
+        let n_val = args
+            .ctx
+            .get_thunk(*n_thunk)
             .try_get_materialized()
             .expect("pre-materialized by force_count=1");
         let seconds = match &n_val {
@@ -900,7 +952,9 @@ pub fn builtin_duration_minutes(
             ));
         };
 
-        let n_val = args.ctx.get_thunk(*n_thunk)
+        let n_val = args
+            .ctx
+            .get_thunk(*n_thunk)
             .try_get_materialized()
             .expect("pre-materialized by force_count=1");
         let minutes = match &n_val {
@@ -938,7 +992,9 @@ pub fn builtin_duration_hours(
             ));
         };
 
-        let n_val = args.ctx.get_thunk(*n_thunk)
+        let n_val = args
+            .ctx
+            .get_thunk(*n_thunk)
             .try_get_materialized()
             .expect("pre-materialized by force_count=1");
         let hours = match &n_val {
@@ -971,7 +1027,9 @@ pub fn builtin_duration_days(
             ));
         };
 
-        let n_val = args.ctx.get_thunk(*n_thunk)
+        let n_val = args
+            .ctx
+            .get_thunk(*n_thunk)
             .try_get_materialized()
             .expect("pre-materialized by force_count=1");
         let days = match &n_val {
@@ -1004,7 +1062,9 @@ pub fn builtin_duration_to_seconds(
             ));
         };
 
-        let d_val = args.ctx.get_thunk(*d_thunk)
+        let d_val = args
+            .ctx
+            .get_thunk(*d_thunk)
             .try_get_materialized()
             .expect("pre-materialized by force_count=1");
         let nanos = match &d_val {
@@ -1039,7 +1099,9 @@ pub fn builtin_duration_to_nanos(
             ));
         };
 
-        let d_val = args.ctx.get_thunk(*d_thunk)
+        let d_val = args
+            .ctx
+            .get_thunk(*d_thunk)
             .try_get_materialized()
             .expect("pre-materialized by force_count=1");
         let nanos = match &d_val {
@@ -1067,10 +1129,14 @@ pub fn builtin_load_tz(args: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalRes
             return Err(dt_err("load-tz requires 2 arguments", call_span.clone()));
         };
 
-        let dir_val = args.ctx.get_thunk(*dir_thunk)
+        let dir_val = args
+            .ctx
+            .get_thunk(*dir_thunk)
             .try_get_materialized()
             .expect("pre-materialized by force_count=2");
-        let name_val = args.ctx.get_thunk(*name_thunk)
+        let name_val = args
+            .ctx
+            .get_thunk(*name_thunk)
             .try_get_materialized()
             .expect("pre-materialized by force_count=2");
 
@@ -1138,10 +1204,14 @@ pub fn builtin_timestamp_in_tz(
             ));
         };
 
-        let t_val = args.ctx.get_thunk(*t_thunk)
+        let t_val = args
+            .ctx
+            .get_thunk(*t_thunk)
             .try_get_materialized()
             .expect("pre-materialized by force_count=2");
-        let tz_val = args.ctx.get_thunk(*tz_thunk)
+        let tz_val = args
+            .ctx
+            .get_thunk(*tz_thunk)
             .try_get_materialized()
             .expect("pre-materialized by force_count=2");
 
@@ -1248,25 +1318,39 @@ pub fn builtin_local_to_timestamp(
             ));
         }
 
-        let year_val = args.ctx.get_thunk(args.args[0])
+        let year_val = args
+            .ctx
+            .get_thunk(args.args[0])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let month_val = args.ctx.get_thunk(args.args[1])
+        let month_val = args
+            .ctx
+            .get_thunk(args.args[1])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let day_val = args.ctx.get_thunk(args.args[2])
+        let day_val = args
+            .ctx
+            .get_thunk(args.args[2])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let hour_val = args.ctx.get_thunk(args.args[3])
+        let hour_val = args
+            .ctx
+            .get_thunk(args.args[3])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let minute_val = args.ctx.get_thunk(args.args[4])
+        let minute_val = args
+            .ctx
+            .get_thunk(args.args[4])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let second_val = args.ctx.get_thunk(args.args[5])
+        let second_val = args
+            .ctx
+            .get_thunk(args.args[5])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let tz_val = args.ctx.get_thunk(args.args[6])
+        let tz_val = args
+            .ctx
+            .get_thunk(args.args[6])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
@@ -1373,7 +1457,9 @@ pub fn builtin_local_tz_name(
             ));
         };
 
-        let dir_val = args.ctx.get_thunk(*dir_thunk)
+        let dir_val = args
+            .ctx
+            .get_thunk(*dir_thunk)
             .try_get_materialized()
             .expect("pre-materialized by force_count=1");
         let _dir = match &dir_val {

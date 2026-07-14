@@ -193,7 +193,11 @@ fn eval_quote_preprocess<'a>(
         match &node.expr {
             SurfaceExpression::Unquote(inner) => {
                 // Evaluate the unquoted expression and convert back to SurfaceNode
-                let core = crate::lower::lower_inner(inner, &mut Vec::new());
+                let core = crate::lower::lower_inner(
+                    inner,
+                    &mut Vec::new(),
+                    ctx.scope_frames.as_ref().map(|v| v.as_slice()),
+                );
                 let thunk = eval_core_expr(&core, ctx).await?;
                 let value = materialize(&thunk, Some(&inner.span), ctx).await?;
                 value_to_surface_node(&value, inner.span.clone(), ctx)
@@ -217,7 +221,11 @@ fn eval_quote_preprocess<'a>(
                     // Handle unquote-splicing in dict entry value position
                     if let SurfaceExpression::UnquoteSplice(inner) = &entry.node.value.expr {
                         // Evaluate the unquote-splice expression
-                        let core = crate::lower::lower_inner(inner, &mut Vec::new());
+                        let core = crate::lower::lower_inner(
+                            inner,
+                            &mut Vec::new(),
+                            ctx.scope_frames.as_ref().map(|v| v.as_slice()),
+                        );
                         let thunk = eval_core_expr(&core, ctx).await?;
                         let inner_span = inner.span.clone();
                         let value = materialize(&thunk, Some(&inner_span), ctx).await?;
@@ -322,7 +330,11 @@ fn eval_quote_preprocess<'a>(
                     // Handle unquote-splicing in call argument position
                     if let SurfaceExpression::UnquoteSplice(inner) = &arg.expr {
                         // Evaluate the unquote-splice expression
-                        let core = crate::lower::lower_inner(inner, &mut Vec::new());
+                        let core = crate::lower::lower_inner(
+                            inner,
+                            &mut Vec::new(),
+                            ctx.scope_frames.as_ref().map(|v| v.as_slice()),
+                        );
                         let thunk = eval_core_expr(&core, ctx).await?;
                         let inner_span = inner.span.clone();
                         let value = materialize(&thunk, Some(&inner_span), ctx).await?;
@@ -337,8 +349,7 @@ fn eval_quote_preprocess<'a>(
                         }
                     } else {
                         // Regular argument - recursively process
-                        processed_args
-                            .push(eval_quote_preprocess(Arc::clone(arg), ctx).await?);
+                        processed_args.push(eval_quote_preprocess(Arc::clone(arg), ctx).await?);
                     }
                 }
                 let mut processed_named_args: Vec<Spanned<SurfaceNamedArg>> =
@@ -439,12 +450,10 @@ fn eval_quote_preprocess<'a>(
             }
 
             SurfaceExpression::Match { scrutinee, arms } => {
-                let processed_scrutinee =
-                    eval_quote_preprocess(Arc::clone(scrutinee), ctx).await?;
+                let processed_scrutinee = eval_quote_preprocess(Arc::clone(scrutinee), ctx).await?;
                 let mut processed_arms = Vec::with_capacity(arms.len());
                 for arm in arms {
-                    let processed_body =
-                        eval_quote_preprocess(Arc::clone(&arm.body), ctx).await?;
+                    let processed_body = eval_quote_preprocess(Arc::clone(&arm.body), ctx).await?;
                     let processed_guard = if let Some(ref guard) = arm.guard {
                         Some(eval_quote_preprocess(Arc::clone(guard), ctx).await?)
                     } else {
@@ -470,8 +479,7 @@ fn eval_quote_preprocess<'a>(
                 // unquotes inside the alias body to be evaluated.
                 let processed_decl = match decl.as_ref() {
                     SurfaceDeclaration::TypeAlias { params, body } => {
-                        let processed_body =
-                            eval_quote_preprocess(Arc::clone(body), ctx).await?;
+                        let processed_body = eval_quote_preprocess(Arc::clone(body), ctx).await?;
                         SurfaceDeclaration::TypeAlias {
                             params: params.clone(),
                             body: processed_body,
@@ -576,7 +584,11 @@ pub(crate) async fn extract_fn_annotation_extra(
             // This is the T-1124 fix: annotations like `as-type: [fn [let u] u]` are now evaluable.
             _ => {
                 // Lower SurfaceNode → CoreExpr (inline fields provide all needed type info).
-                let core_expr = crate::lower::lower_inner(&e.node.value, &mut Vec::new());
+                let core_expr = crate::lower::lower_inner(
+                    &e.node.value,
+                    &mut Vec::new(),
+                    ctx.scope_frames.as_ref().map(|v| v.as_slice()),
+                );
 
                 // Evaluate the CoreExpr to a thunk, then materialize to a Value.
                 let thunk = eval_core_expr(&core_expr, ctx).await?;
@@ -628,29 +640,61 @@ pub(crate) fn eval_core_expr<'a>(
             CoreExpr::Var {
                 name, level, slot, ..
             } => {
-                // O(1) FlatEnv dispatch via display vector.
-                // Formula: display[n-1-level] gives the EnvId for resolver level `level`.
-                // level=0 is innermost (current scope) → display[n-1]
-                // level=N is N scopes outward → display[n-1-N]
+                // FlatEnv dispatch via parent-chain traversal.
+                // Walk the parent chain `level` times from the current scope.
+                // level=0 is innermost (current scope — no hops needed)
+                // level=N is N scopes outward → walk N parent pointers
                 let thunk = {
                     let arena = ctx.env_arena.borrow();
-                    let n = arena.envs[ctx.current_env_id as usize].display.len();
                     let level_idx = *level as usize;
-                    if level_idx >= n {
-                        drop(arena);
-                        return Err(EvalError::internal(
-                            format!("'{name}' — resolver level {level} out of range for scope chain depth {n} (valid: 0..{n})"),
-                            span.clone(),
-                        )
-                        .into());
+                    match arena.walk_parent_chain(ctx.current_env_id, level_idx) {
+                        Ok(target_env_id) => {
+                            let slot_idx = *slot as usize;
+                            arena.envs[target_env_id.0 as usize]
+                                .slots
+                                .get(slot_idx)
+                                .and_then(|s| s.as_ref())
+                                .map(Arc::clone)
+                        }
+                        Err(depth_reached) => {
+                            // Build a summary of scope levels for diagnostics.
+                            let chain = arena.collect_parent_chain(ctx.current_env_id);
+                            let scope_depth = chain.len();
+                            let scope_summary: String = chain
+                                .iter()
+                                .enumerate()
+                                .map(|(chain_idx, env_id)| {
+                                    // chain[0] is root (outermost), chain[N-1] is innermost.
+                                    // level 0 = innermost = chain[N-1], level k = chain[N-1-k].
+                                    let scope_level = scope_depth - 1 - chain_idx;
+                                    let names = &arena.envs[env_id.0 as usize].slot_names;
+                                    let preview: Vec<&str> = names
+                                        .iter()
+                                        .filter(|s| !s.is_empty())
+                                        .take(5)
+                                        .map(|s| s.as_str())
+                                        .collect();
+                                    let ellipsis =
+                                        if names.iter().filter(|s| !s.is_empty()).count() > 5 {
+                                            ", ..."
+                                        } else {
+                                            ""
+                                        };
+                                    format!(
+                                        "\n    level {scope_level} (scope {env_id:?}): [{}{}]",
+                                        preview.join(", "),
+                                        ellipsis
+                                    )
+                                })
+                                .collect();
+                            drop(arena);
+                            return Err(EvalError::internal(
+                                format!("'{name}' — resolver level {level} out of range for scope chain depth {scope_depth} (ran out of parents at hop {depth_reached}){scope_summary}"),
+                                span.clone(),
+                            )
+                            .into());
+                        }
                     }
-                    let target_env_id = arena.envs[ctx.current_env_id as usize].display[n - 1 - level_idx];
-                    let slot_idx = *slot as usize;
-                    arena.envs[target_env_id.0 as usize]
-                        .slots
-                        .get(slot_idx)
-                        .and_then(|s| s.as_ref())
-                        .map(Arc::clone)
                 };
                 match thunk {
                     Some(t) => Ok(t),
@@ -712,17 +756,7 @@ pub(crate) fn eval_core_expr<'a>(
                 args,
                 named_args,
                 ..
-            } => {
-                eval_call_core(
-                    func,
-                    args,
-                    named_args,
-                    ctx,
-                    &span,
-                    Arc::new(expr.clone()),
-                )
-                .await
-            }
+            } => eval_call_core(func, args, named_args, ctx, &span, Arc::new(expr.clone())).await,
 
             // Fn: store body as Arc<Spanned<CoreExpr>> directly — no round-trip to Expr.
             CoreExpr::Fn {

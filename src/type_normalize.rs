@@ -134,7 +134,9 @@ pub fn normalize<'a>(
                     ctx.call_stack.push(fn_name.clone());
 
                     let result = if ctx.allow_eval {
-                        if let (Some(env), Some(eval_ctx)) = (ctx.type_stage_env.clone(), ctx.eval_ctx.clone()) {
+                        if let (Some(env), Some(eval_ctx)) =
+                            (ctx.type_stage_env.clone(), ctx.eval_ctx.clone())
+                        {
                             if let Some(resolved) =
                                 evaluate_resolver(fn_name, &normalized_args, &env, &eval_ctx).await
                             {
@@ -274,39 +276,36 @@ pub(crate) async fn evaluate_resolver(
 
     // Step 3: Construct a ThunkId for the resolver function.
     //
-    // The display vector in the leaf FlatEnv encodes the full ancestor chain:
-    //   display[0] = root (depth = display.len()-1 from leaf)
-    //   display[display.len()-1] = self (depth 0)
-    //   display[display.len()-1-depth] = ancestor at `depth` levels up
+    // Walk the parent chain `depth` hops from the leaf FlatEnv to reach the ancestor scope
+    // that owns the resolver function at `slot_index`.
     //
     // ThunkId.env_id is a u32 (raw EnvArena index), not an EnvId wrapper.
     //
-    // Invariant — Env parent chain depth equals FlatEnv display depth:
+    // Invariant — Env parent chain depth equals FlatEnv parent chain depth:
     //   Each builtin-eval call allocates exactly one FlatEnv (via builtin-extend-env with
     //   flat-env: set to the prior call's flat-env-id). The Env chain grows one hop per
-    //   builtin-eval call, and the FlatEnv display vector grows one entry per alloc_child
-    //   call. These two parallel chains are always kept in sync by the loader: every
+    //   builtin-eval call, and the FlatEnv parent chain grows one hop per alloc_child call.
+    //   These two parallel chains are always kept in sync by the loader: every
     //   builtin-eval → builtin-extend-env pair produces exactly one Env hop and one
-    //   FlatEnv display entry. Therefore `display[display_len - 1 - depth]` always
-    //   maps correctly to the FlatEnv at Env depth `depth`.
+    //   FlatEnv parent hop. Therefore walking `depth` parent hops from the leaf always
+    //   reaches the FlatEnv at Env depth `depth`.
     //
     //   This mapping would break only if builtin-extend-env were called without flat-env:
-    //   (causing an alloc_root instead of alloc_child, breaking the display chain). The
+    //   (causing an alloc_root instead of alloc_child, severing the parent chain). The
     //   loader and test-loader always pass flat-env: — verified by code review of
     //   loader.llt and test-loader.llt. The type-stage evaluation path does not omit
     //   flat-env: for any document after the initial bootstrap.
     let resolver_thunk_id = {
         let arena_borrow = eval_ctx.env_arena.borrow();
-        let leaf_env = &arena_borrow.envs[type_stage_flat_env_id as usize];
-        let display_len = leaf_env.display.len();
-        if depth >= display_len {
-            // Depth exceeds display chain — fn_name not reachable
-            return None;
-        }
-        let target_env_id = leaf_env.display[display_len - 1 - depth];
-        crate::arena::ThunkId {
-            env_id: target_env_id.0,
-            slot: slot_index as u32,
+        match arena_borrow.walk_parent_chain(type_stage_flat_env_id, depth) {
+            Err(_) => {
+                // Depth exceeds parent chain — fn_name not reachable
+                return None;
+            }
+            Ok(target_env_id) => crate::arena::ThunkId {
+                env_id: target_env_id.0,
+                slot: slot_index as u32,
+            },
         }
     };
 
@@ -314,10 +313,7 @@ pub(crate) async fn evaluate_resolver(
     let resolver_thunk = eval_ctx.env_arena.borrow().get_thunk(resolver_thunk_id);
 
     // Step 5: Convert Type args to TypeNode values
-    let type_args: Vec<Value> = args
-        .iter()
-        .filter_map(|ty| type_to_typenode(ty))
-        .collect();
+    let type_args: Vec<Value> = args.iter().filter_map(|ty| type_to_typenode(ty)).collect();
     if type_args.len() != args.len() {
         // At least one type couldn't be converted to a TypeNode value
         return None;
@@ -335,11 +331,18 @@ pub(crate) async fn evaluate_resolver(
         .collect();
 
     // Materialize the resolver thunk to get the Function value
-    let resolver_val = crate::eval::materialize(&resolver_thunk, None, eval_ctx).await.ok()?;
+    let resolver_val = crate::eval::materialize(&resolver_thunk, None, eval_ctx)
+        .await
+        .ok()?;
 
     // Dispatch: resolver must be a Function
     let (params, body, closure_env_id) = match resolver_val {
-        Value::Function { params, body, closure_env_id, .. } => (params, body, closure_env_id),
+        Value::Function {
+            params,
+            body,
+            closure_env_id,
+            ..
+        } => (params, body, closure_env_id),
         _ => return None,
     };
 
@@ -359,7 +362,9 @@ pub(crate) async fn evaluate_resolver(
     let result_thunk = invoke_function(&call_ctx).await.ok()?;
 
     // Force the result
-    let result_val = crate::eval::materialize(&result_thunk, None, eval_ctx).await.ok()?;
+    let result_val = crate::eval::materialize(&result_thunk, None, eval_ctx)
+        .await
+        .ok()?;
 
     // Step 7: Convert result TypeNode Value back to Type
     match &result_val {
@@ -408,7 +413,10 @@ impl fmt::Display for Type {
                     if !row.fields.is_empty() {
                         write!(f, " ")?;
                     }
-                    let key_str = key.as_ref().map(|k| format!("{}", k)).unwrap_or_else(|| "Any".to_string());
+                    let key_str = key
+                        .as_ref()
+                        .map(|k| format!("{}", k))
+                        .unwrap_or_else(|| "Any".to_string());
                     write!(f, "...@[Dict {} {}]", key_str, value)?;
                 }
                 write!(f, "]")

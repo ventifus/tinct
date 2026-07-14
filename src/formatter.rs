@@ -4,8 +4,6 @@
 // formatter script (`stdlib/cli/fmt/pretty.llt`) with the parsed AST dict as `%`.
 // The Rust `Formatter` struct was deleted — it was only ever used by the now-removed
 // `format_source` function that was dead code from `tinct fmt`'s perspective.
-use std::sync::Arc;
-
 /// Format source using the tinct-hosted formatter script, optionally receiving an already-open
 /// base directory to avoid re-acquiring ambient filesystem authority.
 ///
@@ -66,25 +64,16 @@ pub async fn format_source_tinct_with_dir(
     // resolve to de Bruijn coordinates instead of falling back to name-based lookup.
     let env = crate::builtins::build_core_env();
 
-    // Build a child env for resolver seeding that includes % (pipeline input).
-    // The formatter script references % to access the parsed AST. Without registering %
-    // in the resolver's seed env, it is unresolvable and lower() emits a Placeholder.
-    // % is at level=0 (innermost scope), slot=0 (first slot of the child scope).
-    // Core builtins remain at level=1 (parent scope), slot=K.
-    let resolver_env = {
-        use std::sync::RwLock;
-        let child = Arc::new(RwLock::new(crate::env::Env::with_parent(Arc::clone(&env))));
-        child.write().unwrap().insert_slot_name_only("%".to_string());
-        child
-    };
-
     // Variable resolution pass — builds ResolutionTable (NodeId → de Bruijn coordinates).
-    // Seeded from the child env (% at level=0 slot=0, builtins at level=1 slot=K).
-    let _ = resolve::resolve_surface_program(&formatter_program, Some(&resolver_env));
+    // T-1576: formatter runs in bootstrap mode (no arena yet). The resolver uses empty
+    // scope stack; builtins and % become FreeVars, falling back to name-based lookup.
+    // This is acceptable for the formatter script — it doesn't need slot-based resolution.
+    let (_table, _frames) = resolve::resolve_surface_program(&formatter_program, &[]);
     // Typecheck the desugared formatter (writes inline type annotations).
     let _ = typecheck::typecheck_surface_program_annotation_table(&formatter_program).await;
 
-    let ctx = EvalContext::new_empty(base_dir, Arc::clone(&env), false);
+    let _ = env; // env no longer needed by EvalContext
+    let ctx = EvalContext::new_empty(base_dir, false);
 
     // Convert input AST to dict using the now-stable ctx.
     use crate::surface_convert::{surface_program_to_dict, AstToDictOpts, CommentMaps};
@@ -104,14 +93,10 @@ pub async fn format_source_tinct_with_dir(
         surface_program_to_dict(&parse_output.program, &opts, &ctx).map_err(|e| format!("{e}"))?;
 
     // Evaluate formatter with AST as % (pipeline input).
-    let formatter_thunk = eval::eval_surface_file_with_input(
-        &formatter_program,
-        Arc::clone(&env),
-        &ctx,
-        Some(ast_thunk),
-    )
-    .await
-    .map_err(|e| format!("formatter eval error: {e}"))?;
+    let formatter_thunk =
+        eval::eval_surface_file_with_input(&formatter_program, &ctx, Some(ast_thunk))
+            .await
+            .map_err(|e| format!("formatter eval error: {e}"))?;
 
     // Materialize the result — should be [Result.Ok String] or [Result.Error msg].
     let result_val = eval::materialize(&formatter_thunk, None, &ctx)

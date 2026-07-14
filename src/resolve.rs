@@ -63,6 +63,10 @@ impl SurfaceResolver {
         self.scopes.push(scope);
     }
 
+    fn enter_scope_from_frame(&mut self, frame: &indexmap::IndexMap<String, ()>) {
+        self.scopes.push(frame.clone());
+    }
+
     fn exit_scope(&mut self) {
         self.scopes
             .pop()
@@ -405,9 +409,9 @@ impl SurfaceResolver {
     fn walk_ctor_node(&mut self, node: &Arc<SurfaceNode>) {
         match &node.expr {
             // Annotated VarRef: `Red@[as-type: [fn [let t] t]]` (bare unit constructor)
-            SurfaceExpression::VarRef { name, annotation, .. }
-                if crate::eval::is_constructor_name(name) =>
-            {
+            SurfaceExpression::VarRef {
+                name, annotation, ..
+            } if crate::eval::is_constructor_name(name) => {
                 if let Some(ann) = annotation {
                     self.walk_ctor_annotation_values(ann);
                 }
@@ -422,7 +426,10 @@ impl SurfaceResolver {
             }
             // Call with annotated func: `Call { func: VarRef("Dict")@[...], named_args: [...] }`
             SurfaceExpression::Call { func, .. } => {
-                if let SurfaceExpression::VarRef { name, annotation, .. } = &func.expr {
+                if let SurfaceExpression::VarRef {
+                    name, annotation, ..
+                } = &func.expr
+                {
                     if crate::eval::is_constructor_name(name) {
                         if let Some(ann) = annotation {
                             self.walk_ctor_annotation_values(ann);
@@ -508,7 +515,10 @@ impl SurfaceResolver {
         }
     }
 
-    fn walk_surface_document(&mut self, doc: &SurfaceDocument) {
+    fn walk_surface_document(
+        &mut self,
+        doc: &SurfaceDocument,
+    ) -> Vec<indexmap::IndexMap<String, ()>> {
         let mut injected = 0usize;
         let items: Vec<&SurfaceItem> = doc.items.iter().collect();
         let expr_count = items
@@ -537,9 +547,16 @@ impl SurfaceResolver {
                 }
             }
         }
+
+        // Capture injected frames before exiting
+        let start = self.scopes.len() - injected;
+        let frames: Vec<_> = self.scopes[start..].iter().cloned().collect();
+
         for _ in 0..injected {
             self.exit_scope();
         }
+
+        frames
     }
 
     fn finish(self) -> ResolutionTable {
@@ -562,103 +579,75 @@ impl SurfaceResolver {
 /// Resolve a single SurfaceDocument in-place, writing de Bruijn coordinates directly to
 /// the inline `Resolution` OnceLocks on each VarRef node.
 ///
-/// The env chain is walked to populate resolver scopes from outermost to innermost.
-/// Names not found in the env chain have their OnceLock left unset (None) and are
+/// Accepts `initial_frames` from prior resolver runs as input to establish outer scopes.
+/// Names not found in the scope stack have their OnceLock left unset (None) and are
 /// returned in the errors vec as `(name, span)` pairs. Only expression-position VarRefs
 /// are reported — annotation type names, static dict keys, LetDecl binding names, and
 /// class/instance method-name keys are suppressed (they are not runtime variable references).
 ///
-/// The resolver MUST be seeded from the same env the document will be evaluated with.
-/// A mismatch produces wrong de Bruijn levels, causing eval-time "undefined variable" errors.
-///
-/// Returns `(ResolutionTable, errors)`. The ResolutionTable can be discarded by most callers;
-/// the errors are what `builtin-resolve` surfaces in its `errors:` result dict.
+/// Returns `(ResolutionTable, errors, new_frames)` where `new_frames` are the scope frames
+/// ADDED by this document (not including `initial_frames`).
 pub fn resolve_surface_document_inplace(
     doc: &crate::ast::SurfaceDocument,
-    outer_env: &std::sync::Arc<std::sync::RwLock<crate::env::Env>>,
-) -> (ResolutionTable, Vec<(String, crate::ast::Span)>) {
+    initial_frames: &[indexmap::IndexMap<String, ()>],
+) -> (
+    ResolutionTable,
+    Vec<(String, crate::ast::Span)>,
+    Vec<indexmap::IndexMap<String, ()>>,
+) {
     let mut resolver = SurfaceResolver::new();
 
-    // Collect env chain levels from outermost to innermost
-    let mut env_levels: Vec<Vec<String>> = Vec::new();
-    {
-        let mut current = Some(std::sync::Arc::clone(outer_env));
-        while let Some(env_rc) = current {
-            let env = env_rc.read().unwrap();
-            env_levels.push(env.slot_names());
-            current = env.parent.as_ref().map(std::sync::Arc::clone);
-        }
+    // Seed from initial_frames (outermost first)
+    for frame in initial_frames {
+        resolver.enter_scope_from_frame(frame);
     }
 
-    // Enter scopes from outermost (root) to innermost (doc-level).
-    // This ensures level 0 = innermost = doc-level scope, matching eval-time env chain.
-    for names in env_levels.iter().rev() {
-        resolver.enter_scope(names);
-    }
+    let new_frames = resolver.walk_surface_document(doc);
 
-    resolver.walk_surface_document(doc);
-
-    for _ in &env_levels {
+    // Exit seeded scopes
+    for _ in initial_frames {
         resolver.exit_scope();
     }
 
-    resolver.finish_with_errors()
+    let (table, errors) = resolver.finish_with_errors();
+    (table, errors, new_frames)
 }
 
 /// Resolve all VarRef nodes in a SurfaceProgram and return a ResolutionTable.
 ///
-/// When `env` is provided, the resolver is pre-seeded from the env chain so that
-/// builtin names (e.g. `builtin-mul`, prelude functions) resolve to
-/// proper de Bruijn (level, slot) coordinates instead of leaving VarRef nodes
-/// unresolved and falling back to name-based lookup at eval time.
+/// Accepts `initial_frames` from prior resolver runs as input to establish outer scopes.
+/// Pass `&[]` when there is no outer scope (e.g., standalone eval, tests).
 ///
-/// When `env` is `None`, the resolver starts with an empty scope stack. Dict-internal
-/// sibling references are still resolved by the resolver's scope-tracking logic; only
-/// env-provided names (builtins, caps) remain unresolved.
-///
-/// Callers that have a runtime `Environment` available MUST pass `Some(&env)`. Callers
-/// that genuinely have no env (tests, type-checker bootstrap paths) pass `None`.
+/// Returns `(ResolutionTable, new_frames)` where `new_frames` are the scope frames
+/// ADDED by this program (not including `initial_frames`).
 pub fn resolve_surface_program(
     program: &SurfaceProgram,
-    env: Option<&std::sync::Arc<std::sync::RwLock<crate::env::Env>>>,
-) -> ResolutionTable {
+    initial_frames: &[indexmap::IndexMap<String, ()>],
+) -> (ResolutionTable, Vec<indexmap::IndexMap<String, ()>>) {
     let mut resolver = SurfaceResolver::new();
 
-    if let Some(env_arc) = env {
-        // Seed the resolver from the env chain: collect scope frames from outermost to
-        // innermost, matching the De Bruijn convention (level 0 = innermost scope).
-        let mut env_levels: Vec<Vec<String>> = Vec::new();
-        let mut current = Some(std::sync::Arc::clone(env_arc));
-        while let Some(env_rc) = current {
-            let env_guard = env_rc.read().unwrap();
-            env_levels.push(env_guard.slot_names());
-            current = env_guard.parent.as_ref().map(std::sync::Arc::clone);
-        }
-        // Enter scopes from outermost to innermost so that level 0 = innermost at resolve time.
-        for names in env_levels.iter().rev() {
-            resolver.enter_scope(names);
-        }
-        for doc_spanned in &program.documents {
-            let doc = &doc_spanned.node;
-            if doc.stage == Some(crate::ast::Stage::Type) {
-                continue;
-            }
-            resolver.walk_surface_document(doc);
-        }
-        for _ in &env_levels {
-            resolver.exit_scope();
-        }
-    } else {
-        for doc_spanned in &program.documents {
-            let doc = &doc_spanned.node;
-            if doc.stage == Some(crate::ast::Stage::Type) {
-                continue;
-            }
-            resolver.walk_surface_document(doc);
-        }
+    // Seed from initial_frames (outermost first)
+    for frame in initial_frames {
+        resolver.enter_scope_from_frame(frame);
     }
 
-    resolver.finish()
+    let mut new_frames = Vec::new();
+    for doc_spanned in &program.documents {
+        let doc = &doc_spanned.node;
+        if doc.stage == Some(crate::ast::Stage::Type) {
+            continue;
+        }
+        let doc_frames = resolver.walk_surface_document(doc);
+        new_frames.extend(doc_frames);
+    }
+
+    // Exit seeded scopes
+    for _ in initial_frames {
+        resolver.exit_scope();
+    }
+
+    let table = resolver.finish();
+    (table, new_frames)
 }
 
 /// Extract static string-keyed names from a SurfaceExpression::Dict's entries.
@@ -836,7 +825,7 @@ mod tests {
         crate::desugar::desugar_surface_program(&mut program);
         // No runtime env in unit tests — dict-internal and lexical references still
         // resolve via the resolver's scope tracking; env-provided names (builtins) use None.
-        let table = resolve_surface_program(&program, None);
+        let (table, _frames) = resolve_surface_program(&program, &[]);
         (program, table)
     }
 

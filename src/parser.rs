@@ -820,7 +820,7 @@ enum StackFrame {
     CaseDecl {
         let_bindings: Option<Arc<SurfaceNode>>,
         pattern: Option<Arc<SurfaceNode>>,
-        body: Option<Arc<SurfaceNode>>,
+        body: Vec<Arc<SurfaceNode>>,
         span_start: Position,
     },
     /// Pipe operator: `lhs | rhs`
@@ -1620,7 +1620,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         stack.push(StackFrame::CaseDecl {
                             let_bindings: None,
                             pattern: None,
-                            body: None,
+                            body: vec![],
                             span_start: span.start,
                         });
                         i += 1; // Consume the OpenBracket
@@ -2456,7 +2456,10 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                                             SurfaceExpression::Str(s) => {
                                                                 structural = s.clone();
                                                             }
-                                                            SurfaceExpression::VarRef { name, .. } => {
+                                                            SurfaceExpression::VarRef {
+                                                                name,
+                                                                ..
+                                                            } => {
                                                                 structural = name.clone();
                                                             }
                                                             _ => {}
@@ -2655,29 +2658,37 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         body,
                         span_start,
                     } => {
-                        // CaseDecl requires exactly 3 positional args: [let bindings] pattern body
+                        // CaseDecl requires [let bindings] pattern body+
                         if let_bindings.is_none() {
                             close_bracket_recover!(ParseError {
-                                message: "case arm requires exactly 3 positional arguments: [let bindings] pattern body".to_string(),
+                                message: "case arm requires [let bindings] pattern body"
+                                    .to_string(),
                                 span: Some(dict_span(span_start)),
                             });
                         } else if pattern.is_none() {
                             close_bracket_recover!(ParseError {
-                                message: "case arm requires exactly 3 positional arguments: [let bindings] pattern body".to_string(),
+                                message: "case arm requires [let bindings] pattern body"
+                                    .to_string(),
                                 span: Some(dict_span(span_start)),
                             });
-                        } else if body.is_none() {
+                        } else if body.is_empty() {
                             close_bracket_recover!(ParseError {
-                                message: "case arm requires exactly 3 positional arguments: [let bindings] pattern body".to_string(),
+                                message: "case arm requires [let bindings] pattern body"
+                                    .to_string(),
                                 span: Some(dict_span(span_start)),
                             });
                         } else {
-                            #[allow(clippy::unnecessary_unwrap)] // Checked above by is_none() guard
+                            #[allow(clippy::unnecessary_unwrap)]
+                            let body_expr = if body.len() == 1 {
+                                body.into_iter().next().unwrap()
+                            } else {
+                                mk(SurfaceExpression::Sequential(body), dict_span(span_start))
+                            };
                             let spanned_case = mk(
                                 SurfaceExpression::CaseArm {
                                     let_bindings: let_bindings.unwrap(),
                                     pattern: pattern.unwrap(),
-                                    body: body.unwrap(),
+                                    body: body_expr,
                                 },
                                 dict_span(span_start),
                             );
@@ -3782,8 +3793,10 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             }
 
                             let caps_end = token_vec[i - 1].span.end;
-                            next_doc_caps =
-                                Some(Spanned::new(caps_vec, Span::new(caps_start, caps_end, token_vec[i - 1].span.file.clone())));
+                            next_doc_caps = Some(Spanned::new(
+                                caps_vec,
+                                Span::new(caps_start, caps_end, token_vec[i - 1].span.file.clone()),
+                            ));
                         }
                         Token::Identifier(s) if s == "uses" => {
                             // uses: pragma
@@ -3875,8 +3888,10 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             }
 
                             let uses_end = token_vec[i - 1].span.end;
-                            next_doc_uses =
-                                Some(Spanned::new(uses_vec, Span::new(uses_start, uses_end, token_vec[i - 1].span.file.clone())));
+                            next_doc_uses = Some(Spanned::new(
+                                uses_vec,
+                                Span::new(uses_start, uses_end, token_vec[i - 1].span.file.clone()),
+                            ));
                         }
                         Token::Identifier(s) if s == "stage" => {
                             // stage: pragma
@@ -4968,8 +4983,8 @@ fn pop_last_value_from_frame(
             // like `Result.Ok` as the pattern or extend the body with field access).
             // It is not valid inside the [let bindings] position.
             if pattern.is_some() {
-                // body phase: pop body as dot-access target, or pattern if body not yet set
-                if let Some(b) = body.take() {
+                // body phase: pop last body expr as dot-access target, or pattern if no body yet
+                if let Some(b) = body.pop() {
                     Ok(b)
                 } else {
                     // pattern is set, body is not yet set — this means the pattern itself
@@ -6042,26 +6057,17 @@ fn push_expr_to_parent(
                 ref mut body,
                 ..
             }) => {
-                // CaseDecl collects exactly three expressions:
-                //   1. let_bindings: the [let ...] binding declaration
-                //   2. pattern:      the structural pattern
-                //   3. body:         the arm body
+                // CaseDecl collects [let bindings] pattern body+
+                // Multiple body expressions are wrapped in Sequential (same as fn).
                 if let_bindings.is_none() {
                     *let_bindings = Some(node);
                     Ok(())
                 } else if pattern.is_none() {
                     *pattern = Some(node);
                     Ok(())
-                } else if body.is_none() {
-                    *body = Some(node);
-                    Ok(())
                 } else {
-                    Err(ParseError {
-                        message:
-                            "case arm can only have three expressions: [let bindings] pattern body"
-                                .to_string(),
-                        span: Some(node.span.clone()),
-                    })
+                    body.push(node);
+                    Ok(())
                 }
             }
             Some(StackFrame::Pipe { lhs, span_start }) => {

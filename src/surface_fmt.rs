@@ -113,9 +113,25 @@ pub fn fmt_fn(
     let param_scope: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
 
     // Step 1: Collect all free (non-stdlib, non-param-bound) variable names.
-    let stdlib_env = ctx
-        .config
-        .stdlib_env
+    // Build a minimal stdlib name set from the FlatEnv root (env_id=0) slot names.
+    let stdlib_name_set: HashSet<String> = {
+        let arena = ctx.env_arena.borrow();
+        if !arena.envs.is_empty() {
+            arena.envs[0].slot_names.iter().cloned().collect()
+        } else {
+            HashSet::new()
+        }
+    };
+    // Build a temporary Env with those names so collect_free_vars can check them.
+    let stdlib_env_inner = {
+        let mut e = crate::env::Env::new();
+        for name in &stdlib_name_set {
+            e.insert_slot_name_only(name.clone());
+        }
+        e
+    };
+    let stdlib_env = std::sync::RwLock::new(stdlib_env_inner);
+    let stdlib_env = stdlib_env
         .read()
         .map_err(|_| "failed to read stdlib_env lock")?;
     let mut free_vars: HashSet<String> = HashSet::new();
@@ -123,11 +139,11 @@ pub fn fmt_fn(
 
     // Step 2: Build substitution map: name → SCN string.
     // For each captured name, look it up in env and serialize its value.
-    // T-1558: Env is type-metadata only — no runtime values available for substitution.
-    // Substitution is deferred to T-1559 when FlatEnv provides closure value access.
+    // Env is type-metadata only — no runtime values available for substitution.
+    // Substitution requires FlatEnv closure value access (B-515 tracks arm binding allocation).
     // Leave all free vars as-is (ambient names resolved through the enclosing scope chain).
     let substitutions: HashMap<String, String> = HashMap::new();
-    let _ = env; // env parameter retained for future T-1559 wiring
+    let _ = env; // env parameter retained for future FlatEnv wiring (B-515)
 
     // Step 3: Capture-avoiding alpha-rename.
     // For each top-level param p, check if p appears as a free-standing identifier
@@ -1425,8 +1441,8 @@ impl Value {
                 annotation: _,
             } => match ctx {
                 Some(ctx) => {
-                    // T-1558: Value::Function no longer stores Arc<RwLock<Env>>.
-                    // Use an empty Env for fmt_fn formatting (T-1559 will wire properly).
+                    // Value::Function no longer stores Arc<RwLock<Env>> (removed in T-1558).
+                    // Uses a stub Env for fmt_fn formatting; B-515 tracks proper FlatEnv wiring.
                     let stub_env = Env::new();
                     fmt_fn(params, body, &stub_env, ctx)
                 }
@@ -1521,25 +1537,22 @@ impl Value {
             Value::TypeContext(_) => {
                 Err(format!("no tinct representation for {}", self.type_name()))
             }
-            Value::Environment(_) => {
-                Err(format!("no tinct representation for {}", self.type_name()))
-            }
-            Value::Bool(b) => Ok(if *b { "true".to_string() } else { "false".to_string() }),
+            Value::Bool(b) => Ok(if *b {
+                "true".to_string()
+            } else {
+                "false".to_string()
+            }),
             Value::Handle { .. } => {
                 Err(format!("no tinct representation for {}", self.type_name()))
             }
             Value::WriteHandle { .. } => {
                 Err(format!("no tinct representation for {}", self.type_name()))
             }
-            Value::Seq { .. } => {
-                Err(format!("no tinct representation for {}", self.type_name()))
-            }
+            Value::Seq { .. } => Err(format!("no tinct representation for {}", self.type_name())),
             Value::Expression(_) => {
                 Err(format!("no tinct representation for {}", self.type_name()))
             }
-            Value::Arena { .. } => {
-                Err(format!("no tinct representation for {}", self.type_name()))
-            }
+            Value::Arena { .. } => Err(format!("no tinct representation for {}", self.type_name())),
         }
     }
 }

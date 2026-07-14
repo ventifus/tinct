@@ -6,7 +6,7 @@
   [stats:       [builtin-arena-stats arena]]
   [drop-result: [builtin-arena-drop arena]]
   [name-ok:    [builtin-eq-string stats.name "test-drop"]
-   thunks-ok:  [builtin-eq-int stats.thunks 0]
+   thunks-ok:  [builtin-eq-int stats.thunks-live 0]
    drop-ok:    [builtin-eq-int [builtin-dict-length drop-result] 0]]]]
 === out
 Dict({"name-ok": Int(1), "thunks-ok": Int(1), "drop-ok": Int(1)})

@@ -840,7 +840,11 @@ pub(crate) fn builtin_str_to_upper_char(
             &ctx,
             call_span.clone(),
         )?;
-        let s = require_string("str-to-upper-char", val, ctx.get_thunk(args[0]).span.clone())?;
+        let s = require_string(
+            "str-to-upper-char",
+            val,
+            ctx.get_thunk(args[0]).span.clone(),
+        )?;
         ok_val(string_val(&s.to_uppercase()), call_span)
     })
 }
@@ -870,7 +874,11 @@ pub(crate) fn builtin_str_to_lower_char(
             &ctx,
             call_span.clone(),
         )?;
-        let s = require_string("str-to-lower-char", val, ctx.get_thunk(args[0]).span.clone())?;
+        let s = require_string(
+            "str-to-lower-char",
+            val,
+            ctx.get_thunk(args[0]).span.clone(),
+        )?;
         ok_val(string_val(&s.to_lowercase()), call_span)
     })
 }
@@ -954,7 +962,6 @@ pub(crate) fn builtin_str_map_chars(
                         args: vec![char_tid],
                         named: None,
                         call_span: call_span.clone(),
-                        caller_env: Arc::new(std::sync::RwLock::new(crate::value::Environment::new())),
                         caller_env_id: 0,
                         ctx: Arc::clone(&ctx),
                     };
@@ -1349,4 +1356,3 @@ pub fn string_builtins() -> Vec<crate::value::BuiltinDef> {
         ),
     ]
 }
-

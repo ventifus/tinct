@@ -144,7 +144,8 @@ pub(crate) async fn check_dot_access(
         // looks up "name" in the bound type, and unifies β with the field type.
         Type::TypeVar(ref alpha, _alpha_level) => {
             // β: fresh TypeVar for the field type
-            let (beta_name, beta) = state.fresh_type_var_with(Some(field_str), None, Kind::Type, &span);
+            let (beta_name, beta) =
+                state.fresh_type_var_with(Some(field_str), None, Kind::Type, &span);
             constraints.push(Constraint::HasField {
                 label: crate::type_def::Label::Concrete(field_str.to_string()),
                 dict_var: alpha.clone(),

@@ -26,7 +26,7 @@ pub struct EnvId(pub u32);
 /// `FlatEnv` slots directly own `Arc<Thunk>` values — thunks are addressed by
 /// `ThunkId { env_id, slot }` which indexes into the owning FlatEnv.
 #[derive(Debug)]
-pub(crate) struct EnvArena {
+pub struct EnvArena {
     pub(crate) envs: Vec<FlatEnv>,
 }
 
@@ -37,8 +37,6 @@ impl EnvArena {
     }
 
     /// Allocate a root environment (no parent) with the given slot capacity.
-    ///
-    /// The display vector is initialized to contain only the new environment's own EnvId.
     pub fn alloc_root(&mut self, slot_count: usize) -> EnvId {
         let len = self.envs.len();
         assert!(
@@ -49,7 +47,8 @@ impl EnvArena {
         let id = EnvId(len as u32);
         let env = FlatEnv {
             slots: Vec::with_capacity(slot_count),
-            display: vec![id],
+            parent: None,
+            slot_names: Vec::with_capacity(slot_count),
             alloc_count: std::sync::atomic::AtomicU64::new(0),
         };
         self.envs.push(env);
@@ -57,8 +56,6 @@ impl EnvArena {
     }
 
     /// Allocate a child environment with the given parent.
-    ///
-    /// The display vector is cloned from the parent and extended with the new environment's EnvId.
     pub fn alloc_child(&mut self, parent_id: EnvId, slot_count: usize) -> EnvId {
         let len = self.envs.len();
         assert!(
@@ -67,15 +64,10 @@ impl EnvArena {
             u32::MAX
         );
         let id = EnvId(len as u32);
-
-        // Clone parent's display vector and extend with self
-        let parent_display = self.envs[parent_id.0 as usize].display.clone();
-        let mut display = parent_display;
-        display.push(id);
-
         let env = FlatEnv {
             slots: Vec::with_capacity(slot_count),
-            display,
+            parent: Some(parent_id),
+            slot_names: Vec::with_capacity(slot_count),
             alloc_count: std::sync::atomic::AtomicU64::new(0),
         };
         self.envs.push(env);
@@ -99,7 +91,13 @@ impl EnvArena {
     /// slot `slot_idx` in the environment identified by `env_id` with the given thunk.
     /// Used by `eval_dict_core` to batch-fill letrec slots after all entries are created,
     /// and by `bind_args_thunks` to fill function call frame parameter slots.
-    pub fn fill_letrec_slot(&mut self, env_id: EnvId, slot_idx: u32, thunk_id: ThunkId) {
+    pub fn fill_letrec_slot(
+        &mut self,
+        env_id: EnvId,
+        slot_idx: u32,
+        thunk_id: ThunkId,
+        name: &str,
+    ) {
         let thunk = {
             // Get the thunk from the ThunkId's source env. The thunk was just allocated
             // in this same arena, so the lookup is always valid.
@@ -115,19 +113,67 @@ impl EnvArena {
             env.slots.resize_with(idx + 1, || None);
         }
         env.slots[idx] = Some(thunk);
+        // Extend slot_names to match slots vec, filling gaps with empty strings
+        if idx >= env.slot_names.len() {
+            env.slot_names.resize(idx + 1, String::new());
+        }
+        env.slot_names[idx] = name.to_string();
     }
 
-    /// Allocate a new anonymous slot in an existing scope, returning its ThunkId.
-    pub fn alloc_slot_thunk(&mut self, env_id: EnvId, thunk: Arc<crate::value::Thunk>) -> ThunkId {
+    /// Allocate a new slot in an existing scope, returning its ThunkId.
+    /// Named slots pass the name; anonymous slots pass "".
+    pub fn alloc_slot_thunk(
+        &mut self,
+        env_id: EnvId,
+        thunk: Arc<crate::value::Thunk>,
+        name: &str,
+    ) -> ThunkId {
         let env = &mut self.envs[env_id.0 as usize];
         let slot = env.slots.len() as u32;
         env.slots.push(Some(thunk));
+        env.slot_names.push(name.to_string());
         env.alloc_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         ThunkId {
             env_id: env_id.0,
             slot,
         }
+    }
+
+    /// Walk the parent chain `level` hops from `start_env_id`.
+    ///
+    /// Returns `Ok(target_env_id)` if the chain is deep enough, or `Err(depth_reached)`
+    /// if the chain ran out of parents before reaching `level` hops.
+    ///
+    /// `level=0` returns `start_env_id` immediately (no hops). `level=1` returns
+    /// the immediate parent, `level=2` the grandparent, and so on.
+    pub fn walk_parent_chain(&self, start_env_id: u32, level: usize) -> Result<EnvId, usize> {
+        let mut current = EnvId(start_env_id);
+        for hop in 0..level {
+            match self.envs[current.0 as usize].parent {
+                Some(p) => current = p,
+                None => return Err(hop),
+            }
+        }
+        Ok(current)
+    }
+
+    /// Collect the parent chain from `start_env_id` outward, returning a Vec where
+    /// index 0 is the root (outermost) and the last element is `start_env_id` (innermost).
+    ///
+    /// Used by the resolver to seed scope levels outermost-first.
+    pub fn collect_parent_chain(&self, start_env_id: u32) -> Vec<EnvId> {
+        let mut chain = Vec::new();
+        let mut current = EnvId(start_env_id);
+        loop {
+            chain.push(current);
+            match self.envs[current.0 as usize].parent {
+                Some(p) => current = p,
+                None => break,
+            }
+        }
+        chain.reverse(); // outermost (root) first
+        chain
     }
 
     /// Get a thunk by ThunkId.
@@ -151,7 +197,6 @@ impl EnvArena {
         env.slots.clear();
     }
 
-
     /// Get a reference to the environment at the given handle.
     #[cfg(test)]
     fn get(&self, id: EnvId) -> &FlatEnv {
@@ -171,25 +216,28 @@ impl Default for EnvArena {
     }
 }
 
-/// Flat environment representation: O(1) slot-based variable lookup.
+/// Flat environment representation: slot-based variable lookup via parent-chain traversal.
 ///
 /// Slots directly own `Arc<Thunk>` values. Variables are assigned `(level, slot)` pairs
-/// by the variable resolution pass (de Bruijn levels), allowing direct indexing.
+/// by the variable resolution pass (de Bruijn levels). Lookup walks the parent chain
+/// `level` times from the current scope to reach the target environment, then indexes
+/// into that environment's slots vector.
 ///
-/// **Display vector:** Prepopulated at creation with the `EnvId` of every ancestor
-/// scope from level 0 to current level. This enables true O(1) access via
-/// `display[level].slots[slot]` without walking the parent chain.
-/// The display vector encodes the full parent chain: `display[display.len()-2]` is the
-/// immediate parent, `display[0]` is the root. No separate `parent` field is needed.
+/// **Parent chain:** `parent` stores the immediate parent `EnvId`. Walking the chain
+/// `level` times from the current scope gives the target environment. Root environments
+/// have `parent: None`. Typical scope depth is 3-8 levels, making O(level) traversal
+/// equivalent in practice to O(1) display-vector access.
 #[derive(Debug)]
-pub(crate) struct FlatEnv {
+pub struct FlatEnv {
     /// Named slots (dict entries, function params) + anonymous slots.
     /// Indexed by slot number. Named slots filled via fill_slot_thunk; anonymous via alloc_slot_thunk.
     pub(crate) slots: Vec<Option<Arc<crate::value::Thunk>>>,
-    /// Display vector: prepopulated at creation with ancestor EnvIds indexed by level.
-    /// For a scope at level `k`, `display[0..k]` contains the EnvIds of all outer scopes,
-    /// and `display[k]` is self. Enables O(1) variable lookup.
-    pub(crate) display: Vec<EnvId>,
+    /// Immediate parent environment. `None` for root environments.
+    /// Variable lookup walks this chain `level` times to reach the target scope.
+    pub(crate) parent: Option<EnvId>,
+    /// Slot names: aligned with slots vec. Named slots have their name here; anonymous slots get "".
+    /// Used by the resolver to seed from FlatEnv when Env is eliminated.
+    pub(crate) slot_names: Vec<String>,
     /// Stats counters for builtin-arena-stats.
     pub(crate) alloc_count: std::sync::atomic::AtomicU64,
 }
@@ -216,15 +264,9 @@ impl FlatEnv {
     }
 
     /// Get the parent environment ID, if any.
-    /// The parent is encoded in the display vector: `display[display.len()-2]` is the immediate
-    /// parent for scopes with depth > 1; root scopes (depth 1) have no parent.
     #[cfg(test)]
     pub fn parent(&self) -> Option<EnvId> {
-        if self.display.len() > 1 {
-            Some(self.display[self.display.len() - 2])
-        } else {
-            None
-        }
+        self.parent
     }
 }
 
@@ -251,14 +293,14 @@ pub fn migrate_flat_env(
         return mapped;
     }
 
-    // Collect the slot count and display vector of the source FlatEnv.
-    let (slot_count, src_display) = {
+    // Collect the slot count and parent of the source FlatEnv.
+    let (slot_count, src_parent) = {
         let src_env = &arena.envs[src_env_id_u32 as usize];
-        (src_env.slots.len(), src_env.display.clone())
+        (src_env.slots.len(), src_env.parent)
     };
 
     // Allocate the new destination FlatEnv.
-    // Use alloc_root (no parent linkage needed — the display vector is rebuilt from migrated chain).
+    // Use alloc_root temporarily; the parent pointer is translated and set below after slots migrate.
     let new_env_id = arena.alloc_root(slot_count);
 
     // Pre-insert into env_map BEFORE migrating slots (two-phase cycle safety at env level).
@@ -283,7 +325,10 @@ pub fn migrate_flat_env(
             .collect()
     };
     for (slot_idx, slot_opt) in src_thunks.iter().enumerate() {
-        let src_tid = ThunkId { env_id: src_env_id_u32, slot: slot_idx as u32 };
+        let src_tid = ThunkId {
+            env_id: src_env_id_u32,
+            slot: slot_idx as u32,
+        };
         match slot_opt {
             None => {
                 // Preserve slot index by pushing None.
@@ -291,9 +336,13 @@ pub fn migrate_flat_env(
             }
             Some(src_arc) => {
                 // Allocate a placeholder into new_env_id at the next slot (= slot_idx).
-                let placeholder = Arc::new(crate::value::Thunk::new_placeholder(src_arc.span.clone()));
-                let new_tid = arena.alloc_slot_thunk(new_env_id, Arc::clone(&placeholder));
-                debug_assert_eq!(new_tid.slot, slot_idx as u32, "slot ordering must match source");
+                let placeholder =
+                    Arc::new(crate::value::Thunk::new_placeholder(src_arc.span.clone()));
+                let new_tid = arena.alloc_slot_thunk(new_env_id, Arc::clone(&placeholder), "");
+                debug_assert_eq!(
+                    new_tid.slot, slot_idx as u32,
+                    "slot ordering must match source"
+                );
                 // Insert into thunk_map BEFORE recursing (cycle-safe at env level).
                 thunk_map.insert(src_tid, new_tid);
             }
@@ -310,18 +359,14 @@ pub fn migrate_flat_env(
                 .expect("placeholder must exist after phase 1");
             if let Some(value) = src_arc.try_get_materialized() {
                 // Materialized: migrate the value recursively.
-                let migrated = migrate_value(&value, src_range, dst_env_id, thunk_map, env_map, arena);
+                let migrated =
+                    migrate_value(&value, src_range, dst_env_id, thunk_map, env_map, arena);
                 placeholder.set_materialized(migrated);
             } else if let Some(state) = src_arc.peek_unevaluated_state() {
                 // Unevaluated: translate all env_id / ThunkId fields so the migrated thunk
                 // does not reference dropped FlatEnvs after arena-drop src.
                 let translated = translate_unevaluated_state(
-                    state,
-                    src_range,
-                    dst_env_id,
-                    thunk_map,
-                    env_map,
-                    arena,
+                    state, src_range, dst_env_id, thunk_map, env_map, arena,
                 );
                 placeholder.restore_unevaluated(translated);
             }
@@ -331,22 +376,23 @@ pub fn migrate_flat_env(
         }
     }
 
-    // Rebuild the display vector: translate each FlatEnv in the source display chain.
-    // FlatEnvs in src_range are migrated recursively; FlatEnvs outside src_range are permanent.
-    let new_display: Vec<EnvId> = src_display.iter().map(|&d| {
-        if src_range.contains(&d.0) {
+    // Translate the parent pointer: if the source parent is in src_range, migrate it
+    // recursively; otherwise keep it as-is (permanent env outside the migrated range).
+    let new_parent: Option<EnvId> = src_parent.map(|p| {
+        if src_range.contains(&p.0) {
             // Recursively migrate (env_map prevents infinite recursion)
-            let migrated_id = migrate_flat_env(d.0, src_range, dst_env_id, thunk_map, env_map, arena);
+            let migrated_id =
+                migrate_flat_env(p.0, src_range, dst_env_id, thunk_map, env_map, arena);
             EnvId(migrated_id)
         } else {
             // Outside src_range — permanent, keep as-is
-            d
+            p
         }
-    }).collect();
+    });
 
-    // Set the rebuilt display vector on the new FlatEnv.
-    // Override the one set by alloc_root (which is just [new_env_id]).
-    arena.envs[new_env_id.0 as usize].display = new_display;
+    // Set the translated parent on the new FlatEnv.
+    // Override the None set by alloc_root.
+    arena.envs[new_env_id.0 as usize].parent = new_parent;
 
     new_env_id.0
 }
@@ -369,7 +415,8 @@ pub fn migrate_value(
         Value::Dict(map) => {
             let mut new_map = indexmap::IndexMap::with_capacity(map.len());
             for (key, &thunk_id) in map.iter() {
-                let new_tid = migrate_thunk_id(thunk_id, src_range, dst_env_id, thunk_map, env_map, arena);
+                let new_tid =
+                    migrate_thunk_id(thunk_id, src_range, dst_env_id, thunk_map, env_map, arena);
                 new_map.insert(key.clone(), new_tid);
             }
             Value::Dict(new_map)
@@ -380,7 +427,8 @@ pub fn migrate_value(
         },
         Value::Variant { tag, payload } => Value::Variant {
             tag: tag.clone(),
-            payload: payload.map(|tid| migrate_thunk_id(tid, src_range, dst_env_id, thunk_map, env_map, arena)),
+            payload: payload
+                .map(|tid| migrate_thunk_id(tid, src_range, dst_env_id, thunk_map, env_map, arena)),
         },
         Value::Proxy { handler } => Value::Proxy {
             handler: migrate_thunk_id(*handler, src_range, dst_env_id, thunk_map, env_map, arena),
@@ -392,9 +440,21 @@ pub fn migrate_value(
         // Value::Function carries closure_env_id: u32 — an EnvArena index.
         // If closure_env_id is in src_range, migrate the closure FlatEnv to the dst arena
         // so calling the function after drop does not reference dropped scopes.
-        Value::Function { params, body, closure_env_id, annotation } => {
+        Value::Function {
+            params,
+            body,
+            closure_env_id,
+            annotation,
+        } => {
             let new_closure_env_id = if src_range.contains(closure_env_id) {
-                migrate_flat_env(*closure_env_id, src_range, dst_env_id, thunk_map, env_map, arena)
+                migrate_flat_env(
+                    *closure_env_id,
+                    src_range,
+                    dst_env_id,
+                    thunk_map,
+                    env_map,
+                    arena,
+                )
             } else {
                 *closure_env_id
             };
@@ -428,13 +488,25 @@ fn translate_unevaluated_state(
     use crate::value::UnevaluatedState;
 
     match state {
-        UnevaluatedState::Surface { node, res, types, env_id, ctx } => {
+        UnevaluatedState::Surface {
+            node,
+            res,
+            types,
+            env_id,
+            ctx,
+        } => {
             let new_env_id = if src_range.contains(&env_id) {
                 migrate_flat_env(env_id, src_range, dst_env_id, thunk_map, env_map, arena)
             } else {
                 env_id
             };
-            UnevaluatedState::Surface { node, res, types, env_id: new_env_id, ctx }
+            UnevaluatedState::Surface {
+                node,
+                res,
+                types,
+                env_id: new_env_id,
+                ctx,
+            }
         }
         UnevaluatedState::CoreExpr { expr, env_id, ctx } => {
             let new_env_id = if src_range.contains(&env_id) {
@@ -442,21 +514,41 @@ fn translate_unevaluated_state(
             } else {
                 env_id
             };
-            UnevaluatedState::CoreExpr { expr, env_id: new_env_id, ctx }
+            UnevaluatedState::CoreExpr {
+                expr,
+                env_id: new_env_id,
+                ctx,
+            }
         }
-        UnevaluatedState::Builtin { def, args, named, call_span, caller_env_id, ctx } => {
+        UnevaluatedState::Builtin {
+            def,
+            args,
+            named,
+            call_span,
+            caller_env_id,
+            ctx,
+        } => {
             let new_caller_env_id = if src_range.contains(&caller_env_id) {
-                migrate_flat_env(caller_env_id, src_range, dst_env_id, thunk_map, env_map, arena)
+                migrate_flat_env(
+                    caller_env_id,
+                    src_range,
+                    dst_env_id,
+                    thunk_map,
+                    env_map,
+                    arena,
+                )
             } else {
                 caller_env_id
             };
-            let new_args = args.into_iter()
+            let new_args = args
+                .into_iter()
                 .map(|tid| migrate_thunk_id(tid, src_range, dst_env_id, thunk_map, env_map, arena))
                 .collect();
             let new_named = named.map(|map| {
                 map.into_iter()
                     .map(|(k, tid)| {
-                        let new_tid = migrate_thunk_id(tid, src_range, dst_env_id, thunk_map, env_map, arena);
+                        let new_tid =
+                            migrate_thunk_id(tid, src_range, dst_env_id, thunk_map, env_map, arena);
                         (k, new_tid)
                     })
                     .collect()
@@ -470,23 +562,44 @@ fn translate_unevaluated_state(
                 ctx,
             }
         }
-        UnevaluatedState::Call { func, args, named, call_span, caller_env_id, ctx, original_call } => {
+        UnevaluatedState::Call {
+            func,
+            args,
+            named,
+            call_span,
+            caller_env_id,
+            ctx,
+            original_call,
+        } => {
             let new_caller_env_id = if src_range.contains(&caller_env_id) {
-                migrate_flat_env(caller_env_id, src_range, dst_env_id, thunk_map, env_map, arena)
+                migrate_flat_env(
+                    caller_env_id,
+                    src_range,
+                    dst_env_id,
+                    thunk_map,
+                    env_map,
+                    arena,
+                )
             } else {
                 caller_env_id
             };
             let new_func = migrate_thunk_id(func, src_range, dst_env_id, thunk_map, env_map, arena);
-            let new_args = args.into_iter()
+            let new_args = args
+                .into_iter()
                 .map(|tid| migrate_thunk_id(tid, src_range, dst_env_id, thunk_map, env_map, arena))
                 .collect();
             let new_named = named.map(|boxed_map| {
-                Box::new(boxed_map.into_iter()
-                    .map(|(k, tid)| {
-                        let new_tid = migrate_thunk_id(tid, src_range, dst_env_id, thunk_map, env_map, arena);
-                        (k, new_tid)
-                    })
-                    .collect())
+                Box::new(
+                    boxed_map
+                        .into_iter()
+                        .map(|(k, tid)| {
+                            let new_tid = migrate_thunk_id(
+                                tid, src_range, dst_env_id, thunk_map, env_map, arena,
+                            );
+                            (k, new_tid)
+                        })
+                        .collect(),
+                )
             });
             UnevaluatedState::Call {
                 func: new_func,
@@ -498,8 +611,16 @@ fn translate_unevaluated_state(
                 original_call,
             }
         }
-        UnevaluatedState::Guarded { inner, expected, field_path, guard_span, blame_label, default } => {
-            let new_inner = migrate_thunk_id(inner, src_range, dst_env_id, thunk_map, env_map, arena);
+        UnevaluatedState::Guarded {
+            inner,
+            expected,
+            field_path,
+            guard_span,
+            blame_label,
+            default,
+        } => {
+            let new_inner =
+                migrate_thunk_id(inner, src_range, dst_env_id, thunk_map, env_map, arena);
             let new_default = default.map(|(expr, env_id)| {
                 let new_env_id = if src_range.contains(&env_id) {
                     migrate_flat_env(env_id, src_range, dst_env_id, thunk_map, env_map, arena)
@@ -552,10 +673,11 @@ pub fn migrate_thunk_id(
         //   2. Recurse into migrate_value (safe — thunk_map already has our entry).
         //   3. Fill the placeholder with the fully-migrated value via set_materialized.
         let placeholder = Arc::new(crate::value::Thunk::new_placeholder(src_thunk.span.clone()));
-        let new_tid = arena.alloc_slot_thunk(dst_env_id, Arc::clone(&placeholder));
+        let new_tid = arena.alloc_slot_thunk(dst_env_id, Arc::clone(&placeholder), "");
         thunk_map.insert(thunk_id, new_tid);
         // Recurse now that thunk_map has the cycle-breaking entry.
-        let migrated_value = migrate_value(&value, src_range, dst_env_id, thunk_map, env_map, arena);
+        let migrated_value =
+            migrate_value(&value, src_range, dst_env_id, thunk_map, env_map, arena);
         // Fill the placeholder (same Arc already in the slot) with the migrated value.
         placeholder.set_materialized(migrated_value);
         new_tid
@@ -571,7 +693,7 @@ pub fn migrate_thunk_id(
         //      remapped through migrate_flat_env / migrate_thunk_id.
         //   3. Replace the placeholder's unevaluated field with the translated state.
         let placeholder = Arc::new(crate::value::Thunk::new_placeholder(src_thunk.span.clone()));
-        let new_tid = arena.alloc_slot_thunk(dst_env_id, Arc::clone(&placeholder));
+        let new_tid = arena.alloc_slot_thunk(dst_env_id, Arc::clone(&placeholder), "");
         thunk_map.insert(thunk_id, new_tid);
 
         // Peek the unevaluated state WITHOUT consuming it (source thunk stays intact).
@@ -581,12 +703,7 @@ pub fn migrate_thunk_id(
         // Arc<Thunk> result channel is set atomically by the materializer on the original).
         if let Some(state) = src_thunk.peek_unevaluated_state() {
             let translated = translate_unevaluated_state(
-                state,
-                src_range,
-                dst_env_id,
-                thunk_map,
-                env_map,
-                arena,
+                state, src_range, dst_env_id, thunk_map, env_map, arena,
             );
             // Write the translated state into the placeholder thunk.
             // new_placeholder() sets unevaluated=None; we must set it to Some(translated).
@@ -616,7 +733,6 @@ mod tests {
         let retrieved = arena.get(id);
         assert_eq!(retrieved.slots.len(), 0);
         assert!(retrieved.parent().is_none());
-        assert_eq!(retrieved.display, vec![id]);
     }
 
     #[test]
@@ -642,7 +758,7 @@ mod tests {
         let env_id = arena.alloc_root(0);
 
         let thunk = Arc::new(Thunk::new_materialized(Value::Int(42), test_span()));
-        let id = arena.alloc_slot_thunk(env_id, Arc::clone(&thunk));
+        let id = arena.alloc_slot_thunk(env_id, Arc::clone(&thunk), "");
 
         assert_eq!(id.env_id, env_id.0);
         assert_eq!(id.slot, 0);
@@ -660,17 +776,26 @@ mod tests {
         let t2 = Arc::new(Thunk::new_materialized(Value::Int(2), test_span()));
         let t3 = Arc::new(Thunk::new_materialized(Value::Int(3), test_span()));
 
-        let id1 = arena.alloc_slot_thunk(env_id, Arc::clone(&t1));
-        let id2 = arena.alloc_slot_thunk(env_id, Arc::clone(&t2));
-        let id3 = arena.alloc_slot_thunk(env_id, Arc::clone(&t3));
+        let id1 = arena.alloc_slot_thunk(env_id, Arc::clone(&t1), "");
+        let id2 = arena.alloc_slot_thunk(env_id, Arc::clone(&t2), "");
+        let id3 = arena.alloc_slot_thunk(env_id, Arc::clone(&t3), "");
 
         assert_eq!(id1.slot, 0);
         assert_eq!(id2.slot, 1);
         assert_eq!(id3.slot, 2);
 
-        assert_eq!(arena.get_thunk(id1).try_get_materialized(), Some(Value::Int(1)));
-        assert_eq!(arena.get_thunk(id2).try_get_materialized(), Some(Value::Int(2)));
-        assert_eq!(arena.get_thunk(id3).try_get_materialized(), Some(Value::Int(3)));
+        assert_eq!(
+            arena.get_thunk(id1).try_get_materialized(),
+            Some(Value::Int(1))
+        );
+        assert_eq!(
+            arena.get_thunk(id2).try_get_materialized(),
+            Some(Value::Int(2))
+        );
+        assert_eq!(
+            arena.get_thunk(id3).try_get_materialized(),
+            Some(Value::Int(3))
+        );
     }
 
     #[test]
@@ -679,7 +804,10 @@ mod tests {
         let env_id = arena.alloc_root(3);
 
         // Pre-allocate a ThunkId (env_id=0, slot=0)
-        let tid = ThunkId { env_id: env_id.0, slot: 0 };
+        let tid = ThunkId {
+            env_id: env_id.0,
+            slot: 0,
+        };
         let thunk = Arc::new(Thunk::new_materialized(Value::Int(99), test_span()));
         arena.fill_slot_thunk(tid, Arc::clone(&thunk));
 
@@ -703,9 +831,14 @@ mod tests {
         let root = env_arena.get(root_id);
         assert_eq!(root.parent(), None);
 
-        // Verify display vectors
-        assert_eq!(root.display, vec![root_id]);
-        assert_eq!(child.display, vec![root_id, child_id]);
+        // Verify parent chain via walk_parent_chain
+        // From child: 0 hops → child itself; 1 hop → root
+        assert_eq!(env_arena.walk_parent_chain(child_id.0, 0), Ok(child_id));
+        assert_eq!(env_arena.walk_parent_chain(child_id.0, 1), Ok(root_id));
+        assert!(env_arena.walk_parent_chain(child_id.0, 2).is_err());
+        // From root: 0 hops → root itself; 1 hop → out of chain
+        assert_eq!(env_arena.walk_parent_chain(root_id.0, 0), Ok(root_id));
+        assert!(env_arena.walk_parent_chain(root_id.0, 1).is_err());
     }
 
     #[test]
@@ -722,9 +855,18 @@ mod tests {
         env.set_slot(1, Arc::clone(&t1));
         env.set_slot(2, Arc::clone(&t2));
 
-        assert_eq!(env.get_slot(0).and_then(|t| t.try_get_materialized()), Some(Value::Int(10)));
-        assert_eq!(env.get_slot(1).and_then(|t| t.try_get_materialized()), Some(Value::Int(20)));
-        assert_eq!(env.get_slot(2).and_then(|t| t.try_get_materialized()), Some(Value::Int(30)));
+        assert_eq!(
+            env.get_slot(0).and_then(|t| t.try_get_materialized()),
+            Some(Value::Int(10))
+        );
+        assert_eq!(
+            env.get_slot(1).and_then(|t| t.try_get_materialized()),
+            Some(Value::Int(20))
+        );
+        assert_eq!(
+            env.get_slot(2).and_then(|t| t.try_get_materialized()),
+            Some(Value::Int(30))
+        );
         assert!(env.get_slot(3).is_none());
     }
 
@@ -766,14 +908,24 @@ mod tests {
         let mut arena = EnvArena::new();
         let env_id = arena.alloc_root(0);
 
-        assert_eq!(arena.envs[env_id.0 as usize].alloc_count.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(
+            arena.envs[env_id.0 as usize]
+                .alloc_count
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
 
         let t1 = Arc::new(Thunk::new_materialized(Value::Int(1), test_span()));
         let t2 = Arc::new(Thunk::new_materialized(Value::Int(2), test_span()));
-        arena.alloc_slot_thunk(env_id, t1);
-        arena.alloc_slot_thunk(env_id, t2);
+        arena.alloc_slot_thunk(env_id, t1, "");
+        arena.alloc_slot_thunk(env_id, t2, "");
 
-        assert_eq!(arena.envs[env_id.0 as usize].alloc_count.load(std::sync::atomic::Ordering::Relaxed), 2);
+        assert_eq!(
+            arena.envs[env_id.0 as usize]
+                .alloc_count
+                .load(std::sync::atomic::Ordering::Relaxed),
+            2
+        );
     }
 
     #[test]
@@ -782,10 +934,13 @@ mod tests {
         let env_id = arena.alloc_root(0);
 
         let thunk = Arc::new(Thunk::new_materialized(Value::Int(42), test_span()));
-        let id = arena.alloc_slot_thunk(env_id, Arc::clone(&thunk));
+        let id = arena.alloc_slot_thunk(env_id, Arc::clone(&thunk), "");
 
         // Verify thunk is present
-        assert_eq!(arena.get_thunk(id).try_get_materialized(), Some(Value::Int(42)));
+        assert_eq!(
+            arena.get_thunk(id).try_get_materialized(),
+            Some(Value::Int(42))
+        );
 
         // Drop the scope
         arena.drop_scope(env_id);
@@ -805,23 +960,38 @@ mod tests {
     fn test_alloc_slot_returns_stable_thunkid() {
         let mut arena = EnvArena::new();
         let env_id = arena.alloc_root(0);
-        let thunk1 = Arc::new(crate::value::Thunk::new_materialized(crate::value::Value::Int(1), rust_span!()));
-        let thunk2 = Arc::new(crate::value::Thunk::new_materialized(crate::value::Value::Int(2), rust_span!()));
-        let id1 = arena.alloc_slot_thunk(env_id, thunk1);
-        let id2 = arena.alloc_slot_thunk(env_id, thunk2);
+        let thunk1 = Arc::new(crate::value::Thunk::new_materialized(
+            crate::value::Value::Int(1),
+            rust_span!(),
+        ));
+        let thunk2 = Arc::new(crate::value::Thunk::new_materialized(
+            crate::value::Value::Int(2),
+            rust_span!(),
+        ));
+        let id1 = arena.alloc_slot_thunk(env_id, thunk1, "");
+        let id2 = arena.alloc_slot_thunk(env_id, thunk2, "");
         assert_ne!(id1, id2);
         assert_eq!(id1.slot, 0);
         assert_eq!(id2.slot, 1);
-        assert_eq!(arena.get_thunk(id1).try_get_materialized(), Some(crate::value::Value::Int(1)));
-        assert_eq!(arena.get_thunk(id2).try_get_materialized(), Some(crate::value::Value::Int(2)));
+        assert_eq!(
+            arena.get_thunk(id1).try_get_materialized(),
+            Some(crate::value::Value::Int(1))
+        );
+        assert_eq!(
+            arena.get_thunk(id2).try_get_materialized(),
+            Some(crate::value::Value::Int(2))
+        );
     }
 
     #[test]
     fn test_drop_scope_clears_slots() {
         let mut arena = EnvArena::new();
         let env_id = arena.alloc_root(0);
-        let thunk = Arc::new(crate::value::Thunk::new_materialized(crate::value::Value::Int(42), rust_span!()));
-        let _id = arena.alloc_slot_thunk(env_id, Arc::clone(&thunk));
+        let thunk = Arc::new(crate::value::Thunk::new_materialized(
+            crate::value::Value::Int(42),
+            rust_span!(),
+        ));
+        let _id = arena.alloc_slot_thunk(env_id, Arc::clone(&thunk), "");
         assert_eq!(arena.envs[env_id.0 as usize].slots.len(), 1);
         arena.drop_scope(env_id);
         assert_eq!(arena.envs[env_id.0 as usize].slots.len(), 0);
@@ -832,11 +1002,17 @@ mod tests {
         let mut arena = EnvArena::new();
         let env0 = arena.alloc_root(0);
         let env1 = arena.alloc_child(env0, 0);
-        let thunk = Arc::new(crate::value::Thunk::new_materialized(crate::value::Value::Int(99), rust_span!()));
-        let id = arena.alloc_slot_thunk(env1, thunk);
+        let thunk = Arc::new(crate::value::Thunk::new_materialized(
+            crate::value::Value::Int(99),
+            rust_span!(),
+        ));
+        let id = arena.alloc_slot_thunk(env1, thunk, "");
         arena.drop_scope(env0);
         // env1 still intact
-        assert_eq!(arena.get_thunk(id).try_get_materialized(), Some(crate::value::Value::Int(99)));
+        assert_eq!(
+            arena.get_thunk(id).try_get_materialized(),
+            Some(crate::value::Value::Int(99))
+        );
     }
 
     #[test]
@@ -848,40 +1024,75 @@ mod tests {
 
         // Allocate an anonymous slot to serve as the thunk source for fill_letrec_slot.
         let named_thunk = Arc::new(Thunk::new_materialized(Value::Int(100), rust_span!()));
-        let src_id = arena.alloc_slot_thunk(env_id, Arc::clone(&named_thunk));
+        let src_id = arena.alloc_slot_thunk(env_id, Arc::clone(&named_thunk), "");
 
         // Fill slot 0 of the same env with the thunk via fill_letrec_slot.
         // fill_letrec_slot reads the thunk from src_id's slot and writes it to slot 0.
         // Since src_id.slot == 0 already, use a second env to hold the canonical src thunk.
         let env2 = arena.alloc_root(0);
-        let src2_id = arena.alloc_slot_thunk(env2, Arc::new(Thunk::new_materialized(Value::Int(200), rust_span!())));
+        let src2_id = arena.alloc_slot_thunk(
+            env2,
+            Arc::new(Thunk::new_materialized(Value::Int(200), rust_span!())),
+            "",
+        );
 
         // Fill slot 1 of env_id from env2 slot 0
-        arena.fill_letrec_slot(env_id, 1, src2_id);
+        arena.fill_letrec_slot(env_id, 1, src2_id, "test");
 
         // Also allocate an anonymous slot after the letrec fill
         let anon_thunk = Arc::new(Thunk::new_materialized(Value::Int(300), rust_span!()));
-        let anon_id = arena.alloc_slot_thunk(env_id, anon_thunk);
+        let anon_id = arena.alloc_slot_thunk(env_id, anon_thunk, "");
 
         // All three ThunkIds must be distinct and retrieve the correct values.
-        assert_eq!(arena.get_thunk(src_id).try_get_materialized(), Some(Value::Int(100)));
-        assert_eq!(arena.get_thunk(src2_id).try_get_materialized(), Some(Value::Int(200)));
-        assert_eq!(arena.get_thunk(anon_id).try_get_materialized(), Some(Value::Int(300)));
+        assert_eq!(
+            arena.get_thunk(src_id).try_get_materialized(),
+            Some(Value::Int(100))
+        );
+        assert_eq!(
+            arena.get_thunk(src2_id).try_get_materialized(),
+            Some(Value::Int(200))
+        );
+        assert_eq!(
+            arena.get_thunk(anon_id).try_get_materialized(),
+            Some(Value::Int(300))
+        );
         // env_id slot 1 was filled via fill_letrec_slot from env2 slot 0
-        let letrec_thunk_id = ThunkId { env_id: env_id.0, slot: 1 };
-        assert_eq!(arena.get_thunk(letrec_thunk_id).try_get_materialized(), Some(Value::Int(200)));
+        let letrec_thunk_id = ThunkId {
+            env_id: env_id.0,
+            slot: 1,
+        };
+        assert_eq!(
+            arena.get_thunk(letrec_thunk_id).try_get_materialized(),
+            Some(Value::Int(200))
+        );
         // anon_id landed in env_id slot 2 (after slot 0 from src_id alloc, slot 1 from letrec fill)
         assert_eq!(anon_id.env_id, env_id.0);
         assert_eq!(anon_id.slot, 2);
     }
 
     #[test]
-    fn test_display_vector_depth_three() {
+    fn test_parent_chain_depth_three() {
         let mut arena = EnvArena::new();
         let root = arena.alloc_root(0);
         let child = arena.alloc_child(root, 0);
         let grandchild = arena.alloc_child(child, 0);
-        assert_eq!(arena.envs[grandchild.0 as usize].display, vec![root, child, grandchild]);
+
+        // Parent pointers
+        assert_eq!(arena.envs[root.0 as usize].parent, None);
+        assert_eq!(arena.envs[child.0 as usize].parent, Some(root));
+        assert_eq!(arena.envs[grandchild.0 as usize].parent, Some(child));
+
+        // walk_parent_chain from grandchild: 0→grandchild, 1→child, 2→root, 3→err
+        assert_eq!(arena.walk_parent_chain(grandchild.0, 0), Ok(grandchild));
+        assert_eq!(arena.walk_parent_chain(grandchild.0, 1), Ok(child));
+        assert_eq!(arena.walk_parent_chain(grandchild.0, 2), Ok(root));
+        assert!(arena.walk_parent_chain(grandchild.0, 3).is_err());
+
+        // collect_parent_chain from grandchild: outermost first
+        assert_eq!(
+            arena.collect_parent_chain(grandchild.0),
+            vec![root, child, grandchild]
+        );
     }
 
     #[cfg(debug_assertions)]
@@ -890,8 +1101,11 @@ mod tests {
     fn test_use_after_free_panics() {
         let mut arena = EnvArena::new();
         let env_id = arena.alloc_root(0);
-        let thunk = Arc::new(crate::value::Thunk::new_materialized(crate::value::Value::Int(1), rust_span!()));
-        let id = arena.alloc_slot_thunk(env_id, thunk);
+        let thunk = Arc::new(crate::value::Thunk::new_materialized(
+            crate::value::Value::Int(1),
+            rust_span!(),
+        ));
+        let id = arena.alloc_slot_thunk(env_id, thunk, "");
         arena.drop_scope(env_id);
         let _ = arena.get_thunk(id); // should panic
     }
@@ -900,15 +1114,13 @@ mod tests {
     async fn test_placeholder_force_errors() {
         use crate::eval::materialize;
         use crate::eval::EvalContext;
-        use crate::env::Env;
 
         // Create a placeholder thunk (unfilled)
         let thunk = Arc::new(Thunk::new_placeholder(rust_span!()));
 
         // Create a minimal test context
-        let env = Arc::new(std::sync::RwLock::new(Env::new()));
         let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
-        let ctx = EvalContext::new(base_dir, Arc::clone(&env), Arc::clone(&env), false);
+        let ctx = EvalContext::new(base_dir, false);
 
         // After the runtime-v2 ThunkInner representation change, placeholder thunks
         // (unevaluated=None, result=None) are indistinguishable from InProgress thunks
@@ -933,8 +1145,8 @@ mod tests {
         let key2 = HashableValue::Str("b".into());
         let thunk1 = Arc::new(Thunk::new_materialized(Value::Int(1), test_span()));
         let thunk2 = Arc::new(Thunk::new_materialized(Value::Int(2), test_span()));
-        let tid1 = arena.alloc_slot_thunk(src_env_id, thunk1);
-        let tid2 = arena.alloc_slot_thunk(src_env_id, thunk2);
+        let tid1 = arena.alloc_slot_thunk(src_env_id, thunk1, "");
+        let tid2 = arena.alloc_slot_thunk(src_env_id, thunk2, "");
 
         let mut dict_map = indexmap::IndexMap::new();
         dict_map.insert(key1.clone(), tid1);
@@ -948,14 +1160,27 @@ mod tests {
         let src_range = src_env_id.0..(src_env_id.0 + 1);
         let mut thunk_map = HashMap::new();
         let mut env_map = HashMap::new();
-        let migrated_value = migrate_value(&dict_value, &src_range, dst_env_id, &mut thunk_map, &mut env_map, &mut arena);
+        let migrated_value = migrate_value(
+            &dict_value,
+            &src_range,
+            dst_env_id,
+            &mut thunk_map,
+            &mut env_map,
+            &mut arena,
+        );
 
         // Extract the migrated dict and verify ThunkIds point to dst_env_id
         if let Value::Dict(migrated_map) = &migrated_value {
             let migrated_tid1 = migrated_map.get(&key1).expect("key 'a' missing");
             let migrated_tid2 = migrated_map.get(&key2).expect("key 'b' missing");
-            assert_eq!(migrated_tid1.env_id, dst_env_id.0, "migrated thunk1 should be in dst scope");
-            assert_eq!(migrated_tid2.env_id, dst_env_id.0, "migrated thunk2 should be in dst scope");
+            assert_eq!(
+                migrated_tid1.env_id, dst_env_id.0,
+                "migrated thunk1 should be in dst scope"
+            );
+            assert_eq!(
+                migrated_tid2.env_id, dst_env_id.0,
+                "migrated thunk2 should be in dst scope"
+            );
 
             // Verify values are still accessible
             let val1 = arena.get_thunk(*migrated_tid1).try_get_materialized();
@@ -973,7 +1198,11 @@ mod tests {
         if let Value::Dict(migrated_map) = &migrated_value {
             let migrated_tid1 = migrated_map.get(&key1).expect("key 'a' missing after drop");
             let val1 = arena.get_thunk(*migrated_tid1).try_get_materialized();
-            assert_eq!(val1, Some(Value::Int(1)), "value should still be accessible after source drop");
+            assert_eq!(
+                val1,
+                Some(Value::Int(1)),
+                "value should still be accessible after source drop"
+            );
         }
     }
 
@@ -1005,7 +1234,11 @@ mod tests {
             span: rust_span!(),
         });
         let fn_value = Value::Function {
-            params: std::rc::Rc::new(vec![Param { name: "x".to_string(), annotation: None, variadic: false }]),
+            params: std::rc::Rc::new(vec![Param {
+                name: "x".to_string(),
+                annotation: None,
+                variadic: false,
+            }]),
             body: body_expr,
             closure_env_id: src_env_id.0,
             annotation: None,
@@ -1016,7 +1249,14 @@ mod tests {
         let mut thunk_map = HashMap::new();
         let mut env_map = HashMap::new();
 
-        let migrated = migrate_value(&fn_value, &src_range, dst_env_id, &mut thunk_map, &mut env_map, &mut arena);
+        let migrated = migrate_value(
+            &fn_value,
+            &src_range,
+            dst_env_id,
+            &mut thunk_map,
+            &mut env_map,
+            &mut arena,
+        );
 
         // The migrated function must have a closure_env_id outside src_range (pointing to
         // the new FlatEnv allocated by migrate_flat_env in the destination).
@@ -1027,15 +1267,33 @@ mod tests {
                     "migrated closure_env_id ({closure_env_id}) must be outside src_range {src_range:?}"
                 );
                 // The new closure_env_id must be recorded in env_map
-                let expected_new = *env_map.get(&src_env_id.0)
-                    .expect("env_map must contain a mapping for the source closure env_id after migration");
+                let expected_new = *env_map.get(&src_env_id.0).expect(
+                    "env_map must contain a mapping for the source closure env_id after migration",
+                );
                 assert_eq!(
                     closure_env_id, expected_new,
                     "migrated closure_env_id must match the env_map entry for the source scope"
                 );
             }
-            other => panic!("migrate_value of Function should return Function, got {:?}", other),
+            other => panic!(
+                "migrate_value of Function should return Function, got {:?}",
+                other
+            ),
         }
+    }
+
+    #[test]
+    fn test_slot_names_populated() {
+        let mut arena = EnvArena::new();
+        let env_id = arena.alloc_root(3);
+
+        let t1 = Arc::new(Thunk::new_materialized(Value::Int(1), test_span()));
+        let t2 = Arc::new(Thunk::new_materialized(Value::Int(2), test_span()));
+
+        let _tid1 = arena.alloc_slot_thunk(env_id, t1, "x");
+        let _tid2 = arena.alloc_slot_thunk(env_id, t2, "y");
+
+        assert_eq!(arena.envs[env_id.0 as usize].slot_names, vec!["x", "y"]);
     }
 
     /// Verify that migrate_thunk_id correctly translates the env_id inside a CoreExpr
@@ -1067,8 +1325,11 @@ mod tests {
 
         // Allocate a materialized thunk in src_env_id (the inner target for Guarded).
         let inner_thunk = Arc::new(Thunk::new_materialized(Value::Int(77), rust_span!()));
-        let inner_tid = arena.alloc_slot_thunk(src_env_id, Arc::clone(&inner_thunk));
-        assert!(src_range.contains(&inner_tid.env_id), "inner_tid must be in src_range for this test");
+        let inner_tid = arena.alloc_slot_thunk(src_env_id, Arc::clone(&inner_thunk), "");
+        assert!(
+            src_range.contains(&inner_tid.env_id),
+            "inner_tid must be in src_range for this test"
+        );
 
         // Create a Guarded thunk in src_env_id whose inner ThunkId points to inner_tid.
         let guarded_thunk = Arc::new(Thunk::new_guarded(
@@ -1077,7 +1338,7 @@ mod tests {
             vec![],
             rust_span!(),
         ));
-        let guarded_tid = arena.alloc_slot_thunk(src_env_id, Arc::clone(&guarded_thunk));
+        let guarded_tid = arena.alloc_slot_thunk(src_env_id, Arc::clone(&guarded_thunk), "");
 
         // Migrate guarded_tid from src to dst.
         let mut thunk_map = HashMap::new();
@@ -1092,7 +1353,10 @@ mod tests {
         );
 
         // The migrated ThunkId must be in dst_env_id.
-        assert_eq!(new_tid.env_id, dst_env_id.0, "migrated guarded thunk must be in dst");
+        assert_eq!(
+            new_tid.env_id, dst_env_id.0,
+            "migrated guarded thunk must be in dst"
+        );
 
         // The migrated thunk must have its inner ThunkId remapped to dst.
         let migrated_arc = arena.get_thunk(new_tid);
@@ -1118,7 +1382,10 @@ mod tests {
                     "inner thunk value must survive migration"
                 );
             }
-            other => panic!("expected Guarded state after migration, got {:?}", std::mem::discriminant(&other)),
+            other => panic!(
+                "expected Guarded state after migration, got {:?}",
+                std::mem::discriminant(&other)
+            ),
         }
 
         // Drop the source scope — the migrated thunk must remain valid.
@@ -1138,7 +1405,10 @@ mod tests {
                     "inner thunk value must be readable after source-drop (no use-after-free)"
                 );
             }
-            other => panic!("expected Guarded state after source drop, got {:?}", std::mem::discriminant(&other)),
+            other => panic!(
+                "expected Guarded state after source drop, got {:?}",
+                std::mem::discriminant(&other)
+            ),
         }
     }
 }

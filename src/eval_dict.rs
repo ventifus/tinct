@@ -227,11 +227,11 @@ pub(crate) async fn eval_dict_core(
         .borrow_mut()
         .alloc_child(crate::arena::EnvId(ctx.current_env_id), entries.len());
     let mut slot_idx: u32 = 0;
-    // Collect (slot_idx, thunk_id) pairs for static-key entries so we can
+    // Collect (slot_idx, thunk_id, name) tuples for static-key entries so we can
     // batch-acquire the arena lock once after the loop instead of once per entry.
     // The lock cannot be held across the .await in eval_key_core, so we must
     // collect first and write after.
-    let mut letrec_slots: Vec<(u32, ThunkId)> = Vec::new();
+    let mut letrec_slots: Vec<(u32, ThunkId, String)> = Vec::new();
 
     for entry in entries {
         // Determine if this entry has a static key (CoreExpr::Str or annotated Var).
@@ -344,7 +344,16 @@ pub(crate) async fn eval_dict_core(
         }
 
         if is_static_key {
-            letrec_slots.push((slot_idx, thunk_id));
+            // Extract the name for the slot. Use the same logic as the duplicate_key error path.
+            let name = match &entry.node.key {
+                Some(k_expr) => match &k_expr.node {
+                    CoreExpr::Str(s) => s.clone(),
+                    CoreExpr::Var { name, .. } => name.clone(),
+                    _ => "<computed>".to_string(), // should not occur for static keys
+                },
+                None => slot_idx.to_string(), // auto-indexed entries
+            };
+            letrec_slots.push((slot_idx, thunk_id, name));
             slot_idx += 1;
         }
     }
@@ -354,8 +363,8 @@ pub(crate) async fn eval_dict_core(
     // dicts with many string-keyed fields.
     if !letrec_slots.is_empty() {
         let mut arena_guard = ctx.env_arena.borrow_mut();
-        for (idx, thunk_id) in letrec_slots {
-            arena_guard.fill_letrec_slot(env_id, idx, thunk_id);
+        for (idx, thunk_id, name) in letrec_slots {
+            arena_guard.fill_letrec_slot(env_id, idx, thunk_id, &name);
         }
     }
 

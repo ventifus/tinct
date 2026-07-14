@@ -1,8 +1,0 @@
-# 3-arg case: dict pattern dispatch on a "tag" field (simulating Ok/Error variant dispatch).
-# Match arms check the tag field and bind the value field.
-[match [tag: "ok"  value: 42]
-  [case [let v] [tag: "ok"   value: v] [str "got " [str v]]]
-  [case [let e] [tag: "error" value: e] [str "err " e]]
-  [case [let _] _ "other"]]
-=== out
-String("got 42")

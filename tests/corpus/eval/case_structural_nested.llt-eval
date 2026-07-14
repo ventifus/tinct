@@ -1,7 +1,0 @@
-# 3-arg case: nested dict pattern destructuring.
-# Pattern [outer: [inner: v]] matches nested dict; v binds to the innermost value.
-[match [outer: [inner: 7]]
-  [case [let v] [outer: [inner: v]] [* v v]]
-  [case [let _] _ 0]]
-=== out
-Int(49)

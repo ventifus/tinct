@@ -368,18 +368,49 @@ pub(crate) fn reject_named(
 // builtin_module() registration and unit tests (via `use super::*`) still work.
 #[allow(unused_imports)] // used in test modules via `use super::*`
 pub(crate) use crate::builtins_math::{
-    builtin_acos, builtin_asin, builtin_atan, builtin_atan2, builtin_band,
-    builtin_bor, builtin_bxor, builtin_cos, builtin_div_float, builtin_eq_float, builtin_eq_int,
-    builtin_eq_string, builtin_exp, builtin_finite_check, builtin_float,
-    builtin_inf_check, builtin_log, builtin_log10, builtin_log2, builtin_lt, builtin_lte,
-    builtin_mul, builtin_nan_check, builtin_pow, builtin_shl, builtin_shr, builtin_sin,
-    builtin_sqrt, builtin_tan,
+    builtin_acos,
+    builtin_asin,
+    builtin_atan,
+    builtin_atan2,
+    builtin_band,
+    builtin_bor,
+    builtin_bxor,
+    builtin_cos,
+    builtin_div_float,
+    builtin_eq_float,
+    builtin_eq_int,
+    builtin_eq_string,
+    builtin_exp,
+    builtin_finite_check,
+    builtin_float,
+    builtin_float_add,
+    builtin_float_gt,
+    builtin_float_gte,
+    builtin_float_mul,
+    builtin_float_sub,
+    builtin_inf_check,
     // Monomorphic typed variants.
-    builtin_int_add, builtin_float_add, builtin_int_to_float,
-    builtin_int_sub, builtin_float_sub,
-    builtin_int_mul, builtin_float_mul,
-    builtin_int_gt, builtin_float_gt, builtin_str_gt,
-    builtin_int_gte, builtin_float_gte, builtin_str_gte,
+    builtin_int_add,
+    builtin_int_gt,
+    builtin_int_gte,
+    builtin_int_mul,
+    builtin_int_sub,
+    builtin_int_to_float,
+    builtin_log,
+    builtin_log10,
+    builtin_log2,
+    builtin_lt,
+    builtin_lte,
+    builtin_mul,
+    builtin_nan_check,
+    builtin_pow,
+    builtin_shl,
+    builtin_shr,
+    builtin_sin,
+    builtin_sqrt,
+    builtin_str_gt,
+    builtin_str_gte,
+    builtin_tan,
 };
 
 // Dict/access builtins: keys, length, merge, get, each, each-key, each-kv, build-dict.
@@ -387,10 +418,10 @@ pub(crate) use crate::builtins_math::{
 // builtin_module() registration and unit tests (via `use super::*`) still work.
 #[allow(unused_imports)] // used in test modules via `use super::*`
 pub(crate) use crate::builtins_dict::{
-    builtin_build_dict, builtin_builder_delete, builtin_builder_finish,
-    builtin_builder_get, builtin_builder_get_or, builtin_builder_has, builtin_builder_set,
-    builtin_builder_snapshot, builtin_dict_key_nth, builtin_dict_kv_nth, builtin_dict_nth,
-    builtin_get, builtin_keys, builtin_length, builtin_make_builder,
+    builtin_build_dict, builtin_builder_delete, builtin_builder_finish, builtin_builder_get,
+    builtin_builder_get_or, builtin_builder_has, builtin_builder_set, builtin_builder_snapshot,
+    builtin_dict_key_nth, builtin_dict_kv_nth, builtin_dict_nth, builtin_get, builtin_keys,
+    builtin_length, builtin_make_builder,
 };
 
 // Type/eval/meta builtins: type-of, include, error, try, apply, validate.
@@ -449,9 +480,7 @@ fn float_to_int_builtin(
         Value::Int(n) => ok_val(Value::Int(n), call_span),
         Value::Float(f) => {
             if !f.is_finite() {
-                return Err(
-                    EvalError::float_not_finite(name.to_string(), f, arg0_span).into(),
-                );
+                return Err(EvalError::float_not_finite(name.to_string(), f, arg0_span).into());
             }
             ok_val(
                 Value::Int(checked_f64_to_i64(name, op(f), call_span.clone())?),
@@ -584,7 +613,6 @@ pub(crate) fn builtin_to_float(
     })
 }
 
-
 // Re-exported here for test access via `use super::*`.
 #[allow(unused_imports)] // used in test modules via `use super::*`
 pub(crate) use crate::builtins_dict::{builtin_concat, builtin_drop, builtin_take};
@@ -605,9 +633,7 @@ pub(crate) fn builtin_proxy(
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
         Ok(Arc::new(Thunk::new_materialized(
-            Value::Proxy {
-                handler: args[0],
-            },
+            Value::Proxy { handler: args[0] },
             call_span,
         )))
     })
@@ -663,7 +689,6 @@ pub fn build_core_env() -> Arc<RwLock<crate::env::Env>> {
     env
 }
 
-
 #[cfg(test)]
 // Test-code lint suppressions:
 // - useless_conversion: string_val("lit".into()) — `.into()` is a &str→&str no-op, idiomatic in test fixtures
@@ -678,7 +703,6 @@ pub fn build_core_env() -> Arc<RwLock<crate::env::Env>> {
 )]
 mod tests {
     use super::*;
-    use crate::env::Env;
     use crate::error::ErrorKind;
     use crate::rust_span;
     use crate::test_util::test_span;
@@ -704,15 +728,7 @@ mod tests {
 
     fn test_ctx() -> Arc<crate::eval::EvalContext> {
         let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
-        let env = Arc::new(RwLock::new(Env::new()));
-        // T-1557: Env is type-metadata only; register slot names for the resolver.
-        // Runtime thunks are pre-populated in the root FlatEnv by EvalContext::new_env_arena().
-        if let Some(defs) = builtin_module("core") {
-            for def in defs {
-                env.write().unwrap().insert_slot_name_only(def.name.to_string());
-            }
-        }
-        crate::eval::EvalContext::new_empty(base_dir, env, false)
+        crate::eval::EvalContext::new_empty(base_dir, false)
     }
 
     /// Drive an async builtin to completion in tests.
@@ -751,10 +767,17 @@ mod tests {
             .unwrap_or_else(|e| panic!("parse_eval: parse failed for {:?}: {}", llt_src, e));
         let mut program = parsed.program;
         crate::desugar::desugar_surface_program(&mut program);
-        let env = Arc::clone(&ctx.config.stdlib_env);
-        // Seed resolver from stdlib_env so builtin names resolve to de Bruijn coords.
-        crate::resolve::resolve_surface_program(&program, Some(&env));
-        let thunk = crate::eval::eval_surface_file(&program, env, ctx)
+        // Seed resolver from FlatEnv so builtin names resolve to de Bruijn coords.
+        let root_frame: indexmap::IndexMap<String, ()> = {
+            let arena = ctx.env_arena.borrow();
+            arena.envs[0]
+                .slot_names
+                .iter()
+                .map(|n| (n.clone(), ()))
+                .collect()
+        };
+        let (_table, _frames) = crate::resolve::resolve_surface_program(&program, &[root_frame]);
+        let thunk = crate::eval::eval_surface_file(&program, ctx)
             .await
             .unwrap_or_else(|e| {
                 panic!(
@@ -826,7 +849,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -841,7 +863,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -856,7 +877,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -871,7 +891,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -887,7 +906,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -902,7 +920,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -917,7 +934,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -932,7 +948,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -948,7 +963,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -968,7 +982,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -988,7 +1001,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -1008,7 +1020,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -1028,7 +1039,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -1048,7 +1058,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -1068,7 +1077,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -1090,7 +1098,6 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -1110,7 +1117,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -1130,7 +1136,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -1150,7 +1155,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -1165,7 +1169,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -1181,7 +1184,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -1197,7 +1199,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -1212,7 +1213,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -1227,7 +1227,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -1243,7 +1242,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -1259,7 +1257,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -1274,7 +1271,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -1289,7 +1285,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -1304,7 +1299,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -1319,7 +1313,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -1335,7 +1328,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -1355,7 +1347,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -1375,7 +1366,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -1395,7 +1385,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -1415,7 +1404,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -1435,7 +1423,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -1455,7 +1442,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -1475,7 +1461,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -1495,7 +1480,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -1510,7 +1494,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -1525,7 +1508,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -1540,7 +1522,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -1555,7 +1536,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -1575,7 +1555,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -1595,7 +1574,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -1615,7 +1593,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -1635,7 +1612,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -1660,7 +1636,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -1680,7 +1655,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -1700,7 +1674,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -1720,7 +1693,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -1740,7 +1712,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -1760,7 +1731,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -1776,7 +1746,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -1791,7 +1760,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -1806,7 +1774,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -1821,7 +1788,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -1836,7 +1802,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -1852,7 +1817,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -1867,7 +1831,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -1887,7 +1850,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -1907,7 +1869,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -1927,7 +1888,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -1947,7 +1907,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -1967,7 +1926,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -1987,7 +1945,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -2007,7 +1964,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -2027,7 +1983,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -2047,7 +2002,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -2070,7 +2024,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -2092,7 +2045,6 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -2113,7 +2065,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -2133,7 +2084,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -2149,7 +2099,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -2165,7 +2114,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -2186,7 +2134,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -2208,7 +2155,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -2234,7 +2180,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -2259,7 +2204,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -2280,7 +2224,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -2300,7 +2243,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -2331,7 +2273,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -2370,7 +2311,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -2419,7 +2359,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -2451,7 +2390,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -2478,7 +2416,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -2505,7 +2442,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -2557,7 +2493,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -2582,7 +2517,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -2616,7 +2550,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -2640,7 +2573,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -2663,7 +2595,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -2686,7 +2617,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -2701,7 +2631,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -2716,7 +2645,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -2731,7 +2659,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -2747,7 +2674,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -2773,7 +2699,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -2785,16 +2710,18 @@ mod tests {
         // type-of on a Variant returns "Variant" (the generic kind).
         // Use builtin_tag_of to get the specific qualified tag.
         let ctx = test_ctx();
-        let variant = alloc(Value::Variant {
-            tag: "Color.Red".to_string(),
-            payload: None,
-        }, &ctx);
+        let variant = alloc(
+            Value::Variant {
+                tag: "Color.Red".to_string(),
+                payload: None,
+            },
+            &ctx,
+        );
         let result = mat(builtin_type_of(BuiltinArgs {
             args: vec![variant],
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -2809,7 +2736,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -2830,7 +2756,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -2854,7 +2779,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -2886,7 +2810,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -2919,7 +2842,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -2951,7 +2873,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -2977,7 +2898,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -2997,7 +2917,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -3016,13 +2935,11 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Int(2));
     }
-
 
     #[tokio::test]
     async fn builtin_def_strictness_array_validity() {
@@ -3054,7 +2971,6 @@ mod tests {
         }
     }
 
-
     #[tokio::test]
     async fn keys_wrong_arity_zero() {
         let ctx = test_ctx();
@@ -3063,7 +2979,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -3084,7 +2999,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -3104,7 +3018,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -3125,7 +3038,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -3137,7 +3049,6 @@ mod tests {
         );
     }
 
-
     #[tokio::test]
     async fn keys_non_dict_int() {
         let ctx = test_ctx();
@@ -3146,7 +3057,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -3172,7 +3082,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -3194,7 +3103,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -3209,7 +3117,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -3225,13 +3132,11 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
         assert_eq!(result, Value::Int(2));
     }
-
 
     #[tokio::test]
     async fn replace_basic() {
@@ -3245,7 +3150,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -3264,7 +3168,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -3283,7 +3186,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -3302,7 +3204,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -3321,7 +3222,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -3344,7 +3244,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -3367,7 +3266,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -3383,7 +3281,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -3398,7 +3295,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -3413,7 +3309,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -3428,7 +3323,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -3443,7 +3337,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -3458,7 +3351,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -3473,7 +3365,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -3488,7 +3379,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -3513,7 +3403,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -3537,7 +3426,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -3566,7 +3454,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -3590,7 +3477,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -3615,7 +3501,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -3647,7 +3532,6 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -3669,7 +3553,6 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -3691,7 +3574,6 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -3713,7 +3595,6 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -3739,7 +3620,6 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -3761,7 +3641,6 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -3783,7 +3662,6 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -3805,7 +3683,6 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -3827,7 +3704,6 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -3849,7 +3725,6 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -3871,7 +3746,6 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -3901,7 +3775,6 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -3924,7 +3797,6 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -3935,7 +3807,6 @@ mod tests {
             err.kind
         );
     }
-
 
     #[tokio::test]
     async fn try_rejects_named_args() {
@@ -3948,7 +3819,6 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -3971,7 +3841,6 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -4021,7 +3890,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4034,11 +3902,13 @@ mod tests {
         // Test: [3 as Float] + 2.5 = 5.5
         let ctx = test_ctx();
         let r = mat(builtin_float_add(BuiltinArgs {
-            args: vec![alloc(Value::Float(3.0), &ctx), alloc(Value::Float(2.5), &ctx)],
+            args: vec![
+                alloc(Value::Float(3.0), &ctx),
+                alloc(Value::Float(2.5), &ctx),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4049,11 +3919,13 @@ mod tests {
     async fn add_float_float() {
         let ctx = test_ctx();
         let r = mat(builtin_float_add(BuiltinArgs {
-            args: vec![alloc(Value::Float(1.5), &ctx), alloc(Value::Float(2.5), &ctx)],
+            args: vec![
+                alloc(Value::Float(1.5), &ctx),
+                alloc(Value::Float(2.5), &ctx),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4068,7 +3940,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4083,7 +3954,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4098,7 +3968,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -4119,7 +3988,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -4135,11 +4003,13 @@ mod tests {
     async fn add_overflow_error() {
         let ctx = test_ctx();
         let err = run(builtin_int_add(BuiltinArgs {
-            args: vec![alloc(Value::Int(i64::MAX), &ctx), alloc(Value::Int(1), &ctx)],
+            args: vec![
+                alloc(Value::Int(i64::MAX), &ctx),
+                alloc(Value::Int(1), &ctx),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -4155,11 +4025,13 @@ mod tests {
     async fn sub_overflow_error() {
         let ctx = test_ctx();
         let err = run(builtin_int_sub(BuiltinArgs {
-            args: vec![alloc(Value::Int(i64::MIN), &ctx), alloc(Value::Int(1), &ctx)],
+            args: vec![
+                alloc(Value::Int(i64::MIN), &ctx),
+                alloc(Value::Int(1), &ctx),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -4179,7 +4051,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4190,11 +4061,13 @@ mod tests {
     async fn sub_float_float() {
         let ctx = test_ctx();
         let r = mat(builtin_float_sub(BuiltinArgs {
-            args: vec![alloc(Value::Float(10.5), &ctx), alloc(Value::Float(3.5), &ctx)],
+            args: vec![
+                alloc(Value::Float(10.5), &ctx),
+                alloc(Value::Float(3.5), &ctx),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4209,7 +4082,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4224,7 +4096,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4239,7 +4110,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -4259,7 +4129,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -4279,7 +4148,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -4300,7 +4168,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4315,7 +4182,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4330,7 +4196,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4341,11 +4206,13 @@ mod tests {
     async fn mul_float_float() {
         let ctx = test_ctx();
         let r = mat(builtin_mul(BuiltinArgs {
-            args: vec![alloc(Value::Float(2.5), &ctx), alloc(Value::Float(3.0), &ctx)],
+            args: vec![
+                alloc(Value::Float(2.5), &ctx),
+                alloc(Value::Float(3.0), &ctx),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4360,7 +4227,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4375,7 +4241,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4390,7 +4255,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4401,11 +4265,13 @@ mod tests {
     async fn mul_overflow_error() {
         let ctx = test_ctx();
         let err = run(builtin_mul(BuiltinArgs {
-            args: vec![alloc(Value::Int(i64::MAX), &ctx), alloc(Value::Int(2), &ctx)],
+            args: vec![
+                alloc(Value::Int(i64::MAX), &ctx),
+                alloc(Value::Int(2), &ctx),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -4421,11 +4287,13 @@ mod tests {
     async fn add_float_overflow_to_infinity_is_error() {
         let ctx = test_ctx();
         let err = run(builtin_float_add(BuiltinArgs {
-            args: vec![alloc(Value::Float(1e308), &ctx), alloc(Value::Float(1e308), &ctx)],
+            args: vec![
+                alloc(Value::Float(1e308), &ctx),
+                alloc(Value::Float(1e308), &ctx),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -4449,7 +4317,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -4465,11 +4332,13 @@ mod tests {
     async fn mul_float_overflow_to_infinity_is_error() {
         let ctx = test_ctx();
         let err = run(builtin_mul(BuiltinArgs {
-            args: vec![alloc(Value::Float(1e308), &ctx), alloc(Value::Float(10.0), &ctx)],
+            args: vec![
+                alloc(Value::Float(1e308), &ctx),
+                alloc(Value::Float(10.0), &ctx),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -4496,7 +4365,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -4516,7 +4384,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4536,7 +4403,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4554,7 +4420,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4570,11 +4435,13 @@ mod tests {
     async fn div_float_float_float() {
         let ctx = test_ctx();
         let r = mat(builtin_div_float(BuiltinArgs {
-            args: vec![alloc(Value::Float(7.5), &ctx), alloc(Value::Float(2.5), &ctx)],
+            args: vec![
+                alloc(Value::Float(7.5), &ctx),
+                alloc(Value::Float(2.5), &ctx),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4589,7 +4456,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -4611,11 +4477,13 @@ mod tests {
         // Float / Float(0.0) produces Inf which check_float_result rejects as non-finite.
         let ctx = test_ctx();
         let e = run(builtin_div_float(BuiltinArgs {
-            args: vec![alloc(Value::Float(10.0), &ctx), alloc(Value::Float(0.0), &ctx)],
+            args: vec![
+                alloc(Value::Float(10.0), &ctx),
+                alloc(Value::Float(0.0), &ctx),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -4636,7 +4504,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -4652,11 +4519,13 @@ mod tests {
     async fn div_float_negative_zero() {
         let ctx = test_ctx();
         let r = mat(builtin_div_float(BuiltinArgs {
-            args: vec![alloc(Value::Float(-0.0), &ctx), alloc(Value::Float(1.0), &ctx)],
+            args: vec![
+                alloc(Value::Float(-0.0), &ctx),
+                alloc(Value::Float(1.0), &ctx),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4671,7 +4540,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4686,7 +4554,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4698,11 +4565,13 @@ mod tests {
     async fn eq_float_float_equal() {
         let ctx = test_ctx();
         let r = mat(builtin_eq_float(BuiltinArgs {
-            args: vec![alloc(Value::Float(3.14), &ctx), alloc(Value::Float(3.14), &ctx)],
+            args: vec![
+                alloc(Value::Float(3.14), &ctx),
+                alloc(Value::Float(3.14), &ctx),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4713,11 +4582,13 @@ mod tests {
     async fn eq_float_float_not_equal() {
         let ctx = test_ctx();
         let r = mat(builtin_eq_float(BuiltinArgs {
-            args: vec![alloc(Value::Float(3.14), &ctx), alloc(Value::Float(2.71), &ctx)],
+            args: vec![
+                alloc(Value::Float(3.14), &ctx),
+                alloc(Value::Float(2.71), &ctx),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4728,11 +4599,13 @@ mod tests {
     async fn eq_nan_not_equal_to_self() {
         let ctx = test_ctx();
         let r = mat(builtin_eq_float(BuiltinArgs {
-            args: vec![alloc(Value::Float(f64::NAN), &ctx), alloc(Value::Float(f64::NAN), &ctx)],
+            args: vec![
+                alloc(Value::Float(f64::NAN), &ctx),
+                alloc(Value::Float(f64::NAN), &ctx),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4743,11 +4616,13 @@ mod tests {
     async fn eq_negative_zero_float() {
         let ctx = test_ctx();
         let r = mat(builtin_eq_float(BuiltinArgs {
-            args: vec![alloc(Value::Float(-0.0), &ctx), alloc(Value::Float(0.0), &ctx)],
+            args: vec![
+                alloc(Value::Float(-0.0), &ctx),
+                alloc(Value::Float(0.0), &ctx),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4766,7 +4641,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4784,7 +4658,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4799,7 +4672,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -4819,7 +4691,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4834,7 +4705,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4849,7 +4719,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4860,11 +4729,13 @@ mod tests {
     async fn lt_float_float() {
         let ctx = test_ctx();
         let r = mat(builtin_lt(BuiltinArgs {
-            args: vec![alloc(Value::Float(2.5), &ctx), alloc(Value::Float(3.5), &ctx)],
+            args: vec![
+                alloc(Value::Float(2.5), &ctx),
+                alloc(Value::Float(3.5), &ctx),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4882,7 +4753,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4900,7 +4770,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4918,7 +4787,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4936,7 +4804,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4951,7 +4818,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4966,7 +4832,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4981,7 +4846,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -4996,7 +4860,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -5013,7 +4876,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -5029,7 +4891,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -5045,7 +4906,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -5061,7 +4921,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -5079,7 +4938,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -5095,7 +4953,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -5115,7 +4972,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -5126,11 +4982,13 @@ mod tests {
     async fn lt_nan_float() {
         let ctx = test_ctx();
         let r = mat(builtin_lt(BuiltinArgs {
-            args: vec![alloc(Value::Float(f64::NAN), &ctx), alloc(Value::Float(1.0), &ctx)],
+            args: vec![
+                alloc(Value::Float(f64::NAN), &ctx),
+                alloc(Value::Float(1.0), &ctx),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -5173,7 +5031,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -5206,7 +5063,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -5229,7 +5085,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -5253,7 +5108,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -5269,11 +5123,13 @@ mod tests {
     async fn take_n_non_int() {
         let ctx = test_ctx();
         let result = run(builtin_take(BuiltinArgs {
-            args: vec![alloc(string_val("not int"), &ctx), alloc(Value::Int(1), &ctx)],
+            args: vec![
+                alloc(string_val("not int"), &ctx),
+                alloc(Value::Int(1), &ctx),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -5291,7 +5147,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -5306,7 +5161,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -5327,7 +5181,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -5359,7 +5212,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -5399,7 +5251,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -5432,10 +5283,13 @@ mod tests {
     async fn concat_variant_xs_is_type_error() {
         // concat(Variant, anything) → type error: builtin_concat is Dict-only.
         let ctx = test_ctx();
-        let xs = alloc(Value::Variant {
-            tag: "Color.Red".to_string(),
-            payload: None,
-        }, &ctx);
+        let xs = alloc(
+            Value::Variant {
+                tag: "Color.Red".to_string(),
+                payload: None,
+            },
+            &ctx,
+        );
         let ys = alloc(Value::Dict(IndexMap::new()), &ctx);
 
         let err = run(builtin_concat(BuiltinArgs {
@@ -5443,7 +5297,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -5474,7 +5327,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -5519,7 +5371,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -5547,7 +5398,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -5573,7 +5423,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -5590,7 +5439,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -5611,7 +5459,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -5634,7 +5481,6 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await
@@ -5708,7 +5554,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -5727,7 +5572,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -5748,7 +5592,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -5765,7 +5608,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -5790,7 +5632,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -5808,7 +5649,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -5850,7 +5690,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -5893,7 +5732,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }))
         .await;
@@ -5906,5 +5744,4 @@ mod tests {
         let val = mat_val(result_thunk).await;
         assert_eq!(val, Value::Int(4), "expected length 4, got {:?}", val);
     }
-
 }

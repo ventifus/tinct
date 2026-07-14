@@ -1545,23 +1545,32 @@ async fn run_eval(
             dir: Rc::new(cwd_dir),
             perms: tinct::DirPerms::full(),
         };
-        let cwd_thunk = Arc::new(tinct::Thunk::new_materialized(cwd_value, tinct::rust_span!()));
-        env.write().unwrap().insert_slot_name_only("%cwd".to_string());
+        let cwd_thunk = Arc::new(tinct::Thunk::new_materialized(
+            cwd_value,
+            tinct::rust_span!(),
+        ));
+        env.write()
+            .unwrap()
+            .insert_slot_name_only("%cwd".to_string());
         deferred_cap_thunks.push(("%cwd".to_string(), cwd_thunk));
     }
 
     // Inject %arena as Value::Arena { name: "root", start_env_id: 0 } so that tinct
     // programs can access the root evaluation arena as a named capability.
     // start_env_id: 0 is the root FlatEnv allocated by EvalContext at construction.
-    // T-1559: this was deferred; now implemented.
+    // Previously deferred; now implemented.
     {
         let arena_value = Value::Arena {
             name: "root".into(),
             start_env_id: 0,
         };
-        let arena_thunk =
-            Arc::new(tinct::Thunk::new_materialized(arena_value, tinct::rust_span!()));
-        env.write().unwrap().insert_slot_name_only("%arena".to_string());
+        let arena_thunk = Arc::new(tinct::Thunk::new_materialized(
+            arena_value,
+            tinct::rust_span!(),
+        ));
+        env.write()
+            .unwrap()
+            .insert_slot_name_only("%arena".to_string());
         deferred_cap_thunks.push(("%arena".to_string(), arena_thunk));
     }
 
@@ -1617,9 +1626,13 @@ async fn run_eval(
                     dir: libdir_dir_for_cap,
                     perms: tinct::DirPerms::full(),
                 };
-                let libdir_thunk =
-                    Arc::new(tinct::Thunk::new_materialized(libdir_value, tinct::rust_span!()));
-                env.write().unwrap().insert_slot_name_only("%libdir".to_string());
+                let libdir_thunk = Arc::new(tinct::Thunk::new_materialized(
+                    libdir_value,
+                    tinct::rust_span!(),
+                ));
+                env.write()
+                    .unwrap()
+                    .insert_slot_name_only("%libdir".to_string());
                 deferred_cap_thunks.push(("%libdir".to_string(), libdir_thunk));
                 libdir_rc_for_ctx = Some(libdir_arc);
             }
@@ -1642,14 +1655,19 @@ async fn run_eval(
                 dir: dir_for_cap,
                 perms,
             };
-            let cap_thunk = Arc::new(tinct::Thunk::new_materialized(cap_value, tinct::rust_span!()));
+            let cap_thunk = Arc::new(tinct::Thunk::new_materialized(
+                cap_value,
+                tinct::rust_span!(),
+            ));
             // Inject as `%NAME` (auto-prefix %).
             let scoped_name = if name.starts_with('%') {
                 name.to_string()
             } else {
                 format!("%{name}")
             };
-            env.write().unwrap().insert_slot_name_only(scoped_name.clone());
+            env.write()
+                .unwrap()
+                .insert_slot_name_only(scoped_name.clone());
             deferred_cap_thunks.push((scoped_name, cap_thunk));
         }
     }
@@ -1693,7 +1711,10 @@ async fn run_eval(
         // Create NetCap values and inject them as `%NAME`.
         for (name, entries) in net_caps {
             let cap_value = Value::NetCap(Rc::new(entries));
-            let cap_thunk = Arc::new(tinct::Thunk::new_materialized(cap_value, tinct::rust_span!()));
+            let cap_thunk = Arc::new(tinct::Thunk::new_materialized(
+                cap_value,
+                tinct::rust_span!(),
+            ));
             env.write().unwrap().insert_slot_name_only(name.clone());
             deferred_cap_thunks.push((name, cap_thunk));
         }
@@ -1726,8 +1747,13 @@ async fn run_eval(
             Value::ClockCap(Rc::new(ClockCapInner::Real))
         };
 
-        let cap_thunk = Arc::new(tinct::Thunk::new_materialized(cap_value, tinct::rust_span!()));
-        env.write().unwrap().insert_slot_name_only("%clock".to_string());
+        let cap_thunk = Arc::new(tinct::Thunk::new_materialized(
+            cap_value,
+            tinct::rust_span!(),
+        ));
+        env.write()
+            .unwrap()
+            .insert_slot_name_only("%clock".to_string());
         deferred_cap_thunks.push(("%clock".to_string(), cap_thunk));
     }
 
@@ -1940,11 +1966,8 @@ async fn run_eval(
         .map_err(|e| format!("cannot open cwd for eval context: {e}"))?
     };
     let eval_ctx = {
-        let type_stage_env = std::sync::Arc::new(std::sync::RwLock::new(tinct::Env::new()));
         let mut ctx = EvalContext::new_with_options(
             cwd_for_ctx,
-            Arc::clone(&env),
-            type_stage_env,
             no_fs,
             require_integrity,
             env_allowed.clone(),
@@ -1969,14 +1992,12 @@ async fn run_eval(
         ctx
     };
 
-    // T-1557: Inject deferred cap thunks into the root FlatEnv arena slot-by-slot.
-    // Slot names were registered in `env` (via insert_slot_name_only) before eval_ctx was
-    // created, so the resolver can assign De Bruijn coordinates. Now that eval_ctx exists,
-    // inject the corresponding thunks into FlatEnv[0] at the next available slots.
-    // The ordering of alloc_thunk calls MUST match the ordering of insert_slot_name_only
-    // calls above so that slot indices align with the resolver's coordinate assignments.
-    for (_name, thunk) in deferred_cap_thunks {
-        eval_ctx.alloc_thunk(thunk);
+    // T-1577: Inject deferred cap thunks as NAMED bindings into the root FlatEnv.
+    // The resolver (T-1576) seeds from FlatEnv.slot_names, so each capability must be
+    // allocated with its name ("%libdir", "%cwd", etc.) so the resolver assigns de Bruijn
+    // coordinates for it. Ordering MUST match registration order above.
+    for (name, thunk) in deferred_cap_thunks {
+        eval_ctx.alloc_named_thunk(&name, thunk);
     }
 
     // Helper: allocate a value as a materialized thunk in the eval_ctx arena and return its ThunkId.
@@ -2101,14 +2122,12 @@ async fn run_eval(
             programs_dict,
             tinct::rust_span!(),
         ));
-        env.write().unwrap().insert_slot_name_only("%programs".to_string());
-        eval_ctx.alloc_thunk(programs_thunk);
+        eval_ctx.alloc_named_thunk("%programs", programs_thunk);
         let args_thunk = std::sync::Arc::new(tinct::Thunk::new_materialized(
             args_dict,
             tinct::rust_span!(),
         ));
-        env.write().unwrap().insert_slot_name_only("%args".to_string());
-        eval_ctx.alloc_thunk(args_thunk);
+        eval_ctx.alloc_named_thunk("%args", args_thunk);
     }
 
     // Wrap the evaluation section in an async block so profiling cleanup runs unconditionally
@@ -2146,15 +2165,8 @@ async fn run_eval(
                 (include_str!("../stdlib/loader.llt"), "stdlib/loader.llt")
             };
 
-        tinct::run_loader_pipeline(
-            Arc::clone(&env),
-            &eval_ctx,
-            &libdir_for_loader,
-            no_fs,
-            init_source,
-            init_path,
-        )
-        .await
+        tinct::run_loader_pipeline(&eval_ctx, &libdir_for_loader, no_fs, init_source, init_path)
+            .await
     })
     .await; // end of eval_result async block
 

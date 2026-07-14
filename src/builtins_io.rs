@@ -310,7 +310,8 @@ pub(crate) fn builtin_narrow(
 
             for &flag_tid in &args[1..] {
                 let flag_thunk = ctx.get_thunk(flag_tid);
-                let flag_val = crate::eval::materialize(&flag_thunk, Some(&call_span), &ctx).await?;
+                let flag_val =
+                    crate::eval::materialize(&flag_thunk, Some(&call_span), &ctx).await?;
 
                 match flag_val {
                     Value::Variant { ref tag, .. } => {
@@ -1223,8 +1224,7 @@ pub(crate) fn builtin_copy_file(
             .expect("pre-materialized by force_count/pos_strictness");
 
         // Extract src DirCap and check permissions
-        let (src_dir, src_perms) =
-            extract_dir_cap(&src_dir_val, "copy-file", thunk0.span.clone())?;
+        let (src_dir, src_perms) = extract_dir_cap(&src_dir_val, "copy-file", thunk0.span.clone())?;
         check_perm(
             src_perms,
             "Readable",
@@ -1234,8 +1234,7 @@ pub(crate) fn builtin_copy_file(
         )?;
 
         // Extract dst DirCap and check permissions
-        let (dst_dir, dst_perms) =
-            extract_dir_cap(&dst_dir_val, "copy-file", thunk2.span.clone())?;
+        let (dst_dir, dst_perms) = extract_dir_cap(&dst_dir_val, "copy-file", thunk2.span.clone())?;
         check_perm(
             dst_perms,
             "Writable",
@@ -2200,7 +2199,8 @@ pub(crate) fn builtin_path_dir(
             call_span.clone(),
         )?;
 
-        let path_str = require_string("builtin-path-dir", val, ctx.get_thunk(args[0]).span.clone())?;
+        let path_str =
+            require_string("builtin-path-dir", val, ctx.get_thunk(args[0]).span.clone())?;
 
         // Extract parent directory component from the path string.
         let path = std::path::Path::new(&path_str);
@@ -3010,4 +3010,3 @@ pub fn io_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("builtin-read-stdin", builtin_read_stdin, [Strictness::Seq]),
     ]
 }
-

@@ -1086,7 +1086,10 @@ pub(crate) async fn infer_dict(
             && matches!(&e.node.value.expr, crate::ast::SurfaceExpression::Rest(..))
     });
     let tail = if has_spread {
-        crate::type_def::RowTail::Uniform { key: None, value: Box::new(Type::Any) }
+        crate::type_def::RowTail::Uniform {
+            key: None,
+            value: Box::new(Type::Any),
+        }
     } else {
         crate::type_def::RowTail::Empty
     };

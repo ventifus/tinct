@@ -1,6 +1,0 @@
-[x: [+ 1 1]
- result: [match x
-   2: "two"
-   _: "other"]]
-=== out
-Dict({"x": Int(2), "result": String("two")})

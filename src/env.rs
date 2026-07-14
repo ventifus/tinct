@@ -90,7 +90,7 @@ impl Env {
 
     /// Return the keys of the slots IndexMap as a `Vec<String>`.
     ///
-    /// Used by the resolver to seed scope frames.
+    /// Used by tests to verify that builtins and type declarations are registered.
     pub fn slot_names(&self) -> Vec<String> {
         self.slots.keys().cloned().collect()
     }
@@ -172,7 +172,12 @@ impl Env {
         if let Some(slot) = self.slots.get_mut(&name) {
             slot.scheme = Some(scheme);
         } else {
-            self.slots.insert(name, EnvSlot { scheme: Some(scheme) });
+            self.slots.insert(
+                name,
+                EnvSlot {
+                    scheme: Some(scheme),
+                },
+            );
         }
     }
 
@@ -189,7 +194,12 @@ impl Env {
         if let Some(slot) = self.extras.get_mut(&name) {
             slot.scheme = Some(scheme);
         } else {
-            self.extras.insert(name, EnvSlot { scheme: Some(scheme) });
+            self.extras.insert(
+                name,
+                EnvSlot {
+                    scheme: Some(scheme),
+                },
+            );
         }
     }
 
@@ -290,9 +300,14 @@ impl Env {
     ///
     /// Callers that previously supplied a `thunk` argument should switch to `insert_scheme`.
     /// This signature is retained for callers that were already passing both; the thunk is
-    /// no longer stored here — values go into `FlatEnv` (T-1559).
+    /// no longer stored here — values go into `FlatEnv` (B-515 tracks arm binding allocation).
     #[allow(unused_variables)]
-    pub fn insert_both(&mut self, name: String, thunk: std::sync::Arc<crate::value::Thunk>, scheme: TypeScheme) {
+    pub fn insert_both(
+        &mut self,
+        name: String,
+        thunk: std::sync::Arc<crate::value::Thunk>,
+        scheme: TypeScheme,
+    ) {
         self.insert_scheme(name, scheme);
     }
 

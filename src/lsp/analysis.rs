@@ -1668,7 +1668,8 @@ mod tests {
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
         let env = test_env().await;
-        crate::eval::EvalContext::new_empty(base_dir, Arc::clone(&env), true)
+        let _ = env;
+        crate::eval::EvalContext::new_empty(base_dir, true)
     }
 
     /// Helper: create an empty include graph for tests.

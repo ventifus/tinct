@@ -167,10 +167,12 @@ pub(crate) fn builtin_eq_int(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let left = ctx.get_thunk(args[0])
+        let left = ctx
+            .get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let right = ctx.get_thunk(args[1])
+        let right = ctx
+            .get_thunk(args[1])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
         match (&left, &right) {
@@ -206,10 +208,12 @@ pub(crate) fn builtin_eq_float(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let left = ctx.get_thunk(args[0])
+        let left = ctx
+            .get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let right = ctx.get_thunk(args[1])
+        let right = ctx
+            .get_thunk(args[1])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
         match (&left, &right) {
@@ -245,10 +249,12 @@ pub(crate) fn builtin_eq_string(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let left = ctx.get_thunk(args[0])
+        let left = ctx
+            .get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let right = ctx.get_thunk(args[1])
+        let right = ctx
+            .get_thunk(args[1])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
         match (&left, &right) {
@@ -361,7 +367,7 @@ pub(crate) fn builtin_lte(
         args,
         named,
         call_span,
-        caller_env,
+        caller_env_id,
         ctx,
         ..
     } = ctx_arg;
@@ -377,8 +383,7 @@ pub(crate) fn builtin_lte(
             args: swapped_args,
             named,
             call_span: call_span.clone(),
-            caller_env,
-            caller_env_id: 0,
+            caller_env_id,
             ctx,
         })
         .await?;
@@ -988,17 +993,39 @@ pub(crate) fn builtin_float(
 pub(crate) fn builtin_int_add(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    let BuiltinArgs { args, named, call_span, ctx, .. } = ctx_arg;
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+        ..
+    } = ctx_arg;
     Box::pin(async move {
         reject_named("builtin-int-add", named.as_ref(), call_span.clone())?;
-        if args.len() != 2 { return Err(EvalError::arity_mismatch(2, args.len(), call_span).into()); }
-        let a = ctx.get_thunk(args[0]).try_get_materialized().expect("pre-materialized");
-        let b = ctx.get_thunk(args[1]).try_get_materialized().expect("pre-materialized");
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        let a = ctx
+            .get_thunk(args[0])
+            .try_get_materialized()
+            .expect("pre-materialized");
+        let b = ctx
+            .get_thunk(args[1])
+            .try_get_materialized()
+            .expect("pre-materialized");
         match (&a, &b) {
-            (Value::Int(x), Value::Int(y)) => x.checked_add(*y)
+            (Value::Int(x), Value::Int(y)) => x
+                .checked_add(*y)
                 .map(|r| Arc::new(Thunk::new_materialized(Value::Int(r), call_span.clone())))
-                .ok_or_else(|| EvalError::integer_overflow("builtin-int-add".to_string(), call_span).into()),
-            _ => Err(EvalError::type_mismatch("Integer", &format!("{} and {}", a.type_name(), b.type_name()), call_span).into()),
+                .ok_or_else(|| {
+                    EvalError::integer_overflow("builtin-int-add".to_string(), call_span).into()
+                }),
+            _ => Err(EvalError::type_mismatch(
+                "Integer",
+                &format!("{} and {}", a.type_name(), b.type_name()),
+                call_span,
+            )
+            .into()),
         }
     })
 }
@@ -1006,15 +1033,36 @@ pub(crate) fn builtin_int_add(
 pub(crate) fn builtin_float_add(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    let BuiltinArgs { args, named, call_span, ctx, .. } = ctx_arg;
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+        ..
+    } = ctx_arg;
     Box::pin(async move {
         reject_named("builtin-float-add", named.as_ref(), call_span.clone())?;
-        if args.len() != 2 { return Err(EvalError::arity_mismatch(2, args.len(), call_span).into()); }
-        let a = ctx.get_thunk(args[0]).try_get_materialized().expect("pre-materialized");
-        let b = ctx.get_thunk(args[1]).try_get_materialized().expect("pre-materialized");
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        let a = ctx
+            .get_thunk(args[0])
+            .try_get_materialized()
+            .expect("pre-materialized");
+        let b = ctx
+            .get_thunk(args[1])
+            .try_get_materialized()
+            .expect("pre-materialized");
         match (&a, &b) {
-            (Value::Float(x), Value::Float(y)) => check_float_result(x + y, "builtin-float-add", call_span),
-            _ => Err(EvalError::type_mismatch("Float", &format!("{} and {}", a.type_name(), b.type_name()), call_span).into()),
+            (Value::Float(x), Value::Float(y)) => {
+                check_float_result(x + y, "builtin-float-add", call_span)
+            }
+            _ => Err(EvalError::type_mismatch(
+                "Float",
+                &format!("{} and {}", a.type_name(), b.type_name()),
+                call_span,
+            )
+            .into()),
         }
     })
 }
@@ -1022,10 +1070,18 @@ pub(crate) fn builtin_float_add(
 pub(crate) fn builtin_int_to_float(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    let BuiltinArgs { args, named, call_span, ctx, .. } = ctx_arg;
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+        ..
+    } = ctx_arg;
     Box::pin(async move {
         reject_named("builtin-int-to-float", named.as_ref(), call_span.clone())?;
-        if args.len() != 1 { return Err(EvalError::arity_mismatch(1, args.len(), call_span).into()); }
+        if args.len() != 1 {
+            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+        }
         let thunk0 = ctx.get_thunk(args[0]);
         let v = thunk0.try_get_materialized().expect("pre-materialized");
         match v {
@@ -1042,17 +1098,39 @@ pub(crate) fn builtin_int_to_float(
 pub(crate) fn builtin_int_sub(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    let BuiltinArgs { args, named, call_span, ctx, .. } = ctx_arg;
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+        ..
+    } = ctx_arg;
     Box::pin(async move {
         reject_named("builtin-int-sub", named.as_ref(), call_span.clone())?;
-        if args.len() != 2 { return Err(EvalError::arity_mismatch(2, args.len(), call_span).into()); }
-        let a = ctx.get_thunk(args[0]).try_get_materialized().expect("pre-materialized");
-        let b = ctx.get_thunk(args[1]).try_get_materialized().expect("pre-materialized");
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        let a = ctx
+            .get_thunk(args[0])
+            .try_get_materialized()
+            .expect("pre-materialized");
+        let b = ctx
+            .get_thunk(args[1])
+            .try_get_materialized()
+            .expect("pre-materialized");
         match (&a, &b) {
-            (Value::Int(x), Value::Int(y)) => x.checked_sub(*y)
+            (Value::Int(x), Value::Int(y)) => x
+                .checked_sub(*y)
                 .map(|r| Arc::new(Thunk::new_materialized(Value::Int(r), call_span.clone())))
-                .ok_or_else(|| EvalError::integer_overflow("builtin-int-sub".to_string(), call_span).into()),
-            _ => Err(EvalError::type_mismatch("Integer", &format!("{} and {}", a.type_name(), b.type_name()), call_span).into()),
+                .ok_or_else(|| {
+                    EvalError::integer_overflow("builtin-int-sub".to_string(), call_span).into()
+                }),
+            _ => Err(EvalError::type_mismatch(
+                "Integer",
+                &format!("{} and {}", a.type_name(), b.type_name()),
+                call_span,
+            )
+            .into()),
         }
     })
 }
@@ -1060,15 +1138,36 @@ pub(crate) fn builtin_int_sub(
 pub(crate) fn builtin_float_sub(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    let BuiltinArgs { args, named, call_span, ctx, .. } = ctx_arg;
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+        ..
+    } = ctx_arg;
     Box::pin(async move {
         reject_named("builtin-float-sub", named.as_ref(), call_span.clone())?;
-        if args.len() != 2 { return Err(EvalError::arity_mismatch(2, args.len(), call_span).into()); }
-        let a = ctx.get_thunk(args[0]).try_get_materialized().expect("pre-materialized");
-        let b = ctx.get_thunk(args[1]).try_get_materialized().expect("pre-materialized");
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        let a = ctx
+            .get_thunk(args[0])
+            .try_get_materialized()
+            .expect("pre-materialized");
+        let b = ctx
+            .get_thunk(args[1])
+            .try_get_materialized()
+            .expect("pre-materialized");
         match (&a, &b) {
-            (Value::Float(x), Value::Float(y)) => check_float_result(x - y, "builtin-float-sub", call_span),
-            _ => Err(EvalError::type_mismatch("Float", &format!("{} and {}", a.type_name(), b.type_name()), call_span).into()),
+            (Value::Float(x), Value::Float(y)) => {
+                check_float_result(x - y, "builtin-float-sub", call_span)
+            }
+            _ => Err(EvalError::type_mismatch(
+                "Float",
+                &format!("{} and {}", a.type_name(), b.type_name()),
+                call_span,
+            )
+            .into()),
         }
     })
 }
@@ -1076,17 +1175,39 @@ pub(crate) fn builtin_float_sub(
 pub(crate) fn builtin_int_mul(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    let BuiltinArgs { args, named, call_span, ctx, .. } = ctx_arg;
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+        ..
+    } = ctx_arg;
     Box::pin(async move {
         reject_named("builtin-int-mul", named.as_ref(), call_span.clone())?;
-        if args.len() != 2 { return Err(EvalError::arity_mismatch(2, args.len(), call_span).into()); }
-        let a = ctx.get_thunk(args[0]).try_get_materialized().expect("pre-materialized");
-        let b = ctx.get_thunk(args[1]).try_get_materialized().expect("pre-materialized");
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        let a = ctx
+            .get_thunk(args[0])
+            .try_get_materialized()
+            .expect("pre-materialized");
+        let b = ctx
+            .get_thunk(args[1])
+            .try_get_materialized()
+            .expect("pre-materialized");
         match (&a, &b) {
-            (Value::Int(x), Value::Int(y)) => x.checked_mul(*y)
+            (Value::Int(x), Value::Int(y)) => x
+                .checked_mul(*y)
                 .map(|r| Arc::new(Thunk::new_materialized(Value::Int(r), call_span.clone())))
-                .ok_or_else(|| EvalError::integer_overflow("builtin-int-mul".to_string(), call_span).into()),
-            _ => Err(EvalError::type_mismatch("Integer", &format!("{} and {}", a.type_name(), b.type_name()), call_span).into()),
+                .ok_or_else(|| {
+                    EvalError::integer_overflow("builtin-int-mul".to_string(), call_span).into()
+                }),
+            _ => Err(EvalError::type_mismatch(
+                "Integer",
+                &format!("{} and {}", a.type_name(), b.type_name()),
+                call_span,
+            )
+            .into()),
         }
     })
 }
@@ -1094,15 +1215,36 @@ pub(crate) fn builtin_int_mul(
 pub(crate) fn builtin_float_mul(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    let BuiltinArgs { args, named, call_span, ctx, .. } = ctx_arg;
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+        ..
+    } = ctx_arg;
     Box::pin(async move {
         reject_named("builtin-float-mul", named.as_ref(), call_span.clone())?;
-        if args.len() != 2 { return Err(EvalError::arity_mismatch(2, args.len(), call_span).into()); }
-        let a = ctx.get_thunk(args[0]).try_get_materialized().expect("pre-materialized");
-        let b = ctx.get_thunk(args[1]).try_get_materialized().expect("pre-materialized");
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        let a = ctx
+            .get_thunk(args[0])
+            .try_get_materialized()
+            .expect("pre-materialized");
+        let b = ctx
+            .get_thunk(args[1])
+            .try_get_materialized()
+            .expect("pre-materialized");
         match (&a, &b) {
-            (Value::Float(x), Value::Float(y)) => check_float_result(x * y, "builtin-float-mul", call_span),
-            _ => Err(EvalError::type_mismatch("Float", &format!("{} and {}", a.type_name(), b.type_name()), call_span).into()),
+            (Value::Float(x), Value::Float(y)) => {
+                check_float_result(x * y, "builtin-float-mul", call_span)
+            }
+            _ => Err(EvalError::type_mismatch(
+                "Float",
+                &format!("{} and {}", a.type_name(), b.type_name()),
+                call_span,
+            )
+            .into()),
         }
     })
 }
@@ -1113,15 +1255,36 @@ pub(crate) fn builtin_float_mul(
 pub(crate) fn builtin_int_gt(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    let BuiltinArgs { args, named, call_span, ctx, .. } = ctx_arg;
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+        ..
+    } = ctx_arg;
     Box::pin(async move {
         reject_named("builtin-int-gt", named.as_ref(), call_span.clone())?;
-        if args.len() != 2 { return Err(EvalError::arity_mismatch(2, args.len(), call_span).into()); }
-        let a = ctx.get_thunk(args[0]).try_get_materialized().expect("pre-materialized");
-        let b = ctx.get_thunk(args[1]).try_get_materialized().expect("pre-materialized");
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        let a = ctx
+            .get_thunk(args[0])
+            .try_get_materialized()
+            .expect("pre-materialized");
+        let b = ctx
+            .get_thunk(args[1])
+            .try_get_materialized()
+            .expect("pre-materialized");
         match (&a, &b) {
-            (Value::Int(x), Value::Int(y)) => ok_val(Value::Int(if x > y { 1 } else { 0 }), call_span),
-            _ => Err(EvalError::type_mismatch("Integer", &format!("{} and {}", a.type_name(), b.type_name()), call_span).into()),
+            (Value::Int(x), Value::Int(y)) => {
+                ok_val(Value::Int(if x > y { 1 } else { 0 }), call_span)
+            }
+            _ => Err(EvalError::type_mismatch(
+                "Integer",
+                &format!("{} and {}", a.type_name(), b.type_name()),
+                call_span,
+            )
+            .into()),
         }
     })
 }
@@ -1129,15 +1292,36 @@ pub(crate) fn builtin_int_gt(
 pub(crate) fn builtin_float_gt(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    let BuiltinArgs { args, named, call_span, ctx, .. } = ctx_arg;
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+        ..
+    } = ctx_arg;
     Box::pin(async move {
         reject_named("builtin-float-gt", named.as_ref(), call_span.clone())?;
-        if args.len() != 2 { return Err(EvalError::arity_mismatch(2, args.len(), call_span).into()); }
-        let a = ctx.get_thunk(args[0]).try_get_materialized().expect("pre-materialized");
-        let b = ctx.get_thunk(args[1]).try_get_materialized().expect("pre-materialized");
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        let a = ctx
+            .get_thunk(args[0])
+            .try_get_materialized()
+            .expect("pre-materialized");
+        let b = ctx
+            .get_thunk(args[1])
+            .try_get_materialized()
+            .expect("pre-materialized");
         match (&a, &b) {
-            (Value::Float(x), Value::Float(y)) => ok_val(Value::Int(if x > y { 1 } else { 0 }), call_span),
-            _ => Err(EvalError::type_mismatch("Float", &format!("{} and {}", a.type_name(), b.type_name()), call_span).into()),
+            (Value::Float(x), Value::Float(y)) => {
+                ok_val(Value::Int(if x > y { 1 } else { 0 }), call_span)
+            }
+            _ => Err(EvalError::type_mismatch(
+                "Float",
+                &format!("{} and {}", a.type_name(), b.type_name()),
+                call_span,
+            )
+            .into()),
         }
     })
 }
@@ -1145,16 +1329,48 @@ pub(crate) fn builtin_float_gt(
 pub(crate) fn builtin_str_gt(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    let BuiltinArgs { args, named, call_span, ctx, .. } = ctx_arg;
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+        ..
+    } = ctx_arg;
     Box::pin(async move {
         reject_named("builtin-str-gt", named.as_ref(), call_span.clone())?;
-        if args.len() != 2 { return Err(EvalError::arity_mismatch(2, args.len(), call_span).into()); }
-        let a = ctx.get_thunk(args[0]).try_get_materialized().expect("pre-materialized");
-        let b = ctx.get_thunk(args[1]).try_get_materialized().expect("pre-materialized");
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        let a = ctx
+            .get_thunk(args[0])
+            .try_get_materialized()
+            .expect("pre-materialized");
+        let b = ctx
+            .get_thunk(args[1])
+            .try_get_materialized()
+            .expect("pre-materialized");
         match (&a, &b) {
-            (Value::String { source: sa, start: sta, end: ea }, Value::String { source: sb, start: stb, end: eb }) =>
-                ok_val(Value::Int(if sa[*sta..*ea] > sb[*stb..*eb] { 1 } else { 0 }), call_span),
-            _ => Err(EvalError::type_mismatch("String", &format!("{} and {}", a.type_name(), b.type_name()), call_span).into()),
+            (
+                Value::String {
+                    source: sa,
+                    start: sta,
+                    end: ea,
+                },
+                Value::String {
+                    source: sb,
+                    start: stb,
+                    end: eb,
+                },
+            ) => ok_val(
+                Value::Int(if sa[*sta..*ea] > sb[*stb..*eb] { 1 } else { 0 }),
+                call_span,
+            ),
+            _ => Err(EvalError::type_mismatch(
+                "String",
+                &format!("{} and {}", a.type_name(), b.type_name()),
+                call_span,
+            )
+            .into()),
         }
     })
 }
@@ -1162,15 +1378,36 @@ pub(crate) fn builtin_str_gt(
 pub(crate) fn builtin_int_gte(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    let BuiltinArgs { args, named, call_span, ctx, .. } = ctx_arg;
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+        ..
+    } = ctx_arg;
     Box::pin(async move {
         reject_named("builtin-int-gte", named.as_ref(), call_span.clone())?;
-        if args.len() != 2 { return Err(EvalError::arity_mismatch(2, args.len(), call_span).into()); }
-        let a = ctx.get_thunk(args[0]).try_get_materialized().expect("pre-materialized");
-        let b = ctx.get_thunk(args[1]).try_get_materialized().expect("pre-materialized");
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        let a = ctx
+            .get_thunk(args[0])
+            .try_get_materialized()
+            .expect("pre-materialized");
+        let b = ctx
+            .get_thunk(args[1])
+            .try_get_materialized()
+            .expect("pre-materialized");
         match (&a, &b) {
-            (Value::Int(x), Value::Int(y)) => ok_val(Value::Int(if x >= y { 1 } else { 0 }), call_span),
-            _ => Err(EvalError::type_mismatch("Integer", &format!("{} and {}", a.type_name(), b.type_name()), call_span).into()),
+            (Value::Int(x), Value::Int(y)) => {
+                ok_val(Value::Int(if x >= y { 1 } else { 0 }), call_span)
+            }
+            _ => Err(EvalError::type_mismatch(
+                "Integer",
+                &format!("{} and {}", a.type_name(), b.type_name()),
+                call_span,
+            )
+            .into()),
         }
     })
 }
@@ -1178,15 +1415,36 @@ pub(crate) fn builtin_int_gte(
 pub(crate) fn builtin_float_gte(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    let BuiltinArgs { args, named, call_span, ctx, .. } = ctx_arg;
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+        ..
+    } = ctx_arg;
     Box::pin(async move {
         reject_named("builtin-float-gte", named.as_ref(), call_span.clone())?;
-        if args.len() != 2 { return Err(EvalError::arity_mismatch(2, args.len(), call_span).into()); }
-        let a = ctx.get_thunk(args[0]).try_get_materialized().expect("pre-materialized");
-        let b = ctx.get_thunk(args[1]).try_get_materialized().expect("pre-materialized");
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        let a = ctx
+            .get_thunk(args[0])
+            .try_get_materialized()
+            .expect("pre-materialized");
+        let b = ctx
+            .get_thunk(args[1])
+            .try_get_materialized()
+            .expect("pre-materialized");
         match (&a, &b) {
-            (Value::Float(x), Value::Float(y)) => ok_val(Value::Int(if x >= y { 1 } else { 0 }), call_span),
-            _ => Err(EvalError::type_mismatch("Float", &format!("{} and {}", a.type_name(), b.type_name()), call_span).into()),
+            (Value::Float(x), Value::Float(y)) => {
+                ok_val(Value::Int(if x >= y { 1 } else { 0 }), call_span)
+            }
+            _ => Err(EvalError::type_mismatch(
+                "Float",
+                &format!("{} and {}", a.type_name(), b.type_name()),
+                call_span,
+            )
+            .into()),
         }
     })
 }
@@ -1194,16 +1452,48 @@ pub(crate) fn builtin_float_gte(
 pub(crate) fn builtin_str_gte(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    let BuiltinArgs { args, named, call_span, ctx, .. } = ctx_arg;
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+        ..
+    } = ctx_arg;
     Box::pin(async move {
         reject_named("builtin-str-gte", named.as_ref(), call_span.clone())?;
-        if args.len() != 2 { return Err(EvalError::arity_mismatch(2, args.len(), call_span).into()); }
-        let a = ctx.get_thunk(args[0]).try_get_materialized().expect("pre-materialized");
-        let b = ctx.get_thunk(args[1]).try_get_materialized().expect("pre-materialized");
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        let a = ctx
+            .get_thunk(args[0])
+            .try_get_materialized()
+            .expect("pre-materialized");
+        let b = ctx
+            .get_thunk(args[1])
+            .try_get_materialized()
+            .expect("pre-materialized");
         match (&a, &b) {
-            (Value::String { source: sa, start: sta, end: ea }, Value::String { source: sb, start: stb, end: eb }) =>
-                ok_val(Value::Int(if sa[*sta..*ea] >= sb[*stb..*eb] { 1 } else { 0 }), call_span),
-            _ => Err(EvalError::type_mismatch("String", &format!("{} and {}", a.type_name(), b.type_name()), call_span).into()),
+            (
+                Value::String {
+                    source: sa,
+                    start: sta,
+                    end: ea,
+                },
+                Value::String {
+                    source: sb,
+                    start: stb,
+                    end: eb,
+                },
+            ) => ok_val(
+                Value::Int(if sa[*sta..*ea] >= sb[*stb..*eb] { 1 } else { 0 }),
+                call_span,
+            ),
+            _ => Err(EvalError::type_mismatch(
+                "String",
+                &format!("{} and {}", a.type_name(), b.type_name()),
+                call_span,
+            )
+            .into()),
         }
     })
 }
@@ -1251,8 +1541,20 @@ pub fn math_builtins() -> Vec<crate::value::BuiltinDef> {
             ["a", "b"]
         ),
         // ── Math ─────────────────────────────────────────────────────────────────────
-        builtin!("builtin-floor", crate::builtins::builtin_floor, [Strictness::Seq], 1, ["n"]),
-        builtin!("builtin-round", crate::builtins::builtin_round, [Strictness::Seq], 1, ["n"]),
+        builtin!(
+            "builtin-floor",
+            crate::builtins::builtin_floor,
+            [Strictness::Seq],
+            1,
+            ["n"]
+        ),
+        builtin!(
+            "builtin-round",
+            crate::builtins::builtin_round,
+            [Strictness::Seq],
+            1,
+            ["n"]
+        ),
         builtin!(
             "builtin-pow",
             builtin_pow,
@@ -1337,22 +1639,26 @@ pub fn math_builtins() -> Vec<crate::value::BuiltinDef> {
         ),
         // ── Type conversion ──────────────────────────────────────────────────────────
         builtin!("builtin-float", builtin_float, [Strictness::Seq], 1, ["n"]),
-        builtin!("builtin-to-int", crate::builtins::builtin_to_int, [Strictness::Seq]),
-        builtin!("builtin-to-float", crate::builtins::builtin_to_float, [Strictness::Seq]),
+        builtin!(
+            "builtin-to-int",
+            crate::builtins::builtin_to_int,
+            [Strictness::Seq]
+        ),
+        builtin!(
+            "builtin-to-float",
+            crate::builtins::builtin_to_float,
+            [Strictness::Seq]
+        ),
     ]
 }
-
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ast::Span;
-    use crate::env::Env;
     use crate::error::ErrorKind;
     use crate::test_util::test_span;
     use crate::value::{BuiltinArgs, Thunk, ThunkId, Value};
-    use std::sync::RwLock;
-
     fn call_span() -> Span {
         test_span(1, 1, 1, 5)
     }
@@ -1363,19 +1669,14 @@ mod tests {
 
     fn test_ctx() -> Arc<crate::eval::EvalContext> {
         let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
-        let env = Arc::new(RwLock::new(Env::new()));
-        // T-1557: Env is type-metadata only; register slot names for the resolver.
-        // Runtime thunks are pre-populated in the root FlatEnv by EvalContext::new_env_arena().
-        if let Some(defs) = crate::builtins::builtin_module("core") {
-            for def in defs {
-                env.write().unwrap().insert_slot_name_only(def.name.to_string());
-            }
-        }
-        crate::eval::EvalContext::new_empty(base_dir, env, false)
+        crate::eval::EvalContext::new_empty(base_dir, false)
     }
 
     fn alloc(ctx: &Arc<crate::eval::EvalContext>, val: Value) -> ThunkId {
-        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(val, test_span(1, 1, 1, 5))))
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            val,
+            test_span(1, 1, 1, 5),
+        )))
     }
 
     /// Drive an async builtin to completion synchronously in tests.
@@ -1394,7 +1695,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }));
         let t = result.expect("expected Float result at MAX_SAFE_INT boundary");
@@ -1413,10 +1713,12 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }));
-        assert!(result.is_err(), "expected precision error for Int > MAX_SAFE_INT");
+        assert!(
+            result.is_err(),
+            "expected precision error for Int > MAX_SAFE_INT"
+        );
     }
 
     // --- Monomorphic int-add fast path ---
@@ -1430,7 +1732,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }));
         let t = result.expect("expected Int(7)");
@@ -1446,7 +1747,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }));
         let t = result.expect("expected Int(42)");
@@ -1463,7 +1763,6 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env: Arc::new(RwLock::new(crate::value::Environment::new())),
             caller_env_id: 0,
         }));
         // Non-Int/Float operands produce a TypeMismatch error.

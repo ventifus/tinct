@@ -135,5 +135,15 @@ fn oom_exit() -> ! {
     eprintln!("  heap allocated:       {allocated} bytes");
     eprintln!("  heap peak:            {peak} bytes");
 
+    // Use _exit (not process::exit) to avoid running atexit/cleanup handlers.
+    // process::exit triggers tokio's scheduler cleanup which panics if called
+    // while a scheduler lock is held (which is the case inside async tasks).
+    // _exit terminates immediately with the given exit code — correct for OOM
+    // since any cleanup code would itself try to allocate and fail.
+    #[cfg(unix)]
+    unsafe {
+        libc::_exit(EXIT_OOM)
+    }
+    #[cfg(not(unix))]
     std::process::exit(EXIT_OOM)
 }

@@ -1074,10 +1074,14 @@ pub(crate) fn extract_span(
             let start = extract_position(&start_val, ctx)?;
             let end = extract_position(&end_val, ctx)?;
 
-            Some(Span::new(start, end, std::sync::Arc::new(crate::ast::SourceFile {
-                path: std::sync::Arc::from("<surface-convert>"),
-                content: std::sync::Arc::from(""),
-            })))
+            Some(Span::new(
+                start,
+                end,
+                std::sync::Arc::new(crate::ast::SourceFile {
+                    path: std::sync::Arc::from("<surface-convert>"),
+                    content: std::sync::Arc::from(""),
+                }),
+            ))
         }
         _ => None,
     }
@@ -2865,12 +2869,8 @@ mod tests {
     use super::*;
 
     fn test_ctx() -> Arc<crate::eval::EvalContext> {
-        use crate::env::Env;
-        use std::sync::RwLock;
-
-        let env = Arc::new(RwLock::new(Env::new()));
         let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
-        crate::eval::EvalContext::new(base_dir, Arc::clone(&env), Arc::clone(&env), false)
+        crate::eval::EvalContext::new(base_dir, false)
     }
 
     /// Peel a `Value::Variant` to its payload dict.

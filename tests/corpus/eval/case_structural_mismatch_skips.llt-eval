@@ -1,8 +1,0 @@
-# 3-arg case: literal pattern mismatch causes soft-skip to next arm.
-# First arm pattern 1 does not match scrutinee 2; second arm pattern 2 fires.
-[match 2
-  [case [let] 1 "one"]
-  [case [let] 2 "two"]
-  [case [let _] _ "other"]]
-=== out
-String("two")

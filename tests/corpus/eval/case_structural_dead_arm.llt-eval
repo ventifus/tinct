@@ -1,7 +1,0 @@
-# 3-arg case: dict pattern match — first arm matches any dict with field "tag",
-# making the second arm dead. Tests that the matching arm fires and dead arm is skipped.
-[match [tag: "ok"  val: 42]
-  [case [let v] [tag: "ok"  val: v] v]
-  [case [let _] _ -1]]
-=== out
-Int(42)
