@@ -212,9 +212,6 @@ enum Commands {
         /// File to hash.
         file: String,
     },
-    /// Start the LSP server (stdio transport).
-    #[cfg(feature = "lsp")]
-    Lsp,
     /// Describe the input contract of an LLT file.
     ///
     /// Extracts `%@Type` annotations and schema dicts, printing a human-readable
@@ -443,8 +440,6 @@ async fn async_main() -> i32 {
             strict,
             file,
         } => run_fmt(&file, check, in_place, &output, strict).await,
-        #[cfg(feature = "lsp")]
-        Commands::Lsp => tinct::lsp::run_lsp().map_err(|e| format!("{e}")),
         Commands::Describe { file } => run_describe(&file).await,
         Commands::Explain { code } => run_explain(&code),
         Commands::Lint {

@@ -94,9 +94,6 @@ pub(crate) mod lower;
 pub(crate) mod surface_fields;
 // Literate tinct: extract and evaluate tinct code blocks from Markdown files.
 pub mod literate;
-// LSP (Language Server Protocol).
-#[cfg(feature = "lsp")]
-pub mod lsp;
 // Profiling infrastructure: span collection, timing, and conversion to Value format.
 pub mod profiling;
 
@@ -129,16 +126,6 @@ pub use imports::{
     get_builtin_core_type_env,
 };
 
-// Compile-time assertion: LSP MAX_DOCUMENT_SIZE must match builtins MAX_FILE_SIZE
-#[cfg(feature = "lsp")]
-const _: () = {
-    const LSP_MAX: usize = lsp::MAX_DOCUMENT_SIZE;
-    const BUILTINS_MAX: u64 = builtins::MAX_FILE_SIZE;
-    assert!(
-        LSP_MAX as u64 == BUILTINS_MAX,
-        "MAX_DOCUMENT_SIZE and MAX_FILE_SIZE must match"
-    );
-};
 
 /// Error types with source spans and stack traces.
 pub use error::{
@@ -151,9 +138,6 @@ pub use types::{format_type_error, TypeError};
 
 /// Formatter: canonical source reformatter.
 pub use formatter::{format_source_tinct, format_source_tinct_with_dir};
-
-#[cfg(feature = "lsp")]
-pub use lsp::run_lsp;
 
 /// Unified evaluation and type-checker environment.
 pub use env::Env;

@@ -2585,8 +2585,8 @@ pub(crate) fn builtin_typecheck(
 
 /// `builtin-get-type-context`: Return a clone of the EvalContext's TypeContext.
 ///
-/// Returns a clone of the TypeContextData initialized by the Rust bootstrap (main.rs /
-/// lsp/document.rs). Errors if the TypeContext was not initialized before this call.
+/// Returns a clone of the TypeContextData initialized by the Rust bootstrap (main.rs).
+/// Errors if the TypeContext was not initialized before this call.
 ///
 /// Note: this builtin is vestigial. Tinct code should use the TypeContext created by
 /// `[builtin-make-type-ctx]` and threaded explicitly through `uses-scope` / `fundamental-tc`.
@@ -2628,8 +2628,7 @@ pub(crate) fn builtin_get_type_context(
             }
             None => {
                 drop(tc_guard);
-                // TypeContext must be initialized by the caller (main.rs / lsp/document.rs)
-                // before any tinct code runs. If it's missing here, something is wrong.
+                // TypeContext must be initialized by main.rs before any tinct code runs.
                 Err(EvalError::internal(
                     "builtin-get-type-context: TypeContext not initialized — \
                      this is a Rust bootstrap error, not a tinct error"

@@ -22,9 +22,8 @@ lto = true
 codegen-units = 1
 
 [features]
-default = ["cli", "lsp"]
+default = ["cli"]
 cli = ["dep:clap"]
-lsp = ["dep:lsp-server", "dep:lsp-types", "dep:url", "dep:serde_json"]
 
 [dependencies]
 tinct-derive = { path = "tinct-derive" }
@@ -35,9 +34,7 @@ clap = { version = "4.6", features = ["derive"], optional = true }
 indexmap = "2.7"
 jiff = { version = "0.2", default-features = false, features = ["std"] }  # Date-time library for timestamp/timezone support
 libc = "0.2"  # Used for POSIX signal handling (SIGALRM timeout) in src/main.rs
-lsp-server = { version = "0.7", optional = true }
-lsp-types = { version = "0.97", optional = true }
-url = { version = "2", optional = true }
+url = "2"  # URL parsing for network builtins
 regex = "1"  # Pattern matching for schema validation
 rust_decimal = "1"  # Exact base-10 decimal arithmetic (96-bit software decimal)
 num-bigint = "0.4"  # Arbitrary-precision integer arithmetic
@@ -60,7 +57,7 @@ h3-quinn = "0.0.10"  # Quinn QUIC adapter for h3 (0.0.10+ compatible with quinn 
 bytes = "1"  # Byte buffer abstraction (shared dep with quinn/h3; used in Http3Session body type)
 http = "1"  # HTTP types (Request, Response, HeaderMap) used in http-request builtin via h3
 serde = { version = "1.0", features = ["derive"] }
-serde_json = { version = "1", optional = true }  # JSON serialization for LSP protocol (lsp feature only)
+serde_json = { version = "1" }
 strsim = "0.11"
 
 [dev-dependencies]
