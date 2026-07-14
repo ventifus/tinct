@@ -104,9 +104,8 @@ impl SurfaceResolver {
                 if binding.starts_with('ɪ')
                     && (binding.contains(&needle_with_args) || binding.contains(&needle_no_args))
                 {
-                    if let Some(slot) = scope.get_index_of(binding) {
+                    if let Some(&slot) = scope.get(binding) {
                         let level = u32::try_from(offset).expect("scope depth overflow");
-                        let slot = u32::try_from(slot).expect("slot index overflow");
                         return Some((level, slot));
                     }
                 }
