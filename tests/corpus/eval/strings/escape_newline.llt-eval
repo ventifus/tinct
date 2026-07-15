@@ -1,0 +1,4 @@
+# String with newline escape
+"line1\nline2"
+=== out
+String("line1\nline2")

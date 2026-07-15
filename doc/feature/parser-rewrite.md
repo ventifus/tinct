@@ -43,32 +43,62 @@ parser holds a current expression buffer and a frame stack; bracket nesting
 pushes and pops frames.
 
 ```rust
+// Note: fields simplified — see src/parser.rs for full definition
 enum StackFrame {
-    Dict           { entries: Vec<Entry>, span_start: usize },
-    Call           { args: Vec<CallArg>, span_start: usize },
-    Fn             { params: Vec<Param>, body_start: Option<usize>, span_start: usize },
-    TypeAlias      { name: String, params: Vec<String>, span_start: usize },
-    TypeAssert     { annotation: Spanned<TypeExpr>, span_start: usize },
+    Dict {
+        entries: Vec<Spanned<SurfaceEntry>>,
+        pending_key: Option<Arc<SurfaceNode>>,
+        seen_keys: HashSet<String>,
+        floating_annotation: Option<Spanned<Annotation>>,
+        span_start: Position,
+    },
+    Call {
+        func: Option<Arc<SurfaceNode>>,
+        implied: bool,
+        args: Vec<CallArg>,
+        pending_key: Option<(String, Span, Option<Spanned<Annotation>>)>,
+        span_start: Position,
+    },
+    Fn {
+        params: Vec<Spanned<SurfaceParam>>,
+        body: Vec<Arc<SurfaceNode>>,
+        return_ann: Option<Spanned<Annotation>>,
+        params_consumed: bool,
+        span_start: Position,
+    },
+    TypeAlias {
+        params: Vec<(String, Option<Spanned<Annotation>>)>,
+        type_exprs: Vec<Arc<SurfaceNode>>,
+        span_start: Position,
+    },
+    AnnotationCollect { target: AnnotationTarget, value: Option<Arc<SurfaceNode>>, span_start: Position },
 }
 ```
 
 On `Token::OpenBracket`: peek at the next non-whitespace token to classify the
 form (keyword detection: `Identifier("call")`, `Identifier("fn")`,
-`Identifier("type")`, `Token::At` for TypeAssert), then push the appropriate
-frame.
+`Identifier("type")`), then push the appropriate frame. `[@...]` is no longer a
+special case — `@` after `[` starts an `AnnotationCollect` frame using the
+floating annotation mechanism on the enclosing `Dict` frame.
 
 On `Token::CloseBracket`: pop the frame, construct the corresponding AST node
 (`Expr::Dict`, `Expr::Call`, `Expr::Fn`, `Expr::TypeAlias`,
-`Expr::TypeAssert`), and append to the enclosing frame's expression buffer.
+`Expr::TypeAssert`), and append to the enclosing frame's expression buffer. When
+a `Dict` frame closes with a floating annotation set and exactly one auto-indexed
+entry, the entry value is wrapped in `TypeAssert` and pushed directly (not
+wrapped in `Dict`).
 
 Between brackets: parse atoms (literals, EscapedRefs, Identifiers), access chains
 (dot), and annotations — all non-recursive, driven by the current token type.
 
-**Annotated bare words** (`word@annotation`, compound-atomic in pest) are
-handled at the lexer level: when `@` follows an `Identifier` token with no
-whitespace gap (detected via the `had_whitespace_before` flag), the lexer emits
-`Token::ImmediateAt` instead of `Token::At`. The parser treats `ImmediateAt` as
-the annotation separator in annotated bare-word context.
+**Annotations** (`word@annotation`, `]@Type`, `"s"@String`, `42@Int`) are
+handled via `Token::ImmediateAt`. The lexer emits `ImmediateAt` instead of `At`
+when `@` appears with no whitespace gap after any value-ending token: `CloseBracket`,
+`StringLiteral`, `Int`, `Float`, `U64Lit`, `EscapedRef`, or `Identifier`. The
+parser responds by popping the last value from the current frame and pushing an
+`AnnotationCollect(Attached(popped))` frame. Plain `@` (with whitespace, or at
+the start of a bracket form) starts an `AnnotationCollect(Floating)` frame whose
+annotation is attached to the enclosing `Dict` as a floating annotation.
 
 `MAX_DEPTH` is checked on `stack.len()` before each push. This fires before any
 allocation, replacing the post-hoc depth check in the previous builder.
@@ -93,10 +123,11 @@ and returns them alongside the AST in a `ParseOutput` struct:
 
 ```rust
 pub struct ParseOutput {
-    pub file: Spanned<File>,
-    pub source: String,                                    // original input — for span-based source lookups
     pub leading_comments: BTreeMap<usize, Vec<String>>,   // keyed by span.start.offset
     pub trailing_comments: BTreeMap<usize, String>,        // keyed by span.start.offset
+    pub blank_before: BTreeMap<usize, bool>,               // keyed by span.start.offset
+    pub errors: Vec<ParseError>,                           // recovered errors from bracket-level recovery
+    pub program: SurfaceProgram,                           // the parsed Surface AST
 }
 ```
 
@@ -105,61 +136,52 @@ Leading comments (appearing before an AST node) are keyed by the
 the same line after a value) are keyed by the `span.start.offset` of the node
 they follow. The formatter looks up both maps for each node it emits.
 
-`source` stores the original input string. The formatter uses it for two
-purposes: (1) rendering `Expr::Error(Span)` nodes verbatim by slicing
-`source[span.start.offset..span.end.offset]`, and (2) recovering the bare-word
-vs quoted-string distinction for `Expr::Str` nodes (see §AST-Based Formatter).
+The original input string is not stored in `ParseOutput`. The formatter passes
+it directly as `AstToDictOpts.source` (an `Option<&str>`) to
+`surface_program_to_dict` in `surface_convert.rs` (see `formatter.rs:84`).
+`AstToDictOpts.source` enables the bare-word vs quoted-string distinction for
+`SurfaceExpression::StringLiteral` keys in dict entries.
 
-`Spanned<T>` is completely unchanged — no new fields, no broken `PartialEq`,
-no memory overhead in evaluator or type-checker paths. The evaluator and type
-checker receive `Spanned<File>` as before; only the formatter consumes `source`
-and the comment maps.
+The evaluator and type checker consume only `program`; the formatter additionally
+uses the comment maps and passes the original `&str` input through
+`AstToDictOpts`.
 
 `parse(source: &str) -> Result<ParseOutput, ParseError>`. The iterative parser
 replaces pest entirely. The corpus test suite serves as the regression suite.
 
-### AST-Based Formatter (rewrite of `src/formatter.rs`)
+### AST-Based Formatter (`src/formatter.rs`)
 
-The rewritten formatter walks `Spanned<File>` from `ParseOutput` and emits
-canonical tinct source. It does not consume the token stream.
+The formatter is tinct-hosted: `src/formatter.rs` is a thin Rust wrapper that
+orchestrates three steps.
 
-Key properties:
+1. **Parse** — the input source is parsed to a `ParseOutput` via `parse()`.
+2. **Convert to dict** — `surface_program_to_dict` (from `src/surface_convert.rs`)
+   converts the `SurfaceProgram` AST to a tinct `Value::Dict` representation.
+   This conversion is driven by `AstToDictOpts`, which carries:
+   - `source: Option<&str>` — the original input string, passed directly from
+     the `format_source_tinct_with_dir` call site (not from `ParseOutput`). Used by
+     `surface_convert.rs` to distinguish bare-word dict keys from quoted string
+     keys by inspecting the character at each key's span offset.
+   - `comments: Option<CommentMaps>` — borrows `ParseOutput.leading_comments`,
+     `ParseOutput.trailing_comments`, and `ParseOutput.blank_before` to embed
+     comment and blank-line metadata into Entry and Document nodes of the dict.
+3. **Evaluate the tinct formatter** — the dict is passed as pipeline input (`%`)
+   to a tinct-hosted formatter script (`stdlib/cli/fmt/pretty.llt` or similar).
+   The script performs all formatting decisions — single-line vs multi-line
+   layout, indentation, spacing — and returns the formatted source as a string.
 
-- **Exact structure**: bracket form is known from AST node type, not keyword
-  scanning.
-- **Exact comment placement**: leading and trailing comments from
-  `ParseOutput.leading_comments` and `ParseOutput.trailing_comments` are
-  looked up by `span.start.offset` and emitted at the correct positions.
-- **No heuristics**: `is_fn_params`, `has_whitespace_between`, keyword string
-  comparisons are all eliminated.
-- **Single-line / multi-line decision**: driven by rendered width of the AST
-  subtree, same policy as before but computed from node structure.
-- **String form preservation**: both `Token::BareWord` and
-  `Token::QuotedString` collapse to `Expr::Str` during parsing — the AST does
-  not distinguish them. The formatter recovers the original form via a
-  span-based source lookup: for each `Expr::Str` node, it checks
-  `ParseOutput.source.as_bytes()[span.start.offset]`. If that byte is `b'"'`,
-  the string was quoted and is emitted with `"..."` delimiters and proper
-  escaping; otherwise it was a bare word and is emitted verbatim without
-  quotes. This span-peek is isolated to the `Expr::Str` arm of the formatter's
-  expression walker. It is removed when unified syntax Phase 2
-  (`doc/whatif/new-syntax.md`) adopts bare-word references. The `Expr` enum is
-  not modified for this purpose — no `Expr::BareWord` variant is introduced.
+All layout decisions (width thresholds, comment placement, indentation) are
+implemented in tinct, not in Rust. The Rust layer handles only parsing,
+AST-to-dict conversion, and tinct evaluation.
 
-The rewritten formatter requires a successful parse. Files with syntax errors
-cannot be formatted — the formatter returns an error. Error nodes
-(`Expr::Error(Span)`) are rendered by emitting the original source text for the
-span verbatim, preserving partial formatting capability.
-
-Semicolons are normalized: the AST represents the canonical form, which uses
-only whitespace and newlines, never semicolons.
+The formatter requires a successful parse. Files with syntax errors cannot be
+formatted — the formatter returns an error.
 
 ## Implementation
 
 ### Lexer (`src/lexer.rs`)
 
-Emits `Token::ImmediateAt` for `@` with no whitespace after an `Identifier`
-token. Whitespace-sensitive token handling updated at all match sites.
+Emits `Token::ImmediateAt` for `@` with no whitespace after any value-ending token (identifier, `]`, string literal, number, float, u64 literal). The `last_was_nonwhitespace` flag is set by all value-producing tokens and cleared by structural delimiters and keywords. Access-field identifiers (after `.`) also set the flag, enabling `obj.field@Type`. Whitespace-sensitive token handling updated at all match sites.
 
 **Note**: `Token::BracketAccess` was evaluated and removed during the
 `access-pipeline-phase2` sprint. Bracket access syntax is no longer part of the
@@ -174,17 +196,20 @@ removed. The corpus test suite is the regression suite.
 
 ### Formatter (`src/formatter.rs`)
 
-Complete rewrite as AST walker over `ParseOutput`. Comment maps drive placement;
-AST node types drive structure. Behavior is observably equivalent for valid
-files. For files with syntax errors, the formatter returns an error.
+Thin Rust wrapper: parses the input, converts the AST to a dict via
+`surface_program_to_dict`, then evaluates the tinct-hosted formatter script with
+the dict as pipeline input. All layout logic lives in tinct. For files with
+syntax errors, the formatter returns an error without invoking the tinct script.
 
 ### Parse Output (`src/parser.rs`)
 
 `parse()` returns `Result<ParseOutput, ParseError>` where `ParseOutput` carries
-`Spanned<File>`, the original `source: String`, and two `BTreeMap<usize, _>`
-comment tables. `Spanned<T>` is entirely unchanged. Callers of `parse()` unwrap
-`ParseOutput.file` for the AST; the formatter additionally consumes `source`
-and the comment maps. The evaluator and type checker are unaffected.
+the `SurfaceProgram` AST, three `BTreeMap<usize, _>` metadata tables
+(`leading_comments`, `trailing_comments`, `blank_before`), and a `Vec<ParseError>`
+of recovered errors. The evaluator and type checker consume only `program`; the
+formatter additionally borrows the comment maps via `AstToDictOpts::comments`.
+The original source string is not stored in `ParseOutput` — callers that need it
+(such as the formatter) pass it directly.
 
 The `(level, slot)` de Bruijn annotation from `doc/feature/arena-patterns.md`
 annotates `VarRef` nodes in the AST as a separate post-parse pass. The comment

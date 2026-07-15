@@ -814,7 +814,11 @@ fn extract_doc_from_surface_node(
             // Extract doc from return annotation (fn@[doc: "..."])
             if let Some(ann) = return_ann {
                 if let Some(doc_node) = ann.node.get_property("doc") {
-                    if let SurfaceExpression::Str(doc_string) = &doc_node.expr {
+                    if let SurfaceExpression::StringLiteral {
+                        content: doc_string,
+                        ..
+                    } = &doc_node.expr
+                    {
                         if let Some(name) = binding_name {
                             doc_map.insert(name.to_string(), doc_string.clone());
                         }
@@ -825,7 +829,11 @@ fn extract_doc_from_surface_node(
             for param_spanned in params {
                 if let Some(ref ann) = param_spanned.node.annotation {
                     if let Some(doc_node) = ann.node.get_property("doc") {
-                        if let SurfaceExpression::Str(doc_string) = &doc_node.expr {
+                        if let SurfaceExpression::StringLiteral {
+                            content: doc_string,
+                            ..
+                        } = &doc_node.expr
+                        {
                             doc_map.insert(param_spanned.node.name.clone(), doc_string.clone());
                         }
                     }
@@ -843,14 +851,18 @@ fn extract_doc_from_surface_node(
                             ..
                         } => {
                             if let Some(doc_node) = ann.node.get_property("doc") {
-                                if let SurfaceExpression::Str(doc_string) = &doc_node.expr {
+                                if let SurfaceExpression::StringLiteral {
+                                    content: doc_string,
+                                    ..
+                                } = &doc_node.expr
+                                {
                                     doc_map.insert(name.clone(), doc_string.clone());
                                 }
                             }
                             Some(name.clone())
                         }
                         SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
-                        SurfaceExpression::Str(s) => Some(s.clone()),
+                        SurfaceExpression::StringLiteral { content, .. } => Some(content.clone()),
                         _ => None,
                     });
                 extract_doc_from_surface_node(&entry.node.value, doc_map, key_name.as_deref());
@@ -917,7 +929,7 @@ fn register_type_aliases(
         let mut alias_entries: Vec<(String, Vec<String>, Arc<SurfaceNode>, Span)> = Vec::new();
         for entry in entries {
             if let Some(ref key) = entry.node.key {
-                if let SurfaceExpression::Str(name) = &key.expr {
+                if let SurfaceExpression::StringLiteral { content: name, .. } = &key.expr {
                     if let SurfaceExpression::Decl(decl_box) = &entry.node.value.expr {
                         if let SurfaceDeclaration::TypeAlias { params, body } = decl_box.as_ref() {
                             let param_names: Vec<String> =
@@ -957,7 +969,7 @@ fn register_type_aliases_env(
         let mut alias_entries: Vec<(String, Vec<String>)> = Vec::new();
         for entry in entries {
             if let Some(ref key) = entry.node.key {
-                if let SurfaceExpression::Str(name) = &key.expr {
+                if let SurfaceExpression::StringLiteral { content: name, .. } = &key.expr {
                     if let SurfaceExpression::Decl(decl_box) = &entry.node.value.expr {
                         if let SurfaceDeclaration::TypeAlias { params, .. } = decl_box.as_ref() {
                             let param_names: Vec<String> =
@@ -1202,7 +1214,9 @@ pub(crate) async fn infer_surface_expr(
         SurfaceExpression::Float(_) => Ok(Type::Float),
         // Bool literals: in this type system, booleans are represented as TyCon("Boolean")
         // There is no SurfaceExpression::Bool variant — skip
-        SurfaceExpression::Str(s) => Ok(Type::StringLiteral(s.clone())),
+        SurfaceExpression::StringLiteral { content, .. } => {
+            Ok(Type::StringLiteral(content.clone()))
+        }
 
         SurfaceExpression::VarRef {
             name, annotation, ..
@@ -1613,7 +1627,9 @@ pub(crate) async fn infer_surface_expr(
                                     break;
                                 }
                                 match &entry.node.value.expr {
-                                    SurfaceExpression::Str(s) => keys.push(s.clone()),
+                                    SurfaceExpression::StringLiteral { content, .. } => {
+                                        keys.push(content.clone())
+                                    }
                                     _ => {
                                         all_literal = false;
                                         break;
@@ -2184,7 +2200,7 @@ pub(crate) async fn infer_surface_expr(
                             if entries.iter().any(|e| {
                                 e.node.key.as_ref().map_or(false, |k| {
                                     matches!(&k.expr,
-                                        crate::ast::SurfaceExpression::Str(s)
+                                        crate::ast::SurfaceExpression::StringLiteral { content: s, .. }
                                             if crate::ast::STANDARD_ANN_KEYS.contains(&s.as_str()))
                                 })
                             }) =>
@@ -3022,7 +3038,7 @@ fn infer_class_decl_from_surface(
     let resolver_name = if let Some(resolver_node) = resolver {
         match &resolver_node.expr {
             SurfaceExpression::VarRef { name: n, .. } => Some(n.clone()),
-            SurfaceExpression::Str(s) => Some(s.clone()),
+            SurfaceExpression::StringLiteral { content, .. } => Some(content.clone()),
             _ => {
                 return Err(vec![TypeError::new(
                     "resolver must be an identifier or string",
@@ -3268,7 +3284,7 @@ async fn infer_instance_decl_from_surface(
         for method in *methods {
             let method_name = match &method.node.key {
                 Some(key_node) => match &key_node.expr {
-                    SurfaceExpression::Str(s) => s.clone(),
+                    SurfaceExpression::StringLiteral { content, .. } => content.clone(),
                     SurfaceExpression::VarRef { name: n, .. } => n.clone(),
                     _ => {
                         return Err(vec![TypeError::new(

@@ -1,4 +1,0 @@
-# Annotation bracket restriction - call special form in annotation
-x@[call f]
-=== out
-1:3: property dict annotation must be a dict expression, got: [call f]

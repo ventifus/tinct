@@ -1,0 +1,5 @@
+# Even-count consecutive quotes: `""""` (4 quotes) → two empty string tokens
+# Documents evaluate to their last expression; both are empty strings
+""""
+=== out
+String("")

@@ -91,7 +91,10 @@ pub(crate) fn stq_is_unknown_annotation(ann: &Annotation) -> bool {
             // Check if there's a "return: Unknown" entry (for function metadata dicts)
             entries.iter().any(|entry| {
                 if let Some(key_node) = &entry.node.key {
-                    if let SurfaceExpression::Str(key_name) = &key_node.expr {
+                    if let SurfaceExpression::StringLiteral {
+                        content: key_name, ..
+                    } = &key_node.expr
+                    {
                         if key_name == "return" {
                             if let SurfaceExpression::VarRef { name, .. } = &entry.node.value.expr {
                                 return name == "Unknown";

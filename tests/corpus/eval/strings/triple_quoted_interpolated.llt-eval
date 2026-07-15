@@ -1,0 +1,7 @@
+# Triple-quoted interpolated strings - i"""...""" desugars to [unindent [tmpl ...]]
+[name: "Alice"  msg: i"""
+  Dear $name,
+  """]
+=== out
+Dict({"name": String("Alice"), "msg": String("Dear Alice,")})
+

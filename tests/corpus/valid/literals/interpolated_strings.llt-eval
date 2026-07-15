@@ -1,5 +1,0 @@
-# Interpolated strings - parser emits [tmpl "raw-template"]; macro expands to [str ...]
-[name: "World"  greeting: i"Hello $name"]
-=== out
-["name": "World"  "greeting": [tmpl "Hello $name"]]
-

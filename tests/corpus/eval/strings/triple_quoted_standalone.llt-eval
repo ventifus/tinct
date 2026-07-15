@@ -1,0 +1,8 @@
+# Triple-quoted strings - """ desugars to [unindent ...], which strips leading indentation
+"""
+  SELECT *
+  FROM users
+  WHERE active = true
+  """
+=== out
+String("SELECT *\nFROM users\nWHERE active = true")

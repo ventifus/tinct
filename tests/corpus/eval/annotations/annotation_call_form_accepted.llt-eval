@@ -1,0 +1,4 @@
+# Annotation with call-form bracket: parser accepts any expression; annotation is stored as PropertyDict
+[x@[call f]: 42  x]
+=== out
+Int(42)

@@ -277,7 +277,9 @@ impl Annotation {
             Annotation::PropertyDict(entries) => entries.iter().find_map(|entry| {
                 let key_node = entry.node.key.as_ref()?;
                 match &key_node.expr {
-                    SurfaceExpression::Str(name) if name == key => Some(&entry.node.value),
+                    SurfaceExpression::StringLiteral { content, .. } if content == key => {
+                        Some(&entry.node.value)
+                    }
                     _ => None,
                 }
             }),
@@ -329,7 +331,7 @@ impl fmt::Display for SurfaceExpression {
                     write!(f, "{s}")
                 }
             }
-            SurfaceExpression::Str(s) => write!(f, "{s:?}"),
+            SurfaceExpression::StringLiteral { content: s, .. } => write!(f, "{s:?}"),
             // Emit name as-is. `%`-prefixed refs already include `%` in the name.
             // Plain identifiers and (indistinguishable) EscapedRefs both display without `$` —
             // Display is used for error messages, not source roundtripping.
@@ -738,7 +740,14 @@ pub enum SurfaceExpression {
     #[expr(tag = "Literal", kind = "float", inject(bare = true))]
     Float(#[expr(key = "value")] f64),
     #[expr(tag = "Literal", kind = "str", inject(bare = true))]
-    Str(#[expr(key = "value")] String),
+    StringLiteral {
+        #[expr(key = "prefix")]
+        prefix: String,
+        #[expr(key = "delimiter")]
+        delimiter: String,
+        #[expr(key = "value")]
+        content: String,
+    },
 
     // Variable reference. escaped: true = $name (pin in patterns), false = bare (bind).
     // Resolution is stored inline in the `resolution` field, written once by the resolver.
@@ -1447,7 +1456,7 @@ mod tests {
 
     #[test]
     fn test_display_annotation_property_dict_with_entries() {
-        // Annotation keys from the parser are always SurfaceExpression::Str (bare words).
+        // Annotation keys from the parser are always SurfaceExpression::StringLiteral (bare words).
         let zero_span = Span {
             start: Position {
                 offset: 0,
@@ -1471,11 +1480,23 @@ mod tests {
         };
         let ann = Annotation::PropertyDict(vec![
             sp(SurfaceEntry {
-                key: Some(mk_node(SurfaceExpression::Str("type".into()))),
-                value: mk_node(SurfaceExpression::Str("Number".into())),
+                key: Some(mk_node(SurfaceExpression::StringLiteral {
+                    prefix: String::new(),
+                    delimiter: "\"".to_string(),
+                    content: "type".into(),
+                })),
+                value: mk_node(SurfaceExpression::StringLiteral {
+                    prefix: String::new(),
+                    delimiter: "\"".to_string(),
+                    content: "Number".into(),
+                }),
             }),
             sp(SurfaceEntry {
-                key: Some(mk_node(SurfaceExpression::Str("default".into()))),
+                key: Some(mk_node(SurfaceExpression::StringLiteral {
+                    prefix: String::new(),
+                    delimiter: "\"".to_string(),
+                    content: "default".into(),
+                })),
                 value: mk_node(SurfaceExpression::Int(42)),
             }),
         ]);

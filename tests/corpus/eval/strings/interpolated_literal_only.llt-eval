@@ -1,0 +1,4 @@
+# i-string with no variable references evaluates to the literal content
+[msg: i"hello world"]
+=== out
+Dict({"msg": String("hello world")})

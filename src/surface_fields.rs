@@ -73,8 +73,8 @@ pub fn surface_node_get_field(
         // --- FloatLiteral ---
         (SurfaceExpression::Float(n), "value") => Value::Float(*n),
 
-        // --- StrLiteral ---
-        (SurfaceExpression::Str(s), "value") => string_val(s),
+        // --- StringLiteral ---
+        (SurfaceExpression::StringLiteral { content: s, .. }, "value") => string_val(s),
 
         // --- Var ---
         (SurfaceExpression::VarRef { name, .. }, "name") => string_val(name),
@@ -723,13 +723,19 @@ fn annotation_inner_to_value(
             // Also expose well-known named keys: doc: and return:
             for entry in entries {
                 if let Some(key_node) = &entry.node.key {
-                    if let SurfaceExpression::Str(key_name) = &key_node.expr {
+                    if let SurfaceExpression::StringLiteral {
+                        content: key_name, ..
+                    } = &key_node.expr
+                    {
                         if key_name == "doc" || key_name == "return" {
-                            let clean = if let SurfaceExpression::Str(s) = &entry.node.value.expr {
-                                s.clone()
-                            } else {
-                                entry.node.value.to_string()
-                            };
+                            let clean =
+                                if let SurfaceExpression::StringLiteral { content: s, .. } =
+                                    &entry.node.value.expr
+                                {
+                                    s.clone()
+                                } else {
+                                    entry.node.value.to_string()
+                                };
                             payload_map.insert(
                                 HashableValue::Str(key_name.clone().into()),
                                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
@@ -856,7 +862,7 @@ pub fn surface_expr_tag(expr: &SurfaceExpression) -> &'static str {
         SurfaceExpression::Int(_)
         | SurfaceExpression::U64(_)
         | SurfaceExpression::Float(_)
-        | SurfaceExpression::Str(_) => "Literal",
+        | SurfaceExpression::StringLiteral { .. } => "Literal",
         SurfaceExpression::VarRef { .. } => "VarRef",
         SurfaceExpression::Field { .. } => "DotAccess",
         SurfaceExpression::Pipe { .. } => "Pipe",

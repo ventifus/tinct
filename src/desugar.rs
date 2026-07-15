@@ -492,12 +492,50 @@ fn recurse_children_surface(node: &mut Arc<SurfaceNode>, depth: usize) {
         SurfaceExpression::Int(_)
         | SurfaceExpression::U64(_)
         | SurfaceExpression::Float(_)
-        | SurfaceExpression::Str(_)
         | SurfaceExpression::VarRef { annotation: None, .. }
         | SurfaceExpression::Rest(..)
         | SurfaceExpression::Placeholder
         | SurfaceExpression::Decl(_) // type-level declaration, no evaluable children
         | SurfaceExpression::Error(_) => {}
+
+        // StringLiteral: dispatch on prefix and delimiter for desugaring transformations.
+        // - prefix == "i" AND delimiter.len() == 1: interpolated string → [tmpl "..." args...]
+        // - prefix == "" AND delimiter.len() >= 3: triple-quoted → [unindent "..."]
+        // - prefix == "i" AND delimiter.len() >= 3: both → [unindent [tmpl "..." args...]]
+        // - otherwise: pass through to lowering unchanged
+        //
+        // Protocol note: "tmpl" and "unindent" are names that MUST be defined in any prelude
+        // that supports interpolated and triple-quoted strings. They are protocol requirements
+        // of the tinct Rust layer — the desugar pass unconditionally emits calls to these names.
+        // D-3 tracks the formal decision on whether they should become Rust builtins or remain
+        // prelude-defined, and how to handle user-provided preludes that omit them.
+        SurfaceExpression::StringLiteral { prefix, delimiter, content } => {
+            if prefix == "i" {
+                // Interpolated string: build tmpl call
+                let tmpl_node = build_interpolated_string_node(content, delimiter, &node_mut.span);
+                if delimiter.len() >= 3 {
+                    // Also triple-quoted: wrap in unindent
+                    let unindent_wrapped = wrap_in_unindent_node(tmpl_node, &node_mut.span);
+                    node_mut.expr = unindent_wrapped.expr.clone();
+                } else {
+                    node_mut.expr = tmpl_node.expr.clone();
+                }
+            } else if delimiter.len() >= 3 && prefix.is_empty() {
+                // Triple-quoted (non-interpolated): wrap in unindent, keeping the delimiter
+                // triple-quoted so lowering knows not to process escape sequences
+                let inner = Arc::new(SurfaceNode::new(
+                    SurfaceExpression::StringLiteral {
+                        prefix: String::new(),
+                        delimiter: delimiter.clone(),
+                        content: content.clone(),
+                    },
+                    node_mut.span.clone(),
+                ));
+                let unindent_wrapped = wrap_in_unindent_node(inner, &node_mut.span);
+                node_mut.expr = unindent_wrapped.expr.clone();
+            }
+            // else: plain single-quoted or unknown prefix — pass through to lowering
+        }
 
         // Access expressions: recurse into target.
         // Leading-dot (expr: None) has no child to recurse into.
@@ -774,6 +812,116 @@ fn desugar_surface_annotation_option(ann: &mut Option<Spanned<Annotation>>, dept
     if let Some(ann_spanned) = ann {
         desugar_surface_annotation(&mut ann_spanned.node, depth);
     }
+}
+
+/// Build a `[tmpl "template" ...]` call node from an interpolated string.
+///
+/// Processes the raw content character by character:
+/// - `$$` → literal `$` in template (kept as `$$` for tmpl to interpret)
+/// - `$` followed by identifier chars → variable reference: keep `$name` in template (tmpl macro
+///   resolves it at compile time)
+/// - `$` followed by nothing or non-identifier → pass through literally (keep `$` in template)
+/// - Everything else → literal text in template
+///
+/// The `${expr}` form is not supported — there is no expression interpolation in tinct string
+/// literals. Only `$ident` variable references are valid. See doc/quickstart.md §Strings.
+///
+/// The `delimiter` parameter must be the original string delimiter (e.g. `"` for single-quoted,
+/// `"""` for triple-quoted). It is propagated to the inner StringLiteral so that lower.rs applies
+/// escape processing only for single-quoted strings (`delimiter.len() == 1`) and passes content
+/// raw for triple-quoted strings (`delimiter.len() >= 3`). Without this, an `i"""..."""` string
+/// would have its backslashes escape-processed (wrong), while `"""..."""` would not (correct).
+fn build_interpolated_string_node(
+    content: &str,
+    delimiter: &str,
+    span: &crate::ast::Span,
+) -> Arc<SurfaceNode> {
+    let mut template = String::new();
+    let mut chars = content.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '$' {
+            match chars.peek() {
+                Some(&'$') => {
+                    // $$ → literal $ in template (keep as $$ for tmpl to interpret)
+                    template.push_str("$$");
+                    chars.next(); // consume second $
+                }
+                Some(&c) if c.is_alphabetic() || c == '_' => {
+                    // $identifier: keep as $name in template
+                    template.push('$');
+                    template.push(c);
+                    chars.next(); // consume first char of identifier
+                    while let Some(&c) = chars.peek() {
+                        if c.is_alphanumeric() || c == '_' || c == '-' {
+                            template.push(c);
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                _ => {
+                    // $ followed by nothing or non-identifier: pass through literally
+                    template.push('$');
+                }
+            }
+        } else {
+            template.push(ch);
+        }
+    }
+
+    // Build [tmpl "template"] — use the original delimiter so lower.rs applies escape processing
+    // only for single-quoted i-strings and passes content raw for triple-quoted i-strings.
+    let args = vec![Arc::new(SurfaceNode::new(
+        SurfaceExpression::StringLiteral {
+            prefix: String::new(),
+            delimiter: delimiter.to_string(),
+            content: template,
+        },
+        span.clone(),
+    ))];
+
+    Arc::new(SurfaceNode::new(
+        SurfaceExpression::Call {
+            func: Arc::new(SurfaceNode::new(
+                SurfaceExpression::VarRef {
+                    name: "tmpl".to_string(),
+                    escaped: false,
+                    resolution: crate::ast::Resolution::new(),
+                    call_dispatch: crate::ast::CallDispatch::new(),
+                    annotation: None,
+                },
+                span.clone(),
+            )),
+            args,
+            named_args: vec![],
+            implied: true,
+        },
+        span.clone(),
+    ))
+}
+
+/// Wrap a node in `[unindent node]`.
+fn wrap_in_unindent_node(inner: Arc<SurfaceNode>, span: &crate::ast::Span) -> Arc<SurfaceNode> {
+    Arc::new(SurfaceNode::new(
+        SurfaceExpression::Call {
+            func: Arc::new(SurfaceNode::new(
+                SurfaceExpression::VarRef {
+                    name: "unindent".to_string(),
+                    escaped: false,
+                    resolution: crate::ast::Resolution::new(),
+                    call_dispatch: crate::ast::CallDispatch::new(),
+                    annotation: None,
+                },
+                span.clone(),
+            )),
+            args: vec![inner],
+            named_args: vec![],
+            implied: true,
+        },
+        span.clone(),
+    ))
 }
 
 #[cfg(test)]

@@ -52,7 +52,18 @@ fn eval_annotation_property_dict(
             // We need to lower it to CoreExpr first, then evaluate
             // For now, handle the common case of string literals directly
             match &key_node.expr {
-                SurfaceExpression::Str(s) => HashableValue::Str(Rc::from(s.as_str())),
+                SurfaceExpression::StringLiteral {
+                    content: s,
+                    delimiter,
+                    ..
+                } => {
+                    let processed = if delimiter.len() == 1 {
+                        crate::lower::process_escapes(s, delimiter)
+                    } else {
+                        s.clone()
+                    };
+                    HashableValue::Str(Rc::from(processed.as_str()))
+                }
                 SurfaceExpression::Int(n) => HashableValue::Int(*n),
                 // U64 values that fit in i64 are used as integer keys; larger values error.
                 SurfaceExpression::U64(n) => {
@@ -97,12 +108,24 @@ fn eval_annotation_property_dict(
         // Evaluate the value expression
         // We need to lower SurfaceExpression to CoreExpr, then evaluate it
         let value_thunk = {
-            // Simple path: annotations should use literal values for now (T-1124 handles full eval at fn definition)
+            // Simple path: annotations should use literal values for now (T-1124 handles full eval at fn definition).
+            // See T-1620 for completing full expression evaluation for annotation property dict values.
             match &entry.node.value.expr {
-                SurfaceExpression::Str(s) => Arc::new(Thunk::new_materialized(
-                    string_val(s),
-                    entry.node.value.span.clone(),
-                )),
+                SurfaceExpression::StringLiteral {
+                    content: s,
+                    delimiter,
+                    ..
+                } => {
+                    let processed = if delimiter.len() == 1 {
+                        crate::lower::process_escapes(s, delimiter)
+                    } else {
+                        s.clone()
+                    };
+                    Arc::new(Thunk::new_materialized(
+                        string_val(&processed),
+                        entry.node.value.span.clone(),
+                    ))
+                }
                 SurfaceExpression::Int(n) => Arc::new(Thunk::new_materialized(
                     Value::Int(*n),
                     entry.node.value.span.clone(),
@@ -130,7 +153,7 @@ fn eval_annotation_property_dict(
         if dict_map.insert(key, thunk_id).is_some() {
             let key_str = match &entry.node.key {
                 Some(k_node) => match &k_node.expr {
-                    SurfaceExpression::Str(s) => s.clone(),
+                    SurfaceExpression::StringLiteral { content: s, .. } => s.clone(),
                     SurfaceExpression::Int(n) => n.to_string(),
                     SurfaceExpression::U64(n) => n.to_string(),
                     SurfaceExpression::VarRef { name, .. } => name.clone(),
@@ -307,10 +330,19 @@ pub(crate) async fn eval_dict_core(
                     // returns {} instead of the annotation dict — acceptable since the primary use
                     // case for annotation-of is functions (FnAnnotation.extra) and unit constructors
                     // (Value::Annotated from make-annotated), not arbitrary non-literal dict entries.
-                    // Value::Annotated removed from Value enum; skip wrapping for all entries.
-                    // annotation_value is unused until Value::Annotated is restored.
-                    let _ = annotation_value;
-                    value_thunk
+                    // See T-1621 for completing Value::Annotated wrapping for non-literal entries.
+                    if let Some(inner_val) = value_thunk.try_get_materialized() {
+                        let span = value_thunk.span.clone();
+                        Arc::new(Thunk::new_materialized(
+                            Value::Annotated {
+                                inner: Box::new(inner_val),
+                                annotation: Box::new(annotation_value),
+                            },
+                            span,
+                        ))
+                    } else {
+                        value_thunk
+                    }
                 } else {
                     // Simple/Annotated annotations are type-level only — use unannotated value
                     value_thunk

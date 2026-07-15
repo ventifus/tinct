@@ -1,0 +1,4 @@
+# Property dict annotation: x@[type: Type]
+[f: [fn [let x@[type: Integer]] [+ x 1]]  [f 41]]
+=== out
+Int(42)

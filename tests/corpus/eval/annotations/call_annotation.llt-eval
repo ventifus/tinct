@@ -1,0 +1,4 @@
+# Annotation attached to a completed call expression: ImmediateAt fires after `]`
+[x: [+ 1 2]@Integer  x]
+=== out
+Int(3)

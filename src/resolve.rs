@@ -368,7 +368,7 @@ impl SurfaceResolver {
             SurfaceExpression::Int(_)
             | SurfaceExpression::U64(_)
             | SurfaceExpression::Float(_)
-            | SurfaceExpression::Str(_)
+            | SurfaceExpression::StringLiteral { .. }
             | SurfaceExpression::Rest(..)
             | SurfaceExpression::Placeholder
             | SurfaceExpression::Error(_) => {}
@@ -661,7 +661,7 @@ fn surface_dict_static_keys(entries: &[Spanned<SurfaceEntry>]) -> Vec<String> {
     for entry in entries {
         if let Some(key_node) = &entry.node.key {
             match &key_node.expr {
-                SurfaceExpression::Str(s) => keys.push(s.clone()),
+                SurfaceExpression::StringLiteral { content, .. } => keys.push(content.clone()),
                 // Non-escaped VarRef (bare identifier) → static name for letrec scope.
                 // Escaped VarRef ($k:) is a computed key — not a static scope binding.
                 SurfaceExpression::VarRef {
@@ -683,7 +683,7 @@ fn surface_dict_static_keys(entries: &[Spanned<SurfaceEntry>]) -> Vec<String> {
                     for me in method_entries {
                         let method_name = match me.node.key.as_ref() {
                             Some(k) => match &k.expr {
-                                SurfaceExpression::Str(s) => s.clone(),
+                                SurfaceExpression::StringLiteral { content, .. } => content.clone(),
                                 SurfaceExpression::VarRef { name, .. } => name.clone(),
                                 _ => continue,
                             },

@@ -1,0 +1,4 @@
+# Basic plain string literal
+"hello"
+=== out
+String("hello")

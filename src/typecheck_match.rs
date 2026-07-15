@@ -279,7 +279,9 @@ pub(crate) async fn typecheck_case_arm(
                             .node
                             .get_property("_constructor")
                             .and_then(|v| match &v.expr {
-                                SurfaceExpression::Str(s) => Some(s.clone()),
+                                SurfaceExpression::StringLiteral { content: s, .. } => {
+                                    Some(s.clone())
+                                }
                                 _ => None,
                             });
                         let is_structural_test = constructor_name_opt.is_some();
@@ -552,7 +554,8 @@ async fn extract_is_narrowing(
     if let Annotation::PropertyDict(entries) = ann {
         for entry in entries {
             if let Some(ref key) = entry.node.key {
-                if matches!(&key.expr, SurfaceExpression::Str(s) if s == "is") {
+                if matches!(&key.expr, SurfaceExpression::StringLiteral { content: s, .. } if s == "is")
+                {
                     // Resolve the value as a type annotation.
                     // The value is typically a simple type name like Int, String, etc.
                     let ann_for_value = match &entry.node.value.expr {
@@ -735,7 +738,7 @@ pub(crate) async fn infer_fn(
                     // Check for function metadata keys directly on SurfaceEntries (no bridge needed for this check)
                     let has_fn_key = surface_entries.iter().any(|e| {
                         e.node.key.as_ref().is_some_and(|k| {
-                            matches!(&k.expr, SurfaceExpression::Str(s) if crate::ast::STANDARD_ANN_KEYS.contains(&s.as_str()))
+                            matches!(&k.expr, SurfaceExpression::StringLiteral { content: s, .. } if crate::ast::STANDARD_ANN_KEYS.contains(&s.as_str()))
                         })
                     });
                     // Check if all entries are keyed (no positional entries)

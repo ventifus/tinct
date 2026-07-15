@@ -1,0 +1,4 @@
+# Empty triple-quoted string - """""" is 6 quotes = 3 empty strings; last one is the result
+""""""
+=== out
+String("")

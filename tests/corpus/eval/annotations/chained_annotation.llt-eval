@@ -1,0 +1,4 @@
+# Chained annotation: x@A@B produces Annotation::Annotated(A, B)
+[x@Integer@Integer: 42  x]
+=== out
+Int(42)

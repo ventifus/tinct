@@ -2820,12 +2820,14 @@ fn extract_doc_strings_from_doc(
                 if let Some(ref key_node) = entry.node.key {
                     // Extract the binding name from the key expression
                     // Keys can be:
-                    // - SurfaceExpression::Str (string literal key)
-                    // - SurfaceExpression::Annotated { name, .. } (annotated binding like name@[...])
+                    // - SurfaceExpression::StringLiteral (string literal key)
+                    // - SurfaceExpression::VarRef with annotation (annotated binding like name@[...])
                     // - SurfaceExpression::VarRef (bare identifier key)
                     // Both plain and annotated VarRef use the name field.
                     let name_opt = match &key_node.expr {
-                        tinct::ast::SurfaceExpression::Str(s) => Some(s.as_str()),
+                        tinct::ast::SurfaceExpression::StringLiteral { content: s, .. } => {
+                            Some(s.as_str())
+                        }
                         tinct::ast::SurfaceExpression::VarRef { name, .. } => Some(name.as_str()),
                         _ => None,
                     };
@@ -2854,7 +2856,11 @@ fn detect_schema_dict(doc: &tinct::ast::SurfaceDocument) -> Vec<(String, String)
         if let tinct::ast::SurfaceExpression::Dict(entries) = &expr.expr {
             for entry in entries {
                 if let Some(ref key_node) = entry.node.key {
-                    if let tinct::ast::SurfaceExpression::Str(ref field_name) = key_node.expr {
+                    if let tinct::ast::SurfaceExpression::StringLiteral {
+                        content: ref field_name,
+                        ..
+                    } = key_node.expr
+                    {
                         // Check if the value is a dict with schema keys
                         if let Some(constraint_str) = extract_schema_info(&entry.node.value.expr) {
                             result.push((field_name.clone(), constraint_str));
@@ -2875,7 +2881,11 @@ fn extract_schema_info(expr: &tinct::ast::SurfaceExpression) -> Option<String> {
         let mut has_schema_key = false;
         for entry in entries {
             if let Some(ref key_node) = entry.node.key {
-                if let tinct::ast::SurfaceExpression::Str(ref key_name) = key_node.expr {
+                if let tinct::ast::SurfaceExpression::StringLiteral {
+                    content: ref key_name,
+                    ..
+                } = key_node.expr
+                {
                     if SCHEMA_KEYS.contains(&key_name.as_str()) {
                         has_schema_key = true;
                         let val_str = describe_surface_annotation_value(&entry.node.value.expr);
@@ -2894,7 +2904,7 @@ fn extract_schema_info(expr: &tinct::ast::SurfaceExpression) -> Option<String> {
 /// Turn a surface annotation value expression into a human-readable string.
 fn describe_surface_annotation_value(expr: &tinct::ast::SurfaceExpression) -> String {
     match expr {
-        tinct::ast::SurfaceExpression::Str(s) => s.clone(),
+        tinct::ast::SurfaceExpression::StringLiteral { content: s, .. } => s.clone(),
         tinct::ast::SurfaceExpression::Int(n) => n.to_string(),
         tinct::ast::SurfaceExpression::U64(n) => n.to_string(),
         tinct::ast::SurfaceExpression::Float(f) => f.to_string(),

@@ -1,5 +1,0 @@
-# Test that unsupported escape sequences are rejected.
-# The lexer only supports \n, \t, \", \\, \r — \x is invalid.
-"test \x41 invalid"
-=== out
-2:1: invalid escape sequence: \x

@@ -1,0 +1,4 @@
+# Annotation with fn-form bracket: parser accepts any expression; annotation is stored as PropertyDict
+[x@[fn [let a] a]: 42  x]
+=== out
+Int(42)

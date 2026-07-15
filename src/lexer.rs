@@ -45,34 +45,27 @@ pub enum Token {
     Float(f64),
     /// Identifier (bare word — variable reference in value position)
     Identifier(String),
-    /// Quoted string literal (escapes already processed)
-    QuotedString(String),
+    /// String literal with prefix, delimiter, and raw content.
+    ///
+    /// Examples:
+    /// - `"hello"` → StringLiteral { prefix: "", delimiter: "\"", content: "hello" }
+    /// - `i"hello $name"` → StringLiteral { prefix: "i", delimiter: "\"", content: "hello $name" }
+    /// - `"""text"""` → StringLiteral { prefix: "", delimiter: "\"\"\"", content: "text" }
+    /// - `i"""text"""` → StringLiteral { prefix: "i", delimiter: "\"\"\"", content: "text" }
+    ///
+    /// The content is ALWAYS raw — no escape processing, no $name interpretation, no indentation stripping.
+    /// The parser/evaluator is responsible for processing escapes, interpolation, and indentation.
+    StringLiteral {
+        prefix: String,
+        delimiter: String,
+        content: String,
+    },
     /// Escaped reference `$name` (disambiguator in head/key positions)
     EscapedRef(String),
-    /// Interpolated string `i"..."` with parts: literals and variable references
-    InterpolatedString(Vec<InterpolatedPart>),
-    /// Triple-quoted string `"""..."""` (raw content, no escape processing except `\"\"\"`)
-    TripleQuotedString(String),
-    /// Triple-quoted interpolated string `i"""..."""` with parts
-    TripleInterpolatedString(Vec<InterpolatedPart>),
     /// Reserved keyword `let` — binding declaration
     Let,
     /// Reserved keyword `case` — match arm with explicit scoping
     Case,
-}
-
-/// Parts of an interpolated string.
-#[derive(Debug, Clone, PartialEq)]
-pub enum InterpolatedPart {
-    /// Literal text segment
-    Literal(String),
-    /// Variable reference `$name`
-    VarRef(String),
-    /// Expression interpolation `${expr}` — raw source text of the inner expression.
-    ///
-    /// The lexer records the raw text; the parser re-parses it as a tinct expression
-    /// and includes it as an arg in the desugared `[str ...]` call.
-    Expr(String),
 }
 
 impl fmt::Display for Token {
@@ -94,31 +87,14 @@ impl fmt::Display for Token {
             Token::U64Lit(n) => write!(f, "{n}u"),
             Token::Float(n) => write!(f, "{n}"),
             Token::Identifier(s) => write!(f, "{s}"),
-            Token::QuotedString(s) => write!(f, "\"{s}\""),
+            Token::StringLiteral {
+                prefix,
+                delimiter,
+                content,
+            } => {
+                write!(f, "{prefix}{delimiter}{content}{delimiter}")
+            }
             Token::EscapedRef(name) => write!(f, "${name}"),
-            Token::InterpolatedString(parts) => {
-                write!(f, "i\"")?;
-                for part in parts {
-                    match part {
-                        InterpolatedPart::Literal(s) => write!(f, "{s}")?,
-                        InterpolatedPart::VarRef(name) => write!(f, "${name}")?,
-                        InterpolatedPart::Expr(raw) => write!(f, "${{{raw}}}")?,
-                    }
-                }
-                write!(f, "\"")
-            }
-            Token::TripleQuotedString(s) => write!(f, "\"\"\"{s}\"\"\""),
-            Token::TripleInterpolatedString(parts) => {
-                write!(f, "i\"\"\"")?;
-                for part in parts {
-                    match part {
-                        InterpolatedPart::Literal(s) => write!(f, "{s}")?,
-                        InterpolatedPart::VarRef(name) => write!(f, "${name}")?,
-                        InterpolatedPart::Expr(raw) => write!(f, "${{{raw}}}")?,
-                    }
-                }
-                write!(f, "\"\"\"")
-            }
             Token::Let => write!(f, "let"),
             Token::Case => write!(f, "case"),
         }
@@ -190,11 +166,13 @@ struct Lexer<'a> {
     bracket_depth: usize,
     /// True if the last token was Dot in an access chain (next identifier excludes dots)
     after_access_dot: bool,
-    /// Tracks whether the last significant token was an Identifier (for ImmediateAt detection).
+    /// Tracks whether the last significant token was a non-whitespace value token (for ImmediateAt detection).
     ///
-    /// Used to determine when `@` should emit `ImmediateAt` (immediately after a bare Identifier
-    /// with no whitespace gap) vs plain `At`. This enables `x@Int` (ImmediateAt) vs `x @Int` (At).
-    last_was_identifier: bool,
+    /// Used to determine when `@` should emit `ImmediateAt` (immediately after any value-ending token
+    /// with no whitespace gap) vs plain `At`. This enables `x@Int`, `]@Seq`, `"s"@String`, `42@Int` etc.
+    /// Set to true after: Identifier, CloseBracket, StringLiteral, Int, Float, U64Lit, EscapedRef.
+    /// Set to false after: whitespace, newlines, keywords (Let, Case), OpenBracket, operators.
+    last_was_nonwhitespace: bool,
     /// Source file shared across all spans produced by this lexer.
     source_file: Arc<SourceFile>,
 }
@@ -214,7 +192,7 @@ impl<'a> Lexer<'a> {
             had_whitespace_before: false,
             bracket_depth: 0,
             after_access_dot: false,
-            last_was_identifier: false,
+            last_was_nonwhitespace: false,
             source_file,
         }
     }
@@ -281,7 +259,7 @@ impl<'a> Lexer<'a> {
                 '\r' => {
                     // Handle CRLF. A newline resets the ImmediateAt context.
                     self.had_whitespace_before = true;
-                    self.last_was_identifier = false;
+                    self.last_was_nonwhitespace = false;
                     let start = self.current_position();
                     self.advance();
                     if self.peek_char() == Some('\n') {
@@ -299,7 +277,7 @@ impl<'a> Lexer<'a> {
                 '\n' => {
                     // A newline resets the ImmediateAt context.
                     self.had_whitespace_before = true;
-                    self.last_was_identifier = false;
+                    self.last_was_nonwhitespace = false;
                     let start = self.current_position();
                     self.advance();
                     let end = self.current_position();
@@ -322,12 +300,12 @@ impl<'a> Lexer<'a> {
         match c {
             '#' => {
                 self.after_access_dot = false;
-                // Comments don't update last_was_identifier (ignored for ImmediateAt detection)
+                // Comments don't update last_was_nonwhitespace (ignored for ImmediateAt detection)
                 self.lex_comment()
             }
             '[' => {
                 self.after_access_dot = false;
-                self.last_was_identifier = false;
+                self.last_was_nonwhitespace = false;
                 // Check depth before incrementing; advance first so the span
                 // covers the `[` character (start..end is one char wide).
                 if self.bracket_depth >= MAX_LEX_DEPTH {
@@ -347,7 +325,6 @@ impl<'a> Lexer<'a> {
             }
             ']' => {
                 self.after_access_dot = false;
-                self.last_was_identifier = false;
                 self.advance();
                 self.bracket_depth = self.bracket_depth.saturating_sub(1);
                 // Note: Lexer doesn't validate bracket matching (parser's job)
@@ -356,11 +333,12 @@ impl<'a> Lexer<'a> {
                     Token::CloseBracket,
                     self.make_span(start, end),
                 ));
+                self.last_was_nonwhitespace = true; // CloseBracket is value-ending
                 Ok(())
             }
             ':' => {
                 self.after_access_dot = false;
-                self.last_was_identifier = false;
+                self.last_was_nonwhitespace = false;
                 self.advance();
                 let end = self.current_position();
                 self.tokens
@@ -369,7 +347,7 @@ impl<'a> Lexer<'a> {
             }
             ';' => {
                 self.after_access_dot = false;
-                self.last_was_identifier = false;
+                self.last_was_nonwhitespace = false;
                 self.advance();
                 let end = self.current_position();
                 self.tokens
@@ -381,41 +359,29 @@ impl<'a> Lexer<'a> {
                 self.advance();
                 let end = self.current_position();
 
-                // Emit ImmediateAt if no whitespace before and previous token was a plain Identifier.
-                let token = if !self.had_whitespace_before && self.last_was_identifier {
+                // Emit ImmediateAt if no whitespace before and previous token was a value-ending token.
+                let token = if !self.had_whitespace_before && self.last_was_nonwhitespace {
                     Token::ImmediateAt
                 } else {
                     Token::At
                 };
 
-                self.last_was_identifier = false;
+                self.last_was_nonwhitespace = false;
                 self.tokens
                     .push(Spanned::new(token, self.make_span(start, end)));
                 Ok(())
             }
             '"' => {
                 self.after_access_dot = false;
-                self.last_was_identifier = false;
-                // Check for triple-quoted string `"""`
-                if self.peek_ahead(1) == Some('"') && self.peek_ahead(2) == Some('"') {
-                    self.lex_triple_quoted_string()
-                } else {
-                    self.lex_quoted_string()
-                }
+                self.lex_string_literal(String::new())
             }
             'i' if self.peek_ahead(1) == Some('"') => {
                 self.after_access_dot = false;
-                self.last_was_identifier = false;
-                // Check for triple-quoted interpolated string `i"""`
-                if self.peek_ahead(2) == Some('"') && self.peek_ahead(3) == Some('"') {
-                    self.lex_triple_interpolated_string()
-                } else {
-                    self.lex_interpolated_string()
-                }
+                self.advance(); // skip 'i'
+                self.lex_string_literal("i".to_string())
             }
             '$' => {
                 self.after_access_dot = false;
-                self.last_was_identifier = false;
                 self.lex_var_ref()
             }
             '%' => {
@@ -427,7 +393,7 @@ impl<'a> Lexer<'a> {
             }
             '|' => {
                 self.after_access_dot = false;
-                self.last_was_identifier = false;
+                self.last_was_nonwhitespace = false;
                 self.advance();
                 let end = self.current_position();
                 self.tokens
@@ -452,7 +418,7 @@ impl<'a> Lexer<'a> {
             }
             '.' => {
                 // Check for ellipsis, two-dots, or single dot
-                self.last_was_identifier = false;
+                self.last_was_nonwhitespace = false;
                 if self.peek_ahead(1) == Some('.') {
                     if self.peek_ahead(2) == Some('.') {
                         // Ellipsis `...`
@@ -535,505 +501,117 @@ impl<'a> Lexer<'a> {
         Ok(())
     }
 
-    fn lex_quoted_string(&mut self) -> Result<(), LexError> {
+    /// Lex a string literal with unified handling for all string forms.
+    ///
+    /// Algorithm:
+    /// 1. Prefix: already consumed before calling this method (empty for plain strings, "i" for interpolated)
+    /// 2. Delimiter: count consecutive `"` characters starting from current position
+    ///    - ODD count (1, 3, 5, ...): that's the delimiter, scan for content
+    ///    - EVEN count (2, 4, ...): emit count/2 empty StringLiterals and return
+    /// 3. Content: scan until matching closing delimiter, store BOTH chars for `\X` (no escape processing)
+    /// 4. Emit: StringLiteral { prefix, delimiter, content } with RAW content
+    fn lex_string_literal(&mut self, prefix: String) -> Result<(), LexError> {
         let start = self.current_position();
-        self.advance(); // skip opening '"'
 
-        let mut result = String::new();
+        // Count consecutive quote characters
+        let mut quote_count = 0;
+        while self.peek_char() == Some('"') {
+            quote_count += 1;
+            self.advance();
+        }
+
+        // EVEN count: emit quote_count/2 empty StringLiterals, each with its own 2-char span.
+        // The counting loop has already advanced past all N quote chars. Since `"` is single-byte
+        // ASCII, pair k starts at offset = start.offset + k*2, column = start.column + k*2.
+        if quote_count % 2 == 0 {
+            if quote_count > MAX_LEX_DEPTH {
+                let end = self.current_position();
+                return Err(LexError::new(
+                    format!(
+                        "consecutive quote run too long ({} quotes, limit {})",
+                        quote_count, MAX_LEX_DEPTH
+                    ),
+                    self.make_span(start, end),
+                ));
+            }
+            let delimiter = "\"".to_string();
+            let empty_content = String::new();
+            for k in 0..(quote_count / 2) {
+                let pair_start = Position {
+                    offset: start.offset + k * 2,
+                    line: start.line,
+                    column: start.column + k * 2,
+                };
+                let pair_end = Position {
+                    offset: start.offset + k * 2 + 2,
+                    line: start.line,
+                    column: start.column + k * 2 + 2,
+                };
+                self.tokens.push(Spanned::new(
+                    Token::StringLiteral {
+                        prefix: prefix.clone(),
+                        delimiter: delimiter.clone(),
+                        content: empty_content.clone(),
+                    },
+                    self.make_span(pair_start, pair_end),
+                ));
+            }
+            self.last_was_nonwhitespace = true; // StringLiteral is value-ending
+            return Ok(());
+        }
+
+        // ODD count: delimiter is quote_count quotes, scan for content
+        let delimiter = "\"".repeat(quote_count);
+        let mut content = String::new();
+
         while let Some(c) = self.peek_char() {
-            match c {
-                '"' => {
+            if c == '\\' {
+                // Store BOTH backslash and next char as raw content (prevents `\"` from matching delimiter)
+                content.push(c);
+                self.advance();
+                if let Some(next) = self.peek_char() {
+                    content.push(next);
                     self.advance();
+                }
+            } else if c == '"' {
+                // Check if we have a matching closing delimiter
+                let mut peek_count = 0;
+                while self.peek_ahead(peek_count) == Some('"') && peek_count < quote_count {
+                    peek_count += 1;
+                }
+
+                if peek_count == quote_count {
+                    // Found closing delimiter — advance past it and emit token
+                    for _ in 0..quote_count {
+                        self.advance();
+                    }
                     let end = self.current_position();
                     self.tokens.push(Spanned::new(
-                        Token::QuotedString(result),
+                        Token::StringLiteral {
+                            prefix,
+                            delimiter,
+                            content,
+                        },
                         self.make_span(start, end),
                     ));
+                    self.last_was_nonwhitespace = true; // StringLiteral is value-ending
                     return Ok(());
-                }
-                '\\' => {
-                    self.advance();
-                    match self.peek_char() {
-                        Some('"') => {
-                            result.push('"');
-                            self.advance();
-                        }
-                        Some('\\') => {
-                            result.push('\\');
-                            self.advance();
-                        }
-                        Some('n') => {
-                            result.push('\n');
-                            self.advance();
-                        }
-                        Some('t') => {
-                            result.push('\t');
-                            self.advance();
-                        }
-                        Some('r') => {
-                            result.push('\r');
-                            self.advance();
-                        }
-                        Some(c) => {
-                            let end = self.current_position();
-                            return Err(LexError::new(
-                                format!("invalid escape sequence: \\{c}"),
-                                self.make_span(start, end),
-                            ));
-                        }
-                        None => {
-                            let end = self.current_position();
-                            return Err(LexError::new(
-                                "unterminated escape sequence",
-                                self.make_span(start, end),
-                            ));
-                        }
-                    }
-                }
-                _ => {
-                    result.push(c);
+                } else {
+                    // Partial quote match — store the quote(s) and continue
+                    content.push(c);
                     self.advance();
                 }
+            } else {
+                // Regular character
+                content.push(c);
+                self.advance();
             }
         }
 
+        // EOF before closing delimiter
         let end = self.current_position();
         Err(LexError::new(
             "unterminated string",
-            self.make_span(start, end),
-        ))
-    }
-
-    fn lex_interpolated_string(&mut self) -> Result<(), LexError> {
-        let start = self.current_position();
-        self.advance(); // skip 'i'
-        self.advance(); // skip opening '"'
-
-        let mut parts = Vec::new();
-        let mut literal = String::new();
-
-        while let Some(c) = self.peek_char() {
-            match c {
-                '"' => {
-                    // End of interpolated string
-                    if !literal.is_empty() {
-                        parts.push(InterpolatedPart::Literal(literal));
-                    }
-                    self.advance();
-                    let end = self.current_position();
-                    self.tokens.push(Spanned::new(
-                        Token::InterpolatedString(parts),
-                        self.make_span(start, end),
-                    ));
-                    return Ok(());
-                }
-                '$' => {
-                    // Check for $$ (escaped literal $)
-                    if self.peek_ahead(1) == Some('$') {
-                        literal.push('$');
-                        self.advance();
-                        self.advance();
-                    } else if self.peek_ahead(1) == Some('{') {
-                        // ${expr} expression interpolation — read until matching '}'
-                        // Save current literal part if non-empty
-                        if !literal.is_empty() {
-                            parts.push(InterpolatedPart::Literal(literal.clone()));
-                            literal.clear();
-                        }
-                        self.advance(); // skip '$'
-                        self.advance(); // skip '{'
-
-                        // Collect the inner expression, tracking brace depth.
-                        // We stop at the matching '}' (depth 0 after opening brace).
-                        let expr_start = self.current.map(|(i, _)| i).unwrap_or(self.input.len());
-                        let mut depth: usize = 1;
-                        let mut found_close = false;
-                        while let Some(c) = self.peek_char() {
-                            match c {
-                                '{' => {
-                                    depth += 1;
-                                    self.advance();
-                                }
-                                '}' => {
-                                    depth -= 1;
-                                    if depth == 0 {
-                                        found_close = true;
-                                        break;
-                                    }
-                                    self.advance();
-                                }
-                                _ => {
-                                    self.advance();
-                                }
-                            }
-                        }
-                        let expr_end = self.current.map(|(i, _)| i).unwrap_or(self.input.len());
-
-                        if !found_close {
-                            let end = self.current_position();
-                            return Err(LexError::new(
-                                "unterminated ${...} in interpolated string",
-                                self.make_span(start, end),
-                            ));
-                        }
-
-                        self.advance(); // skip closing '}'
-
-                        let raw = self.input[expr_start..expr_end].trim().to_string();
-                        if raw.is_empty() {
-                            let end = self.current_position();
-                            return Err(LexError::new(
-                                "empty ${} expression in interpolated string",
-                                self.make_span(start, end),
-                            ));
-                        }
-                        parts.push(InterpolatedPart::Expr(raw));
-                    } else {
-                        // Variable reference $name
-                        // Save current literal part if non-empty
-                        if !literal.is_empty() {
-                            parts.push(InterpolatedPart::Literal(literal.clone()));
-                            literal.clear();
-                        }
-                        self.advance(); // skip '$'
-
-                        // Collect identifier characters
-                        // In interpolated strings, stop at punctuation that commonly appears in natural text
-                        let ident_start = self.current.map(|(i, _)| i).unwrap_or(self.input.len());
-                        while let Some(c) = self.peek_char() {
-                            // Allow same chars as var_ident, but also stop at common punctuation (comma, etc)
-                            if matches!(
-                                c,
-                                ' ' | '\t'
-                                    | '\r'
-                                    | '\n'
-                                    | '['
-                                    | ']'
-                                    | ':'
-                                    | ';'
-                                    | '#'
-                                    | '"'
-                                    | '@'
-                                    | '.'
-                                    | ','
-                                    | '!'
-                                    | '?'
-                            ) {
-                                break;
-                            }
-                            self.advance();
-                        }
-                        let ident_end = self.current.map(|(i, _)| i).unwrap_or(self.input.len());
-
-                        if ident_start == ident_end {
-                            let end = self.current_position();
-                            return Err(LexError::new(
-                                "bare $ without identifier in interpolated string",
-                                self.make_span(start, end),
-                            ));
-                        }
-
-                        let name = self.input[ident_start..ident_end].to_string();
-                        parts.push(InterpolatedPart::VarRef(name));
-                    }
-                }
-                '\\' => {
-                    // Handle escape sequences same as regular strings
-                    self.advance();
-                    match self.peek_char() {
-                        Some('"') => {
-                            literal.push('"');
-                            self.advance();
-                        }
-                        Some('\\') => {
-                            literal.push('\\');
-                            self.advance();
-                        }
-                        Some('n') => {
-                            literal.push('\n');
-                            self.advance();
-                        }
-                        Some('t') => {
-                            literal.push('\t');
-                            self.advance();
-                        }
-                        Some('r') => {
-                            literal.push('\r');
-                            self.advance();
-                        }
-                        Some(c) => {
-                            let end = self.current_position();
-                            return Err(LexError::new(
-                                format!("invalid escape sequence: \\{c}"),
-                                self.make_span(start, end),
-                            ));
-                        }
-                        None => {
-                            let end = self.current_position();
-                            return Err(LexError::new(
-                                "unterminated escape sequence",
-                                self.make_span(start, end),
-                            ));
-                        }
-                    }
-                }
-                _ => {
-                    literal.push(c);
-                    self.advance();
-                }
-            }
-        }
-
-        let end = self.current_position();
-        Err(LexError::new(
-            "unterminated interpolated string",
-            self.make_span(start, end),
-        ))
-    }
-
-    fn lex_triple_quoted_string(&mut self) -> Result<(), LexError> {
-        let start = self.current_position();
-        self.advance(); // skip first '"'
-        self.advance(); // skip second '"'
-        self.advance(); // skip third '"'
-
-        let mut result = String::new();
-        while let Some(c) = self.peek_char() {
-            match c {
-                '"' => {
-                    // Check if this is the closing `"""`
-                    if self.peek_ahead(1) == Some('"') && self.peek_ahead(2) == Some('"') {
-                        self.advance();
-                        self.advance();
-                        self.advance();
-                        let end = self.current_position();
-                        self.tokens.push(Spanned::new(
-                            Token::TripleQuotedString(result),
-                            self.make_span(start, end),
-                        ));
-                        return Ok(());
-                    } else {
-                        // Single quote inside content
-                        result.push(c);
-                        self.advance();
-                    }
-                }
-                '\\' => {
-                    // Only process escape for `"""` inside content
-                    self.advance();
-                    match self.peek_char() {
-                        Some('"')
-                            if self.peek_ahead(1) == Some('"')
-                                && self.peek_ahead(2) == Some('"') =>
-                        {
-                            // Escaped triple-quote: `\"""`
-                            result.push('"');
-                            result.push('"');
-                            result.push('"');
-                            self.advance();
-                            self.advance();
-                            self.advance();
-                        }
-                        Some(c) => {
-                            // Other escapes: pass backslash through literally
-                            result.push('\\');
-                            result.push(c);
-                            self.advance();
-                        }
-                        None => {
-                            result.push('\\');
-                        }
-                    }
-                }
-                _ => {
-                    result.push(c);
-                    self.advance();
-                }
-            }
-        }
-
-        let end = self.current_position();
-        Err(LexError::new(
-            "unterminated triple-quoted string",
-            self.make_span(start, end),
-        ))
-    }
-
-    fn lex_triple_interpolated_string(&mut self) -> Result<(), LexError> {
-        let start = self.current_position();
-        self.advance(); // skip 'i'
-        self.advance(); // skip first '"'
-        self.advance(); // skip second '"'
-        self.advance(); // skip third '"'
-
-        let mut parts = Vec::new();
-        let mut literal = String::new();
-
-        while let Some(c) = self.peek_char() {
-            match c {
-                '"' => {
-                    // Check if this is the closing `"""`
-                    if self.peek_ahead(1) == Some('"') && self.peek_ahead(2) == Some('"') {
-                        if !literal.is_empty() {
-                            parts.push(InterpolatedPart::Literal(literal));
-                        }
-                        self.advance();
-                        self.advance();
-                        self.advance();
-                        let end = self.current_position();
-                        self.tokens.push(Spanned::new(
-                            Token::TripleInterpolatedString(parts),
-                            self.make_span(start, end),
-                        ));
-                        return Ok(());
-                    } else {
-                        // Single quote inside content
-                        literal.push(c);
-                        self.advance();
-                    }
-                }
-                '$' => {
-                    // Check for $$ (escaped literal $)
-                    if self.peek_ahead(1) == Some('$') {
-                        literal.push('$');
-                        self.advance();
-                        self.advance();
-                    } else if self.peek_ahead(1) == Some('{') {
-                        // ${expr} expression interpolation — read until matching '}'
-                        // Save current literal part if non-empty
-                        if !literal.is_empty() {
-                            parts.push(InterpolatedPart::Literal(literal.clone()));
-                            literal.clear();
-                        }
-                        self.advance(); // skip '$'
-                        self.advance(); // skip '{'
-
-                        // Collect the inner expression, tracking brace depth.
-                        let expr_start = self.current.map(|(i, _)| i).unwrap_or(self.input.len());
-                        let mut depth: usize = 1;
-                        let mut found_close = false;
-                        while let Some(c) = self.peek_char() {
-                            match c {
-                                '{' => {
-                                    depth += 1;
-                                    self.advance();
-                                }
-                                '}' => {
-                                    depth -= 1;
-                                    if depth == 0 {
-                                        found_close = true;
-                                        break;
-                                    }
-                                    self.advance();
-                                }
-                                _ => self.advance(),
-                            }
-                        }
-
-                        let expr_end = self.current.map(|(i, _)| i).unwrap_or(self.input.len());
-                        if !found_close {
-                            let end = self.current_position();
-                            return Err(LexError::new(
-                                "unterminated ${...} in triple-quoted interpolated string",
-                                self.make_span(start, end),
-                            ));
-                        }
-
-                        self.advance(); // skip closing '}'
-
-                        let raw = self.input[expr_start..expr_end].trim().to_string();
-                        if raw.is_empty() {
-                            let end = self.current_position();
-                            return Err(LexError::new(
-                                "empty ${} expression in triple-quoted interpolated string",
-                                self.make_span(start, end),
-                            ));
-                        }
-                        parts.push(InterpolatedPart::Expr(raw));
-                    } else {
-                        // Variable reference $name
-                        // Save current literal part if non-empty
-                        if !literal.is_empty() {
-                            parts.push(InterpolatedPart::Literal(literal.clone()));
-                            literal.clear();
-                        }
-                        self.advance(); // skip '$'
-
-                        // Collect identifier characters
-                        let ident_start = self.current.map(|(i, _)| i).unwrap_or(self.input.len());
-                        while let Some(c) = self.peek_char() {
-                            if matches!(
-                                c,
-                                ' ' | '\t'
-                                    | '\r'
-                                    | '\n'
-                                    | '['
-                                    | ']'
-                                    | ':'
-                                    | ';'
-                                    | '#'
-                                    | '"'
-                                    | '@'
-                                    | '.'
-                                    | ','
-                                    | '!'
-                                    | '?'
-                            ) {
-                                break;
-                            }
-                            self.advance();
-                        }
-                        let ident_end = self.current.map(|(i, _)| i).unwrap_or(self.input.len());
-
-                        if ident_start == ident_end {
-                            let end = self.current_position();
-                            return Err(LexError::new(
-                                "bare $ without identifier in triple-quoted interpolated string",
-                                self.make_span(start, end),
-                            ));
-                        }
-
-                        let name = self.input[ident_start..ident_end].to_string();
-                        parts.push(InterpolatedPart::VarRef(name));
-                    }
-                }
-                '\\' => {
-                    // Only process escape for `"""` inside content
-                    self.advance();
-                    match self.peek_char() {
-                        Some('"')
-                            if self.peek_ahead(1) == Some('"')
-                                && self.peek_ahead(2) == Some('"') =>
-                        {
-                            // Escaped triple-quote: `\"""`
-                            literal.push('"');
-                            literal.push('"');
-                            literal.push('"');
-                            self.advance();
-                            self.advance();
-                            self.advance();
-                        }
-                        Some(c) => {
-                            // Other escapes: pass backslash through literally
-                            literal.push('\\');
-                            literal.push(c);
-                            self.advance();
-                        }
-                        None => {
-                            literal.push('\\');
-                        }
-                    }
-                }
-                _ => {
-                    literal.push(c);
-                    self.advance();
-                }
-            }
-        }
-
-        let end = self.current_position();
-        Err(LexError::new(
-            "unterminated triple-quoted interpolated string",
             self.make_span(start, end),
         ))
     }
@@ -1066,6 +644,7 @@ impl<'a> Lexer<'a> {
             Token::EscapedRef(name),
             self.make_span(start, end),
         ));
+        self.last_was_nonwhitespace = true; // EscapedRef is value-ending
         Ok(())
     }
 
@@ -1079,7 +658,7 @@ impl<'a> Lexer<'a> {
 
     fn lex_doc_separator(&mut self) -> Result<(), LexError> {
         let start = self.current_position();
-        self.last_was_identifier = false;
+        self.last_was_nonwhitespace = false;
         self.advance();
         self.advance();
         self.advance();
@@ -1140,20 +719,21 @@ impl<'a> Lexer<'a> {
         if word == "let" {
             self.tokens
                 .push(Spanned::new(Token::Let, self.make_span(start, end)));
-            self.last_was_identifier = false; // Keywords do not trigger ImmediateAt
+            self.last_was_nonwhitespace = false; // Keywords do not trigger ImmediateAt
         } else if word == "case" {
             self.tokens
                 .push(Spanned::new(Token::Case, self.make_span(start, end)));
-            self.last_was_identifier = false; // Keywords do not trigger ImmediateAt
+            self.last_was_nonwhitespace = false; // Keywords do not trigger ImmediateAt
         } else {
             self.tokens.push(Spanned::new(
                 Token::Identifier(word),
                 self.make_span(start, end),
             ));
-            // Only plain (non-access-field) identifiers trigger ImmediateAt for annotations.
-            // Access-field identifiers (after `.`) never have `@` immediately after them in
-            // valid syntax — the annotation always follows the bare word in parameter position.
-            self.last_was_identifier = !in_access_field;
+            // Any identifier (plain or access-field) triggers ImmediateAt for annotations.
+            // `obj.field@Type` is valid: ImmediateAt fires after `field` just as after any
+            // value-producing token. The in_access_field flag controls only whether the
+            // identifier is disambiguated as a dot-access field name, not whether it ends a value.
+            self.last_was_nonwhitespace = true;
         }
         Ok(())
     }
@@ -1345,7 +925,7 @@ impl<'a> Lexer<'a> {
             Ok(n) => {
                 self.tokens
                     .push(Spanned::new(Token::Float(n), self.make_span(start, end)));
-                self.last_was_identifier = false;
+                self.last_was_nonwhitespace = true;
                 Ok(())
             }
             Err(e) => Err(LexError::new(
@@ -1393,7 +973,7 @@ impl<'a> Lexer<'a> {
                 Ok(n) => {
                     self.tokens
                         .push(Spanned::new(Token::U64Lit(n), self.make_span(start, end)));
-                    self.last_was_identifier = false;
+                    self.last_was_nonwhitespace = true;
                     Ok(())
                 }
                 Err(e) => Err(LexError::new(
@@ -1406,7 +986,7 @@ impl<'a> Lexer<'a> {
                 Ok(n) => {
                     self.tokens
                         .push(Spanned::new(Token::Int(n), self.make_span(start, end)));
-                    self.last_was_identifier = false;
+                    self.last_was_nonwhitespace = true;
                     Ok(())
                 }
                 Err(e) => Err(LexError::new(
@@ -1531,7 +1111,7 @@ impl<'a> Lexer<'a> {
                 Ok(n) => {
                     self.tokens
                         .push(Spanned::new(Token::U64Lit(n), self.make_span(start, end)));
-                    self.last_was_identifier = false;
+                    self.last_was_nonwhitespace = true;
                     Ok(())
                 }
                 Err(e) => Err(LexError::new(
@@ -1544,7 +1124,7 @@ impl<'a> Lexer<'a> {
                 Ok(n) => {
                     self.tokens
                         .push(Spanned::new(Token::Int(n), self.make_span(start, end)));
-                    self.last_was_identifier = false;
+                    self.last_was_nonwhitespace = true;
                     Ok(())
                 }
                 Err(e) => Err(LexError::new(
@@ -1602,7 +1182,7 @@ impl<'a> Lexer<'a> {
             let end = self.current_position();
             self.tokens
                 .push(Spanned::new(Token::Int(0), self.make_span(start, end)));
-            self.last_was_identifier = false;
+            self.last_was_nonwhitespace = false;
             return Ok(());
         }
 
@@ -1629,7 +1209,7 @@ impl<'a> Lexer<'a> {
                 Ok(n) => {
                     self.tokens
                         .push(Spanned::new(Token::U64Lit(n), self.make_span(start, end)));
-                    self.last_was_identifier = false;
+                    self.last_was_nonwhitespace = true;
                     Ok(())
                 }
                 Err(e) => Err(LexError::new(
@@ -1642,7 +1222,7 @@ impl<'a> Lexer<'a> {
                 Ok(n) => {
                     self.tokens
                         .push(Spanned::new(Token::Int(n), self.make_span(start, end)));
-                    self.last_was_identifier = false;
+                    self.last_was_nonwhitespace = true;
                     Ok(())
                 }
                 Err(e) => Err(LexError::new(
@@ -1936,25 +1516,125 @@ mod tests {
 
     #[test]
     fn test_quoted_strings() {
-        assert_eq!(tok(r#""hello""#), vec![Token::QuotedString("hello".into())]);
+        // Raw content — escapes NOT processed
+        assert_eq!(
+            tok(r#""hello""#),
+            vec![Token::StringLiteral {
+                prefix: "".into(),
+                delimiter: "\"".into(),
+                content: "hello".into()
+            }]
+        );
         assert_eq!(
             tok(r#""with \"quotes\"""#),
-            vec![Token::QuotedString("with \"quotes\"".into())]
+            vec![Token::StringLiteral {
+                prefix: "".into(),
+                delimiter: "\"".into(),
+                content: r#"with \"quotes\""#.into()
+            }]
         );
         assert_eq!(
             tok(r#""line\nbreak""#),
-            vec![Token::QuotedString("line\nbreak".into())]
+            vec![Token::StringLiteral {
+                prefix: "".into(),
+                delimiter: "\"".into(),
+                content: r#"line\nbreak"#.into()
+            }]
         );
         assert_eq!(
             tok(r#""tab\there""#),
-            vec![Token::QuotedString("tab\there".into())]
+            vec![Token::StringLiteral {
+                prefix: "".into(),
+                delimiter: "\"".into(),
+                content: r#"tab\there"#.into()
+            }]
+        );
+    }
+
+    #[test]
+    fn test_string_literals_unified() {
+        // Empty string
+        assert_eq!(
+            tok(r#""""#),
+            vec![Token::StringLiteral {
+                prefix: "".into(),
+                delimiter: "\"".into(),
+                content: "".into()
+            }]
+        );
+
+        // Even quote count — emits count/2 empty StringLiterals
+        // r#""""""# = """" (4 double-quote chars) → 2 empty StringLiterals
+        assert_eq!(
+            tok(r#""""""#),
+            vec![
+                Token::StringLiteral {
+                    prefix: "".into(),
+                    delimiter: "\"".into(),
+                    content: "".into()
+                },
+                Token::StringLiteral {
+                    prefix: "".into(),
+                    delimiter: "\"".into(),
+                    content: "".into()
+                }
+            ]
+        );
+
+        // Interpolated string with raw $name (NOT parsed)
+        assert_eq!(
+            tok(r#"i"hello $name""#),
+            vec![Token::StringLiteral {
+                prefix: "i".into(),
+                delimiter: "\"".into(),
+                content: "hello $name".into()
+            }]
+        );
+
+        // Triple-quoted string
+        assert_eq!(
+            tok(r#""""hello""""#),
+            vec![Token::StringLiteral {
+                prefix: "".into(),
+                delimiter: "\"\"\"".into(),
+                content: "hello".into()
+            }]
+        );
+
+        // Triple-quoted interpolated
+        assert_eq!(
+            tok(r#"i"""hello $name""""#),
+            vec![Token::StringLiteral {
+                prefix: "i".into(),
+                delimiter: "\"\"\"".into(),
+                content: "hello $name".into()
+            }]
+        );
+
+        // Backslash before delimiter preserved as raw
+        assert_eq!(
+            tok(r#""say \"hi\"""#),
+            vec![Token::StringLiteral {
+                prefix: "".into(),
+                delimiter: "\"".into(),
+                content: r#"say \"hi\""#.into()
+            }]
+        );
+
+        // Backslash in triple-quoted: raw passthrough
+        assert_eq!(
+            tok(r#""""text\nmore""""#),
+            vec![Token::StringLiteral {
+                prefix: "".into(),
+                delimiter: "\"\"\"".into(),
+                content: r#"text\nmore"#.into()
+            }]
         );
     }
 
     #[test]
     fn test_string_errors() {
         assert!(tok_err(r#""unterminated"#).contains("unterminated string"));
-        assert!(tok_err(r#""bad \x escape""#).contains("invalid escape sequence"));
     }
 
     #[test]
@@ -2364,13 +2044,93 @@ mod tests {
             ]
         );
 
-        // EscapedRef followed by @ — At (not ImmediateAt, only fires after Identifier)
+        // EscapedRef followed by @ with no whitespace — ImmediateAt (EscapedRef is value-ending)
         assert_eq!(
             tok("$var@Integer"),
             vec![
                 Token::EscapedRef("var".into()),
-                Token::At,
+                Token::ImmediateAt,
                 Token::Identifier("Integer".into())
+            ]
+        );
+
+        // CloseBracket followed by @ with no whitespace — ImmediateAt
+        assert_eq!(
+            tok("]@Int"),
+            vec![
+                Token::CloseBracket,
+                Token::ImmediateAt,
+                Token::Identifier("Int".into())
+            ]
+        );
+
+        // StringLiteral followed by @ with no whitespace — ImmediateAt
+        assert_eq!(
+            tok(r#""hello"@String"#),
+            vec![
+                Token::StringLiteral {
+                    prefix: "".into(),
+                    delimiter: "\"".into(),
+                    content: "hello".into()
+                },
+                Token::ImmediateAt,
+                Token::Identifier("String".into())
+            ]
+        );
+
+        // Int followed by @ with no whitespace — ImmediateAt
+        assert_eq!(
+            tok("42@Int"),
+            vec![
+                Token::Int(42),
+                Token::ImmediateAt,
+                Token::Identifier("Int".into())
+            ]
+        );
+
+        // Float followed by @ with no whitespace — ImmediateAt
+        #[allow(clippy::approx_constant)]
+        {
+            assert_eq!(
+                tok("3.14@Float"),
+                vec![
+                    Token::Float(3.14),
+                    Token::ImmediateAt,
+                    Token::Identifier("Float".into())
+                ]
+            );
+        }
+
+        // U64Lit followed by @ with no whitespace — ImmediateAt
+        assert_eq!(
+            tok("42u@U64"),
+            vec![
+                Token::U64Lit(42),
+                Token::ImmediateAt,
+                Token::Identifier("U64".into())
+            ]
+        );
+
+        // Dot-access field followed by @ with no whitespace — ImmediateAt
+        // obj.field@Type must emit ImmediateAt after `field` (access-field identifier).
+        assert_eq!(
+            tok("obj.field@Type"),
+            vec![
+                Token::Identifier("obj".into()),
+                Token::Dot,
+                Token::Identifier("field".into()),
+                Token::ImmediateAt,
+                Token::Identifier("Type".into())
+            ]
+        );
+
+        // OpenBracket followed by @ — At (not value-ending)
+        assert_eq!(
+            tok("[@Int"),
+            vec![
+                Token::OpenBracket,
+                Token::At,
+                Token::Identifier("Int".into())
             ]
         );
     }
@@ -2396,84 +2156,87 @@ mod tests {
 
     #[test]
     fn test_interpolated_string_expr_basic() {
-        // ${expr} produces InterpolatedPart::Expr with the inner raw text
+        // ${expr} is stored raw in content — no processing at lex time
         let tokens = tok(r#"i"result: ${[+ $x 1]}""#);
         assert_eq!(tokens.len(), 1);
-        match &tokens[0] {
-            Token::InterpolatedString(parts) => {
-                assert_eq!(parts.len(), 2);
-                assert_eq!(parts[0], InterpolatedPart::Literal("result: ".into()));
-                assert_eq!(parts[1], InterpolatedPart::Expr("[+ $x 1]".into()));
+        assert_eq!(
+            tokens[0],
+            Token::StringLiteral {
+                prefix: "i".into(),
+                delimiter: "\"".into(),
+                content: "result: ${[+ $x 1]}".into(),
             }
-            other => panic!("expected InterpolatedString, got {:?}", other),
-        }
+        );
     }
 
     #[test]
     fn test_interpolated_string_expr_nested_braces() {
-        // Nested braces inside ${...} are tracked correctly
+        // Nested braces are stored raw in content — no brace-tracking at lex time
         let tokens = tok(r#"i"${nested {brace}}""#);
         assert_eq!(tokens.len(), 1);
-        match &tokens[0] {
-            Token::InterpolatedString(parts) => {
-                assert_eq!(parts.len(), 1);
-                assert_eq!(parts[0], InterpolatedPart::Expr("nested {brace}".into()));
+        assert_eq!(
+            tokens[0],
+            Token::StringLiteral {
+                prefix: "i".into(),
+                delimiter: "\"".into(),
+                content: "${nested {brace}}".into(),
             }
-            other => panic!("expected InterpolatedString, got {:?}", other),
-        }
+        );
     }
 
     #[test]
     fn test_interpolated_string_expr_with_varref() {
-        // Mix of $name and ${expr} parts
+        // $name, literal text, and ${expr} are all stored raw in content
         let tokens = tok(r#"i"$name is ${[+ $x 1]}""#);
         assert_eq!(tokens.len(), 1);
-        match &tokens[0] {
-            Token::InterpolatedString(parts) => {
-                assert_eq!(parts.len(), 3);
-                assert_eq!(parts[0], InterpolatedPart::VarRef("name".into()));
-                assert_eq!(parts[1], InterpolatedPart::Literal(" is ".into()));
-                assert_eq!(parts[2], InterpolatedPart::Expr("[+ $x 1]".into()));
+        assert_eq!(
+            tokens[0],
+            Token::StringLiteral {
+                prefix: "i".into(),
+                delimiter: "\"".into(),
+                content: "$name is ${[+ $x 1]}".into(),
             }
-            other => panic!("expected InterpolatedString, got {:?}", other),
-        }
+        );
     }
 
     #[test]
     fn test_interpolated_string_expr_unterminated() {
-        // Unterminated ${...} is a lex error
-        let err = tok_err(r#"i"${unclosed""#);
-        assert!(
-            err.contains("unterminated ${...}"),
-            "expected unterminated error, got: {}",
-            err
+        // Lexer stores raw content — ${unclosed is not validated at lex time
+        assert_eq!(
+            tok(r#"i"${unclosed""#),
+            vec![Token::StringLiteral {
+                prefix: "i".into(),
+                delimiter: "\"".into(),
+                content: "${unclosed".into(),
+            }]
         );
     }
 
     #[test]
     fn test_interpolated_string_expr_empty() {
-        // Empty ${} is a lex error
-        let err = tok_err(r#"i"${}""#);
-        assert!(
-            err.contains("empty ${}"),
-            "expected empty expr error, got: {}",
-            err
+        // Lexer stores raw content — ${} is not validated at lex time
+        assert_eq!(
+            tok(r#"i"${}""#),
+            vec![Token::StringLiteral {
+                prefix: "i".into(),
+                delimiter: "\"".into(),
+                content: "${}".into(),
+            }]
         );
     }
 
     #[test]
     fn test_interpolated_string_dollar_dollar_unchanged() {
-        // $$ consumes two chars and emits literal "$"; the following {foo} is plain text
-        // because `{` is not a special char in interpolated strings (only `${` is special).
-        // So i"$${foo}" → Literal("${foo}") — one part.
+        // $$ and {foo} are stored raw in content — no processing at lex time
         let tokens = tok(r#"i"$${foo}""#);
         assert_eq!(tokens.len(), 1);
-        match &tokens[0] {
-            Token::InterpolatedString(parts) => {
-                assert_eq!(parts.len(), 1, "expected exactly one part");
-                assert_eq!(parts[0], InterpolatedPart::Literal("${foo}".into()));
+        assert_eq!(
+            tokens[0],
+            Token::StringLiteral {
+                prefix: "i".into(),
+                delimiter: "\"".into(),
+                content: "$${foo}".into(),
             }
-            other => panic!("expected InterpolatedString, got {:?}", other),
-        }
+        );
     }
 }

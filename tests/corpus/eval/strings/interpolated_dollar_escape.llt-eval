@@ -1,0 +1,4 @@
+# $$ in i-string template produces a literal dollar sign
+[amount: "42"  price: i"Total: $$$amount"]
+=== out
+Dict({"amount": String("42"), "price": String("Total: $42")})

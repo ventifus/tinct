@@ -1,8 +1,0 @@
-# Triple-quoted strings desugar to [unindent "..."]
-"""
-  SELECT *
-  FROM users
-  WHERE active = true
-  """
-=== out
-[unindent "\n  SELECT *\n  FROM users\n  WHERE active = true\n  "]

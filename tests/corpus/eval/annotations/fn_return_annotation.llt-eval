@@ -1,0 +1,4 @@
+# Function with return type annotation: fn@Type
+[f: [fn@Integer [let x] [+ x 1]]  [f 41]]
+=== out
+Int(42)

@@ -2197,9 +2197,11 @@ pub(crate) fn annotation_to_thunk_id(
                     // SurfaceEntry.key is Arc<SurfaceNode>; SurfaceEntry.value is Arc<SurfaceNode>.
                     let key_id = match &e.node.key {
                         Some(k) => match &k.expr {
-                            crate::ast::SurfaceExpression::Str(s) => ctx.alloc_thunk(Arc::new(
-                                Thunk::new_materialized(string_val(s), k.span.clone()),
-                            )),
+                            crate::ast::SurfaceExpression::StringLiteral { content: s, .. } => ctx
+                                .alloc_thunk(Arc::new(Thunk::new_materialized(
+                                    string_val(s),
+                                    k.span.clone(),
+                                ))),
                             _ => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                                 Value::Dict(IndexMap::new()),
                                 k.span.clone(),
@@ -2216,9 +2218,11 @@ pub(crate) fn annotation_to_thunk_id(
                     // Annotation entry values are strings/ints for simple cases,
                     // or full AST dicts for compound values like [a: Numeric] or Seq@Int.
                     let value_id = match &e.node.value.expr {
-                        crate::ast::SurfaceExpression::Str(s) => ctx.alloc_thunk(Arc::new(
-                            Thunk::new_materialized(string_val(s), e.node.value.span.clone()),
-                        )),
+                        crate::ast::SurfaceExpression::StringLiteral { content: s, .. } => ctx
+                            .alloc_thunk(Arc::new(Thunk::new_materialized(
+                                string_val(s),
+                                e.node.value.span.clone(),
+                            ))),
                         crate::ast::SurfaceExpression::Int(n) => ctx.alloc_thunk(Arc::new(
                             Thunk::new_materialized(Value::Int(*n), e.node.value.span.clone()),
                         )),
@@ -2448,12 +2452,15 @@ fn surface_decl_to_thunk_id(
                 );
             }
             // methods: string-keyed dict of method expression dicts
-            // Keys are SurfaceExpression::Str bare words; values are the full entry value nodes.
+            // Keys are SurfaceExpression::StringLiteral bare words; values are the full entry value nodes.
             let methods_dict: IndexMap<HashableValue, ThunkId> = methods
                 .iter()
                 .filter_map(|method| {
                     method.node.key.as_ref().and_then(|key| {
-                        if let SurfaceExpression::Str(key_str) = &key.expr {
+                        if let SurfaceExpression::StringLiteral {
+                            content: key_str, ..
+                        } = &key.expr
+                        {
                             Some((
                                 HashableValue::Str(Rc::from(key_str.as_str())),
                                 surface_node_to_thunk_id(&method.node.value, opts, ctx).ok()?,
@@ -2534,7 +2541,10 @@ fn surface_decl_to_thunk_id(
                         .iter()
                         .filter_map(|method| {
                             method.node.key.as_ref().and_then(|key| {
-                                if let SurfaceExpression::Str(key_str) = &key.expr {
+                                if let SurfaceExpression::StringLiteral {
+                                    content: key_str, ..
+                                } = &key.expr
+                                {
                                     Some((
                                         HashableValue::Str(Rc::from(key_str.as_str())),
                                         surface_node_to_thunk_id(&method.node.value, opts, ctx)
@@ -2640,7 +2650,7 @@ fn surface_decl_to_thunk_id(
 
 /// Override the `bare` field in an `Expr.Literal` (kind: "str") variant's payload.
 ///
-/// The `inject(bare = true)` attribute on `SurfaceExpression::Str` always generates
+/// The `inject(bare = true)` attribute on `SurfaceExpression::StringLiteral` always generates
 /// `bare: true`. This function corrects the value based on the actual source context:
 /// - `bare: true` when the string was a bare word (no quotes) in source
 /// - `bare: false` when quoted or when source is unavailable
@@ -2698,7 +2708,7 @@ fn alloc_entry_list_with_opts(
             Some(key_node) => {
                 let mut val = SurfaceExpression::to_expr_variant(key_node, ctx);
                 // Override bare for string literal keys: check source text at span offset.
-                if let SurfaceExpression::Str(_) = &key_node.expr {
+                if let SurfaceExpression::StringLiteral { .. } = &key_node.expr {
                     let is_bare = match opts.source {
                         Some(source) => {
                             // Span starts at the opening quote for quoted strings,

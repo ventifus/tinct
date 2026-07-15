@@ -52,7 +52,7 @@ enum SurfaceExpression {
     Int(i64),
     Float(f64),
     Bool(bool),
-    Str(String),
+    StringLiteral { prefix: String, delimiter: String, content: String },
     VarRef { name: String, escaped: bool },
     Dict(Vec<SurfaceEntry>),
     Call { func: Arc<SurfaceNode>, args: Vec<Arc<SurfaceNode>>, named_args: Vec<SurfaceNamedArg>, implied: bool },
@@ -247,7 +247,8 @@ enum Annotation {
 | `Int(42)` | `42` | Integer literal |
 | `Float(3.14)` | `3.14` | Float literal |
 | `Bool(true)` | `true` | Boolean literal |
-| `Str("hello")` | `"hello"` | String literal (quoted) |
+| `SurfaceExpression::StringLiteral { prefix: "", delimiter: "\"", content: "hello" }` (Surface only) | `"hello"` | String literal in the Surface AST. Carries raw content — no escape processing at this stage. The lowering pass converts single-quoted forms to `CoreExpr::Str` after running `process_escapes`; triple-quoted forms are wrapped in an `[unindent ...]` call first. |
+| `CoreExpr::Str("hello")` | `"hello"` | String literal in the Core AST (after lowering). Escape sequences have been applied. |
 | `VarRef { name: "x", .. }` | `x` or `$x` | Variable reference (bare identifier or escaped); resolution results live in `ResolutionTable` keyed by `NodeId` |
 | `SurfaceExpression::Field { field: DotKey::Ident("b"), .. }` (Surface only) | `a.b` | String key access in the Surface AST. The lowering pass desugars this to `Call(field-get, [key, target])` or `Call(slot-get, [slot, target])` — no `DotAccess` in `CoreExpr`. |
 | `SurfaceExpression::Field { field: DotKey::Int(0), .. }` (Surface only) | `a.0` | Integer key access in the Surface AST. Desugared to `Call(field-get, [0, target])` by the lowering pass. |
@@ -382,52 +383,32 @@ The formatter always emits `[fn [let x y] body]`.
 
 ### Parser Output
 
-`parse()` returns `Result<ParseOutput, ParseError>`. `ParseOutput { program: SurfaceProgram, source: String, leading_comments: BTreeMap<usize, Vec<String>>, trailing_comments: BTreeMap<usize, String>, blank_before: BTreeMap<usize, bool>, errors: Vec<ParseError> }` carries the AST plus comment side-tables for formatter support. The evaluator and type checker access `.program`; the formatter uses the comment maps directly.
+`parse()` returns `Result<ParseOutput, ParseError>`. `ParseOutput { program: SurfaceProgram, leading_comments: BTreeMap<usize, Vec<String>>, trailing_comments: BTreeMap<usize, String>, blank_before: BTreeMap<usize, bool>, errors: Vec<ParseError> }` carries the AST plus comment side-tables for formatter support. The evaluator and type checker access `.program`; the formatter uses the comment maps directly.
 
-### Annotation Bracket Restriction
+### Annotation Bracket Expressions
 
-Annotation bracket expressions (e.g., `x@[type: Number  default: 30]`) are parsed by re-parsing the bracket contents as a standalone expression and classifying the result. Only dict literals and implied calls with VarRef heads are accepted. Special forms and other expression types within annotations are parse errors. When a `type:` key is present, rest entries (`...` or `...name`) are also forbidden — they have no defined semantics in property dict context:
+Annotation bracket expressions (e.g., `x@[type: Number  default: 30]`) are parsed by the stack machine's `AnnotationCollect` mechanism. When the annotation is in expression position (e.g., a dict entry key or function parameter), the full bracket expression is parsed normally and then converted to an `Annotation` value by `expression_to_annotation` in `src/parser.rs`.
+
+`expression_to_annotation` accepts any parsed expression and converts it to the appropriate `Annotation` variant:
+
+- **Dict literals** (`[a: Int  b: String]`) → `Annotation::PropertyDict` with the literal's entries.
+- **Implied VarRef-head calls** (`[Seq Int]`, `[or Int Null]`) → `Annotation::PropertyDict` with auto-indexed entries. The func and args from the implied call become positional entries. Both uppercase (type constructors such as `Seq`) and lowercase (type-stage functions such as `or`) VarRef heads are accepted.
+- **Any other expression** → `Annotation::PropertyDict` with a single auto-indexed entry wrapping the expression. The parser does not reject any expression form at parse time.
+
+Semantic validation — whether a particular annotation expression is meaningful for the annotated binding — is deferred to the type checker.
 
 ```tinct
-x@[type: Number  default: 30]    # valid: property dict (Dict literal)
-x@Number                         # valid: simple annotation
-[@[name: String  ...] $val]      # valid: type expression with rest (no type: key)
-fn@[or Int Null]                 # valid: union return type (or is a type-stage function)
-fn@[or a Null]                   # valid: union with type variable
-x@[Seq Int]                      # valid: parameterized type (implied call, VarRef head)
-x@[call $f $x]                   # ERROR: explicit call special form in annotation bracket
-x@[fn [a] $a]                    # ERROR: fn special form in annotation bracket
-x@[type Number]                  # ERROR: type special form in annotation bracket
-x@[@Number $val]                 # ERROR: type_assert_body in annotation bracket
-x@[type: Int  ...]               # ERROR: rest entry alongside type: key
-=== error
-error: property dict annotation must be a dict expression, got: [call f x]
- --> block 5:6:3
-  |
-  6 | x@[call $f $x]                   # ERROR: explicit call special form in annotation bracket
-    |   ^^^^^^^^^^^^
+x@[type: Number  default: 30]    # property dict (Dict literal)
+x@Number                         # simple annotation
+[@[name: String  ...] $val]      # type expression with rest
+fn@[or Int Null]                 # union return type (or is a type-stage function)
+fn@[or a Null]                   # union with type variable
+x@[Seq Int]                      # parameterized type (implied call, VarRef head)
+x@[call $f $x]                   # parsed as annotation; type checker validates semantics
+x@[fn [a] $a]                    # parsed as annotation; type checker validates semantics
 ```
 
-The parser classifies annotation bracket contents after re-parsing the bracket sub-string (`src/parser.rs`, `parse_annotation`):
-
-| Form | Classification | Accepted? | Becomes |
-|------|---------------|-----------|---------|
-| `x@[a: Int  b: String]` | `SurfaceExpression::Dict` | YES | `Annotation::PropertyDict` with named entries |
-| `x@[Seq Int]` | `SurfaceExpression::Call { implied: true, func: VarRef("Seq"), .. }` | YES | `Annotation::PropertyDict` with auto-indexed entries (parameterized type) |
-| `x@[or Int Null]` | `SurfaceExpression::Call { implied: true, func: VarRef("or"), .. }` | YES | `Annotation::PropertyDict` with auto-indexed entries; `or` is a type-stage function resolving to Union(Int, Null) |
-| `x@[or a Null]` | `SurfaceExpression::Call { implied: true, func: VarRef("or"), .. }` | YES | `Annotation::PropertyDict` with auto-indexed entries; `or` with type variable |
-| `x@[call f x]` | `SurfaceExpression::Call { implied: false, .. }` | NO | Parse error: "property dict annotation must be a dict expression" |
-| `x@[fn [a] $a]` | `SurfaceExpression::Fn` | NO | Parse error |
-| `x@[type Number]` | `SurfaceDeclaration::TypeAlias` | NO | Parse error |
-| `x@[@Number $val]` | `SurfaceExpression::TypeAssert` | NO | Parse error |
-
-**Exhaustive classification:**
-
-- **Dict literals** (`[a: Int b: String]`) → accepted, become `Annotation::PropertyDict` with the literal's entries.
-- **Implied VarRef-head calls** (`[Seq Int]`, `[or Int Null]`, `[or a Null]`) → accepted, func and args become auto-indexed PropertyDict entries. Both uppercase (type constructors such as `Seq`) and lowercase (type-stage functions such as `or`) VarRef heads are accepted. The `or` function produces a union type; bare positional entries without an `or` head (e.g., `[Int Null]`) are not union syntax — they are resolved by the type-stage function named by the head identifier.
-- **All other forms** (explicit `call`, `fn`, `type`, `TypeAssert`, VarRef alone, literals, etc.) → rejected with parse error "property dict annotation must be a dict expression".
-
-`type_assert_body` (`[@Annotation expr]`) is rejected on the "anything else" basis, not because of keyword disambiguation.
+For the three header-context call sites (section annotation, header value annotation, rest param annotation), annotations occur outside the document body parsing loop and cannot go through the stack machine. These use `parse_annotation_direct` in `src/parser.rs`, a lightweight token-walker that handles identifier and simple-literal tokens inside `@[...]` brackets.
 
 When no `type:` key is present, the bracket is interpreted as a type expression (record type), and rest entries are allowed for row polymorphism.
 

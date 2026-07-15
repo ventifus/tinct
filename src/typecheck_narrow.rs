@@ -58,7 +58,7 @@ pub(crate) fn extract_narrowings(cond: &Arc<SurfaceNode>) -> Vec<Narrowing> {
                     "has?" if args.len() == 2 => {
                         if let (
                             SurfaceExpression::VarRef { name: var_name, .. },
-                            SurfaceExpression::Str(key),
+                            SurfaceExpression::StringLiteral { content: key, .. },
                         ) = (&args[0].expr, &args[1].expr)
                         {
                             return vec![Narrowing::HasKey {
@@ -187,7 +187,7 @@ pub(crate) fn try_eq_literal(
                 var: name.clone(),
                 ty: Type::IntLiteral(*n),
             }),
-            SurfaceExpression::Str(s) => Some(Narrowing::EqLiteral {
+            SurfaceExpression::StringLiteral { content: s, .. } => Some(Narrowing::EqLiteral {
                 var: name.clone(),
                 ty: Type::StringLiteral(s.clone()),
             }),
@@ -224,7 +224,10 @@ pub(crate) fn try_type_of(left: &Arc<SurfaceNode>, right: &Arc<SurfaceNode>) -> 
                 if func_name == "type-of" {
                     if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
                         // Right side must be a string literal type name
-                        if let SurfaceExpression::Str(type_name) = &right.expr {
+                        if let SurfaceExpression::StringLiteral {
+                            content: type_name, ..
+                        } = &right.expr
+                        {
                             let ty = match type_name.as_str() {
                                 "Int" => Some(Type::Int),
                                 "Float" => Some(Type::Float),
@@ -623,7 +626,7 @@ fn resolve_annotation_sync(ann: &crate::ast::Spanned<Annotation>, state: &mut In
             // User-written @[type: T  default: ...] form — extract the type from the `type:` key.
             for entry in entries {
                 let key_is_type = entry.node.key.as_ref().map_or(false, |k| {
-                    matches!(&k.expr, SurfaceExpression::Str(s) if s == "type")
+                    matches!(&k.expr, SurfaceExpression::StringLiteral { content: s, .. } if s == "type")
                         || matches!(&k.expr, SurfaceExpression::VarRef { name, .. } if name == "type")
                 });
                 if key_is_type {
@@ -855,7 +858,8 @@ pub(crate) fn extract_param_indices(
 
     match &node.expr {
         // Single param: a@Type or just "a"
-        SurfaceExpression::VarRef { name, .. } | SurfaceExpression::Str(name) => {
+        SurfaceExpression::VarRef { name, .. }
+        | SurfaceExpression::StringLiteral { content: name, .. } => {
             if let Some(idx) = params.iter().position(|p| p == name) {
                 indices.push(idx);
             } else {
@@ -871,7 +875,7 @@ pub(crate) fn extract_param_indices(
             for entry in entries {
                 let param_name = match &entry.node.value.expr {
                     SurfaceExpression::VarRef { name, .. } => name,
-                    SurfaceExpression::Str(s) => s,
+                    SurfaceExpression::StringLiteral { content: s, .. } => s,
                     _ => {
                         return Err(vec![TypeError::new(
                             "functional dependency param must be an identifier or string",
@@ -904,7 +908,7 @@ pub(crate) fn extract_param_indices(
             // Extract the function (head param)
             let head_name = match &func.expr {
                 SurfaceExpression::VarRef { name, .. } => name,
-                SurfaceExpression::Str(s) => s,
+                SurfaceExpression::StringLiteral { content: s, .. } => s,
                 _ => {
                     return Err(vec![TypeError::new(
                         "functional dependency param must be an identifier or string",
@@ -927,7 +931,7 @@ pub(crate) fn extract_param_indices(
             for arg in args {
                 let arg_name = match &arg.expr {
                     SurfaceExpression::VarRef { name, .. } => name,
-                    SurfaceExpression::Str(s) => s,
+                    SurfaceExpression::StringLiteral { content: s, .. } => s,
                     _ => {
                         return Err(vec![TypeError::new(
                             "functional dependency param must be an identifier or string",

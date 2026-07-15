@@ -3,4 +3,4 @@
   {"key": "value"}
   """
 === out
-[unindent "\n  {\"key\": \"value\"}\n  "]
+String("{\"key\": \"value\"}")

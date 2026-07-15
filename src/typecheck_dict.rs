@@ -161,7 +161,7 @@ fn collect_dependencies(
             SurfaceExpression::Int(_)
             | SurfaceExpression::U64(_)
             | SurfaceExpression::Float(_)
-            | SurfaceExpression::Str(_) => {}
+            | SurfaceExpression::StringLiteral { .. } => {}
             SurfaceExpression::Dict(entries) => {
                 for entry in entries {
                     if let Some(ref key) = entry.node.key {
@@ -283,7 +283,7 @@ pub(crate) async fn infer_dict(
         let is_static_key = entry.node.key.as_ref().is_some_and(|k| {
             matches!(
                 &k.expr,
-                SurfaceExpression::Str(_) | SurfaceExpression::VarRef { .. }
+                SurfaceExpression::StringLiteral { .. } | SurfaceExpression::VarRef { .. }
             )
         });
         key_entries.push((key_name, is_alias, is_static_key));
@@ -339,7 +339,9 @@ pub(crate) async fn infer_dict(
                         for me in method_entries {
                             let method_name = match me.node.key.as_ref() {
                                 Some(k) => match &k.expr {
-                                    SurfaceExpression::Str(s) => s.clone(),
+                                    SurfaceExpression::StringLiteral { content: s, .. } => {
+                                        s.clone()
+                                    }
                                     SurfaceExpression::VarRef { name, .. } => name.clone(),
                                     _ => continue,
                                 },
@@ -910,7 +912,11 @@ pub(crate) async fn infer_dict(
                                 annotation: Some(ann),
                                 ..
                             } => ann.node.get_property("doc").and_then(|doc_node| {
-                                if let SurfaceExpression::Str(doc_string) = &doc_node.expr {
+                                if let SurfaceExpression::StringLiteral {
+                                    content: doc_string,
+                                    ..
+                                } = &doc_node.expr
+                                {
                                     Some(doc_string.clone())
                                 } else {
                                     None
@@ -927,7 +933,11 @@ pub(crate) async fn infer_dict(
                         SurfaceExpression::Fn { return_ann, .. } => {
                             return_ann.as_ref().and_then(|ann| {
                                 ann.node.get_property("doc").and_then(|doc_node| {
-                                    if let SurfaceExpression::Str(doc_string) = &doc_node.expr {
+                                    if let SurfaceExpression::StringLiteral {
+                                        content: doc_string,
+                                        ..
+                                    } = &doc_node.expr
+                                    {
                                         Some(doc_string.clone())
                                     } else {
                                         None
@@ -1114,7 +1124,7 @@ pub(crate) async fn entry_key_name(
 ) -> Option<String> {
     match &entry.key {
         Some(key_node) => match &key_node.expr {
-            SurfaceExpression::Str(s) => Some(s.clone()),
+            SurfaceExpression::StringLiteral { content: s, .. } => Some(s.clone()),
             SurfaceExpression::Int(n) => Some(n.to_string()),
             // Annotated key: name@[doc: "..."] — extract name directly
             // VarRef with annotation (name@[doc: "..."]) — extract name

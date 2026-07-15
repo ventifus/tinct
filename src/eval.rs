@@ -293,7 +293,7 @@ pub(crate) fn annotation_has_structural_fields(annotation: &crate::ast::Annotati
                 return false;
             };
             match &key_node.expr {
-                crate::ast::SurfaceExpression::Str(name) => {
+                crate::ast::SurfaceExpression::StringLiteral { content: name, .. } => {
                     !ANNOTATION_META_KEYS.contains(&name.as_str())
                 }
                 _ => true,
@@ -2411,7 +2411,11 @@ mod tests {
         let mk = |expr| Arc::new(SurfaceNode::new(expr, z.clone()));
         Spanned::new(
             SurfaceEntry {
-                key: Some(mk(SurfaceExpression::Str(key.into()))),
+                key: Some(mk(SurfaceExpression::StringLiteral {
+                    prefix: String::new(),
+                    delimiter: "\"".to_string(),
+                    content: key.into(),
+                })),
                 value: mk(value_expr),
             },
             z,
@@ -2683,14 +2687,22 @@ mod tests {
         let node = mk(SurfaceExpression::Dict(vec![
             Spanned::new(
                 SurfaceEntry {
-                    key: Some(mk(SurfaceExpression::Str("x".into()))),
+                    key: Some(mk(SurfaceExpression::StringLiteral {
+                        prefix: String::new(),
+                        delimiter: "\"".to_string(),
+                        content: "x".into(),
+                    })),
                     value: mk(SurfaceExpression::Int(1)),
                 },
                 z.clone(),
             ),
             Spanned::new(
                 SurfaceEntry {
-                    key: Some(mk(SurfaceExpression::Str("x".into()))),
+                    key: Some(mk(SurfaceExpression::StringLiteral {
+                        prefix: String::new(),
+                        delimiter: "\"".to_string(),
+                        content: "x".into(),
+                    })),
                     value: mk(SurfaceExpression::Int(2)),
                 },
                 z.clone(),
@@ -3123,11 +3135,19 @@ mod tests {
                 SurfaceExpression::Dict(vec![Spanned::new(
                     crate::ast::SurfaceEntry {
                         key: Some(Arc::new(SurfaceNode::new(
-                            SurfaceExpression::Str("name".into()),
+                            SurfaceExpression::StringLiteral {
+                                prefix: String::new(),
+                                delimiter: "\"".to_string(),
+                                content: "name".into(),
+                            },
                             span.clone(),
                         ))),
                         value: Arc::new(SurfaceNode::new(
-                            SurfaceExpression::Str("fallback".into()),
+                            SurfaceExpression::StringLiteral {
+                                prefix: String::new(),
+                                delimiter: "\"".to_string(),
+                                content: "fallback".into(),
+                            },
                             span.clone(),
                         )),
                     },

@@ -1,4 +1,0 @@
-# Annotation bracket restriction - type assertion in annotation
-x@[@Type e]
-=== out
-1:3: property dict annotation must be a dict expression, got: [@Type e]

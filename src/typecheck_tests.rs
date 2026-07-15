@@ -768,7 +768,11 @@ async fn test_property_dict_non_str_key_falls_back_to_any() {
     let span = crate::test_util::test_span(1, 1, 1, 10);
     let ann = Annotation::PropertyDict(vec![surf_ann_entry_tc(
         Some(SurfaceExpression::Int(42)),
-        SurfaceExpression::Str("Int".into()),
+        SurfaceExpression::StringLiteral {
+            prefix: String::new(),
+            delimiter: "\"".to_string(),
+            content: "Int".into(),
+        },
     )]);
     let mut c = Vec::new();
     assert_eq!(
@@ -810,7 +814,11 @@ async fn test_property_dict_unresolvable_type_propagates_error() {
     // and succeed with NominalVariant; lowercase names that are not type variables
     // produce an error since they don't match any known primitive or alias.)
     let ann = Annotation::PropertyDict(vec![surf_ann_entry_tc(
-        Some(SurfaceExpression::Str("x".into())),
+        Some(SurfaceExpression::StringLiteral {
+            prefix: String::new(),
+            delimiter: "\"".to_string(),
+            content: "x".into(),
+        }),
         SurfaceExpression::VarRef {
             name: "noSuchType".into(),
             escaped: false,
@@ -844,7 +852,11 @@ async fn test_property_dict_literal_value_falls_back_to_any() {
     let env = Arc::new(TypeEnv::new());
     let span = crate::test_util::test_span(1, 1, 1, 10);
     let ann = Annotation::PropertyDict(vec![surf_ann_entry_tc(
-        Some(SurfaceExpression::Str("default".into())),
+        Some(SurfaceExpression::StringLiteral {
+            prefix: String::new(),
+            delimiter: "\"".to_string(),
+            content: "default".into(),
+        }),
         SurfaceExpression::Int(30),
     )]);
     let mut c = Vec::new();

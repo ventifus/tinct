@@ -44,9 +44,11 @@ fn value_to_surface_node(
     match value {
         Value::Int(n) => Ok(make_node(SurfaceExpression::Int(*n))),
         Value::Float(f) => Ok(make_node(SurfaceExpression::Float(*f))),
-        Value::String { source, start, end } => Ok(make_node(SurfaceExpression::Str(
-            source[*start..*end].to_string(),
-        ))),
+        Value::String { source, start, end } => Ok(make_node(SurfaceExpression::StringLiteral {
+            prefix: String::new(),
+            delimiter: "\"".to_string(),
+            content: source[*start..*end].to_string(),
+        })),
         Value::Variant { .. } => {
             // Variant form of an AST node — convert via surface bridge
             crate::surface_convert::dict_to_surface_node(value, &span, ctx).map_err(|err| {
@@ -272,7 +274,11 @@ fn eval_quote_preprocess<'a>(
                                                 ))
                                             } else {
                                                 Arc::new(SurfaceNode::new(
-                                                    SurfaceExpression::Str(s.to_string()),
+                                                    SurfaceExpression::StringLiteral {
+                                                        prefix: String::new(),
+                                                        delimiter: "\"".to_string(),
+                                                        content: s.to_string(),
+                                                    },
                                                     inner_span.clone(),
                                                 ))
                                             }
@@ -564,7 +570,11 @@ pub(crate) async fn extract_fn_annotation_extra(
         let Some(key_node) = e.node.key.as_ref() else {
             continue;
         };
-        let crate::ast::SurfaceExpression::Str(ref key_str) = key_node.expr else {
+        let crate::ast::SurfaceExpression::StringLiteral {
+            content: ref key_str,
+            ..
+        } = key_node.expr
+        else {
             continue;
         };
 
@@ -577,7 +587,7 @@ pub(crate) async fn extract_fn_annotation_extra(
         // Evaluate the annotation value: literals fast-path, expressions via eval
         let val = match &e.node.value.expr {
             // Fast path: literals extract directly without evaluation
-            crate::ast::SurfaceExpression::Str(s) => string_val(s),
+            crate::ast::SurfaceExpression::StringLiteral { content: s, .. } => string_val(s),
             crate::ast::SurfaceExpression::Int(n) => Value::Int(*n),
             crate::ast::SurfaceExpression::Float(f) => Value::Float(*f),
             // Expression-valued fields: lower to CoreExpr, evaluate, materialize to Value.

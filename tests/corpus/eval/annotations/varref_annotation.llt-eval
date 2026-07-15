@@ -1,0 +1,4 @@
+# Variable reference with type annotation: x@Type
+[x@Integer: 42  x]
+=== out
+Int(42)

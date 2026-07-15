@@ -1,0 +1,4 @@
+# Basic i-string interpolation
+[name: "world"  msg: i"hello $name"]
+=== out
+Dict({"name": String("world"), "msg": String("hello world")})

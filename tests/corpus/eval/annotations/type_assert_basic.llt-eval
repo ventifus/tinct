@@ -1,0 +1,4 @@
+# Basic [@Type expr] type assertion
+[@Integer 42]
+=== out
+Int(42)

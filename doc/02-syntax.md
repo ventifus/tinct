@@ -173,7 +173,7 @@ String values must be quoted. Tinct supports both double-quoted (`"`) and triple
 "42"                     # String — quoting overrides numeric recognition
 ```
 
-**Escape sequences:** `\"`, `\\`, `\n`, `\t`, `\r`. Unicode escapes (`\uXXXX`) are not supported — use `from-json` for full Unicode string parsing.
+**Escape sequences:** `\"`, `\\`, `\n`, `\t`, `\r`. Unicode escapes (`\uXXXX`) are not supported — use `from-json` for full Unicode string parsing. Escape sequences apply only to single-quoted strings (`"..."`). Triple-quoted strings (`"""..."""`) store content verbatim — `\n` is a literal backslash followed by `n`, not a newline.
 
 **Multi-line strings.** Both `"..."` and `"""..."""` permit literal embedded newlines. Triple-quoted strings also strip indentation automatically, using the closing delimiter line as the baseline:
 
@@ -959,10 +959,13 @@ Whitespace is significant only for `@` (annotation), not for `.`:
 
 - `a.b` — dot access
 - `a .b` — also dot access (whitespace before `.` is allowed)
-- `word@Annotation` — annotation (no whitespace before `@`)
+- `word@Annotation` — annotation on an identifier (no whitespace before `@`)
 - `word @Annotation` — bare identifier `word` followed by separate expression
+- `[f x]@Type` — annotation on a call expression (`]` is value-ending, so `@` fires ImmediateAt)
+- `"str"@Type` — annotation on a string literal
+- `obj.field@Type` — annotation on a dot-access field identifier
 
-`@` (ImmediateAt) is the only whitespace-sensitive token. A space before `@` prevents annotation detection. `.` is not whitespace-sensitive — dot access works with or without preceding whitespace.
+`@` (ImmediateAt) is the only whitespace-sensitive token. It fires after any value-ending token — identifier, `]`, string literal, number, float, u64 literal — when `@` appears with no preceding whitespace. Structural delimiters (`[`, `:`, `;`) and keywords reset the flag, preventing ImmediateAt. `.` is not whitespace-sensitive — dot access works with or without preceding whitespace.
 
 **Historical note:** Bracket access (`a[0]`) was removed from the language during the access-pipeline-phase2 sprint. It required whitespace sensitivity for `[` (conflicting with immediate bracket after identifier in cases like `$f[args]`), and the feature was replaced by the `nth` and `get` function-based approach. `[` is no longer whitespace-sensitive.
 

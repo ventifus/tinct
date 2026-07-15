@@ -92,6 +92,17 @@ Single-line strings use `"..."`. Multi-line strings use triple quotes — the cl
 
 Variable names stop at whitespace, brackets, and common punctuation (`.`, `,`, `!`, `?`). Only `$ident` is supported — there is no `${expr}` form.
 
+**Escape sequences** — supported within single-quoted `"..."` strings only. Triple-quoted strings (`"""..."""`) pass content raw — `\n`, `\t`, etc. are literal backslash sequences:
+
+| Sequence | Result |
+|----------|--------|
+| `\\` | literal backslash |
+| `\"` | literal double-quote (for `"` delimiter) |
+| `\n` | newline |
+| `\t` | tab |
+| `\r` | carriage return |
+| `\X` (any other `X`) | literal `\X` (pass-through) |
+
 ---
 
 ## Dot Access

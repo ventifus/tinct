@@ -1,0 +1,4 @@
+# String with escape sequences: quote, backslash
+"say \"hi\" and \\ works"
+=== out
+String("say \"hi\" and \\ works")

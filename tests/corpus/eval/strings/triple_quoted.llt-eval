@@ -1,0 +1,6 @@
+# Triple-quoted string with trim
+[trim """
+  hello world
+  """]
+=== out
+String("hello world")

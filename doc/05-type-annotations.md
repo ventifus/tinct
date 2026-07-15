@@ -1175,7 +1175,7 @@ type_assert_body    = { "@" ~ annotation_value ~ value }
 chained_annotation  = ${ identifier ~ ("@" ~ annotation_value)+ }
 ```
 
-`@` is `ImmediateAt` — emitted only when it appears directly after an identifier with no whitespace. This distinguishes `x@Integer` (annotation) from `x @ Int` (which would be parsed differently if `@` were a regular operator).
+`@` is `ImmediateAt` — emitted when it appears directly after any non-whitespace token (identifier, `]`, string literal, number, etc.) with no preceding whitespace. This distinguishes `x@Integer` (annotation) from `x @ Int` (which would be parsed differently if `@` were a regular operator). Any value-producing token can be immediately annotated: `[f x]@Type`, `"str"@Type`, `42@Type`, `obj.field@Type` are all valid.
 
 ### 25. Mixed-Stage Routing
 

@@ -359,7 +359,11 @@ pub(crate) async fn resolve_type_assert(
     // Valid values: "u8", "i8", "u16", "i16", "u32", "i32", "u64", "i64".
     // Must be consistent with the declared type (must be numeric).
     if let Some(repr_node) = annotation.node.get_property("repr") {
-        if let SurfaceExpression::Str(ref repr_val) = repr_node.expr {
+        if let SurfaceExpression::StringLiteral {
+            content: ref repr_val,
+            ..
+        } = repr_node.expr
+        {
             const VALID_REPRS: &[&str] = &["u8", "i8", "u16", "i16", "u32", "i32", "u64", "i64"];
             if !VALID_REPRS.contains(&repr_val.as_str()) {
                 return Err(vec![TypeError::new(
@@ -494,7 +498,10 @@ pub(crate) async fn resolve_fn_metadata(
     // Step 0: Process bind: entries (must come first so TypeVars exist for return:/constraint:/kinds:)
     for entry in entries {
         if let Some(key_expr) = &entry.node.key {
-            if let SurfaceExpression::Str(key_name) = &key_expr.expr {
+            if let SurfaceExpression::StringLiteral {
+                content: key_name, ..
+            } = &key_expr.expr
+            {
                 if key_name == "bind" {
                     // bind: [a b c] — positional list of TypeVar names.
                     //
@@ -668,7 +675,10 @@ pub(crate) async fn resolve_fn_metadata(
     // Step 0b: Process kinds: entries (after bind:, so we can validate names exist)
     for entry in entries {
         if let Some(key_expr) = &entry.node.key {
-            if let SurfaceExpression::Str(key_name) = &key_expr.expr {
+            if let SurfaceExpression::StringLiteral {
+                content: key_name, ..
+            } = &key_expr.expr
+            {
                 if key_name == "kinds" {
                     // kinds: [f: Operator key: Label] — dict mapping TypeVar names to kinds
                     match &entry.node.value.expr {
@@ -676,7 +686,9 @@ pub(crate) async fn resolve_fn_metadata(
                             for kind_entry in kinds_entries {
                                 let typevar_name = match &kind_entry.node.key {
                                     Some(k) => match &k.expr {
-                                        SurfaceExpression::Str(s) => s.clone(),
+                                        SurfaceExpression::StringLiteral { content: s, .. } => {
+                                            s.clone()
+                                        }
                                         _ => {
                                             return Err(TypeErrorTyped::Generic(GenericTypeError {
                                                 message:
@@ -773,7 +785,10 @@ pub(crate) async fn resolve_fn_metadata(
     // Step 1a: Process constraint: keyed entries (single-param class constraints)
     for entry in entries {
         if let Some(key_expr) = &entry.node.key {
-            if let SurfaceExpression::Str(key_name) = &key_expr.expr {
+            if let SurfaceExpression::StringLiteral {
+                content: key_name, ..
+            } = &key_expr.expr
+            {
                 if key_name == "constraint" {
                     // constraint: [a: Comparable] or [a: [each Comparable Printable]]
                     match &entry.node.value.expr {
@@ -786,7 +801,9 @@ pub(crate) async fn resolve_fn_metadata(
 
                                 let typevar_name = match &c_entry.node.key {
                                     Some(k) => match &k.expr {
-                                        SurfaceExpression::Str(s) => s.clone(),
+                                        SurfaceExpression::StringLiteral { content: s, .. } => {
+                                            s.clone()
+                                        }
                                         SurfaceExpression::VarRef { name, .. } => name.clone(),
                                         _ => {
                                             return Err(TypeErrorTyped::Generic(GenericTypeError {
@@ -1004,7 +1021,10 @@ pub(crate) async fn resolve_fn_metadata(
     // Step 1b: Process constraint: MPTC positional entries (multi-param class constraints)
     for entry in entries {
         if let Some(key_expr) = &entry.node.key {
-            if let SurfaceExpression::Str(key_name) = &key_expr.expr {
+            if let SurfaceExpression::StringLiteral {
+                content: key_name, ..
+            } = &key_expr.expr
+            {
                 if key_name == "constraint" {
                     match &entry.node.value.expr {
                         SurfaceExpression::Dict(constraint_entries) => {
@@ -1135,7 +1155,10 @@ pub(crate) async fn resolve_fn_metadata(
     // Step 2: Process return: entry
     for entry in entries {
         if let Some(key_expr) = &entry.node.key {
-            if let SurfaceExpression::Str(key_name) = &key_expr.expr {
+            if let SurfaceExpression::StringLiteral {
+                content: key_name, ..
+            } = &key_expr.expr
+            {
                 if key_name == "return" {
                     let ret = resolve_type_expr(
                         &entry.node.value,
@@ -1156,19 +1179,24 @@ pub(crate) async fn resolve_fn_metadata(
     // Step 3: Process doc: entry
     for entry in entries {
         if let Some(key_expr) = &entry.node.key {
-            if let SurfaceExpression::Str(key_name) = &key_expr.expr {
+            if let SurfaceExpression::StringLiteral {
+                content: key_name, ..
+            } = &key_expr.expr
+            {
                 if key_name == "doc" {
                     // Accept both plain strings and unindent(...) calls (from triple-quoted strings).
                     // Triple-quoted strings `"""..."""` are desugared by the parser to
                     // `Call { func: VarRef("unindent"), args: [Str(s)] }`.
                     let extracted = match &entry.node.value.expr {
-                        SurfaceExpression::Str(s) => Some(s.clone()),
+                        SurfaceExpression::StringLiteral { content: s, .. } => Some(s.clone()),
                         SurfaceExpression::Call { func, args, .. } => {
                             if matches!(&func.expr,
                                 SurfaceExpression::VarRef { name, .. } if name == "unindent")
                             {
                                 args.iter().find_map(|arg| {
-                                    if let SurfaceExpression::Str(s) = &arg.expr {
+                                    if let SurfaceExpression::StringLiteral { content: s, .. } =
+                                        &arg.expr
+                                    {
                                         Some(s.clone())
                                     } else {
                                         None
@@ -1201,7 +1229,10 @@ pub(crate) async fn resolve_fn_metadata(
     const VALID_FN_ANNOTATION_KEYS: &[&str] = &["return", "constraint", "doc", "bind", "kinds"];
     for entry in entries {
         if let Some(key_expr) = &entry.node.key {
-            if let SurfaceExpression::Str(key_name) = &key_expr.expr {
+            if let SurfaceExpression::StringLiteral {
+                content: key_name, ..
+            } = &key_expr.expr
+            {
                 if !VALID_FN_ANNOTATION_KEYS.contains(&key_name.as_str()) {
                     state.diagnostics.push(crate::error::TypeDiagnostic {
                         message: format!(
@@ -1251,7 +1282,7 @@ async fn resolve_fn_type(
             let has_fn_key = surface_entries.iter().any(|e| {
                 if let Some(ref key) = e.node.key {
                     matches!(&key.expr,
-                        SurfaceExpression::Str(s)
+                        SurfaceExpression::StringLiteral { content: s, .. }
                             if crate::ast::STANDARD_ANN_KEYS.contains(&s.as_str()))
                 } else {
                     false
@@ -1378,7 +1409,9 @@ async fn resolve_annotation_as_type(
             let has_non_metadata_key = surface_entries.iter().any(|se| {
                 if let Some(ref k) = se.node.key {
                     match &k.expr {
-                        SurfaceExpression::Str(s) => !METADATA_KEYS.contains(&s.as_str()),
+                        SurfaceExpression::StringLiteral { content: s, .. } => {
+                            !METADATA_KEYS.contains(&s.as_str())
+                        }
                         _ => true, // non-string key → treat as non-metadata
                     }
                 } else {
@@ -1389,7 +1422,9 @@ async fn resolve_annotation_as_type(
                 if let Some(type_node) = surface_entries.iter().find_map(|se| {
                     let key_node = se.node.key.as_ref()?;
                     match &key_node.expr {
-                        SurfaceExpression::Str(s) if s == "type" => Some(&se.node.value),
+                        SurfaceExpression::StringLiteral { content: s, .. } if s == "type" => {
+                            Some(&se.node.value)
+                        }
                         _ => None,
                     }
                 }) {
@@ -1496,14 +1531,14 @@ pub(crate) async fn resolve_annotation(
                             // any single positional entry), treat as Map(Unknown, V).
                             // Fall back to resolving as a positional type list for other forms.
                             let key_entry = surface_entries.iter().find(|e| {
-                                e.node.key.as_ref().is_some_and(
-                                    |k| matches!(&k.expr, SurfaceExpression::Str(s) if s == "key"),
-                                )
+                                e.node.key.as_ref().is_some_and(|k| {
+                                    matches!(&k.expr, SurfaceExpression::StringLiteral { content: s, .. } if s == "key")
+                                })
                             });
                             let value_entry = surface_entries.iter().find(|e| {
-                                e.node.key.as_ref().is_some_and(
-                                    |k| matches!(&k.expr, SurfaceExpression::Str(s) if s == "value"),
-                                )
+                                e.node.key.as_ref().is_some_and(|k| {
+                                    matches!(&k.expr, SurfaceExpression::StringLiteral { content: s, .. } if s == "value")
+                                })
                             });
                             if let Some(v_entry) = value_entry {
                                 let key_ty = if let Some(k_entry) = key_entry {
@@ -1653,7 +1688,9 @@ pub(crate) async fn resolve_annotation(
             let has_non_metadata_key = surface_entries.iter().any(|se| {
                 if let Some(ref k) = se.node.key {
                     match &k.expr {
-                        SurfaceExpression::Str(s) => !metadata_keys.contains(&s.as_str()),
+                        SurfaceExpression::StringLiteral { content: s, .. } => {
+                            !metadata_keys.contains(&s.as_str())
+                        }
                         _ => true, // non-string key → non-metadata
                     }
                 } else {
@@ -1665,7 +1702,9 @@ pub(crate) async fn resolve_annotation(
                 surface_entries.iter().find_map(|se| {
                     let key_node = se.node.key.as_ref()?;
                     match &key_node.expr {
-                        SurfaceExpression::Str(s) if s == "type" => Some(&se.node.value),
+                        SurfaceExpression::StringLiteral { content: s, .. } if s == "type" => {
+                            Some(&se.node.value)
+                        }
                         _ => None,
                     }
                 })
@@ -1700,7 +1739,9 @@ pub(crate) async fn resolve_annotation(
                 if surface_entries.len() == 1 {
                     let key_node = se.node.key.as_ref()?;
                     match &key_node.expr {
-                        SurfaceExpression::Str(s) if s == "label" => Some(&se.node.value),
+                        SurfaceExpression::StringLiteral { content: s, .. } if s == "label" => {
+                            Some(&se.node.value)
+                        }
                         _ => None,
                     }
                 } else {
@@ -1714,7 +1755,7 @@ pub(crate) async fn resolve_annotation(
                 // 2. The identifier must start with a lowercase letter (label TypeVars are
                 //    lowercase by convention, mirroring type-kind TypeVars).
                 match &label_value_node.expr {
-                    SurfaceExpression::Str(_) => Err(TypeError::new(
+                    SurfaceExpression::StringLiteral { .. } => Err(TypeError::new(
                         "label: value must be a bare name (e.g. `label: l`), not a string literal",
                         span,
                     )),
@@ -1888,11 +1929,11 @@ fn entries_look_like_type_dict(entries: &[Spanned<SurfaceEntry>]) -> bool {
             .node
             .key
             .as_ref()
-            .is_some_and(|k| matches!(&k.expr, SurfaceExpression::Str(_)));
+            .is_some_and(|k| matches!(&k.expr, SurfaceExpression::StringLiteral { .. }));
         // Value must be a form that could be a type expression
         let value_is_type_shaped = matches!(
             &entry.node.value.expr,
-            SurfaceExpression::Str(_)
+            SurfaceExpression::StringLiteral { .. }
                 | SurfaceExpression::VarRef { .. }  // includes annotated VarRef
                 | SurfaceExpression::Dict(_)
         );
@@ -2675,7 +2716,7 @@ pub(crate) async fn resolve_type_expr_with_guard(
     }
 
     match &node.expr {
-        SurfaceExpression::Str(s) => Ok(Type::StringLiteral(s.clone())),
+        SurfaceExpression::StringLiteral { content: s, .. } => Ok(Type::StringLiteral(s.clone())),
         SurfaceExpression::VarRef { name, .. } => {
             resolve_type_name_with_guard(
                 name,
@@ -2765,7 +2806,7 @@ async fn resolve_type_dict_with_guard(
             }
             let key = match &entry.node.key {
                 Some(k) => match &k.expr {
-                    SurfaceExpression::Str(s) => s.clone(),
+                    SurfaceExpression::StringLiteral { content: s, .. } => s.clone(),
                     // Field with annotation: `field@Child: Type` (T-1052).
                     // Annotation is now on VarRef directly; use the name field.
                     SurfaceExpression::VarRef { name, .. } => name.clone(),
@@ -2878,7 +2919,7 @@ pub(crate) async fn resolve_type_expr(
     match &node.expr {
         // String literals in type position → Type::StringLiteral (tag-only enum variants).
         // VarRef still goes to resolve_type_name for type alias lookup.
-        SurfaceExpression::Str(s) => Ok(Type::StringLiteral(s.clone())),
+        SurfaceExpression::StringLiteral { content: s, .. } => Ok(Type::StringLiteral(s.clone())),
         // Annotated VarRef (name@Type): annotation is now on VarRef directly.
         // Must come before the plain VarRef arm to be reachable.
         SurfaceExpression::VarRef {
@@ -3029,7 +3070,9 @@ pub(crate) async fn resolve_type_expr(
                                             SurfaceExpression::VarRef { name, .. } => {
                                                 Some(name.clone())
                                             }
-                                            SurfaceExpression::Str(s) => Some(s.clone()),
+                                            SurfaceExpression::StringLiteral {
+                                                content: s, ..
+                                            } => Some(s.clone()),
                                             _ => None,
                                         }
                                     } else {
@@ -3205,14 +3248,14 @@ pub(crate) async fn resolve_type_expr(
                     //   args that are Annotated { name, annotation } → named payload field
                     //   args that are bare VarRef/Call (not Annotated) → old-style positional payload
                     //
-                    // `is_literal` helper: true for Int, U64, Float, Str surface expressions.
+                    // `is_literal` helper: true for Int, U64, Float, StringLiteral surface expressions.
                     let is_literal_expr = |expr: &SurfaceExpression| {
                         matches!(
                             expr,
                             SurfaceExpression::Int(_)
                                 | SurfaceExpression::U64(_)
                                 | SurfaceExpression::Float(_)
-                                | SurfaceExpression::Str(_)
+                                | SurfaceExpression::StringLiteral { .. }
                         )
                     };
 
@@ -3757,7 +3800,9 @@ pub(crate) async fn resolve_type_dict(
                                         // The annotation is stored in the SurfaceNode tree for T-1053;
                                         // type resolution uses only the name.
                                         let field_name = match &k.expr {
-                                            SurfaceExpression::Str(s) => s.clone(),
+                                            SurfaceExpression::StringLiteral {
+                                                content: s, ..
+                                            } => s.clone(),
                                             // Both plain and annotated VarRef use the name field.
                                             SurfaceExpression::VarRef { name, .. } => name.clone(),
                                             _ => return Err(TypeError::new(
@@ -3924,7 +3969,7 @@ pub(crate) async fn resolve_type_dict(
 
         let key = match &entry.node.key {
             Some(k) => match &k.expr {
-                SurfaceExpression::Str(s) => s.clone(),
+                SurfaceExpression::StringLiteral { content: s, .. } => s.clone(),
                 // Both plain and annotated VarRef use the name field.
                 // Annotated field key: `field@Child: Type` (T-1052) — annotation is on VarRef.
                 SurfaceExpression::VarRef { name, .. } => name.clone(),
@@ -4025,7 +4070,7 @@ pub(crate) async fn resolve_type_dict(
 /// `Annotation::PropertyDict` entries that come from implied-call bracket expressions
 /// (e.g., `@[my-combinator Int String]`) are stored as positional entries where the
 /// first entry is a bare VarRef — the function to call. This mirrors the parser
-/// conversion at `parse_annotation` line ~565: `SurfaceExpression::Call { implied: true }`
+/// conversion in `expression_to_annotation`: `SurfaceExpression::Call { implied: true }`
 /// is lowered to a PropertyDict for the annotation resolver.
 ///
 /// For type-stage evaluation we need to reverse this: reconstruct the original Call form
@@ -4041,7 +4086,7 @@ pub(crate) async fn resolve_type_dict(
 ///   the type-stage path (they will return `Type::Unknown` after failing conversion).
 fn synthesize_type_stage_node(entries: &[Spanned<SurfaceEntry>], span: Span) -> Arc<SurfaceNode> {
     // Detect implied call: ALL entries are positional (key: None) AND the first entry
-    // is a VarRef. This matches the parser rule at parse_annotation.
+    // is a VarRef. This matches the parser rule in expression_to_annotation.
     let is_implied_call = !entries.is_empty()
         && entries.iter().all(|e| e.node.key.is_none())
         && matches!(
@@ -5601,7 +5646,7 @@ async fn try_resolve_fn_type_expr(
                 let param_name = if let Some(ref key) = entry.node.key {
                     match &key.expr {
                         SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
-                        SurfaceExpression::Str(s) => Some(s.clone()),
+                        SurfaceExpression::StringLiteral { content: s, .. } => Some(s.clone()),
                         _ => None,
                     }
                 } else {

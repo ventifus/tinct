@@ -1,0 +1,4 @@
+# Annotation attached to a string literal (ImmediateAt after StringLiteral)
+[x: "hello"@String  x]
+=== out
+String("hello")

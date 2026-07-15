@@ -5076,31 +5076,27 @@ Seekable@[doc: "Random-access extension of ByteStream. Only seekable file handle
 # tmpl macro — string interpolation
 # ============================================================================
 #
-# The parser converts i"Hello $name" to [tmpl "Hello $name"].
-# tmpl expands [tmpl "raw-template" expr0 expr1 ...] to
-# [str-parts segment1 var1 segment2 ...].
+# The desugar pass converts i"Hello $name" to [tmpl "Hello $name"].
+# tmpl receives a single template string with $name in-band variable markers
+# and $$ for literal dollar signs. No extra expression arguments are passed.
 #
-# Raw template encoding (set by the parser in emit_tmpl_call):
-#   $$    — literal $ (re-encoded from InterpolatedPart::Literal segments containing $)
-#   $name — variable reference
-#   ${N}  — expression placeholder where N is the 0-based index into extra args
-#
-# args layout:
-#   args[0] = AST dict for the template string literal
-#   args[1..] = AST dicts for ${N} expression args (if any)
+# Template string encoding:
+#   $$    — literal $ escape
+#   $name — variable reference (name stops at whitespace, brackets, and common punctuation)
 #
 # Implementation strategy (split on "$"):
 #   1. Split template on "$" → [prefix, piece1, piece2, ...]
 #   2. Prefix (piece 0) is always a literal
 #   3. For each subsequent piece:
-#      - empty string  → $$ escape: emit literal "$", skip next piece as literal
-#      - starts with { → ${N} expr placeholder: lookup args[N+1]
-#      - otherwise     → $name variable reference: parse ident up to stop char
-#   4. Return {type: "call", fn: {type: "var", name: "str-parts"}, args: [...], named-args: [], implied: True}
+#      - empty string → $$ escape: emit literal "$", skip next piece as literal
+#      - otherwise    → $name variable reference: parse ident up to stop char
+#   4. Return [quote [str-parts parts...]] for evaluation in the call-site scope
 
-# True if character c is a stop character for variable names in interpolated strings.
-# Mirrors the stop-char set in src/lexer.rs lex_interpolated_string VarRef branch
-# (space, tab, CR, LF, delimiters, and common punctuation).
+# Approximate stop-character set for variable names in interpolated strings.
+# The desugar pass (src/desugar.rs build_interpolated_string_node) uses an allow-list
+# (alphanumeric | _ | -); this deny-list is an approximation that covers common cases.
+# Known gap: (, ), {, }, |, $, / are not in this list but would stop the desugar.
+# T-1619 tracks making the sets exactly equivalent.
 tmpl-is-stop: [fn [let c]
   [str-contains? c " \t\r\n[]:#;\"@.,!?"]]
 
@@ -5132,40 +5128,6 @@ tmpl-append-suffix: [fn [let nodes suffix]
     nodes
     [dlist-snoc nodes [tmpl-str-node suffix]]]]
 
-# Process a piece that starts with "{N}" (an expression placeholder).
-# Appends the expression AST node (and optional suffix literal) to nodes.
-# Returns the updated nodes list.
-# Called when the piece starts with "{" after splitting on "$".
-tmpl-process-expr-piece: [fn [let piece macro-args nodes]
-  [if [str-contains? "}" piece]
-    [tmpl-process-expr-with-close piece macro-args nodes]
-    # Malformed ${}: no closing "}" found — emit "$" + piece as a literal
-    [dlist-snoc nodes [tmpl-str-node [join "" ["$" piece]]]]
-  ]]
-
-# Helper: piece has a "}" — extract index and suffix.
-# split "}" on "{0}suffix" → [{0: "{0", 1: "suffix"}]
-tmpl-process-expr-with-close: [fn [let piece macro-args nodes]
-  [tmpl-process-expr-parts [split "}" piece] macro-args nodes]]
-
-tmpl-process-expr-parts: [fn [let brace-split macro-args nodes]
-  [tmpl-process-expr-idx
-    [get 0 brace-split]
-    [get 1 brace-split]
-    macro-args
-    nodes]]
-
-# idx-part is "{N", suffix is the text after "}"
-tmpl-process-expr-idx: [fn [let idx-part suffix macro-args nodes]
-  [tmpl-process-expr-insert
-    [get [+ [to-int [str-slice idx-part 1 [length idx-part]]] 1] macro-args]
-    suffix
-    nodes]]
-
-# Insert the expression node and optional suffix into nodes.
-tmpl-process-expr-insert: [fn [let expr-node suffix nodes]
-  [tmpl-append-suffix [dlist-snoc nodes expr-node] suffix]]
-
 # Process a piece that represents a variable reference ($name).
 # Appends the var-node (and optional suffix literal) to nodes.
 # Returns the updated nodes list.
@@ -5180,14 +5142,14 @@ tmpl-process-var-emit: [fn [let piece nodes var-end len]
     [dlist-snoc nodes [tmpl-var-node [str-slice piece 0 var-end]]]
     [str-slice piece var-end len]]]
 
-# Accumulator step function for building the tmpl args node list.
+# Accumulator step function for building the tmpl AST node list.
 # acc = {nodes: <DList>, skip: False, is-first: True}
 #   nodes    — accumulated DList of AST nodes (finalized by dlist-to-seq in tmpl-emit-call)
 #   skip     — True after a $$ escape; the next piece is a literal continuation, not a var
 #   is-first — True for the first piece (always a literal prefix, not preceded by "$")
 #
 # Returns the updated accumulator.
-tmpl-reduce-step: [fn [let args] [fn [let acc piece]
+tmpl-reduce-step: [fn [let acc piece]
   [if acc.is-first
     # First piece: always a literal prefix (may be empty — skip if so)
     [tmpl-step-literal acc piece]
@@ -5197,16 +5159,12 @@ tmpl-reduce-step: [fn [let args] [fn [let acc piece]
       [if [= piece ""]
         # Empty piece = $$ escape: emit literal "$" and mark next piece as skip.
         [nodes: [dlist-snoc acc.nodes [tmpl-str-node "$"]]  skip: True  is-first: False]
-        [if [starts-with? "{" piece]
-          # ${N} expression placeholder
-          [nodes: [tmpl-process-expr-piece piece args acc.nodes]  skip: False  is-first: False]
-          # $name variable reference
-          [nodes: [tmpl-process-var-piece piece acc.nodes]  skip: False  is-first: False]
-        ]
+        # $name variable reference
+        [nodes: [tmpl-process-var-piece piece acc.nodes]  skip: False  is-first: False]
       ]
     ]
   ]
-]]
+]
 
 # Append piece as a literal to acc.nodes (empty string → skip).
 # Returns a new accumulator with is-first=False and skip=False.
@@ -5216,24 +5174,12 @@ tmpl-step-literal: [fn [let acc piece]
    is-first: False]]
 
 # Split template string on "$" and fold pieces into AST arg nodes.
-tmpl-expand: [fn [let template-str args]
+tmpl-expand: [fn [let template-str]
   [tmpl-emit-call
     [reduce
-      [tmpl-reduce-step args]
+      tmpl-reduce-step
       [nodes: dlist-empty  skip: False  is-first: True]
       [split "$" template-str]]]]
-
-# Build the args dict for tmpl-expand from a collected parts dict.
-# args[0] = template AST node, args[1..] = expression part AST nodes.
-# Named helper because [[fn [let parts-dict] ...] [collect parts]] is NOT a function call
-# in tinct — a bracket expression in head position is a positional dict entry, so that
-# would produce a two-entry dict {0: <fn>, 1: <arg>}. To call a function expression
-# inline, use [call [fn ...] arg]. Here we just name the function instead.
-tmpl-build-args: [fn [let template parts-dict]
-  [reduce
-    [fn [let acc i] [merge acc [make-entry [+ i 1] [get i parts-dict]]]]
-    [0: template]
-    [range 0 [length parts-dict]]]]
 
 # str-parts: variadic helper used by tmpl-generated code to join interpolated string
 # fragments. i"Hello $name" expands to [str-parts "Hello " name], and str-parts joins
@@ -5402,17 +5348,14 @@ eval-macro-ast@[doc: "Evaluate a macro-produced AST in the call-site scope."]:
   builtin-eval-macro-ast
 
 # tmpl macro transformer: string interpolation i"...$var..." syntax.
-# i"..." strings desugar at the parser level to [tmpl "raw-template" expr0 expr1 ...].
-# The raw template encodes $name references literally and ${N} placeholders for ${...} exprs.
-# tmpl-expand splits on "$", builds Expr.VarRef nodes for $name and Expr.* nodes for
-# ${N}, and returns [quote [str-parts parts...]] for evaluation in the call-site scope.
+# i"..." strings desugar at the desugar pass to [tmpl "raw-template"].
+# The raw template encodes $name variable references literally and $$ for literal $.
+# tmpl-expand splits on "$", builds Expr.VarRef nodes for $name references,
+# and returns [quote [str-parts parts...]] for evaluation in the call-site scope.
 #
 # template@Expr — Expr.Literal for the raw template string; template.value gives the str
-# parts@Expr    — Expr.* nodes for ${N} expression placeholders (0-indexed in Seq)
-tmpl: [fn [let template@Expr ...parts@Expr]
-  [parts-dict: [collect parts]]
-  [args:       [tmpl-build-args template parts-dict]]
-  [eval-macro-ast [tmpl-expand template.value args]]]
+tmpl: [fn [let template@Expr]
+  [eval-macro-ast [tmpl-expand template.value]]]
 
 # do macro transformer: monadic do-notation desugaring.
 #

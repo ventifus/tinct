@@ -1123,7 +1123,11 @@ pub(crate) fn builtin_ast_of(
                 crate::value::Value::U64(n) => make_node(SurfaceExpression::U64(n)),
                 crate::value::Value::Float(f) => make_node(SurfaceExpression::Float(f)),
                 crate::value::Value::String { source, start, end } => {
-                    make_node(SurfaceExpression::Str(source[start..end].to_string()))
+                    make_node(SurfaceExpression::StringLiteral {
+                        prefix: String::new(),
+                        delimiter: "\"".to_string(),
+                        content: source[start..end].to_string(),
+                    })
                 }
                 // For other materialized values (Builtin, Dict, etc.), we cannot
                 // reconstruct the original AST, so error out.

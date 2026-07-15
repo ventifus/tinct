@@ -65,6 +65,63 @@ fn resolve_name_in_frames(
     None
 }
 
+/// Process escape sequences in a single-quoted string literal.
+///
+/// Recognized escapes:
+/// - `\n` → newline
+/// - `\t` → tab
+/// - `\r` → carriage return
+/// - `\\` → backslash
+/// - `\<delimiter-char>` → that char (e.g., `\"` → `"` for delimiter `"`)
+/// - `\` + anything else → pass through literally as backslash + that char
+/// - trailing `\` → pass through as backslash
+pub(crate) fn process_escapes(content: &str, delimiter: &str) -> String {
+    let mut result = String::new();
+    let mut chars = content.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.peek() {
+                Some(&'n') => {
+                    result.push('\n');
+                    chars.next();
+                }
+                Some(&'t') => {
+                    result.push('\t');
+                    chars.next();
+                }
+                Some(&'r') => {
+                    result.push('\r');
+                    chars.next();
+                }
+                Some(&'\\') => {
+                    result.push('\\');
+                    chars.next();
+                }
+                Some(&c) if delimiter.starts_with(c) => {
+                    // \<delimiter-char> → that char (e.g., \" → " for delimiter="\"")
+                    result.push(c);
+                    chars.next();
+                }
+                Some(&c) => {
+                    // Unknown escape: pass through literally (backslash + char)
+                    result.push('\\');
+                    result.push(c);
+                    chars.next();
+                }
+                None => {
+                    // Trailing backslash: pass through
+                    result.push('\\');
+                }
+            }
+        } else {
+            result.push(c);
+        }
+    }
+
+    result
+}
+
 /// Lower a single surface node to a CoreExpr, collecting diagnostics.
 ///
 /// This is the entry point for per-thunk lowering. Called from `eval_materialize.rs`
@@ -249,7 +306,25 @@ fn lower_expr(
         SurfaceExpression::Int(n) => CoreExpr::Int(*n),
         SurfaceExpression::U64(n) => CoreExpr::U64(*n),
         SurfaceExpression::Float(n) => CoreExpr::Float(*n),
-        SurfaceExpression::Str(s) => CoreExpr::Str(s.clone()),
+        SurfaceExpression::StringLiteral {
+            prefix,
+            delimiter,
+            content,
+        } => {
+            debug_assert!(
+                prefix.is_empty(),
+                "i-strings (prefix='{}') must be desugared before lowering reaches StringLiteral",
+                prefix
+            );
+            if delimiter.len() == 1 {
+                // Single-quoted: process escape sequences
+                CoreExpr::Str(process_escapes(content, delimiter))
+            } else {
+                // Triple-quoted (or longer): no escape processing
+                // Content is already raw — pass through as-is
+                CoreExpr::Str(content.clone())
+            }
+        }
 
         SurfaceExpression::VarRef {
             name,
@@ -586,7 +661,10 @@ fn lower_expr(
                                     for me in method_entries {
                                         let method_name = match me.node.key.as_ref() {
                                             Some(key_node) => match &key_node.expr {
-                                                SurfaceExpression::Str(s) => s.clone(),
+                                                SurfaceExpression::StringLiteral {
+                                                    content,
+                                                    ..
+                                                } => content.clone(),
                                                 // Both plain and annotated VarRef use the name field.
                                                 SurfaceExpression::VarRef { name, .. } => {
                                                     name.clone()
@@ -897,7 +975,7 @@ fn lower_expr(
                     for me in method_entries {
                         let method_name = match me.node.key.as_ref() {
                             Some(key_node) => match &key_node.expr {
-                                SurfaceExpression::Str(s) => s.clone(),
+                                SurfaceExpression::StringLiteral { content, .. } => content.clone(),
                                 // Both plain and annotated VarRef use the name field.
                                 SurfaceExpression::VarRef { name, .. } => name.clone(),
                                 _ => continue,
@@ -973,7 +1051,11 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
         CoreExpr::Int(n) => SurfaceExpression::Int(*n),
         CoreExpr::U64(n) => SurfaceExpression::U64(*n),
         CoreExpr::Float(f) => SurfaceExpression::Float(*f),
-        CoreExpr::Str(s) => SurfaceExpression::Str(s.clone()),
+        CoreExpr::Str(s) => SurfaceExpression::StringLiteral {
+            prefix: String::new(),
+            delimiter: "\"".to_string(),
+            content: s.clone(),
+        },
         CoreExpr::Var {
             name, annotation, ..
         } => SurfaceExpression::VarRef {
@@ -1160,12 +1242,11 @@ pub(crate) fn extract_dispatch_tags(arm_pattern: &SurfaceExpression) -> Vec<Opti
                         Annotation::PropertyDict(entries) => {
                             // Find the "type" key entry and extract its VarRef name.
                             entries.iter().find_map(|e| {
-                                let key_str = e.node.key.as_ref().and_then(|k| {
-                                    if let SurfaceExpression::Str(s) = &k.expr {
-                                        Some(s.as_str())
-                                    } else {
-                                        None
+                                let key_str = e.node.key.as_ref().and_then(|k| match &k.expr {
+                                    SurfaceExpression::StringLiteral { content, .. } => {
+                                        Some(content.as_str())
                                     }
+                                    _ => None,
                                 });
                                 if key_str == Some("type") {
                                     if let SurfaceExpression::VarRef { name, .. } =
@@ -1209,7 +1290,7 @@ pub(crate) fn extract_dispatch_tags(arm_pattern: &SurfaceExpression) -> Vec<Opti
 fn extract_type_name_from_key(key: &Option<Arc<SurfaceNode>>) -> Option<String> {
     match key {
         Some(key_node) => match &key_node.expr {
-            SurfaceExpression::Str(s) => Some(s.clone()),
+            SurfaceExpression::StringLiteral { content, .. } => Some(content.clone()),
             // Both plain VarRef and annotated VarRef (name@Type) use the name field directly.
             SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
             _ => None, // Computed key
@@ -1502,14 +1583,14 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
                 if let SurfaceExpression::VarRef { name, .. } = &func.expr {
                     if is_ctor(name) {
                         // Payload fields from named_args: only non-literal values are runtime fields.
-                        // Literal values (Int/Float/Str/U64) are compile-time constants.
+                        // Literal values (Int/Float/Str/U64/StringLiteral) are compile-time constants.
                         let is_literal = |expr: &SurfaceExpression| {
                             matches!(
                                 expr,
                                 SurfaceExpression::Int(_)
                                     | SurfaceExpression::U64(_)
                                     | SurfaceExpression::Float(_)
-                                    | SurfaceExpression::Str(_)
+                                    | SurfaceExpression::StringLiteral { .. }
                             )
                         };
                         let payload_named_fields: Vec<String> = named_args
@@ -1591,7 +1672,9 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
                         .filter_map(|e| {
                             e.node.key.as_ref().and_then(|k| match &k.expr {
                                 SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
-                                SurfaceExpression::Str(s) => Some(s.clone()),
+                                SurfaceExpression::StringLiteral { content, .. } => {
+                                    Some(content.clone())
+                                }
                                 _ => None,
                             })
                         })
@@ -1843,5 +1926,72 @@ mod tests {
                 other
             ),
         }
+    }
+
+    // ── process_escapes unit tests ────────────────────────────────────────────
+    //
+    // These tests pin the escape-processing contract documented in the function's
+    // docstring. A mutant that swaps \n→\t or changes unknown-escape behavior
+    // would be caught immediately by one of these assertions.
+
+    #[test]
+    fn test_process_escapes_newline() {
+        assert_eq!(process_escapes(r"\n", "\""), "\n");
+    }
+
+    #[test]
+    fn test_process_escapes_tab() {
+        assert_eq!(process_escapes(r"\t", "\""), "\t");
+    }
+
+    #[test]
+    fn test_process_escapes_carriage_return() {
+        assert_eq!(process_escapes(r"\r", "\""), "\r");
+    }
+
+    #[test]
+    fn test_process_escapes_backslash() {
+        assert_eq!(process_escapes(r"\\", "\""), "\\");
+    }
+
+    #[test]
+    fn test_process_escapes_delimiter_quote() {
+        // \" with delimiter `"` → literal double-quote character
+        assert_eq!(process_escapes("\\\"", "\""), "\"");
+    }
+
+    #[test]
+    fn test_process_escapes_unknown_passthrough() {
+        // Unknown escape \x → pass through literally as backslash + 'x' (not an error)
+        assert_eq!(process_escapes(r"\x", "\""), "\\x");
+    }
+
+    #[test]
+    fn test_process_escapes_trailing_backslash() {
+        // A trailing backslash with no following char → pass through as backslash
+        assert_eq!(process_escapes("\\", "\""), "\\");
+    }
+
+    #[test]
+    fn test_process_escapes_empty_string() {
+        assert_eq!(process_escapes("", "\""), "");
+    }
+
+    #[test]
+    fn test_process_escapes_mixed() {
+        // Full-string test: "say \"hi\" and \\ works" → say "hi" and \ works
+        // This mirrors the escape_sequences.llt-eval corpus test.
+        assert_eq!(
+            process_escapes(r#"say \"hi\" and \\ works"#, "\""),
+            r#"say "hi" and \ works"#
+        );
+    }
+
+    #[test]
+    fn test_process_escapes_all_named_escapes_in_sequence() {
+        // Verify each named escape in sequence produces the right character.
+        // Mutation: swapping \n and \t would fail this test.
+        let result = process_escapes("\\n\\t\\r\\\\", "\"");
+        assert_eq!(result, "\n\t\r\\");
     }
 }

@@ -206,7 +206,7 @@ fn extract_bindings_from_node_to_vec(
                 // Only process entries with explicit string keys (VarRef or Annotated)
                 if let Some(ref key_node) = entry.node.key {
                     let name = match &key_node.expr {
-                        SurfaceExpression::Str(n) => Some(n.clone()),
+                        SurfaceExpression::StringLiteral { content: n, .. } => Some(n.clone()),
                         // Both plain and annotated VarRef use the name field.
                         SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
                         _ => None,
@@ -270,7 +270,7 @@ fn collect_include_paths_from_node(
                     // Handle 2-arg cap-qualified form: [include %cap "path"]
                     if args.len() == 2 {
                         if let SurfaceExpression::VarRef { name: cap_name, .. } = &args[0].expr {
-                            if let SurfaceExpression::Str(path) = &args[1].expr {
+                            if let SurfaceExpression::StringLiteral { content: path, .. } = &args[1].expr {
                                 paths.push((args[1].span.clone(), Some(cap_name.clone()), path.clone()));
                             }
                         }
@@ -345,7 +345,7 @@ fn collect_include_paths_from_node(
         SurfaceExpression::Int(_)
         | SurfaceExpression::U64(_)
         | SurfaceExpression::Float(_)
-        | SurfaceExpression::Str(_)
+        | SurfaceExpression::StringLiteral { .. }
         | SurfaceExpression::VarRef { .. }  // includes annotated VarRef
         | SurfaceExpression::Placeholder
         | SurfaceExpression::Decl(_) // type-level declaration, no include paths inside
@@ -679,7 +679,7 @@ fn apply_include_type_to_node(
             if let SurfaceExpression::VarRef { name, .. } = &func.expr {
                 if name == "include" && args.len() == 2 {
                     if let SurfaceExpression::VarRef { .. } = &args[0].expr {
-                        if let SurfaceExpression::Str(_) = &args[1].expr {
+                        if let SurfaceExpression::StringLiteral { .. } = &args[1].expr {
                             // args[1].span is the lookup key used by resolve_includes
                             let path_span = args[1].span.clone();
                             if let Some(bindings) = include_bindings.get(&path_span) {
@@ -763,7 +763,7 @@ fn apply_include_type_to_node(
         SurfaceExpression::Int(_)
         | SurfaceExpression::U64(_)
         | SurfaceExpression::Float(_)
-        | SurfaceExpression::Str(_)
+        | SurfaceExpression::StringLiteral { .. }
         | SurfaceExpression::VarRef { .. }  // includes annotated VarRef
         | SurfaceExpression::Placeholder
         | SurfaceExpression::Decl(_) // type-level declaration, no include paths inside

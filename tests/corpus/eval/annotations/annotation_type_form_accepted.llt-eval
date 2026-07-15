@@ -1,0 +1,4 @@
+# Annotation with type-form bracket: parser accepts any expression; annotation is stored as PropertyDict
+[x@[type Number]: 42  x]
+=== out
+Int(42)

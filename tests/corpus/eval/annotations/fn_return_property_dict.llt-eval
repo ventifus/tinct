@@ -1,0 +1,4 @@
+# Function with property dict return type annotation: fn@[return: Integer]
+[[fn@[return: Integer] [let x@Integer] x] 42]
+=== out
+Int(42)
