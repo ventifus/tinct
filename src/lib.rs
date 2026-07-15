@@ -126,7 +126,6 @@ pub use imports::{
     get_builtin_core_type_env,
 };
 
-
 /// Error types with source spans and stack traces.
 pub use error::{
     render_span_snippet, ArityBound, DiagnosticLevel, ErrorKind, EvalError, EvalResult, StackFrame,

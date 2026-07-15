@@ -16,15 +16,15 @@ What would it take to make type declarations exist as first-class runtime values
 
 Types in tinct exist in two separate worlds that do not communicate at runtime.
 
-**The type-checker world:** `state.tycon_env` is a `HashMap<String, TyConDef>` populated when `typecheck_surface_program_with_env` processes `[type ...]` declarations. `TypeContext` carries `tycon_env` as an opaque handle. Programs that want to reuse a TypeContext thread it explicitly through `builtin-typecheck`. The type-checker resolves `@DirCap` by looking up `"DirCap"` in `state.tycon_env`.
+**The type-checker world:** `state.tycon_env` is a `HashMap<String, TyConDef>` populated when `typecheck_surface_program_with_env` processes `[type ...]` declarations. `TypeContext` carries `tycon_env` as an opaque handle. Programs that want to reuse a TypeContext thread it explicitly through `builtin-typecheck-doc`. The type-checker resolves `@DirCap` by looking up `"DirCap"` in `state.tycon_env`.
 
 **The runtime world:** evaluating `[type DirCap]` produces a `Value::Dict` containing one entry: `"DirCap" → Value::Variant("DirCap.DirCap", {})`. The value `DirCap` in loader's scope is this constructor dict. The runtime knows nothing about what `@DirCap` means.
 
-These worlds meet only inside `builtin-typecheck`: the Rust implementation reads the current TypeContext, seeds the type-checker state from it, and runs inference. There is no mechanism for moving in the other direction — from a runtime value back into a TypeContext.
+These worlds meet only inside `builtin-typecheck-doc`: the Rust implementation reads the current TypeContext, seeds the type-checker state from it, and runs inference. There is no mechanism for moving in the other direction — from a runtime value back into a TypeContext.
 
 ### The fundamental-tc problem
 
-Loader needs a seed TypeContext (`fundamental-tc`) to pass to `uses-scope` and to the main `builtin-typecheck` call. This TypeContext should contain *only* type declarations — `Int`, `Float`, `Bytes`, `String`, `DirCap`, `NetCap`, `ClockCap`, `Handle`, `Url`, `BuilderHandle`, `Task`, `Channel`, etc. — and none of the function type schemes (`builtin-get`, `builtin-parse`, etc.) that come from evaluating `builtin_core.llt`.
+Loader needs a seed TypeContext (`fundamental-tc`) to pass to `uses-scope` and to the main `builtin-typecheck-doc` call. This TypeContext should contain *only* type declarations — `Int`, `Float`, `Bytes`, `String`, `DirCap`, `NetCap`, `ClockCap`, `Handle`, `Url`, `BuilderHandle`, `Task`, `Channel`, etc. — and none of the function type schemes (`builtin-get`, `builtin-parse`, etc.) that come from evaluating `builtin_core.llt`.
 
 Today, `[builtin-get-type-context]` returns whatever TypeContext Rust initialized — which includes all function schemes. There is no way to say "give me just the type declarations, not the functions."
 
@@ -117,7 +117,7 @@ After this change, `[builtin-get-type-context]` returns the master TypeContext �
   uses-scope: [fn [let module-names]
     [reduce
       [fn [let acc name]
-        [typed: [builtin-typecheck parse-result.program fundamental-tc]]
+        [typed: [builtin-typecheck-doc parse-result.program fundamental-tc]]
         ...]
       []
       module-names]]
@@ -158,7 +158,7 @@ Both forms are viable. The variadic form is syntactic sugar over `reduce`.
 
 ### `src/eval.rs` — `TypeContextData`
 
-**Current:** `tycon_env` is populated during `builtin-typecheck` calls and accumulates across calls via the sync mechanism.
+**Current:** `tycon_env` is populated during `builtin-typecheck-doc` calls and accumulates across calls via the sync mechanism.
 **Proposed:** `tycon_env` in a freshly made TypeContext (`[builtin-make-type-ctx]`) starts empty. TyConDefs enter only via explicit `builtin-tc-add-type` or via `builtin-typecheck` processing a `[type ...]` declaration.
 **Impact:** Minor — semantics clarified, not changed.
 

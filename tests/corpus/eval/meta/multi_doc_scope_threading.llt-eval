@@ -1,0 +1,36 @@
+# Multi-document scope threading: scope-id returned from builtin-eval for doc N can be
+# used as parent scope-id for doc N+1, and names from doc N are visible in doc N+1
+# via the scope chain.
+#
+# Program: doc 0 = [x: 10], doc 1 = [result: [builtin-int-add %.x 5]]
+# After evaluating doc 0 we bind % -> {x: 10} in sc1 (child of ev0.scope-id).
+# The resolver finds % in sc1's names; the evaluator resolves %.x -> 10 at runtime.
+# Expected: ev1.result.result = 15
+[call [fn [let]
+  [src:    [builtin-str-bytes "[x: 10]\n---\n[result: [builtin-int-add %.x 5]]"]]
+  [parsed: [builtin-parse src "test.llt"]]
+  [desug:  [builtin-desugar parsed.program]]
+  [docs:   [builtin-program-docs desug]]
+  [doc0:   [builtin-get 0 docs]]
+  [doc1:   [builtin-get 1 docs]]
+  [tc:     [builtin-make-type-ctx]]
+  # Evaluate doc 0 in root scope (0) with empty frames
+  [res0:   [builtin-resolve doc0 []]]
+  [typed0: [builtin-typecheck-doc res0.doc tc]]
+  [ev0:    [builtin-eval typed0 0]]
+  # ev0.scope-id is the scope that holds doc 0's bindings
+  # Build sc1 as child of ev0.scope-id with % bound to doc 0's result {x: 10}
+  [sc1:    [builtin-scope-new ev0.scope-id [%: ev0.result]]]
+  # Build frames for doc 1: outermost scope names (ev0.scope-id, has x) then sc1 names (has %)
+  [frames1: [0: [builtin-scope-names ev0.scope-id]  1: [builtin-scope-names sc1]]]
+  [res1:   [builtin-resolve doc1 frames1]]
+  [typed1: [builtin-typecheck-doc res1.doc tc]]
+  [ev1:    [builtin-eval typed1 sc1]]
+  # Verify doc 1 result has key "result" with value 15
+  [has-result: [builtin-has-key? "result" ev1.result]]
+  [val:        [builtin-get "result" ev1.result]]
+  [is-15:      [builtin-eq-int val 15]]
+  [no-errors:  [if [null? ev1.errors] 1 0]]
+  [builtin-int-add [builtin-int-add has-result is-15] no-errors]]]
+=== out
+Int(3)

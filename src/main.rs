@@ -1974,15 +1974,16 @@ async fn run_eval(
             ctx.set_libdir_dir(Arc::clone(libdir_rc));
         }
         // Initialize TypeContext so loader.llt can call [builtin-get-type-context].
-        // tycon_env starts empty — it is populated by uses-scope calling builtin-typecheck
+        // tycon_env starts empty — it is populated by uses-scope calling builtin-typecheck-doc
         // for each module in the --- uses: header (core first, then io, etc.).
         ctx.init_type_context(tinct::TypeContextData {
             type_stage_env: std::sync::Arc::new(std::sync::RwLock::new(tinct::Env::new())),
-            type_stage_flat_env_id: None,
+            type_stage_scope_id: None,
             inference_env: tinct::get_builtin_core_type_env()
                 .await
                 .expect("builtin_core type env unavailable at startup"),
             tycon_env: std::collections::HashMap::new(),
+            type_errors: Vec::new(),
         });
         ctx
     };
@@ -2733,33 +2734,10 @@ async fn run_describe(file_path: &str) -> Result<(), String> {
     let mut has_any_contract = false;
 
     for (doc_idx, doc) in program.documents.iter().enumerate() {
-        let mut type_name: Option<String> = None;
-        let mut fields: Vec<(String, String)> = Vec::new();
+        let type_name: Option<String> = None;
+        let fields: Vec<(String, String)> = Vec::new();
 
-        // Extract expects: / %@Type annotation
-        if let Some(ref ann) = doc.node.expects {
-            has_any_contract = true;
-            match &ann.node {
-                tinct::Annotation::Simple(name) => {
-                    type_name = Some(name.clone());
-                }
-                tinct::Annotation::PropertyDict(entries) => {
-                    for entry in entries {
-                        if let Some(ref key_node) = entry.node.key {
-                            if let tinct::SurfaceExpression::Str(ref key_name) = key_node.expr {
-                                fields.push((
-                                    key_name.clone(),
-                                    describe_surface_annotation_value(&entry.node.value.expr),
-                                ));
-                            }
-                        }
-                    }
-                }
-                tinct::Annotation::Annotated(name, _inner) => {
-                    type_name = Some(name.clone());
-                }
-            }
-        }
+        // expects: header field moved to raw dict after S-926 — re-implement via builtin-doc-meta.
 
         // Detect schema dicts in the document expressions
         let schema = detect_schema_dict(&doc.node);

@@ -27,30 +27,12 @@ struct SurfaceProgram {
 /// A document — one or more items (expressions or declarations) forming a scope chain,
 /// optionally carrying section-header metadata from the preceding `---` line.
 struct SurfaceDocument {
+    /// Raw `---` header as parsed key-value pairs. Values are unevaluated SurfaceNodes.
+    /// Evaluate with `builtin-doc-meta(doc, scope-id)` to get typed values in the
+    /// loader's scope. Keys include "stage", "name", "uses", "expects", "caps", etc.
+    /// The set of valid keys is extensible — any key from the `---` header is stored here.
+    header: IndexMap<String, Arc<SurfaceNode>>,
     items: Vec<SurfaceItem>,
-    /// Section name from `--- %name`, e.g. `"config"` (bare name, no `%` sigil).
-    /// `None` for anonymous documents.
-    name: Option<String>,
-    /// Output type annotation from `--- %name@Type` or `--- @Type`.
-    output_type: Option<Spanned<Annotation>>,
-    /// Input contract from `--- expects: Type`.
-    expects: Option<Spanned<Annotation>>,
-    /// Capability declarations from `--- caps: [...]`.
-    caps: Option<Spanned<Vec<(String, Annotation)>>>,
-    /// Document stage from `--- stage: type` (defaults to `Stage::Runtime` if `None`).
-    stage: Option<Stage>,
-    /// Module injection from `--- uses: ["core" "datetime"]`.
-    /// Each string names a native module whose builtins are injected into this document's
-    /// local scope. Injection is doc-local: the bindings do not propagate to subsequent
-    /// documents. `None` means no `uses:` header was present; `Some([])` means `uses: []`
-    /// (explicit empty list, equivalent to no injection).
-    uses: Option<Spanned<Vec<Spanned<String>>>>,
-}
-
-/// Document stage — determines how the document is evaluated
-enum Stage {
-    Runtime,  // Default: evaluated in the main pipeline
-    Type,     // Type-stage: evaluated for type aliases and class declarations
 }
 
 /// Document items: either expressions or declarations

@@ -1,7 +1,0 @@
-# Test E055: IncludeHashMismatch — load with a wrong integrity hash fails.
-# Triggers [load] with a hash: named arg that does not match the actual blake3 digest
-# of the source string. The display path defaults to "<load>" when no name: is given.
-[load "x: 42" hash: "wrong-hash-value"]
-=== error
-include: integrity check failed for "<load>": expected wrong-hash-value, got 3ae8cca449d76f24e8ff0ea790420ab7110416de8bf1ff9e615017e7ea7cb8e2 (defined at 3:1-3:40)
-  in [load ...] at 3:1-3:40

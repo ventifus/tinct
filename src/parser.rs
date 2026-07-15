@@ -1210,16 +1210,13 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
     // the last popped frame is the extra bracket that consumed the expected outer close.
     let mut last_popped_frame: Option<(&'static str, Position)> = None;
 
-    // Phase 1: Track next document's header components (parsed from --- line)
-    let mut next_doc_name: Option<String> = None;
-    // Span of the %name token that set next_doc_name; used to point errors at the name,
-    // not at the --- separator whose span is in the outer-loop `span` variable.
-    let mut next_doc_name_span: Option<Span> = None;
-    let mut next_doc_output_type: Option<Spanned<Annotation>> = None;
-    let mut next_doc_expects: Option<Spanned<Annotation>> = None;
-    let mut next_doc_caps: Option<Spanned<Vec<(String, Annotation)>>> = None;
-    let mut next_doc_uses: Option<Spanned<Vec<Spanned<String>>>> = None;
-    let mut next_doc_stage: Option<Stage> = None;
+    // Phase 1: Track next document's header (parsed from --- line)
+    let mut next_doc_header: indexmap::IndexMap<String, Arc<SurfaceNode>> =
+        indexmap::IndexMap::new();
+
+    // Track all section names seen across the file to detect duplicates.
+    let mut seen_section_names: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
 
     fn frame_info_static(frame: &StackFrame) -> (&'static str, Position) {
         match frame {
@@ -3532,19 +3529,14 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                 };
                 documents.push(Spanned::new(
                     Arc::new(SurfaceDocument {
+                        header: std::mem::take(&mut next_doc_header),
                         items,
-                        name: next_doc_name.take(),
-                        output_type: next_doc_output_type.take(),
-                        expects: next_doc_expects.take(),
-                        caps: next_doc_caps.take(),
-                        stage: next_doc_stage.take(),
-                        uses: next_doc_uses.take(),
                     }),
                     doc_span,
                 ));
 
-                // Parse section header (Phase 1): consume tokens until Newline or Semicolon
-                // Format: --- %name@Type expects: Type
+                // Parse section header (Phase 1): generic key-value pairs
+                // Format: --- key: value  key2: value2
                 // This header applies to the NEXT document
                 i += 1;
 
@@ -3555,101 +3547,108 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             i += 1;
                             break;
                         }
-                        Token::Identifier(s) if s.starts_with('%') => {
-                            // Section name: %name or bare %@Type for input validation
-                            let name_after_percent = &s[1..];
+                        Token::Identifier(key_name) => {
+                            let key = key_name.clone();
+                            let id_span = token_vec[i].span.clone();
+                            i += 1;
 
-                            // Check if this is bare % with @Type annotation (input validation)
-                            if name_after_percent.is_empty() {
-                                // Bare % must be followed by @Type to be valid
-                                if i + 1 < token_vec.len()
-                                    && matches!(
-                                        &token_vec[i + 1].node,
-                                        Token::ImmediateAt | Token::At
-                                    )
-                                {
-                                    // %@Type syntax - equivalent to expects: @Type
-                                    if next_doc_expects.is_some() {
+                            // Handle `--- %name` syntax: identifier starting with `%` followed
+                            // by something other than `:` is a named section declaration.
+                            // Optionally followed immediately by `@Type` to annotate the section's
+                            // output type: `--- %config@Dict`.
+                            // Store as header["name"] = Str("name-without-percent") and
+                            // header["output-annotation"] = annotation node if present.
+                            if key.starts_with('%')
+                                && (i >= token_vec.len()
+                                    || !matches!(&token_vec[i].node, Token::Colon))
+                            {
+                                let section_name = key.trim_start_matches('%').to_string();
+                                if section_name.is_empty() {
+                                    // Check for %@Type (bare % with immediate @)
+                                    if i < token_vec.len()
+                                        && matches!(&token_vec[i].node, Token::ImmediateAt)
+                                    {
+                                        // Consume the annotation and ignore the section name
+                                        // (bare % is still an error, but a more informative one)
                                         return Err(ParseError {
-                                            message: "duplicate input type annotation (both %@Type and expects: @Type)".to_string(),
-                                            span: Some(token_vec[i].span.clone()),
+                                            message: "bare '%' in section header: expected a name after '%' (e.g. '--- %name' or '--- %name@Type')".to_string(),
+                                            span: Some(id_span),
                                         });
                                     }
-                                    i += 1; // Move to @ token
-                                    match parse_annotation(
+                                    return Err(ParseError {
+                                        message: "bare '%' in section header: expected a name after '%' (e.g. '--- %name')".to_string(),
+                                        span: Some(id_span),
+                                    });
+                                }
+
+                                // Duplicate section name detection
+                                let full_name = format!("%{}", section_name);
+                                if seen_section_names.contains(&section_name) {
+                                    return Err(ParseError {
+                                        message: format!(
+                                            "duplicate section name '{}' in file",
+                                            full_name
+                                        ),
+                                        span: Some(id_span),
+                                    });
+                                }
+                                seen_section_names.insert(section_name.clone());
+
+                                let name_node = Arc::new(SurfaceNode::new(
+                                    SurfaceExpression::Str(section_name),
+                                    id_span,
+                                ));
+                                next_doc_header.insert("name".to_string(), name_node);
+
+                                // Check for optional `@Type` annotation after section name
+                                // (ImmediateAt: no whitespace between name and @).
+                                // `--- %config@Dict` stores a TypeAssert(Dict, null) node
+                                // as header["output-annotation"] for the loader to inspect.
+                                if i < token_vec.len()
+                                    && matches!(&token_vec[i].node, Token::ImmediateAt)
+                                {
+                                    let (ann, new_i) = parse_annotation(
                                         &token_vec,
                                         i,
                                         &mut leading_comments,
                                         &mut blank_before,
                                         input,
                                         Some(&mut recovered_errors),
-                                    ) {
-                                        Ok((annotation, next_i)) => {
-                                            next_doc_expects = Some(annotation);
-                                            i = next_i;
-                                            continue;
-                                        }
-                                        Err(ann_err) => {
-                                            return Err(ann_err);
-                                        }
-                                    }
-                                } else {
-                                    return Err(ParseError {
-                                        message: "bare % in section header must be followed by @Type annotation (use '%@Type' to validate pipeline input)".to_string(),
-                                        span: Some(token_vec[i].span.clone()),
-                                    });
+                                    )?;
+                                    let at_start = token_vec[i].span.start;
+                                    let at_file = token_vec[i].span.file.clone();
+                                    let at_span = token_vec[i].span.clone();
+                                    let ann_end = ann.span.end;
+                                    let assert_span = Span {
+                                        start: at_start,
+                                        end: ann_end,
+                                        file: at_file,
+                                    };
+                                    let null_node = Arc::new(SurfaceNode::new(
+                                        SurfaceExpression::Dict(Vec::new()),
+                                        at_span,
+                                    ));
+                                    let ann_node = Arc::new(SurfaceNode::new(
+                                        SurfaceExpression::TypeAssert {
+                                            annotation: ann,
+                                            expr: null_node,
+                                            resolved_type: crate::ast::TypeAnnotation::new(),
+                                        },
+                                        assert_span,
+                                    ));
+                                    next_doc_header
+                                        .insert("output-annotation".to_string(), ann_node);
+                                    i = new_i;
                                 }
+
+                                // Continue to next header token
+                                continue;
                             }
 
-                            // Named section: %name or %name@Type
-                            if next_doc_name.is_some() {
-                                return Err(ParseError {
-                                    message: "duplicate section name in header".to_string(),
-                                    span: Some(token_vec[i].span.clone()),
-                                });
-                            }
-                            next_doc_name_span = Some(token_vec[i].span.clone());
-                            next_doc_name = Some(name_after_percent.to_string());
-
-                            // Check for @Type annotation on the name (%name@Type - output type)
-                            if i + 1 < token_vec.len()
-                                && matches!(&token_vec[i + 1].node, Token::ImmediateAt | Token::At)
-                            {
-                                i += 1; // Move to @ token
-                                match parse_annotation(
-                                    &token_vec,
-                                    i,
-                                    &mut leading_comments,
-                                    &mut blank_before,
-                                    input,
-                                    Some(&mut recovered_errors),
-                                ) {
-                                    Ok((annotation, next_i)) => {
-                                        next_doc_output_type = Some(annotation);
-                                        i = next_i;
-                                        continue;
-                                    }
-                                    Err(ann_err) => {
-                                        return Err(ann_err);
-                                    }
-                                }
-                            }
-
-                            i += 1;
-                        }
-                        Token::Identifier(s) if s == "expects" => {
-                            // expects: pragma
-                            if next_doc_expects.is_some() {
-                                return Err(ParseError {
-                                    message: "duplicate expects: pragma in header".to_string(),
-                                    span: Some(token_vec[i].span.clone()),
-                                });
-                            }
-                            i += 1;
-                            // Expect colon
+                            // Expect colon for key: value pairs
                             if i >= token_vec.len() || !matches!(&token_vec[i].node, Token::Colon) {
                                 return Err(ParseError {
-                                    message: "expected ':' after 'expects' pragma".to_string(),
+                                    message: format!("expected ':' after '{}' in header", key),
                                     span: Some(if i < token_vec.len() {
                                         token_vec[i].span.clone()
                                     } else {
@@ -3658,318 +3657,324 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                 });
                             }
                             i += 1;
-                            // Parse annotation
-                            match parse_annotation(
-                                &token_vec,
-                                i,
-                                &mut leading_comments,
-                                &mut blank_before,
-                                input,
-                                Some(&mut recovered_errors),
-                            ) {
-                                Ok((annotation, next_i)) => {
-                                    next_doc_expects = Some(annotation);
-                                    i = next_i;
-                                }
-                                Err(ann_err) => {
-                                    return Err(ann_err);
-                                }
-                            }
-                        }
-                        Token::Identifier(s) if s == "caps" => {
-                            // caps: pragma
-                            if next_doc_caps.is_some() {
-                                return Err(ParseError {
-                                    message: "duplicate caps: pragma in header".to_string(),
-                                    span: Some(token_vec[i].span.clone()),
-                                });
-                            }
-                            let caps_start = token_vec[i].span.start;
-                            i += 1;
-                            // Expect colon
-                            if i >= token_vec.len() || !matches!(&token_vec[i].node, Token::Colon) {
-                                return Err(ParseError {
-                                    message: "expected ':' after 'caps' pragma".to_string(),
-                                    span: Some(if i < token_vec.len() {
-                                        token_vec[i].span.clone()
-                                    } else {
-                                        token_vec[i - 1].span.clone()
-                                    }),
-                                });
-                            }
-                            i += 1;
-                            // Expect open bracket
-                            if i >= token_vec.len()
-                                || !matches!(&token_vec[i].node, Token::OpenBracket)
-                            {
-                                return Err(ParseError {
-                                    message:
-                                        "expected '[' after 'caps:' — caps must be a dict literal"
-                                            .to_string(),
-                                    span: Some(if i < token_vec.len() {
-                                        token_vec[i].span.clone()
-                                    } else {
-                                        token_vec[i - 1].span.clone()
-                                    }),
-                                });
-                            }
-                            i += 1; // Skip open bracket
 
-                            // Parse cap entries: %name: @Type
-                            let mut caps_vec: Vec<(String, Annotation)> = Vec::new();
+                            // Parse value as a simple expression — bracket or literal
+                            if i >= token_vec.len() {
+                                return Err(ParseError {
+                                    message: format!("expected value after '{}:' in header", key),
+                                    span: Some(token_vec[i - 1].span.clone()),
+                                });
+                            }
+
+                            // Start a temporary parse by pushing the value tokens onto the stack
+                            // We need to parse one complete expression and collect it
+                            let value_start_i = i;
+                            let mut temp_stack: Vec<StackFrame> = Vec::new();
+                            let mut temp_items: Vec<SurfaceItem> = Vec::new();
+                            let value_node: Arc<SurfaceNode>;
+
+                            // Simple approach: parse until we have exactly one item in temp_items
+                            // This handles brackets, literals, identifiers
                             loop {
-                                // Check for close bracket
                                 if i >= token_vec.len() {
                                     return Err(ParseError {
-                                        message: "unclosed caps dict — expected ']'".to_string(),
+                                        message: format!("unexpected end of input while parsing header value for '{}'", key),
                                         span: Some(token_vec[i - 1].span.clone()),
                                     });
                                 }
-                                if matches!(&token_vec[i].node, Token::CloseBracket) {
-                                    i += 1; // Skip close bracket
-                                    break;
-                                }
 
-                                // Parse capability variable name (must start with %)
-                                // The lexer produces Token::Identifier("%nc") for %nc, not separate tokens
-                                let cap_name = match &token_vec[i].node {
-                                    Token::Identifier(name) if name.starts_with('%') => {
-                                        i += 1;
-                                        // Strip the % prefix to get just the capability name
-                                        name[1..].to_string()
-                                    }
-                                    _ => {
-                                        return Err(ParseError {
-                                            message: "caps entries must start with '%' (e.g., %nc: @NetCap)".to_string(),
-                                            span: Some(token_vec[i].span.clone()),
-                                        });
-                                    }
-                                };
-
-                                // Expect colon
-                                if i >= token_vec.len()
-                                    || !matches!(&token_vec[i].node, Token::Colon)
-                                {
-                                    return Err(ParseError {
-                                        message: format!(
-                                            "expected ':' after '%{}' in caps entry",
-                                            cap_name
-                                        ),
-                                        span: Some(if i < token_vec.len() {
-                                            token_vec[i].span.clone()
-                                        } else {
-                                            token_vec[i - 1].span.clone()
-                                        }),
-                                    });
-                                }
-                                i += 1;
-
-                                // Parse annotation (@Type)
-                                if i >= token_vec.len() {
-                                    return Err(ParseError {
-                                        message: format!(
-                                            "expected annotation after '%{}:' in caps entry",
-                                            cap_name
-                                        ),
-                                        span: Some(token_vec[i - 1].span.clone()),
-                                    });
-                                }
-                                match parse_annotation(
-                                    &token_vec,
-                                    i,
-                                    &mut leading_comments,
-                                    &mut blank_before,
-                                    input,
-                                    Some(&mut recovered_errors),
-                                ) {
-                                    Ok((annotation, next_i)) => {
-                                        caps_vec.push((cap_name, annotation.node));
-                                        i = next_i;
-                                    }
-                                    Err(ann_err) => {
-                                        return Err(ann_err);
-                                    }
-                                }
-                            }
-
-                            let caps_end = token_vec[i - 1].span.end;
-                            next_doc_caps = Some(Spanned::new(
-                                caps_vec,
-                                Span::new(caps_start, caps_end, token_vec[i - 1].span.file.clone()),
-                            ));
-                        }
-                        Token::Identifier(s) if s == "uses" => {
-                            // uses: pragma
-                            if next_doc_uses.is_some() {
-                                return Err(ParseError {
-                                    message: "duplicate uses: pragma in header".to_string(),
-                                    span: Some(token_vec[i].span.clone()),
-                                });
-                            }
-                            i += 1;
-                            // Expect colon
-                            if i >= token_vec.len() || !matches!(&token_vec[i].node, Token::Colon) {
-                                return Err(ParseError {
-                                    message: "expected ':' after 'uses' pragma".to_string(),
-                                    span: Some(if i < token_vec.len() {
-                                        token_vec[i].span.clone()
-                                    } else {
-                                        token_vec[i - 1].span.clone()
-                                    }),
-                                });
-                            }
-                            i += 1;
-
-                            // Expect open bracket
-                            if i >= token_vec.len()
-                                || !matches!(&token_vec[i].node, Token::OpenBracket)
-                            {
-                                return Err(ParseError {
-                                    message: "expected '[' after 'uses:' — module list must be a bracket form".to_string(),
-                                    span: Some(if i < token_vec.len() {
-                                        token_vec[i].span.clone()
-                                    } else {
-                                        token_vec[i - 1].span.clone()
-                                    }),
-                                });
-                            }
-                            let uses_start = token_vec[i].span.start;
-                            i += 1; // Skip open bracket
-
-                            // Parse module names (only Token::QuotedString allowed)
-                            let mut uses_vec: Vec<Spanned<String>> = Vec::new();
-                            loop {
-                                // Check for close bracket
-                                if i >= token_vec.len() {
-                                    return Err(ParseError {
-                                        message: "unclosed uses list — expected ']'".to_string(),
-                                        span: Some(token_vec[i - 1].span.clone()),
-                                    });
-                                }
-                                if matches!(&token_vec[i].node, Token::CloseBracket) {
-                                    i += 1; // Skip close bracket
-                                    break;
-                                }
-
-                                // Only Token::QuotedString is valid; reject all others
+                                // Check if we should stop (end of value)
                                 match &token_vec[i].node {
-                                    Token::QuotedString(module_name) => {
-                                        let name_span = token_vec[i].span.clone();
-                                        uses_vec.push(Spanned::new(module_name.clone(), name_span));
+                                    Token::Newline | Token::Semicolon => {
+                                        // End of header — don't consume, let outer loop handle
+                                        break;
+                                    }
+                                    Token::Identifier(_)
+                                        if temp_stack.is_empty() && !temp_items.is_empty() =>
+                                    {
+                                        // Next key — stop here
+                                        break;
+                                    }
+                                    _ => {}
+                                }
+
+                                // Inline simple expression parsing for header values
+                                match &token_vec[i].node {
+                                    Token::OpenBracket => {
+                                        let start_pos = token_vec[i].span.start;
+                                        temp_stack.push(StackFrame::Dict {
+                                            entries: Vec::new(),
+                                            pending_key: None,
+                                            seen_keys: std::collections::HashSet::new(),
+                                            span_start: start_pos,
+                                        });
                                         i += 1;
                                     }
-                                    Token::InterpolatedString(_) => {
+                                    Token::CloseBracket => {
+                                        if let Some(StackFrame::Dict {
+                                            entries,
+                                            span_start,
+                                            ..
+                                        }) = temp_stack.pop()
+                                        {
+                                            let dict_span = Span::new(
+                                                span_start,
+                                                token_vec[i].span.end,
+                                                token_vec[i].span.file.clone(),
+                                            );
+                                            let dict_node = Arc::new(SurfaceNode::new(
+                                                SurfaceExpression::Dict(entries),
+                                                dict_span,
+                                            ));
+                                            if temp_stack.is_empty() {
+                                                temp_items.push(SurfaceItem::Expr(dict_node));
+                                                i += 1;
+                                                break;
+                                            } else {
+                                                // Push into parent frame
+                                                if let Some(StackFrame::Dict {
+                                                    ref mut entries,
+                                                    ..
+                                                }) = temp_stack.last_mut()
+                                                {
+                                                    let node_span = dict_node.span.clone();
+                                                    entries.push(Spanned::new(
+                                                        SurfaceEntry {
+                                                            key: None,
+                                                            value: dict_node,
+                                                        },
+                                                        node_span,
+                                                    ));
+                                                }
+                                                i += 1;
+                                            }
+                                        } else {
+                                            return Err(ParseError {
+                                                message: "unexpected ']' in header value"
+                                                    .to_string(),
+                                                span: Some(token_vec[i].span.clone()),
+                                            });
+                                        }
+                                    }
+                                    Token::QuotedString(s) => {
+                                        let lit_span = token_vec[i].span.clone();
+                                        let lit_node = Arc::new(SurfaceNode::new(
+                                            SurfaceExpression::Str(s.clone()),
+                                            lit_span.clone(),
+                                        ));
+                                        if temp_stack.is_empty() {
+                                            temp_items.push(SurfaceItem::Expr(lit_node));
+                                            i += 1;
+                                            break;
+                                        } else {
+                                            if let Some(StackFrame::Dict {
+                                                ref mut entries, ..
+                                            }) = temp_stack.last_mut()
+                                            {
+                                                entries.push(Spanned::new(
+                                                    SurfaceEntry {
+                                                        key: None,
+                                                        value: lit_node,
+                                                    },
+                                                    lit_span,
+                                                ));
+                                            }
+                                            i += 1;
+                                        }
+                                    }
+                                    Token::Identifier(name) => {
+                                        let id_span = token_vec[i].span.clone();
+                                        let id_node = Arc::new(SurfaceNode::new(
+                                            SurfaceExpression::VarRef {
+                                                name: name.clone(),
+                                                escaped: false,
+                                                resolution: crate::ast::Resolution::new(),
+                                                call_dispatch: crate::ast::CallDispatch::new(),
+                                                annotation: None,
+                                            },
+                                            id_span.clone(),
+                                        ));
+                                        if temp_stack.is_empty() {
+                                            temp_items.push(SurfaceItem::Expr(id_node));
+                                            i += 1;
+                                            break;
+                                        } else {
+                                            if let Some(StackFrame::Dict {
+                                                ref mut entries, ..
+                                            }) = temp_stack.last_mut()
+                                            {
+                                                entries.push(Spanned::new(
+                                                    SurfaceEntry {
+                                                        key: None,
+                                                        value: id_node,
+                                                    },
+                                                    id_span,
+                                                ));
+                                            }
+                                            i += 1;
+                                        }
+                                    }
+                                    Token::Colon => {
+                                        // Handle keyed entry in dict
+                                        if let Some(StackFrame::Dict {
+                                            ref mut entries, ..
+                                        }) = temp_stack.last_mut()
+                                        {
+                                            if let Some(last_entry) = entries.last_mut() {
+                                                if last_entry.node.key.is_none() {
+                                                    // Convert last positional to keyed
+                                                    let key_node = last_entry.node.value.clone();
+                                                    last_entry.node.key = Some(key_node);
+                                                    i += 1;
+                                                    continue;
+                                                }
+                                            }
+                                        }
                                         return Err(ParseError {
-                                            message: "interpolated strings not allowed in uses: list — use plain quoted strings like \"core\"".to_string(),
+                                            message: "unexpected ':' in header value".to_string(),
                                             span: Some(token_vec[i].span.clone()),
                                         });
                                     }
-                                    Token::TripleQuotedString(_) => {
-                                        return Err(ParseError {
-                                            message: "triple-quoted strings not allowed in uses: list — use plain quoted strings like \"core\"".to_string(),
-                                            span: Some(token_vec[i].span.clone()),
-                                        });
+                                    Token::Int(n) => {
+                                        let lit_span = token_vec[i].span.clone();
+                                        let lit_node = Arc::new(SurfaceNode::new(
+                                            SurfaceExpression::Int(*n),
+                                            lit_span.clone(),
+                                        ));
+                                        if temp_stack.is_empty() {
+                                            temp_items.push(SurfaceItem::Expr(lit_node));
+                                            i += 1;
+                                            break;
+                                        } else {
+                                            if let Some(StackFrame::Dict {
+                                                ref mut entries, ..
+                                            }) = temp_stack.last_mut()
+                                            {
+                                                entries.push(Spanned::new(
+                                                    SurfaceEntry {
+                                                        key: None,
+                                                        value: lit_node,
+                                                    },
+                                                    lit_span,
+                                                ));
+                                            }
+                                            i += 1;
+                                        }
                                     }
-                                    Token::Identifier(_) => {
-                                        return Err(ParseError {
-                                            message: "bare identifiers not allowed in uses: list — use quoted strings like \"core\"".to_string(),
-                                            span: Some(token_vec[i].span.clone()),
-                                        });
+                                    Token::Float(f) => {
+                                        let f_val = *f;
+                                        let lit_span = token_vec[i].span.clone();
+                                        let lit_node = Arc::new(SurfaceNode::new(
+                                            SurfaceExpression::Float(f_val),
+                                            lit_span.clone(),
+                                        ));
+                                        if temp_stack.is_empty() {
+                                            temp_items.push(SurfaceItem::Expr(lit_node));
+                                            i += 1;
+                                            break;
+                                        } else {
+                                            if let Some(StackFrame::Dict {
+                                                ref mut entries, ..
+                                            }) = temp_stack.last_mut()
+                                            {
+                                                entries.push(Spanned::new(
+                                                    SurfaceEntry {
+                                                        key: None,
+                                                        value: lit_node,
+                                                    },
+                                                    lit_span,
+                                                ));
+                                            }
+                                            i += 1;
+                                        }
+                                    }
+                                    Token::At | Token::ImmediateAt => {
+                                        // Annotation in header value position: @Type or @[prop: T ...]
+                                        // Parse the annotation and wrap it in a TypeAssert with a null
+                                        // (empty dict) inner expression as a placeholder. This allows
+                                        // `--- expects: @Dict` and `--- caps: [%nc: @NetCap]` to parse.
+                                        let at_span = token_vec[i].span.clone();
+                                        let (ann, new_i) = parse_annotation(
+                                            &token_vec,
+                                            i,
+                                            &mut leading_comments,
+                                            &mut blank_before,
+                                            input,
+                                            Some(&mut recovered_errors),
+                                        )?;
+                                        let ann_end = ann.span.end;
+                                        let assert_span =
+                                            Span::new(at_span.start, ann_end, at_span.file.clone());
+                                        // Placeholder inner expression: empty dict [] (null)
+                                        let null_node = Arc::new(SurfaceNode::new(
+                                            SurfaceExpression::Dict(Vec::new()),
+                                            at_span.clone(),
+                                        ));
+                                        let assert_node = Arc::new(SurfaceNode::new(
+                                            SurfaceExpression::TypeAssert {
+                                                annotation: ann,
+                                                expr: null_node,
+                                                resolved_type: crate::ast::TypeAnnotation::new(),
+                                            },
+                                            assert_span,
+                                        ));
+                                        i = new_i;
+                                        if temp_stack.is_empty() {
+                                            temp_items.push(SurfaceItem::Expr(assert_node));
+                                            break;
+                                        } else {
+                                            if let Some(StackFrame::Dict {
+                                                ref mut entries, ..
+                                            }) = temp_stack.last_mut()
+                                            {
+                                                let node_span = assert_node.span.clone();
+                                                entries.push(Spanned::new(
+                                                    SurfaceEntry {
+                                                        key: None,
+                                                        value: assert_node,
+                                                    },
+                                                    node_span,
+                                                ));
+                                            }
+                                        }
                                     }
                                     _ => {
                                         return Err(ParseError {
-                                            message:
-                                                "expected module name (quoted string) in uses: list"
-                                                    .to_string(),
+                                            message: format!(
+                                                "unsupported token in header value: {:?}",
+                                                token_vec[i].node
+                                            ),
                                             span: Some(token_vec[i].span.clone()),
                                         });
                                     }
                                 }
                             }
 
-                            let uses_end = token_vec[i - 1].span.end;
-                            next_doc_uses = Some(Spanned::new(
-                                uses_vec,
-                                Span::new(uses_start, uses_end, token_vec[i - 1].span.file.clone()),
-                            ));
-                        }
-                        Token::Identifier(s) if s == "stage" => {
-                            // stage: pragma
-                            if next_doc_stage.is_some() {
+                            // Extract the single parsed value
+                            if temp_items.len() != 1 {
                                 return Err(ParseError {
-                                    message: "duplicate stage: pragma in header".to_string(),
-                                    span: Some(token_vec[i].span.clone()),
+                                    message: format!(
+                                        "failed to parse value for header key '{}'",
+                                        key
+                                    ),
+                                    span: Some(token_vec[value_start_i].span.clone()),
                                 });
                             }
-                            i += 1;
-                            // Expect colon
-                            if i >= token_vec.len() || !matches!(&token_vec[i].node, Token::Colon) {
+                            if let SurfaceItem::Expr(node) = temp_items.into_iter().next().unwrap()
+                            {
+                                value_node = node;
+                            } else {
                                 return Err(ParseError {
-                                    message: "expected ':' after 'stage' pragma".to_string(),
-                                    span: Some(if i < token_vec.len() {
-                                        token_vec[i].span.clone()
-                                    } else {
-                                        token_vec[i - 1].span.clone()
-                                    }),
+                                    message: format!(
+                                        "header value for '{}' must be an expression",
+                                        key
+                                    ),
+                                    span: Some(token_vec[value_start_i].span.clone()),
                                 });
                             }
-                            i += 1;
-                            // Parse identifier (only "type" is valid for now)
-                            match &token_vec.get(i).map(|t| &t.node) {
-                                Some(Token::Identifier(stage_name))
-                                    if stage_name.as_str() == "type" =>
-                                {
-                                    next_doc_stage = Some(Stage::Type);
-                                    i += 1;
-                                }
-                                Some(Token::Identifier(stage_name)) => {
-                                    return Err(ParseError {
-                                        message: format!(
-                                            "unknown stage: '{}' (expected 'type')",
-                                            stage_name
-                                        ),
-                                        span: Some(token_vec[i].span.clone()),
-                                    });
-                                }
-                                _ => {
-                                    return Err(ParseError {
-                                        message:
-                                            "expected stage name after 'stage:' (expected 'type')"
-                                                .to_string(),
-                                        span: Some(if i < token_vec.len() {
-                                            token_vec[i].span.clone()
-                                        } else {
-                                            token_vec[i - 1].span.clone()
-                                        }),
-                                    });
-                                }
-                            }
-                        }
-                        Token::At | Token::ImmediateAt => {
-                            // Standalone @Type annotation (no name)
-                            if next_doc_output_type.is_some() {
-                                return Err(ParseError {
-                                    message: "duplicate output type annotation in header"
-                                        .to_string(),
-                                    span: Some(token_vec[i].span.clone()),
-                                });
-                            }
-                            match parse_annotation(
-                                &token_vec,
-                                i,
-                                &mut leading_comments,
-                                &mut blank_before,
-                                input,
-                                Some(&mut recovered_errors),
-                            ) {
-                                Ok((annotation, next_i)) => {
-                                    next_doc_output_type = Some(annotation);
-                                    i = next_i;
-                                }
-                                Err(ann_err) => {
-                                    return Err(ann_err);
-                                }
-                            }
+
+                            // Store in header
+                            next_doc_header.insert(key, value_node);
                         }
                         _ => {
                             // Unexpected token in header
@@ -3980,22 +3985,6 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                 ),
                                 span: Some(token_vec[i].span.clone()),
                             });
-                        }
-                    }
-                }
-
-                // Check for duplicate section names across the file.
-                // Use next_doc_name_span (the %name token's span) rather than span
-                // (the --- separator's span) so the error underlines the duplicate name.
-                if let Some(ref name) = next_doc_name {
-                    for doc in &documents {
-                        if let Some(ref existing_name) = doc.node.name {
-                            if existing_name == name {
-                                return Err(ParseError {
-                                    message: format!("duplicate section name '%{}' in file", name),
-                                    span: next_doc_name_span,
-                                });
-                            }
                         }
                     }
                 }
@@ -4679,13 +4668,8 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
     // If no expressions, create one empty document
     if current_document_items.is_empty() && documents.is_empty() {
         let doc = SurfaceDocument {
+            header: next_doc_header,
             items: vec![],
-            name: next_doc_name.take(),
-            output_type: next_doc_output_type.take(),
-            expects: next_doc_expects.take(),
-            caps: next_doc_caps.take(),
-            stage: next_doc_stage.take(),
-            uses: next_doc_uses.take(),
         };
         let doc_span = Span {
             start: Position {
@@ -4704,13 +4688,8 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
     } else if !current_document_items.is_empty() {
         // Finalize current document
         let doc = SurfaceDocument {
+            header: next_doc_header,
             items: current_document_items,
-            name: next_doc_name.take(),
-            output_type: next_doc_output_type.take(),
-            expects: next_doc_expects.take(),
-            caps: next_doc_caps.take(),
-            stage: next_doc_stage.take(),
-            uses: next_doc_uses.take(),
         };
         let doc_span = Span {
             start: Position {
@@ -6817,18 +6796,9 @@ pub fn stamp_spans_with_file(program: &mut SurfaceProgram, file: &Arc<SourceFile
         doc.span.file = Arc::clone(file);
         let doc_node = Arc::get_mut(&mut doc.node)
             .expect("stamp_spans_with_file runs immediately after parse, before any Arc sharing");
-        // Stamp document-level annotation spans
-        if let Some(ann) = &mut doc_node.output_type {
-            stamp_annotation_spanned(ann, file);
-        }
-        if let Some(ann) = &mut doc_node.expects {
-            stamp_annotation_spanned(ann, file);
-        }
-        if let Some(caps) = &mut doc_node.caps {
-            caps.span.file = Arc::clone(file);
-            for (_, ann) in &mut caps.node {
-                stamp_annotation(ann, file);
-            }
+        // Stamp document-level header nodes
+        for (_, header_node) in &mut doc_node.header {
+            stamp_node(header_node, file);
         }
         for item in &mut doc_node.items {
             match item {

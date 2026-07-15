@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use indexmap::{Equivalent, IndexMap};
 
-use crate::ast::{CoreExpr, Param, Span, Spanned, SurfaceDocument, SurfaceNode, SurfaceProgram};
+use crate::ast::{CoreExpr, Param, Span, Spanned, SurfaceDocument, SurfaceNode};
 use crate::error::{EvalError, EvalResult};
 use crate::types::Type;
 
@@ -630,8 +630,14 @@ pub enum Value {
     // runtime-v2 native AST value types
     // =========================================================================
     /// A complete tinct program — the type returned by `load` and `expand`.
+    ///
+    /// `id` is an index into `EvalContext.program_store` (a `Vec<SurfaceProgram>`).
+    /// Carrying an id instead of `Arc<SurfaceProgram>` means that `builtin_desugar` can
+    /// mutate the program in-place (via `with_program_mut`) without needing ownership or
+    /// deep-cloning to get a unique reference. Consistent with the arena pattern: ThunkId
+    /// is a coordinate, not data — programs are the same.
     Program {
-        program: Arc<SurfaceProgram>,
+        id: u32,
         resolutions: Arc<crate::ast::ResolutionTable>,
         types: Arc<crate::ast::TypeAnnotationTable>,
         expects_resolved: Arc<HashMap<crate::ast::Span, crate::types::Type>>,
@@ -680,7 +686,7 @@ pub enum Value {
         annotation: Box<Value>,
     },
     /// Type-checker context handle — wraps `TypeContextData` for passing between tinct builtins.
-    /// Created by `builtin-get-type-context`; consumed by `builtin-typecheck`, `builtin-resolve`, etc.
+    /// Created by `builtin-get-type-context`; consumed by `builtin-typecheck-doc`, `builtin-resolve`, etc.
     TypeContext(std::sync::Arc<std::sync::Mutex<crate::eval::TypeContextData>>),
 }
 

@@ -2,8 +2,8 @@
 # First document produces a typed record
 [host: "localhost"  port: 3000]
 
---- %@[host: String  port: Int]
-# Structural type check - should work with nominal matching for now
+--- expects: [host: String  port: Int]
+# Record type check for pipeline input
 
 [url: [str "http://" %.host ":" [str %.port]]]
 

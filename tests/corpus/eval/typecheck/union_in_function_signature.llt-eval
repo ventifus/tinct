@@ -1,5 +1,4 @@
-# Inline union annotation in function signature: [@[Integer String] expr]
-# resolves as Union(Int, Str) — two positional type entries produce a union.
+# Inline union annotation in function signature using the `or` combinator.
 # A function that returns @[or Integer String] can return either Int or String.
 [
   to-int-or-str: [fn@[or Integer String] [let n@Integer]

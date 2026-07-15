@@ -1,12 +1,17 @@
-# builtin-eval error path: failing document populates result.error with String
-# Parses a document containing [raise "oops"], evaluates it, checks error field type.
-[
-  src:      [builtin-str-bytes "[raise \"oops\"]"]
-  parsed:   [builtin-parse src "test.llt"]
-  doc:      [builtin-get 0 parsed.program.documents]
-  env:      [builtin-extend-env [] []]
-  result:   [builtin-eval doc env: env]
-  is-error: [builtin-eq-string [builtin-type-of result.error] "String"]
-]
+# builtin-eval error path: failing document populates result.errors when program raises.
+# Updated for S-926 new API: builtin-eval [typed-doc scope-id] → {result, scope-id, errors}
+[call [fn [let]
+  [src:       [builtin-str-bytes "[raise \"oops\"]"]]
+  [parsed:    [builtin-parse src "test.llt"]]
+  [desugared: [builtin-desugar parsed.program]]
+  [docs:      [builtin-program-docs desugared]]
+  [doc:       [builtin-get 0 docs]]
+  [all-scopes: [builtin-scopes]]
+  [root-id:   [head [keys [filter-entries all-scopes [fn [let _ p] [null? p]]]]]]
+  [frames:    [scope-to-frames root-id]]
+  [resolved:  [builtin-resolve doc frames]]
+  [result:    [builtin-eval resolved.doc root-id]]
+  [has-error: [if [null? result.errors] 0 1]]
+  has-error]]
 === out
-Dict({"src": Bytes, "parsed": Dict({"program": Program, "errors": Dict({})}), "doc": Document, "env": Environment, "result": Dict({"env": Environment, "error": String("oops")}), "is-error": Boolean.True})
+Int(1)

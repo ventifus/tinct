@@ -1,0 +1,19 @@
+# %programs is a loader-internal binding that should not appear in user-visible scopes.
+# When builtin-scope-new is used to build a user scope (with explicit bindings dict),
+# %programs is absent from that scope's names because it is not injected automatically.
+# This verifies that user scopes created via builtin-scope-new are clean of loader internals.
+#
+# builtin-has-key? returns Int(1) if present, Int(0) if absent.
+# We verify absence: absent -> 0, so we check that the result is 0 via builtin-eq-int.
+[call [fn [let]
+  # Create a user scope as child of root with no bindings
+  [user-scope: [builtin-scope-new 0 []]]
+  [names:      [builtin-scope-names user-scope]]
+  # %programs must not appear in the user scope's names (absent -> 0)
+  [no-programs: [builtin-eq-int [builtin-has-key? "%programs" names] 0]]
+  # Root scope also should not have %programs (it is only in loader-internal scopes)
+  [root-names:       [builtin-scope-names 0]]
+  [root-no-programs: [builtin-eq-int [builtin-has-key? "%programs" root-names] 0]]
+  [builtin-int-add no-programs root-no-programs]]]
+=== out
+Int(2)

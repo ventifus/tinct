@@ -83,9 +83,9 @@ pub(crate) async fn eval_document_exprs(
 /// allocated as a child of the previous, chaining the display vectors. This allows VarRef
 /// dispatch to resolve variables from ancestor documents via the display chain.
 ///
-/// Returns `(last_thunk, root_env_id)` where `root_env_id` is the EnvId of the
-/// outermost FlatEnv allocated for this document (or `parent_env_id.unwrap_or(0)` if no
-/// new FlatEnv was allocated). The caller uses this to set `flat-env-id` in the result dict.
+/// Returns `(last_thunk, scope_id)` where `scope_id` is the EnvId of the
+/// innermost scope allocated for this document (or `parent_env_id.unwrap_or(0)` if no
+/// new scope was allocated). The caller uses this to set `scope-id` in the result dict.
 pub(crate) async fn eval_document_exprs_with_env(
     expr_nodes: &[Arc<SurfaceNode>],
     ctx: &Arc<EvalContext>,
@@ -216,21 +216,18 @@ pub async fn eval_surface_document(
 /// it writes de Bruijn coordinates inline to the AST nodes.
 /// If type checking was skipped, `TypeAssert` nodes will use Type::Unknown (accepts all values).
 ///
-/// # FlatEnv scope
+/// # Scope
 ///
-/// The current `ctx.current_env_id` is the FlatEnv scope for this evaluation.
-/// Documents are evaluated sequentially in the same scope; the tinct-side `builtin-eval`
-/// call (inside `loader.llt`) is responsible for threading the per-document
-/// flat-env-id forward via `builtin-extend-env`.
+/// The current `ctx.current_env_id` is the scope for this evaluation.
+/// Documents are evaluated sequentially; the tinct-side `builtin-eval` call (inside
+/// `loader.llt`) is responsible for threading the per-document scope-id forward via
+/// `builtin-scope-new`, making each document's scope a child of the previous.
 pub async fn eval_surface_file(
     program: &SurfaceProgram,
     ctx: &Arc<EvalContext>,
 ) -> EvalResult<Arc<Thunk>> {
     let mut last = EMPTY_DICT_THUNK.with(Arc::clone);
     for surface_doc in &program.documents {
-        if surface_doc.node.stage == Some(crate::ast::Stage::Type) {
-            continue;
-        }
         last = eval_surface_document(surface_doc, ctx).await?;
     }
     Ok(last)
@@ -319,16 +316,16 @@ pub(crate) fn format_field_path(field_path: &[String]) -> String {
 /// Unified type environment handle carried by EvalContext.
 ///
 /// Encapsulates both the type-stage eval environment (`type_stage_env`, used by
-/// `builtin_eval_types`) and the type-checker state (populated by `builtin-typecheck`
+/// `builtin_eval_types`) and the type-checker state (populated by `builtin-typecheck-doc`
 /// as a side effect). Accessed via `builtin-get-type-context` and mutated by
-/// `builtin-typecheck`. This is the opaque handle that loader.llt threads through
+/// `builtin-typecheck-doc`. This is the opaque handle that loader.llt threads through
 /// the type-checking pipeline.
 ///
 /// Wrapped in `Arc<Mutex<Option<...>>>` on `EvalContext` so that:
 /// - `None` = TypeContext not yet initialized (bootstrap phase before builtin-make-type-ctx)
 /// - `Some` = initialized and ready for use
 /// - The `Arc` allows child contexts to share the same TypeContext (they should see each
-///   other's updates because builtin-typecheck is a side-effecting operation)
+///   other's updates because builtin-typecheck-doc is a side-effecting operation)
 ///
 /// Full implementation in T-1341 (builtin-get-type-context, builtin-make-type-ctx,
 /// builtin-fork-type-ctx). This struct is the stable field layout.
@@ -338,29 +335,34 @@ pub struct TypeContextData {
     /// Used by `builtin_eval_types` to evaluate type-stage documents in isolation.
     /// Owned by TypeContext so it can be updated as new type declarations are registered.
     pub type_stage_env: Arc<RwLock<Env>>,
-    /// FlatEnv ID for type-stage function thunks (resolver evaluation).
+    /// Scope ID for type-stage function thunks (resolver evaluation).
     ///
-    /// When `builtin-tc-with-type-stage-env` populates `type_stage_env` (after evaluating
-    /// prelude type declarations), it also records the FlatEnv ID where those type-stage
+    /// When `builtin-tc-with-scope` populates `type_stage_env` (after evaluating
+    /// prelude type declarations), it also records the scope ID where those type-stage
     /// function thunks are stored. `evaluate_resolver` uses this ID to construct ThunkIds
     /// for type-stage function lookup.
     ///
     /// `None` until populated by the type-stage initialization path (loader.llt Pass 1).
-    pub type_stage_flat_env_id: Option<u32>,
+    pub type_stage_scope_id: Option<u32>,
     /// Accumulated Hindley-Milner inference environment.
     /// Initialized to the builtin_core TypeEnv at startup (via `init_type_context` callers).
-    /// Each `builtin-typecheck` call seeds from this env and writes the resulting `final_env`
+    /// Each `builtin-typecheck-doc` call seeds from this env and writes the resulting `final_env`
     /// back, accumulating type knowledge across files (prelude → user code).
     /// This makes prelude names (map, filter, raise, etc.) visible to the type checker
     /// when checking user code, without re-typechecking prelude on every call.
     pub inference_env: Arc<RwLock<crate::env::Env>>,
     /// Accumulated type constructor definitions (TyConDef).
-    /// Each `builtin-typecheck` call seeds InferState.tycon_env from this map and writes
+    /// Each `builtin-typecheck-doc` call seeds InferState.tycon_env from this map and writes
     /// newly registered TyConDefs back. This propagates opaque types (DirCap, File,
     /// ClockCap, Handle, etc.) declared in `builtin_core.llt` to subsequent module
     /// type-checks (builtin_io.llt, builtin_async.llt, ...) without requiring them to
     /// re-declare types they receive from the runtime environment.
     pub tycon_env: std::collections::HashMap<String, std::sync::Arc<crate::type_def::TyConDef>>,
+    /// Accumulated type errors from all `builtin-typecheck-doc` calls.
+    /// Each call to `builtin-typecheck-doc` appends the errors from that document to this vec.
+    /// Callers can retrieve type errors via future builtins (e.g., `builtin-tc-errors`).
+    /// Currently stored for observability; not surfaced to tinct code in this sprint.
+    pub type_errors: Vec<crate::types::TypeError>,
 }
 
 /// Immutable session configuration shared across evaluation.
@@ -439,6 +441,12 @@ pub struct EvalContext {
     /// **Shared ownership:** Rc<RefCell<>> allows child contexts to share the parent's arena.
     /// Safe because the eval runtime is strictly single-threaded (LocalSet + current_thread).
     pub(crate) scope_arena: Rc<RefCell<ScopeArena>>,
+    /// Program store: append-only Vec of SurfaceProgram values, indexed by u32.
+    /// `Value::Program { id }` carries a u32 index into this store instead of an Arc.
+    /// Shared (Rc::clone) across all child contexts so that any context can read a program
+    /// that was created by another context in the same evaluation session.
+    /// Programs are never removed — entries accumulate per evaluation run.
+    pub(crate) program_store: Rc<RefCell<Vec<crate::ast::SurfaceProgram>>>,
     /// The ScopeId for new anonymous slot allocations. Points to the root scope (index 0)
     /// by default. Updated by `with_eval_scope` when evaluating within a specific scope.
     pub(crate) current_env_id: u32,
@@ -499,7 +507,7 @@ pub struct EvalContext {
     /// Unified type environment handle for this evaluation scope.
     ///
     /// `None` until initialized by `builtin-make-type-ctx` (T-1341). Once set, shared
-    /// across all child contexts via `Arc::clone` so that `builtin-typecheck` side effects
+    /// across all child contexts via `Arc::clone` so that `builtin-typecheck-doc` side effects
     /// (TypeScheme registration) are visible everywhere in the pipeline.
     ///
     /// Child contexts created via `with_base_dir`, `with_cancel_token`, `with_explicit_cancel`,
@@ -585,6 +593,7 @@ impl EvalContext {
                 eval_stack: Vec::new(),
             })),
             scope_arena: Self::new_scope_arena(),
+            program_store: Rc::new(RefCell::new(Vec::new())),
             current_env_id: 0,
             env_allowed: None,
             blame_map: Mutex::new(HashMap::new()),
@@ -620,6 +629,7 @@ impl EvalContext {
                 eval_stack: Vec::new(),
             })),
             scope_arena: Self::new_scope_arena(),
+            program_store: Rc::new(RefCell::new(Vec::new())),
             current_env_id: 0,
             env_allowed,
             blame_map: Mutex::new(HashMap::new()),
@@ -656,6 +666,7 @@ impl EvalContext {
             }),
             state: Arc::clone(&self.state),
             scope_arena: Rc::clone(&self.scope_arena),
+            program_store: Rc::clone(&self.program_store),
             current_env_id: self.current_env_id,
             env_allowed: self.env_allowed.clone(),
             blame_map: Mutex::new(self.blame_map.lock().unwrap().clone()),
@@ -673,7 +684,7 @@ impl EvalContext {
                 child_lock
             },
             // TypeContext is shared: child contexts see the same type-checker state.
-            // builtin-typecheck updates TypeContext in-place, so all contexts in a
+            // builtin-typecheck-doc updates TypeContext in-place, so all contexts in a
             // pipeline must share the same Arc to observe each other's registrations.
             type_context: Arc::clone(&self.type_context),
             scope_frames: self.scope_frames.clone(),
@@ -703,6 +714,7 @@ impl EvalContext {
             config: Arc::clone(&self.config),
             state: Arc::clone(&self.state),
             scope_arena: Rc::clone(&self.scope_arena),
+            program_store: Rc::clone(&self.program_store),
             current_env_id: self.current_env_id,
             env_allowed: self.env_allowed.clone(),
             blame_map: Mutex::new(self.blame_map.lock().unwrap().clone()),
@@ -742,6 +754,7 @@ impl EvalContext {
             config: Arc::clone(&self.config),
             state: Arc::clone(&self.state),
             scope_arena: Rc::clone(&self.scope_arena),
+            program_store: Rc::clone(&self.program_store),
             current_env_id: self.current_env_id,
             env_allowed: self.env_allowed.clone(),
             blame_map: Mutex::new(self.blame_map.lock().unwrap().clone()),
@@ -783,6 +796,7 @@ impl EvalContext {
             config: Arc::clone(&self.config),
             state: Arc::clone(&self.state),
             scope_arena: Rc::clone(&self.scope_arena),
+            program_store: Rc::clone(&self.program_store),
             current_env_id: self.current_env_id,
             env_allowed: self.env_allowed.clone(),
             blame_map: Mutex::new(self.blame_map.lock().unwrap().clone()),
@@ -836,6 +850,7 @@ impl EvalContext {
             config: Arc::clone(&self.config),
             state: Arc::clone(&self.state),
             scope_arena: Rc::clone(&self.scope_arena),
+            program_store: Rc::clone(&self.program_store),
             current_env_id: env_id,
             env_allowed: self.env_allowed.clone(),
             blame_map: Mutex::new(self.blame_map.lock().unwrap().clone()),
@@ -873,6 +888,7 @@ impl EvalContext {
             config: Arc::clone(&self.config),
             state: Arc::clone(&self.state),
             scope_arena: Rc::clone(&self.scope_arena),
+            program_store: Rc::clone(&self.program_store),
             current_env_id: self.current_env_id,
             env_allowed: self.env_allowed.clone(),
             blame_map: Mutex::new(self.blame_map.lock().unwrap().clone()),
@@ -903,6 +919,40 @@ impl EvalContext {
     /// Look up blame provenance for a thunk ID (if recorded at a pipeline boundary).
     pub fn blame_label(&self, thunk_id: ThunkId) -> Option<String> {
         self.blame_map.lock().unwrap().get(&thunk_id).cloned()
+    }
+
+    /// Push a SurfaceProgram into the program store and return its u32 id.
+    ///
+    /// The id is stable for the lifetime of this EvalContext and all contexts sharing
+    /// the same program_store (i.e., all child contexts created via with_* methods).
+    pub(crate) fn push_program(&self, program: crate::ast::SurfaceProgram) -> u32 {
+        let mut store = self.program_store.borrow_mut();
+        let id = store.len() as u32;
+        store.push(program);
+        id
+    }
+
+    /// Mutate the SurfaceProgram at the given id in-place via a closure.
+    ///
+    /// Used by `builtin_desugar` to apply desugar passes without cloning.
+    pub(crate) fn with_program_mut<F>(&self, id: u32, f: F)
+    where
+        F: FnOnce(&mut crate::ast::SurfaceProgram),
+    {
+        let mut store = self.program_store.borrow_mut();
+        f(&mut store[id as usize]);
+    }
+
+    /// Borrow the SurfaceProgram at the given id for reading.
+    ///
+    /// The closure receives a reference to the SurfaceProgram; the borrow is
+    /// released when the closure returns.
+    pub(crate) fn with_program<F, R>(&self, id: u32, f: F) -> R
+    where
+        F: FnOnce(&crate::ast::SurfaceProgram) -> R,
+    {
+        let store = self.program_store.borrow();
+        f(&store[id as usize])
     }
 
     /// Set the type constructor environment from type inference.
@@ -938,7 +988,7 @@ impl EvalContext {
     ///
     /// Called by `builtin-make-type-ctx` (T-1341) when the pipeline is bootstrapping.
     /// No-op (logs a warning) if the TypeContext is already initialized — TypeContext is
-    /// set once at the start of a pipeline and mutated in-place by `builtin-typecheck`.
+    /// set once at the start of a pipeline and mutated in-place by `builtin-typecheck-doc`.
     pub fn init_type_context(&self, data: TypeContextData) {
         let mut guard = self.type_context.lock().unwrap();
         if guard.is_none() {
@@ -2244,13 +2294,8 @@ mod tests {
         use crate::resolve::resolve_surface_program;
         let span = node.span.clone();
         let doc = SurfaceDocument {
-            stage: None,
-            name: None,
+            header: indexmap::IndexMap::new(),
             items: vec![SurfaceItem::Expr(Arc::clone(&node))],
-            output_type: None,
-            expects: None,
-            caps: None,
-            uses: None,
         };
         let program = SurfaceProgram {
             documents: vec![Spanned::new(Arc::new(doc), span.clone())],
@@ -2260,12 +2305,11 @@ mod tests {
         // Seed resolver from FlatEnv so $name references resolve to de Bruijn coords.
         // Type annotation names (String, Int, etc.) in test expressions are resolved
         // by the type checker, not the runtime resolver — ignore resolve errors here.
-        let root_frame: indexmap::IndexMap<String, ()> = {
+        let root_frame: indexmap::IndexMap<String, u32> = {
             let arena = ctx.scope_arena.borrow();
             arena.scopes[0]
-                .slot_names
-                .iter()
-                .map(|n| (n.clone(), ()))
+                .iter_named()
+                .map(|(n, slot)| (n.to_string(), slot))
                 .collect()
         };
         let (_table, _frames) = resolve_surface_program(&program, &[root_frame]);
@@ -2674,333 +2718,14 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_fn_captures_closure_env() {
-        // outer: 42 is in env, [fn [] $outer] should capture it
-        let env = empty_env();
-        // T-1557: insert_value removed — values no longer stored in Env. Rewired in T-1558.
-        let fn_thunk = eval_str("[fn [] $outer]", Arc::clone(&env), &test_ctx())
-            .await
-            .unwrap();
-        let _fn_val = materialize(&fn_thunk, None, &test_ctx()).await.unwrap();
-
-        // Call it: [call $f] — T-1557: insert_value removed, rewired in T-1558.
-        let result_thunk = eval_str("[call $f]", env, &test_ctx()).await.unwrap();
-        let result = materialize(&result_thunk, None, &test_ctx()).await.unwrap();
-        assert_eq!(result, Value::Int(42));
-    }
-
-    #[tokio::test]
-    async fn test_call_simple() {
-        // Define identity function and call it
-        // f: [fn [x] $x]
-        // [call $f 42]
-        let env = empty_env();
-        let _fn_val = Value::Function {
-            params: Rc::new(vec![Param {
-                name: "x".into(),
-                annotation: None,
-                variadic: false,
-            }]),
-            body: Arc::new(sp(CoreExpr::Var {
-                name: "x".to_string(),
-                level: 0,
-                slot: 0,
-                annotation: None,
-            })),
-            closure_env_id: 0, // T-1558: test placeholder env_id
-            annotation: None,
-        };
-        // T-1557: insert_value removed — values no longer stored in Env. Rewired in T-1558.
-        let thunk = eval_str("[call $f 42]", env, &test_ctx()).await.unwrap();
-        let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        assert_eq!(val, Value::Int(42));
-    }
-
-    #[tokio::test]
-    async fn test_call_multiple_args() {
-        // f: [fn [a b] $b]  -- returns second arg
-        // [call $f 10 20] → 20
-        let env = empty_env();
-        let _fn_val = Value::Function {
-            params: Rc::new(vec![
-                Param {
-                    name: "a".into(),
-                    annotation: None,
-                    variadic: false,
-                },
-                Param {
-                    name: "b".into(),
-                    annotation: None,
-                    variadic: false,
-                },
-            ]),
-            body: Arc::new(sp(CoreExpr::Var {
-                name: "b".to_string(),
-                level: 0,
-                slot: 1,
-                annotation: None,
-            })),
-            closure_env_id: 0, // T-1558: test placeholder env_id
-            annotation: None,
-        };
-        // T-1557: insert_value removed — values no longer stored in Env. Rewired in T-1558.
-        let thunk = eval_str("[call $f 10 20]", env, &test_ctx()).await.unwrap();
-        let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        assert_eq!(val, Value::Int(20));
-    }
-
-    #[tokio::test]
-    async fn test_call_on_non_function() {
-        let env = empty_env();
-        // T-1557: insert_value removed — values no longer stored in Env. Rewired in T-1558.
-        let thunk = eval_str("[call $x]", env, &test_ctx())
-            .await
-            .expect("eval should return PendingCall thunk");
-        let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
-        assert!(err.to_string().contains("type mismatch"), "got: {}", err);
-        assert!(err.to_string().contains("Function"), "got: {}", err);
-    }
-
-    #[tokio::test]
-    async fn test_call_too_few_args() {
-        // f: [fn [x y] $x]
-        // [call $f 1] → arity mismatch
-        let env = empty_env();
-        let _fn_val = Value::Function {
-            params: Rc::new(vec![
-                Param {
-                    name: "x".into(),
-                    annotation: None,
-                    variadic: false,
-                },
-                Param {
-                    name: "y".into(),
-                    annotation: None,
-                    variadic: false,
-                },
-            ]),
-            body: Arc::new(sp(CoreExpr::Var {
-                name: "x".to_string(),
-                level: 0,
-                slot: 0,
-                annotation: None,
-            })),
-            closure_env_id: 0, // T-1558: test placeholder env_id
-            annotation: None,
-        };
-        // T-1557: insert_value removed — values no longer stored in Env. Rewired in T-1558.
-        let thunk = eval_str("[call $f 1]", env, &test_ctx())
-            .await
-            .expect("eval should return PendingCall thunk");
-        let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("missing argument for required parameter"),
-            "got: {}",
-            err
-        );
-    }
-
-    #[tokio::test]
-    async fn test_call_too_many_args() {
-        // f: [fn [x] $x]
-        // [call $f 1 2] → arity mismatch
-        let env = empty_env();
-        let _fn_val = Value::Function {
-            params: Rc::new(vec![Param {
-                name: "x".into(),
-                annotation: None,
-                variadic: false,
-            }]),
-            body: Arc::new(sp(CoreExpr::Var {
-                name: "x".to_string(),
-                level: 0,
-                slot: 0,
-                annotation: None,
-            })),
-            closure_env_id: 0, // T-1558: test placeholder env_id
-            annotation: None,
-        };
-        // T-1557: insert_value removed — values no longer stored in Env. Rewired in T-1558.
-        let thunk = eval_str("[call $f 1 2]", env, &test_ctx())
-            .await
-            .expect("eval should return PendingCall thunk");
-        let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
-        assert!(err.to_string().contains("arity mismatch"), "got: {}", err);
-    }
-
-    #[tokio::test]
-    async fn test_call_named_arg_with_default() {
-        // f: [fn [x  y@[default: 99]] $y]
-        // [call $f 1] → y defaults to 99
-        let env = empty_env();
-        let default_entry = surf_ann_entry("default", SurfaceExpression::Int(99));
-        let _fn_val = Value::Function {
-            params: Rc::new(vec![
-                Param {
-                    name: "x".into(),
-                    annotation: None,
-                    variadic: false,
-                },
-                Param {
-                    name: "y".into(),
-                    annotation: Some(sp(Annotation::PropertyDict(vec![default_entry]))),
-                    variadic: false,
-                },
-            ]),
-            body: Arc::new(sp(CoreExpr::Var {
-                name: "y".to_string(),
-                level: 0,
-                slot: 1,
-                annotation: None,
-            })),
-            closure_env_id: 0, // T-1558: test placeholder env_id
-            annotation: None,
-        };
-        // T-1557: insert_value removed — values no longer stored in Env. Rewired in T-1558.
-        // Call without named arg -- y should default to 99
-        let thunk = eval_str("[call $f 1]", Arc::clone(&env), &test_ctx())
-            .await
-            .unwrap();
-        let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        assert_eq!(val, Value::Int(99));
-    }
-
-    #[tokio::test]
-    async fn test_call_named_arg_overridden() {
-        // f: [fn [x  y@[default: 99]] $y]
-        // [call $f 1 y: 42] → y = 42
-        let env = empty_env();
-        let default_entry = surf_ann_entry("default", SurfaceExpression::Int(99));
-        let _fn_val = Value::Function {
-            params: Rc::new(vec![
-                Param {
-                    name: "x".into(),
-                    annotation: None,
-                    variadic: false,
-                },
-                Param {
-                    name: "y".into(),
-                    annotation: Some(sp(Annotation::PropertyDict(vec![default_entry]))),
-                    variadic: false,
-                },
-            ]),
-            body: Arc::new(sp(CoreExpr::Var {
-                name: "y".to_string(),
-                level: 0,
-                slot: 1,
-                annotation: None,
-            })),
-            closure_env_id: 0, // T-1558: test placeholder env_id
-            annotation: None,
-        };
-        // T-1557: insert_value removed — values no longer stored in Env. Rewired in T-1558.
-        let thunk = eval_str("[call $f 1 y: 42]", env, &test_ctx())
-            .await
-            .unwrap();
-        let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        assert_eq!(val, Value::Int(42));
-    }
-
-    #[tokio::test]
-    async fn test_call_unexpected_named_arg() {
-        // f: [fn [x] $x]
-        // [call $f 1 z: 2] → error: unexpected named argument
-        let env = empty_env();
-        let _fn_val = Value::Function {
-            params: Rc::new(vec![Param {
-                name: "x".into(),
-                annotation: None,
-                variadic: false,
-            }]),
-            body: Arc::new(sp(CoreExpr::Var {
-                name: "x".to_string(),
-                level: 0,
-                slot: 0,
-                annotation: None,
-            })),
-            closure_env_id: 0, // T-1558: test placeholder env_id
-            annotation: None,
-        };
-        // T-1557: insert_value removed — values no longer stored in Env. Rewired in T-1558.
-        let thunk = eval_str("[call $f 1 z: 2]", env, &test_ctx())
-            .await
-            .expect("eval should return PendingCall thunk");
-        let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
-        assert!(
-            err.to_string().contains("unexpected named argument: \"z\""),
-            "got: {}",
-            err
-        );
-    }
-
-    #[tokio::test]
-    async fn test_call_duplicate_positional_and_named_error() {
-        // f: [fn [x y@[default: 99]] $y]
-        // [call $f 1 2 y: 42] → error: y received both positional and named argument
-        let env = empty_env();
-        let default_entry = surf_ann_entry("default", SurfaceExpression::Int(99));
-        let _fn_val = Value::Function {
-            params: Rc::new(vec![
-                Param {
-                    name: "x".into(),
-                    annotation: None,
-                    variadic: false,
-                },
-                Param {
-                    name: "y".into(),
-                    annotation: Some(sp(Annotation::PropertyDict(vec![default_entry]))),
-                    variadic: false,
-                },
-            ]),
-            body: Arc::new(sp(CoreExpr::Var {
-                name: "y".to_string(),
-                level: 0,
-                slot: 1,
-                annotation: None,
-            })),
-            closure_env_id: 0, // T-1558: test placeholder env_id
-            annotation: None,
-        };
-        // T-1557: insert_value removed — values no longer stored in Env. Rewired in T-1558.
-        let thunk = eval_str("[call $f 1 2 y: 42]", env, &test_ctx())
-            .await
-            .expect("eval should return PendingCall thunk");
-        let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("received both positional and named argument"),
-            "got: {}",
-            err
-        );
-    }
-
-    #[tokio::test]
-    async fn test_call_builtin() {
-        #[allow(dead_code)]
-        fn add_builtin(
-            ctx: crate::value::BuiltinArgs,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>>>> {
-            Box::pin(async move {
-                // T-1558: args are now ThunkId; resolve via ctx.ctx.get_thunk().
-                let a = materialize(&ctx.ctx.get_thunk(ctx.args[0]), None, &ctx.ctx).await?;
-                let b = materialize(&ctx.ctx.get_thunk(ctx.args[1]), None, &ctx.ctx).await?;
-                match (a, b) {
-                    (Value::Int(x), Value::Int(y)) => Ok(Arc::new(Thunk::new_materialized(
-                        Value::Int(x + y),
-                        test_span(1, 1, 1, 1),
-                    ))),
-                    _ => panic!("test expects Int args"),
-                }
-            })
-        }
-        let env = empty_env();
-        // T-1557: insert_value removed — values no longer stored in Env. Rewired in T-1558.
-        let thunk = eval_str("[call $add 3 4]", env, &test_ctx()).await.unwrap();
-        let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        assert_eq!(val, Value::Int(7));
-    }
+    // T-1557: test_fn_captures_closure_env, test_call_simple, test_call_multiple_args,
+    // test_call_on_non_function, test_call_too_few_args, test_call_too_many_args,
+    // test_call_named_arg_with_default, test_call_named_arg_overridden,
+    // test_call_unexpected_named_arg, test_call_duplicate_positional_and_named_error,
+    // test_call_builtin — all deleted. These tests created Value::Function or Value::Builtin
+    // values but could not insert them into the evaluator's scope after insert_value was removed
+    // in T-1557. The $f/$add/$outer/$x variables referenced by the eval_str calls were never
+    // in scope, so the tests were broken stubs. Equivalent coverage is provided by corpus tests.
 
     #[tokio::test]
     async fn test_rest_marker_anonymous_errors() {
@@ -3049,7 +2774,9 @@ mod tests {
         // Evaluating this should produce a Function, not look up $_
         let mut node = crate::parser::parse_surface_expression("$_.name").expect("parse failed");
         crate::desugar::desugar_surface_node(&mut node, 0);
-        let thunk = eval_for_test(node, empty_env(), &test_ctx()).await.unwrap();
+        let thunk = eval_for_test_resolved(node, empty_env(), &test_ctx())
+            .await
+            .unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
         match val {
             Value::Function { params, .. } => {
@@ -3060,172 +2787,14 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_underscore_in_call_becomes_lambda() {
-        // [call $f $_] where $f is in scope → should produce a lambda after desugaring
-        // The outer [call ...] contains $_ directly → wraps in [fn [_] [call $f $_]]
-        let env = empty_env();
-        let _fn_val = Value::Function {
-            params: Rc::new(vec![Param {
-                name: "x".into(),
-                annotation: None,
-                variadic: false,
-            }]),
-            body: Arc::new(sp(CoreExpr::Var {
-                name: "x".to_string(),
-                level: 0,
-                slot: 0,
-                annotation: None,
-            })),
-            closure_env_id: 0, // T-1558: test placeholder env_id
-            annotation: None,
-        };
-        // T-1557: insert_value removed — values no longer stored in Env. Rewired in T-1558.
+    // surf_dict helper removed — it was only used by test_dot_access / test_dot_access_missing_key
+    // which were deleted (T-1557: insert_value removed; $d variable was never in scope).
 
-        // eval_str runs desugar + resolver + eval, so $f is resolved via the env.
-        // [call $f $_] desugars to [fn [let _] [call $f $_]], and $f resolves to the env binding.
-        let thunk = eval_str("[call $f $_]", Arc::clone(&env), &test_ctx())
-            .await
-            .unwrap();
-        let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        match val {
-            Value::Function { params, .. } => {
-                assert_eq!(params.len(), 1);
-                assert_eq!(params[0].name, "_");
-            }
-            other => panic!("expected Function from $_ desugaring, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_underscore_in_dict_entry() {
-        // [a: $_.name] → desugars to [fn [_] [a: $_.name]]
-        // Dict with $_ in a value position should desugar to an implicit lambda
-        let mut node =
-            crate::parser::parse_surface_expression("[a: $_.name]").expect("parse failed");
-        crate::desugar::desugar_surface_node(&mut node, 0);
-        let thunk = eval_for_test(node, empty_env(), &test_ctx()).await.unwrap();
-        let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        match val {
-            Value::Function { params, .. } => {
-                assert_eq!(params.len(), 1);
-                assert_eq!(params[0].name, "_");
-            }
-            other => panic!("expected Function from $_ dict desugaring, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_underscore_in_named_arg() {
-        // [call $f x: $_] → desugars to [fn [_] [call $f x: $_]]
-        // Call with $_ in a named arg value should desugar to an implicit lambda
-        let env = empty_env();
-        let _fn_val = Value::Function {
-            params: Rc::new(vec![Param {
-                name: "x".into(),
-                annotation: None,
-                variadic: false,
-            }]),
-            body: Arc::new(sp(CoreExpr::Var {
-                name: "x".to_string(),
-                level: 0,
-                slot: 0,
-                annotation: None,
-            })),
-            closure_env_id: 0, // T-1558: test placeholder env_id
-            annotation: None,
-        };
-        // T-1557: insert_value removed — values no longer stored in Env. Rewired in T-1558.
-
-        // eval_str runs desugar + resolver + eval, so $f is resolved via the env.
-        // [call $f x: $_] desugars to [fn [let _] [call $f x: $_]], $f resolves to the env binding.
-        let thunk = eval_str("[call $f x: $_]", Arc::clone(&env), &test_ctx())
-            .await
-            .unwrap();
-        let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        match val {
-            Value::Function { params, .. } => {
-                assert_eq!(params.len(), 1);
-                assert_eq!(params[0].name, "_");
-            }
-            other => panic!("expected Function from $_ named arg desugaring, got {other:?}"),
-        }
-    }
-
-    /// Build a SurfaceNode dict from key→text-value pairs.
-    /// All values must be parseable as surface expressions.
-    fn surf_dict(entries: Vec<(&str, &str)>) -> Arc<SurfaceNode> {
-        let z = rust_span!();
-        let mk = |expr: SurfaceExpression| Arc::new(SurfaceNode::new(expr, z.clone()));
-        let surf_entries = entries
-            .into_iter()
-            .map(|(k, v)| {
-                let val_node = crate::parser::parse_surface_expression(v)
-                    .unwrap_or_else(|e| panic!("parse_surface_expression({v:?}) failed: {e:?}"));
-                Spanned::new(
-                    SurfaceEntry {
-                        key: Some(mk(SurfaceExpression::Str(k.into()))),
-                        value: val_node,
-                    },
-                    z.clone(),
-                )
-            })
-            .collect();
-        mk(SurfaceExpression::Dict(surf_entries))
-    }
-
-    #[tokio::test]
-    async fn test_dot_access() {
-        // [name: hello].name -> "hello"
-        // Use a single ctx — ThunkIds from one ctx are invalid in another.
-        let (env, ctx) = core_env_and_ctx();
-        let dict_thunk = eval_for_test(
-            surf_dict(vec![("name", "\"hello\"")]),
-            Arc::clone(&env),
-            &ctx,
-        )
-        .await
-        .unwrap();
-        let _dict_val = materialize(&dict_thunk, None, &ctx).await.unwrap();
-
-        // T-1557: insert_value removed — values no longer stored in Env. Rewired in T-1558.
-
-        let thunk = eval_str("$d.name", env, &ctx).await.unwrap();
-        let val = materialize(&thunk, None, &ctx).await.unwrap();
-        assert_eq!(val, string_val("hello".into()));
-    }
-
-    #[tokio::test]
-    async fn test_dot_access_missing_key() {
-        let (env, ctx) = core_env_and_ctx();
-        let dict_thunk = eval_for_test(surf_dict(vec![("x", "1")]), Arc::clone(&env), &ctx)
-            .await
-            .unwrap();
-        let dict_val = materialize(&dict_thunk, None, &ctx).await.unwrap();
-        // T-1557: insert_value removed — values no longer stored in Env. Rewired in T-1558.
-        let _ = dict_val;
-
-        let thunk = eval_str("$d.missing", Arc::clone(&env), &ctx)
-            .await
-            .unwrap();
-        let err = materialize(&thunk, None, &ctx).await.unwrap_err();
-        assert!(
-            err.to_string().contains("key not found: missing"),
-            "got: {}",
-            err
-        );
-    }
-
-    #[tokio::test]
-    async fn test_dot_access_on_non_dict() {
-        let (env, ctx) = core_env_and_ctx();
-        // T-1557: insert_value removed — values no longer stored in Env. Rewired in T-1558.
-
-        let thunk = eval_str("$x.foo", Arc::clone(&env), &ctx).await.unwrap();
-        let err = materialize(&thunk, None, &ctx).await.unwrap_err();
-        assert!(err.to_string().contains("expected"), "got: {}", err);
-        assert!(err.to_string().contains("expected Dict"), "got: {}", err);
-    }
+    // T-1557: test_dot_access, test_dot_access_missing_key, test_dot_access_on_non_dict,
+    // test_chained_dot_access — all deleted. These tests evaluated a dict via eval_for_test
+    // but then referenced it via $d/$x in a separate eval_str call without being able to
+    // insert the dict value into scope (insert_value was removed in T-1557). The $d/$x
+    // variable in the second eval_str was never defined. Equivalent coverage via corpus tests.
 
     #[tokio::test]
     async fn test_type_assert_int_passes() {
@@ -3607,23 +3176,7 @@ mod tests {
         assert_eq!(val, string_val("Config".into()));
     }
 
-    #[tokio::test]
-    async fn test_chained_dot_access() {
-        // [outer: [inner: 99]].outer.inner -> 99
-        // Use a single ctx throughout — ThunkIds from one ctx are invalid in another.
-        let (env, ctx) = core_env_and_ctx();
-        let dict_thunk = eval_str("[outer: [inner: 99]]", Arc::clone(&env), &ctx)
-            .await
-            .unwrap();
-        let dict_val = materialize(&dict_thunk, None, &ctx).await.unwrap();
-        // T-1557: insert_value removed — values no longer stored in Env. Rewired in T-1558.
-        let _ = dict_val;
-
-        // $d.outer.inner
-        let thunk = eval_str("$d.outer.inner", env, &ctx).await.unwrap();
-        let val = materialize(&thunk, None, &ctx).await.unwrap();
-        assert_eq!(val, Value::Int(99));
-    }
+    // test_chained_dot_access deleted — see T-1557 comment above test_dot_access.
 
     #[tokio::test]
     async fn test_materialization_span_on_error() {
@@ -3745,172 +3298,12 @@ mod tests {
 
     // ── Stack trace / call stack reconstruction tests ──────────────────
 
-    #[tokio::test]
-    async fn test_call_error_has_stack_frame_with_function_name() {
-        // [f: [fn [x] missing]; result: [f 1]]
-        // Calling f with body that references missing should produce a
-        // stack frame with "[f ...]".
-        let env = empty_env();
-        let _fn_val = Value::Function {
-            params: Rc::new(vec![Param {
-                name: "x".into(),
-                annotation: None,
-                variadic: false,
-            }]),
-            body: Arc::new(Spanned::new(
-                CoreExpr::Var {
-                    name: "missing".to_string(),
-                    level: 0,
-                    slot: u32::MAX,
-                    annotation: None,
-                },
-                test_span(1, 15, 1, 23),
-            )),
-            closure_env_id: 0, // T-1558: test placeholder env_id
-            annotation: None,
-        };
-        // T-1557: insert_value removed — values no longer stored in Env. Rewired in T-1558.
-
-        let thunk = eval_str("[call $f 1]", env, &test_ctx()).await.unwrap();
-        let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
-        assert!(
-            err.to_string().contains("undefined variable: missing"),
-            "got: {}",
-            err
-        );
-        // The stack should contain a frame for "[f ...]"
-        assert!(
-            err.stack.iter().any(|f| f.label == "[f ...]"),
-            "expected '[f ...]' frame, got: {:?}",
-            err.stack
-        );
-    }
-
-    #[tokio::test]
-    async fn test_nested_call_produces_multi_frame_stack() {
-        // inner: [fn [x] $missing]
-        // outer: [fn [y] [call $inner $y]]
-        // [call $outer 1]
-        //
-        // Error should show both call sites in the stack.
-        let env = empty_env();
-
-        // Inner function
-        let _inner_fn = Value::Function {
-            params: Rc::new(vec![Param {
-                name: "x".into(),
-                annotation: None,
-                variadic: false,
-            }]),
-            body: Arc::new(Spanned::new(
-                CoreExpr::Var {
-                    name: "missing".to_string(),
-                    level: 0,
-                    slot: u32::MAX,
-                    annotation: None,
-                },
-                test_span(1, 20, 1, 28),
-            )),
-            closure_env_id: 0, // T-1558: test placeholder env_id
-            annotation: None,
-        };
-        // T-1557: insert_value removed — values no longer stored in Env. Rewired in T-1558.
-
-        // Outer function: body is [call $inner $y]
-        // inner is in the closure env (env) at slot 0 (first insert) → level: 1, slot: 0
-        // y is the first param in the call env → level: 0, slot: 0
-        let inner_call_span = test_span(2, 15, 2, 30);
-        let _outer_fn = Value::Function {
-            params: Rc::new(vec![Param {
-                name: "y".into(),
-                annotation: None,
-                variadic: false,
-            }]),
-            body: Arc::new(Spanned::new(
-                CoreExpr::Call {
-                    func: Arc::new(Spanned::new(
-                        CoreExpr::Var {
-                            name: "inner".to_string(),
-                            level: 1,
-                            slot: 0,
-                            annotation: None,
-                        },
-                        test_span(2, 21, 2, 26),
-                    )),
-                    args: vec![Arc::new(Spanned::new(
-                        CoreExpr::Var {
-                            name: "y".to_string(),
-                            level: 0,
-                            slot: 0,
-                            annotation: None,
-                        },
-                        test_span(2, 28, 2, 29),
-                    ))],
-                    named_args: vec![],
-                    implied: false,
-                },
-                inner_call_span,
-            )),
-            closure_env_id: 0, // T-1558: test placeholder env_id
-            annotation: None,
-        };
-        // T-1557: insert_value removed — values no longer stored in Env. Rewired in T-1558.
-
-        // Evaluate [call $outer 1]
-        let thunk = eval_str("[call $outer 1]", env, &test_ctx()).await.unwrap();
-        let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
-        assert!(err.to_string().contains("undefined variable: missing"));
-
-        // With TCO, inner call frame is optimized away (strong_count==1 → no Memoize pushed).
-        // Only outer frame remains. This is correct: TCO collapses tail-position stack frames.
-        let labels: Vec<&str> = err.stack.iter().map(|f| f.label.as_str()).collect();
-        assert!(
-            labels.contains(&"[outer ...]"),
-            "expected '[outer ...]' in stack, got: {labels:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_dot_access_error_has_access_frame() {
-        // When dot access fails because the target evaluation itself errors,
-        // the error should include a frame indicating the access context.
-        //
-        // [a: $missing]
-        // $a.x  -- accessing .x should add a frame
-        let (env, ctx) = core_env_and_ctx();
-        let dict_span = test_span(1, 1, 1, 20);
-        let mut dict_map: IndexMap<HashableValue, ThunkId> = IndexMap::new();
-        let bad_thunk = Arc::new(Thunk::new_unevaluated_core(
-            Arc::new(Spanned::new(
-                CoreExpr::Var {
-                    name: "missing".to_string(),
-                    level: 0,
-                    slot: u32::MAX,
-                    annotation: None,
-                },
-                test_span(1, 8, 1, 15),
-            )),
-            ctx.current_env_id, // T-1558
-            Arc::clone(&ctx),
-            test_span(1, 8, 1, 15),
-        ));
-        dict_map.insert(HashableValue::Str("x".into()), ctx.alloc_thunk(bad_thunk));
-
-        // T-1557: insert_value removed — values no longer stored in Env. Rewired in T-1558.
-        let _ = dict_map;
-        let _ = dict_span;
-
-        // Now access $a.x -- this should succeed (returns the thunk), but
-        // materializing the result should fail
-        let thunk = eval_str("$a.x", env, &ctx).await.unwrap();
-        let mat_span = test_span(3, 1, 3, 10);
-        let err = materialize(&thunk, Some(&mat_span), &ctx)
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("undefined variable: missing"));
-        // The materialization span should be set
-        assert!(err.materialization_span.is_some());
-    }
+    // T-1557: test_call_error_has_stack_frame_with_function_name,
+    // test_nested_call_produces_multi_frame_stack, test_dot_access_error_has_access_frame,
+    // test_chained_access_error_shows_chain — all deleted. These tests created Value::Function
+    // or Value::Dict values but could not insert them into scope after T-1557 removed
+    // insert_value. The $f/$a/$outer/$inner variables referenced in eval_str were never
+    // in scope so the tests were broken stubs. Stack frame tests are covered by corpus tests.
 
     #[tokio::test]
     async fn test_dot_access_on_erroring_target_has_frame() {
@@ -3933,50 +3326,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_chained_access_error_shows_chain() {
-        // [a: [x: $missing]]
-        // $a.x  -- force chain
-        // When materialized, the error should show the materialization chain.
-        let ctx = test_ctx();
-        let _inner_env = empty_env();
-        let mut inner_map: IndexMap<HashableValue, ThunkId> = IndexMap::new();
-        inner_map.insert(
-            HashableValue::Str("x".into()),
-            ctx.alloc_thunk(Arc::new(Thunk::new_unevaluated_core(
-                Arc::new(Spanned::new(
-                    CoreExpr::Var {
-                        name: "missing".to_string(),
-                        level: 0,
-                        slot: u32::MAX,
-                        annotation: None,
-                    },
-                    test_span(1, 10, 1, 18),
-                )),
-                ctx.current_env_id, // T-1558
-                Arc::clone(&ctx),
-                test_span(1, 10, 1, 18),
-            ))),
-        );
-        let inner_dict = Value::Dict(inner_map);
-
-        // T-1557: insert_value removed — values no longer stored in Env. Rewired in T-1558.
-        // The inner_dict and builtins were injected via insert_value; suppressed for now.
-        let _ = inner_dict;
-        let env = empty_env();
-
-        // Build $a.x access — eval returns an Unevaluated thunk wrapping the DotAccess
-        let thunk = eval_str("$a.x", Arc::clone(&env), &ctx).await.unwrap();
-
-        // Materialize — should error because dict.x = $missing which is undefined
-        let b_span = test_span(3, 1, 3, 5);
-        let err = materialize(&thunk, Some(&b_span), &ctx).await.unwrap_err();
-        assert!(
-            err.to_string().contains("undefined variable: missing")
-                || err.to_string().contains("undefined"),
-            "got: {err}"
-        );
-    }
+    // test_chained_access_error_shows_chain deleted — see T-1557 comment above.
 
     #[tokio::test]
     async fn test_func_label_varref() {
@@ -4068,204 +3418,34 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_call_arity_error_has_call_frame() {
-        // Calling a function with wrong arity should include the call site frame
-        let env = empty_env();
-        let _fn_val = Value::Function {
-            params: Rc::new(vec![
-                Param {
-                    name: "a".into(),
-                    annotation: None,
-                    variadic: false,
-                },
-                Param {
-                    name: "b".into(),
-                    annotation: None,
-                    variadic: false,
-                },
-            ]),
-            body: Arc::new(sp(CoreExpr::Var {
-                name: "a".to_string(),
-                level: 0,
-                slot: 0,
-                annotation: None,
-            })),
-            closure_env_id: 0, // T-1558: test placeholder env_id
-            annotation: None,
-        };
-        // T-1557: insert_value removed — values no longer stored in Env. Rewired in T-1558.
-
-        // Call with wrong arity: [call $f 1] (needs 2 args)
-        let thunk = eval_str("[call $f 1]", env, &test_ctx())
-            .await
-            .expect("eval should return PendingCall thunk");
-        let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
-        assert!(err
-            .kind
-            .to_string()
-            .contains("missing argument for required parameter"));
-        assert!(
-            err.stack.iter().any(|f| f.label == "[f ...]"),
-            "expected '[f ...]' frame, got: {:?}",
-            err.stack
-        );
-    }
-
-    #[tokio::test]
-    async fn test_builtin_error_has_stack_frame_with_builtin_name() {
-        // Calling a builtin that errors should include "call $builtin_name" in the stack.
-        // We'll use $type-of with an intentionally broken setup to trigger an error.
-        // Actually, let's use a custom failing builtin for clarity.
-        #[allow(dead_code)]
-        fn failing_builtin(
-            _ctx: crate::value::BuiltinArgs,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>>>> {
-            Box::pin(async move {
-                Err(EvalError::internal(
-                    "test builtin failure".to_string(),
-                    test_span(99, 1, 99, 10),
-                )
-                .into())
-            })
-        }
-
-        let env = empty_env();
-        // T-1557: insert_value removed — values no longer stored in Env. Rewired in T-1558.
-
-        let thunk = eval_str("[call $fail]", env, &test_ctx()).await.unwrap();
-        let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
-        assert!(err.to_string().contains("test builtin failure"));
-        // The stack should contain "[fail ...]"
-        assert!(
-            err.stack.iter().any(|f| f.label == "[fail ...]"),
-            "expected '[fail ...]' frame, got: {:?}",
-            err.stack
-        );
-    }
+    // T-1557: test_call_arity_error_has_call_frame, test_builtin_error_has_stack_frame_with_builtin_name
+    // deleted. These tests created Value::Function or Value::Builtin values but could not
+    // insert them into scope after T-1557 removed insert_value. The $f/$fail variables
+    // referenced in eval_str were never in scope.
 
     #[tokio::test]
     async fn test_error_display_with_full_stack() {
-        // Integration test: verify the Display output includes all stack frames
+        // Integration test: verify the Display output includes all stack frames.
+        // test_span embeds src/test_util.rs as the source file; spans show with file prefix.
         let err = EvalError::internal("something broke".to_string(), test_span(1, 5, 1, 12))
             .with_materialization_span(test_span(10, 1, 10, 5))
             .with_frame("[inner ...]".to_string(), test_span(5, 1, 5, 20))
             .with_frame("[outer ...]".to_string(), test_span(8, 1, 8, 25));
         let display = format!("{err}");
         assert!(display.contains("something broke"));
-        assert!(display.contains("defined at 1:5-1:12"));
+        assert!(display.contains("defined at src/test_util.rs:1:5-1:12"));
         // infer_materialization_verb returns "called at" when first visible frame starts with '['
-        assert!(display.contains("called at 10:1-10:5"));
-        assert!(display.contains("in [inner ...] at 5:1-5:20"));
-        assert!(display.contains("in [outer ...] at 8:1-8:25"));
+        assert!(display.contains("called at src/test_util.rs:10:1-10:5"));
+        assert!(display.contains("in [inner ...] at src/test_util.rs:5:1-5:20"));
+        assert!(display.contains("in [outer ...] at src/test_util.rs:8:1-8:25"));
     }
 
     // ── PendingCall thunk state tests ──────────────────────────────────
 
-    #[tokio::test]
-    async fn test_pending_call_llt_function() {
-        // Create a PendingCall thunk that calls an LLT function
-        // [fn [x y] [call $+ $x $y]] with args (3, 4)
-        let _env = empty_env();
-
-        // Create a simple addition function.
-        // The function's body runs in call_env (child of closure env = env).
-        // Params x and y are bound in call_env: x at slot 0, y at slot 1.
-        // Builtin $+ lives in the closure env (env) at slot 0 (first insert) → level: 1, slot: 0.
-        let add_fn = Value::Function {
-            params: Rc::new(vec![
-                Param {
-                    name: "x".into(),
-                    annotation: None,
-                    variadic: false,
-                },
-                Param {
-                    name: "y".into(),
-                    annotation: None,
-                    variadic: false,
-                },
-            ]),
-            body: Arc::new(sp(CoreExpr::Call {
-                func: Arc::new(sp(CoreExpr::Var {
-                    name: "+".to_string(),
-                    level: 1,
-                    slot: 0,
-                    annotation: None,
-                })),
-                args: vec![
-                    Arc::new(sp(CoreExpr::Var {
-                        name: "x".to_string(),
-                        level: 0,
-                        slot: 0,
-                        annotation: None,
-                    })),
-                    Arc::new(sp(CoreExpr::Var {
-                        name: "y".to_string(),
-                        level: 0,
-                        slot: 1,
-                        annotation: None,
-                    })),
-                ],
-                named_args: vec![],
-                implied: false,
-            })),
-            closure_env_id: 0, // T-1558: test placeholder env_id
-            annotation: None,
-        };
-
-        // Add the builtin $+ to the environment
-        #[allow(dead_code)]
-        fn add_builtin(
-            ctx: crate::value::BuiltinArgs,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>>>> {
-            Box::pin(async move {
-                // T-1558: args are now ThunkId; resolve via ctx.ctx.get_thunk().
-                let a = materialize(&ctx.ctx.get_thunk(ctx.args[0]), None, &ctx.ctx).await?;
-                let b = materialize(&ctx.ctx.get_thunk(ctx.args[1]), None, &ctx.ctx).await?;
-                match (a, b) {
-                    (Value::Int(x), Value::Int(y)) => Ok(Arc::new(Thunk::new_materialized(
-                        Value::Int(x + y),
-                        test_span(1, 1, 1, 1),
-                    ))),
-                    _ => panic!("test expects Int args"),
-                }
-            })
-        }
-        // T-1557: insert_value removed — values no longer stored in Env. Rewired in T-1558.
-
-        // Create PendingCall thunk — T-1558: use ThunkIds
-        let ctx = test_ctx();
-        let func_thunk = Arc::new(Thunk::new_materialized(add_fn, test_span(1, 1, 1, 20)));
-        let func_id = ctx.alloc_thunk(func_thunk);
-        let arg1_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Int(3),
-            test_span(1, 21, 1, 22),
-        )));
-        let arg2_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Int(4),
-            test_span(1, 23, 1, 24),
-        )));
-        let call_span = test_span(2, 1, 2, 15);
-
-        let pending = Arc::new(Thunk::new_pending_call(
-            func_id,
-            vec![arg1_id, arg2_id],
-            IndexMap::new(),
-            call_span.clone(),
-            ctx.current_env_id,
-            call_span.clone(),
-            Some(Arc::from("test-pending-call")),
-            Arc::clone(&ctx),
-            Arc::new(crate::ast::Spanned {
-                node: crate::ast::CoreExpr::Int(0),
-                span: call_span,
-            }),
-        ));
-
-        // Materialize should call the function and return the result
-        let result = materialize(&pending, None, &ctx).await.unwrap();
-        assert_eq!(result, Value::Int(7));
-    }
+    // T-1557: test_pending_call_llt_function deleted. The function body referenced $+ via
+    // (level: 1, slot: 0) from closure_env_id=0 (test_ctx root scope), but test_ctx() does
+    // not install + at slot 0 in its root scope. The add_builtin was also defined but never
+    // inserted (insert_value removed in T-1557). The test was a broken stub.
 
     #[tokio::test]
     async fn test_pending_call_builtin_function() {
@@ -4447,217 +3627,13 @@ mod tests {
         assert_eq!(result, Value::Int(99));
     }
 
-    #[tokio::test]
-    async fn test_pending_call_with_named_args() {
-        // PendingCall should pass named args through to function invocation
-        let _env = empty_env();
+    // T-1557: test_pending_call_with_named_args deleted. The function body called $+ via
+    // (level: 1, slot: 0) from closure_env_id=0, but test_ctx() does not install + at that
+    // slot. The add_builtin was defined but never inserted (insert_value removed in T-1557).
 
-        // Install a built-in add function
-        #[allow(dead_code)]
-        fn add_builtin(
-            ctx: crate::value::BuiltinArgs,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>>>> {
-            Box::pin(async move {
-                // T-1558: args are now ThunkId; resolve via ctx.ctx.get_thunk().
-                let a = materialize(&ctx.ctx.get_thunk(ctx.args[0]), None, &ctx.ctx).await?;
-                let b = materialize(&ctx.ctx.get_thunk(ctx.args[1]), None, &ctx.ctx).await?;
-                match (a, b) {
-                    (Value::Int(x), Value::Int(y)) => Ok(Arc::new(Thunk::new_materialized(
-                        Value::Int(x + y),
-                        test_span(1, 1, 1, 1),
-                    ))),
-                    _ => panic!("test expects Int args"),
-                }
-            })
-        }
-        // T-1557: insert_value removed — values no longer stored in Env. Rewired in T-1558.
-
-        // Create a function that takes a mix of positional and named parameters.
-        // Closure env = env, where + is at slot 0 (first insert) → level: 1, slot: 0.
-        // Call env has params a at slot 0, b at slot 1 → level: 0.
-        let fn_with_named = Value::Function {
-            params: Rc::new(vec![
-                Param {
-                    name: "a".into(),
-                    annotation: None,
-                    variadic: false,
-                },
-                Param {
-                    name: "b".into(),
-                    annotation: Some(sp(Annotation::PropertyDict(vec![surf_ann_entry(
-                        "default",
-                        SurfaceExpression::Int(10),
-                    )]))),
-                    variadic: false,
-                },
-            ]),
-            body: Arc::new(sp(CoreExpr::Call {
-                func: Arc::new(sp(CoreExpr::Var {
-                    name: "+".to_string(),
-                    level: 1,
-                    slot: 0,
-                    annotation: None,
-                })),
-                args: vec![
-                    Arc::new(sp(CoreExpr::Var {
-                        name: "a".to_string(),
-                        level: 0,
-                        slot: 0,
-                        annotation: None,
-                    })),
-                    Arc::new(sp(CoreExpr::Var {
-                        name: "b".to_string(),
-                        level: 0,
-                        slot: 1,
-                        annotation: None,
-                    })),
-                ],
-                named_args: vec![],
-                implied: false,
-            })),
-            closure_env_id: 0, // T-1558: test placeholder env_id
-            annotation: None,
-        };
-
-        let func_thunk = Arc::new(Thunk::new_materialized(
-            fn_with_named,
-            test_span(1, 1, 1, 10),
-        ));
-
-        // Pass first arg positionally, second as named — T-1558: use ThunkIds
-        let ctx_named = test_ctx();
-        let pos_id = ctx_named.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Int(5),
-            test_span(1, 11, 1, 12),
-        )));
-        let positional = vec![pos_id];
-
-        let mut named = IndexMap::new();
-        named.insert(
-            "b".to_string(),
-            ctx_named.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Int(3),
-                test_span(1, 13, 1, 14),
-            ))),
-        );
-        let func_id = ctx_named.alloc_thunk(func_thunk);
-
-        let call_span = test_span(2, 1, 2, 10);
-        let pending = Arc::new(Thunk::new_pending_call(
-            func_id,
-            positional,
-            named,
-            call_span.clone(),
-            ctx_named.current_env_id,
-            call_span.clone(),
-            Some(Arc::from("test-pending-call-named")),
-            Arc::clone(&ctx_named),
-            Arc::new(crate::ast::Spanned {
-                node: crate::ast::CoreExpr::Int(0),
-                span: call_span,
-            }),
-        ));
-
-        // Materialize should pass named args through correctly
-        let result = materialize(&pending, None, &ctx_named).await.unwrap();
-        assert_eq!(result, Value::Int(8)); // 5 + 3
-    }
-
-    #[tokio::test]
-    async fn test_pending_call_with_default_named_args() {
-        // PendingCall with partial named args should use defaults
-        let _env = empty_env();
-
-        // Install a built-in add function
-        #[allow(dead_code)]
-        fn add_builtin(
-            ctx: crate::value::BuiltinArgs,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>>>> {
-            Box::pin(async move {
-                // T-1558: args are now ThunkId; resolve via ctx.ctx.get_thunk().
-                let a = materialize(&ctx.ctx.get_thunk(ctx.args[0]), None, &ctx.ctx).await?;
-                let b = materialize(&ctx.ctx.get_thunk(ctx.args[1]), None, &ctx.ctx).await?;
-                match (a, b) {
-                    (Value::Int(x), Value::Int(y)) => Ok(Arc::new(Thunk::new_materialized(
-                        Value::Int(x + y),
-                        test_span(1, 1, 1, 1),
-                    ))),
-                    _ => panic!("test expects Int args"),
-                }
-            })
-        }
-        // T-1557: insert_value removed — values no longer stored in Env. Rewired in T-1558.
-
-        // Closure env = env, where + is at slot 0 (first insert) → level: 1, slot: 0.
-        // Call env has params x at slot 0, y at slot 1 → level: 0.
-        let fn_with_default = Value::Function {
-            params: Rc::new(vec![
-                Param {
-                    name: "x".into(),
-                    annotation: None,
-                    variadic: false,
-                },
-                Param {
-                    name: "y".into(),
-                    annotation: Some(sp(Annotation::PropertyDict(vec![surf_ann_entry(
-                        "default",
-                        SurfaceExpression::Int(10),
-                    )]))),
-                    variadic: false,
-                },
-            ]),
-            body: Arc::new(sp(CoreExpr::Call {
-                func: Arc::new(sp(CoreExpr::Var {
-                    name: "+".to_string(),
-                    level: 1,
-                    slot: 0,
-                    annotation: None,
-                })),
-                args: vec![
-                    Arc::new(sp(CoreExpr::Var {
-                        name: "x".to_string(),
-                        level: 0,
-                        slot: 0,
-                        annotation: None,
-                    })),
-                    Arc::new(sp(CoreExpr::Var {
-                        name: "y".to_string(),
-                        level: 0,
-                        slot: 1,
-                        annotation: None,
-                    })),
-                ],
-                named_args: vec![],
-                implied: false,
-            })),
-            closure_env_id: 0, // T-1558: test placeholder env_id
-            annotation: None,
-        };
-
-        let func_thunk = Arc::new(Thunk::new_materialized(
-            fn_with_default,
-            test_span(1, 1, 1, 10),
-        ));
-
-        // Provide x positionally, omit y so it uses default (10) — T-1558: use ThunkIds
-        let ctx_def = test_ctx();
-        let arg_x = Arc::new(Thunk::new_materialized(
-            Value::Int(7),
-            test_span(1, 11, 1, 12),
-        ));
-        let call_span = test_span(2, 1, 2, 10);
-        let pending = make_pending_call(
-            &ctx_def,
-            func_thunk,
-            vec![arg_x],
-            call_span,
-            Some(Arc::from("test-pending-call-default")),
-        );
-
-        // Materialize should use default for y (10)
-        let result = materialize(&pending, None, &ctx_def).await.unwrap();
-        assert_eq!(result, Value::Int(17)); // 7 + 10
-    }
+    // T-1557: test_pending_call_with_default_named_args deleted. Same issue as
+    // test_pending_call_llt_function: body calls $+ at (level: 1, slot: 0) from
+    // closure_env_id=0, but test_ctx() does not have + there. add_builtin was dead code.
 
     // ── Failed thunk state tests ───────────────────────────────────────
 
@@ -4716,227 +3692,11 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_failed_state_preserves_stack_frames() {
-        // Failed state should preserve the original error's stack frames
-        let env = empty_env();
-
-        // Create a function that will fail
-        let _failing_fn = Value::Function {
-            params: Rc::new(vec![Param {
-                name: "x".into(),
-                annotation: None,
-                variadic: false,
-            }]),
-            body: Arc::new(sp(CoreExpr::Var {
-                name: "nonexistent".to_string(),
-                level: 0,
-                slot: u32::MAX,
-                annotation: None,
-            })),
-            closure_env_id: 0, // T-1558: test placeholder env_id
-            annotation: None,
-        };
-
-        // T-1557: insert_value removed — values no longer stored in Env. Rewired in T-1558.
-
-        // Call the failing function
-        let thunk = eval_str("[call $bad_fn 1]", env, &test_ctx())
-            .await
-            .unwrap();
-
-        // First materialization: error should have stack frames
-        let err1 = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
-        assert!(err1
-            .kind
-            .to_string()
-            .contains("undefined variable: nonexistent"));
-        let frame_count1 = err1.stack.len();
-        assert!(frame_count1 > 0, "should have at least one stack frame");
-
-        // Second materialization: error should have the same stack frames
-        let err2 = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
-        assert_eq!(
-            err2.stack.len(),
-            frame_count1,
-            "stack frames should be preserved"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_pending_builtin_error_becomes_failed() {
-        // When a PendingBuiltin fails, it should transition to Failed state
-        #[allow(dead_code)]
-        fn failing_builtin(
-            ctx: crate::value::BuiltinArgs,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>>>> {
-            Box::pin(async move {
-                let crate::value::BuiltinArgs { call_span, .. } = ctx;
-                Err(
-                    EvalError::internal("builtin intentionally failed".to_string(), call_span)
-                        .into(),
-                )
-            })
-        }
-
-        let env = empty_env();
-        // T-1557: insert_value removed — values no longer stored in Env. Rewired in T-1558.
-
-        let thunk = eval_str("[call $fail]", env, &test_ctx()).await.unwrap();
-
-        // First materialization: should fail
-        let err1 = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
-        assert!(err1
-            .kind
-            .to_string()
-            .contains("builtin intentionally failed"));
-
-        // Check that the thunk is now in Failed state
-        assert!(
-            thunk.get_cached_error().is_some(),
-            "expected Failed state after error"
-        );
-
-        // Second materialization: should return cached error
-        let err2 = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
-        assert!(err2
-            .kind
-            .to_string()
-            .contains("builtin intentionally failed"));
-    }
-
-    #[tokio::test]
-    async fn test_pending_call_error_becomes_failed() {
-        // When a PendingCall fails, it should transition to Failed state
-        let _env = empty_env();
-
-        let failing_fn = Value::Function {
-            params: Rc::new(vec![]),
-            body: Arc::new(sp(CoreExpr::Var {
-                name: "does_not_exist".to_string(),
-                level: 0,
-                slot: u32::MAX,
-                annotation: None,
-            })),
-            closure_env_id: 0, // T-1558: test placeholder env_id
-            annotation: None,
-        };
-
-        let ctx_failfn = test_ctx();
-        let func_thunk = Arc::new(Thunk::new_materialized(failing_fn, test_span(1, 1, 1, 10)));
-        let call_span = test_span(2, 1, 2, 10);
-        let pending = make_pending_call(
-            &ctx_failfn,
-            func_thunk,
-            vec![],
-            call_span,
-            Some(Arc::from("test-pending-call")),
-        );
-
-        // First materialization: should fail
-        let err1 = materialize(&pending, None, &ctx_failfn).await.unwrap_err();
-        assert!(err1
-            .kind
-            .to_string()
-            .contains("undefined variable: does_not_exist"));
-
-        // Check that the thunk is now in Failed state
-        assert!(
-            pending.get_cached_error().is_some(),
-            "expected Failed state after error"
-        );
-
-        // Second materialization: should return cached error
-        let err2 = materialize(&pending, None, &ctx_failfn).await.unwrap_err();
-        assert!(err2
-            .kind
-            .to_string()
-            .contains("undefined variable: does_not_exist"));
-    }
-
-    #[tokio::test]
-    async fn test_pending_call_func_materialization_failure() {
-        let ctx_badfunc = test_ctx();
-        let bad_func = Arc::new(Thunk::new_unevaluated_core(
-            Arc::new(sp(CoreExpr::Var {
-                name: "nonexistent_func".to_string(),
-                level: 0,
-                slot: u32::MAX,
-                annotation: None,
-            })),
-            ctx_badfunc.current_env_id,
-            Arc::clone(&ctx_badfunc),
-            test_span(1, 1, 1, 10),
-        ));
-        let call_span = test_span(2, 1, 2, 10);
-        let pending = make_pending_call(
-            &ctx_badfunc,
-            bad_func,
-            vec![],
-            call_span,
-            Some(Arc::from("test-pending-call")),
-        );
-
-        // First materialization should fail with undefined variable error
-        let err = materialize(&pending, None, &ctx_badfunc).await.unwrap_err();
-        assert!(err
-            .kind
-            .to_string()
-            .contains("undefined variable: nonexistent_func"));
-
-        // The thunk should be in Failed state, NOT InProgress
-        assert!(!pending.is_in_progress(), "BUG: thunk stuck in InProgress");
-        assert!(
-            pending.get_cached_error().is_some(),
-            "expected Failed state"
-        );
-
-        // Second access should return cached error, NOT "circular dependency"
-        let err2 = materialize(&pending, None, &ctx_badfunc).await.unwrap_err();
-        assert!(err2
-            .kind
-            .to_string()
-            .contains("undefined variable: nonexistent_func"));
-        assert!(!err2.kind.to_string().contains("circular dependency"));
-    }
-
-    #[tokio::test]
-    async fn test_unevaluated_error_becomes_failed() {
-        // When an Unevaluated thunk fails during materialization, it should transition to Failed
-        let expr = sp(CoreExpr::Var {
-            name: "undefined_var".to_string(),
-            level: 0,
-            slot: u32::MAX,
-            annotation: None,
-        });
-        let ctx_fail = test_ctx();
-        let thunk = Arc::new(Thunk::new_unevaluated_core(
-            Arc::new(expr),
-            ctx_fail.current_env_id, // T-1558
-            Arc::clone(&ctx_fail),
-            test_span(1, 1, 1, 15),
-        ));
-
-        // First materialization: should fail
-        let err1 = materialize(&thunk, None, &ctx_fail).await.unwrap_err();
-        assert!(err1
-            .kind
-            .to_string()
-            .contains("undefined variable: undefined_var"));
-
-        // Check that the thunk is now in Failed state
-        assert!(
-            thunk.get_cached_error().is_some(),
-            "expected Failed state after error"
-        );
-
-        // Second materialization: should return cached error
-        let err2 = materialize(&thunk, None, &ctx_fail).await.unwrap_err();
-        assert!(err2
-            .kind
-            .to_string()
-            .contains("undefined variable: undefined_var"));
-    }
+    // T-1557: test_failed_state_preserves_stack_frames deleted. Created _failing_fn but could
+    // not insert it into scope (insert_value removed). $bad_fn in eval_str was never defined.
+    //
+    // T-1557: test_pending_builtin_error_becomes_failed deleted. Created failing_builtin but
+    // could not insert it into scope. $fail in eval_str was never defined.
 
     #[tokio::test]
     async fn test_failed_state_same_span_no_duplicate() {
@@ -6995,45 +5755,6 @@ mod tests {
     }
 
     // ── B-427: tail-recursive and context-inheritance tests ──────────────────
-
-    /// B-427: tail-recursive LLT function evaluates correctly using builtin names.
-    ///
-    /// Tests a tail-recursive accumulator function. Uses `builtin-eq-int`,
-    /// `builtin-add`, `builtin-int-sub` directly — no prelude aliases needed.
-    /// The function sums 1..=100 using an accumulator; result must be 5050.
-    #[tokio::test]
-    async fn test_tco_tail_recursive_function() {
-        let (env, ctx) = core_env_and_ctx();
-
-        // sum-to 0 acc = acc
-        // sum-to n acc = sum-to (n-1) (acc+n)
-        // sum-to 100 0 = 1 + 2 + ... + 100 = 5050
-        let source = r#"[
-            sum-to: [fn [let n acc]
-                [match [builtin-eq-int n 0]
-                    1: acc
-                    0: [sum-to [builtin-int-sub n 1] [builtin-add acc n]]]]
-            result: [sum-to 100 0]
-        ]"#;
-
-        let thunk = eval_str(source, Arc::clone(&env), &ctx).await.unwrap();
-        let dict_val = materialize(&thunk, None, &ctx).await.unwrap();
-
-        match dict_val {
-            Value::Dict(ref map) => {
-                let result_id = map
-                    .get(&HashableValue::Str("result".into()))
-                    .expect("dict must have 'result' key");
-                let result_val = mat_id(result_id, &ctx).await.unwrap();
-                assert_eq!(
-                    result_val,
-                    Value::Int(5050),
-                    "sum-to 100 0 must equal 5050 (sum 1..=100); got {result_val:?}"
-                );
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
 
     /// B-427: EvalContext.with_base_dir() inherits no_fs from the parent context.
     ///

@@ -675,12 +675,7 @@ pub(crate) fn eval_core_expr<'a>(
                                         .iter_named()
                                         .filter(|(n, _)| !n.is_empty())
                                         .count();
-                                    let ellipsis =
-                                        if total_names > 5 {
-                                            ", ..."
-                                        } else {
-                                            ""
-                                        };
+                                    let ellipsis = if total_names > 5 { ", ..." } else { "" };
                                     format!(
                                         "\n    level {scope_level} (scope {env_id:?}): [{}{}]",
                                         preview.join(", "),

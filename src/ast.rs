@@ -146,13 +146,6 @@ impl<T> Spanned<T> {
     }
 }
 
-/// Document stage — determines how the document is evaluated
-#[derive(Debug, Clone, PartialEq)]
-pub enum Stage {
-    Runtime,
-    Type,
-}
-
 /// A function parameter
 #[derive(Debug, Clone, PartialEq)]
 pub struct Param {
@@ -1036,13 +1029,8 @@ impl SurfaceItem {
 /// A document in a SurfaceProgram — one or more items forming a scope chain.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SurfaceDocument {
-    pub stage: Option<Stage>,
-    pub name: Option<String>,
+    pub header: indexmap::IndexMap<String, Arc<SurfaceNode>>,
     pub items: Vec<SurfaceItem>,
-    pub output_type: Option<Spanned<Annotation>>,
-    pub expects: Option<Spanned<Annotation>>,
-    pub caps: Option<Spanned<Vec<(String, Annotation)>>>,
-    pub uses: Option<Spanned<Vec<Spanned<String>>>>,
 }
 
 impl SurfaceDocument {

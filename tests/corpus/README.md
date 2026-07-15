@@ -28,6 +28,7 @@ tests/corpus/
 │   ├── functions/            # Function definition, call, closure tests
 │   ├── laziness/             # Laziness proof tests (use $error in unused positions)
 │   ├── letrec/               # Letrec scoping and forward references
+│   ├── meta/                 # Meta pipeline (builtin-parse/desugar/resolve/typecheck-doc/eval) tests
 │   ├── pipeline/             # Pipeline (%) evaluation tests
 │   ├── regressions/          # Regression tests for specific bugs
 │   ├── stdlib/               # Stdlib function evaluation (51+ stdlib functions)
@@ -254,6 +255,7 @@ Failed tests show the filename and error:
 - **access/**: Access chain evaluation
 - **underscore/**: _ implicit lambda desugaring
 - **letrec/**: Letrec scoping and forward references
+- **meta/**: Meta pipeline tests (builtin-parse/desugar/resolve/typecheck-doc/eval scope threading)
 
 ## Error Code Coverage
 

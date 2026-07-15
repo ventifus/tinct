@@ -1,0 +1,12 @@
+# builtin-scopes returns a dict containing at least scope 0 with null parent.
+# Verifies that the scope arena always has a root scope (id=0) with no parent.
+[call [fn [let]
+  [all-scopes:   [builtin-scopes]]
+  [has-root:     [builtin-has-key? 0 all-scopes]]
+  [root-parent:  [builtin-get 0 all-scopes]]
+  [root-is-null: [if [null? root-parent] 1 0]]
+  [len-ok:       [builtin-int-gte [builtin-dict-length all-scopes] 1]]
+  [has-root-ok:  [builtin-eq-int has-root 1]]
+  [builtin-int-add [builtin-int-add has-root-ok root-is-null] len-ok]]]
+=== out
+Int(3)

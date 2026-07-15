@@ -37,9 +37,9 @@ pub struct NormCtxt {
     /// when type-stage env creation fails, or when resolver evaluation is
     /// not needed (e.g., in tests that only normalize concrete types).
     pub type_stage_env: Option<Arc<RwLock<Env>>>,
-    /// EvalContext for accessing the FlatEnv arena and type-stage function thunks.
+    /// EvalContext for accessing the scope arena (ScopeArena) and type-stage function thunks.
     ///
-    /// Needed by `evaluate_resolver` to construct ThunkIds from the type_stage_flat_env_id
+    /// Needed by `evaluate_resolver` to construct ThunkIds from the type_stage_scope_id
     /// stored in the TypeContext. `None` when normalizing outside of an evaluation context
     /// (e.g., in tests).
     pub eval_ctx: Option<Arc<crate::eval::EvalContext>>,
@@ -237,7 +237,7 @@ pub(crate) async fn evaluate_resolver(
 ) -> Option<Type> {
     // Step 1: Walk the Env parent chain to find fn_name and its depth.
     //
-    // Depth 0 = leaf Env (the one pointed to by type_stage_flat_env_id).
+    // Depth 0 = leaf Env (the one pointed to by type_stage_scope_id).
     // Depth 1 = its parent, depth 2 = grandparent, etc.
     //
     // This handles the general case where type-stage docs span multiple sequential
@@ -266,38 +266,32 @@ pub(crate) async fn evaluate_resolver(
         }
     };
 
-    // Step 2: Get the type_stage_flat_env_id from the TypeContext.
-    // This is the FlatEnv EnvId of the leaf (last-evaluated) type-stage doc.
-    let type_stage_flat_env_id = {
+    // Step 2: Get the type_stage_scope_id from the TypeContext.
+    // This is the ScopeId of the leaf (last-evaluated) type-stage doc.
+    let type_stage_scope_id = {
         let tc_guard = eval_ctx.type_context.lock().unwrap();
         let tc_data = tc_guard.as_ref()?;
-        tc_data.type_stage_flat_env_id?
+        tc_data.type_stage_scope_id?
     };
 
     // Step 3: Construct a ThunkId for the resolver function.
     //
-    // Walk the parent chain `depth` hops from the leaf FlatEnv to reach the ancestor scope
+    // Walk the parent chain `depth` hops from the leaf scope to reach the ancestor scope
     // that owns the resolver function at `slot_index`.
     //
     // ThunkId.scope_id is a u32 (raw ScopeArena index), not a ScopeId wrapper.
     //
-    // Invariant — Env parent chain depth equals FlatEnv parent chain depth:
-    //   Each builtin-eval call allocates exactly one FlatEnv (via builtin-extend-env with
-    //   flat-env: set to the prior call's flat-env-id). The Env chain grows one hop per
-    //   builtin-eval call, and the FlatEnv parent chain grows one hop per alloc_child call.
-    //   These two parallel chains are always kept in sync by the loader: every
-    //   builtin-eval → builtin-extend-env pair produces exactly one Env hop and one
-    //   FlatEnv parent hop. Therefore walking `depth` parent hops from the leaf always
-    //   reaches the FlatEnv at Env depth `depth`.
+    // Invariant — ScopeArena parent chain depth equals resolver depth:
+    //   Each builtin-eval call creates exactly one child scope via builtin-scope-new,
+    //   using the prior call's scope-id as parent. The ScopeArena parent chain grows one
+    //   hop per builtin-eval call. Therefore walking `depth` parent hops from the leaf
+    //   scope always reaches the scope at depth `depth` from the root (scope 0).
     //
-    //   This mapping would break only if builtin-extend-env were called without flat-env:
-    //   (causing an alloc_root instead of alloc_child, severing the parent chain). The
-    //   loader and test-loader always pass flat-env: — verified by code review of
-    //   loader.llt and test-loader.llt. The type-stage evaluation path does not omit
-    //   flat-env: for any document after the initial bootstrap.
+    //   This mapping holds as long as the loader creates exactly one scope per document
+    //   via builtin-scope-new. Verified by code review of loader.llt and test-loader.llt.
     let resolver_thunk_id = {
         let arena_borrow = eval_ctx.scope_arena.borrow();
-        match arena_borrow.walk_parent_chain(type_stage_flat_env_id, depth) {
+        match arena_borrow.walk_parent_chain(type_stage_scope_id, depth) {
             Err(_) => {
                 // Depth exceeds parent chain — fn_name not reachable
                 return None;

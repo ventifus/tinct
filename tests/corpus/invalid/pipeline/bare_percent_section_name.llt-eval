@@ -3,4 +3,4 @@
 --- %
 [y: 2]
 === out
-2:5: bare % in section header must be followed by @Type annotation (use '%@Type' to validate pipeline input)
+3:5: bare '%' in section header: expected a name after '%' (e.g. '--- %name')

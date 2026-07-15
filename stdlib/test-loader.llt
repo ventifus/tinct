@@ -73,15 +73,50 @@
             flush:  [fn [let h] h]
             close:  [fn [let h] h]]
 
-  bytes-empty?: [fn [let b] [builtin-eq-int [builtin-dict-length b] 0]]
+  bytes-empty?: [fn [let b] [builtin-eq-int [builtin-bytes-length b] 0]]
+
+  # null?: test if value is [] (empty dict). Same definition as loader.llt Dict 1.
+  null?: [fn [let x]
+    [match [builtin-eq-string [builtin-type-of x] "Dict"]
+      0: 0
+      _: [builtin-eq-int [builtin-dict-length x] 0]]]
 
   # make-entry: construct single-entry dict from key and value.
   # Defined here for Dict 1 because it runs before prelude is loaded.
   make-entry: [fn [let k v] [$k: v]]
 
-  # dot-access-flat-env-id: minimal child FlatEnv with only field-get and slot-get.
-  # T-1577: builtin-extend-env now returns just an Int (child flat-env-id).
-  dot-access-flat-env-id: [builtin-extend-env 0 [field-get: .field-get  slot-get: .slot-get]]
+  # get-or: safe dict access with default value
+  get-or: [fn [let default key dict]
+    [match [builtin-has-key? key dict]
+      0: default
+      _: [builtin-get key dict]]]
+
+  # scope-to-frames: build frames array from scope-id for builtin-resolve.
+  # Walks from innermost to outermost via builtin-scope-parent, prepends each
+  # level's names, producing [outermost-names, ..., innermost-names].
+  # This matches resolve.rs ordering: initial_frames[0] = outermost.
+  _scope-to-frames-inner: [fn [let scope-id acc]
+    [acc-next: [merge [make-entry 0 [builtin-scope-names scope-id]]
+                      [object-map acc [fn [let k v] [make-entry [builtin-int-add k 1] v]]]]]
+    [parent: [builtin-scope-parent scope-id]]
+    [match [null? parent]
+      0: [_scope-to-frames-inner parent acc-next]
+      _: acc-next]]
+  scope-to-frames: [fn [let scope-id]
+    [_scope-to-frames-inner scope-id []]]
+
+  # object-map: map over dict values, preserving keys. Used by scope-to-frames
+  # to shift frame indices when prepending a new outermost frame.
+  _object-map-step: [fn [let obj f keys i n builder]
+    [match [builtin-eq-int i n]
+      0: [call [fn [let]
+            [k: [builtin-get i keys]]
+            [_object-map-step obj f keys [builtin-int-add i 1] n
+              [builtin-builder-set k [f k [builtin-get k obj]] builder]]]]
+      _: [builtin-builder-finish builder]]]
+  object-map: [fn [let obj f]
+    [keys: [builtin-keys obj]]
+    [_object-map-step obj f keys 0 [builtin-dict-length keys] [builtin-make-builder]]]
 
   merge: [fn [let a b]
     [_copy: [fn [let builder d n i]
@@ -187,9 +222,10 @@
   # Declaration files (builtin_NAME.llt) are optional — if absent, builtin-try
   # catches the error. Typecheck is forced via typed.warnings data dependency (no >>).
   # seed-tc: the TypeContext to use for all module type-checks.
+  # seed-scope-id: the parent scope to use for declaration file scopes.
   # Caller builds it explicitly — no implicit global fallback. This is the same
-  # pattern as full-env: the init program controls what environments downstream sees.
-  uses-scope: [fn [let module-names seed-tc]
+  # pattern as the init program controlling what environments downstream sees.
+  uses-scope: [fn [let module-names seed-tc seed-scope-id]
     [reduce
       [fn [let acc name]
         [decl-path:   [builtin-string-concat "builtin_" [builtin-string-concat name ".llt"]]
@@ -197,18 +233,32 @@
              [decl-handle:    [builtin-file-open %libdir decl-path "read"]]
              [decl-bytes:     [read-file decl-handle [builtin-bytes]]]
              [parse-result:   [builtin-parse decl-bytes decl-path]]
-             # builtin-resolve requires flat-env: Int — use dot-access-flat-env-id as the seed.
-             [decl-flat-env-id: [builtin-extend-env dot-access-flat-env-id []]]
+             [desugared:      [builtin-desugar parse-result.program]]
+             [decl-docs:      [builtin-program-docs desugared]]
+             # Seed scope with field-get/slot-get builtins for dot-access
+             [decl-scope-id:  [builtin-scope-new seed-scope-id [field-get: .field-get  slot-get: .slot-get]]]
              [resolve-errors: [reduce
                [fn [let acc doc]
-                 [r: [builtin-resolve doc flat-env: decl-flat-env-id scope-frames: []]]
+                 [frames: [scope-to-frames decl-scope-id]]
+                 [r: [builtin-resolve doc frames]]
                  [builtin-int-add acc [builtin-dict-length r.errors]]]
                0
-               parse-result.program.documents]]
-             [typed:          [builtin-typecheck parse-result.program seed-tc]]
+               decl-docs]]
+             [typed-docs:  [reduce
+               [fn [let acc doc]
+                 [frames: [scope-to-frames decl-scope-id]]
+                 [r: [builtin-resolve doc frames]]
+                 [typed: [builtin-typecheck-doc r.doc seed-tc]]
+                 [merge acc [make-entry [builtin-dict-length acc] typed]]]
+               []
+               decl-docs]]
+             [warnings: [reduce
+               [fn [let acc tdoc] [merge acc tdoc.warnings]]
+               []
+               typed-docs]]
              [match [builtin-eq-int resolve-errors 0]
-               0: typed.warnings
-               _: typed.warnings]]]
+               0: warnings
+               _: warnings]]]
          warnings:    [match [builtin-has-key? "ok" tc-result]
              0: []
              _: [builtin-get "ok" tc-result]]
@@ -221,12 +271,30 @@
       []
       module-names]]
 
+  # Discover the root scope-id: the only scope with a null parent in builtin-scopes.
+  # Mirrors the loader.llt pattern — no hardcoded scope IDs.
+  _all-scopes: [builtin-scopes]
+  _root-scope-entries: [reduce
+    [fn [let acc entry]
+      [scope-id: [builtin-get 0 entry]]
+      [parent:   [builtin-get 1 entry]]
+      [match [null? parent]
+        0: [merge acc [make-entry [builtin-dict-length acc] scope-id]]
+        _: acc]]
+    []
+    [reduce
+      [fn [let acc k]
+        [merge acc [make-entry [builtin-dict-length acc] [0: k  1: [builtin-get k _all-scopes]]]]]
+      []
+      [builtin-keys _all-scopes]]]
+  root-scope-id: [builtin-get 0 _root-scope-entries]
+
   # Fundamental-types TypeContext: start from an empty TypeContext and populate
   # it by type-checking builtin_core.llt. Same pattern as loader.llt — no
   # implicit Rust back-channel. Core types (DirCap, Int, Bytes, etc.) are
   # available to all downstream builtin-typecheck calls via this explicit seed.
   _fundamental-base-tc: [builtin-make-type-ctx]
-  fundamental-tc: [match [builtin-int-gte [builtin-dict-length [uses-scope ["core"] _fundamental-base-tc]] 0]
+  fundamental-tc: [match [builtin-int-gte [builtin-dict-length [uses-scope ["core"] _fundamental-base-tc root-scope-id]] 0]
     0: _fundamental-base-tc
     _: _fundamental-base-tc]
 
@@ -262,8 +330,8 @@
     [merge state [bytes: [builtin-str-bytes source]]]]
 
   # ── Stage: parse-source ───────────────────────────────────────────────────────
-  # Parses state.bytes into state.parsed. On parse errors: emits diagnostics and
-  # sets state.errors (as an error-message string) for consistent ERROR: output.
+  # Parses state.bytes into state.parsed and desugars the program.
+  # On parse errors: emits diagnostics and sets state.errors (as an error-message string).
   parse-source: [fn [let state]
     [r:  [builtin-parse state.bytes state.path]]
     [n:  [builtin-dict-length r.errors]]
@@ -272,108 +340,100 @@
       0: [merge state [errors: [make-entry 0
             [reduce [fn [let acc d] [builtin-string-concat acc [format-diagnostic d]]]
                     "" r.errors]]]]
-      _: [merge state [parsed: r]]]]
+      _: [call [fn [let]
+           [desugared: [builtin-desugar r.program]]
+           [docs: [builtin-program-docs desugared]]
+           [merge state [parsed: [program: r.program  documents: docs]]]]]]]
 
   # ── Stage: eval-program ───────────────────────────────────────────────────────
   # Two-pass eval on state.parsed: type-stage documents first, then runtime.
-  # Scope-frames are threaded through resolve calls (T-1583).
+  # Uses new thin meta API: builtin-scope-new, builtin-doc-meta, builtin-typecheck-doc.
   # Resolve and eval errors raise immediately — a broken program cannot be loaded.
-  # Adds: ts-acc, flat-env-id, scope-frames, last-result, _tc.
+  # Adds: scope-id, last-result, _tc.
   eval-program: [fn [let extras tc state]
-    [seed-flat-env-id: [builtin-extend-env dot-access-flat-env-id extras]]
-    [ts-seed: [builtin-extend-env seed-flat-env-id
+    [seed-scope-id: [builtin-scope-new root-scope-id
+      [merge extras [field-get: .field-get  slot-get: .slot-get]]]]
+    [ts-seed: [builtin-scope-new seed-scope-id
       [Boolean: Boolean  True: Boolean.True  False: Boolean.False]]]
-    [eval-doc-ts: [fn [let acc doc]
-      [doc-uses:        [uses-scope doc.uses fundamental-tc]
-       doc-flat-env-id: [builtin-extend-env acc.flat-env-id doc-uses]
-       doc-scope-frames: [merge acc.scope-frames
-                           [make-entry [builtin-dict-length acc.scope-frames] [builtin-keys doc-uses]]]
-       resolved:        [builtin-resolve doc flat-env: doc-flat-env-id scope-frames: doc-scope-frames]
-       n-re:            [builtin-dict-length resolved.errors]
-       _re:             [emit-diagnostics resolved.errors]
-       eval-result:     [match [builtin-eq-int [builtin-int-add n-re _re] 0]
-         0: [builtin-raise [reduce [fn [let acc d] [builtin-string-concat acc [format-diagnostic d]]]
-                                   "" resolved.errors]]
-         _: [builtin-eval resolved.doc flat-env: doc-flat-env-id]]]
-      [match [builtin-eq-string [builtin-type-of eval-result.error] "String"]
-        0: [call [fn [let]
-             [new-env-id: [builtin-extend-env eval-result.flat-env-id
-                            [make-entry
-                              [match [builtin-eq-string eval-result.doc-name ""]
-                                0: eval-result.doc-name
-                                _: "%"]
-                              eval-result.result]]]
-             [flat-env-id: new-env-id  scope-frames: resolved.scope-frames]]]
-        _: [builtin-raise eval-result.error]]]]
-    [seed-frames: [make-entry 0 [builtin-keys extras]]]
-    [ts-acc: [reduce eval-doc-ts
-      [flat-env-id: ts-seed  scope-frames: seed-frames]
-      [reduce
-        [fn [let acc doc]
-          [match [builtin-eq-string [builtin-tag-of doc.stage] "DocStage.Type"]
-            0: acc
-            _: [merge acc [make-entry [builtin-dict-length acc] doc]]]]
-        []
-        state.parsed.program.documents]]]
-    [_tc: [builtin-tc-with-type-stage-env tc ts-acc.flat-env-id]]
-    [final-state: [reduce
-      [fn [let st doc]
-        [done:             [builtin-eq-string [builtin-tag-of doc.stage] "DocStage.Type"]
-         doc-uses:         [uses-scope doc.uses fundamental-tc]
-         doc-flat-env-id:  [builtin-extend-env st.flat-env-id doc-uses]
-         doc-scope-frames: [merge st.scope-frames
-                              [make-entry [builtin-dict-length st.scope-frames] [builtin-keys doc-uses]]]
-         resolved:         [builtin-resolve doc flat-env: doc-flat-env-id scope-frames: doc-scope-frames]
-         n-re:             [builtin-dict-length resolved.errors]
-         _re:              [emit-diagnostics resolved.errors]
-         eval-result:      [match [builtin-eq-int [builtin-int-add n-re _re] 0]
-           0: [builtin-raise [reduce [fn [let acc d] [builtin-string-concat acc [format-diagnostic d]]]
-                                     "" resolved.errors]]
-           _: [builtin-eval resolved.doc flat-env: doc-flat-env-id]]
-         new-flat-env-id: [builtin-extend-env eval-result.flat-env-id
-           [make-entry
-             [match [builtin-eq-string eval-result.doc-name ""]
-               0: eval-result.doc-name
-               _: "%"]
-             eval-result.result]]]
-        [match done
-          0: [match [builtin-eq-string [builtin-type-of eval-result.error] "String"]
-               0: [flat-env-id: eval-result.flat-env-id  last-result: eval-result.result  scope-frames: resolved.scope-frames]
-               _: [builtin-raise eval-result.error]]
-          _: st]]
-      [flat-env-id: ts-acc.flat-env-id  last-result: []  scope-frames: ts-acc.scope-frames]
-      state.parsed.program.documents]]
-    # Capture ts-acc and _tc before the merge dict to avoid letrec self-reference.
-    # In a letrec dict, [key: key] resolves 'key' to the dict's own entry (level=0),
-    # not the outer sequential binding (level=1), causing a circular dependency.
-    [_ts-acc-val: ts-acc]
-    [_tc-val:     _tc]
+    [eval-doc: [fn [let acc doc]
+      [meta:    [builtin-doc-meta doc acc.scope-id]]
+      [uses:    [uses-scope [get-or [] "uses" meta] fundamental-tc acc.scope-id]]
+      [scope:   [builtin-scope-new acc.scope-id uses]]
+      [frames:  [scope-to-frames scope]]
+      [res:     [builtin-resolve doc frames]]
+      [n-re:    [builtin-dict-length res.errors]]
+      [_re:     [emit-diagnostics res.errors]]
+      [match [builtin-eq-int [builtin-int-add n-re _re] 0]
+        0: [builtin-raise [reduce [fn [let acc d] [builtin-string-concat acc [format-diagnostic d]]]
+                                  "" res.errors]]
+        _: [call [fn [let]
+             [typed:  [builtin-typecheck-doc res.doc acc.tc]]
+             [ev:     [builtin-eval typed scope]]
+             [match [null? ev.errors]
+               0: [builtin-raise [builtin-get 0 ev.errors]]
+               _: [call [fn [let]
+                    [doc-name: [get-or "" "name" meta]]
+                    [next-scope: [builtin-scope-new ev.scope-id
+                                   [match [builtin-eq-string doc-name ""]
+                                     0: [%: ev.result]
+                                     _: [make-entry doc-name ev.result]]]]
+                    [merge acc [scope-id: next-scope  tc: acc.tc  last-result: ev.result]]]]]]]]]]
+    # Split documents by stage: check meta.stage string (not doc.stage tag)
+    [split: [reduce
+      [fn [let acc doc]
+        [meta: [builtin-doc-meta doc ts-seed]]
+        [stage: [get-or "runtime" "stage" meta]]
+        [match [builtin-eq-string stage "type"]
+          0: [ts: [merge acc.ts [make-entry [builtin-dict-length acc.ts] doc]]  rt: acc.rt]
+          _: [ts: acc.ts  rt: [merge acc.rt [make-entry [builtin-dict-length acc.rt] doc]]]]]
+      [ts: []  rt: []]
+      state.parsed.documents]]
+    # Pass 1: evaluate type-stage documents
+    [ts-acc: [reduce eval-doc [scope-id: ts-seed  tc: tc  last-result: []] split.ts]]
+    # Wire ts scope-id into the TypeContext
+    [_tc: [builtin-tc-with-scope ts-acc.tc ts-acc.scope-id]]
+    # Pass 2: evaluate runtime documents
+    [final-acc: [reduce eval-doc [scope-id: ts-acc.scope-id  tc: _tc  last-result: []] split.rt]]
+    # final-acc tracks last-result from the most recent eval-doc call
     [merge state
-      [ts-acc:       _ts-acc-val
-       flat-env-id:  final-state.flat-env-id
-       scope-frames: final-state.scope-frames
-       last-result:  final-state.last-result
-       _tc:          _tc-val]]]
+      [scope-id:    final-acc.scope-id
+       last-result: final-acc.last-result
+       _tc:         _tc]]]
 
   # ── Stage: export ─────────────────────────────────────────────────────────────
   # Promotes the last document's exported dict entries into the env.
-  # Adds: full-flat-env-id.
+  # Adds: full-scope-id.
   export: [fn [let state]
     [exported: [match [builtin-eq-string [builtin-type-of state.last-result] "Dict"]
       0: []
       _: state.last-result]]
-    [merge state [full-flat-env-id: [builtin-extend-env state.flat-env-id exported]]]]
+    [merge state [full-scope-id: [builtin-scope-new state.scope-id exported]]]]
 
   # ── Stage: typecheck-program ──────────────────────────────────────────────────
-  # Typechecks state.parsed.program using state._tc and state.scope-frames.
-  # OnceLocks are write-once so no re-resolve pass is needed before typecheck.
+  # Typechecks each document in state.parsed.documents using state._tc.
+  # Uses builtin-typecheck-doc (per-document API).
   # Adds: tc-warnings.
   typecheck-program: [fn [let state]
-    [typed: [builtin-typecheck state.parsed.program state._tc scope-frames: state.scope-frames]]
-    [_e:    [emit-diagnostics typed.warnings]]
+    [typed-docs: [reduce
+      [fn [let acc doc]
+        [frames: [scope-to-frames state.scope-id]]
+        [res: [builtin-resolve doc frames]]
+        [typed: [builtin-typecheck-doc res.doc state._tc]]
+        [merge acc [make-entry [builtin-dict-length acc] typed]]]
+      []
+      state.parsed.documents]]
+    [all-warnings: [reduce
+      [fn [let acc tdoc]
+        [reduce
+          [fn [let wacc w] [merge wacc [make-entry [builtin-dict-length wacc] w]]]
+          acc
+          tdoc.warnings]]
+      []
+      typed-docs]]
+    [_e: [emit-diagnostics all-warnings]]
     [match [builtin-int-gte _e 0]
-      0: [merge state [tc-warnings: typed.warnings]]
-      _: [merge state [tc-warnings: typed.warnings]]]]
+      0: [merge state [tc-warnings: all-warnings]]
+      _: [merge state [tc-warnings: all-warnings]]]]
 ]
 
 # ============================================================================
@@ -436,59 +496,51 @@
   # eval-docs uses builtin-try to capture errors as data rather than raises,
   # manages the per-test arena, and handles caps/expects validation.
 
-  # eval-docs: resolve+eval all documents against base-env using arena.
+  # eval-docs: resolve+eval all documents against base-scope using arena.
   # Errors are captured into state.errors (String) rather than propagated as raises.
-  # Adds: flat-env-id, scope-frames, last-result (migrated to root arena), program.
-  eval-docs: [fn [let base-env arena state]
+  # Adds: scope-id, last-result (migrated to root arena), program.
+  eval-docs: [fn [let base-scope arena state]
     [try-result: [builtin-try [fn []
       [test-state: [reduce
         [fn [let st doc]
-          [doc-uses:         [uses-scope doc.uses fundamental-tc]
-           doc-flat-env-id:  [builtin-extend-env st.flat-env-id doc-uses]
-           doc-scope-frames: [merge st.scope-frames
-                                [make-entry [builtin-dict-length st.scope-frames] [builtin-keys doc-uses]]]]
-          [r:           [builtin-resolve doc flat-env: doc-flat-env-id scope-frames: doc-scope-frames]]
-          [n-re:        [builtin-dict-length r.errors]
-           _re:         [emit-diagnostics r.errors]]
-          [eval-result: [match [builtin-eq-int [builtin-int-add n-re _re] 0]
+          [meta:  [builtin-doc-meta doc st.scope-id]]
+          [uses:  [uses-scope [get-or [] "uses" meta] fundamental-tc st.scope-id]]
+          [scope: [builtin-scope-new st.scope-id uses]]
+          [frames: [scope-to-frames scope]]
+          [r:     [builtin-resolve doc frames]]
+          [n-re:  [builtin-dict-length r.errors]]
+          [_re:   [emit-diagnostics r.errors]]
+          [match [builtin-eq-int [builtin-int-add n-re _re] 0]
             0: [builtin-raise [reduce [fn [let acc d] [builtin-string-concat acc [format-diagnostic d]]]
                                       "" r.errors]]
-            _: [builtin-eval r.doc flat-env: doc-flat-env-id arena: arena]]]
-          [match [builtin-eq-string [builtin-type-of eval-result.error] "String"]
-            0: [call [fn [let]
-                  # T-1507: caps check against current eval flat-env-id.
-                  [_caps-ok: [reduce
-                    [fn [let ok cap-name]
-                      [full-name: [builtin-string-concat "%" cap-name]]
-                      [match [builtin-cap-env-has? full-name st.flat-env-id]
-                        0: [builtin-raise [join "" [full-name " is required but not provided"]]]
-                        _: ok]]
-                    Boolean.True
-                    [builtin-keys doc.caps]]
-                   # T-1506: expects check. Identical branches — force builtin-check-type for its raise.
-                   _expects-ok: [match [builtin-eq-string [builtin-type-of doc.expects] "String"]
-                     0: Boolean.True
-                     _: [match [builtin-int-gte [builtin-dict-length [builtin-type-of [builtin-check-type doc.expects st.last-result]]] 0]
-                          0: Boolean.True
-                          _: Boolean.True]]
-                   new-flat-env-id: [builtin-extend-env eval-result.flat-env-id
-                     [make-entry
-                       [match [builtin-eq-string eval-result.doc-name ""]
-                         0: eval-result.doc-name
-                         _: "%"]
-                       eval-result.result]]]
-                  [match [builtin-eq-string [builtin-tag-of _caps-ok] "Boolean.True"]
-                    0: [builtin-raise "unreachable"]
-                    _: [match [builtin-eq-string [builtin-tag-of _expects-ok] "Boolean.True"]
-                         0: [builtin-raise "unreachable"]
-                         _: [flat-env-id: eval-result.flat-env-id  last-result: eval-result.result  scope-frames: r.scope-frames]]]]]
-            _: [builtin-raise eval-result.error]]]
-        [flat-env-id: base-env  last-result: []  scope-frames: []]
-        state.parsed.program.documents]]
-      [flat-env-id:  test-state.flat-env-id
-       last-result:  test-state.last-result
-       scope-frames: test-state.scope-frames
-       program:      state.parsed.program]]]]
+            _: [call [fn [let]
+                 [typed: [builtin-typecheck-doc r.doc st.tc]]
+                 [ev:    [builtin-eval typed scope]]
+                 [match [null? ev.errors]
+                   0: [builtin-raise [builtin-get 0 ev.errors]]
+                   _: [call [fn [let]
+                        # T-1507: Validate --- caps: declarations against the evaluated scope.
+                        [caps-list: [get-or [] "caps" meta]]
+                        [_caps-ok: [reduce [fn [let _ cap-name]
+                          [match [builtin-cap-env-has? cap-name scope]
+                            Boolean.False: [builtin-raise [builtin-string-concat "missing required capability: " cap-name]]
+                            _: 0]]
+                          0 [builtin-keys caps-list]]]
+                        # T-1506: Validate --- expects: type annotation against the document result.
+                        # builtin-check-type raises on mismatch; passes return the value unchanged.
+                        [expects: [get-or [] "expects" meta]]
+                        [_expects-forced: [match [builtin-eq-int [builtin-dict-length expects] 0]
+                          0: [builtin-int-gte [builtin-dict-length [builtin-type-of [builtin-check-type expects ev.result]]] _caps-ok]
+                          _: _caps-ok]]
+                        [match [builtin-int-gte _expects-forced 0]
+                          0: [scope-id: ev.scope-id  last-result: ev.result  tc: st.tc]
+                          _: [scope-id: ev.scope-id  last-result: ev.result  tc: st.tc]]]]]]]]]]
+        [scope-id: base-scope  last-result: []  tc: fundamental-tc]
+        state.parsed.documents]]
+      [scope-id:   test-state.scope-id
+       last-result: test-state.last-result
+       tc:         test-state.tc
+       documents:  state.parsed.documents]]]]
     # Migrate result (or [] on error) to root arena, print stats, drop arena.
     [to-migrate: [match [builtin-has-key? "ok" try-result]
       0: []
@@ -507,21 +559,36 @@
     [match [builtin-has-key? "ok" try-result]
       0: [merge state [errors: [make-entry 0 [builtin-get "error" try-result]]]]
       _: [merge state
-           [flat-env-id:  [builtin-get "ok" try-result].flat-env-id
-            last-result:  [match _df 0: migrated-result _: migrated-result]
-            scope-frames: [builtin-get "ok" try-result].scope-frames
-            program:      state.parsed.program]]]]
+           [scope-id:   [builtin-get "ok" try-result].scope-id
+            last-result: [match _df 0: migrated-result _: migrated-result]
+            tc:         [builtin-get "ok" try-result].tc
+            documents:  state.parsed.documents]]]]
 
-  # typecheck-docs: typecheck state.program against base-env using scope-frames.
+  # typecheck-docs: typecheck state.documents against base-scope.
   # Adds: tc-warnings.
-  typecheck-docs: [fn [let tc base-env state]
-    [typed: [match [builtin-int-gte [builtin-dict-length [builtin-type-of state.flat-env-id]] 0]
+  typecheck-docs: [fn [let tc base-scope state]
+    [typed-docs: [match [builtin-int-gte [builtin-dict-length [builtin-type-of state.scope-id]] 0]
       0: []
-      _: [builtin-typecheck state.program tc scope-frames: state.scope-frames]]]
-    [_e: [emit-diagnostics typed.warnings]]
+      _: [reduce
+           [fn [let acc doc]
+             [frames: [scope-to-frames state.scope-id]]
+             [res: [builtin-resolve doc frames]]
+             [typed: [builtin-typecheck-doc res.doc tc]]
+             [merge acc [make-entry [builtin-dict-length acc] typed]]]
+           []
+           state.documents]]]
+    [all-warnings: [reduce
+      [fn [let acc tdoc]
+        [reduce
+          [fn [let wacc w] [merge wacc [make-entry [builtin-dict-length wacc] w]]]
+          acc
+          tdoc.warnings]]
+      []
+      typed-docs]]
+    [_e: [emit-diagnostics all-warnings]]
     [match [builtin-int-gte _e 0]
-      0: [merge state [tc-warnings: typed.warnings]]
-      _: [merge state [tc-warnings: typed.warnings]]]]
+      0: [merge state [tc-warnings: all-warnings]]
+      _: [merge state [tc-warnings: all-warnings]]]]
 
   # format-output: format state.last-result into state.output using builtin-llt-repr.
   format-output: [fn [let state]
@@ -530,20 +597,20 @@
   # run-test-pipeline: evaluate a test source string through the full pipeline.
   # Returns a state dict with output and tc-warnings on success, or errors on failure.
   # No builtin-try at this level — eval-docs captures errors as data internally.
-  run-test-pipeline: [fn [let source path prelude-flat-env-id]
+  run-test-pipeline: [fn [let source path prelude-scope-id]
     [capture: [make-string-handle]]
-    [base-flat-env-id: [builtin-extend-env prelude-flat-env-id
-                         [%cwd:    %cwd
-                          %libdir: %libdir
-                          %stdout: capture
-                          %stderr: %stderr
-                          %args:   %args]]]
+    [base-scope-id: [builtin-scope-new prelude-scope-id
+                      [%cwd:    %cwd
+                       %libdir: %libdir
+                       %stdout: capture
+                       %stderr: %stderr
+                       %args:   %args]]]
     [test-arena: [builtin-arena-new path]]
     [[path: path  errors: []]
      | [if-ok load-from-string source]
      | [if-ok parse-source]
-     | [if-ok eval-docs base-flat-env-id test-arena]
-     | [if-ok typecheck-docs fundamental-tc base-flat-env-id]
+     | [if-ok eval-docs base-scope-id test-arena]
+     | [if-ok typecheck-docs fundamental-tc base-scope-id]
      | [if-ok format-output]]]
 
   # path-has-component: true if path contains "/component/" as a path segment.
@@ -591,7 +658,7 @@
            _: ""]]]
 
   # run-test-file: execute a single file ProgramItem as a corpus test.
-  run-test-file: [fn [let p prelude-flat-env-id]
+  run-test-file: [fn [let p prelude-scope-id]
     [bytes:          [read-file p.handle [builtin-bytes]]]
     [content:        [builtin-bytes-str bytes]]
     [source:         [extract-source content]]
@@ -600,7 +667,7 @@
     [expected-error: [extract-section content "error"]]
 
     # Run test through the pipeline. Errors are returned as state.errors (no builtin-try needed).
-    [pipe-result: [run-test-pipeline source p.path prelude-flat-env-id]]
+    [pipe-result: [run-test-pipeline source p.path prelude-scope-id]]
 
     [try-ok: [builtin-eq-int [builtin-dict-length pipe-result.errors] 0]]
 
@@ -665,17 +732,17 @@
     [path: r-path  passed: r-passed  actual: r-actual  expected: r-expected]]
 
   # run-test: run one ProgramItem as a corpus test.
-  run-test: [fn [let item prelude-flat-env-id]
+  run-test: [fn [let item prelude-scope-id]
     [p:    [match [builtin-eq-string [builtin-tag-of item] "ProgramItem.File"]
              0: item.path
              _: "<expr>"]]
     [_log: [%stderr.write [builtin-string-concat "test:    " [builtin-string-concat p "\n"]] %stderr]]
     [match [builtin-int-gte [builtin-dict-length _log] 0]
       0: [match item
-           [ProgramItem.File _]: [run-test-file item prelude-flat-env-id]
+           [ProgramItem.File _]: [run-test-file item prelude-scope-id]
            [ProgramItem.Expr _]: [path: "<expr>"  passed: Boolean.True  actual: ""  expected: ""]]
       _: [match item
-           [ProgramItem.File _]: [run-test-file item prelude-flat-env-id]
+           [ProgramItem.File _]: [run-test-file item prelude-scope-id]
            [ProgramItem.Expr _]: [path: "<expr>"  passed: Boolean.True  actual: ""  expected: ""]]]]
 
   # format-result: render test outcome line.
@@ -728,8 +795,8 @@
     | [if-ok export]
     | [if-ok typecheck-program]]
 
-  # _prelude-flat-env-id: pre-export flat-env-id used as display-chain seed for test programs.
-  _prelude-flat-env-id: _prelude-result.flat-env-id
+  # _prelude-scope-id: pre-export scope-id used as display-chain seed for test programs.
+  _prelude-scope-id: _prelude-result.scope-id
 
   # Fatal boundary: typecheck warnings on prelude mean execution is undefined behavior.
   # Raise here (outside any builtin-try) so the error propagates to the top level.
@@ -739,7 +806,7 @@
     0: [builtin-raise [join "" ["prelude failed — cannot continue\n"
           [reduce [fn [let acc d] [builtin-string-concat acc [builtin-string-concat d "\n"]]]
                   "" _prelude-result.errors]]]]
-    _: _prelude-result.full-flat-env-id]
+    _: _prelude-result.full-scope-id]
 
   _prelude-ok: [builtin-int-gte [builtin-dict-length [builtin-type-of _prelude]] 0]
 
@@ -772,7 +839,7 @@
                       _: _raw.error]
                     "\n"]] %stderr]]
         _: 1]]
-    [builtin-try [fn [] _llt-formatter-expanded.documents]]]
+    [builtin-try [fn [] [builtin-program-docs _llt-formatter-expanded]]]]
 
   # Discover test files (or use the ones given on the command line).
   # _prelude-ok is a data dependency.
@@ -787,7 +854,7 @@
 
   final-state: [reduce
     [fn [let state item]
-      [result: [run-test item _prelude-flat-env-id]]
+      [result: [run-test item _prelude-scope-id]]
       # Force the write as a data dependency (no >> needed).
       # %stdout.write returns the handle (%stdout protocol dict).
       # Force it by reading the handle's key count (always >= 0).

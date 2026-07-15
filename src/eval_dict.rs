@@ -369,7 +369,10 @@ pub(crate) async fn eval_dict_core(
         let mut arena_guard = ctx.scope_arena.borrow_mut();
         for (idx, _thunk_id, name) in &letrec_slots {
             let reserved_idx = arena_guard.reserve_slot(env_id, name);
-            debug_assert_eq!(reserved_idx, *idx, "letrec slot index must match reservation order");
+            debug_assert_eq!(
+                reserved_idx, *idx,
+                "letrec slot index must match reservation order"
+            );
         }
         for (idx, thunk_id, _name) in letrec_slots {
             arena_guard.fill_slot(env_id, idx, thunk_id);

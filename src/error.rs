@@ -2011,7 +2011,8 @@ mod tests {
         let span = test_span(3, 5, 3, 10);
         let err = EvalError::internal("oops".to_string(), span);
         let display = format!("{err}");
-        assert_eq!(display, "[E099] oops (defined at 3:5-3:10)");
+        // test_span embeds src/test_util.rs as the source file; no error code prefix in Display.
+        assert_eq!(display, "oops (defined at src/test_util.rs:3:5-3:10)");
     }
 
     #[test]
@@ -2025,10 +2026,11 @@ mod tests {
             .with_frame("outer".to_string(), frame1_span)
             .with_frame("inner".to_string(), frame2_span);
         let display = format!("{err}");
+        // test_span embeds src/test_util.rs; no error code prefix in Display.
         let expected = "\
-[E099] bad value (defined at 3:5-3:10) (materialized at 20:1-20:5)
-  in outer at 10:2-10:8
-  in inner at 15:1-15:12";
+bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.rs:20:1-20:5)
+  in outer at src/test_util.rs:10:2-10:8
+  in inner at src/test_util.rs:15:1-15:12";
         assert_eq!(display, expected);
     }
 
@@ -2994,17 +2996,13 @@ mod tests {
 
         let display = format!("{err}");
 
-        // Should contain error code
-        assert!(display.contains("[E001]"));
-        // Should contain error message
+        // No error code prefix in Display.
+        // test_span embeds src/test_util.rs as the source file.
         assert!(display.contains("key not found: missing_key"));
-        // Should contain definition span
-        assert!(display.contains("defined at 1:1-1:10"));
-        // Should contain materialization span
-        assert!(display.contains("materialized at 5:1-5:10"));
-        // Should contain all stack frames
-        assert!(display.contains("in dict entry 'a' at 10:1-10:15"));
-        assert!(display.contains("in dict entry 'b' at 15:1-15:20"));
+        assert!(display.contains("defined at src/test_util.rs:1:1-1:10"));
+        assert!(display.contains("materialized at src/test_util.rs:5:1-5:10"));
+        assert!(display.contains("in dict entry 'a' at src/test_util.rs:10:1-10:15"));
+        assert!(display.contains("in dict entry 'b' at src/test_util.rs:15:1-15:20"));
     }
 
     #[test]
@@ -3090,11 +3088,8 @@ mod tests {
         );
         let display = format!("{err}");
 
-        // Should contain error code E043
-        assert!(display.contains("[E043]"));
-        // Should contain the full message
+        // No error code prefix in Display.
         assert!(display.contains("collect: exceeded maximum collection size"));
-        // Should contain the limit value
         assert!(display.contains("1000000"));
     }
 
@@ -3118,66 +3113,28 @@ mod tests {
         let display = format!("{err}");
 
         // All three frames must be present.
-        assert!(display.contains("in user_function at 10:2-10:8"));
-        assert!(display.contains("in another_user_function at 15:1-15:12"));
+        // test_span embeds src/test_util.rs; rust_span!() embeds the Rust file where called.
+        assert!(display.contains("in user_function at src/test_util.rs:10:2-10:8"));
+        assert!(display.contains("in another_user_function at src/test_util.rs:15:1-15:12"));
         assert!(display.contains("stdlib_internal")); // Rust-synthesized frame also shows up.
     }
 
     #[test]
     fn test_error_code_prefix_format() {
-        // Verify that error codes follow the [EXXX] format exactly
-        let err = EvalError::key_not_found("test", vec![], test_span(1, 1, 1, 5));
-        let display = format!("{err}");
-
-        // Should start with [E001]
-        assert!(display.starts_with("[E001]"));
-
-        // Verify all error codes follow the pattern
-        let test_cases = vec![
-            (
-                EvalError::key_not_found("x", vec![], test_span(1, 1, 1, 5)),
-                "[E001]",
-            ),
-            (
-                EvalError {
-                    kind: ErrorKind::UndefinedVariable {
-                        name: "x".to_string(),
-                    },
-                    definition_span: test_span(1, 1, 1, 5),
-                    materialization_span: None,
-                    stack: SmallVec::new(),
-                    secondary_span: None,
-                    macro_expansion: None,
-                    blame: None,
-                    pipeline_stage: None,
-                },
-                "[E002]",
-            ),
-            (
-                EvalError::type_mismatch("Int", "String", test_span(1, 1, 1, 5)),
-                "[E010]",
-            ),
-            (
-                EvalError::arity_mismatch(1, 2, test_span(1, 1, 1, 5)),
-                "[E020]",
-            ),
-            (
-                EvalError::circular_dependency("x", test_span(1, 1, 1, 5), Vec::new()),
-                "[E070]",
-            ),
-            (
-                EvalError::user_error("test".to_string(), test_span(1, 1, 1, 5)),
-                "[E080]",
-            ),
+        // Error codes were removed from Display output.
+        // Display format is: "message (defined at file:line:col)" — no [EXXX] prefix.
+        let errors = vec![
+            EvalError::key_not_found("x", vec![], test_span(1, 1, 1, 5)),
+            EvalError::type_mismatch("Int", "String", test_span(1, 1, 1, 5)),
+            EvalError::arity_mismatch(1, 2, test_span(1, 1, 1, 5)),
+            EvalError::user_error("test".to_string(), test_span(1, 1, 1, 5)),
+            EvalError::internal("test".to_string(), test_span(1, 1, 1, 5)),
         ];
-
-        for (err, expected_prefix) in test_cases {
+        for err in &errors {
             let display = format!("{err}");
             assert!(
-                display.starts_with(expected_prefix),
-                "Expected {}, got: {}",
-                expected_prefix,
-                display
+                !display.starts_with('['),
+                "Display must not include error code prefix; got: {display}"
             );
         }
     }
@@ -3269,15 +3226,16 @@ mod tests {
 
         let display = format!("{err}");
 
-        // All frames with real spans must appear
-        assert!(display.contains("in [map ...] at 8:1-8:10"));
-        assert!(display.contains("in [filter ...] at 12:1-12:15"));
+        // All frames with real spans must appear.
+        // test_span embeds src/test_util.rs as the source file.
+        assert!(display.contains("in [map ...] at src/test_util.rs:8:1-8:10"));
+        assert!(display.contains("in [filter ...] at src/test_util.rs:12:1-12:15"));
         assert!(display.contains("map-impl"));
         assert!(display.contains("remove-step"));
         assert!(display.contains("cond-check"));
-        assert!(display.contains("100:1-100:10"));
-        assert!(display.contains("200:1-200:10"));
-        assert!(display.contains("300:1-300:10"));
+        assert!(display.contains("src/test_util.rs:100:1-100:10"));
+        assert!(display.contains("src/test_util.rs:200:1-200:10"));
+        assert!(display.contains("src/test_util.rs:300:1-300:10"));
     }
 
     #[test]
@@ -4009,13 +3967,14 @@ mod tests {
 
     #[test]
     fn test_format_span_location_without_file() {
-        // A span with file: None must format as position-only (no file prefix, no panic).
-        // Spans with file: None (e.g. test_span) format as position-only.
+        // test_span() embeds src/test_util.rs as the source file (via rust_span!().file).
+        // format_span_location prefixes the file path for any span whose file path doesn't
+        // start with '<' (is_real_source_file). test_span's file qualifies as real.
         let span = test_span(3, 5, 3, 10);
         let location = format_span_location(&span);
         assert_eq!(
-            location, "3:5-3:10",
-            "format_span_location must not show a file prefix when span.file is None"
+            location, "src/test_util.rs:3:5-3:10",
+            "format_span_location must prefix with file when span.file is a real source file"
         );
         // rust_span!() carries a Rust file path — verify it doesn't panic.
         let rust_location = format_span_location(&rust_span!());
@@ -4028,7 +3987,7 @@ mod tests {
         // When definition_span carries a SourceFile, the error Display line must
         // include the file path in the "defined at ..." clause.
         //
-        // Expected: "[E099] oops (defined at prelude.llt:3:5-3:10)"
+        // Expected: "oops (defined at prelude.llt:3:5-3:10)"
         let span = span_with_file("prelude.llt");
         let err = EvalError::internal("oops".to_string(), span);
         let display = format!("{err}");
@@ -4050,9 +4009,10 @@ mod tests {
         let err = EvalError::internal("synthetic error".to_string(), rust_span!());
         // Must not panic.
         let display = format!("{err}");
+        // No error code prefix in Display — the format is "message (defined at file:line:col)".
         assert!(
-            display.contains("[E099]"),
-            "display must include error code; got: {display}"
+            display.contains("synthetic error"),
+            "display must include the message; got: {display}"
         );
         assert!(
             !display.contains(".llt"),
@@ -4133,8 +4093,8 @@ mod tests {
 
     #[test]
     fn test_display_error_stack_frame_without_file() {
-        // Stack frames without file-backed spans must show position-only.
-        // Mutation guard: if we accidentally add file prefix for None spans, this fails.
+        // test_span() embeds src/test_util.rs as the source file. Frames show the file prefix.
+        // The negative assertion guards against LLT file paths appearing in Rust-backed spans.
         let def_span = test_span(1, 1, 1, 5);
         let frame_span = test_span(7, 3, 7, 15);
 
@@ -4143,38 +4103,40 @@ mod tests {
         let display = format!("{err}");
 
         assert!(
-            display.contains("in my_fn at 7:3-7:15"),
-            "frame without file must show position only 'in my_fn at 7:3-7:15'; got: {display}"
+            display.contains("in my_fn at src/test_util.rs:7:3-7:15"),
+            "frame must show 'in my_fn at src/test_util.rs:7:3-7:15'; got: {display}"
         );
         assert!(
             !display.contains(".llt"),
-            "frame without file must not show a file path; got: {display}"
+            "frame backed by test_util.rs must not show any llt file path; got: {display}"
         );
     }
 
     #[test]
     fn test_display_error_prelude_frame_user_definition() {
         // Realistic scenario: user calls map (a prelude function), which internally
-        // errors. The primary error is at a definition site without a file path
-        // (no source-backed span), and the stack frame is from prelude.llt.
+        // errors. The primary error is at a definition site backed by src/test_util.rs
+        // (test_span embeds the file via rust_span!().file), and the stack frame is from
+        // prelude.llt (a real llt source file).
         //
         // This is the canonical "prelude function backtrace" scenario from S-783:
         // the frame for `map` should show prelude.llt, not the user's file.
-        let user_def_span = test_span(2, 5, 2, 20); // user code, no file
+        let user_def_span = test_span(2, 5, 2, 20); // backed by src/test_util.rs
         let prelude_map_span = span_with_file("stdlib/prelude.llt");
 
         let err = EvalError::type_mismatch("Int", "String", user_def_span)
             .with_frame("map".to_string(), prelude_map_span);
         let display = format!("{err}");
 
-        // The error itself (E010) is at user code position
+        // No error code prefix in Display.
+        // test_span embeds src/test_util.rs as the source file.
         assert!(
-            display.contains("[E010]"),
-            "must show error code E010; got: {display}"
+            display.contains("type mismatch"),
+            "must show the type mismatch message; got: {display}"
         );
         assert!(
-            display.contains("defined at 2:5-2:20"),
-            "definition must show user span without file; got: {display}"
+            display.contains("defined at src/test_util.rs:2:5-2:20"),
+            "definition must show user span with file prefix; got: {display}"
         );
 
         // The stack frame for `map` must name the prelude file

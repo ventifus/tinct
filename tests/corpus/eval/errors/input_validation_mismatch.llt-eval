@@ -2,7 +2,7 @@
 # First document produces an Int
 42
 
---- %@Dict
+--- expects: Dict
 # Second document expects a Dict, but % is Int - should error
 
 %.foo

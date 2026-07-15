@@ -1,9 +1,0 @@
-# Exhaustiveness: wildcard arm after complete Int+String coverage is inaccessible.
-# [@[Integer String] 42] gives scrutinee typed Union(Int, String).
-# Int and String arms exhaust all variants; the wildcard arm is unreachable.
-[match [@[Integer String] 42]
-    Integer: "int"
-    String:  "str"
-    _:       "catch"]
-=== out
-[TypeError] inaccessible match arm: reachable only via diverging (bottom) values

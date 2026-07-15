@@ -1,0 +1,14 @@
+# builtin-program-docs splits a multi-document program into individual documents.
+# A program with two --- sections produces an auto-indexed dict with 2 Document entries.
+[call [fn [let]
+  [src:    [builtin-str-bytes "[x: 1]\n---\n[y: 2]"]]
+  [parsed: [builtin-parse src "two-docs.llt"]]
+  [desug:  [builtin-desugar parsed.program]]
+  [docs:   [builtin-program-docs desug]]
+  [count:  [builtin-dict-length docs]]
+  [has-0:  [builtin-has-key? 0 docs]]
+  [has-1:  [builtin-has-key? 1 docs]]
+  [count-ok: [builtin-eq-int count 2]]
+  [builtin-int-add [builtin-int-add count-ok has-0] has-1]]]
+=== out
+Int(3)

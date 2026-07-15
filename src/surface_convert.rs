@@ -12,9 +12,8 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 
 use crate::ast::{
-    Annotation, DotKey, Position, Span, Spanned, Stage, SurfaceDeclaration, SurfaceDocument,
-    SurfaceEntry, SurfaceExpression, SurfaceItem, SurfaceNamedArg, SurfaceNode, SurfaceParam,
-    SurfaceProgram,
+    Annotation, DotKey, Position, Span, Spanned, SurfaceDeclaration, SurfaceDocument, SurfaceEntry,
+    SurfaceExpression, SurfaceItem, SurfaceNamedArg, SurfaceNode, SurfaceParam, SurfaceProgram,
 };
 use crate::error::EvalResult;
 use crate::rust_span;
@@ -2288,57 +2287,21 @@ fn surface_document_to_thunk_id(
         list_to_thunk_id(item_ids.into_iter(), span.clone(), ctx)?,
     );
 
-    // name: string or []
+    // header: dict of header entries (as SurfaceNode values)
+    let header_thunks: IndexMap<HashableValue, ThunkId> = doc
+        .header
+        .iter()
+        .map(|(k, v)| {
+            Ok((
+                HashableValue::Str(k.clone().into()),
+                surface_node_to_thunk_id(v, opts, ctx)?,
+            ))
+        })
+        .collect::<EvalResult<_>>()?;
     dict.insert(
-        HashableValue::Str("name".into()),
-        match &doc.name {
-            Some(s) => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                string_val(s),
-                span.clone(),
-            ))),
-            None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Dict(IndexMap::new()),
-                span.clone(),
-            ))),
-        },
-    );
-
-    // output-type: annotation or []
-    dict.insert(
-        HashableValue::Str("output-type".into()),
-        match &doc.output_type {
-            Some(a) => annotation_to_thunk_id(&a.node, span.clone(), ctx)?,
-            None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Dict(IndexMap::new()),
-                span.clone(),
-            ))),
-        },
-    );
-
-    // expects: annotation or []
-    dict.insert(
-        HashableValue::Str("expects".into()),
-        match &doc.expects {
-            Some(a) => annotation_to_thunk_id(&a.node, span.clone(), ctx)?,
-            None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Dict(IndexMap::new()),
-                span.clone(),
-            ))),
-        },
-    );
-
-    // stage: DocStage.Type | DocStage.Runtime — nominal variant based on document stage annotation
-    let stage_tag = match &doc.stage {
-        Some(Stage::Type) => "DocStage.Type",
-        Some(Stage::Runtime) | None => "DocStage.Runtime",
-    };
-    dict.insert(
-        HashableValue::Str("stage".into()),
+        HashableValue::Str("header".into()),
         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Variant {
-                tag: stage_tag.to_string(),
-                payload: None,
-            },
+            Value::Dict(header_thunks),
             span.clone(),
         ))),
     );

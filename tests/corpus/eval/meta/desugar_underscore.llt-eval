@@ -1,0 +1,12 @@
+# builtin-desugar accepts a Program and returns a Program (desugared in-place).
+# Verifies that builtin-desugar returns the same opaque type it received,
+# confirming the $_ shorthand desugaring pass ran without error.
+[call [fn [let]
+  [src:       [builtin-str-bytes "[map [* _ 2] [1 2 3]]"]]
+  [parsed:    [builtin-parse src "test.llt"]]
+  [desugared: [builtin-desugar parsed.program]]
+  [type-ok:   [builtin-eq-string [builtin-type-of desugared] "Program"]]
+  [parse-ok:  [builtin-eq-int [builtin-dict-length parsed.errors] 0]]
+  [builtin-int-add type-ok parse-ok]]]
+=== out
+Int(2)

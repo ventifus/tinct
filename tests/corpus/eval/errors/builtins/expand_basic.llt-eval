@@ -1,11 +1,11 @@
-# resolve: round-trip a simple source string through resolve, verify the result structure
-# Access the exprs field to verify resolution produced actual expressions
+# builtin-resolve rejects a Value::Program — callers must resolve per-document.
+# Parse "42" to get a Program, then pass the Program directly to builtin-resolve.
+# builtin-resolve expects a Document; passing a Program produces a user error.
 [
-  resolved: [builtin-resolve [load "42"]].resolved
-  type-ok: [= resolved.type "file"]
-  has-exprs: [> [length [collect resolved.exprs]] 0]
-  [and type-ok has-exprs]
+  parsed: [builtin-parse [builtin-str-bytes "42"] "test.llt"]
+  desug: [builtin-desugar parsed.program]
+  [builtin-resolve desug []]
 ]
 
 === error
-cannot serialize Program to JSON (defined at 3:13-3:35)
+builtin-resolve: Value::Program is no longer accepted

@@ -577,9 +577,8 @@ impl Env {
             ("builtin-to-int", "to-int"),
             ("builtin-append", "append"),
             ("builtin-length", "length"),
-            // docgen-conformance: list-dir, load, expand exported from prelude
+            // docgen-conformance: list-dir, expand exported from prelude
             ("builtin-list-dir", "list-dir"),
-            ("builtin-load", "load"),
             ("builtin-expand", "expand"),
             ("builtin-eval", "eval"),
             ("builtin-eval-types", "eval-types"),

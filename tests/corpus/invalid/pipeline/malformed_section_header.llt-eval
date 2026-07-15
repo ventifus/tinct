@@ -1,7 +1,7 @@
 # Test that an unexpected token in a section header is a parse error.
-# `--- foo` (bare identifier without % prefix) is not valid in a section header.
+# `--- foo` (bare identifier without % prefix, no colon) is not valid in a section header.
 [x: 1]
 --- foo
 [y: 2]
 === out
-3:5: unexpected token in section header: Identifier("foo")
+3:9: expected ':' after 'foo' in header

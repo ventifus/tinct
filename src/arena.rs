@@ -73,7 +73,10 @@ impl ScopeArena {
         thunk: Arc<crate::value::Thunk>,
     ) -> ThunkId {
         let slot = self.scopes[env_id.0 as usize].push(name, thunk);
-        ThunkId { scope_id: env_id.0, slot }
+        ThunkId {
+            scope_id: env_id.0,
+            slot,
+        }
     }
 
     /// Reserve a named slot for letrec phase 1 (None placeholder, filled later by fill_slot).
@@ -137,7 +140,9 @@ impl ScopeArena {
     pub fn get_thunk(&self, id: ThunkId) -> Arc<crate::value::Thunk> {
         self.scopes[id.scope_id as usize]
             .get(id.slot)
-            .expect("use-after-free: ThunkId accessed after arena scope was dropped or slot is empty")
+            .expect(
+                "use-after-free: ThunkId accessed after arena scope was dropped or slot is empty",
+            )
             .clone()
     }
 
@@ -195,12 +200,16 @@ impl Scope {
     /// Append a named binding. Returns the slot index.
     /// Panics in debug builds if name is empty — all bindings must be named.
     pub(crate) fn push(&mut self, name: &str, thunk: Arc<crate::value::Thunk>) -> u32 {
-        debug_assert!(!name.is_empty(), "Scope::push: all bindings must be named; use gensym for synthetic slots");
+        debug_assert!(
+            !name.is_empty(),
+            "Scope::push: all bindings must be named; use gensym for synthetic slots"
+        );
         debug_assert_eq!(self.slots.len(), self.slot_names.len());
         let slot = self.slots.len() as u32;
         self.slots.push(Some(thunk));
         self.slot_names.push(name.to_string());
-        self.alloc_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.alloc_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         slot
     }
 
@@ -230,7 +239,10 @@ impl Scope {
 
     /// Cold path: iterate (name, slot_index) pairs in insertion order.
     pub(crate) fn iter_named(&self) -> impl Iterator<Item = (&str, u32)> {
-        self.slot_names.iter().enumerate().map(|(i, n)| (n.as_str(), i as u32))
+        self.slot_names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.as_str(), i as u32))
     }
 
     /// Count live (filled) slots — for builtin-arena-stats.
@@ -297,7 +309,10 @@ pub fn migrate_flat_env(
     // Collect the source slot names and thunks for migration.
     let src_slots: Vec<(String, Option<Arc<crate::value::Thunk>>)> = {
         let src_env = &arena.scopes[src_env_id_u32 as usize];
-        src_env.slot_names.iter().zip(src_env.slots.iter())
+        src_env
+            .slot_names
+            .iter()
+            .zip(src_env.slots.iter())
             .map(|(n, s)| (n.clone(), s.clone()))
             .collect()
     };
@@ -790,7 +805,10 @@ mod tests {
 
         arena.fill_slot(env_id, slot_idx, src_tid);
 
-        let tid = ThunkId { scope_id: env_id.0, slot: 0 };
+        let tid = ThunkId {
+            scope_id: env_id.0,
+            slot: 0,
+        };
         let retrieved = arena.get_thunk(tid);
         assert_eq!(retrieved.try_get_materialized(), Some(Value::Int(99)));
     }
@@ -873,7 +891,10 @@ mod tests {
 
     #[test]
     fn test_thunk_id_struct_copy() {
-        let id = ThunkId { scope_id: 3, slot: 7 };
+        let id = ThunkId {
+            scope_id: 3,
+            slot: 7,
+        };
         let id_copy = id; // Copy — not moved
         assert_eq!(id, id_copy);
         assert_eq!(id.scope_id, 3);

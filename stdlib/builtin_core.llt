@@ -99,7 +99,7 @@
 
   # ── Builder ops ───────────────────────────────────────────────────────────
   builtin-make-builder:      [fn@BuilderHandle [] ...]
-  builtin-builder-set:       [fn@BuilderHandle [let builder@BuilderHandle value@Any key@Any] ...]
+  builtin-builder-set:       [fn@BuilderHandle [let key@Any value@Any builder@BuilderHandle] ...]
   builtin-builder-delete:    [fn@BuilderHandle [let builder@BuilderHandle key@Any] ...]
   builtin-builder-finish:    [fn@Dict    [let builder@BuilderHandle] ...]
   builtin-builder-snapshot:  [fn@Dict    [let builder@BuilderHandle] ...]
@@ -141,19 +141,28 @@
   builtin-write-stderr:  [fn@[bind: [h] return: h] [let s@String h] ...]
 
   # ── Pipeline primitives ────────────────────────────────────────────────────
-  builtin-parse:         [fn@Program [let src@Bytes path@String] ...]
-  builtin-resolve:       [fn@Dict    [let prog@Any ...opts] ...]
-  builtin-typecheck:     [fn@Program [let prog@Any ctx@TypeContext ...opts] ...]
-  builtin-eval:          [fn@Dict    [let prog@Any ...opts] ...]
+  builtin-parse:          [fn@Program  [let src@Bytes path@String] ...]
+  builtin-desugar:        [fn@Program  [let prog@Program] ...]
+  builtin-resolve:        [fn@Dict     [let doc@Document frames@Dict] ...]
+  builtin-eval:           [fn@Dict     [let typed@Document scope-id@Int] ...]
+  builtin-typecheck-doc:  [fn@Document [let doc@Document tc@TypeContext] ...]
+  builtin-program-docs:      [fn@Dict     [let prog@Program] ...]
+  builtin-doc-meta:          [fn@Dict     [let doc@Document scope-id@Int] ...]
+  builtin-doc-expressions:   [fn@Dict     [let doc@Document] ...]
+
+  # ── Scope arena primitives ────────────────────────────────────────────────
+  builtin-scopes:         [fn@Dict [let] ...]
+  builtin-scope-new:      [fn@Int  [let parent@Any bindings@Dict] ...]
+  builtin-scope-names:    [fn@Dict [let scope-id@Int] ...]
+  builtin-scope-parent:   [fn@Any  [let scope-id@Int] ...]
 
   # ── Module system ─────────────────────────────────────────────────────────
-  builtin-module:        [fn@Dict    [let name@String] ...]
-  builtin-extend-env:    [fn@Any     [let parent@Any bindings@Dict] ...]
+  builtin-module:         [fn@Dict    [let name@String] ...]
 
   # ── TypeContext bootstrap ──────────────────────────────────────────────────
-  builtin-get-type-context:       [fn@TypeContext [] ...]
-  builtin-make-type-ctx:          [fn@TypeContext [] ...]
-  builtin-tc-with-type-stage-env: [fn@TypeContext [let ctx@TypeContext ts-acc@Any] ...]
+  builtin-get-type-context: [fn@TypeContext [] ...]
+  builtin-make-type-ctx:    [fn@TypeContext [] ...]
+  builtin-tc-with-scope:    [fn@TypeContext [let ctx@TypeContext scope-id@Int] ...]
 
   # ── Sequences (core collection ops) ───────────────────────────────────────
   builtin-take:    [fn@Dict [let n@Integer xs@Dict] ...]

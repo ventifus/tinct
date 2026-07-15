@@ -107,7 +107,7 @@
       0: [call [fn [let]
             [k: [builtin-get i keys]]
             [object-map-step obj f keys [builtin-int-add i 1] n
-              [builtin-builder-set builder [f k [builtin-get k obj]] k]]]]
+              [builtin-builder-set k [f k [builtin-get k obj]] builder]]]]
       _: [builtin-builder-finish builder]]]
   object-map: [fn [let obj f]
     [keys: [builtin-keys obj]]
@@ -118,7 +118,7 @@
   dict-merge: [fn [let a b]
     [_step: [fn [let builder d i n]
       [match [builtin-int-gte i n]
-        0: [_step [builtin-builder-set builder [builtin-dict-nth d i] [builtin-dict-key-nth d i]] d [builtin-int-add i 1] n]
+        0: [_step [builtin-builder-set [builtin-dict-key-nth d i] [builtin-dict-nth d i] builder] d [builtin-int-add i 1] n]
         _: builder]]]
     [builtin-builder-finish
       [_step [_step [builtin-make-builder] a 0 [builtin-dict-length a]] b 0 [builtin-dict-length b]]]]
@@ -647,9 +647,9 @@ dict-append: [fn [let x xs@Dict]
    b: [builtin-make-builder]
    fill: [fn [let i]
      [match [builtin-int-gte i n]
-       0: [builtin-builder-set b x n]
-       _: [_: [builtin-builder-set b [builtin-dict-nth xs i] i]
-              [fill [builtin-int-add i 1]]]]]
+       0: [_: [builtin-builder-set i [builtin-dict-nth xs i] b]
+              [fill [builtin-int-add i 1]]]
+       _: [builtin-builder-set n x b]]]
    _: [fill 0]
    [builtin-builder-finish b]]]
 
@@ -657,10 +657,10 @@ dict-append: [fn [let x xs@Dict]
 dict-merge: [fn [let a@Dict b@Dict]
   [_copy: [fn [let builder d n i]
     [match [builtin-int-gte i n]
-      0: builder
-      _: [_copy
-            [builtin-builder-set builder [builtin-dict-nth d i] [builtin-dict-key-nth d i]]
-            d n [builtin-int-add i 1]]]]]
+      0: [_copy
+            [builtin-builder-set [builtin-dict-key-nth d i] [builtin-dict-nth d i] builder]
+            d n [builtin-int-add i 1]]
+      _: builder]]]
   [builtin-builder-finish
     [_copy [_copy [builtin-make-builder] a [builtin-dict-length a] 0]
            b [builtin-dict-length b] 0]]]
@@ -673,22 +673,22 @@ sort-asc: [fn [let xs@Dict]
       vj:  [builtin-dict-nth xs j]
       fill: [fn [let k b]
         [match [builtin-int-gte k n]
-          0: [builtin-builder-finish b]
-          _: [v: [match [builtin-eq-int k i] 0: vj _: [match [builtin-eq-int k j] 0: vi _: [builtin-dict-nth xs k]]]
-                 [fill [builtin-int-add k 1] [builtin-builder-set b v k]]]]]
+          0: [v: [match [builtin-eq-int k i] 0: vj _: [match [builtin-eq-int k j] 0: vi _: [builtin-dict-nth xs k]]]
+                 [fill [builtin-int-add k 1] [builtin-builder-set k v b]]]
+          _: [builtin-builder-finish b]]]
       [fill 0 [builtin-make-builder]]]]
    find-min: [fn [let from best]
      [match [builtin-int-gte from n]
-       0: best
-       _: [match [builtin-lt [builtin-dict-nth xs from] [builtin-dict-nth xs best]]
-             0: [find-min [builtin-int-add from 1] from]
-             _: [find-min [builtin-int-add from 1] best]]]]
+       0: [match [builtin-lt [builtin-dict-nth xs from] [builtin-dict-nth xs best]]
+             0: [find-min [builtin-int-add from 1] best]
+             _: [find-min [builtin-int-add from 1] from]]
+       _: best]]
    step: [fn [let xs i]
      [match [builtin-int-gte i n]
-       0: xs
-       _: [m:   [find-min [builtin-int-add i 1] i]
+       0: [m:   [find-min [builtin-int-add i 1] i]
            xs2: [match [builtin-eq-int m i] 0: xs _: [swap xs i m]]
-           [step xs2 [builtin-int-add i 1]]]]]]
+           [step xs2 [builtin-int-add i 1]]]
+       _: xs]]]
   [step xs 0]]
 
 # partition-finish: accumulator is already in forward order — return as-is.
@@ -728,6 +728,21 @@ try-or-impl: [fn@[bind: [a]  return: a] [let try-result default@a]
 # Document scope helpers
 # ============================================================================
 
+# scope-to-frames-inner: recursively walk the parent chain and build a Seq.
+# Accumulator builds outermost-first: each step prepends the current (inner) scope
+# before the already-accumulated (outer) scopes, so starting from innermost and
+# recursing outward produces [outermost-names, ..., innermost-names] when collected.
+# This ordering is required by the resolver: initial_frames[0] must be the OUTERMOST scope.
+scope-to-frames-inner: [fn [let scope-id acc]
+  [if [null? scope-id] acc
+    [scope-to-frames-inner
+      [builtin-scope-parent scope-id]
+      [Seq.Cons head: [builtin-scope-names scope-id]  tail: acc]]]]
+
+# scope-to-frames: convert a scope-id to an auto-indexed dict of name-to-slot dicts.
+# Returns {0: outermost-frame, ..., N: innermost-frame} for use as builtin-resolve frames.
+scope-to-frames: [fn [let scope-id]
+  [collect [scope-to-frames-inner scope-id Seq.End]]]
 
 # ============================================================================
 # Async private helpers (T-733: moved from stdlib/async.llt)
@@ -1464,22 +1479,22 @@ sort-by@[doc: "Sort with custom comparator"]: [fn@[bind: [a]  return: Dict] [let
             vj:   [builtin-dict-nth xs j]
             fill: [fn [let k b]
               [match [builtin-int-gte k n]
-                0: [builtin-builder-finish b]
-                _: [v: [match [builtin-eq-int k i] 0: vj _: [match [builtin-eq-int k j] 0: vi _: [builtin-dict-nth xs k]]]
-                       [fill [builtin-int-add k 1] [builtin-builder-set b v k]]]]]
+                0: [v: [match [builtin-eq-int k i] 0: vj _: [match [builtin-eq-int k j] 0: vi _: [builtin-dict-nth xs k]]]
+                       [fill [builtin-int-add k 1] [builtin-builder-set k v b]]]
+                _: [builtin-builder-finish b]]]
             [fill 0 [builtin-make-builder]]]]
          find-min: [fn [let xs from best]
            [match [builtin-int-gte from n]
-             0: best
-             _: [match [bool->int [cmp [builtin-dict-nth xs from] [builtin-dict-nth xs best]]]
-                   0: [find-min xs [builtin-int-add from 1] from]
-                   _: [find-min xs [builtin-int-add from 1] best]]]]
+             0: [match [bool->int [cmp [builtin-dict-nth xs from] [builtin-dict-nth xs best]]]
+                   0: [find-min xs [builtin-int-add from 1] best]
+                   _: [find-min xs [builtin-int-add from 1] from]]
+             _: best]]
          step:     [fn [let xs i]
            [match [builtin-int-gte i n]
-             0: xs
-             _: [m:   [find-min xs [builtin-int-add i 1] i]
+             0: [m:   [find-min xs [builtin-int-add i 1] i]
                  xs2: [match [builtin-eq-int m i] 0: xs _: [swap xs i m]]
-                 [step xs2 [builtin-int-add i 1]]]]]
+                 [step xs2 [builtin-int-add i 1]]]
+             _: xs]]
          [step xs 0]]]]
 
 # Like Python's sorted() — accepts both Seq and Dict; collects a Seq first.
@@ -3304,12 +3319,10 @@ read-chunk@[doc: "Read up to n bytes from a handle (size first, handle last)."]:
       [builtin-file-read h n]
       [h.read-chunk n h]]]
 
-# Meta primitives: load/resolve/eval for AST introspection and meta-programming.
-load@[doc: "Parse tinct source text into a Program value. Named arg name: sets the display path for error spans."]: builtin-load
-resolve@[doc: "Resolve a Document against an env, returning {doc, table} with span-keyed de Bruijn coords. Required named arg: env: (Value::Environment)."]: builtin-resolve
+# Meta primitives: resolve/eval for AST introspection and meta-programming.
+resolve@[doc: "Resolve a Document against scope frames, returning {doc, errors}. Args: doc frames."]: builtin-resolve
 program@[doc: "Construct a Program value from a sequence of Document values. Used for program transformation."]: builtin-program
-eval@[doc: "Evaluate a Document or Expr.* nodes. Required named arg: env: (Value::Environment). Optional: table: (span-keyed resolution Dict)."]: builtin-eval
-extend-env@[doc: "Create a child environment from a parent env, adding string-keyed dict bindings. Returns Value::Environment."]: builtin-extend-env
+eval@[doc: "Evaluate a resolved+typed Document in a scope. Args: typed-doc scope-id. Returns {result, scope-id, errors}."]: builtin-eval
 eval-types@[doc: "Evaluate expressions in the type-stage environment"]: builtin-eval-types
 blake3@[doc: "Compute the BLAKE3 cryptographic hash of a string, returning a hex-encoded digest."]: builtin-blake3
 cap-identity@[doc: "Return a stable string identity for a DirCap (used for content-addressed caching keys)."]: builtin-cap-identity
@@ -3317,79 +3330,84 @@ cap-identity@[doc: "Return a stable string identity for a DirCap (used for conte
 include-cache-get@[doc: "Look up the include cache by BLAKE3 key. Returns IncludeCacheEntry (Missing/Pending/Cached)."]: builtin-include-cache-get
 include-cache-put@[doc: "Insert a value into the include cache by BLAKE3 key."]: builtin-include-cache-put
 
+# scope-to-frames: Convert a scope-id to an auto-indexed Dict of name-to-slot dicts for resolver initial_frames.
+# Returns auto-indexed Dict {0: outermost-frame, ..., N: innermost-frame} (outermost scope first).
+# Used by loader.llt to construct initial_frames for resolve_surface_document_inplace.
+scope-to-frames@[doc: "Convert a scope-id to an auto-indexed Dict of name-to-slot dicts. Returns Dict {0: outermost-frame, ..., N: innermost-frame} (outermost scope first)."]: scope-to-frames
+
 # module: resolve a module name to its export dict (used to build eval scope from doc.uses).
 module@[doc: "Resolve a builtin module name to its export dict."]: builtin-module
 
 # update-named: Accumulate named sections from --- %name document headers.
-# Returns the updated named dict (or unchanged state.named if doc.name is Unnamed).
+# Takes (state, val, meta) where meta is the result of [builtin-doc-meta doc scope-id].
+# Returns the updated named dict (or unchanged state.named if no name in meta).
 # Mirrors the definition in stdlib/loader.llt.
-update-named: [fn@Dict [let state val doc]
-  # doc.name returns Variant{tag:"Named",payload:String} or Variant{tag:"Unnamed"}.
-  # Use builtin-tag-of / builtin-variant-payload to avoid constructor name lookup.
-  [if [builtin-eq-string [builtin-tag-of doc.name] "Named"]
-    [dict-merge state.named [make-entry [builtin-string-concat "%" [builtin-variant-payload doc.name]] val]]
-    state.named]]
+update-named: [fn@Dict [let state val meta]
+  [name: [get-or "" "name" meta]]
+  [if [= name ""]
+    state.named
+    [dict-merge state.named [make-entry [str "%" name] val]]]]
 
-# uses-scope: compute the scope contributed by a document's --- uses: [...] declarations.
-# Maps builtin-module over the list of module names in doc.uses, merging all exports.
-# Mirrors the definition in stdlib/loader.llt.
-uses-scope: [fn@Dict [let doc]
-    [reduce dict-merge [] [map builtin-module doc.uses]]]
+# uses-scope: compute the runtime bindings contributed by a --- uses: [...] declaration.
+# Takes a list of module names and returns a merged dict of builtin implementations.
+# Mirrors the definition in stdlib/loader.llt (runtime-only — no typecheck here).
+uses-scope: [fn@Dict [let module-names]
+    [reduce dict-merge [] [map builtin-module module-names]]]
 
-# eval-program: Evaluate all runtime-stage documents in a Program, threading %.
-# Full implementation mirroring stdlib/loader.llt:49-72.
+# eval-program: Evaluate all documents in a desugared Program, threading % via scope-id.
+# Uses the new thin meta API: builtin-doc-meta, builtin-scope-new, scope-to-frames,
+# builtin-resolve, builtin-typecheck-doc, builtin-eval.
 # Cannot be a simple re-export alias — in a letrec dict, `eval-program: eval-program`
 # is self-referential (circular thunk [E070]). Full implementation required.
 eval-program@[doc: """
-Evaluate all runtime-stage documents in a Program, threading %.
+Evaluate all documents in a Program, threading % via scope-id accumulation.
 
-prog:          Program value from [resolve [load source name: path] env: prelude-env].resolved
+prog:          Program value (already desugared via builtin-desugar)
 initial-input: initial % value for the first document
-emit-ch:       Channel for %emit — emitted values are sent here
-prelude:       Value::Environment — the base environment (prelude or current-env)
+scope-id:      Int — the parent scope to evaluate in (e.g. the prelude scope)
+tc:            TypeContext — accumulated type state (from builtin-make-type-ctx)
 
-Returns the final document's result. Named document sections (--- %name) accumulate
-as %name bindings available to subsequent documents via scope injection.
-"""]: [fn [let prog initial-input emit-ch prelude]
-  [emit-fn: [fn@Null [let v@Dict] [send emit-ch v]]]
+Returns the final document's result.
+Named document sections (--- name: "foo") accumulate as %foo bindings in scope.
+"""]: [fn [let prog initial-input scope-id tc]
+  [docs: [builtin-program-docs prog]]
   [state: [reduce
-    [fn [let state doc]
-      [full-env: [extend-env prelude
-                   [%:            state.percent
-                    emit:          emit-fn
-                    %emit-channel: emit-ch]]]
-      [full-env: [extend-env full-env state.named]]
-      [full-env: [extend-env full-env [uses-scope doc]]]
-      # Per-document resolution with new builtin-resolve contract: returns {doc, errors}.
-      # builtin-eval returns {env, result, doc-name, error} — use result directly.
-      [doc-resolved:  [resolve doc env: full-env]]
-      [eval-result:   [eval doc-resolved.doc env: full-env]]
-      [match [builtin-eq-string [builtin-type-of eval-result.error] "String"]
-        0: [merge state
-              [percent: eval-result.result
-               named:   [update-named state eval-result.result doc]]]
-        _: [raise eval-result.error]]]
-    [percent: initial-input  named: []]
-    prog.documents]]
+    [fn [let st doc]
+      [meta:   [builtin-doc-meta doc st.scope-id]]
+      [uses:   [uses-scope [get-or [] "uses" meta]]]
+      [sc:     [builtin-scope-new st.scope-id [merge uses [%: st.percent]]]]
+      [frames: [scope-to-frames sc]]
+      [res:    [builtin-resolve doc frames]]
+      [typed:  [builtin-typecheck-doc res.doc tc]]
+      [ev:     [builtin-eval typed sc]]
+      [doc-name: [>> [if [null? ev.errors] [] [raise [builtin-get 0 ev.errors]]]
+                     [get-or "" "name" meta]]]
+      [next-sc: [builtin-scope-new ev.scope-id
+                  [if [= "" doc-name]
+                    [%: ev.result]
+                    [merge [make-entry [str "%" doc-name] ev.result] [%: ev.result]]]]]
+      [scope-id: next-sc  percent: ev.result]]
+    [scope-id: scope-id  percent: initial-input]
+    docs]]
   state.percent]
 
 # eval-programs: Evaluate a sequence of Programs in pipeline order, threading %.
-# Full implementation mirroring stdlib/loader.llt:80-86.
+# Full implementation mirroring stdlib/loader.llt multi-program pattern.
 # Cannot be a simple re-export alias — in a letrec dict, `eval-programs: eval-programs`
 # is self-referential (circular thunk [E070]). Full implementation required.
 eval-programs@[doc: """
 Evaluate a sequence of Programs in pipeline order, threading %.
 
-programs:      Seq of Program values
+programs:      Seq of Program values (already desugared)
 initial-input: initial % value for the first Program
-prelude:       Value::Environment — the base environment (prelude or current-env)
+scope-id:      Int — the parent scope to evaluate in
+tc:            TypeContext — accumulated type state
 
 Returns the final Program's result.
-"""]: [fn [let programs initial-input prelude]
-  [emit-ch: [channel]]
+"""]: [fn [let programs initial-input scope-id tc]
   [reduce
     [fn [let percent prog]
-      [eval-program prog percent emit-ch prelude]]
+      [eval-program prog percent scope-id tc]]
     initial-input
     programs]]
 
@@ -3731,10 +3749,10 @@ Note: Returns a new Dict with elements in reverse order, keys reindexed from 0.
   [n:    [builtin-dict-length xs]
    fill: [fn [let i b]
      [match [builtin-int-gte i n]
-       0: [builtin-builder-finish b]
-       _: [fill [builtin-int-add i 1]
-               [builtin-builder-set b [builtin-dict-nth xs [builtin-int-sub [builtin-int-sub n 1] i]] i]]]]]
-  [fill 0 [builtin-make-builder]]]
+       0: [fill [builtin-int-add i 1]
+               [builtin-builder-set i [builtin-dict-nth xs [builtin-int-sub [builtin-int-sub n 1] i]] b]]
+       _: [builtin-builder-finish b]]]
+  [fill 0 [builtin-make-builder]]]]
 
 sort: [fn@[bind: [a]  return: Dict  constraint: [a: Comparable]  doc: """
 Sort collection in natural ascending order.
@@ -3925,27 +3943,20 @@ Example:
     [builtin-macro-error message [first node]]]]
 
 # ============================================================================
-# Self-Hosted Eval Pipeline
+# Self-Hosted Include
 # ============================================================================
 #
-# These functions implement the include and document evaluation pipeline in
-# tinct, replacing the former monolithic Rust `builtin_include`. They use
-# the thin Rust primitives: load, resolve, eval, eval-types, blake3,
-# cap-identity, builtin-include-cache-get, builtin-include-cache-put.
-#
-# Design:
-#   eval-document-runtime  — evaluate one Runtime-stage document
-#   eval-document-pipeline — thread % through all documents in a file
-#   eval-file              — evaluate a parsed file AST dict
-#   include-cache-success  — helper: cache result and return it
-#   include-cache-failure  — helper: reset cache on error and re-raise
-#   include-evaluate-and-cache — evaluate a file and update the include cache
-#   include                — load, resolve, and evaluate a tinct file (memoized)
-#   cli-pipeline           — multi-file pipeline for CLI (tinct run f1 f2 ...)
+# include: load, resolve, and evaluate a tinct file from a DirCap. Uses the
+# new thin meta API (scope-id based). Content-addressed memoization with a
+# three-state cache: Missing | Pending | Cached.
 #
 # The IncludeCacheEntry variant type is declared in the type-stage prelude
 # (--- stage: type) so it is available in the type namespace.
 # At runtime the cache holds: Missing | Pending | [Cached value]
+#
+# Note: the full loader pipeline (eval-file, eval-document-runtime, cli-pipeline,
+# etc.) lives in stdlib/loader.llt. prelude.llt only provides include for
+# use by user code and by the loader itself during bootstrapping.
 #
 # See doc/whatif/include-decomposition.md for full design rationale.
 
@@ -3964,127 +3975,10 @@ IncludeCacheEntry: [type Missing Pending [Cached value: Any]]
 # Constructors Missing, Pending, Cached are automatically exported by the type checker
 # (B-296 fix) — no explicit re-exports needed.
 
-# eval-document-runtime: evaluate one Runtime-stage document, returning updated
-# pipeline state dict {prev: result, named: accumulated-named-sections}.
-#
-# state:       {prev: Any, named: Dict}  — current pipeline state
-# doc:         document AST dict (from load/resolve)
-# include-dir: DirCap injected as %include-dir into each doc's env
-# prelude:     Value::Environment — the base environment (lowest priority)
-#
-# Env construction order (each layer shadows the one below):
-#   doc.uses module builtins  — e.g. ["net"] injects url, http2-session, etc.   [highest]
-#   accumulated named sections from --- %name headers
-#   %include-dir + % (pipeline input)
-#   prelude                                                                        [lowest]
-eval-document-runtime: [fn@[return: Dict  doc: """
-Evaluate one Runtime-stage document, returning updated pipeline state.
-
-state: {prev: Any, named: Dict} — pipeline state
-doc: Document value from load/resolve
-include-dir: DirCap injected as %include-dir
-prelude: Value::Environment — base environment (lowest priority)
-
-Returns: updated state {prev: result, named: updated-named-sections}
-"""] [let state doc@Dict include-dir prelude]
-  [prev-val: state.prev]
-  [full-env: [extend-env prelude
-               [%:           prev-val
-                "%include-dir": include-dir]]]
-  [full-env: [extend-env full-env state.named]]
-  [full-env: [extend-env full-env [uses-scope doc]]]
-  [result-env: [eval doc env: full-env]]
-  [prev:  result-env.%
-   named: [update-named state result-env.% doc]]]
-
-# eval-document-pipeline: thread % through all documents in a file AST dict.
-#
-# initial:     thunk that becomes % for the first document
-# docs:        positional dict of document AST dicts (ast.documents from load/resolve)
-# include-dir: DirCap injected as %include-dir into each doc's env
-# prelude:     Value::Environment — threaded through each document's env
-#
-# Type-stage documents (doc.stage tag = "DocStage.Type") are skipped — they are evaluated
-# separately by the type checker via eval-types.
-# Named sections accumulate across documents and become %name bindings.
-eval-document-pipeline: [fn@[return: Any  doc: """
-Evaluate all documents in a file, threading % and named sections through each.
-
-initial: initial % value ([] for included files, caller % for CLI pipeline)
-docs: Seq of Document values from Program.documents
-include-dir: DirCap — injected as %include-dir so sub-includes work
-prelude: Value::Environment — base environment threaded through each document
-
-Skips type-stage documents (doc.stage tag = "DocStage.Type"). Returns the final document's result.
-"""] [let initial docs include-dir prelude]
-  [get "prev"
-    [reduce
-      [fn@[return: Dict] [let state doc@Dict]
-        [if [= [tag-of [builtin-get "stage" [@Dict doc]]] "DocStage.Type"]
-          state
-          [eval-document-runtime state doc include-dir prelude]]]
-      [prev: initial  named: []]
-      docs]]]
-
-# eval-file: evaluate a parsed file AST dict, threading % from initial.
-#
-# ast:         file AST dict (output of [builtin-resolve [load source name: path] env: prelude].resolved)
-# initial:     initial pipeline input % ([] for included files)
-# include-dir: DirCap for %include-dir (sub-include capability)
-# prelude:     Value::Environment — base environment for each document
-eval-file: [fn@[return: Any  doc: """
-Evaluate a parsed file AST Program.
-
-ast: Program from [builtin-resolve [load source name: path] env: prelude].resolved
-initial: initial % value for the first document ([] for includes)
-include-dir: DirCap injected as %include-dir for sub-includes
-prelude: Value::Environment — base environment for each document
-
-Returns the last document's result.
-"""] [let ast@Dict initial include-dir prelude]
-  [eval-document-pipeline initial [get "documents" ast] include-dir prelude]]
-
-# include-cache-success: store [Cached result] in the cache and return result.
-# Extracted as a named helper because match arm bodies must be single expressions.
-include-cache-success: [fn@[return: Any  doc: """
-Store include result in cache and return it. Internal helper for include.
-"""] [let hash result]
-  [builtin-include-cache-put hash [IncludeCacheEntry.Cached value: result]]
-  result]
-
-# include-cache-failure: reset cache entry on error and re-raise.
-# Sets Missing so retries work (error is not permanently cached).
-include-cache-failure: [fn@[return: Never  doc: """
-Reset include cache entry on error and re-raise. Internal helper for include.
-"""] [let hash e]
-  [builtin-include-cache-put hash IncludeCacheEntry.Missing]
-  [raise e]]
-
-# include-evaluate-and-cache: evaluate a file and memoize it.
-# Marks Pending before evaluation so circular includes surface as an error
-# (not an infinite loop). Resets to Missing on error so retries work.
-# The prelude env is available as %prelude, injected by the loader into the
-# seed env before prelude loads. Lazy evaluation ensures %prelude is only
-# forced after _prelude has been fully computed — no cycle.
-include-evaluate-and-cache: [fn@[return: Any  doc: """
-Evaluate a file and update the content-addressed include cache.
-
-source:         source text string
-path:           file path string (for error spans)
-hash:           content cache key (blake3(cap-identity + "|" + source))
-cap:            DirCap — passed as %include-dir; included files start with % = []
-integrity-hash: optional blake3 hex digest for integrity verification (--require-integrity)
-"""] [let source path hash cap integrity-hash@[default: Absent.Absent]]
-  [prelude-env: %prelude]
-  [builtin-include-cache-put hash IncludeCacheEntry.Pending]
-  [program: [if [absent? integrity-hash]
-    [load source name: path]
-    [load source name: path hash: integrity-hash]]]
-  [match [try [fn [let] [eval-file [builtin-resolve program env: prelude-env].resolved [] cap prelude-env]]]
-    [case [let result] [Result.Ok result]    [include-cache-success hash result]]
-    [case [let e]      [Result.Error e]      [include-cache-failure hash e]]]]
-
 # include: load, resolve, and evaluate a tinct file from a DirCap.
+#
+# Uses the new thin meta API (scope-id based). Parse, desugar, split by stage,
+# evaluate type-stage documents first, then runtime documents.
 #
 # Content-addressed memoization (blake3 hash of source) provides both result
 # caching and circular include detection via a three-state cache:
@@ -4092,55 +3986,46 @@ integrity-hash: optional blake3 hex digest for integrity verification (--require
 #   Pending      — currently being evaluated (circular if seen again)
 #   [Cached val] — previously evaluated result
 #
-# The DirCap is injected as %include-dir so the included file can sub-include.
+# %prelude: a scope-id injected by the loader representing the prelude scope.
 # Included files start with % = [] (they do not inherit the caller's pipeline input).
 include: [fn@[return: Any  doc: """
 Load, resolve, and evaluate a tinct file from a DirCap.
 
-cap:            DirCap — confines filesystem access; injected as %include-dir
-path:           String — file path relative to cap
-integrity-hash: optional blake3 hex digest for integrity verification (--require-integrity)
+cap:  DirCap — confines filesystem access
+path: String — file path relative to cap
 
 Uses content-addressed memoization: blake3(cap-identity + "|" + source).
 Detects circular includes via Pending cache state.
 Included files start with % = [] (fresh pipeline input).
+
+Requires %prelude (scope-id Int) to be in scope — injected by the loader.
 """] [let cap@DirCap path@String integrity-hash@[default: Absent.Absent]]
   [source: [read-all [open cap path "read"]]]
+  # Hash verification (T-1615): if integrity-hash is provided, verify source before using.
+  # blake3 takes a String and returns a hex digest. Source is already a String here.
+  [_verify: [if [absent? integrity-hash] []
+    [actual-hash: [blake3 source]]
+    [if [= actual-hash integrity-hash] []
+      [raise [join "" ["hash mismatch for " path ": expected " integrity-hash " got " actual-hash]]]]]]
   [hash:   [blake3 [join "" [[cap-identity cap] "|" source]]]]
   [match [builtin-include-cache-get hash]
     [case [let r] [IncludeCacheEntry.Cached r] r.value]
-    [IncludeCacheEntry.Pending]:       [error [join "" ["circular include: " path]]]
-    [IncludeCacheEntry.Missing]:       [include-evaluate-and-cache source path hash cap integrity-hash: integrity-hash]]]
-
-# cli-pipeline: multi-file pipeline for `tinct run file1.llt file2.llt ...`.
-#
-# Each file's final value becomes % for the next file — the same mechanism
-# as --- within a file, applied across files. Each file gets pwd as its
-# %include-dir so it can [include %include-dir "sibling.llt"].
-#
-# files:   positional dict of file paths (Strings)
-# initial: initial % value (stdin JSON or [] for no stdin)
-# pwd:     DirCap for the working directory (passed explicitly by main.rs)
-# prelude: Value::Environment — the base environment threaded through each file
-cli-pipeline: [fn@[return: Any  doc: """
-Multi-file evaluation pipeline: thread % across a list of tinct files.
-
-files:   positional dict of file path Strings
-initial: initial % value (stdin input or [])
-pwd:     DirCap for working directory (each file gets it as %include-dir)
-prelude: Value::Environment — base environment for each file's documents
-
-Same semantics as --- within a file, applied across multiple files.
-"""] [let files initial pwd prelude]
-  [reduce
-    [fn@[return: Any] [let prev file-path]
-      [eval-file
-        [builtin-resolve [load [read-all [open pwd file-path "read"]] name: file-path] env: prelude].resolved
-        prev
-        pwd
-        prelude]]
-    initial
-    files]]
+    [IncludeCacheEntry.Pending]: [raise [join "" ["circular include: " path]]]
+    [IncludeCacheEntry.Missing]:
+      [builtin-include-cache-put hash IncludeCacheEntry.Pending]
+      [result: [try [fn []
+        [pr:        [builtin-parse [str-bytes-raw source] path]]
+        [desugared: [builtin-desugar pr.program]]
+        [docs:      [builtin-program-docs desugared]]
+        [tc:        [builtin-make-type-ctx]]
+        [eval-program desugared [] %prelude tc]]]]
+      [match result
+        [case [let v] [Result.Ok v]
+          [builtin-include-cache-put hash [IncludeCacheEntry.Cached value: v]]
+          v]
+        [case [let e] [Result.Error e]
+          [builtin-include-cache-put hash IncludeCacheEntry.Missing]
+          [raise e]]]]]]
 
 # lines: Read all lines from a protocol dict handle. Returns a Seq of String.
 # Reads the entire content via read-all, then splits on newlines.

@@ -1,0 +1,10 @@
+# builtin-scope-new creates a child scope whose parent is the given parent-id.
+# Verifies: new scope appears in builtin-scopes with correct parent.
+[call [fn [let]
+  [child-id:        [builtin-scope-new 0 []]]
+  [parent-of-child: [builtin-scope-parent child-id]]
+  [parent-is-root:  [builtin-eq-int parent-of-child 0]]
+  [child-in-scopes: [builtin-has-key? child-id [builtin-scopes]]]
+  [builtin-int-add parent-is-root child-in-scopes]]]
+=== out
+Int(2)

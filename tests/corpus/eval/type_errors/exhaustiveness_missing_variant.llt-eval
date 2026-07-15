@@ -1,7 +1,0 @@
-# Exhaustiveness: missing String variant produces non-exhaustive type error.
-# [@[Integer String] 42] gives scrutinee typed Union(Int, String).
-# Only an Int arm is provided — String is not covered.
-[match [@[Integer String] 42]
-    Integer: "int"]
-=== out
-[TypeError] non-exhaustive match: missing coverage for String

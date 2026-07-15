@@ -1305,8 +1305,8 @@ pub(crate) fn builtin_var_resolution(
             }
         };
         let prog_val = materialize(&arg1_thunk, Some(&call_span), &ctx).await?;
-        let program = match prog_val {
-            Value::Program { program, .. } => program,
+        let program_id = match prog_val {
+            Value::Program { id, .. } => id,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-var-resolution".to_string(),
@@ -1388,17 +1388,20 @@ pub(crate) fn builtin_var_resolution(
             None
         }
 
-        let mut found: Option<(u32, u32)> = None;
-        'outer: for doc_spanned in &program.documents {
-            for item in &doc_spanned.node.items {
-                if let crate::ast::SurfaceItem::Expr(node) = item {
-                    if let Some(coords) = find_in_node(node, offset) {
-                        found = coords;
-                        break 'outer;
+        let found: Option<(u32, u32)> = ctx.with_program(program_id, |program| {
+            let mut found = None;
+            'outer: for doc_spanned in &program.documents {
+                for item in &doc_spanned.node.items {
+                    if let crate::ast::SurfaceItem::Expr(node) = item {
+                        if let Some(coords) = find_in_node(node, offset) {
+                            found = coords;
+                            break 'outer;
+                        }
                     }
                 }
             }
-        }
+            found
+        });
 
         let alloc =
             |v: Value| ctx.alloc_thunk(Arc::new(Thunk::new_materialized(v, call_span.clone())));
@@ -1736,17 +1739,11 @@ pub(crate) fn builtin_cap_identity(
     })
 }
 
-/// `load`: parse a source String into a file AST dict (same format as `ast-of`).
+/// `builtin-scopes`: Return all scopes in the scope arena.
 ///
-/// Takes 1 positional arg (String source text) and an optional `name:` named arg (String,
-/// used as the provenance hint for error messages).
-///
-/// Pipeline: parse → macro-expand → desugar → surface_program_to_dict.
-/// Returns `Value::Program(Arc<SurfaceProgram>)` — the runtime-v2 native AST type.
-///
-/// This is the primitive underlying the `include` pipeline in the include-decomposition design.
-/// runtime-v2 Part G: changed from Dict schema to Value::Program.
-pub(crate) fn builtin_load(
+/// Takes 0 args. Returns Dict {scope_id_int: parent_id_int_or_empty_dict, ...}
+/// For each scope, if scope.parent is Some(id) return Int(id), else return empty dict (null).
+pub(crate) fn builtin_scopes(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     Box::pin(async move {
@@ -1757,91 +1754,320 @@ pub(crate) fn builtin_load(
             ctx,
             ..
         } = ctx_arg;
-
-        if args.len() != 1 {
-            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+        crate::builtins::reject_named("builtin-scopes", named.as_ref(), call_span.clone())?;
+        if !args.is_empty() {
+            return Err(EvalError::arity_mismatch(0, args.len(), call_span).into());
         }
 
-        // Extract optional name: and hash: named args
-        let (name_hint, expected_hash): (Option<String>, Option<String>) = if let Some(named_map) =
-            named
-        {
-            // Reject unknown named args
-            for key in named_map.keys() {
-                if key != "name" && key != "hash" {
-                    return Err(EvalError::named_arg_rejected("load".to_string(), call_span).into());
-                }
-            }
-            let name_hint = if let Some(&name_thunk_id) = named_map.get("name") {
-                let name_thunk = ctx.get_thunk(name_thunk_id);
-                let name_val = materialize(&name_thunk, Some(&call_span), &ctx).await?; // H2: conditional (only when name: named arg present)
-                let name_str = require_string("load", name_val, name_thunk.span.clone())?;
-                Some(name_str)
-            } else {
-                None
-            };
-            let expected_hash = if let Some(&hash_thunk_id) = named_map.get("hash") {
-                let hash_thunk = ctx.get_thunk(hash_thunk_id);
-                let hash_val = materialize(&hash_thunk, Some(&call_span), &ctx).await?; // H2: conditional (only when hash: named arg present)
-                let hash_str = require_string("load", hash_val, hash_thunk.span.clone())?;
-                Some(hash_str)
-            } else {
-                None
-            };
-            (name_hint, expected_hash)
-        } else {
-            (None, None)
-        };
+        // Collect (scope_id, parent_val) while holding the borrow, then drop before allocating.
+        // Allocating thunks requires scope_arena.borrow_mut() via alloc_thunk(); holding
+        // the immutable borrow concurrently would panic at runtime.
+        let pairs: Vec<(usize, Value)> = {
+            let arena = ctx.scope_arena.borrow();
+            arena
+                .scopes
+                .iter()
+                .enumerate()
+                .map(|(i, scope)| {
+                    let parent_val = match scope.parent {
+                        Some(parent_id) => Value::Int(parent_id.0 as i64),
+                        None => Value::Dict(IndexMap::new()), // null = empty dict
+                    };
+                    (i, parent_val)
+                })
+                .collect()
+        }; // borrow dropped here
+        let mut result: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+        for (i, parent_val) in pairs {
+            let thunk_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                parent_val,
+                call_span.clone(),
+            )));
+            result.insert(HashableValue::Int(i as i64), thunk_id);
+        }
+        ok_val(Value::Dict(result), call_span)
+    })
+}
 
-        // Extract source string
-        let arg0_thunk = ctx.get_thunk(args[0]);
-        let source_val = arg0_thunk
+/// `builtin-scope-new`: Create a new scope with the given parent and bindings.
+///
+/// Takes 2 args:
+/// - arg0: Int (parent scope-id) or empty Dict (null = create root, no parent)
+/// - arg1: Dict of string-keyed bindings to install
+///
+/// Non-string keys → type error (raise immediately).
+/// Returns Int(new_scope_id).
+pub(crate) fn builtin_scope_new(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+            ..
+        } = ctx_arg;
+        crate::builtins::reject_named("builtin-scope-new", named.as_ref(), call_span.clone())?;
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+
+        // arg0: parent scope-id (Int) or null (empty Dict)
+        let parent_val = ctx
+            .get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let source = require_string("load", source_val, arg0_thunk.span.clone())?;
-
-        // Use name hint for error messages
-        let display_name = name_hint.as_deref().unwrap_or("<load>");
-
-        // Integrity hash verification
-        if let Some(expected) = &expected_hash {
-            let actual = blake3_hex(source.as_bytes());
-            if actual != *expected {
-                return Err(EvalError::include_hash_mismatch(
-                    display_name.to_string(),
-                    expected.clone(),
-                    actual,
+        let parent_id_opt: Option<crate::arena::ScopeId> = match parent_val {
+            Value::Int(n) => {
+                if n < 0 {
+                    return Err(EvalError::type_mismatch_ctx(
+                        "builtin-scope-new parent scope-id must be non-negative Int".to_string(),
+                        "non-negative Int",
+                        &format!("{}", n),
+                        call_span,
+                    )
+                    .into());
+                }
+                let parent_u32 = n as u32;
+                // Validate parent scope-id range before taking borrow_mut.
+                {
+                    let arena = ctx.scope_arena.borrow();
+                    let scope_len = arena.scopes.len();
+                    if parent_u32 as usize >= scope_len {
+                        return Err(EvalError::user_error(
+                            format!(
+                                "scope-id {} out of range (max {})",
+                                parent_u32,
+                                scope_len.saturating_sub(1)
+                            ),
+                            call_span,
+                        )
+                        .into());
+                    }
+                } // immutable borrow dropped before borrow_mut below
+                Some(crate::arena::ScopeId(parent_u32))
+            }
+            Value::Dict(ref d) if d.is_empty() => None, // null = no parent
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-scope-new parent".to_string(),
+                    "Int or []",
+                    other.type_name(),
                     call_span,
                 )
                 .into());
             }
-        } else if ctx.config.require_integrity {
-            // --require-integrity flag is set but no hash: argument provided
-            return Err(
-                EvalError::include_hash_required(display_name.to_string(), call_span).into(),
-            );
+        };
+
+        // arg1: Dict of string-keyed bindings
+        let bindings_val = ctx
+            .get_thunk(args[1])
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let bindings_dict = match bindings_val {
+            Value::Dict(d) => d,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-scope-new bindings".to_string(),
+                    "Dict",
+                    other.type_name(),
+                    call_span,
+                )
+                .into());
+            }
+        };
+
+        // Verify all keys are strings and pre-fetch all thunks BEFORE taking borrow_mut.
+        // get_thunk() calls scope_arena.borrow() internally; holding borrow_mut concurrently
+        // would panic. Collect (name, Arc<Thunk>) pairs first, then install while holding
+        // the mutable borrow.
+        let mut binding_thunks: Vec<(String, Arc<Thunk>)> = Vec::with_capacity(bindings_dict.len());
+        for (key, thunk_id) in &bindings_dict {
+            match key {
+                HashableValue::Str(name) => {
+                    let thunk = ctx.get_thunk(*thunk_id); // immutable borrow, short-lived
+                    binding_thunks.push((name.to_string(), Arc::clone(&thunk)));
+                }
+                other => {
+                    return Err(EvalError::type_mismatch_ctx(
+                        "builtin-scope-new bindings key".to_string(),
+                        "String",
+                        &format!("{:?}", other),
+                        call_span,
+                    )
+                    .into());
+                }
+            }
         }
 
-        // Parse
-        let parsed = crate::parser::parse(&source).map_err(|e| {
-            EvalError::user_error(
-                format!("load: parse error in \"{}\": {}", display_name, e),
-                call_span.clone(),
-            )
-        })?;
+        // Create the new scope and install bindings under borrow_mut.
+        let new_scope_id = {
+            let mut arena = ctx.scope_arena.borrow_mut();
+            let new_id = match parent_id_opt {
+                Some(parent_id) => arena.alloc_child(parent_id, binding_thunks.len()),
+                None => arena.alloc_root(binding_thunks.len()),
+            };
+            for (name, thunk) in binding_thunks {
+                arena.push_slot(new_id, &name, thunk);
+            }
+            new_id
+        }; // borrow_mut dropped here
 
-        // load returns the raw parsed SurfaceProgram with empty tables.
-        // Formatters need the raw AST. Callers that need resolution
-        // should call `[builtin-resolve [load ...]]` explicitly.
-        let program = parsed.program;
-        let program_value = Value::Program {
-            program: std::sync::Arc::new(program),
-            resolutions: std::sync::Arc::new(Default::default()),
-            types: std::sync::Arc::new(Default::default()),
-            expects_resolved: std::sync::Arc::new(std::collections::HashMap::new()),
+        ok_val(Value::Int(new_scope_id.0 as i64), call_span)
+    })
+}
+
+/// `builtin-scope-names`: Return the direct bindings of a scope.
+///
+/// Takes 1 arg: scope-id (Int).
+/// Returns Dict {String(name): Int(slot), ...} — direct bindings only, not inherited.
+pub(crate) fn builtin_scope_names(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+            ..
+        } = ctx_arg;
+        crate::builtins::reject_named("builtin-scope-names", named.as_ref(), call_span.clone())?;
+        if args.len() != 1 {
+            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+        }
+
+        let scope_id_val = ctx
+            .get_thunk(args[0])
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let scope_id_n = match scope_id_val {
+            Value::Int(n) => n,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-scope-names".to_string(),
+                    "Int",
+                    other.type_name(),
+                    call_span,
+                )
+                .into());
+            }
         };
-        let thunk = Arc::new(Thunk::new_materialized(program_value, call_span));
-        Ok(thunk)
+        if scope_id_n < 0 {
+            return Err(EvalError::type_mismatch_ctx(
+                "builtin-scope-names scope-id must be non-negative Int".to_string(),
+                "non-negative Int",
+                &format!("{}", scope_id_n),
+                call_span,
+            )
+            .into());
+        }
+        let scope_id_u32 = scope_id_n as u32;
+        {
+            let arena = ctx.scope_arena.borrow();
+            let scope_len = arena.scopes.len();
+            if scope_id_u32 as usize >= scope_len {
+                return Err(EvalError::user_error(
+                    format!(
+                        "scope-id {} out of range (max {})",
+                        scope_id_u32,
+                        scope_len.saturating_sub(1)
+                    ),
+                    call_span,
+                )
+                .into());
+            }
+        } // borrow dropped
+
+        // Collect (name, slot) while holding borrow, then drop before allocating.
+        // Allocating thunks requires scope_arena.borrow_mut() via alloc_thunk(); holding
+        // the immutable borrow concurrently would panic at runtime.
+        let named_pairs: Vec<(String, u32)> = {
+            let arena = ctx.scope_arena.borrow();
+            let scope = &arena.scopes[scope_id_u32 as usize];
+            scope
+                .iter_named()
+                .map(|(name, slot)| (name.to_string(), slot))
+                .collect()
+        }; // borrow dropped here
+        let mut result: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+        for (name, slot) in named_pairs {
+            let thunk_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                Value::Int(slot as i64),
+                call_span.clone(),
+            )));
+            result.insert(HashableValue::Str(name.into()), thunk_id);
+        }
+        ok_val(Value::Dict(result), call_span)
+    })
+}
+
+/// `builtin-scope-parent`: Return the parent scope-id of a scope.
+///
+/// Takes 1 arg: scope-id (Int).
+/// Returns Int(parent_id) if Some, empty Dict if None.
+pub(crate) fn builtin_scope_parent(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+            ..
+        } = ctx_arg;
+        crate::builtins::reject_named("builtin-scope-parent", named.as_ref(), call_span.clone())?;
+        if args.len() != 1 {
+            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+        }
+
+        let scope_id_val = ctx
+            .get_thunk(args[0])
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let scope_id_n = match scope_id_val {
+            Value::Int(n) => n,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-scope-parent".to_string(),
+                    "Int",
+                    other.type_name(),
+                    call_span,
+                )
+                .into());
+            }
+        };
+        if scope_id_n < 0 {
+            return Err(EvalError::type_mismatch_ctx(
+                "builtin-scope-parent scope-id must be non-negative Int".to_string(),
+                "non-negative Int",
+                &format!("{}", scope_id_n),
+                call_span,
+            )
+            .into());
+        }
+        let scope_id_u32 = scope_id_n as u32;
+        let arena = ctx.scope_arena.borrow();
+        let scope_len = arena.scopes.len();
+        if scope_id_u32 as usize >= scope_len {
+            return Err(EvalError::user_error(
+                format!(
+                    "scope-id {} out of range (max {})",
+                    scope_id_u32,
+                    scope_len.saturating_sub(1)
+                ),
+                call_span,
+            )
+            .into());
+        }
+        let scope = &arena.scopes[scope_id_u32 as usize];
+        let parent_val = match scope.parent {
+            Some(parent_id) => Value::Int(parent_id.0 as i64),
+            None => Value::Dict(IndexMap::new()), // null = empty dict
+        };
+        ok_val(parent_val, call_span)
     })
 }
 
@@ -1859,7 +2085,7 @@ pub(crate) fn builtin_load(
 ///
 /// Callers should check `errors` before proceeding. The `program` is always present
 /// (may be an empty program on fatal parse failure). Callers must call `builtin-resolve`
-/// (desugar + resolve) and then `builtin-typecheck` before passing the result to `builtin-eval`.
+/// (desugar + resolve) and then `builtin-typecheck-doc` before passing the result to `builtin-eval`.
 ///
 /// This is Stage 1 of the 4-stage pipeline: parse → resolve → typecheck → eval.
 pub(crate) fn builtin_parse(
@@ -1946,21 +2172,18 @@ pub(crate) fn builtin_parse(
         }
 
         // Build the program value. If the parse was fatal, produce an empty program.
-        let program_value = if let Some(output) = parsed {
-            Value::Program {
-                program: std::sync::Arc::new(output.program),
-                resolutions: std::sync::Arc::new(Default::default()),
-                types: std::sync::Arc::new(Default::default()),
-                expects_resolved: std::sync::Arc::new(std::collections::HashMap::new()),
-            }
+        let surface_program = if let Some(output) = parsed {
+            output.program
         } else {
             // Fatal parse: return empty program so {program, errors} is always usable.
-            Value::Program {
-                program: std::sync::Arc::new(crate::ast::SurfaceProgram { documents: vec![] }),
-                resolutions: std::sync::Arc::new(Default::default()),
-                types: std::sync::Arc::new(Default::default()),
-                expects_resolved: std::sync::Arc::new(std::collections::HashMap::new()),
-            }
+            crate::ast::SurfaceProgram { documents: vec![] }
+        };
+        let store_id = ctx.push_program(surface_program);
+        let program_value = Value::Program {
+            id: store_id,
+            resolutions: std::sync::Arc::new(Default::default()),
+            types: std::sync::Arc::new(Default::default()),
+            expects_resolved: std::sync::Arc::new(std::collections::HashMap::new()),
         };
 
         // Return {program: Value::Program, errors: integer-keyed Dict of error dicts}.
@@ -1981,24 +2204,18 @@ pub(crate) fn builtin_parse(
 
 /// `builtin-resolve`: Resolve a single `Value::Document` in-place.
 ///
+/// Takes 2 positional args: the document to resolve and a frames dict.
+///
+/// **Arguments:**
+/// - arg0: `Value::Document` (only Document, not Program — error if Program)
+/// - arg1: Dict — frames in format `{0: {name-a: 0, name-b: 1}, 1: {name-c: 5}, ...}`
+///   - Outer dict: integer-keyed, each entry is one scope frame
+///   - Inner dict: String key → Int value as (name, slot)
+///
+/// **Returns** `{doc: Document, errors: Dict<Int, ErrorDict>}`.
+///
 /// Writes De Bruijn coordinates into the inline `Resolution` OnceLocks on each `VarRef`/`DotAccess`
 /// node of the document's AST. After this call, `builtin-eval` lowers the resolved nodes directly.
-///
-/// **Named arguments:**
-///
-/// - `flat-env:` (Int, required) — the FlatEnv id that establishes the evaluation context.
-///
-/// - `scope-frames:` (Dict, required for Document resolution) — accumulated scope frames from
-///   previous documents in the pipeline, encoded as an auto-indexed dict of auto-indexed dicts
-///   of strings: `{0: {0: "field-get", 1: "slot-get", ...}, 1: {...}, ...}`.
-///   An empty dict (`[]`) is valid and means resolve with no outer scope.
-///   Returns a hard error if absent when resolving a Document.
-///
-/// **Returns** `{doc: Document, errors: Dict<Int, ErrorDict>, scope-frames: Dict}` where
-/// `scope-frames` contains ALL frames (initial + new from this document).
-/// Pass these directly as `scope-frames:` to the next `builtin-resolve` call.
-///
-/// Does NOT run the type checker. Call `builtin-typecheck` afterwards.
 ///
 /// This is Stage 2 of the 4-stage pipeline (Stage 1 is parse from loader.llt).
 pub(crate) fn builtin_resolve(
@@ -2012,187 +2229,100 @@ pub(crate) fn builtin_resolve(
             ctx,
             ..
         } = ctx_arg;
-        // Extract optional flat-env: named argument (Int).
-        // Reject any other named arguments.
-        let (opt_flat_env_id, opt_scope_frames_thunk) = if let Some(ref named_map) = named {
-            let unknown: Vec<&str> = named_map
-                .keys()
-                .filter(|k| k.as_str() != "flat-env" && k.as_str() != "scope-frames")
-                .map(|k| k.as_str())
-                .collect();
-            if !unknown.is_empty() {
-                return Err(EvalError::user_error(
-                    format!(
-                        "builtin-resolve: unknown named arguments: {}",
-                        unknown.join(", ")
-                    ),
-                    call_span,
-                )
-                .into());
-            }
-            (
-                named_map.get("flat-env").copied(),
-                named_map.get("scope-frames").copied(),
-            )
-        } else {
-            (None, None)
-        };
-        if args.len() != 1 {
-            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+        crate::builtins::reject_named("builtin-resolve", named.as_ref(), call_span.clone())?;
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        // Materialize the flat-env: argument if present
-        let flat_env_id = if let Some(fe_thunk_id) = opt_flat_env_id {
-            let fe_thunk = ctx.get_thunk(fe_thunk_id);
-            let fe_val = crate::eval::materialize(&fe_thunk, Some(&call_span), &ctx).await?;
-            match fe_val {
-                Value::Int(n) => Some(n as u32),
-                other => {
-                    return Err(EvalError::type_mismatch_ctx(
-                        "builtin-resolve flat-env:".to_string(),
-                        "Int",
-                        other.type_name(),
-                        call_span,
-                    )
-                    .into());
-                }
-            }
-        } else {
-            None
-        };
 
-        let val = ctx
+        // arg0: Value::Document ONLY
+        let doc_val = ctx
             .get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        match val {
-            // Program path removed — builtin-resolve only accepts Value::Document.
-            // Tinct code should resolve per-document (the narrow builtin principle):
-            // the loader orchestrates, the builtin does one thing.
-            // Callers that previously passed Value::Program should loop over
-            // program.documents and call [builtin-resolve doc env: env] for each.
+        let doc_arc = match doc_val {
+            Value::Document(d) => d,
             Value::Program { .. } => {
                 return Err(EvalError::user_error(
                     "builtin-resolve: Value::Program is no longer accepted — \
-                     resolve per-document instead: \
-                     [reduce [fn [let acc doc] [builtin-resolve doc env: e]] [] docs]"
+                     resolve per-document instead"
                         .to_string(),
                     call_span,
                 )
                 .into());
             }
-            // Build errors dict from resolve errors (undefined variables).
-            // Per-document resolution path: `[builtin-resolve doc env: E]`
-            //
-            // Resolves a single document with proper scope accumulation for intermediate
-            // dict expressions. Returns a dict:
-            //   {doc: Value::Document, errors: Dict<Int, ErrorDict>, scope-frames: Dict}
-            //
-            // Resolution is written inline to the AST nodes in `doc_arc`. After this call,
-            // lowering reads inline resolution directly from each VarRef/DotAccess node.
-            // No table: is needed in builtin-eval — the inline resolution is already on the nodes.
-            // The `errors:` dict contains resolve errors (undefined variables).
-            // The `scope-frames:` dict contains the NEW frames added by this document.
-            Value::Document(doc_arc) => {
-                if flat_env_id.is_none() {
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-resolve".to_string(),
+                    "Document",
+                    other.type_name(),
+                    call_span,
+                )
+                .into());
+            }
+        };
+
+        // arg1: Dict — frames in format {0: {name-a: 0, name-b: 1}, 1: {name-c: 5}, ...}
+        let frames_val = ctx
+            .get_thunk(args[1])
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let frames_dict = match frames_val {
+            Value::Dict(d) => d,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-resolve frames".to_string(),
+                    "Dict",
+                    other.type_name(),
+                    call_span,
+                )
+                .into());
+            }
+        };
+
+        // Decode frames: outer dict is integer-keyed (scope level indices), inner dict is String key → Int value.
+        // Non-integer outer keys are an error — they indicate a malformed frames dict.
+        let mut frame_entries: Vec<(i64, ThunkId)> = Vec::with_capacity(frames_dict.len());
+        for (k, v) in frames_dict.iter() {
+            match k {
+                HashableValue::Int(i) => {
+                    frame_entries.push((*i, *v));
+                }
+                other => {
                     return Err(EvalError::user_error(
-                        "builtin-resolve: flat-env: argument is required when first arg is a Document"
-                            .to_string(),
+                        format!(
+                            "builtin-resolve frames: outer keys must be integers (scope level indices), got {:?}",
+                            other
+                        ),
                         call_span,
                     )
                     .into());
                 }
+            }
+        }
+        frame_entries.sort_by_key(|(i, _)| *i);
 
-                let alloc = |v: Value| {
-                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(v, call_span.clone())))
-                };
-
-                // Resolve the document in-place: writes de Bruijn coords directly to the
-                // inline Resolution OnceLocks on the original Arc<SurfaceDocument>'s nodes.
-                // We do NOT clone — cloning would write to a copy's OnceLocks, not the
-                // original, so builtin-eval would see empty OnceLocks and lower everything
-                // to CoreExpr::Placeholder (with a LowerDiagnostic for each unresolved name).
-                //
-                // Build initial_frames from scope-frames: (required for Document resolution).
-                // scope-frames: is an auto-indexed dict of auto-indexed dicts of strings:
-                // {0: {0: "field-get", 1: "slot-get", ...}, 1: {...}, ...}.
-                // An empty dict (scope-frames: []) is valid and means resolve with no outer scope.
-                let initial_frames: Vec<indexmap::IndexMap<String, u32>> = if let Some(sf_thunk_id) =
-                    opt_scope_frames_thunk
-                {
-                    // Decode scope-frames: — an auto-indexed dict of auto-indexed dicts of
-                    // strings. Each outer entry is one scope frame; each inner entry is a
-                    // name visible in that frame.
-                    let sf_thunk = ctx.get_thunk(sf_thunk_id);
-                    let sf_val =
-                        crate::eval::materialize(&sf_thunk, Some(&call_span), &ctx).await?;
-                    match sf_val {
-                        Value::Dict(outer) => {
-                            // Collect integer-keyed frame entries in order.
-                            let mut frame_entries: Vec<(i64, ThunkId)> = outer
-                                .iter()
-                                .filter_map(|(k, v)| {
-                                    if let HashableValue::Int(i) = k {
-                                        Some((*i, *v))
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .collect();
-                            frame_entries.sort_by_key(|(i, _)| *i);
-
-                            let mut frames = Vec::new();
-                            for (_, frame_tid) in frame_entries {
-                                let frame_thunk = ctx.get_thunk(frame_tid);
-                                let frame_val =
-                                    crate::eval::materialize(&frame_thunk, Some(&call_span), &ctx)
+        let mut initial_frames: Vec<indexmap::IndexMap<String, u32>> = Vec::new();
+        for (_, frame_tid) in frame_entries {
+            let frame_thunk = ctx.get_thunk(frame_tid);
+            let frame_val = crate::eval::materialize(&frame_thunk, Some(&call_span), &ctx).await?;
+            match frame_val {
+                Value::Dict(inner) => {
+                    let mut frame: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
+                    for (k, v_tid) in &inner {
+                        match k {
+                            HashableValue::Str(name) => {
+                                let slot_thunk = ctx.get_thunk(*v_tid);
+                                let slot_val =
+                                    crate::eval::materialize(&slot_thunk, Some(&call_span), &ctx)
                                         .await?;
-                                match frame_val {
-                                    Value::Dict(inner) => {
-                                        // Collect integer-keyed name entries in order.
-                                        let mut name_entries: Vec<(i64, ThunkId)> = inner
-                                            .iter()
-                                            .filter_map(|(k, v)| {
-                                                if let HashableValue::Int(i) = k {
-                                                    Some((*i, *v))
-                                                } else {
-                                                    None
-                                                }
-                                            })
-                                            .collect();
-                                        name_entries.sort_by_key(|(i, _)| *i);
-
-                                        let mut frame: indexmap::IndexMap<String, u32> =
-                                            indexmap::IndexMap::new();
-                                        for (slot_i64, name_tid) in name_entries {
-                                            let name_thunk = ctx.get_thunk(name_tid);
-                                            let name_val = crate::eval::materialize(
-                                                &name_thunk,
-                                                Some(&call_span),
-                                                &ctx,
-                                            )
-                                            .await?;
-                                            match name_val.as_str() {
-                                                Some(s) => {
-                                                    frame.insert(s.to_string(), slot_i64 as u32);
-                                                }
-                                                None => {
-                                                    return Err(EvalError::type_mismatch_ctx(
-                                                        "builtin-resolve scope-frames: name"
-                                                            .to_string(),
-                                                        "String",
-                                                        name_val.type_name(),
-                                                        call_span,
-                                                    )
-                                                    .into());
-                                                }
-                                            }
-                                        }
-                                        frames.push(frame);
+                                match slot_val {
+                                    Value::Int(slot) => {
+                                        frame.insert(name.to_string(), slot as u32);
                                     }
                                     other => {
                                         return Err(EvalError::type_mismatch_ctx(
-                                            "builtin-resolve scope-frames: frame".to_string(),
-                                            "Dict",
+                                            "builtin-resolve frames entry".to_string(),
+                                            "Int (slot)",
                                             other.type_name(),
                                             call_span,
                                         )
@@ -2200,133 +2330,104 @@ pub(crate) fn builtin_resolve(
                                     }
                                 }
                             }
-                            // Empty frames is valid — resolve with no outer scope.
-                            frames
-                        }
-                        other => {
-                            return Err(EvalError::type_mismatch_ctx(
-                                "builtin-resolve scope-frames:".to_string(),
-                                "Dict",
-                                other.type_name(),
-                                call_span,
-                            )
-                            .into());
+                            other => {
+                                return Err(EvalError::type_mismatch_ctx(
+                                    "builtin-resolve frames key".to_string(),
+                                    "String (name)",
+                                    &format!("{:?}", other),
+                                    call_span,
+                                )
+                                .into());
+                            }
                         }
                     }
-                } else {
-                    return Err(EvalError::user_error(
-                        "builtin-resolve: scope-frames: argument is required for Document resolution".to_string(),
-                        call_span,
-                    ).into());
-                };
-
-                let (_resolve_table, resolve_errors, new_frames) =
-                    crate::resolve::resolve_surface_document_inplace(&doc_arc, &initial_frames);
-
-                // Build errors dict from resolve_errors (undefined variables).
-                let mut errors_dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
-                for (i, (name, span)) in resolve_errors.iter().enumerate() {
-                    let span_id = make_span_dict(span, &ctx, &call_span);
-                    let mut w: IndexMap<HashableValue, ThunkId> = IndexMap::new();
-                    w.insert(
-                        HashableValue::Str("kind".into()),
-                        alloc(string_val("resolve-error")),
-                    );
-                    w.insert(
-                        HashableValue::Str("message".into()),
-                        alloc(string_val(&format!("undefined variable: {}", name))),
-                    );
-                    w.insert(HashableValue::Str("span".into()), span_id);
-                    w.insert(
-                        HashableValue::Str("notes".into()),
-                        alloc(Value::Dict(IndexMap::new())),
-                    );
-                    w.insert(
-                        HashableValue::Str("call-stack".into()),
-                        alloc(Value::Dict(IndexMap::new())),
-                    );
-                    w.insert(
-                        HashableValue::Str("macro-expand".into()),
-                        alloc(Value::Dict(IndexMap::new())),
-                    );
-                    w.insert(
-                        HashableValue::Str("blame".into()),
-                        alloc(Value::Dict(IndexMap::new())),
-                    );
-                    errors_dict.insert(HashableValue::Int(i as i64), alloc(Value::Dict(w)));
+                    initial_frames.push(frame);
                 }
-
-                // Encode ALL frames (initial + new) as a tinct auto-indexed dict of
-                // auto-indexed dicts of strings: {0: {0: "name-a", ...}, 1: {...}, ...}
-                // Returning all frames lets the caller pass resolved.scope-frames directly
-                // to the next builtin-resolve call without any concatenation.
-                let scope_frames_val = {
-                    let mut outer: indexmap::IndexMap<HashableValue, ThunkId> =
-                        indexmap::IndexMap::new();
-                    for (i, frame) in initial_frames.iter().chain(new_frames.iter()).enumerate() {
-                        let mut inner: indexmap::IndexMap<HashableValue, ThunkId> =
-                            indexmap::IndexMap::new();
-                        for (name, &slot) in frame.iter() {
-                            inner.insert(HashableValue::Int(slot as i64), alloc(string_val(name)));
-                        }
-                        outer.insert(HashableValue::Int(i as i64), alloc(Value::Dict(inner)));
-                    }
-                    Value::Dict(outer)
-                };
-
-                // Return {doc: Value::Document, errors: Dict, scope-frames: Dict}
-                // Resolution is now inline on the document's AST nodes.
-                let doc_thunk_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    Value::Document(std::sync::Arc::clone(&doc_arc)),
-                    call_span.clone(),
-                )));
-                let errors_thunk_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    Value::Dict(errors_dict),
-                    call_span.clone(),
-                )));
-                let scope_frames_thunk_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    scope_frames_val,
-                    call_span.clone(),
-                )));
-                let mut result_dict = indexmap::IndexMap::new();
-                result_dict.insert(HashableValue::Str("doc".into()), doc_thunk_id);
-                result_dict.insert(HashableValue::Str("errors".into()), errors_thunk_id);
-                result_dict.insert(
-                    HashableValue::Str("scope-frames".into()),
-                    scope_frames_thunk_id,
-                );
-                ok_val(Value::Dict(result_dict), call_span)
+                other => {
+                    return Err(EvalError::type_mismatch_ctx(
+                        "builtin-resolve frame".to_string(),
+                        "Dict",
+                        other.type_name(),
+                        call_span,
+                    )
+                    .into());
+                }
             }
-
-            _ => Err(EvalError::type_mismatch_ctx(
-                "builtin-resolve".to_string(),
-                "Program or Document",
-                val.type_name(),
-                call_span,
-            )
-            .into()),
         }
+
+        // Resolve the document in-place.
+        // _resolve_table: the full ResolutionTable mapping spans to de Bruijn coords. Intentionally
+        //   discarded — the evaluator uses inline OnceLock resolutions written directly onto each
+        //   SurfaceNode::VarRef during the resolve walk (see lower.rs: resolution.get()). The
+        //   ResolutionTable is not read by the evaluator.
+        // _new_frames: the frames produced by this document's declarations (type aliases, etc.).
+        //   Intentionally discarded — the new scope-id returned by builtin-eval captures the
+        //   document's bindings in the ScopeArena, and tinct callers use scope-to-frames to
+        //   rebuild frames from the scope chain for the next document.
+        let (_resolve_table, resolve_errors, _new_frames) =
+            crate::resolve::resolve_surface_document_inplace(&doc_arc, &initial_frames);
+
+        // Build errors dict from resolve_errors (undefined variables).
+        let alloc =
+            |v: Value| ctx.alloc_thunk(Arc::new(Thunk::new_materialized(v, call_span.clone())));
+        let mut errors_dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+        for (i, (name, span)) in resolve_errors.iter().enumerate() {
+            let span_id = make_span_dict(span, &ctx, &call_span);
+            let mut w: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+            w.insert(
+                HashableValue::Str("kind".into()),
+                alloc(string_val("resolve-error")),
+            );
+            w.insert(
+                HashableValue::Str("message".into()),
+                alloc(string_val(&format!("undefined variable: {}", name))),
+            );
+            w.insert(HashableValue::Str("span".into()), span_id);
+            w.insert(
+                HashableValue::Str("notes".into()),
+                alloc(Value::Dict(IndexMap::new())),
+            );
+            w.insert(
+                HashableValue::Str("call-stack".into()),
+                alloc(Value::Dict(IndexMap::new())),
+            );
+            w.insert(
+                HashableValue::Str("macro-expand".into()),
+                alloc(Value::Dict(IndexMap::new())),
+            );
+            w.insert(
+                HashableValue::Str("blame".into()),
+                alloc(Value::Dict(IndexMap::new())),
+            );
+            errors_dict.insert(HashableValue::Int(i as i64), alloc(Value::Dict(w)));
+        }
+
+        // Return {doc: Value::Document, errors: Dict} — NO scope-frames
+        let doc_thunk_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            Value::Document(std::sync::Arc::clone(&doc_arc)),
+            call_span.clone(),
+        )));
+        let errors_thunk_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            Value::Dict(errors_dict),
+            call_span.clone(),
+        )));
+        let mut result_dict = indexmap::IndexMap::new();
+        result_dict.insert(HashableValue::Str("doc".into()), doc_thunk_id);
+        result_dict.insert(HashableValue::Str("errors".into()), errors_thunk_id);
+        ok_val(Value::Dict(result_dict), call_span)
     })
 }
 
-/// `builtin-typecheck`: Type-check a resolved `Value::Program`, returning a typed Program.
+// builtin_typecheck removed — use builtin_typecheck_doc for per-document type-checking
+
+/// `builtin-typecheck-doc`: Type-check a single resolved `Value::Document`.
 ///
-/// Takes a resolved Program (output of `builtin-resolve` or `expand`) and runs the type
-/// checker against it. Type errors are advisory — eval proceeds regardless. The returned
-/// Program has populated inline type annotations and `expects_resolved` map for use by `builtin-eval`.
+/// Takes 2 args:
+/// - arg0: Value::Document (already resolved)
+/// - arg1: Value::TypeContext
 ///
-/// Seeds the type checker from `inference_env` on the current EvalContext's TypeContext.
-/// After type-checking, writes the resulting `final_env` back to `inference_env` so that
-/// subsequent calls (e.g. user code after prelude) see all previously declared types.
-///
-/// The second argument is the TypeContext handle (`Value::TypeContext`). The TypeContext is
-/// accepted and validated.
-///
-/// TypeContext arg (arg 2) must be a Value::TypeContext handle from builtin-get-type-context.
-///
-/// Signature: `[builtin-typecheck resolved-program]` or
-///             `[builtin-typecheck resolved-program type-ctx]`
-pub(crate) fn builtin_typecheck(
+/// Returns Value::Document (same Arc — type annotations written inline).
+pub(crate) fn builtin_typecheck_doc(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     Box::pin(async move {
@@ -2337,249 +2438,98 @@ pub(crate) fn builtin_typecheck(
             ctx,
             ..
         } = ctx_arg;
-        // Extract optional scope-frames: named argument. Reject any unknown named args.
-        let opt_tc_scope_frames_thunk = if let Some(ref named_map) = named {
-            let unknown: Vec<&str> = named_map
-                .keys()
-                .filter(|k| k.as_str() != "scope-frames")
-                .map(|k| k.as_str())
-                .collect();
-            if !unknown.is_empty() {
-                return Err(EvalError::user_error(
-                    format!(
-                        "builtin-typecheck: unknown named arguments: {}",
-                        unknown.join(", ")
-                    ),
-                    call_span.clone(),
-                )
-                .into());
-            }
-            named_map.get("scope-frames").copied()
-        } else {
-            None
-        };
-        // Build a resolver seed Env from scope-frames: if provided.
-        // The Env is used by the type checker's name resolution pass to find instance bindings
-        // (ɪ-prefixed mangled names) that are visible in the runtime environment.
-        let resolver_seed_env: Option<std::sync::Arc<std::sync::RwLock<crate::env::Env>>> =
-            if let Some(sf_thunk_id) = opt_tc_scope_frames_thunk {
-                // Decode scope-frames: — same format as builtin-resolve scope-frames:.
-                // An auto-indexed dict of auto-indexed dicts of strings.
-                let sf_thunk = ctx.get_thunk(sf_thunk_id);
-                let sf_val = materialize(&sf_thunk, Some(&call_span), &ctx).await?;
-                match sf_val {
-                    Value::Dict(outer) => {
-                        // Collect integer-keyed frame entries in order.
-                        let mut frame_entries: Vec<(i64, ThunkId)> = outer
-                            .iter()
-                            .filter_map(|(k, v)| {
-                                if let HashableValue::Int(i) = k {
-                                    Some((*i, *v))
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect();
-                        frame_entries.sort_by_key(|(i, _)| *i);
-
-                        let mut root_env: Option<
-                            std::sync::Arc<std::sync::RwLock<crate::env::Env>>,
-                        > = None;
-                        for (_, frame_tid) in frame_entries {
-                            let frame_thunk = ctx.get_thunk(frame_tid);
-                            let frame_val =
-                                materialize(&frame_thunk, Some(&call_span), &ctx).await?;
-                            match frame_val {
-                                Value::Dict(inner) => {
-                                    // Collect integer-keyed name entries in order.
-                                    let mut name_entries: Vec<(i64, ThunkId)> = inner
-                                        .iter()
-                                        .filter_map(|(k, v)| {
-                                            if let HashableValue::Int(i) = k {
-                                                Some((*i, *v))
-                                            } else {
-                                                None
-                                            }
-                                        })
-                                        .collect();
-                                    name_entries.sort_by_key(|(i, _)| *i);
-
-                                    let mut frame = match &root_env {
-                                        Some(parent) => crate::env::Env::with_parent(
-                                            std::sync::Arc::clone(parent),
-                                        ),
-                                        None => crate::env::Env::new(),
-                                    };
-                                    for (_, name_tid) in name_entries {
-                                        let name_thunk = ctx.get_thunk(name_tid);
-                                        let name_val =
-                                            materialize(&name_thunk, Some(&call_span), &ctx)
-                                                .await?;
-                                        match name_val.as_str() {
-                                            Some(s) => {
-                                                frame.insert_slot_name_only(s.to_string());
-                                            }
-                                            None => {
-                                                return Err(EvalError::type_mismatch_ctx(
-                                                    "builtin-typecheck scope-frames: name"
-                                                        .to_string(),
-                                                    "String",
-                                                    name_val.type_name(),
-                                                    call_span,
-                                                )
-                                                .into());
-                                            }
-                                        }
-                                    }
-                                    root_env =
-                                        Some(std::sync::Arc::new(std::sync::RwLock::new(frame)));
-                                }
-                                other => {
-                                    return Err(EvalError::type_mismatch_ctx(
-                                        "builtin-typecheck scope-frames: frame".to_string(),
-                                        "Dict",
-                                        other.type_name(),
-                                        call_span,
-                                    )
-                                    .into());
-                                }
-                            }
-                        }
-                        root_env
-                    }
-                    other => {
-                        return Err(EvalError::type_mismatch_ctx(
-                            "builtin-typecheck scope-frames:".to_string(),
-                            "Dict",
-                            other.type_name(),
-                            call_span,
-                        )
-                        .into());
-                    }
-                }
-            } else {
-                None
-            };
-        // Accept 1 or 2 args: program, [type-ctx]
-        if args.is_empty() || args.len() > 2 {
-            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
-        }
-        // Extract and validate the TypeContext argument (arg 2).
-        // The passed TypeContext is the one we read from AND write to — tinct code
-        // is in charge of propagating it between calls (e.g. by passing the same tc
-        // to each builtin-typecheck in a uses-scope reduce loop). This allows TyConDefs
-        // (DirCap, File, etc.) from builtin_core.llt to accumulate in the TypeContext
-        // and be visible when builtin_io.llt is subsequently type-checked.
-        // A TypeContext must always be passed explicitly — callers are responsible for
-        // threading the TypeContext so TyConDefs accumulate across module type-checks.
+        crate::builtins::reject_named("builtin-typecheck-doc", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let tc_arc: Arc<Mutex<crate::eval::TypeContextData>> = {
-            let tc_thunk = ctx.get_thunk(args[1]);
-            let tc_val = materialize(&tc_thunk, Some(&call_span), &ctx).await?;
-            match tc_val {
-                Value::TypeContext(arc) => arc,
-                other => {
-                    return Err(EvalError::type_mismatch_ctx(
-                        "builtin-typecheck".to_string(),
-                        "TypeContext",
-                        other.type_name(),
-                        call_span,
-                    )
-                    .into());
-                }
-            }
-        };
-        let val = ctx
+
+        // arg0: Value::Document
+        let doc_val = ctx
             .get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        match val {
-            Value::Program {
-                program: surface_program,
-                ..
-            } => {
-                // Seed from the passed TypeContext (tc_arc). The tinct caller is responsible
-                // for passing the same TypeContext across calls so TyConDefs (DirCap, File, etc.)
-                // declared in builtin_core.llt accumulate and are visible to builtin_io.llt etc.
-                let (parent_env, type_stage_env, seed_tycon_env): (
-                    Arc<std::sync::RwLock<crate::env::Env>>,
-                    Option<Arc<std::sync::RwLock<crate::env::Env>>>,
-                    std::collections::HashMap<String, std::sync::Arc<crate::type_def::TyConDef>>,
-                ) = {
-                    let guard = tc_arc.lock().unwrap();
-                    (
-                        Arc::clone(&guard.inference_env),
-                        Some(Arc::clone(&guard.type_stage_env)),
-                        guard.tycon_env.clone(),
-                    )
-                };
-
-                // Run the full typecheck pass seeded from the accumulated env.
-                // Pass resolver_seed_env (from the env: named argument, if any) so that
-                // instance binding names (ɪ-prefixed) visible in the runtime eval env are
-                // also visible to the type checker's name resolution pass. Without this,
-                // method VarRefs (cast, +, -, etc.) produce false-positive "undefined variable"
-                // warnings because the type-only parent_env lacks ɪ-prefixed instance bindings.
-                // Pass type_stage_env from the TypeContext so that eval_type_stage_expr can
-                // evaluate user-defined TypeNode functions and type-stage combinators.
-                // Pass seed_tycon_env so that TyConDefs (DirCap, File, ClockCap, etc.) from
-                // builtin_core.llt are available when type-checking builtin_io.llt etc.
-                let (
-                    errors,
-                    _type_map,
-                    _doc_map,
-                    _scheme_map,
-                    _diagnostics,
-                    state,
-                    final_env,
-                    _annotation_table,
-                ) = crate::typecheck::typecheck_surface_program_with_env(
-                    &surface_program,
-                    parent_env,
-                    false, // enable_scheme_map
-                    resolver_seed_env,
-                    type_stage_env,
-                    seed_tycon_env,
-                    Some(Arc::clone(&ctx)), // pass EvalContext — capabilities come from tinct
-                )
-                .await;
-
-                // Write the final_env and new TyConDefs back into tc_arc (the passed TypeContext).
-                // Since tinct code passes the same tc_arc to each builtin-typecheck call,
-                // this accumulation is visible to subsequent calls — tinct is in control.
-                // TyConDefs use or_insert: core types declared first are never overwritten.
-                {
-                    let mut guard = tc_arc.lock().unwrap();
-                    guard.inference_env = Arc::clone(&final_env);
-                    for (name, def) in &state.tycon_env {
-                        guard
-                            .tycon_env
-                            .entry(name.clone())
-                            .or_insert_with(|| Arc::clone(def));
-                    }
-                }
-                let _ = errors; // type errors are no longer stored in Value::Program
-
-                ok_val(
-                    Value::Program {
-                        program: surface_program,
-                        resolutions: std::sync::Arc::new(Default::default()),
-                        types: std::sync::Arc::new(Default::default()),
-                        expects_resolved: std::sync::Arc::new(state.expects_resolved),
-                    },
+        let doc_arc = match doc_val {
+            Value::Document(d) => d,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-typecheck-doc".to_string(),
+                    "Document",
+                    other.type_name(),
                     call_span,
                 )
+                .into());
             }
-            _ => Err(EvalError::type_mismatch_ctx(
-                "builtin-typecheck".to_string(),
-                "Program",
-                val.type_name(),
-                call_span,
-            )
-            .into()),
+        };
+
+        // arg1: Value::TypeContext
+        let tc_val = ctx
+            .get_thunk(args[1])
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let tc_arc = match tc_val {
+            Value::TypeContext(arc) => arc,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-typecheck-doc".to_string(),
+                    "TypeContext",
+                    other.type_name(),
+                    call_span,
+                )
+                .into());
+            }
+        };
+
+        // Extract TypeContext state
+        let (mut state, mut type_map, parent_env) = {
+            let guard = tc_arc.lock().unwrap();
+            let mut state = crate::types::InferState::new();
+            state.tycon_env = guard.tycon_env.clone();
+            state.env = Arc::clone(&guard.inference_env);
+            let type_map = crate::ast::TypeAnnotationTable::new();
+            let parent_env = Arc::clone(&guard.inference_env);
+            (state, type_map, parent_env)
+        };
+
+        // Call typecheck_surface_document directly to capture the resulting env.
+        // typecheck_surface_document returns (doc_env, result_type, errors) where doc_env is
+        // a child of parent_env extended with type schemes for this document's bindings.
+        // Writing doc_env back to guard.inference_env accumulates type knowledge across
+        // documents so that bindings from document N are visible when type-checking document N+1.
+        let pipeline_type = crate::types::Type::Dict(crate::types::Row {
+            fields: indexmap::IndexMap::new(),
+            tail: crate::type_def::RowTail::Empty,
+        });
+        let named_types = std::collections::HashMap::new();
+        let (doc_env, _result_type, errors) = crate::typecheck::typecheck_surface_document(
+            &doc_arc,
+            &parent_env,
+            &mut state,
+            &mut type_map,
+            &mut None,
+            &pipeline_type,
+            &named_types,
+        )
+        .await;
+
+        // Write results back to TypeContext:
+        // - tycon_env: new type constructor definitions from this document
+        // - inference_env: the accumulated doc_env so subsequent documents see this document's
+        //   type schemes (Hindley-Milner accumulation across files per TypeContextData doc comment)
+        // - type_errors: accumulated type errors from this document (for observability)
+        {
+            let mut guard = tc_arc.lock().unwrap();
+            for (name, def) in &state.tycon_env {
+                guard
+                    .tycon_env
+                    .entry(name.clone())
+                    .or_insert_with(|| Arc::clone(def));
+            }
+            guard.inference_env = doc_env;
+            guard.type_errors.extend(errors);
         }
+
+        // Return the same Document Arc (type annotations written inline)
+        ok_val(Value::Document(doc_arc), call_span)
     })
 }
 
@@ -2670,11 +2620,12 @@ pub(crate) fn builtin_make_type_ctx(
         // it returns the TypeContext that main.rs pre-populated from builtin_core.llt.
         let tc = TypeContextData {
             type_stage_env: Arc::new(RwLock::new(Env::new())),
-            type_stage_flat_env_id: None,
+            type_stage_scope_id: None,
             inference_env: crate::imports::get_builtin_core_type_env()
                 .await
                 .expect("builtin_core type env unavailable"),
             tycon_env: std::collections::HashMap::new(),
+            type_errors: Vec::new(),
         };
         // Install it on EvalContext (no-op if already initialized).
         ctx.init_type_context(tc.clone());
@@ -2731,23 +2682,22 @@ pub(crate) fn builtin_fork_type_ctx(
     })
 }
 
-/// `builtin-tc-with-type-stage-env`: Inject a type-stage FlatEnv id into a `TypeContext`.
+/// `builtin-tc-with-scope`: Registers the scope-id of type-stage function thunks in the TypeContext.
 ///
 /// Takes 2 positional args (both forced):
 ///   - arg 0: `Value::TypeContext` — the TypeContext to update
-///   - arg 1: `Value::Int` — the flat-env-id produced by evaluating type-stage documents
+///   - arg 1: `Value::Int` — the scope-id produced by evaluating type-stage documents
 ///
-/// Locks the TypeContext mutex, records the flat-env-id for resolver lookup, and initializes
-/// `type_stage_env` to an empty Env (type-stage functions live in FlatEnv now).
+/// Locks the TypeContext mutex, records the scope-id for resolver lookup, and initializes
+/// `type_stage_env` to an empty Env (type-stage functions live in Scope now).
 /// Returns the **same** `Value::TypeContext` value (the mutation is in-place).
 ///
 /// Used by loader.llt and test-loader.llt to wire the type-stage env into the TypeContext
 /// before type-checking.
 ///
-/// Signature: `[builtin-tc-with-type-stage-env type-ctx ts-flat-env-id]`
-/// where `ts-flat-env-id` is the Int returned by the final `builtin-extend-env` call in
-/// the type-stage evaluation reduce.
-pub(crate) fn builtin_tc_with_type_stage_env(
+/// Signature: `[builtin-tc-with-scope type-ctx ts-scope-id]`
+/// where `ts-scope-id` is the Int returned by the final scope-id from type-stage evaluation.
+pub(crate) fn builtin_tc_with_scope(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     Box::pin(async move {
@@ -2758,11 +2708,7 @@ pub(crate) fn builtin_tc_with_type_stage_env(
             ctx,
             ..
         } = ctx_arg;
-        crate::builtins::reject_named(
-            "builtin-tc-with-type-stage-env",
-            named.as_ref(),
-            call_span.clone(),
-        )?;
+        crate::builtins::reject_named("builtin-tc-with-scope", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
@@ -2770,7 +2716,7 @@ pub(crate) fn builtin_tc_with_type_stage_env(
             .get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let flat_env_id_val = ctx
+        let scope_id_val = ctx
             .get_thunk(args[1])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
@@ -2779,7 +2725,7 @@ pub(crate) fn builtin_tc_with_type_stage_env(
             Value::TypeContext(arc) => arc,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
-                    "builtin-tc-with-type-stage-env".to_string(),
+                    "builtin-tc-with-scope".to_string(),
                     "TypeContext",
                     other.type_name(),
                     call_span,
@@ -2788,13 +2734,13 @@ pub(crate) fn builtin_tc_with_type_stage_env(
             }
         };
 
-        // arg 1: flat-env-id as Int
-        let flat_env_id = match flat_env_id_val {
+        // arg 1: scope-id as Int
+        let scope_id = match scope_id_val {
             Value::Int(n) => n as u32,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
-                    "builtin-tc-with-type-stage-env".to_string(),
-                    "Int (flat-env-id from type-stage evaluation)",
+                    "builtin-tc-with-scope".to_string(),
+                    "Int (scope-id from type-stage evaluation)",
                     other.type_name(),
                     call_span,
                 )
@@ -2802,12 +2748,11 @@ pub(crate) fn builtin_tc_with_type_stage_env(
             }
         };
 
-        // Update TypeContext: record flat-env-id; type_stage_env is an empty Env
-        // (type-stage functions are stored in FlatEnv, not Env).
+        // Update TypeContext: record scope-id for evaluate_resolver thunk lookup
         {
             let mut guard = tc_arc.lock().unwrap();
             guard.type_stage_env = Arc::new(std::sync::RwLock::new(crate::env::Env::new()));
-            guard.type_stage_flat_env_id = Some(flat_env_id);
+            guard.type_stage_scope_id = Some(scope_id);
         }
 
         ok_val(Value::TypeContext(tc_arc), call_span)
@@ -2859,12 +2804,11 @@ pub(crate) fn builtin_program(
                     let doc_val = crate::eval::materialize(&thunk, Some(&call_span), &ctx).await?;
                     match doc_val {
                         Value::Document(surface_doc) => {
-                            // Wrap the SurfaceDocument in a Spanned with origin span.
-                            // The document is reconstructed/transformed, so we use origin()
-                            // to indicate synthetic content. The original spans are preserved
-                            // in the expression nodes inside the SurfaceDocument.
+                            // T-1603: Use Arc::clone to preserve OnceLocks (resolver coordinates).
+                            // Deep clone would create a new SurfaceDocument with empty OnceLocks,
+                            // breaking resolution. Arc::clone just increments refcount.
                             documents.push(crate::ast::Spanned {
-                                node: std::sync::Arc::new((*surface_doc).clone()),
+                                node: Arc::clone(&surface_doc),
                                 span: rust_span!(),
                             });
                             if documents.len() >= MAX_COLLECT_SIZE {
@@ -2901,19 +2845,334 @@ pub(crate) fn builtin_program(
             }
         }
 
-        // Construct the SurfaceProgram
+        // Construct the SurfaceProgram and push it into the program store.
         let surface_program = crate::ast::SurfaceProgram { documents };
+        let store_id = ctx.push_program(surface_program);
 
         // Return as Value::Program with empty tables (caller can run expand/resolve if needed)
         ok_val(
             Value::Program {
-                program: std::sync::Arc::new(surface_program),
+                id: store_id,
                 resolutions: std::sync::Arc::new(Default::default()),
                 types: std::sync::Arc::new(Default::default()),
                 expects_resolved: std::sync::Arc::new(std::collections::HashMap::new()),
             },
             call_span,
         )
+    })
+}
+
+/// `builtin-desugar`: Desugar a `Value::Program` in-place.
+///
+/// Thin wrapper around `desugar_surface_program`. Takes 1 arg: Value::Program
+/// Returns Value::Program with desugaring applied.
+pub(crate) fn builtin_desugar(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+            ..
+        } = ctx_arg;
+        crate::builtins::reject_named("builtin-desugar", named.as_ref(), call_span.clone())?;
+        if args.len() != 1 {
+            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+        }
+
+        let program_val = ctx
+            .get_thunk(args[0])
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let (program_id, resolutions, types, expects_resolved) = match program_val {
+            Value::Program {
+                id,
+                resolutions,
+                types,
+                expects_resolved,
+            } => (id, resolutions, types, expects_resolved),
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-desugar".to_string(),
+                    "Program",
+                    other.type_name(),
+                    call_span,
+                )
+                .into());
+            }
+        };
+
+        // ORDERING: builtin-desugar MUST be called before builtin-program-docs.
+        // Calling builtin-program-docs first shares Arc<SurfaceDocument> references from the
+        // program store; subsequent desugar passes call Arc::get_mut() which panics on shared Arcs.
+        // Correct call order in the pipeline: builtin-desugar → builtin-program-docs → builtin-resolve.
+        //
+        // Mutate the program in-place in the program_store. The store holds the unique
+        // SurfaceProgram; desugar runs before any Arc<SurfaceDocument> sharing (program-docs
+        // is called after desugar in the pipeline), so Arc::get_mut succeeds inside the
+        // desugar passes. Correct order: instance decl transformation must run first,
+        // then $_ desugaring and pipe lowering.
+        // Verify all document Arcs are exclusively owned before mutating.
+        // If builtin-program-docs was called first, document Arcs are shared (refcount > 1)
+        // and the desugar passes' Arc::get_mut() calls would panic. Return EvalError instead.
+        let all_exclusive = ctx.with_program(program_id, |program| {
+            program
+                .documents
+                .iter()
+                .all(|doc| std::sync::Arc::strong_count(&doc.node) == 1)
+        });
+        if !all_exclusive {
+            return Err(EvalError::user_error(
+                "builtin-desugar: cannot desugar after builtin-program-docs was called \
+                 (document Arcs are shared). Call builtin-desugar before builtin-program-docs."
+                    .to_string(),
+                call_span,
+            )
+            .into());
+        }
+        ctx.with_program_mut(program_id, |program| {
+            crate::desugar::desugar_instance_decls_surface_program(program);
+            crate::desugar::desugar_surface_program(program);
+        });
+
+        ok_val(
+            Value::Program {
+                id: program_id,
+                resolutions,
+                types,
+                expects_resolved,
+            },
+            call_span,
+        )
+    })
+}
+
+/// `builtin-program-docs`: Extract documents from a `Value::Program`.
+///
+/// Thin wrapper to access `SurfaceProgram.documents`. Takes 1 arg: Value::Program
+/// Returns auto-indexed Dict of Value::Document values (Arc::clone each doc).
+pub(crate) fn builtin_program_docs(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+            ..
+        } = ctx_arg;
+        crate::builtins::reject_named("builtin-program-docs", named.as_ref(), call_span.clone())?;
+        if args.len() != 1 {
+            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+        }
+
+        let program_val = ctx
+            .get_thunk(args[0])
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let program_id = match program_val {
+            Value::Program { id, .. } => id,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-program-docs".to_string(),
+                    "Program",
+                    other.type_name(),
+                    call_span,
+                )
+                .into());
+            }
+        };
+
+        // Collect Arc::clone handles while the store borrow is held, then release it
+        // before allocating thunks (alloc_thunk re-borrows scope_arena, not program_store).
+        let doc_arcs: Vec<(usize, Arc<crate::ast::SurfaceDocument>)> =
+            ctx.with_program(program_id, |program| {
+                program
+                    .documents
+                    .iter()
+                    .enumerate()
+                    .map(|(i, spanned)| (i, Arc::clone(&spanned.node)))
+                    .collect()
+            });
+        let mut result: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+        for (i, doc_arc) in doc_arcs {
+            let doc_thunk = Arc::new(Thunk::new_materialized(
+                Value::Document(doc_arc),
+                call_span.clone(),
+            ));
+            result.insert(HashableValue::Int(i as i64), ctx.alloc_thunk(doc_thunk));
+        }
+        ok_val(Value::Dict(result), call_span)
+    })
+}
+
+/// `builtin-doc-expressions`: Return expression items from a document.
+///
+/// Takes 1 arg: Value::Document.
+///
+/// Returns an auto-indexed Dict of Expr-variant values, one per SurfaceItem::Expr
+/// in the document. SurfaceItem::Decl items are skipped. The Expr-variant format
+/// is the same as produced by `surface_node_to_expr_variant`, which is what
+/// `json-expression` in json.llt consumes.
+///
+/// This replaces the `Value::Document.expressions` field-get backdoor that was
+/// deleted from builtins_dict.rs (T-1605 follow-up, S-926 R4).
+pub(crate) fn builtin_doc_expressions(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+            ..
+        } = ctx_arg;
+        crate::builtins::reject_named(
+            "builtin-doc-expressions",
+            named.as_ref(),
+            call_span.clone(),
+        )?;
+        if args.len() != 1 {
+            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+        }
+
+        let doc_val = ctx
+            .get_thunk(args[0])
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let doc_arc = match doc_val {
+            Value::Document(d) => d,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-doc-expressions".to_string(),
+                    "Document",
+                    other.type_name(),
+                    call_span,
+                )
+                .into());
+            }
+        };
+
+        let mut result: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+        let mut i = 0usize;
+        for item in &doc_arc.items {
+            if let crate::ast::SurfaceItem::Expr(node) = item {
+                let expr_val = crate::surface_convert::surface_node_to_expr_variant(node, &ctx);
+                let id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    expr_val,
+                    call_span.clone(),
+                )));
+                result.insert(HashableValue::Int(i as i64), id);
+                i += 1;
+            }
+        }
+        ok_val(Value::Dict(result), call_span)
+    })
+}
+
+/// `builtin-doc-meta`: Evaluate document header metadata.
+///
+/// Evaluates the header values of a document in the given scope. Takes 2 args:
+/// - arg0: Value::Document
+/// - arg1: Int (scope-id for evaluating header values)
+///
+/// Returns Dict {key: evaluated-value, ...}.
+/// Returns empty Dict if header is empty.
+pub(crate) fn builtin_doc_meta(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+            ..
+        } = ctx_arg;
+        crate::builtins::reject_named("builtin-doc-meta", named.as_ref(), call_span.clone())?;
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+
+        let doc_val = ctx
+            .get_thunk(args[0])
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let doc_arc = match doc_val {
+            Value::Document(d) => d,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-doc-meta".to_string(),
+                    "Document",
+                    other.type_name(),
+                    call_span,
+                )
+                .into());
+            }
+        };
+
+        let scope_id_val = ctx
+            .get_thunk(args[1])
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let scope_id = match scope_id_val {
+            Value::Int(n) => {
+                if n < 0 {
+                    return Err(EvalError::type_mismatch_ctx(
+                        "builtin-doc-meta scope-id must be non-negative Int".to_string(),
+                        "non-negative Int",
+                        &format!("{}", n),
+                        call_span,
+                    )
+                    .into());
+                }
+                let u = n as u32;
+                let scope_len = ctx.scope_arena.borrow().scopes.len();
+                if u as usize >= scope_len {
+                    return Err(EvalError::user_error(
+                        format!(
+                            "scope-id {} out of range (max {})",
+                            u,
+                            scope_len.saturating_sub(1)
+                        ),
+                        call_span,
+                    )
+                    .into());
+                }
+                Some(u)
+            }
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-doc-meta scope-id".to_string(),
+                    "Int",
+                    other.type_name(),
+                    call_span,
+                )
+                .into());
+            }
+        };
+
+        // Evaluate each header SurfaceNode value in the given scope and collect results.
+        let mut result: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+        for (key, node_arc) in &doc_arc.header {
+            let nodes = vec![Arc::clone(node_arc)];
+            let eval_result =
+                crate::eval::eval_document_exprs_with_env(&nodes, &ctx, scope_id).await;
+            match eval_result {
+                Ok((thunk, _)) => {
+                    result.insert(
+                        HashableValue::Str(key.clone().into()),
+                        ctx.alloc_thunk(thunk),
+                    );
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        ok_val(Value::Dict(result), call_span)
     })
 }
 
@@ -2969,24 +3228,25 @@ pub(crate) fn builtin_builtin_module(
     })
 }
 
-/// `builtin-eval`: evaluate a `Value::Document` or `Expr.*` nodes in a given environment.
+/// `builtin-eval`: evaluate a `Value::Document` in a given scope.
 ///
-/// Positional arg[0]: `Value::Document` (preferred) or integer-keyed `Dict` of `Expr.*` variants.
+/// Takes 2 positional args: the typed document and the parent scope-id.
 ///
-/// Named args:
-/// - `env:`   (`Value::Env`) — the starting environment (required).
+/// Positional args:
+/// - arg0: `Value::Document` ONLY (Expr.* Dict path DELETED)
+/// - arg1: Int (scope-id — becomes parent of the document's internal scope)
+///
 /// Returns: `Value::Dict` with keys:
-/// - `flat-env-id:` (`Value::Int`) — the FlatEnv id of the evaluated document scope.
-/// - `result:` — last expression's thunk (on success).
-/// - `doc-name:` (`Value::Str`) — the document name (or empty string if unnamed).
-/// - `error:` (`Value::Dict([])` = null on success, `Value::Str(message)` on failure)
+/// - `result:` — last expression's thunk (on success)
+/// - `scope-id:` (`Value::Int`) — the NEW child scope-id created for this document
+/// - `errors:` (`Value::Dict([])` = null on success, `Value::Dict({0: String(message)})` on failure)
 ///
-/// Callers MUST check `result.error` before using `result.flat-env-id`. This design
+/// On the error path, `scope-id` returns the unchanged input parent scope-id.
+///
+/// Callers MUST check `result.errors` before using `result.scope-id`. This design
 /// ensures Rust never prints errors — tinct code receives errors as data.
-///
-/// Named args:
-///   flat-env:  (Int, required) — parent FlatEnv id for evaluation scope and display chain.
-///   arena:     (Arena, optional) — arena to allocate thunks into during evaluation.
+/// Check for errors with `[null? ev.errors]` — empty dict (null) means success,
+/// non-empty dict means failure.
 pub(crate) fn builtin_eval(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -2998,188 +3258,98 @@ pub(crate) fn builtin_eval(
             ctx,
             ..
         } = ctx_arg;
-
-        if args.len() != 1 {
-            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+        crate::builtins::reject_named("builtin-eval", named.as_ref(), call_span.clone())?;
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
 
-        // Named args:
-        //   flat-env:  (Int, required) — parent EnvId for evaluation scope
-        //   arena:     (Arena, optional) — per-document arena for thunk allocation
-        let (flat_env_parent_id, arena_thunk_id) = if let Some(ref named_map) = named {
-            for key in named_map.keys() {
-                if key != "flat-env" && key != "arena" {
-                    return Err(EvalError::named_arg_rejected("eval".to_string(), call_span).into());
-                }
-            }
-            // flat-env: is required.
-            let flat_env_thunk_id = match named_map.get("flat-env").copied() {
-                Some(t) => t,
-                None => {
-                    return Err(EvalError::type_mismatch_ctx(
-                        "eval".to_string(),
-                        "Int (for flat-env: argument — required)",
-                        "absent",
-                        call_span,
-                    )
-                    .into())
-                }
-            };
-            let fe_thunk = ctx.get_thunk(flat_env_thunk_id);
-            let fe_val = materialize(&fe_thunk, Some(&call_span), &ctx).await?;
-            let flat_env_id = match fe_val {
-                Value::Int(n) => Some(n as u32),
-                other => {
-                    return Err(EvalError::type_mismatch_ctx(
-                        "builtin-eval flat-env:".to_string(),
-                        "Int (FlatEnv id)",
-                        other.type_name(),
-                        call_span,
-                    )
-                    .into())
-                }
-            };
-            let arena_id = named_map.get("arena").copied();
-            (flat_env_id, arena_id)
-        } else {
-            // No named args at all — flat-env: is missing.
-            return Err(EvalError::type_mismatch_ctx(
-                "eval".to_string(),
-                "Int (for flat-env: argument — required)",
-                "absent",
-                call_span,
-            )
-            .into());
-        };
-        let _ = arena_thunk_id; // arena: handled by caller's alloc pattern
-
-        // arg[0]: Value::Document or Dict of Expr.* nodes.
-        //
-        // Value::Document path (preferred for normal document evaluation):
-        //   Extracts SurfaceNodes directly from the document's item list using the
-        //   original Arc pointers. Resolution is already inline on the nodes from builtin-resolve.
-        //
-        // Dict of Expr.* path (for metaprogramming, quote/unquote):
-        //   Deserialises Expr.* variants into new SurfaceNodes. Resolution must have been
-        //   written inline to the original nodes; deserialized nodes start unresolved.
-        let input_val = ctx
+        // arg0: Value::Document ONLY
+        let doc_val = ctx
             .get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by Strictness::Seq");
-
-        let (expression_nodes, doc_name): (Vec<std::sync::Arc<crate::ast::SurfaceNode>>, String) =
-            match input_val {
-                // ── Document path (no round-trip) ──────────────────────────────
-                Value::Document(doc) => {
-                    let name = doc.name.clone().unwrap_or_default();
-                    let nodes = doc
-                        .items
-                        .iter()
-                        .filter_map(|item| {
-                            if let crate::ast::SurfaceItem::Expr(node) = item {
-                                Some(std::sync::Arc::clone(node))
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-                    (nodes, name)
-                }
-
-                // ── Dict of Expr.* path (metaprogramming) ──────────────────────
-                Value::Dict(input_map) => {
-                    let mut keyed_entries: Vec<(i64, _)> = Vec::new();
-                    for (key, val_id) in &input_map {
-                        if let HashableValue::Int(idx) = key {
-                            keyed_entries.push((*idx, *val_id));
-                        }
-                    }
-                    keyed_entries.sort_by_key(|(k, _)| *k);
-
-                    let mut nodes = Vec::new();
-                    for (_idx, val_id) in keyed_entries {
-                        let val =
-                            materialize(&ctx.get_thunk(val_id), Some(&call_span), &ctx).await?;
-                        match val {
-                            Value::Variant { ref tag, .. } if tag.starts_with("Expr.") => {
-                                let node = crate::surface_convert::dict_to_surface_node(
-                                    &val, &call_span, &ctx,
-                                )
-                                .map_err(|e| {
-                                    EvalError::internal(
-                                        format!("eval: Expr.* conversion failed: {}", e),
-                                        call_span.clone(),
-                                    )
-                                })?;
-                                nodes.push(node);
-                            }
-                            other => {
-                                return Err(EvalError::type_mismatch_ctx(
-                                    "eval".to_string(),
-                                    "Expr.*",
-                                    other.type_name(),
-                                    call_span,
-                                )
-                                .into())
-                            }
-                        }
-                    }
-                    (nodes, String::new())
-                }
-
-                other => {
-                    return Err(EvalError::type_mismatch_ctx(
-                        "eval".to_string(),
-                        "Document or Dict of Expr.*",
-                        other.type_name(),
-                        call_span,
-                    )
-                    .into())
-                }
-            };
-
-        // Evaluate the expression sequence.
-        // Errors are returned as data in the result dict rather than propagated via
-        // Rust's ? operator. This ensures Rust never prints errors — the caller (tinct
-        // code) receives {flat-env-id: ..., error: null_or_string} and decides what to do.
-        let eval_result =
-            crate::eval::eval_document_exprs_with_env(&expression_nodes, &ctx, flat_env_parent_id)
-                .await;
-
-        // The flat-env-id is the root EnvId of the FlatEnv scope allocated for this document.
-        let flat_env_id_val: i64 = match &eval_result {
-            Ok((_, root_env_id)) => *root_env_id as i64,
-            Err(_) => ctx.current_env_id as i64, // error path: return current (pre-call) env_id
+        let doc_arc = match doc_val {
+            Value::Document(d) => d,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-eval".to_string(),
+                    "Document",
+                    other.type_name(),
+                    call_span,
+                )
+                .into());
+            }
         };
 
-        let mut result_map: indexmap::IndexMap<HashableValue, ThunkId> = indexmap::IndexMap::new();
+        // arg1: Int (scope-id)
+        let scope_id_val = ctx
+            .get_thunk(args[1])
+            .try_get_materialized()
+            .expect("pre-materialized by Strictness::Seq");
+        let scope_id = match scope_id_val {
+            Value::Int(n) => {
+                let arena_len = ctx.scope_arena.borrow().scopes.len();
+                if n < 0 || (n as usize) >= arena_len {
+                    return Err(EvalError::user_error(
+                        format!(
+                            "builtin-eval scope-id {} out of range (valid: 0..{})",
+                            n,
+                            arena_len.saturating_sub(1)
+                        ),
+                        call_span,
+                    )
+                    .into());
+                }
+                n as u32
+            }
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-eval scope-id".to_string(),
+                    "Int",
+                    other.type_name(),
+                    call_span,
+                )
+                .into());
+            }
+        };
 
+        // Extract expression nodes from the document
+        let expression_nodes: Vec<std::sync::Arc<crate::ast::SurfaceNode>> = doc_arc
+            .items
+            .iter()
+            .filter_map(|item| {
+                if let crate::ast::SurfaceItem::Expr(node) = item {
+                    Some(std::sync::Arc::clone(node))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Evaluate the expression sequence
+        let eval_result =
+            crate::eval::eval_document_exprs_with_env(&expression_nodes, &ctx, Some(scope_id))
+                .await;
+
+        // Build result dict: {result, scope-id, errors}
+        let mut result_map: indexmap::IndexMap<HashableValue, ThunkId> = indexmap::IndexMap::new();
         match eval_result {
-            Ok((result_thunk, _root_env_id)) => {
-                // Return {flat-env-id: Int, result: last_thunk, doc-name: name, error: null}.
-                // No % injection — tinct code decides what name to bind the result under.
+            Ok((result_thunk, new_scope_id)) => {
                 result_map.insert(
                     HashableValue::Str("result".into()),
                     ctx.alloc_thunk(result_thunk),
                 );
                 result_map.insert(
-                    HashableValue::Str("doc-name".into()),
+                    HashableValue::Str("scope-id".into()),
                     ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                        string_val(&doc_name),
+                        Value::Int(new_scope_id as i64),
                         call_span.clone(),
                     ))),
                 );
                 result_map.insert(
-                    HashableValue::Str("error".into()),
+                    HashableValue::Str("errors".into()),
                     ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                        Value::Dict(indexmap::IndexMap::new()),
-                        call_span.clone(),
-                    ))),
-                );
-                result_map.insert(
-                    HashableValue::Str("flat-env-id".into()),
-                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                        Value::Int(flat_env_id_val),
+                        Value::Dict(indexmap::IndexMap::new()), // null = success
                         call_span.clone(),
                     ))),
                 );
@@ -3187,16 +3357,34 @@ pub(crate) fn builtin_eval(
             Err(e) => {
                 let msg = format!("{}", e);
                 result_map.insert(
-                    HashableValue::Str("error".into()),
+                    HashableValue::Str("result".into()),
+                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                        Value::Dict(indexmap::IndexMap::new()), // null on error
+                        call_span.clone(),
+                    ))),
+                );
+                result_map.insert(
+                    HashableValue::Str("scope-id".into()),
+                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                        Value::Int(scope_id as i64), // unchanged input parent scope-id
+                        call_span.clone(),
+                    ))),
+                );
+                // errors: integer-keyed Dict<Int, String> matching builtin-parse/builtin-resolve schema.
+                // {0: String(message)} — non-null Dict so callers can check [null? ev.errors].
+                let mut errors_map: indexmap::IndexMap<HashableValue, ThunkId> =
+                    indexmap::IndexMap::new();
+                errors_map.insert(
+                    HashableValue::Int(0),
                     ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                         string_val(&msg),
                         call_span.clone(),
                     ))),
                 );
                 result_map.insert(
-                    HashableValue::Str("flat-env-id".into()),
+                    HashableValue::Str("errors".into()),
                     ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                        Value::Int(flat_env_id_val),
+                        Value::Dict(errors_map),
                         call_span.clone(),
                     ))),
                 );
@@ -3256,11 +3444,11 @@ pub(crate) fn builtin_variant_payload(
     })
 }
 
-/// `builtin-eval-repr`: evaluate a document in an env and return `builtin-llt-repr` of the
+/// `builtin-eval-repr`: evaluate a document in a scope and return `builtin-llt-repr` of the
 /// last expression's result. Combines `builtin-eval` + `builtin-llt-repr` atomically.
 ///
-/// Named arg `env:` (Value::Env) — required, same as builtin-eval.
-/// Positional arg[0]: Value::Document or Dict of Expr.* nodes.
+/// Positional arg[0]: Value::Document — the typed document to evaluate.
+/// Positional arg[1]: Value::Int — the scope-id to evaluate in (same as builtin-eval).
 /// Returns: String (the llt-repr of the last expression's value).
 pub(crate) fn builtin_eval_repr(
     ctx_arg: BuiltinArgs,
@@ -3274,41 +3462,11 @@ pub(crate) fn builtin_eval_repr(
             ..
         } = ctx_arg;
 
-        if args.len() != 1 {
-            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+        crate::builtins::reject_named("eval-repr", named.as_ref(), call_span.clone())?;
+
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-
-        let flat_env_id_opt = if let Some(ref named_map) = named {
-            for key in named_map.keys() {
-                if key != "flat-env" {
-                    return Err(
-                        EvalError::named_arg_rejected("eval-repr".to_string(), call_span).into(),
-                    );
-                }
-            }
-            named_map.get("flat-env").copied()
-        } else {
-            None
-        };
-
-        let flat_env_parent_id = if let Some(fe_tid) = flat_env_id_opt {
-            let fe_thunk = ctx.get_thunk(fe_tid);
-            let fe_val = materialize(&fe_thunk, Some(&call_span), &ctx).await?;
-            match fe_val {
-                Value::Int(n) => Some(n as u32),
-                other => {
-                    return Err(EvalError::type_mismatch_ctx(
-                        "eval-repr flat-env:".to_string(),
-                        "Int (flat-env-id)",
-                        other.type_name(),
-                        call_span,
-                    )
-                    .into())
-                }
-            }
-        } else {
-            None
-        };
 
         let input_val = ctx
             .get_thunk(args[0])
@@ -3338,9 +3496,39 @@ pub(crate) fn builtin_eval_repr(
             }
         };
 
+        let scope_id_val = ctx
+            .get_thunk(args[1])
+            .try_get_materialized()
+            .expect("pre-materialized by Strictness::Seq");
+        let scope_id: Option<u32> = match scope_id_val {
+            Value::Int(n) => {
+                let arena_len = ctx.scope_arena.borrow().scopes.len();
+                if n < 0 || (n as usize) >= arena_len {
+                    return Err(EvalError::user_error(
+                        format!(
+                            "builtin-eval-repr scope-id {} out of range (valid: 0..{})",
+                            n,
+                            arena_len.saturating_sub(1)
+                        ),
+                        call_span,
+                    )
+                    .into());
+                }
+                Some(n as u32)
+            }
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "eval-repr scope-id".to_string(),
+                    "Int",
+                    other.type_name(),
+                    call_span,
+                )
+                .into())
+            }
+        };
+
         let (result_thunk, _root_env_id) =
-            crate::eval::eval_document_exprs_with_env(&expression_nodes, &ctx, flat_env_parent_id)
-                .await?;
+            crate::eval::eval_document_exprs_with_env(&expression_nodes, &ctx, scope_id).await?;
 
         let result_val = materialize(&result_thunk, Some(&call_span), &ctx).await?;
         let repr = crate::value_to_display_string(&result_val, &ctx, call_span.clone())
@@ -3349,133 +3537,6 @@ pub(crate) fn builtin_eval_repr(
                 EvalError::internal(format!("eval-repr: {}", e.kind), call_span.clone())
             })?;
         ok_val(string_val(&repr), call_span)
-    })
-}
-
-/// `builtin-extend-env`: create a child FlatEnv scope with additional bindings.
-///
-/// arg[0]: `Value::Int` — the parent flat-env-id (u32 as i64). Use 0 for the root scope.
-/// arg[1]: `Value::Dict` — string-keyed bindings to add as a child layer.
-///   Integer keys in a Dict are silently skipped. The values remain as thunks — no
-///   materialization of dict values.
-///
-/// Named args: none accepted.
-///
-/// Returns: `Value::Int` — the child flat-env-id as an i64.
-///
-/// The child FlatEnv is allocated as a child of the parent (display chain extended by one).
-/// All string-keyed entries from the bindings dict are written as named slots in the child FlatEnv.
-pub(crate) fn builtin_extend_env(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-            ..
-        } = ctx_arg;
-
-        // Reject all named args — no named args accepted.
-        crate::builtins::reject_named("extend-env", named.as_ref(), call_span.clone())?;
-
-        if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
-        }
-
-        // Force arg[0] — must be Value::Int (parent flat-env-id).
-        let arg0_thunk = ctx.get_thunk(args[0]);
-        let parent_val = materialize(&arg0_thunk, Some(&call_span), &ctx).await?;
-        let parent_flat_env_id: u32 = match parent_val {
-            Value::Int(n) => n as u32,
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "extend-env".to_string(),
-                    "Int (parent flat-env-id)",
-                    other.type_name(),
-                    call_span,
-                )
-                .into())
-            }
-        };
-
-        // Force arg[1] — must be Value::Dict.
-        // Normalize: peel Annotated wrappers and flatten Overlay into a plain Dict.
-        // builtin-merge returns Value::Overlay (lazy); @Any annotations wrap in Annotated.
-        // Both have type_name()="Dict" but don't match Value::Dict directly.
-        let arg1_thunk = ctx.get_thunk(args[1]);
-        let bindings_raw = materialize(&arg1_thunk, Some(&call_span), &ctx).await?;
-        let bindings_val = {
-            let mut v = bindings_raw;
-            while let Value::Annotated { inner, .. } = v {
-                v = *inner;
-            }
-            if let Value::Overlay(ref left, ref right) = v {
-                v = Value::Dict(
-                    crate::builtins::flatten_overlay(
-                        left,
-                        right,
-                        "extend-env",
-                        &ctx,
-                        call_span.clone(),
-                    )
-                    .await?,
-                );
-            }
-            v
-        };
-
-        let child_env_id = match bindings_val {
-            Value::Dict(ref bindings) => {
-                // Count string-keyed bindings to size the FlatEnv.
-                let binding_count = bindings
-                    .iter()
-                    .filter(|(k, _)| matches!(k, HashableValue::Str(_)))
-                    .count();
-
-                // Allocate child scope as child of parent to chain the display vector.
-                let child_env_id = ctx
-                    .scope_arena
-                    .borrow_mut()
-                    .alloc_child(crate::arena::ScopeId(parent_flat_env_id), binding_count);
-
-                // Fill scope slots with named thunk values.
-                // Two-phase: first reserve all slots in order, then fill from source ThunkIds.
-                let string_bindings: Vec<(&std::rc::Rc<str>, crate::arena::ThunkId)> = bindings
-                    .iter()
-                    .filter_map(|(k, &tid)| {
-                        if let HashableValue::Str(name) = k { Some((name, tid)) } else { None }
-                    })
-                    .collect();
-                {
-                    let mut arena = ctx.scope_arena.borrow_mut();
-                    for (name, _) in &string_bindings {
-                        arena.reserve_slot(child_env_id, name);
-                    }
-                    for (slot_idx, (_, thunk_id)) in string_bindings.iter().enumerate() {
-                        arena.fill_slot(child_env_id, slot_idx as u32, *thunk_id);
-                    }
-                }
-
-                child_env_id
-            }
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "extend-env".to_string(),
-                    "Dict",
-                    other.type_name(),
-                    call_span,
-                )
-                .into())
-            }
-        };
-
-        // Return just the child flat-env-id as an Int.
-        Ok(Arc::new(Thunk::new_materialized(
-            Value::Int(child_env_id.0 as i64),
-            call_span,
-        )))
     })
 }
 
@@ -3576,13 +3637,8 @@ pub(crate) fn builtin_eval_macro_ast(
 
         // ── Step 3: Wrap in a single-expression SurfaceProgram ────────────────
         let document = crate::ast::SurfaceDocument {
-            stage: None,
-            name: None,
+            header: indexmap::IndexMap::new(),
             items: vec![crate::ast::SurfaceItem::Expr(expr_node)],
-            output_type: None,
-            expects: None,
-            caps: None,
-            uses: None,
         };
         let mut program = crate::ast::SurfaceProgram {
             documents: vec![crate::ast::Spanned::new(
@@ -3645,7 +3701,7 @@ pub(crate) fn builtin_eval_macro_ast(
 /// `eval-types`: same as `eval` but evaluates in the type-stage environment.
 ///
 /// This is used for evaluating type-level expressions (type aliases, class declarations).
-/// Base environment: the type_stage_flat_env_id from the current TypeContext.
+/// Base environment: the type_stage_scope_id from the current TypeContext.
 pub(crate) fn builtin_eval_types(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -3665,11 +3721,11 @@ pub(crate) fn builtin_eval_types(
         // Reject all named args — eval-types takes only the positional document arg.
         crate::builtins::reject_named("eval-types", named.as_ref(), call_span.clone())?;
 
-        // Get type_stage_flat_env_id from the TypeContext.
-        // This is the FlatEnv scope populated by the type-stage evaluation pass.
-        let type_stage_flat_env_id: Option<u32> = {
+        // Get type_stage_scope_id from the TypeContext.
+        // This is the scope populated by the type-stage evaluation pass.
+        let type_stage_scope_id: Option<u32> = {
             let tc_guard = ctx.type_context.lock().unwrap();
-            tc_guard.as_ref().and_then(|tc| tc.type_stage_flat_env_id)
+            tc_guard.as_ref().and_then(|tc| tc.type_stage_scope_id)
         };
 
         // Materialize the input — accepts Value::Document only.
@@ -3691,12 +3747,9 @@ pub(crate) fn builtin_eval_types(
                     }
                 })
                 .collect();
-            let (result_thunk, _root_env_id) = crate::eval::eval_document_exprs_with_env(
-                &expr_nodes,
-                &ctx,
-                type_stage_flat_env_id,
-            )
-            .await?;
+            let (result_thunk, _root_env_id) =
+                crate::eval::eval_document_exprs_with_env(&expr_nodes, &ctx, type_stage_scope_id)
+                    .await?;
             return Ok(result_thunk);
         }
 
@@ -4663,13 +4716,8 @@ pub(crate) fn builtin_ast_to_program(
 
         // Wrap in a SurfaceProgram: one document, one item (Expr)
         let document = crate::ast::SurfaceDocument {
-            stage: None,
-            name: None,
+            header: indexmap::IndexMap::new(),
             items: vec![crate::ast::SurfaceItem::Expr(expr_node)],
-            output_type: None,
-            expects: None,
-            caps: None,
-            uses: None,
         };
 
         let program = crate::ast::SurfaceProgram {
@@ -4679,10 +4727,13 @@ pub(crate) fn builtin_ast_to_program(
             )],
         };
 
+        // Push into program store and return Value::Program { id }.
+        let store_id = ctx.push_program(program);
+
         // Return Value::Program
         ok_val(
             Value::Program {
-                program: Arc::new(program),
+                id: store_id,
                 resolutions: Arc::new(Default::default()),
                 types: Arc::new(Default::default()),
                 expects_resolved: Arc::new(std::collections::HashMap::new()),
@@ -4760,7 +4811,7 @@ pub(crate) fn builtin_check_type(
 /// tinct runtime environment.
 ///
 /// - arg 0: String — the name to look up (e.g. `"%myfs"`)
-/// - arg 1: Env (`Value::Env`) — the environment to search
+/// - arg 1: Int — scope-id to search (walks parent chain via ScopeArena)
 /// - Returns: `Boolean.True` if the name is bound in the environment chain,
 ///   `Boolean.False` otherwise
 ///
@@ -4789,10 +4840,10 @@ pub(crate) fn builtin_cap_env_has(
 
         let env_val = materialize(&arg1_thunk, Some(&call_span), &ctx).await?;
         let found = match env_val {
-            Value::Int(flat_env_id) => {
-                // Look up the name in the FlatEnv parent chain slot_names.
+            Value::Int(scope_id) => {
+                // Look up the name in the ScopeArena parent chain slot_names.
                 let arena = ctx.scope_arena.borrow();
-                let env_id = flat_env_id as u32;
+                let env_id = scope_id as u32;
                 if (env_id as usize) < arena.scopes.len() {
                     let chain = arena.collect_parent_chain(env_id);
                     chain.iter().any(|eid| {
@@ -5108,10 +5159,12 @@ pub(crate) fn builtin_arena_migrate(
 /// Returns all "meta" module Rust builtins.
 ///
 /// These are the AST, evaluation, reflection, and macro builtins that are NOT in the
-/// Core-46 set. The Core-46 items (builtin-parse, builtin-resolve, builtin-typecheck,
-/// builtin-eval, builtin-module, builtin-extend-env, builtin-get-type-context,
-/// builtin-tc-with-type-stage-env, builtin-tag-of, builtin-variant-payload,
-/// builtin-type-of, builtin-llt-repr, builtin-cap-env-has?, builtin-check-type)
+/// core_builtins() set. The core_builtins() items (builtin-parse, builtin-resolve,
+/// builtin-typecheck-doc, builtin-eval, builtin-module, builtin-get-type-context,
+/// builtin-make-type-ctx, builtin-tc-with-scope, builtin-variant-payload,
+/// builtin-tag-of, builtin-llt-repr, builtin-type-of, builtin-cap-env-has?,
+/// builtin-check-type, builtin-scopes, builtin-scope-new, builtin-scope-names,
+/// builtin-scope-parent, builtin-desugar, builtin-program-docs, builtin-doc-meta)
 /// stay in core_builtins() for loader.llt.
 ///
 /// Consumed exclusively by `builtin_module("meta")` in `src/builtins.rs`.
@@ -5138,11 +5191,10 @@ pub fn meta_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!(
             "builtin-eval-repr",
             builtin_eval_repr,
-            [Strictness::Seq],
-            1,
-            ["x"]
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["doc", "scope-id"]
         ),
-        builtin!("builtin-load", builtin_load, [Strictness::Seq], 1, ["path"]),
         builtin!(
             "builtin-ast-to-program",
             builtin_ast_to_program,

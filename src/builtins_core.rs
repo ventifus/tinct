@@ -56,10 +56,12 @@ use crate::builtins_string::{
 use crate::builtins_bytes::{builtin_bytes, builtin_bytes_concat};
 // Meta/eval implementations — Core-46 only.
 use crate::builtins_meta::{
-    builtin_builtin_module, builtin_cap_env_has, builtin_check_type, builtin_eval,
-    builtin_extend_env, builtin_get_type_context, builtin_llt_repr, builtin_parse, builtin_raise,
-    builtin_resolve, builtin_tag_of, builtin_tc_with_type_stage_env, builtin_try, builtin_type_of,
-    builtin_typecheck, builtin_variant_payload,
+    builtin_builtin_module, builtin_cap_env_has, builtin_check_type, builtin_desugar,
+    builtin_doc_expressions, builtin_doc_meta, builtin_eval, builtin_get_type_context,
+    builtin_llt_repr, builtin_parse, builtin_program_docs, builtin_raise, builtin_resolve,
+    builtin_scope_names, builtin_scope_new, builtin_scope_parent, builtin_scopes, builtin_tag_of,
+    builtin_tc_with_scope, builtin_try, builtin_type_of, builtin_typecheck_doc,
+    builtin_variant_payload,
 };
 // I/O implementations — Core-46 only.
 use crate::builtins_dict::{builtin_concat, builtin_drop, builtin_take};
@@ -306,7 +308,7 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             builtin_builder_set,
             [Strictness::Seq, Strictness::Id, Strictness::Seq],
             0,
-            ["builder", "value", "key"]
+            ["key", "value", "builder"]
         ),
         builtin!(
             "builtin-builder-delete",
@@ -502,17 +504,16 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
         builtin!(
             "builtin-resolve",
             builtin_resolve,
-            [Strictness::Seq],
-            1,
-            ["doc"],
-            ["env"]
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["doc", "frames"]
         ),
         builtin!(
-            "builtin-typecheck",
-            builtin_typecheck,
-            [Strictness::Seq],
-            1,
-            ["program"]
+            "builtin-typecheck-doc",
+            builtin_typecheck_doc,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["doc", "tc"]
         ),
         // TypeContext primitives
         builtin!("builtin-get-type-context", builtin_get_type_context, [], 0),
@@ -523,8 +524,8 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             0
         ),
         builtin!(
-            "builtin-tc-with-type-stage-env",
-            builtin_tc_with_type_stage_env,
+            "builtin-tc-with-scope",
+            builtin_tc_with_scope,
             [Strictness::Seq, Strictness::Seq],
             2,
             ["type-ctx", "ts-env"]
@@ -539,10 +540,9 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
         builtin!(
             "builtin-eval",
             builtin_eval,
-            [Strictness::Seq],
-            1,
-            ["doc"],
-            ["env", "table", "flat-env"]
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["doc", "scope-id"]
         ),
         builtin!(
             "builtin-variant-payload",
@@ -551,13 +551,57 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             1,
             ["variant"]
         ),
+        // ── Scope arena primitives ─────────────────────────────────────────────────────
+        builtin!("builtin-scopes", builtin_scopes, [], 0),
         builtin!(
-            "builtin-extend-env",
-            builtin_extend_env,
+            "builtin-scope-new",
+            builtin_scope_new,
             [Strictness::Seq, Strictness::Seq],
-            2,
-            ["parent", "entries"],
-            ["flat-env"]
+            0,
+            ["parent", "entries"]
+        ),
+        builtin!(
+            "builtin-scope-names",
+            builtin_scope_names,
+            [Strictness::Seq],
+            0,
+            ["scope-id"]
+        ),
+        builtin!(
+            "builtin-scope-parent",
+            builtin_scope_parent,
+            [Strictness::Seq],
+            0,
+            ["scope-id"]
+        ),
+        // ── Program/document decomposition ────────────────────────────────────────────
+        builtin!(
+            "builtin-desugar",
+            builtin_desugar,
+            [Strictness::Seq],
+            0,
+            ["program"]
+        ),
+        builtin!(
+            "builtin-program-docs",
+            builtin_program_docs,
+            [Strictness::Seq],
+            0,
+            ["program"]
+        ),
+        builtin!(
+            "builtin-doc-meta",
+            builtin_doc_meta,
+            [Strictness::Seq, Strictness::Seq],
+            0,
+            ["doc", "scope-id"]
+        ),
+        builtin!(
+            "builtin-doc-expressions",
+            builtin_doc_expressions,
+            [Strictness::Seq],
+            0,
+            ["doc"]
         ),
         // ── Sequences ─────────────────────────────────────────────────────────────────
         builtin!(

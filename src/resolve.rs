@@ -632,9 +632,6 @@ pub fn resolve_surface_program(
     let mut new_frames = Vec::new();
     for doc_spanned in &program.documents {
         let doc = &doc_spanned.node;
-        if doc.stage == Some(crate::ast::Stage::Type) {
-            continue;
-        }
         let doc_frames = resolver.walk_surface_document(doc);
         new_frames.extend(doc_frames);
     }

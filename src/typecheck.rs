@@ -104,7 +104,7 @@ pub async fn typecheck_surface_program_annotation_table(
     let (resolve_table, _frames) = crate::resolve::resolve_surface_program(program, &[]);
     state.resolution_table = Some(std::sync::Arc::new(resolve_table));
 
-    let mut named_types: HashMap<String, Type> = HashMap::new();
+    let named_types: HashMap<String, Type> = HashMap::new();
     let mut pipeline_type = Type::Dict(Row {
         fields: indexmap::IndexMap::new(),
         tail: crate::type_def::RowTail::Empty,
@@ -128,10 +128,7 @@ pub async fn typecheck_surface_program_annotation_table(
         env = new_env;
         // Collect all errors (type errors + advisory) without blocking propagation.
         errors.append(&mut doc_errors);
-        // Store named section type if this document has a name
-        if let Some(ref name) = doc.name {
-            named_types.insert(name.clone(), doc_output_type.clone());
-        }
+        // Document names removed — named_types no longer populated from doc.name
         // Update pipeline type for next document
         pipeline_type = doc_output_type;
     }
@@ -201,13 +198,13 @@ pub async fn typecheck_surface_program(
 ///   When `Some`, the resolver is seeded from this env so that instance binding names
 ///   (ɪ-prefixed, e.g. `ɪɴꜱᴛᴀɴᴄᴇ⧼Castable∷cast⟨String,Int⟩⧽`) are visible in scope
 ///   and `method_to_instance` can resolve class method VarRefs. This should be the full
-///   runtime eval env (from `builtin-typecheck env: <env>`), which contains instance
+///   runtime eval env (from `builtin-typecheck-doc env: <env>`), which contains instance
 ///   bindings that the type-only `parent_env` does not. When `None`, falls back to
 ///   `parent_env` for resolver seeding (the prior behavior).
 /// - `type_stage_env`: Optional type-stage evaluation environment. When `Some`, stored on
 ///   `state.type_stage_env` so that `eval_type_stage_expr` and `call_type_stage_fn` can
 ///   evaluate user-defined type-stage functions (e.g. TypeNode constructors, `or`, `all`).
-///   Populated from `TypeContextData.type_stage_env` by `builtin-typecheck`. `None` at all
+///   Populated from `TypeContextData.type_stage_env` by `builtin-typecheck-doc`. `None` at all
 ///   bootstrap call sites (prelude, stdlib includes, LSP path) where the type-stage env
 ///   has not yet been built.
 ///
@@ -286,7 +283,7 @@ pub async fn typecheck_surface_program_with_env(
     // type_map_inner accumulates span→type for all sub-expressions (for LSP hover).
     // Populated when enable_scheme_map is true (i.e., LSP path), empty otherwise.
     let mut type_map_inner = TypeMap::new();
-    let mut named_types: HashMap<String, Type> = HashMap::new();
+    let named_types: HashMap<String, Type> = HashMap::new();
     let mut pipeline_type = Type::Dict(Row {
         fields: indexmap::IndexMap::new(),
         tail: crate::type_def::RowTail::Empty,
@@ -318,10 +315,7 @@ pub async fn typecheck_surface_program_with_env(
         env = new_env;
         // Collect all errors (type errors + advisory) without blocking env propagation.
         errors.append(&mut doc_errors);
-        // Store named section type if this document has a name.
-        if let Some(ref name) = doc.name {
-            named_types.insert(name.clone(), doc_output_type.clone());
-        }
+        // Document names removed — named_types no longer populated from doc.name
         // Update pipeline type for next document.
         pipeline_type = doc_output_type;
     }
@@ -359,7 +353,7 @@ pub async fn typecheck_surface_program_with_env(
 
     // Merge the document-level Env scheme bindings back into the child Env.
     // This ensures that variables declared in this program are visible to callers
-    // that hold the returned Arc<RwLock<Env>> (e.g., subsequent builtin-typecheck calls).
+    // that hold the returned Arc<RwLock<Env>> (e.g., subsequent builtin-typecheck-doc calls).
     merge_env_schemes_into_env(&env, &child_env);
 
     (
@@ -475,7 +469,7 @@ fn propagate_classes_instances_to_env(
 ///
 /// Mirrors the structure of `typecheck_document()` but operates on SurfaceItem instead of Expr.
 /// Converts SurfaceNode back to Expr for type inference, then captures results in TypeAnnotationTable.
-async fn typecheck_surface_document(
+pub(crate) async fn typecheck_surface_document(
     doc: &SurfaceDocument,
     parent_env: &Arc<RwLock<Env>>,
     state: &mut InferState,
@@ -503,12 +497,10 @@ async fn typecheck_surface_document(
     // Note: expects: and caps: annotation validation requires async resolve_annotation.
     // Since typecheck_surface_document is sync, these are skipped here.
     // The async typecheck path handles them separately.
-    let _ = &doc.expects; // acknowledged
-    let _ = &doc.caps; // acknowledged
-                       // Note: --- uses: headers are processed by loader's uses-scope (tinct code) which
-                       // type-checks each builtin_*.llt file and accumulates results into the TypeContext.
-                       // The typechecker receives all module type schemes via tc.inference_env (the parent_env
-                       // passed to typecheck_surface_program_with_env). No Rust-side injection needed here.
+    // Note: --- uses: headers (now in doc.header) are processed by loader's uses-scope (tinct code) which
+    // type-checks each builtin_*.llt file and accumulates results into the TypeContext.
+    // The typechecker receives all module type schemes via tc.inference_env (the parent_env
+    // passed to typecheck_surface_program_with_env). No Rust-side injection needed here.
 
     let mut result_type = Type::Dict(Row {
         fields: indexmap::IndexMap::new(),
@@ -620,8 +612,7 @@ async fn typecheck_surface_document(
         .collect();
 
     if expr_items.is_empty() {
-        // Note: output_type annotation validation requires async resolve_annotation — skip.
-        let _ = &doc.output_type; // acknowledged
+        // Note: output_type annotation (now in doc.header) validation requires async resolve_annotation — skip.
 
         let mut result_env_inner = Env::with_parent(Arc::clone(parent_env));
         result_env_inner.insert("%".to_string(), result_type.clone());
@@ -733,8 +724,7 @@ async fn typecheck_surface_document(
         }
     }
 
-    // Note: output_type annotation validation requires async resolve_annotation — skip.
-    let _ = &doc.output_type; // acknowledged
+    // Note: output_type annotation (now in doc.header) validation requires async resolve_annotation — skip.
 
     // Build result_env: thread last-dict schemes or last-Record fields into cross-document scope.
     // Mirrors typecheck_document lines 1116-1148.
@@ -789,41 +779,6 @@ async fn typecheck_surface_document(
 /// Results are written into `type_map` (NodeId → Type). Errors are returned as
 /// `Err(Vec<TypeError>)`; advisory errors (expects:/output_type) are silently
 /// discarded here — this entry point is intended for callers that only need
-/// type-error diagnostics, not pipeline-type threading.
-///
-/// - Walks `SurfaceItem::Expr` via `infer_surface_expr` (native SurfaceNode walk)
-/// - Walks `SurfaceItem::Decl` for `TypeAlias`, `ClassDecl`, `InstanceDecl`
-///   Pass 0c pre-scan via `SurfaceExpression::Decl` is already handled by `typecheck_surface_document`.
-#[allow(dead_code)]
-pub(crate) async fn typecheck_surface_document_native(
-    doc: &SurfaceDocument,
-    state: &mut InferState,
-    type_map: &mut TypeAnnotationTable,
-    env: &Arc<RwLock<Env>>,
-) -> Result<(), Vec<TypeError>> {
-    let pipeline_type = Type::Dict(Row {
-        fields: indexmap::IndexMap::new(),
-        tail: crate::type_def::RowTail::Empty,
-    });
-    let named_types = HashMap::new();
-
-    let (_env, _ty, errors) = typecheck_surface_document(
-        doc,
-        env,
-        state,
-        type_map,
-        &mut None, // no span TypeMap for this entry point
-        &pipeline_type,
-        &named_types,
-    )
-    .await;
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(errors)
-    }
-}
-
 /// Extract documentation strings from parameter and function annotations.
 ///
 /// Walks the AST looking for `doc:` properties in `@[...]` annotations.

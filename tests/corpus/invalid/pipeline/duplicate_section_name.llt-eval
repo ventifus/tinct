@@ -4,4 +4,4 @@
 --- %foo
 [y: 2]
 === out
-3:5: duplicate section name '%foo' in file
+4:5: duplicate section name '%foo' in file

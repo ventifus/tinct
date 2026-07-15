@@ -99,9 +99,9 @@ the `Value::Builder(Arc<Builder>)` value stored in the memoized thunk is returne
 evaluator path for mutations (e.g. `builder-set`) returns `Ok(Arc::clone(&args[2]))` — the
 original builder thunk — only after the `builder.set()` call fails. That failure produces E082
 internally, but the returned value, a `Value::Builder`, is then subject to JSON serialization and
-produces E035 instead. The existing `tests/corpus/eval/builtins/builder_frozen_error.llt-eval`
-demonstrates this behavior: it asserts `[E035]` rather than `[E082]` for a `builder-set` on a
-finished builder.
+produces E035 instead. A hypothetical `tests/corpus/eval/builtins/builder_frozen_error.llt-eval`
+would assert `[E035]` rather than `[E082]` for a `builder-set` on a finished builder; such a test
+does not currently exist in this repository.
 
 **Alternative**: The `test_error_code_exhaustiveness` and `test_error_kind_display_all_variants`
 unit tests in `src/error.rs` verify the E082 code string and display format via direct
@@ -153,6 +153,27 @@ the HKT corpus tests in `tests/corpus/eval/errors/hkt_do_inferred_maybe.llt-eval
 `tests/corpus/eval/errors/hkt_do_inferred_unresolvable.llt-eval` (T091 type errors).
 
 **Re-evaluate when**: A new builtin or evaluator path calls `EvalError::kind_mismatch` directly.
+
+## IncludeHashMismatch (E055) and include-path-not-allowed
+
+**Files**: `include_forbidden.llt-eval` (deleted), `include_path_not_allowed.llt-eval` (deleted)
+
+**Reason**: Both tests exercised E055 (IncludeHashMismatch) via `[load ... hash: ...]`, which
+was the hash-validation path in the `builtin-load` builtin. `builtin-load` was deleted in S-926
+(thin-meta-api sprint) and replaced with the decomposed meta API (`builtin-parse`,
+`builtin-desugar`, `builtin-resolve`, `builtin-typecheck-doc`, `builtin-eval`). None of the
+replacement builtins perform hash validation — there is no `hash:` parameter anywhere in the new
+API.
+
+E055 (IncludeHashMismatch) has zero call sites in the current codebase. The error constructor
+exists in `src/error.rs` but is not raised by any production path. These tests cannot be rewritten
+against the new API because the feature they tested (hash-validated source loading) no longer
+exists.
+
+**Re-evaluate when**: Hash validation is added to a new builtin (e.g. `builtin-parse` gains a
+`hash:` named argument), or a standalone `builtin-blake3-verify` builtin is introduced.
+
+---
 
 ## MacroError (E012)
 

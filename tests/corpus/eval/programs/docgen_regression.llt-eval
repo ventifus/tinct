@@ -114,7 +114,7 @@ parse-entry: [fn@Dict [let entry]
      [try-str [fn [let] [tag-of value]]]]]]
 
 extract-from-doc: [fn [let doc]
-  [exprs: [collect doc.expressions]]
+  [exprs: [collect [builtin-doc-expressions doc]]]
   [last-dict: [reduce
     [fn [let acc expr]
       [t: [try-str [fn [let] [tag-of expr]]]]
@@ -128,11 +128,11 @@ extract-from-doc: [fn [let doc]
       [map parse-entry last-dict.entries]]]]]
 
 extract-from-program: [fn [let program]
-  [docs: program.documents]
+  [docs: [builtin-program-docs program]]
   [reduce
     [fn [let acc doc]
-      [stage-tag: [try-str [fn [let] [tag-of doc.stage]]]]
-      [if [= stage-tag "Type"]
+      [stage: [get-or "runtime" "stage" [builtin-doc-meta doc 0]]]
+      [if [= stage "type"]
         acc
         [reduce [fn [let a e] [cons e a]] acc [extract-from-doc doc]]]]
     []
@@ -157,10 +157,11 @@ render-entry: [fn@String [let e]
 # Returns "" if the file has no documented bindings.
 # (Original write-module wrote to %docdir; here we return the content instead.)
 emit-module: [fn@String [let full-path@String]
-  [source:  [str [join "\n" [collect [lines [open %libdir full-path Readable]]]]]]
-  [program: [builtin-resolve [load source name: full-path]].resolved]
-  [docs:    [extract-from-program program]]
-  [name:    [mod-name full-path]]
+  [source:    [str [join "\n" [collect [lines [open %libdir full-path Readable]]]]]]
+  [parsed:    [builtin-parse [builtin-str-bytes source] full-path]]
+  [desugared: [builtin-desugar parsed.program]]
+  [docs:      [extract-from-program desugared]]
+  [name:      [mod-name full-path]]
   [if [empty? docs]
     ""
     [str "# " name "\n"

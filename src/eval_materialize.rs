@@ -667,7 +667,7 @@ pub(crate) enum Action {
 /// Build a tinct span dict: `{file, start-line, start-col, end-line, end-col}`.
 ///
 /// Used by unified error dicts across pipeline builtins (builtin-parse,
-/// builtin-typecheck). The `call_span` argument is used as the creation span for the
+/// builtin-typecheck-doc). The `call_span` argument is used as the creation span for the
 /// materialized thunks that hold each field value.
 ///
 /// `file` is the path string if present, or `[]` (empty dict) when no source file is known.
@@ -3690,7 +3690,10 @@ async fn eval_case_arm_structural_pattern(
         let mut arena = ctx.scope_arena.borrow_mut();
         for (name, expected_slot) in binding_map {
             let reserved = arena.reserve_slot(arm_env_id, name);
-            debug_assert_eq!(reserved, *expected_slot, "arm slot reservation order must match binding_map");
+            debug_assert_eq!(
+                reserved, *expected_slot,
+                "arm slot reservation order must match binding_map"
+            );
         }
     }
 

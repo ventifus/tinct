@@ -11,30 +11,47 @@
   # ── AST and evaluation ─────────────────────────────────────────────────────
   # parse: parse source bytes at path, return Program with documents and errors.
   builtin-parse:             [fn@Program  [let src@Bytes path@String] ...]
-  # resolve: resolve VarRef de Bruijn coords in a document against an env.
-  builtin-resolve:           [fn@Dict     [let prog@Any ...opts] ...]
-  # eval: evaluate a resolved document; returns {env, result, doc-name, error}.
-  builtin-eval:              [fn@Dict     [let prog@Any ...opts] ...]
+  # desugar: desugar a Program (apply $_ transformation, pipe lowering, etc.).
+  builtin-desugar:           [fn@Program  [let prog@Program] ...]
+  # resolve: resolve VarRef de Bruijn coords in a document against scope frames.
+  builtin-resolve:           [fn@Dict     [let doc@Document frames@Dict] ...]
+  # eval: evaluate a resolved+typed document in a scope; returns {result, scope-id, errors}.
+  builtin-eval:              [fn@Dict     [let typed@Document scope-id@Int] ...]
+  # typecheck-doc: type-check a single resolved document against a TypeContext.
+  builtin-typecheck-doc:     [fn@Document [let doc@Document tc@TypeContext] ...]
+  # program-docs: return auto-indexed dict of documents in a Program.
+  builtin-program-docs:      [fn@Dict     [let prog@Program] ...]
+  # doc-meta: evaluate a document's --- header in a scope, returning the result dict.
+  builtin-doc-meta:          [fn@Dict     [let doc@Document scope-id@Int] ...]
+  # doc-expressions: return auto-indexed dict of Expr-variant values from a document's expression items.
+  # Decl items (type declarations, class/instance declarations, etc.) are skipped.
+  builtin-doc-expressions:   [fn@Dict     [let doc@Document] ...]
   # eval-types: evaluate only type-stage documents, returning a Program.
   builtin-eval-types:        [fn@Program  [let prog@Any] ...]
-  # load: load+parse source bytes or string, return Program.
-  builtin-load:              [fn@Program  [let src@String ...opts] ...]
   # eval-macro-ast: evaluate a macro-produced Expr.* AST in the call-site scope.
   builtin-eval-macro-ast:    [fn@Any      [let ast@Any] ...]
 
+  # ── Scope arena primitives ────────────────────────────────────────────────
+  # scopes: return all scopes as {scope-id: parent-id | [], ...}.
+  builtin-scopes:            [fn@Dict [let] ...]
+  # scope-new: create a new child scope with given parent and bindings.
+  builtin-scope-new:         [fn@Int  [let parent@Any bindings@Dict] ...]
+  # scope-names: return direct name-to-slot bindings for a scope.
+  builtin-scope-names:       [fn@Dict [let scope-id@Int] ...]
+  # scope-parent: return parent scope-id or [] for root.
+  builtin-scope-parent:      [fn@Any  [let scope-id@Int] ...]
+
   # ── Type-checking context ──────────────────────────────────────────────────
-  # typecheck: run type-checking on prog using ctx; returns typed Program.
-  builtin-typecheck:              [fn@Program    [let prog@Any ctx@TypeContext ...opts] ...]
   # get-type-context: retrieve the EvalContext's TypeContext handle.
-  builtin-get-type-context:       [fn@TypeContext [] ...]
+  builtin-get-type-context:  [fn@TypeContext [] ...]
   # make-type-ctx: create a fresh TypeContext seeded with core type definitions.
-  builtin-make-type-ctx:          [fn@TypeContext [] ...]
+  builtin-make-type-ctx:     [fn@TypeContext [] ...]
   # fork-type-ctx: create child TypeContext inheriting parent; mutations don't propagate up.
-  builtin-fork-type-ctx:          [fn@TypeContext [let ctx@TypeContext] ...]
-  # tc-with-type-stage-env: replace the TypeContext's type-stage env, return updated ctx.
-  builtin-tc-with-type-stage-env: [fn@TypeContext [let ctx@TypeContext ts-acc@Any] ...]
+  builtin-fork-type-ctx:     [fn@TypeContext [let ctx@TypeContext] ...]
+  # tc-with-scope: set the TypeContext's type-stage scope-id, return updated ctx.
+  builtin-tc-with-scope:     [fn@TypeContext [let ctx@TypeContext scope-id@Int] ...]
   # validate: validate program AST structure; returns Program or error.
-  builtin-validate:               [fn@Program    [let prog@Any ctx@TypeContext] ...]
+  builtin-validate:          [fn@Program    [let prog@Any ctx@TypeContext] ...]
 
   # ── Reflection and introspection ───────────────────────────────────────────
   # tag-of: return the variant tag string (e.g. "Boolean.True") or type name.

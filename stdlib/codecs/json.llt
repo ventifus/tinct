@@ -233,16 +233,16 @@ json-declaration: [fn [let d@Declaration]
       [json-variant "SyntaxClass" [name: n  pattern: [json-expression p]  message: m]]]]]
 
 json-document: [fn [let d@Document]
+  # stage, name, and declarations were removed from SurfaceDocument in T-1600.
+  # Header metadata requires builtin-doc-meta with a scope-id, which is not
+  # available in the generic serializer context.
+  # builtin-doc-expressions returns an auto-indexed dict of Expr-variant values,
+  # one per SurfaceItem::Expr in the document (Decl items are skipped).
   [to-json-dict
-    [stage:        [match d.stage Runtime: "Runtime" Type: "Type"]
-     name:         [match d.name
-                     [case [let n] [Named n] n]
-                     Unnamed: []]
-     expressions:  [to-json-seq [map json-expression  d.expressions]]
-     declarations: [to-json-seq [map json-declaration d.declarations]]]]]
+    [expressions: [to-json-seq [map json-expression [builtin-doc-expressions d]]]]]]
 
 json-program: [fn [let p@Program]
-  [to-json-dict [documents: [to-json-seq [map json-document p.documents]]]]]
+  [to-json-dict [documents: [to-json-seq [map json-document [builtin-program-docs p]]]]]]
 
 to-json-user-variant: [fn [let v]
   # Serialize a user-defined Variant (not Program/Document/Expression, which are handled

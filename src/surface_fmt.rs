@@ -117,7 +117,10 @@ pub fn fmt_fn(
     let stdlib_name_set: HashSet<String> = {
         let arena = ctx.scope_arena.borrow();
         if !arena.scopes.is_empty() {
-            arena.scopes[0].iter_named().map(|(n, _)| n.to_string()).collect()
+            arena.scopes[0]
+                .iter_named()
+                .map(|(n, _)| n.to_string())
+                .collect()
         } else {
             HashSet::new()
         }

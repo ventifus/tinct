@@ -2300,7 +2300,7 @@ async fn resolve_type_head(
     }
 
     // Step 3: type_stage_env — After T-1557, Env no longer stores runtime values; thunks
-    // live exclusively in FlatEnv (EvalContext.scope_arena). Name-based thunk lookup via
+    // live exclusively in the ScopeArena (EvalContext.scope_arena). Name-based thunk lookup via
     // get_value_by_name is no longer possible from Env. This step falls through to
     // tycon_env (Step 4) for type resolution.
 
@@ -4834,8 +4834,8 @@ pub(crate) async fn eval_type_stage_expr(
 
     // T-1557: TypeVar bindings can no longer be injected into Env (value storage removed).
     // TypeVar names in annotations (`a`, `b`, etc.) must be resolved through the resolver
-    // pass or via arena-based FlatEnv slots (B-515). The ann_mapping parameter is retained
-    // for future use once the FlatEnv injection path is implemented.
+    // pass or via arena-based scope slots (B-515). The ann_mapping parameter is retained
+    // for future use once the scope injection path is implemented.
     let _ = ann_mapping; // suppress unused-variable warning
 
     // No resolution pass for synthetic type-stage nodes; resolution is inline on nodes
@@ -4868,14 +4868,14 @@ pub(crate) async fn eval_type_stage_expr(
 
     // Attempt TypeNode.as-type dispatch (T-1059 hook).
     //
-    // Look up the TypeNode dict in the type-stage FlatEnv, extract its `as-type` field
+    // Look up the TypeNode dict in the type-stage scope, extract its `as-type` field
     // (a function), and call it with `typenode_val`. Built-in TypeNode constructors carry
     // identity as-type functions — they return t unchanged. User-defined constructors may
     // carry a custom as-type to reduce to an existing TypeNode form.
     //
     // Dispatch path:
     //   1. Look up "TypeNode" in the type-stage Env chain (slot_index, depth).
-    //   2. Resolve the FlatEnv EnvId for that depth via the display vector.
+    //   2. Resolve the scope-id for that depth via the ScopeArena parent chain.
     //   3. Materialize the TypeNode ThunkId → Value::Dict.
     //   4. Get the "as-type" field ThunkId from the dict.
     //   5. Materialize the "as-type" thunk → Value::Function.
@@ -4922,12 +4922,12 @@ pub(crate) async fn eval_type_stage_expr(
             }
         };
 
-        // Step 2: Get the type_stage_flat_env_id from the TypeContext and resolve the FlatEnv.
+        // Step 2: Get the type_stage_scope_id from the TypeContext and resolve via ScopeArena.
         let typenode_thunk_id = {
-            // Extract flat_env_id under the lock, then drop the lock before borrowing arena.
-            let flat_env_id = {
+            // Extract scope_id under the lock, then drop the lock before borrowing arena.
+            let scope_id = {
                 let tc_guard = eval_ctx.type_context.lock().unwrap();
-                let flat = tc_guard.as_ref().and_then(|d| d.type_stage_flat_env_id);
+                let flat = tc_guard.as_ref().and_then(|d| d.type_stage_scope_id);
                 match flat {
                     Some(id) => id,
                     None => break 'dispatch None,
@@ -4935,7 +4935,7 @@ pub(crate) async fn eval_type_stage_expr(
             }; // tc_guard dropped here
 
             let arena_borrow = eval_ctx.scope_arena.borrow();
-            let target_env_id = match arena_borrow.walk_parent_chain(flat_env_id, typenode_depth) {
+            let target_env_id = match arena_borrow.walk_parent_chain(scope_id, typenode_depth) {
                 Ok(env_id) => env_id,
                 Err(_) => break 'dispatch None,
             };

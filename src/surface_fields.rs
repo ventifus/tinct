@@ -8,14 +8,12 @@
 //!
 //! The field extraction functions return `Value` variants. Child expression nodes are
 //! returned as `Value::Variant { tag: "Expr.<Tag>", .. }` — the canonical runtime
-//! representation. `Value::Document` and `Value::Program` carry their original Arc
-//! wrappers for efficient sharing.
+//! representation. `Value::Document` carries its original Arc for efficient sharing.
+//! `Value::Program` carries a u32 id into `EvalContext.program_store`.
 
 use std::sync::Arc;
 
-use crate::ast::{
-    SurfaceDeclaration, SurfaceDocument, SurfaceExpression, SurfaceNode, SurfaceProgram,
-};
+use crate::ast::{SurfaceDeclaration, SurfaceExpression, SurfaceNode};
 use crate::rust_span;
 
 /// Extract the variant tag from a `SurfaceDeclaration` as a static string.
@@ -31,22 +29,6 @@ pub fn surface_decl_tag(decl: &SurfaceDeclaration) -> &'static str {
 }
 
 // ============================================================================
-// Document and program tag extraction
-// ============================================================================
-
-/// Returns the match tag for a SurfaceDocument.
-/// Always `"Document"` — used by match evaluator for Value::Document dispatch.
-#[allow(dead_code)] // Used in Part F when Value::Document is added
-pub fn surface_doc_tag(_doc: &SurfaceDocument) -> &'static str {
-    "Document"
-}
-
-/// Returns the match tag for a SurfaceProgram.
-/// Always `"Program"` — used by match evaluator for Value::Program dispatch.
-#[allow(dead_code)] // Used in Part F when Value::Program is added
-pub fn surface_program_tag(_prog: &SurfaceProgram) -> &'static str {
-    "Program"
-}
 
 // ============================================================================
 // Surface node field names for each variant

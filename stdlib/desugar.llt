@@ -213,15 +213,6 @@ desugar-match-arm: [fn [let a@MatchArm depth@Integer]
     body: [desugar-expr-impl a.body depth]
     span: a.span]]
 
-# desugar-document: Desugar all expressions in a document.
-desugar-document: [fn [let doc@Document]
-  [Document
-    name: doc.name
-    expressions: [map [fn [let e] [desugar-expr-impl e 0]] doc.expressions]
-    declarations: doc.declarations  # Declarations are passed through without desugaring
-    output-type: doc.output-type
-    expects: doc.expects]]
-
 ]
 
 # ---- Public API ----
@@ -229,11 +220,9 @@ desugar-document: [fn [let doc@Document]
 
 desugar-program@[doc: "Desugar a Program by applying $_ implicit lambda transformation.
 
-This function walks the Expression tree via match dispatch and wraps expressions
-containing `$_` in non-parameter positions with implicit lambda functions.
-
-The transformation is a surface pass: it runs after parsing and macro expansion,
-before resolution and type checking.
+Delegates to builtin-desugar, which implements the transformation in Rust.
+The tinct-level desugar-expr-impl walk in this file is kept for reference and
+testing purposes but is no longer used in the main pipeline.
 
 Parameters:
   p@Program — The program to desugar
@@ -241,6 +230,6 @@ Parameters:
 Returns:
   Program — The desugared program with all $_ references wrapped in lambdas"]:
   [fn [let p@Program]
-    [program [map desugar-document p.documents]]]
+    [builtin-desugar p]]
 
 ]

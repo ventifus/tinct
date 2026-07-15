@@ -419,10 +419,10 @@ The formal rules map directly to the implementation:
 | SEQ-SCOPE | `eval_document_exprs()` (canonical loop) | `eval.rs` |
 | SEQ-SCOPE (document) | `eval_surface_document()` (delegates to `eval_document_exprs`) | `eval.rs` |
 | SEQ-SCOPE (eval builtin) | `builtin_eval()` (extracts nodes from Document, delegates to `eval_document_exprs_with_env`) | `builtins_meta.rs` |
-| DOC-PIPELINE | tinct-side loop in `loader.llt` via `builtin-eval` + `builtin-extend-env` (returns `{env, result, doc-name, error}`) | `stdlib/loader.llt` |
-| DOC-PIPELINE caps enforcement | tinct-side `builtin-cap-env-has?` in `eval-document-runtime` | `stdlib/loader.llt` |
-| DOC-PIPELINE expects validation | tinct-side `builtin-check-type` in `eval-document-runtime` | `stdlib/loader.llt` |
-| LOOKUP | `Environment::get()` | `value.rs:445-460` |
+| DOC-PIPELINE | tinct-side `eval-doc` reduce loop in `loader.llt` via `builtin-eval` + `builtin-scope-new` (returns `{result, scope-id, errors}`) | `stdlib/loader.llt` |
+| DOC-PIPELINE caps enforcement | tinct-side `builtin-cap-env-has?` reduce loop in `eval-document-runtime` | `stdlib/loader.llt` |
+| DOC-PIPELINE expects validation | tinct-side `builtin-check-type` in `eval-docs`; not enforced in the CLI `eval-document-runtime` path | `stdlib/test-loader.llt` |
+| LOOKUP | `Environment::get()` | `value.rs:1858-1871` |
 | Key isolation | `eval_key(key_expr, parent_env, d)` | `eval.rs:327` |
 | String-key filter | `if let Key::String(name) = key` | `eval.rs:234, 347` |
 | Letrec sharing | `Thunk::new_unevaluated(expr, dict_env)` | `eval.rs:340-344` |
@@ -546,15 +546,21 @@ A tinct file contains one or more documents separated by `---`. Each `---` line 
 file          = SOI ~ document ~ (section_header ~ document)* ~ EOI
 document      = expression*
 expression    = !section_header ~ value
-section_header = "---" ~ header_components? ~ NEWLINE
-header_components = header_component+
-header_component  = section_name | output_annotation | expects_pragma | caps_pragma | uses_pragma
-section_name      = "%" ~ ident_char+     // e.g., %config — bare % alone is a parse error
-output_annotation = "@" ~ annotation_value
-expects_pragma    = "expects" ~ ":" ~ annotation_value
-caps_pragma       = "caps" ~ ":" ~ "[" ~ (cap_entry)* ~ "]"
-cap_entry         = "%" ~ ident_char+ ~ ":" ~ "@" ~ ident_char+   // e.g., %nc: @NetCap
-uses_pragma       = "uses" ~ ":" ~ "[" ~ (quoted_string)* ~ "]"   // e.g., uses: ["core" "datetime"]
+section_header = "---" ~ header_entry* ~ NEWLINE
+header_entry  = section_name | key_value_pair
+section_name  = "%" ~ ident_char+ ~ output_annotation?
+                                           // e.g., %config — sets header["name"] = "config"
+                                           // %config@Dict — also sets header["output-annotation"]
+                                           // bare % alone is a parse error
+                                           // a section name may appear at most once per file
+output_annotation = "@" ~ (identifier | bracket_expr)
+                                           // no whitespace between section name and @
+key_value_pair = identifier ~ ":" ~ value  // e.g., uses: ["core"] expects: @Type caps: [...]
+value          = bracket_expr | string_literal | integer_literal | float_literal
+               | identifier | type_assert
+type_assert    = "@" ~ (identifier | bracket_expr)
+                                           // e.g., @Dict, @[type: Seq  item: Int]
+                                           // produces a TypeAssert node with a null inner expression
 ```
 
 **File:** The outermost unit. Contains documents separated by `---` section headers.
@@ -997,7 +1003,7 @@ This matches the document isolation property of DOC-PIPELINE (§Scope Chain Sema
 | Guard push | `builtins.rs:1300-1303` (`include_guard.insert`) |
 | Guard pop + base_dir restore | `builtins.rs:1323` (`cleanup` closure) |
 | Cache store | `builtins.rs:1345-1348` |
-| DOC-PIPELINE (cross-ref) | tinct-side loop in `stdlib/loader.llt:eval-document-runtime` via `builtin-eval` + `builtin-extend-env` |
+| DOC-PIPELINE (cross-ref) | tinct-side `eval-doc` reduce loop in `stdlib/loader.llt` via `builtin-eval` + `builtin-scope-new` (returns `{result, scope-id, errors}`) |
 | SEQ-SCOPE (cross-ref) | `eval_document_exprs` (canonical loop, `eval.rs`); `eval_surface_document` delegates to it |
 
 ## Side Effects and I/O

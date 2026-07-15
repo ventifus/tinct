@@ -1,10 +1,11 @@
-# eval-types evaluates multiple expressions in type-stage environment
+# eval-types evaluates multiple expressions in type-stage environment.
+# Parsing "[x: 1] [y: 2]" produces a Program with one document containing
+# two dict expressions. Returning parsed.program in output triggers the
+# ValueNotSerializable error — Program values cannot be serialized to JSON.
 [
-  src: [load "[x: 1] [y: 2]"]
-  exprs: [builtin-resolve src].resolved.exprs
-  results: [collect [eval-types exprs]]
-  [length results]
+  parsed: [builtin-parse [builtin-str-bytes "[x: 1] [y: 2]"] "test.llt"]
+  parsed.program
 ]
 
 === error
-cannot serialize Program to JSON (defined at 2:8-2:32)
+cannot serialize Program to JSON

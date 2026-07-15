@@ -432,9 +432,8 @@ pub(crate) use crate::builtins_meta::{
     builtin_annotation_of, builtin_apply, builtin_ast_of, builtin_big_int, builtin_blake3,
     builtin_cap_identity, builtin_decimal, builtin_eval, builtin_eval_types, builtin_force,
     builtin_gensym, builtin_include_cache_get, builtin_include_cache_put, builtin_llt_repr,
-    builtin_load, builtin_macro_error, builtin_macro_injects, builtin_make_annotated,
-    builtin_raise, builtin_span_of, builtin_tag_of, builtin_try, builtin_type_of, builtin_until,
-    builtin_validate,
+    builtin_macro_error, builtin_macro_injects, builtin_make_annotated, builtin_raise,
+    builtin_span_of, builtin_tag_of, builtin_try, builtin_type_of, builtin_until, builtin_validate,
 };
 
 // String builtins: str, split, replace, trim, trim-start, trim-end,
@@ -768,12 +767,11 @@ mod tests {
         let mut program = parsed.program;
         crate::desugar::desugar_surface_program(&mut program);
         // Seed resolver from FlatEnv so builtin names resolve to de Bruijn coords.
-        let root_frame: indexmap::IndexMap<String, ()> = {
+        let root_frame: indexmap::IndexMap<String, u32> = {
             let arena = ctx.scope_arena.borrow();
             arena.scopes[0]
-                .slot_names
-                .iter()
-                .map(|n| (n.clone(), ()))
+                .iter_named()
+                .map(|(n, slot)| (n.to_string(), slot))
                 .collect()
         };
         let (_table, _frames) = crate::resolve::resolve_surface_program(&program, &[root_frame]);

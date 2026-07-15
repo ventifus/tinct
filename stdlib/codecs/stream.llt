@@ -66,13 +66,17 @@
   balanced-exprs: [fn [let ls]
     [scan ls "" 0]]
 
-  # parse-expr: parse a single balanced expression string to an Expression.
-  # Type: (String -> Expression)
+  # parse-expr: parse a single balanced expression string and return a Document.
+  # Parses and desugars s, then returns the first document for evaluation.
+  # Type: (String -> Document)
   parse-expr: [fn [let s]
-    [head [head [builtin-resolve [load s]].resolved.documents].expressions]]
+    [pr: [builtin-parse [builtin-str-bytes s] "<stream>"]]
+    [desugared: [builtin-desugar pr.program]]
+    [docs: [builtin-program-docs desugared]]
+    [builtin-get 0 docs]]
 
-  # program-exprs: extract all expressions from a Value::Program.
+  # program-exprs: extract all documents from a Value::Program.
   # Type: (Program -> Seq)
   program-exprs: [fn [let prog]
-    [flat-map [fn [let doc] doc.expressions] prog.documents]]
+    [each [builtin-program-docs prog]]]
 ]
