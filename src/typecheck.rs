@@ -14,7 +14,7 @@ use crate::ast::{
 use crate::coverage;
 use crate::env::Env;
 use crate::types::{
-    generalize, instantiate_scheme, InferState, Kind, Row, Type, TypeAlias, TypeEnv, TypeError,
+    generalize, instantiate_scheme, InferState, Row, Type, TypeAlias, TypeEnv, TypeError,
     TypeScheme,
 };
 
@@ -1752,14 +1752,19 @@ pub(crate) async fn infer_surface_expr(
                                 )]);
                             }
 
-                            for (arg, (_param_name, _param_ty)) in args.iter().zip(params.iter()) {
+                            for (arg, (_param_name, param_ty)) in args.iter().zip(params.iter()) {
                                 let arg_ty =
                                     Box::pin(infer_surface_expr(arg, env, state, type_map)).await?;
-                                // Type-checking arg against param type: bind in substitution
-                                state.subst.type_map.borrow_mut().insert(
-                                    InferState::typevar_name("_check", &Kind::Type, &arg.span),
-                                    arg_ty.clone(),
-                                );
+                                // Bind the pre-bound param TypeVar to the inferred arg type.
+                                // This propagates argument type information back to constrain the
+                                // parameter, consistent with Damas-Milner HM (Algorithm W).
+                                if let Type::TypeVar(param_var_name, _) = param_ty {
+                                    state
+                                        .subst
+                                        .type_map
+                                        .borrow_mut()
+                                        .insert(param_var_name.clone(), arg_ty.clone());
+                                }
                             }
                             for na in named_args {
                                 let _ = Box::pin(infer_surface_expr(

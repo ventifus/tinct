@@ -409,7 +409,7 @@ Named argument type checking is implemented. `Type::Function` carries `params: V
 - **CALL-POLY** (`check_call`): same name-based lookup and unify on the instantiated params.
 - **`check_call_with_scheme`** Function arm: same name-based lookup and unify, applied after the positional arg unification loop, using the already-instantiated `params` from `instantiate_scheme`.
 
-Known gap: when the callee is a letrec forward reference (same-dict scope), the type resolves to an unbound `TypeVar` and falls through to the `TypeVar` arm, which skips named-arg validation. See [Type System Extensions](07-type-extensions.md) §Completeness for the remaining gaps.
+Known gap: when the callee is a letrec forward reference for a *non-fn* entry (same-dict scope), the type resolves to an unbound `TypeVar` and falls through to the `TypeVar` arm, which skips named-arg validation. Fn-form entries are pre-bound as `Type::Function` (B-520), so recursive calls to fn entries are handled correctly by the `Type::Function` arm. See [Type System Extensions](07-type-extensions.md) §Completeness for the remaining gaps.
 
 **Access chains:**
 
@@ -964,10 +964,18 @@ Creates fresh `TypeVar(_tN, level)` for each quantified variable, registers them
 
 ```text
 Pass 0 — Key resolution: unchanged
-Pass 1 — Bind all: Γ' = Γ, k₁:α₁, ..., kₙ:αₙ
-         where each αᵢ is a fresh type variable at level ℓ+1.
-         Forward references see αᵢ (participates in unification,
-         unlike the previous Unknown which silently matched everything).
+Pass 1 — Bind all (B-520):
+         For each fn-form entry kᵢ (SurfaceExpression::Fn):
+           αᵢ = Fn([fresh βⱼ for each param j], variadic) → fresh γᵢ  at level ℓ+1
+           Recursive calls see a Function-shaped callee so the
+           Type::Function arm handles them without a return annotation.
+           Variadic params get Dict(Uniform { value: fresh δ }) as βⱼ
+           rather than a bare TypeVar, mirroring infer_fn's own binding.
+         For each non-fn entry kⱼ:
+           αⱼ = fresh TypeVar at level ℓ+1
+           Forward references see αⱼ (participates in unification,
+           unlike the previous Unknown which silently matched everything).
+         Γ' = Γ, k₁:α₁, ..., kₙ:αₙ
 Pass 2 — Type aliases: unchanged. Aliases remain monomorphic
          (IndexMap<String, Type>, not TypeScheme).
 Pass 3 — Infer values: at level ℓ+1, for each non-alias

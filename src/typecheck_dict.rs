@@ -866,11 +866,45 @@ pub(crate) async fn infer_dict(
                                         for ((_, pre_ty), (_, actual_ty)) in
                                             pre_params.iter().zip(actual_params.iter())
                                         {
-                                            if let Type::TypeVar(param_name, _) = pre_ty {
-                                                subst
-                                                    .type_map
-                                                    .borrow_mut()
-                                                    .insert(param_name.clone(), actual_ty.clone());
+                                            match pre_ty {
+                                                Type::TypeVar(param_name, _) => {
+                                                    subst.type_map.borrow_mut().insert(
+                                                        param_name.clone(),
+                                                        actual_ty.clone(),
+                                                    );
+                                                }
+                                                Type::Dict(Row {
+                                                    tail:
+                                                        RowTail::Uniform {
+                                                            value: elem_var, ..
+                                                        },
+                                                    ..
+                                                }) => {
+                                                    // Variadic param: the pre-bound type is
+                                                    // Dict(Uniform { value: elem_TypeVar }).
+                                                    // Bind the inner elem TypeVar to the actual
+                                                    // elem type so recursive calls see a concrete
+                                                    // element type.
+                                                    if let Type::TypeVar(elem_name, _) =
+                                                        elem_var.as_ref()
+                                                    {
+                                                        if let Type::Dict(Row {
+                                                            tail:
+                                                                RowTail::Uniform {
+                                                                    value: actual_elem,
+                                                                    ..
+                                                                },
+                                                            ..
+                                                        }) = actual_ty
+                                                        {
+                                                            subst.type_map.borrow_mut().insert(
+                                                                elem_name.clone(),
+                                                                *actual_elem.clone(),
+                                                            );
+                                                        }
+                                                    }
+                                                }
+                                                _ => {}
                                             }
                                         }
                                     }
