@@ -1212,9 +1212,9 @@ Tinct uses Hindley-Milner inference with row polymorphism and levels-based let-g
 **Dict letrec inference.** Dict entries form a letrec scope. The type checker runs five passes:
 
 1. **Pass 0:** Resolve key names (literal keys extracted; computed keys resolved via type inference in parent scope)
-2. **Pass 1:** Bind all non-alias key names to fresh TypeVars at the current level
+2. **Pass 1:** Bind all non-alias key names to fresh TypeVar placeholders. For `[fn ...]` entries, the placeholder is `Type::Function { params: [(name, fresh TypeVar)...], ret: fresh TypeVar, variadic, required_count }` — enabling recursive calls to resolve the function shape without a return annotation. For non-fn entries, the placeholder is a bare fresh TypeVar as before.
 3. **Pass 2:** Register type aliases sequentially (each alias sees previously registered siblings)
-4. **Pass 3:** Infer actual value types and unify with Pass 1 TypeVars
+4. **Pass 3:** Infer actual value types and bind Pass 1 placeholders in the substitution. For fn entries, the pre-bound ret TypeVar is directly inserted into `subst.type_map` (not unified — `infer_dict` is sync; `unify` is async), resolving recursive references to the concrete return type.
 5. **Pass 4:** Generalize field types into polymorphic schemes
 
 **Substitution idempotence invariant.** `Substitution::apply()` is idempotent — applying the same substitution twice yields the same result. Achieved by transitive chaining in `apply_inner()` (Robinson 1965).

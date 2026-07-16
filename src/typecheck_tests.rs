@@ -2090,23 +2090,47 @@ async fn test_match_arm_nested_dict_pin_pattern_does_not_bind() {
 // ========== Typecheck Completeness Tests ==========
 
 #[tokio::test]
-async fn test_recursive_function_without_annotation_errors() {
-    // Task 1: Recursive functions WITHOUT return annotations should error
-    // Use a simpler recursive function: [f $x] calls f recursively (not [$f $x] which is a dict).
+async fn test_recursive_function_without_annotation_ok() {
+    // After B-520: recursive functions with no return annotation should be valid.
+    // Pass 1 binds f → Fn([α]) → β; the recursive call returns β.
     let result = check("[f: [fn [let x] [f $x]]]").await;
     assert!(
-        result.is_err(),
-        "recursive function without return annotation should fail"
+        result.is_ok(),
+        "recursive function without return annotation should type-check successfully, got: {:?}",
+        result.unwrap_err()
     );
-    let errs = result.unwrap_err();
-    // Accept either the recursion error or the infinite type error
-    // (infinite type occurs when the check doesn't catch it in time)
+}
+
+// Note: the TypeVar arm at typecheck.rs:1775 ("'x' is not a function") is guarded by
+// `state.current_function == Some(name)` (line 1717), which is only set inside fn bodies.
+// Non-fn dict entries like `[x: [x 1]]` never set current_function, so they go through
+// the normal speculative call path rather than the recursive-call path. After B-520 Change 1,
+// all fn entries get Function pre-bindings, making the TypeVar arm effectively unreachable
+// in normal operation. No separate error test is needed for this case.
+
+#[tokio::test]
+async fn test_mutual_recursion_without_annotation_ok() {
+    // B-520: mutual recursion via direct call syntax should type-check without annotations.
+    // Both f and g get Fn pre-bindings in Pass 1; each recursive call hits the Function arm.
+    let result = check("[f: [fn [let x] [g $x]]  g: [fn [let y] [f $y]]]").await;
     assert!(
-        errs.iter()
-            .any(|e| e.message().contains("recursive function requires")
-                || e.message().contains("infinite type")),
-        "should report either polymorphic recursion or infinite type error, got: {:?}",
-        errs
+        result.is_ok(),
+        "mutually recursive functions without annotations should type-check: {:?}",
+        result.err()
+    );
+}
+
+#[tokio::test]
+async fn test_nested_recursive_fn_in_multi_body_ok() {
+    // B-520: recursive fn defined in intermediate dict of a multi-body function should work.
+    // This exercises the Sequential handler path (infer_dict for intermediate dicts).
+    let result =
+        check("[outer: [fn [let n] [loop: [fn [let i] [if [= i n] n [loop [+ i 1]]]]] [loop 0]]]")
+            .await;
+    assert!(
+        result.is_ok(),
+        "recursive fn in intermediate dict should type-check: {:?}",
+        result.err()
     );
 }
 
@@ -2828,6 +2852,7 @@ async fn test_do_infer_resolve_monad_from_expr_unqualified_registered_result() {
         annotation: None,
         field_annotations: indexmap::IndexMap::new(),
         constructor_constants: indexmap::IndexMap::new(),
+        definition_span: None,
     });
     env.insert_tycon_def("Result".to_string(), result_tycon);
 
@@ -2890,6 +2915,7 @@ fn make_tycon_def_zero(body: Type) -> Arc<crate::type_def::TyConDef> {
         annotation: None,
         field_annotations: indexmap::IndexMap::new(),
         constructor_constants: indexmap::IndexMap::new(),
+        definition_span: None,
     })
 }
 
@@ -2905,6 +2931,7 @@ fn make_tycon_def_one(param: &str, body: Type) -> Arc<crate::type_def::TyConDef>
         annotation: None,
         field_annotations: indexmap::IndexMap::new(),
         constructor_constants: indexmap::IndexMap::new(),
+        definition_span: None,
     })
 }
 
@@ -2920,6 +2947,7 @@ fn make_builtin_tycon(param: &str, discriminant: &str) -> Arc<crate::type_def::T
         annotation: None,
         field_annotations: indexmap::IndexMap::new(),
         constructor_constants: indexmap::IndexMap::new(),
+        definition_span: None,
     })
 }
 
@@ -3067,6 +3095,7 @@ async fn test_expand_named_cycle_detection() {
         annotation: None,
         field_annotations: indexmap::IndexMap::new(),
         constructor_constants: indexmap::IndexMap::new(),
+        definition_span: None,
     });
     state
         .tycon_env
@@ -3199,6 +3228,7 @@ async fn test_expand_named_produces_recursive_wrapper() {
         annotation: None,
         field_annotations: indexmap::IndexMap::new(),
         constructor_constants: indexmap::IndexMap::new(),
+        definition_span: None,
     });
     state
         .tycon_env
@@ -3269,6 +3299,7 @@ async fn test_expand_named_mutual_recursion_wraps_at_origin() {
         annotation: None,
         field_annotations: indexmap::IndexMap::new(),
         constructor_constants: indexmap::IndexMap::new(),
+        definition_span: None,
     });
     let odd_arc = Arc::new(crate::type_def::TyConDef {
         params: vec![],
@@ -3280,6 +3311,7 @@ async fn test_expand_named_mutual_recursion_wraps_at_origin() {
         annotation: None,
         field_annotations: indexmap::IndexMap::new(),
         constructor_constants: indexmap::IndexMap::new(),
+        definition_span: None,
     });
     state
         .tycon_env

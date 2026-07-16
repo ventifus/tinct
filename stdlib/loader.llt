@@ -1,6 +1,36 @@
 # stdlib/loader.llt
 #
 # The tinct "main function" — the first tinct code evaluated at startup.
+
+--- stage: "type"
+# Type-stage definitions for primitive types available in this init program.
+[
+  TypeNode: [type
+    Int
+    String
+    Float
+    Bytes
+    Never
+    Top
+    Unknown
+    Proxy
+    AnyFn
+    [Dict fields: Any  open: Any  key-type: Any  value-type: Any]
+    [TypeConstructor name: Any]
+    [TypeApplication ctor: Any  args: Any]]
+
+  Integer: TypeNode.Int
+  String:  TypeNode.String
+  Float:   TypeNode.Float
+  Bytes:   TypeNode.Bytes
+  Never:   TypeNode.Never
+  Any:     TypeNode.Top
+  Unknown: TypeNode.Unknown
+  Proxy:   TypeNode.Proxy
+  Dict:    [TypeNode.Dict fields: []  open: 1  key-type: TypeNode.Top  value-type: TypeNode.Top]
+]
+
+---
 # The invoker (CLI, LSP, literate runner, ...) provides an initial dictionary
 # environment, as though it evaluated a tinct dict before this file runs:
 #
@@ -139,13 +169,24 @@
       0: default
       _: [builtin-get key dict]]]
 
+  # _shift-keys: shift all integer keys in dict d by +1.
+  # {0: v} → {1: v}, {0: a, 1: b} → {1: a, 2: b}
+  # Used by _scope-to-frames-inner to make room for new outermost frame at key 0.
+  _shift-keys: [fn [let d@Dict n@Integer i@Integer builder@BuilderHandle]
+    [match [builtin-eq-int i n]
+      0: [_shift-keys d n [builtin-int-add i 1]
+            [builtin-builder-set [builtin-int-add [builtin-dict-key-nth d i] 1]
+                                 [builtin-dict-nth d i]
+                                 builder]]
+      _: [builtin-builder-finish builder]]]
+
   # scope-to-frames: build frames array from scope-id for builtin-resolve.
   # Walks from innermost to outermost via builtin-scope-parent, prepends each
   # level's names, producing [outermost-names, ..., innermost-names].
   # This matches resolve.rs ordering: initial_frames[0] = outermost (line 599).
   _scope-to-frames-inner: [fn [let scope-id acc]
     [acc-next: [merge [make-entry 0 [builtin-scope-names scope-id]]
-                      [object-map acc [fn [let k v] [make-entry [builtin-int-add k 1] v]]]]]
+                      [_shift-keys acc [builtin-dict-length acc] 0 [builtin-make-builder]]]]
     [parent: [builtin-scope-parent scope-id]]
     [match [null? parent]
       0: [_scope-to-frames-inner parent acc-next]
@@ -233,7 +274,7 @@
     [reduce
       [fn [let acc name]
         [decl-path:  [builtin-string-concat "builtin_" [builtin-string-concat name ".llt"]]]
-        [tc-result:  [builtin-try [fn []
+        [tc-result:  [builtin-try [call [fn []
             [decl-handle:    [builtin-file-open %libdir decl-path "read"]]
             [decl-bytes:     [read-file decl-handle [builtin-bytes]]]
             [parse-result:   [builtin-parse decl-bytes decl-path]]
@@ -249,7 +290,7 @@
                                  []]
                                []
                                docs]]
-            []]]]
+            []]]]]
         [_warnings:  [match [builtin-has-key? "ok" tc-result]
             0: []
             _: [builtin-get "ok" tc-result]]]
@@ -313,7 +354,7 @@
     # Use builtin-try per diagnostic so a formatting failure doesn't suppress remaining errors.
     [reduce
       [fn [let _ d]
-        [builtin-try [fn [] [%stderr.write [format-diagnostic d] %stderr]]]
+        [builtin-try [%stderr.write [format-diagnostic d] %stderr]]
         _]
       []
       diagnostics]]

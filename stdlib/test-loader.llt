@@ -8,6 +8,36 @@
 #   %args      — CLI flags dict
 #   %cwd       — DirCap for working directory
 #   %libdir    — DirCap for stdlib
+
+--- stage: "type"
+# Type-stage definitions for primitive types available in this init program.
+[
+  TypeNode: [type
+    Int
+    String
+    Float
+    Bytes
+    Never
+    Top
+    Unknown
+    Proxy
+    AnyFn
+    [Dict fields: Any  open: Any  key-type: Any  value-type: Any]
+    [TypeConstructor name: Any]
+    [TypeApplication ctor: Any  args: Any]]
+
+  Integer: TypeNode.Int
+  String:  TypeNode.String
+  Float:   TypeNode.Float
+  Bytes:   TypeNode.Bytes
+  Never:   TypeNode.Never
+  Any:     TypeNode.Top
+  Unknown: TypeNode.Unknown
+  Proxy:   TypeNode.Proxy
+  Dict:    [TypeNode.Dict fields: []  open: 1  key-type: TypeNode.Top  value-type: TypeNode.Top]
+]
+
+---
 #   %stdout    — protocol dict for output (write, flush, close methods)
 #
 # Test file format (*.llt-eval):
@@ -44,13 +74,13 @@
 
   # reduce and join defined here using core builtins only.
   # Dict 1 helpers need these but prelude is not yet loaded.
-  _reduce-loop: [fn [let f acc xs i len]
+  _reduce-loop: [fn [let f acc@a xs@Dict i@Integer len@Integer]
     [match [builtin-int-gte i len]
       0: [_reduce-loop f [f acc [builtin-get i xs]] xs [builtin-int-add i 1] len]
       _: acc]]
   reduce: [fn [let f init xs] [_reduce-loop f init xs 0 [builtin-dict-length xs]]]
 
-  _join-loop: [fn [let sep acc xs i len]
+  _join-loop: [fn [let sep@String acc@String xs@Dict i@Integer len@Integer]
     [match [builtin-int-gte i len]
       0: [_join-loop sep
             [match [builtin-eq-int i 0]
@@ -91,13 +121,24 @@
       0: default
       _: [builtin-get key dict]]]
 
+  # _shift-keys: shift all integer keys in dict d by +1.
+  # {0: v} → {1: v}, {0: a, 1: b} → {1: a, 2: b}
+  # Used by _scope-to-frames-inner to make room for new outermost frame at key 0.
+  _shift-keys: [fn [let d@Dict n@Integer i@Integer builder@BuilderHandle]
+    [match [builtin-eq-int i n]
+      0: [_shift-keys d n [builtin-int-add i 1]
+            [builtin-builder-set [builtin-int-add [builtin-dict-key-nth d i] 1]
+                                 [builtin-dict-nth d i]
+                                 builder]]
+      _: [builtin-builder-finish builder]]]
+
   # scope-to-frames: build frames array from scope-id for builtin-resolve.
   # Walks from innermost to outermost via builtin-scope-parent, prepends each
   # level's names, producing [outermost-names, ..., innermost-names].
   # This matches resolve.rs ordering: initial_frames[0] = outermost.
-  _scope-to-frames-inner: [fn [let scope-id acc]
+  _scope-to-frames-inner: [fn [let scope-id@Integer acc@Dict]
     [acc-next: [merge [make-entry 0 [builtin-scope-names scope-id]]
-                      [object-map acc [fn [let k v] [make-entry [builtin-int-add k 1] v]]]]]
+                      [_shift-keys acc [builtin-dict-length acc] 0 [builtin-make-builder]]]]
     [parent: [builtin-scope-parent scope-id]]
     [match [null? parent]
       0: [_scope-to-frames-inner parent acc-next]
@@ -107,7 +148,7 @@
 
   # object-map: map over dict values, preserving keys. Used by scope-to-frames
   # to shift frame indices when prepending a new outermost frame.
-  _object-map-step: [fn [let obj f keys i n builder]
+  _object-map-step: [fn [let obj@Dict f keys@Dict i@Integer n@Integer builder@BuilderHandle]
     [match [builtin-eq-int i n]
       0: [call [fn [let]
             [k: [builtin-get i keys]]
@@ -119,7 +160,7 @@
     [_object-map-step obj f keys 0 [builtin-dict-length keys] [builtin-make-builder]]]
 
   merge: [fn [let a b]
-    [_copy: [fn [let builder d n i]
+    [_copy: [fn [let builder@BuilderHandle d@Dict n@Integer i@Integer]
       [match [builtin-int-gte i n]
         0: [_copy
               [builtin-builder-set [builtin-dict-key-nth d i] [builtin-dict-nth d i] builder]
@@ -129,7 +170,7 @@
       [_copy [_copy [builtin-make-builder] a [builtin-dict-length a] 0]
              b [builtin-dict-length b] 0]]]
 
-  read-file: [fn [let handle acc]
+  read-file: [fn [let handle acc@Bytes]
     [chunk: [builtin-file-read handle 65536]]
     [match [bytes-empty? chunk]
       0: [read-file handle [builtin-bytes-concat acc chunk]]
@@ -203,7 +244,7 @@
   # the materialization path — this is what forces all the writes.
   # Each iteration: write d_i, use the write result's length (always >= 0) as proof
   # the write happened, add 1 to the running count.
-  _emit-loop: [fn [let diags i len acc]
+  _emit-loop: [fn@Integer [let diags@Dict i@Integer len@Integer acc@Integer]
     [match [builtin-int-gte i len]
       0: [_emit-loop diags [builtin-int-add i 1] len
             [builtin-int-add acc
@@ -229,7 +270,7 @@
     [reduce
       [fn [let acc name]
         [decl-path:   [builtin-string-concat "builtin_" [builtin-string-concat name ".llt"]]
-         tc-result:   [builtin-try [fn []
+         tc-result:   [builtin-try [call [fn []
              [decl-handle:    [builtin-file-open %libdir decl-path "read"]]
              [decl-bytes:     [read-file decl-handle [builtin-bytes]]]
              [parse-result:   [builtin-parse decl-bytes decl-path]]
@@ -248,8 +289,8 @@
                [fn [let acc doc]
                  [frames: [scope-to-frames decl-scope-id]]
                  [r: [builtin-resolve doc frames]]
-                 [typed: [builtin-typecheck-doc r.doc seed-tc]]
-                 [merge acc [make-entry [builtin-dict-length acc] typed]]]
+                 [tc-result: [builtin-typecheck-doc r.doc seed-tc]]
+                 [merge acc [make-entry [builtin-dict-length acc] tc-result]]]
                []
                decl-docs]]
              [warnings: [reduce
@@ -258,7 +299,7 @@
                typed-docs]]
              [match [builtin-eq-int resolve-errors 0]
                0: warnings
-               _: warnings]]]
+               _: warnings]]]]
          warnings:    [match [builtin-has-key? "ok" tc-result]
              0: []
              _: [builtin-get "ok" tc-result]]
@@ -367,8 +408,9 @@
         0: [builtin-raise [reduce [fn [let acc d] [builtin-string-concat acc [format-diagnostic d]]]
                                   "" res.errors]]
         _: [call [fn [let]
-             [typed:  [builtin-typecheck-doc res.doc acc.tc]]
-             [ev:     [builtin-eval typed scope]]
+             [tc-result: [builtin-typecheck-doc res.doc acc.tc]]
+             [typed:     tc-result.doc]
+             [ev:        [builtin-eval typed scope]]
              [match [null? ev.errors]
                0: [builtin-raise [builtin-get 0 ev.errors]]
                _: [call [fn [let]
@@ -496,11 +538,11 @@
   # eval-docs uses builtin-try to capture errors as data rather than raises,
   # manages the per-test arena, and handles caps/expects validation.
 
-  # eval-docs: resolve+eval all documents against base-scope using arena.
+  # eval-docs: resolve+eval all documents against base-scope.
   # Errors are captured into state.errors (String) rather than propagated as raises.
-  # Adds: scope-id, last-result (migrated to root arena), program.
-  eval-docs: [fn [let base-scope arena state]
-    [try-result: [builtin-try [fn []
+  # Adds: scope-id, last-result, program.
+  eval-docs: [fn [let base-scope state]
+    [try-result: [builtin-try [call [fn []
       [test-state: [reduce
         [fn [let st doc]
           [meta:  [builtin-doc-meta doc st.scope-id]]
@@ -534,33 +576,18 @@
                           _: _caps-ok]]
                         [match [builtin-int-gte _expects-forced 0]
                           0: [scope-id: ev.scope-id  last-result: ev.result  tc: st.tc]
-                          _: [scope-id: ev.scope-id  last-result: ev.result  tc: st.tc]]]]]]]]]]
+                          _: [scope-id: ev.scope-id  last-result: ev.result  tc: st.tc]]]]]]]]]
         [scope-id: base-scope  last-result: []  tc: fundamental-tc]
         state.parsed.documents]]
       [scope-id:   test-state.scope-id
        last-result: test-state.last-result
        tc:         test-state.tc
-       documents:  state.parsed.documents]]]]
-    # Migrate result (or [] on error) to root arena, print stats, drop arena.
-    [to-migrate: [match [builtin-has-key? "ok" try-result]
-      0: []
-      _: [builtin-get "ok" try-result].last-result]]
-    [migrated-result: [builtin-arena-migrate to-migrate arena %arena]]
-    [_mf: [builtin-int-gte [builtin-dict-length [builtin-type-of migrated-result]] 0]]
-    [stats: [match _mf 0: [builtin-arena-stats arena] _: [builtin-arena-stats arena]]]
-    [_sw: [%stderr.write [join "" [stats.name ": "
-            [builtin-int->string stats.thunks-live] " live / "
-            [builtin-int->string stats.thunks-allocated] " alloc, "
-            [builtin-int->string stats.heap-bytes] " heap\n"]] %stderr]]
-    [_drop: [match [builtin-int-gte [builtin-dict-length [builtin-type-of _sw]] 0]
-      0: [builtin-arena-drop arena]
-      _: [builtin-arena-drop arena]]]
-    [_df: [builtin-int-gte [builtin-dict-length [builtin-type-of _drop]] 0]]
+       documents:  state.parsed.documents]]]]]
     [match [builtin-has-key? "ok" try-result]
       0: [merge state [errors: [make-entry 0 [builtin-get "error" try-result]]]]
       _: [merge state
            [scope-id:   [builtin-get "ok" try-result].scope-id
-            last-result: [match _df 0: migrated-result _: migrated-result]
+            last-result: [builtin-get "ok" try-result].last-result
             tc:         [builtin-get "ok" try-result].tc
             documents:  state.parsed.documents]]]]
 
@@ -605,11 +632,10 @@
                        %stdout: capture
                        %stderr: %stderr
                        %args:   %args]]]
-    [test-arena: [builtin-arena-new path]]
     [[path: path  errors: []]
      | [if-ok load-from-string source]
      | [if-ok parse-source]
-     | [if-ok eval-docs base-scope-id test-arena]
+     | [if-ok eval-docs base-scope-id]
      | [if-ok typecheck-docs fundamental-tc base-scope-id]
      | [if-ok format-output]]]
 
@@ -765,7 +791,7 @@
       _: 0]]
 
   # find-corpus-files: recursively walk cap/dir-path, accumulate .llt-eval files.
-  find-corpus-files: [fn [let cap dir-path state]
+  find-corpus-files: [fn@Dict [let cap dir-path state@Dict]
     [entries: [builtin-list-dir cap dir-path]]
     [reduce
       [fn [let st entry]
@@ -776,7 +802,8 @@
                _: [merge st [make-entry [builtin-dict-length st] [ProgramItem.File path: full  handle: [builtin-file-open cap full "read"]]]]]
           _: [find-corpus-files cap full st]]]
       state
-      entries]]]
+      entries]]
+]
 
 # ============================================================================
 # Dict 3 — Load prelude, pre-parse formatter, run tests
@@ -839,7 +866,7 @@
                       _: _raw.error]
                     "\n"]] %stderr]]
         _: 1]]
-    [builtin-try [fn [] [builtin-program-docs _llt-formatter-expanded]]]]
+    [builtin-try [builtin-program-docs _llt-formatter-expanded]]]
 
   # Discover test files (or use the ones given on the command line).
   # _prelude-ok is a data dependency.

@@ -1,6 +1,6 @@
-# Unannotated recursive function should error
-# A function without a return type annotation that calls itself
-# should be rejected during type checking.
+# Unannotated recursive function is valid after B-520.
+# A function without a return type annotation that calls itself is accepted:
+# Pass 1 pre-binds f as Type::Function; recursive calls return the pre-bound ret TypeVar.
 [f: [fn [let x] [$f $x]]]
 === out
 Dict({"f": Function(x)})

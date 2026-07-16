@@ -190,7 +190,9 @@ fn collect_dependencies(
             SurfaceExpression::Match { scrutinee, arms } => {
                 worklist.push(scrutinee);
                 for arm in arms {
-                    worklist.push(&arm.body);
+                    for body_expr in &arm.body {
+                        worklist.push(body_expr);
+                    }
                     if let Some(ref guard) = arm.guard {
                         worklist.push(guard);
                     }
@@ -318,14 +320,61 @@ pub(crate) async fn infer_dict(
         // (a) Static-key entry.
         if *is_static_key {
             if let Some(ref name) = key_name {
-                let fresh_var = state.fresh_type_var(&entry.span);
-                if !is_alias {
-                    fresh_vars_by_name.insert(name.clone(), fresh_var.clone());
+                // B-520: when the entry is a function, bind with Type::Function instead of a bare TypeVar.
+                // This gives recursive calls a function-shaped callee type, so the Type::Function arm
+                // in typecheck.rs handles them correctly without requiring a return annotation.
+                if let SurfaceExpression::Fn { params, .. } = &entry.node.value.expr {
+                    let fn_params: Vec<(Option<String>, Type)> = params
+                        .iter()
+                        .map(|p| {
+                            let ty = if p.node.variadic {
+                                // Mirror typecheck.rs:2275-2283: variadic params hold a
+                                // uniform Dict rather than a bare TypeVar.
+                                let elem_ty = state.fresh_type_var(&p.span);
+                                Type::Dict(Row {
+                                    fields: indexmap::IndexMap::new(),
+                                    tail: RowTail::Uniform {
+                                        key: None,
+                                        value: Box::new(elem_ty),
+                                    },
+                                })
+                            } else {
+                                state.fresh_type_var(&p.span)
+                            };
+                            (Some(p.node.name.clone()), ty)
+                        })
+                        .collect();
+                    let is_variadic = params.iter().any(|p| p.node.variadic);
+                    let ret_var = state.fresh_type_var(&entry.span);
+                    let required_count = if is_variadic {
+                        fn_params.len().saturating_sub(1)
+                    } else {
+                        fn_params.len()
+                    };
+                    let fn_type = Type::Function {
+                        params: fn_params,
+                        ret: Box::new(ret_var.clone()),
+                        variadic: is_variadic,
+                        required_count,
+                    };
+                    if !is_alias {
+                        fresh_vars_by_name.insert(name.clone(), fn_type.clone());
+                    }
+                    dict_env
+                        .write()
+                        .unwrap()
+                        .insert_scheme(name.clone(), TypeScheme::mono(fn_type));
+                } else {
+                    // Non-fn entry: bare TypeVar as before
+                    let fresh_var = state.fresh_type_var(&entry.span);
+                    if !is_alias {
+                        fresh_vars_by_name.insert(name.clone(), fresh_var.clone());
+                    }
+                    dict_env
+                        .write()
+                        .unwrap()
+                        .insert_scheme(name.clone(), TypeScheme::mono(fresh_var));
                 }
-                dict_env
-                    .write()
-                    .unwrap()
-                    .insert_scheme(name.clone(), TypeScheme::mono(fresh_var));
             }
         }
         // (b) Anonymous InstanceDecl entry: insert ɪ-prefixed placeholders at this source position.
@@ -483,6 +532,7 @@ pub(crate) async fn infer_dict(
                         annotation: None,
                         field_annotations: indexmap::IndexMap::new(),
                         constructor_constants: indexmap::IndexMap::new(),
+                        definition_span: Some(entry.span.clone()),
                     });
                     let alias_ty = qualified_body;
 
@@ -782,13 +832,55 @@ pub(crate) async fn infer_dict(
                         };
 
                         if let Some(bound_var) = bound_var_opt {
-                            // Bind the TypeVar to the inferred type in the substitution.
-                            // (unify is async; infer_dict is sync — direct substitution instead)
-                            if let Type::TypeVar(var_name, _) = bound_var {
-                                subst
-                                    .type_map
-                                    .borrow_mut()
-                                    .insert(var_name.clone(), value_ty.clone());
+                            // Bind the pre-bound placeholder to the inferred type in the
+                            // substitution. (unify is async; infer_dict is sync — direct
+                            // substitution instead.)
+                            match bound_var {
+                                Type::TypeVar(var_name, _) => {
+                                    subst
+                                        .type_map
+                                        .borrow_mut()
+                                        .insert(var_name.clone(), value_ty.clone());
+                                }
+                                Type::Function {
+                                    params: pre_params,
+                                    ret: pre_ret,
+                                    ..
+                                } => {
+                                    // B-520: The pre-bound placeholder was a Type::Function with
+                                    // fresh TypeVars for params and ret. Bind those TypeVars to
+                                    // the actual inferred param and return types so that recursive
+                                    // calls (which see ret_var β) resolve to the concrete type.
+                                    if let Type::Function {
+                                        params: actual_params,
+                                        ret: actual_ret,
+                                        ..
+                                    } = &value_ty
+                                    {
+                                        if let Type::TypeVar(ret_name, _) = pre_ret.as_ref() {
+                                            subst
+                                                .type_map
+                                                .borrow_mut()
+                                                .insert(ret_name.clone(), *actual_ret.clone());
+                                        }
+                                        for ((_, pre_ty), (_, actual_ty)) in
+                                            pre_params.iter().zip(actual_params.iter())
+                                        {
+                                            if let Type::TypeVar(param_name, _) = pre_ty {
+                                                subst
+                                                    .type_map
+                                                    .borrow_mut()
+                                                    .insert(param_name.clone(), actual_ty.clone());
+                                            }
+                                        }
+                                    }
+                                    // If value_ty is not Type::Function (e.g., inference
+                                    // returned Any due to a type error in the fn body), the
+                                    // pre-bound TypeVars are left unbound in the substitution.
+                                    // Recursive call sites then see an unresolved TypeVar and
+                                    // proceed speculatively — correct gradual-typing behavior.
+                                }
+                                _ => {}
                             }
                             field_types.insert(name.clone(), value_ty);
                         } else {

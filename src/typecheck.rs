@@ -95,10 +95,43 @@ pub async fn typecheck_surface_program_annotation_table(
     TypeAnnotationTable,
     crate::type_def::TyConEnv,
 ) {
+    typecheck_surface_program_annotation_table_with_env(
+        program,
+        Arc::new(RwLock::new(Env::new())),
+        None,
+        None,
+        std::collections::HashMap::new(),
+        None,
+    )
+    .await
+}
+
+/// Type-check a `SurfaceProgram` starting from a pre-seeded type environment.
+///
+/// Identical to [`typecheck_surface_program_annotation_table`] but accepts an initial
+/// `TypeEnv` and an optional `EvalContext`. When `eval_ctx` is provided, the type
+/// normalizer can evaluate TypeStageApp nodes (e.g. `Integer → TypeNode.Int → Type::Int`)
+/// using the runtime evaluator, enabling the type-stage for the init program's type-check.
+pub async fn typecheck_surface_program_annotation_table_with_env(
+    program: &SurfaceProgram,
+    initial_env: Arc<RwLock<Env>>,
+    eval_ctx: Option<std::sync::Arc<crate::eval::EvalContext>>,
+    type_stage_env: Option<Arc<RwLock<Env>>>,
+    seed_tycon_env: crate::type_def::TyConEnv,
+    type_stage_thunks: Option<std::collections::HashMap<String, crate::arena::ThunkId>>,
+) -> (
+    Vec<TypeError>,
+    TypeAnnotationTable,
+    crate::type_def::TyConEnv,
+) {
     let mut errors = Vec::new();
     let mut table = TypeAnnotationTable::new();
-    let mut env: Arc<RwLock<Env>> = Arc::new(RwLock::new(Env::new()));
+    let mut env: Arc<RwLock<Env>> = initial_env;
     let mut state = InferState::new();
+    state.eval_ctx = eval_ctx;
+    state.type_stage_env = type_stage_env;
+    state.tycon_env = seed_tycon_env;
+    state.type_stage_thunks = type_stage_thunks;
     // Compute and store the resolution table for slot-indexed VarRef lookup.
     // No runtime env at the type-checker path; pass empty initial_frames for bootstrap mode.
     let (resolve_table, _frames) = crate::resolve::resolve_surface_program(program, &[]);
@@ -1740,15 +1773,14 @@ pub(crate) async fn infer_surface_expr(
                             return Ok(state.subst.apply(&ret));
                         }
                         Type::TypeVar(_, _) => {
-                            // TypeVar: this is a recursive call to an unannotated function.
-                            // The return type is unknown and cannot be determined without a
-                            // type annotation. Emit an error: recursive function requires
-                            // a return type annotation.
+                            // After B-520 this arm is unreachable in normal operation:
+                            // fn-form letrec entries are pre-bound as Type::Function
+                            // (typecheck_dict.rs:326-366), so fn_resolved_ty is always
+                            // Type::Function when current_function == Some(name).
+                            // Non-fn entries never set current_function (should_check_recursion
+                            // = false). Kept as a defensive error for future regressions.
                             return Err(vec![TypeError::new(
-                                format!(
-                                    "recursive function requires a return type annotation to be type-checked (function '{}')",
-                                    name
-                                ),
+                                format!("'{}' is not a function", name),
                                 func.span.clone(),
                             )]);
                         }
@@ -2610,8 +2642,13 @@ pub(crate) async fn infer_surface_expr(
                 } else {
                     arm_env
                 };
-                let arm_ty =
-                    Box::pin(infer_surface_expr(&arm.body, &arm_env, state, type_map)).await?;
+                let arm_ty = Box::pin(infer_surface_expr(
+                    arm.body_expr(),
+                    &arm_env,
+                    state,
+                    type_map,
+                ))
+                .await?;
                 arm_result_types.push(arm_ty);
 
                 // Update remaining_scrutinee for subsequent arms (I-Case3 negation accumulation).
