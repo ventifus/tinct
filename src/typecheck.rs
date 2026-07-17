@@ -36,6 +36,9 @@ pub(crate) mod typecheck_match;
 // Call and dot-access type checking
 #[path = "typecheck_call.rs"]
 pub(crate) mod typecheck_call;
+// CEK machine for iterative type checking
+#[path = "typecheck_cek.rs"]
+pub(crate) mod typecheck_cek;
 
 #[allow(unused_imports)]
 use typecheck_annot::*;
@@ -118,7 +121,7 @@ pub async fn typecheck_surface_program_annotation_table_with_env(
     eval_ctx: Option<std::sync::Arc<crate::eval::EvalContext>>,
     type_stage_env: Option<Arc<RwLock<Env>>>,
     seed_tycon_env: crate::type_def::TyConEnv,
-    type_stage_thunks: Option<std::collections::HashMap<String, crate::arena::ThunkId>>,
+    type_stage_map: Option<std::collections::HashMap<String, crate::type_infer::TypeStageEntry>>,
 ) -> (
     Vec<TypeError>,
     TypeAnnotationTable,
@@ -131,7 +134,7 @@ pub async fn typecheck_surface_program_annotation_table_with_env(
     state.eval_ctx = eval_ctx;
     state.type_stage_env = type_stage_env;
     state.tycon_env = seed_tycon_env;
-    state.type_stage_thunks = type_stage_thunks;
+    state.type_stage_map = type_stage_map;
     // Compute and store the resolution table for slot-indexed VarRef lookup.
     // No runtime env at the type-checker path; pass empty initial_frames for bootstrap mode.
     let (resolve_table, _frames) = crate::resolve::resolve_surface_program(program, &[]);
@@ -705,52 +708,59 @@ pub(crate) async fn typecheck_surface_document(
             let enclosing_level = state.level;
             state.level += 1;
 
-            match infer_surface_expr(surface_node, &env, state, type_map).await {
-                Ok(ty) => {
-                    state.level = enclosing_level;
-                    table.insert(node_id(surface_node), ty.clone());
-                    // Merge nested TypeAssert entries from infer_surface_expr into the document-level table
-                    for (nid, ty) in state.type_annotation_table.drain() {
-                        table.insert(nid, ty);
-                    }
-                    if is_last {
-                        result_type = ty.clone();
-                        last_node = Some(Arc::clone(surface_node));
-                        // Track last non-dict Record for cross-document field threading.
-                        if matches!(&ty, Type::Dict(_)) {
-                            last_record_type = Some((ty, enclosing_level));
-                        }
-                    } else {
-                        // Intermediate expressions must be record types.
-                        // Mirrors typecheck_document line 1097.
-                        match &ty {
-                            Type::Dict(Row { fields, .. }) => {
-                                let mut new_env_inner = Env::with_parent(Arc::clone(&env));
-                                for (name, field_ty) in fields {
-                                    let scheme = generalize(enclosing_level, field_ty, state);
-                                    new_env_inner.insert_scheme(name.clone(), scheme);
-                                }
-                                register_type_aliases_env(
-                                    surface_node,
-                                    &mut new_env_inner,
-                                    state,
-                                    &mut errors,
-                                );
-                                env = Arc::new(RwLock::new(new_env_inner));
-                            }
-                            Type::Unknown => {} // Gradual: dict type inference failed, skip type alias registration
-                            _ => {
-                                errors.push(TypeError::not_a_record(&ty, surface_node.span.clone()))
-                            }
-                        }
-                    }
+            // Track error count before inference to detect whether run_typecheck added errors.
+            let errors_before = errors.len();
+            let mut stack = Vec::new();
+            let ty = typecheck_cek::run_typecheck(
+                surface_node,
+                &env,
+                state,
+                &mut errors,
+                type_map,
+                &mut stack,
+            )
+            .await;
+            state.level = enclosing_level;
+            let had_errors = errors.len() > errors_before;
+
+            if had_errors {
+                // Drain TypeAssert entries from failed expression to prevent leaking into next iteration
+                for (nid, ty) in state.type_annotation_table.drain() {
+                    table.insert(nid, ty);
                 }
-                Err(mut errs) => {
-                    state.level = enclosing_level;
-                    errors.append(&mut errs);
-                    // Drain TypeAssert entries from failed expression to prevent leaking into next iteration
-                    for (nid, ty) in state.type_annotation_table.drain() {
-                        table.insert(nid, ty);
+            } else {
+                table.insert(node_id(surface_node), ty.clone());
+                // Merge nested TypeAssert entries from run_typecheck into the document-level table
+                for (nid, ty) in state.type_annotation_table.drain() {
+                    table.insert(nid, ty);
+                }
+                if is_last {
+                    result_type = ty.clone();
+                    last_node = Some(Arc::clone(surface_node));
+                    // Track last non-dict Record for cross-document field threading.
+                    if matches!(&ty, Type::Dict(_)) {
+                        last_record_type = Some((ty, enclosing_level));
+                    }
+                } else {
+                    // Intermediate expressions must be record types.
+                    // Mirrors typecheck_document line 1097.
+                    match &ty {
+                        Type::Dict(Row { fields, .. }) => {
+                            let mut new_env_inner = Env::with_parent(Arc::clone(&env));
+                            for (name, field_ty) in fields {
+                                let scheme = generalize(enclosing_level, field_ty, state);
+                                new_env_inner.insert_scheme(name.clone(), scheme);
+                            }
+                            register_type_aliases_env(
+                                surface_node,
+                                &mut new_env_inner,
+                                state,
+                                &mut errors,
+                            );
+                            env = Arc::new(RwLock::new(new_env_inner));
+                        }
+                        Type::Unknown => {} // Gradual: dict type inference failed, skip type alias registration
+                        _ => errors.push(TypeError::not_a_record(&ty, surface_node.span.clone())),
                     }
                 }
             }
@@ -1235,6 +1245,17 @@ fn try_resolve_call_dispatch(
 /// Natively walks SurfaceExpression variants without converting to Expr.
 /// Recursive calls use `infer_surface_expr` for child SurfaceNodes.
 /// Bridge to check_* functions (via surface_node_to_expr) will be eliminated in Phase 4.
+///
+/// # Transitional status
+///
+/// This function is being phased out in favor of `typecheck_cek::run_typecheck`, which
+/// implements the same inference iteratively via a CEK machine (no Rust stack recursion).
+/// `run_typecheck` is the entry point for non-dict top-level expressions; see
+/// `typecheck_surface_document`. `infer_surface_expr` is retained for Decl variants whose
+/// helpers (`infer_class_decl_from_surface`, etc.) remain private to this module, and
+/// for dict inference which delegates via `typecheck_dict::infer_dict`.
+///
+/// Do not add new callers. New inference code should call `run_typecheck`.
 pub(crate) async fn infer_surface_expr(
     node: &std::sync::Arc<SurfaceNode>,
     env: &Arc<RwLock<Env>>,
@@ -1382,12 +1403,9 @@ pub(crate) async fn infer_surface_expr(
             }
         }
 
-        SurfaceExpression::Pipe { .. } => Err(vec![TypeError {
-            message: "Pipe should be desugared before type checking".to_string(),
-            span: node.span.clone(),
-            notes: Box::new(Vec::new()),
-            code: None,
-        }]),
+        SurfaceExpression::Pipe { .. } => Ok(Type::error_note(
+            "Pipe should be desugared before type checking",
+        )),
 
         SurfaceExpression::Sequential(exprs) => {
             // Multi-expression sequential evaluation (let-binding semantics).
@@ -3310,7 +3328,7 @@ async fn infer_instance_decl_from_surface(
 /// Used for the gradual typing fallback: when Unknown/Top appears anywhere in a type,
 /// subsumption uses `is_consistent` instead of `is_subtype` to maintain the gradual guarantee.
 #[allow(dead_code)]
-fn contains_unknown_or_top(ty: &Type) -> bool {
+pub(crate) fn contains_unknown_or_top(ty: &Type) -> bool {
     match ty {
         Type::Unknown | Type::Any => true,
         // TypeVar is treated as gradual (like Unknown) in the subsumption check.

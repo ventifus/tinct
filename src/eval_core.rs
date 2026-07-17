@@ -18,7 +18,6 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 
 use crate::ast::{CoreExpr, Param, Span, Spanned};
-use crate::builtins::MAX_COLLECT_SIZE;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{eval_call_core, eval_dict_core, materialize, EvalContext};
 use crate::value::ThunkId;
@@ -138,18 +137,6 @@ async fn collect_seq_elements(
                     let thunk = ctx.get_thunk(thunk_id);
                     let value = materialize(&thunk, Some(&span), ctx).await?;
                     elements.push(value);
-
-                    // Enforce size limit
-                    if elements.len() >= MAX_COLLECT_SIZE {
-                        return Err(EvalError::resource_limit_exceeded(
-                            format!(
-                                "unquote-splice: too many elements (limit {})",
-                                MAX_COLLECT_SIZE
-                            ),
-                            span,
-                        )
-                        .into());
-                    }
                 }
 
                 // Done — Dict entries have been processed

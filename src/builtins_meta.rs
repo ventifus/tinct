@@ -44,9 +44,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use indexmap::IndexMap;
 
 use crate::ast::Span;
-use crate::builtins::{
-    builtin, ok_val, reject_named, require_string, synthetic_call_expr, MAX_COLLECT_SIZE,
-};
+use crate::builtins::{builtin, ok_val, reject_named, require_string, synthetic_call_expr};
 use crate::env::Env;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{materialize, TypeContextData};
@@ -68,27 +66,13 @@ fn parse_error_to_dict(
     ctx: &Arc<crate::eval::EvalContext>,
     call_span: &crate::ast::Span,
 ) -> ThunkId {
-    use crate::ast::{Position, Span};
     let alloc = |v: Value| ctx.alloc_thunk(0, Arc::new(Thunk::value(v, call_span.clone())));
 
     let span_id = match &err.span {
         Some(s) => make_span_dict(s, ctx, call_span),
         None => {
-            // No span available — produce a zero-position span dict.
-            let zero_pos = Position {
-                offset: 0,
-                line: 0,
-                column: 0,
-            };
-            let zero_span = Span {
-                start: zero_pos,
-                end: zero_pos,
-                file: std::sync::Arc::new(crate::ast::SourceFile {
-                    path: std::sync::Arc::from("<macro-raise>"),
-                    content: std::sync::Arc::from(""),
-                }),
-            };
-            make_span_dict(&zero_span, ctx, call_span)
+            // No tinct source span — report the Rust location that handled the error.
+            make_span_dict(&crate::rust_span!(), ctx, call_span)
         }
     };
 
@@ -2788,16 +2772,6 @@ pub(crate) fn builtin_program(
                                 node: Arc::clone(&surface_doc),
                                 span: rust_span!(),
                             });
-                            if documents.len() >= MAX_COLLECT_SIZE {
-                                return Err(EvalError::resource_limit_exceeded(
-                                    format!(
-                                        "builtin-program: exceeded maximum document count ({})",
-                                        MAX_COLLECT_SIZE
-                                    ),
-                                    call_span,
-                                )
-                                .into());
-                            }
                         }
                         _ => {
                             return Err(EvalError::type_mismatch_ctx(

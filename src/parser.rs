@@ -56,10 +56,6 @@ impl std::error::Error for ParseError {}
 /// Maximum nesting depth for bracket expressions (enforced before allocation).
 const MAX_PARSE_DEPTH: usize = 256;
 
-/// Maximum source size in bytes (100 MB). Inputs larger than this are rejected
-/// before tokenization to prevent unbounded memory allocation.
-pub const MAX_SOURCE_SIZE: usize = 100_000_000;
-
 /// Helper: peek at the next significant (non-whitespace, non-newline, non-comment) token.
 fn peek_next_significant(
     tokens: &[Spanned<Token>],
@@ -214,9 +210,11 @@ fn parse_annotation_direct(
     i += skip_whitespace_tokens(tokens, i, leading_comments, blank_before);
 
     if i >= tokens.len() {
+        // Report at the @ token itself — it was consumed but nothing followed.
+        let at_span = tokens[start_index].span.clone();
         return Err(ParseError {
             message: "unexpected end of input after @".to_string(),
-            span: None,
+            span: Some(at_span),
         });
     }
 
@@ -1028,13 +1026,6 @@ fn recover_from_failed_open(
 /// in `ParseOutput.errors`. Fatal errors (lexer failure, unclosed brackets) still
 /// cause this function to return `Err(...)`.
 pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
-    if input.len() > MAX_SOURCE_SIZE {
-        return Err(ParseError {
-            message: "source exceeds maximum size".to_string(),
-            span: None,
-        });
-    }
-
     // Tokenize the input via the lexer
     let tokens = lexer::tokenize(input).map_err(|e| ParseError {
         message: e.message,
@@ -4667,6 +4658,18 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
         }
     }
 
+    // Source file from the token stream — used for all synthetic end-of-file spans.
+    // tokenize() produces "<tokenize>"; parse_with_file stamps the actual file afterward.
+    // Source file from the token stream — used for all synthetic end-of-file spans.
+    // tokenize() produces "<tokenize>"; parse_with_file stamps the actual file afterward.
+    // For empty input (no tokens, no significant spans), fall back to this Rust source
+    // location — honest attribution of where the fallback was constructed.
+    let eof_file: Arc<crate::ast::SourceFile> = token_vec
+        .first()
+        .map(|t| Arc::clone(&t.span.file))
+        .or_else(|| last_significant_span.as_ref().map(|s| Arc::clone(&s.file)))
+        .unwrap_or_else(|| Arc::clone(&crate::rust_span!().file));
+
     // Check for unclosed brackets
     if !stack.is_empty() {
         let innermost_frame = stack.last().unwrap();
@@ -4688,7 +4691,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                 line: innermost_pos.line,
                 column: innermost_pos.column + 1,
             },
-            file: crate::rust_span!().file,
+            file: Arc::clone(&eof_file),
         };
 
         let count = stack.len();
@@ -4756,7 +4759,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                 line: 1,
                 column: 1,
             },
-            file: crate::rust_span!().file,
+            file: Arc::clone(&eof_file),
         };
         documents.push(Spanned::new(Arc::new(doc), doc_span));
     } else if !current_document_items.is_empty() {
@@ -4776,7 +4779,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                 line: 1,
                 column: 1,
             },
-            file: crate::rust_span!().file,
+            file: Arc::clone(&eof_file),
         };
         documents.push(Spanned::new(Arc::new(doc), doc_span));
     }
@@ -6884,7 +6887,7 @@ pub fn parse_surface_expression(input: &str) -> Result<Arc<SurfaceNode>, ParseEr
     if surface.documents.is_empty() {
         return Err(ParseError {
             message: "no documents in input".to_string(),
-            span: None,
+            span: Some(crate::rust_span!()),
         });
     }
 
@@ -7272,7 +7275,18 @@ pub fn stamp_spans_with_file(program: &mut SurfaceProgram, file: &Arc<SourceFile
 /// Use this when you have a `SourceFile` handle for the input (e.g., after reading
 /// from a file path or stdin) and want error diagnostics to include the file name.
 pub fn parse_with_file(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseError> {
-    let mut output = parse(source)?;
+    let mut output = match parse(source) {
+        Ok(output) => output,
+        Err(mut fatal) => {
+            // Stamp the fatal error's span with the correct file before propagating.
+            // parse() uses tokenize() (with path "<tokenize>"); without this, fatal
+            // errors such as "unclosed bracket" would show the wrong filename.
+            if let Some(span) = &mut fatal.span {
+                span.file = Arc::clone(&file);
+            }
+            return Err(fatal);
+        }
+    };
     stamp_spans_with_file(&mut output.program, &file);
     // Also stamp any recovered-error spans
     for err in &mut output.errors {

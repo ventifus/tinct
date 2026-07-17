@@ -21,7 +21,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use crate::builtins::{expect_one_arg, ok_val, reject_named, require_string, MAX_STRING_SIZE};
+use crate::builtins::{expect_one_arg, ok_val, reject_named, require_string};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
 use crate::eval_call::CallContext;
@@ -81,16 +81,15 @@ pub(crate) fn builtin_replace(
             .saturating_sub(removed_bytes)
             .saturating_add(added_bytes);
 
-        if output_len > MAX_STRING_SIZE {
-            return Err(EvalError::resource_limit_exceeded(
+        const MAX_REPLACE_OUTPUT: usize = 10 * 1024 * 1024; // 10MB
+        if output_len > MAX_REPLACE_OUTPUT {
+            return Err(Box::new(EvalError::resource_limit_exceeded(
                 format!(
-                    "replace: output would exceed {} MB limit ({} bytes)",
-                    MAX_STRING_SIZE / (1024 * 1024),
-                    output_len
+                    "replace: output would exceed {} bytes (estimated {})",
+                    MAX_REPLACE_OUTPUT, output_len
                 ),
-                call_span.clone(),
-            )
-            .into());
+                call_span,
+            )));
         }
 
         // Fast-path: if there are no matches, return the input unchanged
@@ -979,18 +978,6 @@ pub(crate) fn builtin_str_map_chars(
             let mapped_val = materialize(&call_result_thunk, Some(&call_span), &ctx).await?;
             let mapped_str = require_string("str-map-chars", mapped_val, call_span.clone())?;
 
-            // Guard against excessive output size.
-            if result.len() + mapped_str.len() > MAX_STRING_SIZE {
-                return Err(EvalError::resource_limit_exceeded(
-                    format!(
-                        "str-map-chars: output would exceed {} MB limit",
-                        MAX_STRING_SIZE / (1024 * 1024)
-                    ),
-                    call_span.clone(),
-                )
-                .into());
-            }
-
             result.push_str(&mapped_str);
         }
 
@@ -1159,20 +1146,6 @@ pub(crate) fn builtin_string_concat(
 
         let s1 = require_string("builtin-string-concat", s1_val, thunk0.span.clone())?;
         let s2 = require_string("builtin-string-concat", s2_val, thunk1.span.clone())?;
-
-        // Pre-check output size to prevent memory exhaustion
-        let output_len = s1.len().saturating_add(s2.len());
-        if output_len > MAX_STRING_SIZE {
-            return Err(EvalError::resource_limit_exceeded(
-                format!(
-                    "builtin-string-concat: output would exceed {} MB limit ({} bytes)",
-                    MAX_STRING_SIZE / (1024 * 1024),
-                    output_len
-                ),
-                call_span.clone(),
-            )
-            .into());
-        }
 
         let result = format!("{}{}", s1, s2);
         ok_val(string_val(&result), call_span)

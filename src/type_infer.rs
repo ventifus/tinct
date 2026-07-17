@@ -186,6 +186,17 @@ impl TypeScheme {
 /// of the type-checking result for LSP consumers.
 pub type SchemeMap = HashMap<(usize, usize), TypeScheme>;
 
+/// Type-stage entry: either a resolved type or a function that must be evaluated.
+#[derive(Debug, Clone)]
+pub enum TypeStageEntry {
+    /// Fully materialized type — no further evaluation needed.
+    Resolved(Type),
+    /// Function thunk that must be called to produce a type — used for parameterized
+    /// type constructors (e.g., Seq, Result) where the type-stage function takes type
+    /// parameters and returns a TypeNode.
+    Function(crate::arena::ThunkId),
+}
+
 /// Inference state for levels-based let-generalization
 #[derive(Debug, Clone)]
 pub struct InferState {
@@ -300,11 +311,10 @@ pub struct InferState {
     /// to materialize type-stage thunks without ambient filesystem access. Never created
     /// inside the type checker; always provided by the caller that has proper capabilities.
     pub eval_ctx: Option<std::sync::Arc<crate::eval::EvalContext>>,
-    /// Direct ThunkId map from type-stage evaluation — name → ThunkId in scope_arena.
-    /// When set, resolve_type_head forces the thunk directly to get the TypeNode value,
-    /// bypassing the evaluate_resolver scope-alignment mechanism. Used for the bootstrap
-    /// two-pass where the ThunkIds come directly from evaluating the type-stage dict.
-    pub type_stage_thunks: Option<std::collections::HashMap<String, crate::arena::ThunkId>>,
+    /// Type-stage map: pre-computed types from type-stage evaluation.
+    /// Populated in lib.rs by forcing all type-stage thunks before type-checking begins.
+    /// Replaces the old lazy type_stage_thunks with fully materialized entries.
+    pub type_stage_map: Option<std::collections::HashMap<String, TypeStageEntry>>,
     /// Pending param narrowings from the most recently inferred function (compatibility field).
     pub pending_param_narrowings: Vec<Option<Type>>,
     /// Unified TypeVar table (from HEAD~1 design).
@@ -359,7 +369,7 @@ impl InferState {
             type_stage_env: None,
             main_env: None,
             eval_ctx: None,
-            type_stage_thunks: None,
+            type_stage_map: None,
             pending_param_narrowings: Vec::new(),
             type_vars: indexmap::IndexMap::new(),
             bounds: std::collections::HashMap::new(),

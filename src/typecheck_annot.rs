@@ -2210,33 +2210,38 @@ async fn resolve_type_head(
         return Ok(fresh_ty);
     }
 
-    // Step 3a: direct ThunkId lookup — for bootstrap two-pass where ThunkIds come directly
-    // from evaluating the type-stage dict. Force the thunk and convert via typenode_leaf_to_type.
-    if let (Some(thunks), Some(eval_ctx)) = (&state.type_stage_thunks, &state.eval_ctx) {
-        if let Some(&thunk_id) = thunks.get(name) {
-            let thunk = eval_ctx.get_thunk(thunk_id);
-            match crate::eval::materialize(&thunk, None, eval_ctx).await {
-                Ok(val) => {
-                    if let Some(ty) = crate::type_normalize::typenode_leaf_to_type(&val) {
-                        return Ok(ty);
-                    }
-                    // Value was not a TypeNode leaf — fall through to tycon_env
+    // Step 3: type_stage_map — pre-computed types from type-stage evaluation.
+    // This is the single unified path replacing the old three-path resolution
+    // (Step 3a direct thunks + Step 3b eval_type_stage_expr fallback).
+    if let Some(ref map) = state.type_stage_map {
+        if let Some(entry) = map.get(name) {
+            match entry {
+                crate::type_infer::TypeStageEntry::Resolved(ty) => {
+                    // Fully materialized type (e.g., TypeNode.Int → Type::Int) — return directly.
+                    // This is the common case for primitive types and zero-arg type aliases.
+                    return Ok(ty.clone());
                 }
-                Err(e) => {
-                    return Err(crate::types::TypeError::new(
-                        format!(
-                            "type-stage thunk for '{}' failed to materialize: {}",
-                            name, e
-                        ),
-                        span,
-                    ));
+                crate::type_infer::TypeStageEntry::Function(thunk_id) => {
+                    // Function thunk — parameterized type constructor (e.g., Seq, Result).
+                    // Use the pre-located ThunkId directly to evaluate inline, bypassing the
+                    // env walk in evaluate_resolver (T-1635: eliminate three-path resolution).
+                    if let Some(eval_ctx) = &state.eval_ctx {
+                        if let Some(ty) = crate::type_normalize::evaluate_resolver_with_thunk(
+                            *thunk_id, args, eval_ctx,
+                        )
+                        .await
+                        {
+                            return Ok(ty);
+                        }
+                    }
+                    // If eval_ctx is not available (bootstrap path), fall through to Step 4.
                 }
             }
         }
     }
 
-    // Step 3b: type_stage_env — look up via evaluate_resolver (for the normal loader path
-    // where the type-stage scope is set up by builtin-tc-with-scope).
+    // Step 4: type_stage_env — look up via evaluate_resolver (for types not in type_stage_map
+    // at all, and as fallback when eval_ctx is unavailable in bootstrap paths).
     if let (Some(ts_env), Some(eval_ctx)) = (&state.type_stage_env, &state.eval_ctx) {
         if let Some(ty) =
             crate::type_normalize::evaluate_resolver(name, args, ts_env, eval_ctx).await
@@ -2245,7 +2250,7 @@ async fn resolve_type_head(
         }
     }
 
-    // Step 4: tycon_env — bootstrap fallback for types declared in builtin_core.llt that
+    // Step 5: tycon_env — bootstrap fallback for types declared in builtin_core.llt that
     // were not found in the type-stage (e.g., DirCap, NetCap, TypeContext, and primitive
     // types when prelude is not yet loaded).
     if let Some(def) = state
@@ -2299,7 +2304,7 @@ async fn resolve_type_head(
         }));
     }
 
-    // Step 5: Undefined type name.
+    // Step 6: Undefined type name.
     Err(TypeError::new(format!("undefined type: {}", name), span))
 }
 

@@ -10,7 +10,6 @@
 //! - [`build_core_env`] -- build a fresh env with only the core Rust builtins (starting point for `run_loader_pipeline`)
 //! - [`EvalContext`] -- evaluation context with base directory and stdlib environment; include_cache memoizes `include` results (same file = same cached thunk)
 //! - [`value_to_display_string`] -- render a materialized `Value` as a human-readable string
-//! - [`MAX_FILE_SIZE`] -- file size limit for `include` and stdin (10 MB)
 
 #![deny(clippy::disallowed_types, clippy::disallowed_methods)]
 // Arc<Thunk> and related types are !Send because Thunk contains Rc<...> (e.g. Rc<str>
@@ -117,8 +116,7 @@ pub use eval::{
     EvalConfig, EvalContext, TypeContextData,
 };
 
-/// Builtin infrastructure: core env builder and resource limits.
-pub use builtins::{build_core_env, MAX_COLLECT_SIZE, MAX_FILE_SIZE};
+pub use builtins::build_core_env;
 
 /// Import resolution for the type checker.
 pub use imports::{
@@ -218,10 +216,11 @@ pub async fn run_loader_pipeline(
         eval_ctx.with_scope_frames(Arc::new(all_frames))
     };
 
-    // Two-pass: evaluate type-stage documents first to populate type_stage_env,
-    // then typecheck the full program with the resulting type_stage_env so that
-    // @Integer, @String, etc. resolve correctly via TypeNode.
-    let type_stage_thunks_opt: Option<std::collections::HashMap<String, crate::arena::ThunkId>> = {
+    // Two-pass: evaluate type-stage documents first, force all thunks to build
+    // type_stage_map with fully materialized types, then typecheck the loader program.
+    let type_stage_map_opt: Option<
+        std::collections::HashMap<String, crate::type_infer::TypeStageEntry>,
+    > = {
         // Filter type-stage documents (those with stage: "type" in their header).
         let ts_docs: Vec<_> = loader_program
             .documents
@@ -255,17 +254,47 @@ pub async fn run_loader_pipeline(
                 .map_err(|e| format!("type-stage materialization failed: {e}"))?;
             match ts_val {
                 crate::value::Value::Dict(entries) => {
-                    // Build a direct name → ThunkId map. The ThunkIds come directly from the
-                    // tinct dict evaluator and point into the existing scope_arena. No need
-                    // to create a duplicate scope — just force thunks on demand.
-                    let mut thunks: std::collections::HashMap<String, crate::arena::ThunkId> =
-                        std::collections::HashMap::new();
+                    // Force all thunks and classify them as Resolved or Function.
+                    let mut map: std::collections::HashMap<
+                        String,
+                        crate::type_infer::TypeStageEntry,
+                    > = std::collections::HashMap::new();
                     for (key, &thunk_id) in &entries {
                         if let crate::value::HashableValue::Str(name) = key {
-                            thunks.insert(name.to_string(), thunk_id);
+                            let thunk = eval_ctx_with_frames.get_thunk(thunk_id);
+                            let val = eval::materialize(&thunk, None, &eval_ctx_with_frames)
+                                .await
+                                .map_err(|e| {
+                                    format!(
+                                        "type-stage thunk '{}' failed to materialize: {}",
+                                        name, e
+                                    )
+                                })?;
+
+                            // Attempt TypeNode leaf conversion first.
+                            if let Some(ty) = crate::type_normalize::typenode_leaf_to_type(&val) {
+                                map.insert(
+                                    name.to_string(),
+                                    crate::type_infer::TypeStageEntry::Resolved(ty),
+                                );
+                            } else if matches!(val, crate::value::Value::Function { .. }) {
+                                // Function → keep as ThunkId for parameterized types
+                                map.insert(
+                                    name.to_string(),
+                                    crate::type_infer::TypeStageEntry::Function(thunk_id),
+                                );
+                            } else {
+                                // Non-leaf TypeNode (e.g., complex record, union) — use typenode_leaf_to_type
+                                // fallback by trying again. If it's not a TypeNode variant at all, skip.
+                                // For now, treat unknown values as functions (conservative).
+                                map.insert(
+                                    name.to_string(),
+                                    crate::type_infer::TypeStageEntry::Function(thunk_id),
+                                );
+                            }
                         }
                     }
-                    Some(thunks)
+                    Some(map)
                 }
                 other => {
                     return Err(format!(
@@ -303,7 +332,7 @@ pub async fn run_loader_pipeline(
             Some(Arc::clone(&eval_ctx_with_frames)),
             None,
             seed_tycon_env,
-            type_stage_thunks_opt,
+            type_stage_map_opt,
         )
         .await;
     // Wire the TyConEnv from the typecheck pass into the eval context so that

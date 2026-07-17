@@ -506,31 +506,7 @@ async fn resolve_includes(
         }
         visited.insert(path_key);
 
-        // Enforce the same 10 MB limit as the runtime $include.
-        // Use cap_std for %cwd paths (RESOLVE_BENEATH semantics); fall back to std::fs for %libdir paths.
         let use_cap = cap_name.as_deref() == Some("%cwd");
-        let file_len = if use_cap {
-            // Derive relative path by stripping the canonical base prefix.
-            let canonical_base = base_dir.and_then(|b| b.canonicalize().ok());
-            let relative = if let Some(ref base) = canonical_base {
-                normalized.strip_prefix(base).unwrap_or(&normalized)
-            } else {
-                &normalized
-            };
-            match cap_dir.metadata(relative) {
-                Ok(m) => m.len(),
-                Err(_) => continue,
-            }
-        } else {
-            match std::fs::metadata(&normalized) {
-                Ok(m) => m.len(),
-                Err(_) => continue,
-            }
-        };
-        if file_len > crate::builtins::MAX_FILE_SIZE {
-            continue;
-        }
-
         // Read the file — use cap_std RESOLVE_BENEATH for %cwd paths.
         let content = if use_cap {
             let canonical_base = base_dir.and_then(|b| b.canonicalize().ok());

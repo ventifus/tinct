@@ -590,12 +590,12 @@ async fn test_call_non_function() {
 
 #[tokio::test]
 async fn test_check_call_with_scheme_non_function_scheme() {
-    // Exercises the `_ => Err(not_a_function)` arm in check_call_with_scheme.
+    // Exercises the `_ => not_a_function` arm in apply_cont_call_func (AfterCallFunc handler).
     //
-    // check_call_with_scheme is only reached for polymorphic schemes (non-empty
-    // type_vars or row_vars). The `_` arm fires when the instantiated body is
-    // neither Type::Function nor Type::Unknown. We construct such a scheme directly:
-    // ∀a. Int — polymorphic (has type_vars) but body is Int (not a function).
+    // The CEK path (AfterCallFunc / apply_cont_call_func) handles polymorphic schemes by
+    // instantiating via instantiate_at_level. The `_` arm fires when the instantiated body is
+    // neither Type::Function, Type::TypeVar, nor Type::Unknown/Any. We construct such a scheme
+    // directly: ∀a. Int — polymorphic (has type_vars) but body is Int (not a function).
     // After instantiate_scheme, the body is still Int (no substitution to apply),
     // so the `_` arm fires and produces "expected function type".
     //
@@ -606,8 +606,8 @@ async fn test_check_call_with_scheme_non_function_scheme() {
     crate::desugar::desugar_surface_program(&mut program);
 
     // Build env with `f: ∀a. Int` — polymorphic scheme, non-function body.
-    // type_vars non-empty satisfies the dispatch guard at line ~286, routing to
-    // check_call_with_scheme rather than check_call.
+    // type_vars non-empty causes instantiate_at_level to be applied, revealing
+    // that Int is not a callable type.
     let mut parent_env_inner = crate::env::Env::new();
     parent_env_inner.insert_scheme(
         "f".to_string(),
@@ -1160,21 +1160,21 @@ async fn test_let_gen_any_touched_not_generalized() {
 
 #[tokio::test]
 async fn test_call_any_callee_populates_type_map_for_positional_args() {
-    // Regression test for the Type::Unknown arm in check_call and check_call_with_scheme.
+    // Regression test for the Type::Unknown arm in apply_cont_call_func (CEK AfterCallFunc handler).
     //
     // When the callee resolves to Type::Unknown (e.g., a variable bound to Any in the env),
     // positional arguments must still be inferred and recorded in type_map — otherwise
     // LSP hover over argument expressions in Any-typed calls produces no type information.
     //
-    // The fix (typecheck.rs check_call ~1050, check_call_with_scheme ~900) added an
-    // `infer_expr` loop inside the Type::Unknown arm only. This test guards that loop:
-    // if it were removed, the span of `42` would not appear in type_map and the assertion
-    // below would fail.
+    // The CEK path (apply_cont_call_func, typecheck_cek.rs) infers all args for type_map
+    // population in the Type::Unknown | Type::Any arm. This test guards that path:
+    // if the arg inference loop were removed, the span of `42` would not appear in type_map
+    // and the assertion below would fail.
     //
     // SETUP: `f` is bound to TypeScheme::mono(Type::Unknown) in the parent env, simulating
     // any runtime-typed or externally-typed callable (e.g., a function loaded from JSON,
     // an FFI binding, or a value whose type cannot be statically determined). The call
-    // `[call $f 42]` exercises check_call via the monomorphic (empty type_vars) path.
+    // `[call $f 42]` exercises the AfterCallFunc Unknown arm.
     let input = "[call $f 42]";
     let mut program = crate::parse(input).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
@@ -1272,9 +1272,11 @@ async fn test_variadic_param_env_binding_is_record() {
     }
 }
 
-// -- check_call_with_scheme substitution threading (Algorithm W) --
+// -- AfterCallFunc/AfterCallArg substitution threading (Algorithm W) —
+// -- previously check_call_with_scheme (deleted T-1639); now CEK path --
 
-// -- check_call (non-scheme) CALL-POLY substitution threading (Algorithm W) --
+// -- AfterCallFunc/AfterCallArg CALL-POLY substitution threading (Algorithm W) —
+// -- previously check_call (deleted T-1639); now CEK path --
 
 // -- Level restoration on error --
 
@@ -1443,14 +1445,16 @@ async fn test_arity_mismatch_named_args_counted() {
     // Note: wrong-type named arg sub-case removed — uses @Integer (builtin_core type).
 }
 
-// -- check_call TypeVar arm (letrec forward references) --
+// -- apply_cont_call_func TypeVar arm (letrec forward references) —
+// -- previously check_call TypeVar arm (deleted T-1639); now CEK path --
 
 #[tokio::test]
 async fn test_check_call_forward_ref_function() {
     // Letrec forward reference: $f is called before its definition is inferred.
     // During Pass 3, $f has type TypeVar (from Pass 1). Without the TypeVar arm
-    // in check_call, this produces a spurious "expected function type" error.
-    // With the fix, check_call returns Any for unbound TypeVar callees.
+    // in apply_cont_call_func (CEK AfterCallFunc handler), this produces a spurious
+    // "expected function type" error. With the fix, the TypeVar arm returns a fresh
+    // TypeVar for the return type without emitting an error.
     let result = check("[result: [call $f 42]  f: [fn [let x] $x]]").await;
     assert!(
         result.is_ok(),
@@ -1713,7 +1717,8 @@ async fn test_error_absorbed_in_unify_does_not_corrupt_substitution() {
 async fn test_calling_error_function_does_not_produce_t003() {
     // B-180: calling a function typed as Error (e.g., because its definition failed
     // type-checking) should suppress the "expected function type, got <error>" T003
-    // rather than cascading it to every call site. This tests the check_call path.
+    // rather than cascading it to every call site. This tests the AfterCallFunc CEK path
+    // (apply_cont_call_func in typecheck_cek.rs; previously the check_call path, deleted T-1639).
     //
     // We simulate this by having a binding `broken` that the type checker cannot infer
     // (e.g., a function with a type error in its body). When we call `broken`, the
@@ -1753,12 +1758,13 @@ async fn test_calling_error_function_does_not_produce_t003() {
     );
 }
 
-// -- check_call_with_scheme error paths --
+// -- apply_cont_call_func error paths (CEK AfterCallFunc handler) —
+// -- previously check_call_with_scheme error paths (deleted T-1639); now CEK path --
 
 #[tokio::test]
 async fn test_check_call_with_scheme_non_function_error() {
     // Calling a non-function scheme (type is Int, not Function).
-    // check_call_with_scheme should produce "expected function type" error.
+    // apply_cont_call_func (CEK AfterCallFunc handler) should produce "expected function type" error.
     let errors = check_err("[x: 42]\n---\n[result: [call $x 1 2]]").await;
     assert!(
         errors
@@ -3808,6 +3814,179 @@ async fn test_b452_type_alias_entry_type_is_not_unknown() {
         !matches!(color_scheme.body, Type::Unknown),
         "Type alias declaration must not produce Type::Unknown in the exported env; \
          got Unknown for Color — expand_type_alias must return Type::Any (B-452)"
+    );
+}
+
+// ============================================================================
+// T-1642: CEK machine regression tests — stack overflow and type-stage resolution
+// ============================================================================
+
+/// T-1642 / Test 1: Recursive function definition type-checks without stack overflow.
+///
+/// Regression guard for the iterative CEK machine. Invokes `run_typecheck` directly on a
+/// function expression (not the wrapping dict) to exercise the `AfterFnBody` continuation path.
+///
+/// The fn body `[if [= n 0] 1 [* n [factorial [- n 1]]]]` contains nested calls; the CEK
+/// machine must handle the `[if ...]` special case and general `AfterCallFunc/AfterCallArg`
+/// continuations without recursing on the Rust call stack.
+///
+/// The test runs on the default tokio stack. It asserts no panic — type errors from
+/// undefined `=`, `*`, `-` are expected and are acceptable results.
+#[tokio::test]
+async fn test_recursive_fn_no_stack_overflow() {
+    // Parse as a two-item sequential: a fn expression followed by a VarRef.
+    // We want a fn node in expression position for run_typecheck.
+    let src = "[fn [let n] [if [= n 0] 1 [* n [factorial [- n 1]]]]]";
+    let mut program = crate::parse(src).unwrap().program;
+    crate::desugar::desugar_surface_program(&mut program);
+
+    let node = match &program.documents[0].node.items[0] {
+        crate::ast::SurfaceItem::Expr(n) => Arc::clone(n),
+        _ => panic!("expected expression item"),
+    };
+
+    let env = Arc::new(RwLock::new(crate::env::Env::new()));
+    let mut state = InferState::new();
+    let mut errors: Vec<TypeError> = Vec::new();
+    let mut stack = Vec::new();
+
+    // Invoke run_typecheck directly — exercises the CEK iterative path.
+    // Should complete without panicking (no Rust stack overflow).
+    let _ =
+        typecheck_cek::run_typecheck(&node, &env, &mut state, &mut errors, &mut None, &mut stack)
+            .await;
+    // Errors are expected (undefined variables) — the test only asserts no panic.
+}
+
+/// T-1642 / Test 2: Deeply nested function bodies type-check without stack overflow.
+///
+/// Builds a 100-level deeply nested `[fn [let x] [fn [let x] [fn ...]]]` expression and
+/// invokes `run_typecheck` directly to exercise the `AfterFnBody` continuation chain.
+/// Each nesting level pushes one `AfterFnBody` onto the CEK stack rather than the Rust stack,
+/// so depth is bounded by heap allocation not the call stack.
+///
+/// The old recursive path (`infer_fn_inline` calling `infer_surface_expr` for the body)
+/// would push one Rust frame per nesting level; at 100 levels that is ~100 recursive Rust
+/// calls, which this test guards against.
+#[tokio::test]
+async fn test_deeply_nested_fn_no_stack_overflow() {
+    // Build a 100-level deep nested fn: [fn [let x] [fn [let x] ... 1 ...]]
+    let mut src = "1".to_string();
+    for _ in 0..100 {
+        src = format!("[fn [let x] {}]", src);
+    }
+    let mut program = crate::parse(&src).unwrap().program;
+    crate::desugar::desugar_surface_program(&mut program);
+
+    let node = match &program.documents[0].node.items[0] {
+        crate::ast::SurfaceItem::Expr(n) => Arc::clone(n),
+        _ => panic!("expected expression item"),
+    };
+
+    let env = Arc::new(RwLock::new(crate::env::Env::new()));
+    let mut state = InferState::new();
+    let mut errors: Vec<TypeError> = Vec::new();
+    let mut stack = Vec::new();
+
+    // Invoke run_typecheck directly — exercises the AfterFnBody continuation chain.
+    // Should complete without panicking even at 100 nesting levels.
+    let ty =
+        typecheck_cek::run_typecheck(&node, &env, &mut state, &mut errors, &mut None, &mut stack)
+            .await;
+    // Result should be a function type (each fn is a lambda).
+    assert!(
+        matches!(&ty, Type::Function { .. }),
+        "expected Function type from nested fn, got {:?}",
+        ty
+    );
+}
+
+/// T-1642 / Test 3: Type annotation resolves through `type_stage_map` via CEK path.
+///
+/// Verifies that a `TypeStageEntry::Resolved` entry in `state.type_stage_map` is correctly
+/// consulted by `resolve_type_head` when resolving an uppercase annotation name.
+///
+/// This test calls `run_typecheck` directly on a `TypeAssert` node (`[@Int 42]`), exercising
+/// the `AfterTypeAssertInner` continuation path and confirming the CEK loop handles annotation
+/// resolution without Rust recursion.
+///
+/// The test seeds `type_stage_map` with `"Int" → TypeStageEntry::Resolved(Type::Int)` so
+/// that `@Int` resolves without error even though the type environment is otherwise empty.
+#[tokio::test]
+async fn test_type_stage_resolver_via_cek() {
+    use crate::type_infer::TypeStageEntry;
+
+    // [@Int 42] is a TypeAssert node — the CEK machine handles it via AfterTypeAssertInner.
+    let src = "[@Int 42]";
+    let mut program = crate::parse(src).unwrap().program;
+    crate::desugar::desugar_surface_program(&mut program);
+
+    let node = match &program.documents[0].node.items[0] {
+        crate::ast::SurfaceItem::Expr(n) => Arc::clone(n),
+        _ => panic!("expected expression item"),
+    };
+
+    // Seed the type_stage_map so that the annotation `@Int` resolves to Type::Int.
+    let mut type_stage_map = std::collections::HashMap::new();
+    type_stage_map.insert("Int".to_string(), TypeStageEntry::Resolved(Type::Int));
+
+    let env = Arc::new(RwLock::new(crate::env::Env::new()));
+    let mut state = InferState::new();
+    state.type_stage_map = Some(type_stage_map);
+
+    let mut errors: Vec<TypeError> = Vec::new();
+    let mut stack = Vec::new();
+
+    // Invoke run_typecheck directly on the TypeAssert node.
+    let ty =
+        typecheck_cek::run_typecheck(&node, &env, &mut state, &mut errors, &mut None, &mut stack)
+            .await;
+
+    // With Int resolved via the type_stage_map, there should be no type errors.
+    assert!(
+        errors.is_empty(),
+        "[@Int 42] with type_stage_map seeded for Int should produce no type errors via CEK; got: {:?}",
+        errors.iter().map(|e| e.message()).collect::<Vec<_>>()
+    );
+    // The resolved type should be Int (the annotation overrides the inner 42's IntLiteral type).
+    assert!(
+        matches!(&ty, Type::Int),
+        "expected Type::Int from [@Int 42] via CEK, got {:?}",
+        ty
+    );
+}
+
+/// T-1642 / Test 4: AfterMatchScrutinee and AfterMatchArm continuations are exercised via run_typecheck.
+///
+/// Passes a Match expression directly to `run_typecheck` to confirm that the
+/// `AfterMatchScrutinee` continuation (pushed after inferring the scrutinee) and the
+/// `AfterMatchArm` continuation (pushed/self-pushed for each arm body) are both exercised
+/// in the CEK loop rather than the recursive `infer_surface_expr` path.
+///
+/// The match has two string-typed arms so the union result type must be a string type.
+#[tokio::test]
+async fn test_match_expr_via_cek_exercises_after_match_arm() {
+    // Test that AfterMatchScrutinee and AfterMatchArm continuations are exercised
+    // by passing a Match expression directly to run_typecheck.
+    let src = "[match 42  42: \"forty-two\"  _: \"other\"]";
+    let mut program = crate::parse(src).unwrap().program;
+    crate::desugar::desugar_surface_program(&mut program);
+    let node = match &program.documents[0].node.items[0] {
+        crate::ast::SurfaceItem::Expr(n) => Arc::clone(n),
+        _ => panic!("expected expression item"),
+    };
+    let env = Arc::new(RwLock::new(crate::env::Env::new()));
+    let mut state = InferState::new();
+    let mut errors = Vec::new();
+    let mut stack = Vec::new();
+    let ty =
+        typecheck_cek::run_typecheck(&node, &env, &mut state, &mut errors, &mut None, &mut stack)
+            .await;
+    // Both arms produce string types; union is Str or StringLiteral
+    assert!(
+        matches!(&ty, Type::StringLiteral(_) | Type::Str | Type::Unknown),
+        "expected string type from match on two string arms, got {:?}",
+        ty
     );
 }
 

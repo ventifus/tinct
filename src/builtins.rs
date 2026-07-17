@@ -94,14 +94,6 @@ macro_rules! builtin {
 }
 pub(crate) use builtin;
 
-/// Maximum collection size for $collect (1,000,000 elements).
-/// Prevents memory exhaustion from infinite sequences without $take.
-pub const MAX_COLLECT_SIZE: usize = 1_000_000;
-
-/// Maximum string output size for string output builtins (`$replace`, `$str-map-chars`, `$join`) (64 MB).
-/// Prevents memory exhaustion from adversarial inputs or replacement patterns.
-pub(crate) const MAX_STRING_SIZE: usize = 64 * 1024 * 1024;
-
 pub(crate) fn ok_val(v: Value, span: Span) -> EvalResult<Arc<Thunk>> {
     Ok(Arc::new(Thunk::value(v, span)))
 }
@@ -127,9 +119,6 @@ pub(crate) fn synthetic_call_expr(span: Span) -> Arc<Spanned<CoreExpr>> {
         span,
     })
 }
-
-/// Maximum file size for reading LLT files: 10 MB.
-pub const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
 
 /// Helper: get a pre-materialized single positional argument, enforcing exact arity of 1
 /// and rejecting named arguments. Used by many single-arg builtins with force_count=1.

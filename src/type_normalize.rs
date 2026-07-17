@@ -374,6 +374,94 @@ pub(crate) async fn evaluate_resolver(
     typenode_leaf_to_type(&result_val)
 }
 
+/// Evaluate a type-stage resolver using a pre-materialized `ThunkId`.
+///
+/// This is the fast path for `TypeStageEntry::Function(thunk_id)` — when the type-stage
+/// pre-computation pass (T-1634) has already located the resolver thunk, we skip the env
+/// walk performed by `evaluate_resolver` (Steps 1-3) and go directly to materializing
+/// and calling the function (Steps 4-7).
+///
+/// ## Arguments
+/// - `thunk_id`: The `ThunkId` of the resolver function (from `TypeStageEntry::Function`).
+/// - `args`: Type arguments to pass to the resolver (converted to TypeNode values).
+/// - `eval_ctx`: The evaluation context owning the scope arena.
+///
+/// Returns `None` if any step fails (materialization error, not a Function value,
+/// argument conversion failure, or result cannot be converted back to a `Type`).
+pub(crate) async fn evaluate_resolver_with_thunk(
+    thunk_id: crate::arena::ThunkId,
+    args: &[crate::type_def::Type],
+    eval_ctx: &Arc<crate::eval::EvalContext>,
+) -> Option<crate::type_def::Type> {
+    // Step 4: Get the resolver function thunk from the arena (thunk_id is already known).
+    let resolver_thunk = eval_ctx.scope_arena.borrow().get_thunk(thunk_id);
+
+    // Step 5: Convert Type args to TypeNode values.
+    let type_args: Vec<Value> = args.iter().filter_map(|ty| type_to_typenode(ty)).collect();
+    if type_args.len() != args.len() {
+        // At least one type couldn't be converted to a TypeNode value.
+        return None;
+    }
+
+    // Step 6: Allocate arg ThunkIds in the arena and call the resolver.
+    let arg_thunk_ids: Vec<crate::arena::ThunkId> = type_args
+        .into_iter()
+        .map(|val| {
+            eval_ctx.alloc_thunk(
+                0,
+                Arc::new(crate::value::Thunk::value(val, crate::rust_span!())),
+            )
+        })
+        .collect();
+
+    // Materialize the resolver thunk to get the Function value.
+    let resolver_val = crate::eval::materialize(&resolver_thunk, None, eval_ctx)
+        .await
+        .ok()?;
+
+    // Dispatch: if no args and the resolved value is already a TypeNode constant (not a
+    // function), convert it directly.
+    if args.is_empty() {
+        if let Some(ty) = typenode_leaf_to_type(&resolver_val) {
+            return Some(ty);
+        }
+    }
+
+    // Otherwise: resolver must be a Function (e.g. Map, Seq — parameterized type constructors).
+    let (params, body, closure_env_id) = match resolver_val {
+        Value::Function {
+            params,
+            body,
+            closure_env_id,
+            ..
+        } => (params, body, closure_env_id),
+        _ => return None,
+    };
+
+    // Call the resolver function via invoke_function.
+    use crate::eval_call::{invoke_function, CallContext};
+    let call_ctx = CallContext {
+        params: &params,
+        body: &body,
+        closure_env_id,
+        positional: &arg_thunk_ids,
+        named: None,
+        default_env_id: closure_env_id,
+        call_span: crate::rust_span!(),
+        origin: None,
+        ctx: eval_ctx,
+    };
+    let result_thunk = invoke_function(&call_ctx).await.ok()?;
+
+    // Force the result.
+    let result_val = crate::eval::materialize(&result_thunk, None, eval_ctx)
+        .await
+        .ok()?;
+
+    // Step 7: Convert result TypeNode Value back to Type.
+    typenode_leaf_to_type(&result_val)
+}
+
 /// Convert a TypeNode variant value to a Type.
 /// Handles leaf constructors (no payload) and the Dict constructor (any payload → open Dict).
 pub(crate) fn typenode_leaf_to_type(val: &Value) -> Option<Type> {

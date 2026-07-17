@@ -1,10 +1,53 @@
 //! Dict type inference with multi-pass binding and generalization.
+//!
+//! # T-1644: Deletion blocked — active callers remain in typecheck.rs
+//!
+//! The intent of T-1644 was to delete this file after migrating its contents to
+//! `typecheck_cek.rs`. The migration is partially complete:
+//!
+//! - `compute_sccs` — delegation shim (lines ~57-62) calling
+//!   `super::typecheck_cek::compute_sccs`; the canonical implementation lives in
+//!   `typecheck_cek.rs`.
+//! - `type_contains_typevar` — delegation shim (lines ~65-67) calling
+//!   `super::typecheck_cek::type_contains_typevar`; canonical lives in `typecheck_cek.rs`.
+//! - `adt_value_type` — delegation shim calling `super::typecheck_cek::adt_value_type`.
+//! - `collect_dependencies` — NOT present in this file; only in `typecheck_cek.rs`.
+//! - `entry_key_name` — delegation shim calling `super::typecheck_cek::entry_key_name`.
+//!   The canonical implementation in `typecheck_cek.rs` handles `StringLiteral`, `Int`,
+//!   `VarRef` directly and falls back to `run_typecheck` for computed key expressions.
+//! - `infer_dict` / `infer_surface_expr` — transitional; still the active dict-inference
+//!   path; will be removed when T-1644 completes.  `typecheck.rs` calls `infer_dict`
+//!   from three sites:
+//!     - `typecheck_surface_document` (line ~685): main document-level dict inference
+//!     - `infer_surface_expr` / `SurfaceExpression::Dict` arm (line ~1380): nested dicts
+//!     - `infer_surface_expr` / `SurfaceExpression::Sequential` arm (line ~1427):
+//!       intermediate dict bindings in multi-body functions
+//!
+//! ## What must happen before deletion
+//!
+//! `typecheck_cek.rs` defines `run_typecheck` and `AfterDictSccMember` /
+//! `AfterDictPassZero` continuations. `run_typecheck` is now the active path for
+//! non-dict top-level expressions in `typecheck_surface_document`
+//! (`typecheck.rs:714`). `AfterDictPassZero` still delegates back to
+//! `infer_surface_expr` (which calls `infer_dict` here). Full dict wiring tracked
+//! by T-1644.
+//!
+//! To delete this file:
+//! 1. Wire `run_typecheck` into `typecheck_surface_document` and
+//!    `infer_surface_expr` as the Dict arm handler.
+//! 2. Remove the three `infer_dict` call sites in `typecheck.rs`.
+//! 3. Confirm all delegation shims (`compute_sccs`, `type_contains_typevar`,
+//!    `adt_value_type`, `entry_key_name`) delegate correctly — all are now shims with
+//!    canonical implementations in `typecheck_cek.rs`.
+//! 4. Delete this file and remove `mod typecheck_dict` from `typecheck.rs`.
+//!
+//! Tracked by T-1644.
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use super::{infer_surface_expr, TypeMap};
-use crate::ast::{Span, Spanned, SurfaceDeclaration, SurfaceEntry, SurfaceExpression, SurfaceNode};
+use crate::ast::{Span, Spanned, SurfaceDeclaration, SurfaceEntry, SurfaceExpression};
 use crate::env::Env;
 use crate::type_def::{RowTail, TyConDef};
 use crate::type_infer::Substitution;
@@ -13,269 +56,24 @@ use crate::types::{
     TypeScheme,
 };
 
-/// Strongly Connected Component - a group of mutually dependent bindings
-pub(crate) struct Scc {
-    /// Indices into the entries array
-    pub(crate) indices: Vec<usize>,
-}
+/// Re-export: Strongly Connected Component — canonical definition lives in typecheck_cek.
+/// Used by infer_dict and its tests; definition moved to typecheck_cek.rs to avoid
+/// maintaining two copies of Tarjan's algorithm.
+pub(crate) use super::typecheck_cek::Scc;
 
 /// Tarjan's algorithm for computing SCCs in topological order.
-/// Returns SCCs in reverse topological order (dependencies before dependents).
-///
-/// Uses an iterative worklist implementation to avoid stack overflow on large
-/// prelude dicts with many interdependent bindings. The recursive formulation
-/// of Tarjan's algorithm would overflow on dicts with O(n) dependency chains;
-/// the iterative version uses an explicit work stack instead of the call stack.
+/// Canonical implementation lives in typecheck_cek::compute_sccs.
+/// This shim delegates there to eliminate the duplicate.
 pub(crate) fn compute_sccs(
     entries: &[Spanned<SurfaceEntry>],
     key_entries: &[(Option<String>, bool, bool)],
 ) -> Vec<Scc> {
-    let n = entries.len();
-
-    // Build name-to-index map for O(1) lookup
-    let mut name_to_idx: HashMap<String, usize> = HashMap::new();
-    for (i, (key_name, _, _)) in key_entries.iter().enumerate() {
-        if let Some(ref kn) = key_name {
-            name_to_idx.insert(kn.clone(), i);
-        }
-    }
-
-    // Build adjacency list: for each entry, which other entries does it reference?
-    let mut graph: Vec<Vec<usize>> = vec![Vec::new(); n];
-    for (i, entry) in entries.iter().enumerate() {
-        let deps = collect_dependencies(&entry.node.value, &name_to_idx);
-        graph[i] = deps;
-    }
-
-    // Tarjan's algorithm state (Cormen et al. 2009 §22.5 formulation)
-    let mut index = 0usize;
-    let mut tarjan_stack: Vec<usize> = Vec::new(); // Tarjan's S stack
-    let mut disc: Vec<Option<usize>> = vec![None; n]; // discovery time
-    let mut lowlinks: Vec<usize> = vec![0; n];
-    let mut on_stack: Vec<bool> = vec![false; n];
-    let mut sccs: Vec<Scc> = Vec::new();
-
-    // Iterative Tarjan's SCC using an explicit work stack.
-    //
-    // Each work frame stores (node v, index into graph[v] — the next successor to process).
-    // On push: initialize v and visit the first unvisited successor.
-    // On resume: advance the successor index, propagate lowlink, check root condition.
-    //
-    // This exactly mirrors the recursive call structure without using the call stack.
-    // Each "frame" is (v, next_successor_idx) where next_successor_idx is the 0-based
-    // index of the next successor of v to process. When next_successor_idx == graph[v].len(),
-    // all successors are done and we check the root condition.
-    let mut call_stack: Vec<(usize, usize)> = Vec::new(); // (node, next_succ_idx)
-
-    for start in 0..n {
-        if disc[start].is_some() {
-            continue;
-        }
-
-        // Initialize start node and push its frame
-        disc[start] = Some(index);
-        lowlinks[start] = index;
-        index += 1;
-        tarjan_stack.push(start);
-        on_stack[start] = true;
-        call_stack.push((start, 0));
-
-        'outer: while let Some((v, succ_idx)) = call_stack.last().copied() {
-            let succs = &graph[v];
-
-            // Find the next successor to process starting from succ_idx
-            let mut next_succ = succ_idx;
-            while next_succ < succs.len() {
-                let w = succs[next_succ];
-                if disc[w].is_none() {
-                    // Tree edge: initialize w and recurse into it.
-                    // Update call_stack frame for v to resume at next_succ+1 after w returns.
-                    call_stack.last_mut().unwrap().1 = next_succ + 1;
-                    disc[w] = Some(index);
-                    lowlinks[w] = index;
-                    index += 1;
-                    tarjan_stack.push(w);
-                    on_stack[w] = true;
-                    call_stack.push((w, 0));
-                    continue 'outer;
-                } else if on_stack[w] {
-                    // Back edge: w is on the tarjan stack, update lowlink for v
-                    lowlinks[v] = lowlinks[v].min(disc[w].unwrap());
-                }
-                // Already-visited and not on stack (cross/forward edge — skip): no lowlink update needed
-                next_succ += 1;
-            }
-
-            // All successors of v are processed. Propagate lowlink to parent and check root.
-            call_stack.pop();
-            if let Some(&(parent, _)) = call_stack.last() {
-                // Propagate lowlink: parent's lowlink = min(parent's lowlink, v's lowlink)
-                lowlinks[parent] = lowlinks[parent].min(lowlinks[v]);
-            }
-
-            // Root check: if disc[v] == lowlinks[v], v is the root of an SCC
-            if Some(lowlinks[v]) == disc[v] {
-                let mut scc_indices = Vec::new();
-                loop {
-                    let x = tarjan_stack.pop().unwrap();
-                    on_stack[x] = false;
-                    scc_indices.push(x);
-                    if x == v {
-                        break;
-                    }
-                }
-                sccs.push(Scc {
-                    indices: scc_indices,
-                });
-            }
-        }
-    }
-
-    // Tarjan's algorithm produces SCCs in reverse topological order of the condensation DAG:
-    // dependency SCCs are emitted before the SCCs that depend on them. infer_dict processes
-    // the returned list front-to-back, so dependencies are inferred (and generalized) before
-    // the dependent SCCs that reference them — exactly the order we need.
-    sccs
+    super::typecheck_cek::compute_sccs(entries, key_entries)
 }
 
-/// Occurs check: returns true if TypeVar `name` appears free anywhere in `ty`.
-///
-/// Used in the B-520 reconciliation to prevent cyclic substitution bindings
-/// (e.g. β → Union(T, β)) that would cause `Type::clone()` to recurse infinitely.
-/// This is the same guard that `unify()` applies — unified code path for TypeVar binding.
+/// Occurs check: delegates to typecheck_cek::type_contains_typevar (canonical implementation).
 fn type_contains_typevar(ty: &Type, name: &str) -> bool {
-    match ty {
-        Type::TypeVar(n, _) => n.as_str() == name,
-        Type::Union(members) | Type::Intersection(members) => {
-            members.iter().any(|m| type_contains_typevar(m, name))
-        }
-        Type::Negation(inner) => type_contains_typevar(inner, name),
-        Type::Function { params, ret, .. } => {
-            params.iter().any(|(_, t)| type_contains_typevar(t, name))
-                || type_contains_typevar(ret, name)
-        }
-        Type::App(f, arg) => type_contains_typevar(f, name) || type_contains_typevar(arg, name),
-        Type::Dict(row) => {
-            row.fields.values().any(|t| type_contains_typevar(t, name))
-                || match &row.tail {
-                    RowTail::Uniform { key: k, value: v } => {
-                        k.as_ref().map_or(false, |t| type_contains_typevar(t, name))
-                            || type_contains_typevar(v, name)
-                    }
-                    RowTail::Empty => false,
-                }
-        }
-        _ => false,
-    }
-}
-
-/// Collect all sibling variable references in an expression.
-/// Returns the set of indices that this expression depends on.
-///
-/// Uses an iterative worklist to avoid stack overflow on deeply nested
-/// Sequential/Pipe chains (which are unbounded by the parser's MAX_PARSE_DEPTH).
-/// This mirrors the iterative Tarjan's algorithm above.
-fn collect_dependencies(
-    node: &Arc<SurfaceNode>,
-    name_to_idx: &HashMap<String, usize>,
-) -> Vec<usize> {
-    let mut deps: Vec<usize> = Vec::new();
-    let mut worklist: Vec<&Arc<SurfaceNode>> = vec![node];
-
-    while let Some(current) = worklist.pop() {
-        match &current.expr {
-            SurfaceExpression::VarRef { name, .. } => {
-                if let Some(&idx) = name_to_idx.get(name) {
-                    deps.push(idx);
-                }
-            }
-            SurfaceExpression::Int(_)
-            | SurfaceExpression::U64(_)
-            | SurfaceExpression::Float(_)
-            | SurfaceExpression::StringLiteral { .. } => {}
-            SurfaceExpression::Dict(entries) => {
-                for entry in entries {
-                    if let Some(ref key) = entry.node.key {
-                        worklist.push(key);
-                    }
-                    worklist.push(&entry.node.value);
-                }
-            }
-            SurfaceExpression::Fn { body, .. } => {
-                worklist.push(body);
-            }
-            SurfaceExpression::Call {
-                func,
-                args,
-                named_args,
-                ..
-            } => {
-                worklist.push(func);
-                for arg in args {
-                    worklist.push(arg);
-                }
-                for named_arg in named_args {
-                    worklist.push(&named_arg.node.value);
-                }
-            }
-            SurfaceExpression::Match { scrutinee, arms } => {
-                worklist.push(scrutinee);
-                for arm in arms {
-                    for body_expr in &arm.body {
-                        worklist.push(body_expr);
-                    }
-                    if let Some(ref guard) = arm.guard {
-                        worklist.push(guard);
-                    }
-                }
-            }
-            SurfaceExpression::Field { expr, .. } => {
-                if let Some(target) = expr {
-                    worklist.push(target);
-                }
-            }
-            SurfaceExpression::Pipe { lhs, rhs } => {
-                worklist.push(lhs);
-                worklist.push(rhs);
-            }
-            SurfaceExpression::Sequential(exprs) => {
-                for e in exprs {
-                    worklist.push(e);
-                }
-            }
-            SurfaceExpression::TypeAssert { expr, .. } => {
-                worklist.push(expr);
-            }
-            SurfaceExpression::Rest(..) => {}
-            SurfaceExpression::Quote(e)
-            | SurfaceExpression::Unquote(e)
-            | SurfaceExpression::UnquoteSplice(e) => {
-                worklist.push(e);
-            }
-            SurfaceExpression::Decl(_) => {
-                // Type aliases, class/instance/macro declarations have no sibling variable
-                // dependencies in the dict scope — they are fully processed in Pass 0c/Pass 2.
-            }
-            SurfaceExpression::PatternDecl { bindings }
-            | SurfaceExpression::LetDecl { bindings } => {
-                for b in bindings {
-                    worklist.push(b);
-                }
-            }
-            SurfaceExpression::CaseArm {
-                let_bindings,
-                pattern,
-                body,
-            } => {
-                worklist.push(let_bindings);
-                worklist.push(pattern);
-                worklist.push(body);
-            }
-            SurfaceExpression::Placeholder | SurfaceExpression::Error(_) => {}
-        }
-    }
-
-    deps
+    super::typecheck_cek::type_contains_typevar(ty, name)
 }
 
 /// Build the constructor dict value type for an ADT.
@@ -283,44 +81,22 @@ fn collect_dependencies(
 ///   - Unit constructors  → NominalVariant values (the value IS the variant)
 ///   - Payload constructors → Function values (taking the declared fields as named params)
 /// For non-ADT types (structural aliases, etc.), returns the body type unchanged.
+///
+/// Delegates to the canonical implementation in `typecheck_cek`.
 fn adt_value_type(alias_body: &Type) -> Type {
-    let members: Vec<&Type> = match alias_body {
-        Type::Union(ms) => ms.iter().collect(),
-        nv @ Type::NominalVariant { .. } => vec![nv],
-        _ => return alias_body.clone(),
-    };
-    let mut ctor_dict_fields: indexmap::IndexMap<String, Type> = indexmap::IndexMap::new();
-    for m in members {
-        if let Type::NominalVariant { ctor, fields, .. } = m {
-            let ctor_type = if fields.fields.is_empty() {
-                m.clone()
-            } else {
-                let fn_params: Vec<(Option<String>, Type)> = fields
-                    .fields
-                    .iter()
-                    .map(|(k, v)| (Some(k.clone()), v.clone()))
-                    .collect();
-                let required_count = fn_params.len();
-                Type::Function {
-                    params: fn_params,
-                    ret: Box::new(m.clone()),
-                    variadic: false,
-                    required_count,
-                }
-            };
-            ctor_dict_fields.insert(ctor.clone(), ctor_type);
-        }
-    }
-    if ctor_dict_fields.is_empty() {
-        alias_body.clone()
-    } else {
-        Type::Dict(Row {
-            fields: ctor_dict_fields,
-            tail: RowTail::Empty,
-        })
-    }
+    super::typecheck_cek::adt_value_type(alias_body)
 }
 
+/// Dict type inference via multi-pass binding analysis (Passes 0–3).
+///
+/// # Transitional status
+///
+/// This function is being phased out in favor of the CEK continuation path in
+/// `typecheck_cek.rs` (`AfterDictPassZero` → `AfterTypeAliasReg` →
+/// `AfterClassInstancePreReg` → `AfterDictSccMember`). The `AfterDictPassZero`
+/// handler in `apply_cont` currently delegates back here transitionally.
+///
+/// Tracked by T-1644. Do not add new callers.
 pub(crate) async fn infer_dict(
     entries: &[Spanned<SurfaceEntry>],
     env: &Arc<RwLock<Env>>,
@@ -1349,6 +1125,7 @@ pub(crate) async fn infer_dict(
     (record_type, schemes, errors)
 }
 
+/// Delegation shim — canonical implementation lives in `typecheck_cek.rs`.
 pub(crate) async fn entry_key_name(
     entry: &SurfaceEntry,
     auto_index: &mut i64,
@@ -1356,30 +1133,13 @@ pub(crate) async fn entry_key_name(
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Option<String> {
-    match &entry.key {
-        Some(key_node) => match &key_node.expr {
-            SurfaceExpression::StringLiteral { content: s, .. } => Some(s.clone()),
-            SurfaceExpression::Int(n) => Some(n.to_string()),
-            // Annotated key: name@[doc: "..."] — extract name directly
-            // VarRef with annotation (name@[doc: "..."]) — extract name
-            SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
-            _ => match Box::pin(infer_surface_expr(key_node, env, state, type_map)).await {
-                Ok(Type::StringLiteral(s)) => Some(s),
-                Ok(Type::IntLiteral(n)) => Some(n.to_string()),
-                _ => None,
-            },
-        },
-        None => {
-            let name = auto_index.to_string();
-            *auto_index += 1;
-            Some(name)
-        }
-    }
+    super::typecheck_cek::entry_key_name(entry, auto_index, env, state, type_map).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::SurfaceNode;
     use crate::test_util::sp;
 
     /// Helper: build a zero-origin [`SurfaceNode`] from a [`SurfaceExpression`].

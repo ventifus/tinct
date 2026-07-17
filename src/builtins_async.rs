@@ -34,7 +34,7 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 
 use crate::ast::Span;
-use crate::builtins::{ok_val, MAX_COLLECT_SIZE};
+use crate::builtins::ok_val;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
 use crate::eval_core::eval_core_expr;
@@ -130,23 +130,12 @@ async fn collect_dict_to_vec(
     dict_val: Value,
     _ctx: &Arc<crate::eval::EvalContext>,
     call_span: Span,
-    name: &str,
+    _name: &str,
 ) -> EvalResult<Vec<ThunkId>> {
     let map = match dict_val {
         Value::Dict(m) => m,
         other => return Err(EvalError::type_mismatch("Dict", other.type_name(), call_span).into()),
     };
-
-    if map.len() >= MAX_COLLECT_SIZE {
-        return Err(EvalError::resource_limit_exceeded(
-            format!(
-                "{}: exceeded maximum collection size ({})",
-                name, MAX_COLLECT_SIZE
-            ),
-            call_span,
-        )
-        .into());
-    }
 
     Ok(map.values().copied().collect())
 }

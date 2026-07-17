@@ -13,7 +13,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tinct::{
     build_core_env, literate, parse, parse_with_file, string_val, EvalContext, HashableValue,
-    SourceFile, Thunk, ThunkId, Value, MAX_FILE_SIZE,
+    SourceFile, Thunk, ThunkId, Value,
 };
 // Exit codes for llt eval
 const EXIT_OK: i32 = 0;
@@ -2517,18 +2517,9 @@ fn format_type_diagnostic(diag: &tinct::TypeDiagnostic, source: &str, file_name:
 // AMBIENT-OK: CLI hash command on operator-specified file.
 #[allow(clippy::disallowed_types)]
 fn run_hash(file_path: &str) -> Result<(), String> {
-    let file = std::fs::File::open(file_path).map_err(|e| format!("error reading file: {e}"))?;
-    let metadata = file
-        .metadata()
-        .map_err(|e| format!("error reading file: {e}"))?;
-    if metadata.len() > MAX_FILE_SIZE {
-        return Err(format!(
-            "file is {} bytes, exceeds the 10 MB limit",
-            metadata.len()
-        ));
-    }
     let mut buf = Vec::new();
-    file.take(MAX_FILE_SIZE + 1)
+    std::fs::File::open(file_path)
+        .map_err(|e| format!("error reading file: {e}"))?
         .read_to_end(&mut buf)
         .map_err(|e| format!("error reading file: {e}"))?;
     let hash = blake3::hash(&buf);
@@ -2547,44 +2538,18 @@ fn read_source(file_path: &str) -> Result<Arc<SourceFile>, String> {
     if file_path == "-" {
         let mut buf = String::new();
         io::stdin()
-            .take(MAX_FILE_SIZE + 1)
             .read_to_string(&mut buf)
             .map_err(|e| format!("error reading stdin: {e}"))?;
-        if buf.len() as u64 > MAX_FILE_SIZE {
-            return Err(format!(
-                "stdin input exceeds the 10 MB limit ({} bytes)",
-                MAX_FILE_SIZE
-            ));
-        }
         Ok(Arc::new(SourceFile {
             path: Arc::from("-"),
             content: Arc::from(buf.as_str()),
         }))
     } else {
-        // Open the file first to get a stable fd, avoiding TOCTOU race.
-        let file =
-            std::fs::File::open(file_path).map_err(|e| format!("error reading file: {e}"))?;
-        let metadata = file
-            .metadata()
-            .map_err(|e| format!("error reading file: {e}"))?;
-        if metadata.len() > MAX_FILE_SIZE {
-            return Err(format!(
-                "input file is {} bytes, which exceeds the 10 MB limit ({} bytes)",
-                metadata.len(),
-                MAX_FILE_SIZE
-            ));
-        }
-        // Read from the open fd using take() to limit reads at the OS level.
         let mut buf = String::new();
-        file.take(MAX_FILE_SIZE + 1)
+        std::fs::File::open(file_path)
+            .map_err(|e| format!("error reading file: {e}"))?
             .read_to_string(&mut buf)
             .map_err(|e| format!("error reading file: {e}"))?;
-        if buf.len() as u64 > MAX_FILE_SIZE {
-            return Err(format!(
-                "file grew beyond 10 MB limit during read ({} bytes)",
-                buf.len()
-            ));
-        }
         Ok(Arc::new(SourceFile {
             path: Arc::from(file_path),
             content: Arc::from(buf.as_str()),

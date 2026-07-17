@@ -1317,7 +1317,7 @@ async fn dispatch_state(
     }
 }
 
-/// Entry point for spawned evaluation tasks. Called by materialize() in eval.rs via spawn_local.
+/// Entry point for inline thunk evaluation. Called by materialize() in eval.rs in the same task.
 ///
 /// Sets up the initial Memoize continuation and calls dispatch_state to begin CEK evaluation.
 pub(crate) async fn run_owned(
