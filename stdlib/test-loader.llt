@@ -74,7 +74,7 @@
 
   # reduce and join defined here using core builtins only.
   # Dict 1 helpers need these but prelude is not yet loaded.
-  _reduce-loop: [fn [let f acc@a xs@Dict i@Integer len@Integer]
+  _reduce-loop: [fn@[bind: [a]] [let f acc@a xs@Dict i@Integer len@Integer]
     [match [builtin-int-gte i len]
       0: [_reduce-loop f [f acc [builtin-get i xs]] xs [builtin-int-add i 1] len]
       _: acc]]
@@ -398,7 +398,7 @@
       [Boolean: Boolean  True: Boolean.True  False: Boolean.False]]]
     [eval-doc: [fn [let acc doc]
       [meta:    [builtin-doc-meta doc acc.scope-id]]
-      [uses:    [uses-scope [get-or [] "uses" meta] fundamental-tc acc.scope-id]]
+      [uses:    [uses-scope [get-or [] "uses" meta] acc.tc acc.scope-id]]
       [scope:   [builtin-scope-new acc.scope-id uses]]
       [frames:  [scope-to-frames scope]]
       [res:     [builtin-resolve doc frames]]

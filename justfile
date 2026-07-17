@@ -96,12 +96,12 @@ test-cli-summary:
 # With no arguments: auto-discovers all tests under tests/corpus/.
 # With file arguments: runs only those specific tests.
 test-corpus:
-    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo run --bin tinct -- --max-memory {{tinct_max_memory}} run --init stdlib/test-loader.llt
+    {{container}} run {{run_flags}} {{rust_image}} cargo run --bin tinct -- --max-memory {{tinct_max_memory}} run --init stdlib/test-loader.llt
 
-# Run specific corpus test files.
+# Run specific corpus test files under gdb for crash diagnosis.
 # Usage: just test-corpus-one tests/corpus/eval/simple_dict.llt-eval
 test-corpus-one +FILES:
-    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo run --bin tinct -- --max-memory {{tinct_max_memory}} run --init stdlib/test-loader.llt {{FILES}}
+    {{container}} run {{run_flags}} {{rust_image}} sh -c "cargo build --bin tinct 2>&1 && apt-get update -qq && apt-get install -y -q gdb > /dev/null 2>&1 && rust-gdb -batch -ex run -ex bt --args target/debug/tinct --max-memory {{tinct_max_memory}} run --init stdlib/test-loader.llt {{FILES}}"
 
 # Run all lint checks. Always runs every check regardless of failures; exits non-zero if any failed.
 lint:

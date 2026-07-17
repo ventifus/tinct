@@ -2101,13 +2101,6 @@ async fn test_recursive_function_without_annotation_ok() {
     );
 }
 
-// Note: the TypeVar arm at typecheck.rs:1775 ("'x' is not a function") is guarded by
-// `state.current_function == Some(name)` (line 1717), which is only set inside fn bodies.
-// Non-fn dict entries like `[x: [x 1]]` never set current_function, so they go through
-// the normal speculative call path rather than the recursive-call path. After B-520 Change 1,
-// all fn entries get Function pre-bindings, making the TypeVar arm effectively unreachable
-// in normal operation. No separate error test is needed for this case.
-
 #[tokio::test]
 async fn test_mutual_recursion_without_annotation_ok() {
     // B-520: mutual recursion via direct call syntax should type-check without annotations.

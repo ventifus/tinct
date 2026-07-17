@@ -219,9 +219,6 @@ pub struct InferState {
     ///
     /// Enabled by setting this to `Some(SchemeMap::new())` before running inference.
     pub scheme_map: Option<SchemeMap>,
-    /// Name of the function currently being inferred (for polymorphic recursion detection).
-    /// Set by infer_fn when entering a function body, cleared when exiting.
-    pub current_function: Option<String>,
     /// Expected return type of the currently-inferring function (if annotated).
     /// Set by infer_fn when entering a function body with an explicit return annotation,
     /// cleared when exiting. Used for inferred [do] macro to determine which monad to use.
@@ -303,6 +300,11 @@ pub struct InferState {
     /// to materialize type-stage thunks without ambient filesystem access. Never created
     /// inside the type checker; always provided by the caller that has proper capabilities.
     pub eval_ctx: Option<std::sync::Arc<crate::eval::EvalContext>>,
+    /// Direct ThunkId map from type-stage evaluation — name → ThunkId in scope_arena.
+    /// When set, resolve_type_head forces the thunk directly to get the TypeNode value,
+    /// bypassing the evaluate_resolver scope-alignment mechanism. Used for the bootstrap
+    /// two-pass where the ThunkIds come directly from evaluating the type-stage dict.
+    pub type_stage_thunks: Option<std::collections::HashMap<String, crate::arena::ThunkId>>,
     /// Pending param narrowings from the most recently inferred function (compatibility field).
     pub pending_param_narrowings: Vec<Option<Type>>,
     /// Unified TypeVar table (from HEAD~1 design).
@@ -341,7 +343,6 @@ impl InferState {
             env,
             failed_bindings: HashMap::new(),
             scheme_map: None,
-            current_function: None,
             expected_return: None,
             diagnostics: Vec::new(),
             deferred_equalities: Vec::new(),
@@ -358,6 +359,7 @@ impl InferState {
             type_stage_env: None,
             main_env: None,
             eval_ctx: None,
+            type_stage_thunks: None,
             pending_param_narrowings: Vec::new(),
             type_vars: indexmap::IndexMap::new(),
             bounds: std::collections::HashMap::new(),

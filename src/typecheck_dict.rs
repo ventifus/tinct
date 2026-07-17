@@ -138,6 +138,37 @@ pub(crate) fn compute_sccs(
     sccs
 }
 
+/// Occurs check: returns true if TypeVar `name` appears free anywhere in `ty`.
+///
+/// Used in the B-520 reconciliation to prevent cyclic substitution bindings
+/// (e.g. β → Union(T, β)) that would cause `Type::clone()` to recurse infinitely.
+/// This is the same guard that `unify()` applies — unified code path for TypeVar binding.
+fn type_contains_typevar(ty: &Type, name: &str) -> bool {
+    match ty {
+        Type::TypeVar(n, _) => n.as_str() == name,
+        Type::Union(members) | Type::Intersection(members) => {
+            members.iter().any(|m| type_contains_typevar(m, name))
+        }
+        Type::Negation(inner) => type_contains_typevar(inner, name),
+        Type::Function { params, ret, .. } => {
+            params.iter().any(|(_, t)| type_contains_typevar(t, name))
+                || type_contains_typevar(ret, name)
+        }
+        Type::App(f, arg) => type_contains_typevar(f, name) || type_contains_typevar(arg, name),
+        Type::Dict(row) => {
+            row.fields.values().any(|t| type_contains_typevar(t, name))
+                || match &row.tail {
+                    RowTail::Uniform { key: k, value: v } => {
+                        k.as_ref().map_or(false, |t| type_contains_typevar(t, name))
+                            || type_contains_typevar(v, name)
+                    }
+                    RowTail::Empty => false,
+                }
+        }
+        _ => false,
+    }
+}
+
 /// Collect all sibling variable references in an expression.
 /// Returns the set of indices that this expression depends on.
 ///
@@ -748,20 +779,6 @@ pub(crate) async fn infer_dict(
             }
 
             if let Some(name) = key_name {
-                // Set current_function for polymorphic recursion detection.
-                // Only set it for functions WITHOUT return annotations — functions with
-                // annotations can recurse safely because the return type is pinned.
-                let should_check_recursion =
-                    if let SurfaceExpression::Fn { return_ann, .. } = &entry.node.value.expr {
-                        return_ann.is_none()
-                    } else {
-                        false
-                    };
-
-                if should_check_recursion {
-                    state.current_function = Some(name.clone());
-                }
-
                 // Save constraints before inferring this entry's value.
                 // Function constraints (from fn@[constraint: ...] annotations) should be scoped
                 // to the function being inferred, not leak across dict entries.
@@ -811,10 +828,6 @@ pub(crate) async fn infer_dict(
                     entry_constraints.insert(name.clone(), this_entry_constraints);
                 }
 
-                if should_check_recursion {
-                    state.current_function = None;
-                }
-
                 // Store nested schemes if present.
                 // inner_schemes is HashMap-keyed (name-based DOT-POLY lookup, no slot indexing),
                 // so convert from IndexMap to HashMap here.
@@ -857,21 +870,37 @@ pub(crate) async fn infer_dict(
                                         ..
                                     } = &value_ty
                                     {
+                                        // Bind pre-bound ret TypeVar → actual return type.
+                                        // Apply local subst first, then occurs-check before
+                                        // inserting. If β ∈ fv(actual_ret) (e.g. recursive
+                                        // return: β → Union(T, β)), skip binding — β stays
+                                        // free and is generalized. Same guard as unify().
                                         if let Type::TypeVar(ret_name, _) = pre_ret.as_ref() {
-                                            subst
-                                                .type_map
-                                                .borrow_mut()
-                                                .insert(ret_name.clone(), *actual_ret.clone());
+                                            let actual_ret_applied =
+                                                subst.apply(actual_ret.as_ref());
+                                            if !type_contains_typevar(&actual_ret_applied, ret_name)
+                                            {
+                                                subst
+                                                    .type_map
+                                                    .borrow_mut()
+                                                    .insert(ret_name.clone(), actual_ret_applied);
+                                            }
                                         }
                                         for ((_, pre_ty), (_, actual_ty)) in
                                             pre_params.iter().zip(actual_params.iter())
                                         {
                                             match pre_ty {
                                                 Type::TypeVar(param_name, _) => {
-                                                    subst.type_map.borrow_mut().insert(
-                                                        param_name.clone(),
-                                                        actual_ty.clone(),
-                                                    );
+                                                    let actual_applied = subst.apply(actual_ty);
+                                                    if !type_contains_typevar(
+                                                        &actual_applied,
+                                                        param_name,
+                                                    ) {
+                                                        subst.type_map.borrow_mut().insert(
+                                                            param_name.clone(),
+                                                            actual_applied,
+                                                        );
+                                                    }
                                                 }
                                                 Type::Dict(Row {
                                                     tail:
@@ -880,11 +909,6 @@ pub(crate) async fn infer_dict(
                                                         },
                                                     ..
                                                 }) => {
-                                                    // Variadic param: the pre-bound type is
-                                                    // Dict(Uniform { value: elem_TypeVar }).
-                                                    // Bind the inner elem TypeVar to the actual
-                                                    // elem type so recursive calls see a concrete
-                                                    // element type.
                                                     if let Type::TypeVar(elem_name, _) =
                                                         elem_var.as_ref()
                                                     {
@@ -897,10 +921,17 @@ pub(crate) async fn infer_dict(
                                                             ..
                                                         }) = actual_ty
                                                         {
-                                                            subst.type_map.borrow_mut().insert(
-                                                                elem_name.clone(),
-                                                                *actual_elem.clone(),
-                                                            );
+                                                            let actual_elem_applied =
+                                                                subst.apply(actual_elem.as_ref());
+                                                            if !type_contains_typevar(
+                                                                &actual_elem_applied,
+                                                                elem_name,
+                                                            ) {
+                                                                subst.type_map.borrow_mut().insert(
+                                                                    elem_name.clone(),
+                                                                    actual_elem_applied,
+                                                                );
+                                                            }
                                                         }
                                                     }
                                                 }
