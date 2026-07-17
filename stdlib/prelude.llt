@@ -141,57 +141,57 @@
 
   TypeNode: [type
     # Primitives — leaf constructors: no @Child fields
-    [Int@[as-type: [fn [let t] t]  guarding: 1]]
-    [Float@[as-type: [fn [let t] t]  guarding: 1]]
-    [String@[as-type: [fn [let t] t]  guarding: 1]]
-    [Bool@[as-type: [fn [let t] t]  guarding: 1]]
-    [Absent@[as-type: [fn [let t] t]  guarding: 1]]
-    [Unknown@[as-type: [fn [let t] t]  guarding: 1]]
-    [Never@[as-type: [fn [let t] t]  guarding: 1]]
+    Int@[as-type: [fn [let t] t]  guarding: 1]:        []
+    Float@[as-type: [fn [let t] t]  guarding: 1]:      []
+    String@[as-type: [fn [let t] t]  guarding: 1]:     []
+    Bool@[as-type: [fn [let t] t]  guarding: 1]:       []
+    Absent@[as-type: [fn [let t] t]  guarding: 1]:     []
+    Unknown@[as-type: [fn [let t] t]  guarding: 1]:    []
+    Never@[as-type: [fn [let t] t]  guarding: 1]:      []
     # Structural
-    [Dict@[as-type: [fn [let r] r]  guarding: 1]
-      fields@Child: [Map String TypeNode]   # @Child on Map → MapValues (map over values, preserve keys)
-      open:         Int]                    # 1 = open, 0 = closed; no @Child → NonChild
-    [Union@[as-type: [fn [let u] u]  guarding: 0]
-      types@Child: [Map Int TypeNode]]       # @Child on Map → MapValues (map over values)
-    [Intersect@[as-type: [fn [let i] i]  guarding: 0]
-      types@Child: [Seq TypeNode]]
-    [Negation@[as-type: [fn [let n] n]  guarding: 0]
-      inner@Child: TypeNode]                    # @Child on TypeNode → One
+    Dict@[as-type: [fn [let r] r]  guarding: 1]:
+      [fields@Child: [Map String TypeNode]   # @Child on Map → MapValues (map over values, preserve keys)
+       open:         Int]                    # 1 = open, 0 = closed; no @Child → NonChild
+    Union@[as-type: [fn [let u] u]  guarding: 0]:
+      [types@Child: [Map Int TypeNode]]      # @Child on Map → MapValues (map over values)
+    Intersect@[as-type: [fn [let i] i]  guarding: 0]:
+      [types@Child: [Seq TypeNode]]
+    Negation@[as-type: [fn [let n] n]  guarding: 0]:
+      [inner@Child: TypeNode]                # @Child on TypeNode → One
     # TypeConstructor — two roles:
     #   Transient (pre-normalization): bare name lookup result, eliminated by expansion
     #   Leaf identity (post-normalization): qualified name "Color.Red", carries nominal identity
-    [TypeConstructor@[as-type: [fn [let t] t]  guarding: 1]
-      name: String]                         # no @Child → leaf
-    [TypeApplication@[as-type: [fn [let a] a]  guarding: 1]
-      ctor@Child:  TypeNode                 # @Child on TypeNode → One
-      args@Child:  [Map Int TypeNode]]      # @Child on Map → MapValues
-    [Arrow@[as-type: [fn [let a] a]  guarding: 1]
-      params@Child: [Map Int TypeNode]      # @Child on Map → MapValues
-      result@Child: TypeNode]              # @Child on TypeNode → One
+    TypeConstructor@[as-type: [fn [let t] t]  guarding: 1]:
+      [name: String]                         # no @Child → leaf
+    TypeApplication@[as-type: [fn [let a] a]  guarding: 1]:
+      [ctor@Child:  TypeNode                 # @Child on TypeNode → One
+       args@Child:  [Map Int TypeNode]]      # @Child on Map → MapValues
+    Arrow@[as-type: [fn [let a] a]  guarding: 1]:
+      [params@Child: [Map Int TypeNode]      # @Child on Map → MapValues
+       result@Child: TypeNode]              # @Child on TypeNode → One
     # Recursive — equirecursive types; body is a concrete TypeNode with
     # RecursiveRef(var) at recursive positions (not a function)
-    [Recursive@[as-type: [fn [let r] r]  guarding: 1]
-      var:         String                   # no @Child → NonChild (binder name, not a type child)
-      body@Child:  TypeNode]               # @Child on TypeNode → One
+    Recursive@[as-type: [fn [let r] r]  guarding: 1]:
+      [var:         String                   # no @Child → NonChild (binder name, not a type child)
+       body@Child:  TypeNode]               # @Child on TypeNode → One
     # Internal sentinel — always a leaf; only appears inside Recursive bodies
-    [RecursiveRef@[as-type: [fn [let r] r]  guarding: 0]
-      name: String]                         # no @Child → leaf
+    RecursiveRef@[as-type: [fn [let r] r]  guarding: 0]:
+      [name: String]                         # no @Child → leaf
     # Inference variable — leaf; name and level are not TypeNode children.
     # TypeVar IS a TypeNode constructor — findable by walk_type, handled uniformly
     # with all other TypeNode forms. level is the Kiselyov creation-time level;
     # state.levels is the authoritative mutable current level (never read from payload).
-    [TypeVar@[as-type: [fn [let t] t]  guarding: 0]
-      name:  String                         # e.g. "_t42"
-      level: Int]
+    TypeVar@[as-type: [fn [let t] t]  guarding: 0]:
+      [name:  String                         # e.g. "_t42"
+       level: Int]
     # Fixed-size bytes refinement type — [Bytes N] in annotation position.
     # Supertype: TypeNode.Bytes. Subtype rule [Bytes N] <: Bytes is derived from
     # the supertype: annotation generically, with no Rust special-case.
     # guarding: 0 — SizedBytes is a leaf structurally (n is Int, not TypeNode child).
     # Two SizedBytes nodes are incompatible when n values differ (M ≠ N) — falls
     # out of generic TypeNode structural equality on the n field.
-    [SizedBytes@[supertype: TypeNode.Bytes  as-type: [fn [let b] b]  guarding: 0]
-      n: Int]]                              # n: the concrete byte-count N from [Bytes N] annotation
+    SizedBytes@[supertype: TypeNode.Bytes  as-type: [fn [let b] b]  guarding: 0]:
+      [n: Int]]                              # n: the concrete byte-count N from [Bytes N] annotation
 
   # ============================================================================
   # Bytes[N]: parameterized type function (T-1355)
@@ -530,14 +530,16 @@
 
 Closed: [type Closed]
 Full:   [type Full]
-Lagged: [type [Lagged count: Int]]
+Lagged: [type Lagged: [count: Int]]
 
 # Result type: needed by private helpers (group-by-get-bucket, try-or-impl, retry-impl).
 # Declared here so dict-1 match patterns referencing Result.Ok / Result.Error resolve correctly.
 # The public dict (dict 2) re-exports Result, Ok, Error under the same names for callers.
 # Both declarations produce variants with identical tag strings ("Result.Ok", "Result.Error"),
 # so runtime pattern matching works correctly regardless of which declaration constructed a value.
-Result: [type [let a] [Ok a] [Error String]]
+Result: [type [let a]
+  Ok:    [value: a]
+  Error: [msg: String]]
 
 # Boolean type: needed by private helpers that return Boolean.True/Boolean.False in body positions.
 # Declared here (dict 1) so it is visible in both the private and public dicts.
@@ -602,8 +604,8 @@ bool->int-priv: [fn [let b]
 # a Result.Ok / Result.Error variant for downstream match arms to consume.
 raw-to-result: [fn [let raw]
     [match [builtin-has-key? "ok" raw]
-        0: [Result.Error [builtin-get "error" raw]]
-        _: [Result.Ok [builtin-get "ok" raw]]]]
+        0: [Result.Error msg:   [builtin-get "error" raw]]
+        _: [Result.Ok   value: [builtin-get "ok"    raw]]]]
 
 # ============================================================================
 # List helpers (only depend on builtins + siblings)
@@ -691,7 +693,7 @@ partition-finish: [fn@[bind: [a]  return: a] [let result@a] result]
 # group-by-get-bucket: retrieve existing bucket for key k from acc dict, or [] if missing.
 group-by-get-bucket: [fn@Dict [let k acc@Dict]
     [match [raw-to-result [builtin-try [builtin-get k acc]]]
-        [case [let v] [Result.Ok v]    v]
+        [case [let p] [Result.Ok p]    p.value]
         [case [let _] [Result.Error]   []]]]
 
 # group-by-insert: update key k in plain dict acc with x appended to existing bucket.
@@ -715,7 +717,7 @@ group-by-step: [fn@[bind: [a k]  return: Dict] [let f@[Fn@k [a]] acc@Dict x]
 
 try-or-impl: [fn@[bind: [a]  return: a] [let try-result default@a]
     [match try-result
-        [case [let v] [Result.Ok v]    v]
+        [case [let p] [Result.Ok p]    p.value]
         [case [let _] [Result.Error]   default]]]
 
 # ============================================================================
@@ -746,7 +748,7 @@ scope-to-frames: [fn [let scope-id]
 # Attempts thunk. On success returns value. On failure, if n > 0 retries.
 retry-impl: [fn@[bind: [a]  return: a] [let n@Integer thunk@[Fn@a []]]
     [match [raw-to-result [builtin-try [thunk]]]
-        [case [let v] [Result.Ok v]    v]
+        [case [let p] [Result.Ok p]    p.value]
         [case [let _] [Result.Error]   [match [builtin-int-gte n 1]
                        0: [builtin-raise "retry limit exceeded"]
                        _: [retry-impl [builtin-int-sub n 1] thunk]]]]]
@@ -810,92 +812,92 @@ Indexable:
 # Expression is self-referential — the type system handles this via its
 # recursive alias guard (substitutes a fresh TypeVar at recursive positions).
 
-Span: [type [Span
+Span: [type Span: [
   start-line: Int
   start-col:  Int
   end-line:   Int
   end-col:    Int]]
 
-DotKey: [type [Ident String] [Index Int]]
+DotKey: [type Ident: [name: String] Index: [index: Int]]
 
 Annotation: [type
   # text: always present — the full display string of the annotation (e.g. "String", "[return: X]", "A@B")
   # Simple: bare type name or TypeVar — name is the identifier string
-  [Simple       text: String  name: String]
+  Simple:       [text: String  name: String]
   # PropertyDict: bracketed annotation with keys.
   #   parts: integer-keyed Dict of positional Annotation values (the type arguments)
   #   doc: and return: exposed when present as named entries, else null
-  [PropertyDict text: String  parts: [Map Int Any]  doc: Any  return: Any]
+  PropertyDict: [text: String  parts: [Map Int Any]  doc: Any  return: Any]
   # Annotated: chained @-form — name is the outer identifier, inner is the inner annotation as a string
-  [Annotated    text: String  name: String  inner: String]
+  Annotated:    [text: String  name: String  inner: String]
   # Unknown: opaque annotation sub-expression that can't be parsed as a typed annotation
   # (e.g. [Map k v] parsed as a Call expression inside a PropertyDict) — only text available
-  [Unknown      text: String]]
+  Unknown:      [text: String]]
 
-Parameter: [type [Parameter
+Parameter: [type Parameter: [
   name:       String
   annotation: Annotation
   variadic:   Bool
   span:       Span]]
 
-NamedArg: [type [NamedArg
+NamedArg: [type NamedArg: [
   name:  String
   value: Expression
   span:  Span]]
 
-Entry: [type [Entry
+Entry: [type Entry: [
   key:   Expression
   value: Expression
   span:  Span]]
 
-MatchArm: [type [MatchArm
+MatchArm: [type MatchArm: [
   pattern: Expression
   guard:   Expression
   body:    Expression
   span:    Span]]
 
 Expression: [type
-  [IntLiteral   value: Int    span: Span]
-  [FloatLiteral value: Float  span: Span]
-  [StrLiteral   value: String span: Span]
-  [Var  name: String  escaped: Bool  span: Span]
-  [DotAccess  target: Expression  field: DotKey  span: Span]
-  [Pipe  lhs: Expression  rhs: Expression  span: Span]
-  [Sequential  exprs: [Seq Expression]  span: Span]
-  [Dict  entries: [Seq Entry]  span: Span]
-  [Call  fn: Expression  args: [Seq Expression]  named: [Seq NamedArg]  implied: Bool  span: Span]
-  [Fn  params: [Seq Parameter]  body: Expression  return-ann: Annotation  desugared: Bool  span: Span]
-  [TypeAssert  annotation: Annotation  expr: Expression  span: Span]
-  [Annotated  name: String  annotation: Annotation  span: Span]
-  [Rest  name: String  span: Span]
-  [Match  scrutinee: Expression  arms: [Seq MatchArm]  span: Span]
-  [Quote         expr: Expression  span: Span]
-  [Unquote       expr: Expression  span: Span]
-  [UnquoteSplice expr: Expression  span: Span]
-  [PatternDecl  bindings: [Seq Expression]  span: Span]
-  [LetDecl      bindings: [Seq Expression]  span: Span]
-  [CaseArm      pattern: Expression  body: Expression  span: Span]
-  [Placeholder  span: Span]
-  [ExprError  span: Span]]
+  IntLiteral:   [value: Int    span: Span]
+  FloatLiteral: [value: Float  span: Span]
+  StrLiteral:   [value: String span: Span]
+  Var:          [name: String  escaped: Bool  span: Span]
+  DotAccess:    [target: Expression  field: DotKey  span: Span]
+  Pipe:         [lhs: Expression  rhs: Expression  span: Span]
+  Sequential:   [exprs: [Seq Expression]  span: Span]
+  Dict:         [entries: [Seq Entry]  span: Span]
+  Call:         [fn: Expression  args: [Seq Expression]  named: [Seq NamedArg]  implied: Bool  span: Span]
+  Fn:           [params: [Seq Parameter]  body: Expression  return-ann: Annotation  desugared: Bool  span: Span]
+  TypeAssert:   [annotation: Annotation  expr: Expression  span: Span]
+  Annotated:    [name: String  annotation: Annotation  span: Span]
+  Rest:         [name: String  span: Span]
+  Match:        [scrutinee: Expression  arms: [Seq MatchArm]  span: Span]
+  Quote:        [expr: Expression  span: Span]
+  Unquote:      [expr: Expression  span: Span]
+  UnquoteSplice:[expr: Expression  span: Span]
+  PatternDecl:  [bindings: [Seq Expression]  span: Span]
+  LetDecl:      [bindings: [Seq Expression]  span: Span]
+  CaseArm:      [pattern: Expression  body: Expression  span: Span]
+  Placeholder:  [span: Span]
+  ExprError:    [span: Span]]
 
 
 Declaration: [type
-  [TypeAlias    params: [Seq String]  body: Expression]
-  [ClassDecl    name: String  params: [Seq String]]
-  [InstanceDecl class-name: String]
-  [SyntaxClass  name: String  pattern: Expression  message: String]
-  [Splice       forms: [Seq Expression]]]
+  TypeAlias:    [params: [Seq String]  body: Expression]
+  ClassDecl:    [name: String  params: [Seq String]]
+  InstanceDecl: [class-name: String]
+  SyntaxClass:  [name: String  pattern: Expression  message: String]
+  Splice:       [forms: [Seq Expression]]]
 
-DocumentName: [type [Named String] Unnamed]
+DocumentName: [type Named: [name: String] Unnamed]
 
-Document: [type [Document
+Document: [type Document: [
   name:         DocumentName
   expressions:  [Seq Expression]
   declarations: [Seq Declaration]
   output-type:  Annotation
   expects:      Annotation]]
 
-Program: [type [Program
+Program: [type Program: [
   documents: [Seq Document]]]
 
 # Expr: complete variant-level view of expression AST nodes.
@@ -905,44 +907,44 @@ Program: [type [Program
 # Constructors: Expr.Literal, Expr.VarRef, Expr.Call, etc.
 Expr: [type
   # Primitives
-  [Literal      kind: String  bare: Bool  value: Any]
-  [VarRef       name: String]
+  Literal:      [kind: String  bare: Bool  value: Any]
+  VarRef:       [name: String]
   # Variant/constructor node: Expr.Variant tag: "Color.Red" payload: []
-  [Variant      tag: String  payload: Any]
+  Variant:      [tag: String  payload: Any]
 
   # Compound expressions
-  [Call         fn: Any  args: Any  named-args: Any  implied: Bool]
-  [Fn           params: Any  body: Any  return-ann: Any  desugared: Bool]
-  [Dict         entries: Any]
-  [DotAccess    target: Any  field: String]
-  [Sequential   exprs: Any]
+  Call:         [fn: Any  args: Any  named-args: Any  implied: Bool]
+  Fn:           [params: Any  body: Any  return-ann: Any  desugared: Bool]
+  Dict:         [entries: Any]
+  DotAccess:    [target: Any  field: String]
+  Sequential:   [exprs: Any]
 
   # Declarations and bindings
-  [LetDecl      bindings: Any]
-  [PatternDecl  bindings: Any]
+  LetDecl:      [bindings: Any]
+  PatternDecl:  [bindings: Any]
 
   # Pattern matching
-  [Match        scrutinee: Any  arms: Any]
-  [CaseArm      let-bindings: Any  pattern: Any  body: Any]
+  Match:        [scrutinee: Any  arms: Any]
+  CaseArm:      [let-bindings: Any  pattern: Any  body: Any]
 
   # Type annotations
-  [Annotated    name: String  annotation: Any]
-  [TypeAssert   annotation: Any  value: Any]
+  Annotated:    [name: String  annotation: Any]
+  TypeAssert:   [annotation: Any  value: Any]
 
   # Quasiquotation
-  [Quote        expr: Any]
-  [Unquote      expr: Any]
-  [UnquoteSplice expr: Any]
+  Quote:        [expr: Any]
+  Unquote:      [expr: Any]
+  UnquoteSplice:[expr: Any]
 
   # Structural helpers (used in Call args, Dict entries, Fn params)
-  [Entry        key: Any  value: Any]
-  [NamedArg     name: String  value: Any]
-  [Param        name: String  variadic: Bool  annotation: Any]
-  [Rest         name: String]
+  Entry:        [key: Any  value: Any]
+  NamedArg:     [name: String  value: Any]
+  Param:        [name: String  variadic: Bool  annotation: Any]
+  Rest:         [name: String]
 
   # Sentinel nodes
   Placeholder                        # the ... form
-  [ExprError    span: Any]]
+  ExprError:    [span: Any]]
 
 variant?@[doc: "Check if value is a Variant."]: [fn@Boolean [let v]
   [= [type-of v] "Variant"]]
@@ -1626,7 +1628,7 @@ find-deep-try@[doc: "Find-deep try (internal helper)"]: [fn@Any [let subtree@Dic
 
 find-deep-try-check@[doc: "Find-deep try-check (internal helper)"]: [fn@Any [let result parent@Dict target ks i@Integer]
     [match result
-        [case [let v] [Result.Ok v]    v]
+        [case [let p] [Result.Ok p]    p.value]
         [case [let _] [Result.Error]   [find-deep-impl parent target ks [builtin-int-add i 1]]]]]
 
 find-deep: [fn@[bind: [a]  return: [or a Null]  doc: """
@@ -1970,7 +1972,7 @@ Note: Wraps the function call in error handling. Returns the function's result i
 # Seq is declared here (public dict) so private Seq-building helpers below can
 # reference Seq.End and Seq.Cons directly. Callers who include the prelude get Seq.
 Seq: [type [let a]
-  [Cons head: a  tail: [Seq a]]
+  Cons: [head: a  tail: [Seq a]]
   End]
 
 # ============================================================================
@@ -2231,8 +2233,10 @@ DirCapFlag: [type Statable Listable Deletable Renameable]
 # Result Type and Combinators
 # ============================================================================
 
-# Result type: Ok[a] | Error[String]
-Result: [type [let a] [Ok a] [Error String]]
+# Result type: Ok[value: a] | Error[msg: String]
+Result: [type [let a]
+  Ok:    [value: a]
+  Error: [msg: String]]
 # T-1086 convenience aliases — explicit bindings so bare Ok/Error remain valid.
 # These work now that [type ...] evaluates to a constructor dict (T-1193).
 Ok:    Result.Ok
@@ -2272,8 +2276,8 @@ Note: Signature is Fn -> Result -> Result (subject-last for pipeline composition
 If Ok, applies f to the value; if Error, passes through. Matches Rust's .and_then(f) and Haskell's result >>= f. Equivalent to MonadResult.bind.
 """] [let f@[Fn@[Result b] [a]] result@[Result a]]
     [match result
-        [case [let v]   [Result.Ok v]    [f v]]
-        [case [let msg] [Result.Error msg] [Error msg: msg]]]]
+        [case [let p]   [Result.Ok p]    [f p.value]]
+        [case [let p]   [Result.Error p] [Error msg: p.msg]]]]
 
 result-or: [fn@[bind: [a]  return: a  doc: """
 Unwrap Ok value or return default.
@@ -2284,7 +2288,7 @@ Example: [result-or 99 [Result.Error "bad"]] => 99
 Note: Default-value behavior for Result. Returns the Ok value if present, otherwise the default.
 """] [let default@a result]
     [match result
-        [case [let v] [Result.Ok v]    v]
+        [case [let p] [Result.Ok p]    p.value]
         [case [let _] [Result.Error]   default]]]
 
 result-map: [fn@[bind: [a b]  return: [Result b]  doc: """
@@ -2296,8 +2300,8 @@ Example: [result-map [fn [x] [* x 2]] [Error msg: "bad"]] => Variant(Result.Erro
 Note: Maps a function over the Ok value; passes Error through unchanged.
 """] [let f@[Fn@b [a]] result@[Result a]]
     [match result
-        [case [let v]   [Result.Ok v]    [Ok value: [f v]]]
-        [case [let msg] [Result.Error msg] [Error msg: msg]]]]
+        [case [let p]   [Result.Ok p]    [Ok value: [f p.value]]]
+        [case [let p]   [Result.Error p] [Error msg: p.msg]]]
 
 result@[doc: "Result monad dict for [do result ...] chains"]:
   [bind: [fn [let r f] [and-then f r]]  pure: Ok]
@@ -2386,11 +2390,11 @@ FoldableResult@[doc: "Foldable instance for Result"]:
     [let t@Result]: [
       fold:   [fn [let f init r]
         [match r
-          [case [let a] [Result.Ok a]    [f init a]]
+          [case [let p] [Result.Ok p]    [f init p.value]]
           [case [let _] [Result.Error]   init]]]
       to-seq: [fn [let r]
         [match r
-          [case [let a] [Result.Ok a]    [0: a]]
+          [case [let p] [Result.Ok p]    [0: p.value]]
           [case [let _] [Result.Error]   []]]]]]
 
 # Traverses a structure applying effects (traverse)
@@ -2416,8 +2420,8 @@ TraversableResult@[doc: "Traversable instance for Result"]:
     [let t@Result]: [
       traverse: [fn [let f r]
         [match r
-          [case [let a] [Result.Ok a]    [f.fmap Ok [f a]]]
-          [case [let e] [Result.Error e] [f.pure [Error msg: e]]]]]]]
+          [case [let p] [Result.Ok p]    [f.fmap Ok [f p.value]]]
+          [case [let p] [Result.Error p] [f.pure [Error msg: p.msg]]]]]]]
 
 # Absent: sentinel value for missing keys/vars/elements.
 # Returned by get?, env, head on empty seq. NOT interchangeable with null? (empty collection).
@@ -3875,7 +3879,7 @@ Note: Wraps a function as a proxy. Field access calls the handler. Used for capa
 # Each write creates a new StringWriter with the content appended.
 # Access accumulated string via h.cells.
 # Created via [StringWriter.Writer cells: ""] or make-string-writer.
-StringWriter: [type [Writer cells: String]]
+StringWriter: [type Writer: [cells: String]]
 
 make-string-writer@[doc: "Create an empty StringWriter for accumulating string output."]:
   [fn [] [StringWriter.Writer cells: ""]]
@@ -4227,8 +4231,8 @@ Rust-level EvalErrors bypass finally.
         # Run cleanup as a zero-arg thunk in non-cancellable context, then return result.
         # with-context takes (context, thunk) where thunk is a fn [let] that runs cleanup.
         # null? forces the with-context result; [if c v v] always returns v.
-        [case [let v] [Result.Ok v]    [if [null? [with-context [non-cancellable] [fn [let] [cleanup]]]] v v]]
-        [case [let e] [Result.Error e] [if [null? [with-context [non-cancellable] [fn [let] [cleanup]]]] [raise e] [raise e]]]]]
+        [case [let p] [Result.Ok p]    [if [null? [with-context [non-cancellable] [fn [let] [cleanup]]]] p.value p.value]]
+        [case [let p] [Result.Error p] [if [null? [with-context [non-cancellable] [fn [let] [cleanup]]]] [raise p.msg] [raise p.msg]]]]]
 
 # ============================================================================
 # Macro transformer helpers and public transformers
@@ -4298,15 +4302,15 @@ dlist-to-seq: [fn@[bind: [a]  return: [Seq a]] [let dl] [dl Seq.End]]
 
 Digit@[doc: "Internal: 1–4 element buffer used as prefix/suffix in a FingerTree spine."]:
   [type [let a]
-    [One   a: a]
-    [Two   a: a  b: a]
-    [Three a: a  b: a  c: a]
-    [Four  a: a  b: a  c: a  d: a]]
+    One:   [a: a]
+    Two:   [a: a  b: a]
+    Three: [a: a  b: a  c: a]
+    Four:  [a: a  b: a  c: a  d: a]]
 
 FNode@[doc: "Internal: 2- or 3-child spine node carrying a precomputed subtree leaf count in the size field."]:
   [type [let a]
-    [FNode2 size: Int  left: a  right: a]
-    [FNode3 size: Int  left: a  mid: a  right: a]]
+    FNode2: [size: Int  left: a  right: a]
+    FNode3: [size: Int  left: a  mid: a  right: a]]
 
 FingerTree@[doc: """
 Internal: 2-3 finger tree (Hinze & Paterson 2006). Backing structure for List.
@@ -4317,8 +4321,8 @@ Purely tinct — no Rust builtins required.
 """]:
   [type [let a]
     FTEmpty
-    [FTSingle value: a]
-    [FTDeep size: Int  prefix: [Digit a]  spine: [FingerTree [FNode a]]  suffix: [Digit a]]]
+    FTSingle: [value: a]
+    FTDeep:   [size: Int  prefix: [Digit a]  spine: [FingerTree [FNode a]]  suffix: [Digit a]]]
 
 List@[doc: """
 Ordered finite sequence with O(1) amortized push and O(log n) index access.
@@ -4331,7 +4335,7 @@ List vs Seq:
   List — O(log n) index, O(1) amortized push/pop, always finite
   Seq  — O(1) head/tail, potentially infinite, no index access
 """]:
-  [type [let a] [FingerTree a]]
+  [type [let a] FingerTree]
 
 # ============================================================================
 # Finger tree internal helpers (S-897)
@@ -4972,9 +4976,9 @@ ft-empty: FingerTree.FTEmpty
 # Current — offset relative to the current position
 SeekFrom@[doc: "Seek position descriptor for Seekable.seek."]:
   [type
-    [Start   pos: Int]
-    [End     pos: Int]
-    [Current pos: Int]]
+    Start:   [pos: Int]
+    End:     [pos: Int]
+    Current: [pos: Int]]
 
 # ByteStream: ordered, reliable byte pipe (T-1359)
 #

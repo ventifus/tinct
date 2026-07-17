@@ -1,12 +1,12 @@
-# ADT mixed variants: [type [let a] [Ok a] "error" "pending"] produces
+# ADT mixed variants: [type [let a] Ok: [value: a] "error" "pending"] produces
 # a Union(NominalVariant("Ok"), StringLiteral("error"), StringLiteral("pending")).
 # At runtime, only the NominalVariant constructor Ok appears in the type dict.
 # String-literal variants have no constructor.
 [
-  Mixed: [type [let a] [Ok a] "error" "pending"]
-  ok-val: [Ok 42]
+  Mixed: [type [let a] Ok: [value: a] "error" "pending"]
+  ok-val: [Mixed.Ok value: 42]
   tag1:   "error"
   tag2:   "pending"
 ]
 === out
-Dict({"Mixed": Dict({"Ok": Function()}), "ok-val": Variant(Mixed.Ok, Int(42)), "tag1": String("error"), "tag2": String("pending")})
+Dict({"Mixed": Dict({"Ok": Function(value)}), "ok-val": Variant(Mixed.Ok, Dict({"value": Int(42)})), "tag1": String("error"), "tag2": String("pending")})

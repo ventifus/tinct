@@ -1192,6 +1192,17 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
             call_dispatch: crate::ast::CallDispatch::new(),
             annotation: None,
         },
+        CoreExpr::UnitVariant { tycon, ctor } => SurfaceExpression::VarRef {
+            name: if tycon.is_empty() {
+                ctor.clone()
+            } else {
+                format!("{}.{}", tycon, ctor)
+            },
+            escaped: false,
+            resolution: crate::ast::Resolution::new(),
+            call_dispatch: crate::ast::CallDispatch::new(),
+            annotation: None,
+        },
     }
 }
 
@@ -1316,8 +1327,8 @@ fn extract_type_name_from_key(key: &Option<Arc<SurfaceNode>>) -> Option<String> 
 /// Lower a TypeAlias body to a constructor dict at runtime (T-1193).
 ///
 /// Produces a `CoreExpr::Dict` containing constructor entries:
-/// - Unit constructors (no annotation) → `CtorName: CoreExpr::Variant { tag, payload: None }`
-/// - Unit constructors (with annotation) → `CtorName: [builtin-make-annotated CoreExpr::Variant { tag, payload: None } [key: val ...]]`
+/// - Unit constructors (no annotation) → `CtorName: CoreExpr::UnitVariant { tycon, ctor }`
+/// - Unit constructors (with annotation) → `CtorName: [builtin-make-annotated CoreExpr::UnitVariant { tycon, ctor } [key: val ...]]`
 /// - Payload constructors → `CtorName: [fn [...fields] CoreExpr::Variant { tag, payload: Some(payload_dict) }]`
 ///
 /// The type name (if present) qualifies the variant tags. When absent, uses unqualified tags.
@@ -1339,9 +1350,14 @@ fn lower_type_alias_to_constructor_dict(
     let mut core_entries: Vec<Spanned<CoreEntry>> = Vec::new();
 
     for ctor in ctors {
-        let qualified_tag = match &type_name_opt {
-            Some(tn) => format!("{}.{}", tn, ctor.name),
-            None => ctor.name.clone(),
+        let (tycon, ctor_name) = match &type_name_opt {
+            Some(tn) => (tn.clone(), ctor.name.clone()),
+            None => (String::new(), ctor.name.clone()),
+        };
+        let qualified_tag = if tycon.is_empty() {
+            ctor_name.clone()
+        } else {
+            format!("{}.{}", tycon, ctor_name)
         };
 
         // Create the key for this constructor entry
@@ -1352,12 +1368,12 @@ fn lower_type_alias_to_constructor_dict(
 
         // Create the value: either a unit variant or a constructor function
         let value = if ctor.is_unit {
-            // Unit constructor: CoreExpr::Variant { tag: "TypeName.CtorName", payload: None }
+            // Unit constructor: CoreExpr::UnitVariant { tycon, ctor }
             // If the constructor carries a @[...] annotation (T-1121), wrap with make-annotated.
             let variant_call = Arc::new(Spanned::new(
-                CoreExpr::Variant {
-                    tag: qualified_tag,
-                    payload: None,
+                CoreExpr::UnitVariant {
+                    tycon: tycon.clone(),
+                    ctor: ctor_name.clone(),
                 },
                 syn_span.clone(),
             ));
@@ -1549,8 +1565,10 @@ struct ConstructorInfo {
 /// 1. Bare VarRef uppercase → unit constructor (e.g., `Red`, `None`)
 /// 2. Annotated uppercase → unit constructor with annotation
 /// 3. Call with uppercase func + no named args → unit constructor (e.g., `[Ok a]`, `[Error String]`)
-/// 4. Call with uppercase func + named args → named-field constructor (e.g., `[Circle r: Int]`)
-/// 5. Dict with first positional VarRef/Annotated + keyed entries → named-field constructor
+/// 4. (legacy) Call with uppercase func + named args → named-field constructor (e.g., `[Circle r: Int]`, old form)
+/// 5. (legacy) Dict with first positional VarRef/Annotated + keyed entries → named-field constructor
+/// 6. (T-1538 new form) Dict with named uppercase-key entries → payload/unit constructors:
+///    `File: [path: String]` (payload), `Noop` (unit)
 fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorInfo> {
     let mut ctors = Vec::new();
 
@@ -1705,28 +1723,97 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
         }
     }
 
-    // Top-level dispatch: distinguish single-constructor dict from union of constructors.
+    // Top-level dispatch: distinguish body forms.
     match body {
         SurfaceExpression::Dict(entries) => {
-            // Distinguish "single named-field constructor dict" from "union of constructors":
-            // - Constructor dict: first positional is VarRef/Annotated uppercase AND has keyed entries
-            // - Union: each positional entry is a separate constructor
-            let is_single_ctor_dict = entries.first().is_some_and(|first| {
-                if first.node.key.is_some() {
-                    return false;
+            // T-1538: New named-key constructor body form.
+            // Detected when ANY entry has a named key whose name starts with an uppercase letter.
+            // In this form:
+            //   - Named entry with uppercase key → payload constructor
+            //   - Positional entry with bare uppercase VarRef → unit constructor
+            let has_named_uppercase_key = entries.iter().any(|e| {
+                if let Some(k) = &e.node.key {
+                    matches!(&k.expr, SurfaceExpression::VarRef { name, .. } if is_ctor(name))
+                } else {
+                    false
                 }
-                // Both plain and annotated VarRef are now VarRef { name, annotation }.
-                let first_is_ctor = matches!(&first.node.value.expr,
-                    SurfaceExpression::VarRef { name, .. } if is_ctor(name));
-                let has_keyed = entries[1..].iter().any(|e| e.node.key.is_some());
-                first_is_ctor && has_keyed
             });
-            if is_single_ctor_dict {
-                try_extract_one(body, &mut ctors);
-            } else {
+
+            if has_named_uppercase_key {
+                // Named-key constructor body: extract from both named and positional entries.
                 for entry in entries {
-                    if entry.node.key.is_none() {
+                    if let Some(key_node) = &entry.node.key {
+                        // Named entry: uppercase key is constructor name, value is payload dict.
+                        if let SurfaceExpression::VarRef {
+                            name, annotation, ..
+                        } = &key_node.expr
+                        {
+                            if !is_ctor(name) {
+                                continue; // lowercase or non-uppercase key: skip
+                            }
+                            // Extract constructor-level annotation (e.g., Ctor@[role: "x"]: [...])
+                            let ann_entries = annotation.as_ref().and_then(|ann| match &ann.node {
+                                crate::ast::Annotation::PropertyDict(ann_entries)
+                                    if !ann_entries.is_empty() =>
+                                {
+                                    Some(ann_entries.clone())
+                                }
+                                _ => None,
+                            });
+                            // Collect field names from the payload dict.
+                            let fields: Vec<String> = match &entry.node.value.expr {
+                                SurfaceExpression::Dict(field_entries) => field_entries
+                                    .iter()
+                                    .filter_map(|fe| {
+                                        fe.node.key.as_ref().and_then(|k| match &k.expr {
+                                            SurfaceExpression::VarRef { name: fn_, .. } => {
+                                                Some(fn_.clone())
+                                            }
+                                            SurfaceExpression::StringLiteral {
+                                                content, ..
+                                            } => Some(content.clone()),
+                                            _ => None,
+                                        })
+                                    })
+                                    .collect(),
+                                _ => vec![],
+                            };
+                            let is_unit = fields.is_empty();
+                            ctors.push(ConstructorInfo {
+                                name: name.clone(),
+                                is_unit,
+                                annotation: ann_entries,
+                                fields,
+                            });
+                        }
+                    } else {
+                        // Positional entry: bare uppercase VarRef → unit constructor.
                         try_extract_one(&entry.node.value.expr, &mut ctors);
+                    }
+                }
+            } else {
+                // Old body forms: single-constructor dict or union of positional constructors.
+                //
+                // Distinguish "single named-field constructor dict" from "union of constructors":
+                // - Constructor dict: first positional is VarRef/Annotated uppercase AND has keyed entries
+                // - Union: each positional entry is a separate constructor
+                let is_single_ctor_dict = entries.first().is_some_and(|first| {
+                    if first.node.key.is_some() {
+                        return false;
+                    }
+                    // Both plain and annotated VarRef are now VarRef { name, annotation }.
+                    let first_is_ctor = matches!(&first.node.value.expr,
+                        SurfaceExpression::VarRef { name, .. } if is_ctor(name));
+                    let has_keyed = entries[1..].iter().any(|e| e.node.key.is_some());
+                    first_is_ctor && has_keyed
+                });
+                if is_single_ctor_dict {
+                    try_extract_one(body, &mut ctors);
+                } else {
+                    for entry in entries {
+                        if entry.node.key.is_none() {
+                            try_extract_one(&entry.node.value.expr, &mut ctors);
+                        }
                     }
                 }
             }

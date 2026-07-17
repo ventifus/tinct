@@ -93,7 +93,8 @@ fn inject_span_into_expr_variant(
 
     match val {
         Value::Variant {
-            tag,
+            tycon,
+            ctor,
             payload: Some(payload_id),
         } => {
             let payload_thunk = ctx.get_thunk(payload_id);
@@ -105,12 +106,14 @@ fn inject_span_into_expr_variant(
                     Arc::new(Thunk::value(Value::Dict(payload_dict), span.clone())),
                 );
                 Value::Variant {
-                    tag,
+                    tycon,
+                    ctor,
                     payload: Some(new_payload_id),
                 }
             } else {
                 Value::Variant {
-                    tag,
+                    tycon,
+                    ctor,
                     payload: Some(payload_id),
                 }
             }
@@ -147,13 +150,13 @@ fn dict_to_surface_node_inner(
 ) -> Result<Arc<SurfaceNode>, AstError> {
     // AstError is a skip variant — to_expr_variant produces a unit Expr.AstError (no payload).
     // Handle it here before from_expr_variant tries to read a non-existent payload.
-    if let Value::Variant { tag, payload: None } = val {
-        let stripped = if tag.starts_with("Expr.") {
-            &tag[5..]
-        } else {
-            tag.as_str()
-        };
-        if stripped == "AstError" {
+    if let Value::Variant {
+        tycon,
+        ctor,
+        payload: None,
+    } = val
+    {
+        if tycon == "Expr" && ctor == "AstError" {
             return Ok(Arc::new(SurfaceNode::new(
                 SurfaceExpression::Error(call_site_span.clone()),
                 call_site_span.clone(),
@@ -653,6 +656,19 @@ pub fn core_expr_to_expr_value(
             make_variant("Variant", fields)
         }
 
+        CoreExpr::UnitVariant { tycon, ctor } => {
+            let mut fields = IndexMap::new();
+            fields.insert(
+                HashableValue::Str("tycon".into()),
+                ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(tycon), synth.clone()))),
+            );
+            fields.insert(
+                HashableValue::Str("ctor".into()),
+                ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(ctor), synth.clone()))),
+            );
+            make_variant("UnitVariant", fields)
+        }
+
         // ── Placeholder ──────────────────────────────────────────────────────────
         CoreExpr::Placeholder => make_unit_variant("Expr.Placeholder"),
     };
@@ -709,20 +725,22 @@ fn dict_to_annotation(
     // Handle the Variant format produced by annotation_to_value / annotation_inner_to_value.
     // Tags: "Annotation.Simple", "Annotation.PropertyDict", "Annotation.Annotated", "Annotation.Unknown"
     if let Value::Variant {
-        tag,
+        tycon,
+        ctor,
         payload: Some(payload_id),
     } = val
     {
-        let stripped = if tag.starts_with("Annotation.") {
-            &tag[11..]
-        } else {
-            tag.as_str()
-        };
+        if tycon != "Annotation" {
+            return Err(AstError {
+                message: format!("expected Annotation variant, got {tycon}.{ctor}"),
+                field_path: path.iter().map(|s| s.to_string()).collect(),
+            });
+        }
         let payload_thunk = ctx.get_thunk(*payload_id);
         let payload_val = payload_thunk
             .try_get_materialized()
             .unwrap_or_else(|| Value::Dict(indexmap::IndexMap::new()));
-        let ann = match stripped {
+        let ann = match ctor.as_str() {
             "Simple" => match &payload_val {
                 Value::Dict(d) => {
                     let name = get_string_field(d, "name", path, ctx).unwrap_or_else(|_| {
@@ -1246,7 +1264,8 @@ pub(crate) fn alloc_entry_list(
         );
         // Expr.Entry variant
         let entry_variant = Value::Variant {
-            tag: "Expr.Entry".to_string(),
+            tycon: "Expr".to_string(),
+            ctor: "Entry".to_string(),
             payload: Some(payload_id),
         };
         let entry_thunk =
@@ -1288,7 +1307,8 @@ pub(crate) fn alloc_named_arg_list(
             0,
             Arc::new(Thunk::value(
                 Value::Variant {
-                    tag: "Expr.NamedArg".into(),
+                    tycon: "Expr".into(),
+                    ctor: "NamedArg".into(),
                     payload: Some(payload_id),
                 },
                 na.span.clone(),
@@ -1337,7 +1357,8 @@ pub(crate) fn alloc_param_list(
             0,
             Arc::new(Thunk::value(
                 Value::Variant {
-                    tag: "Expr.Param".into(),
+                    tycon: "Expr".into(),
+                    ctor: "Param".into(),
                     payload: Some(param_payload_id),
                 },
                 p.span.clone(),
@@ -1408,15 +1429,19 @@ pub(crate) fn make_variant_with_payload(
 ) -> Value {
     let payload_val = Value::Dict(payload);
     let payload_id = ctx.alloc_thunk(0, Arc::new(Thunk::value(payload_val, span.clone())));
+    let (tycon, ctor) = tag.split_once('.').unwrap_or(("", tag));
     Value::Variant {
-        tag: tag.to_string(),
+        tycon: tycon.to_string(),
+        ctor: ctor.to_string(),
         payload: Some(payload_id),
     }
 }
 
 pub(crate) fn make_unit_variant(tag: &str) -> Value {
+    let (tycon, ctor) = tag.split_once('.').unwrap_or(("", tag));
     Value::Variant {
-        tag: tag.to_string(),
+        tycon: tycon.to_string(),
+        ctor: ctor.to_string(),
         payload: None,
     }
 }
@@ -1437,14 +1462,13 @@ pub(crate) fn extract_tag_and_dict(
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<(String, IndexMap<HashableValue, ThunkId>), AstError> {
     match val {
-        Value::Variant { tag, payload } => {
-            let stripped = if tag.starts_with("Expr.") {
-                tag[5..].to_string()
-            } else {
-                tag.clone()
-            };
+        Value::Variant {
+            tycon,
+            ctor,
+            payload,
+        } => {
             let payload_thunk_id = payload.as_ref().ok_or_else(|| AstError {
-                message: format!("Expr variant {} has no payload", stripped),
+                message: format!("Expr variant {}.{} has no payload", tycon, ctor),
                 field_path: vec![],
             })?;
             let payload_val = ctx
@@ -1455,7 +1479,7 @@ pub(crate) fn extract_tag_and_dict(
                     field_path: vec![],
                 })?;
             match payload_val {
-                Value::Dict(d) => Ok((stripped, d)),
+                Value::Dict(d) => Ok((ctor.clone(), d)),
                 _ => Err(AstError {
                     message: format!(
                         "Expr variant payload must be Dict, got {}",
@@ -2603,11 +2627,13 @@ fn surface_decl_to_thunk_id(
         span_to_thunk_id(span.clone(), ctx)?,
     );
     let payload_id = ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(dict), span.clone())));
+    let (vt_tycon, vt_ctor) = variant_tag.split_once('.').unwrap_or(("", variant_tag));
     Ok(ctx.alloc_thunk(
         0,
         Arc::new(Thunk::value(
             Value::Variant {
-                tag: variant_tag.to_string(),
+                tycon: vt_tycon.to_string(),
+                ctor: vt_ctor.to_string(),
                 payload: Some(payload_id),
             },
             span,
@@ -2631,11 +2657,12 @@ fn override_bare_in_literal_variant(
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Value {
     if let Value::Variant {
-        ref tag,
+        ref tycon,
+        ref ctor,
         payload: Some(payload_id),
     } = val
     {
-        if tag == "Expr.Literal" {
+        if tycon == "Expr" && ctor == "Literal" {
             let payload_thunk = ctx.get_thunk(payload_id);
             if let Some(Value::Dict(mut dict)) = payload_thunk.try_get_materialized() {
                 let new_bare_id = ctx.alloc_thunk(
@@ -2649,7 +2676,8 @@ fn override_bare_in_literal_variant(
                 let new_payload_id =
                     ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(dict), span.clone())));
                 return Value::Variant {
-                    tag: tag.clone(),
+                    tycon: tycon.clone(),
+                    ctor: ctor.clone(),
                     payload: Some(new_payload_id),
                 };
             }
@@ -2751,7 +2779,8 @@ fn alloc_entry_list_with_opts(
         );
         // Expr.Entry variant
         let entry_variant = Value::Variant {
-            tag: "Expr.Entry".to_string(),
+            tycon: "Expr".to_string(),
+            ctor: "Entry".to_string(),
             payload: Some(payload_id),
         };
         let entry_thunk =
@@ -2783,7 +2812,8 @@ fn surface_node_to_thunk_id(
         );
         inject_span_into_expr_variant(
             Value::Variant {
-                tag: "Expr.Dict".to_string(),
+                tycon: "Expr".to_string(),
+                ctor: "Dict".to_string(),
                 payload: Some(payload_id),
             },
             &node.span,
@@ -2812,12 +2842,13 @@ mod tests {
     ) -> (String, IndexMap<HashableValue, ThunkId>) {
         match val {
             Value::Variant {
-                tag,
+                tycon,
+                ctor,
                 payload: Some(payload_id),
             } => {
                 let payload_thunk = ctx.get_thunk(payload_id);
                 match payload_thunk.try_get_materialized() {
-                    Some(Value::Dict(map)) => (tag, map),
+                    Some(Value::Dict(map)) => (format!("{}.{}", tycon, ctor), map),
                     other => panic!("expected Dict payload for Variant, got {:?}", other),
                 }
             }

@@ -4,12 +4,4 @@
     result: [public-fn 42]
 ]
 === error
-from helper-impl (defined at stdlib/prelude.llt:2471:28-2471:47)
-  --> stdlib/prelude.llt:2471:28-2471:47
-   |
-  2471 | """]: [fn [let msg@String] [builtin-raise msg]]
-       |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-raise ...] at stdlib/prelude.llt:2471:28-2471:47
-   |
-  2471 | """]: [fn [let msg@String] [builtin-raise msg]]
-       |                            ^^^^^^^^^^^^^^^^^^^
+from helper-impl

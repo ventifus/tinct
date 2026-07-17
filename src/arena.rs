@@ -9,6 +9,9 @@
 
 use std::sync::Arc;
 
+/// Per-thunk byte estimate for memory budget tracking.
+const PER_THUNK_BYTES: usize = std::mem::size_of::<crate::value::Thunk>() + 32;
+
 /// A handle to a thunk in the arena. Copy-cheap (8 bytes).
 /// `scope_id` indexes into `ScopeArena.scopes`; `slot` is the ordinal position within that Scope.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -48,6 +51,10 @@ impl ScopeArena {
         );
         let id = ScopeId(len as u32);
         self.scopes.push(Scope::new(None, slot_count));
+        // Record scope allocation: Scope struct + Vec<Option<Arc<Thunk>>> backing.
+        let scope_bytes = std::mem::size_of::<Scope>()
+            + slot_count * std::mem::size_of::<Option<Arc<crate::value::Thunk>>>();
+        crate::memory_budget::record_scope_alloc(scope_bytes);
         id
     }
 
@@ -61,6 +68,10 @@ impl ScopeArena {
         );
         let id = ScopeId(len as u32);
         self.scopes.push(Scope::new(Some(parent_id), slot_count));
+        // Record scope allocation: Scope struct + Vec<Option<Arc<Thunk>>> backing.
+        let scope_bytes = std::mem::size_of::<Scope>()
+            + slot_count * std::mem::size_of::<Option<Arc<crate::value::Thunk>>>();
+        crate::memory_budget::record_scope_alloc(scope_bytes);
         id
     }
 
@@ -148,6 +159,8 @@ impl ScopeArena {
 
     /// Drop a scope: clear all thunk slots, freeing Arc<Thunk> references.
     pub fn drop_scope(&mut self, env_id: ScopeId) {
+        let live = self.scopes[env_id.0 as usize].count_live();
+        crate::memory_budget::record_thunk_free(live * PER_THUNK_BYTES, live);
         self.scopes[env_id.0 as usize].clear();
     }
 
@@ -184,7 +197,6 @@ pub struct Scope {
     slots: Vec<Option<Arc<crate::value::Thunk>>>,
     slot_names: Vec<String>,
     pub(crate) parent: Option<ScopeId>,
-    pub(crate) alloc_count: std::sync::atomic::AtomicU64,
 }
 
 impl Scope {
@@ -193,7 +205,6 @@ impl Scope {
             slots: Vec::with_capacity(capacity),
             slot_names: Vec::with_capacity(capacity),
             parent,
-            alloc_count: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -208,8 +219,7 @@ impl Scope {
         let slot = self.slots.len() as u32;
         self.slots.push(Some(thunk));
         self.slot_names.push(name.to_string());
-        self.alloc_count
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        crate::memory_budget::record_and_check(PER_THUNK_BYTES);
         slot
     }
 
@@ -421,8 +431,13 @@ pub fn migrate_value(
             head: migrate_thunk_id(*head, src_range, dst_env_id, thunk_map, env_map, arena),
             tail: migrate_thunk_id(*tail, src_range, dst_env_id, thunk_map, env_map, arena),
         },
-        Value::Variant { tag, payload } => Value::Variant {
-            tag: tag.clone(),
+        Value::Variant {
+            tycon,
+            ctor,
+            payload,
+        } => Value::Variant {
+            tycon: tycon.clone(),
+            ctor: ctor.clone(),
             payload: payload
                 .map(|tid| migrate_thunk_id(tid, src_range, dst_env_id, thunk_map, env_map, arena)),
         },
@@ -903,31 +918,6 @@ mod tests {
         assert_eq!(id, id_copy);
         assert_eq!(id.0, 456);
         assert_eq!(id_copy.0, 456);
-    }
-
-    #[test]
-    fn test_scope_alloc_count() {
-        let mut arena = ScopeArena::new();
-        let env_id = arena.alloc_root(0);
-
-        assert_eq!(
-            arena.scopes[env_id.0 as usize]
-                .alloc_count
-                .load(std::sync::atomic::Ordering::Relaxed),
-            0
-        );
-
-        let t1 = Arc::new(Thunk::value(Value::Int(1), test_span()));
-        let t2 = Arc::new(Thunk::value(Value::Int(2), test_span()));
-        arena.push_slot(env_id, "a", t1);
-        arena.push_slot(env_id, "b", t2);
-
-        assert_eq!(
-            arena.scopes[env_id.0 as usize]
-                .alloc_count
-                .load(std::sync::atomic::Ordering::Relaxed),
-            2
-        );
     }
 
     #[test]

@@ -3,6 +3,6 @@
 # Priority 2b: Record + ImmediateAt → Dict frame. The field key is
 # SurfaceExpression::Annotated { name: "fields", annotation: Simple("Child") }.
 # Type resolution strips @Child and uses "fields" as the field name.
-[Color: [type [Record@[guarding: True]  fields@Child: String  open: Bool]]]
+[Color: [type Record@[guarding: True]: [fields@Child: String  open: Bool]]]
 === out
-["Color": [type [Record@["guarding": True]  fields@Child: String  "open": Bool]]]
+["Color": [type Record@["guarding": True]: [fields@Child: String  "open": Bool]]]

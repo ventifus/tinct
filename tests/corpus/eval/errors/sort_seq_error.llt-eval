@@ -1,13 +1,4 @@
 # sort: Seq input produces descriptive error
 [sort [range 0 10]]
 === error
-sort: expected Int, Float, String, or Bool (homogeneous collection), got Seq.Cons and Int (defined at stdlib/prelude.llt:3065:15-3065:32)
-  --> stdlib/prelude.llt:3065:15-3065:32
-   |
-  3065 | """] [let xs] [builtin-sort xs]]
-       |               ^^^^^^^^^^^^^^^^^
-  in [builtin-sort ...] at stdlib/prelude.llt:3065:15-3065:32
-   |
-  3065 | """] [let xs] [builtin-sort xs]]
-       |               ^^^^^^^^^^^^^^^^^
-  in [sort ...] at 1:1-1:20
+sort: expected Int, Float, String, or Bool (homogeneous collection), got Seq.Cons and Int

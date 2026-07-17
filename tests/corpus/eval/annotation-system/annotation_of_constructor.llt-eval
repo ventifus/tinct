@@ -8,7 +8,7 @@
 # The annotation field `role: "primary"` is a string literal, so it passes through
 # extract_fn_annotation_extra (which only captures scalar literals; see T-1125 for dict values).
 # annotation-of Ctor → Dict({"role": String("primary")})
-[MyType: [type [Ctor@[role: "primary"] val: Int]]]
+[MyType: [type Ctor@[role: "primary"]: [val: Int]]]
 [result: [= [get "role" [annotation-of MyType.Ctor]] "primary"]]
 === out
 Dict({"result": Variant(Boolean.True, Null)})

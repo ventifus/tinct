@@ -1,13 +1,4 @@
 # take: error when xs is not a Dict or Seq
 [take 3 "hello"]
 === error
-take: expected Dict or Seq, got String (defined at stdlib/prelude.llt:2481:57-2481:76)
-  --> stdlib/prelude.llt:2481:57-2481:76
-   |
-  2481 | take@[doc: "Take first n elements"]: [fn [let n@Integer xs] [builtin-take n xs]]
-       |                                                         ^^^^^^^^^^^^^^^^^^^
-  in [builtin-take ...] at stdlib/prelude.llt:2481:57-2481:76
-   |
-  2481 | take@[doc: "Take first n elements"]: [fn [let n@Integer xs] [builtin-take n xs]]
-       |                                                         ^^^^^^^^^^^^^^^^^^^
-  in [take ...] at 1:1-1:17
+take: expected Dict or Seq, got String

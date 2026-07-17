@@ -4,7 +4,7 @@
 # The runtime falls back to the generic = wrapper (Boolean.False fallback / primitive_eq),
 # which returns Boolean.False for payload Variants. Pattern matching should be used
 # instead for comparing user-defined variant types.
-[Point: [type [Point x: Int y: Int]]]
+[Point: [type Point: [x: Int y: Int]]]
 [instance Equatable
   [let a@Point]: [=: [fn [let p q]
     [and [= p.x q.x] [= p.y q.y]]]]]

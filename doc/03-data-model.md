@@ -77,11 +77,11 @@ process: [fn [config@[host: String  port: Int]] ...]
 
 # Map with unconstrained key type — iterate values, key type is Any
 T1: [type [record host: String  port: Int]]
-Hosts: [type [Map Any T1]]                        # a bag of T1 values, any keys
+Hosts: [type [_ : T1]]                            # a bag of T1 values, any keys
 process-all: [fn [hosts@Hosts] [map do-work hosts]]
 
 # Map with explicit key type — string-keyed lookup table
-Scoreboard: [type [Map String Int]]
+Scoreboard: [type [String: Int]]
 lookup: [fn@Integer [s@Scoreboard  key@String] [get-or key 0 s]]
 
 # Inline forms
@@ -361,7 +361,7 @@ Tinct has a fixed set of runtime value types. The following table lists all type
 | `Dict` | Key-value dictionary (the fundamental structure) | §Dicts Are Fundamental above |
 | `Function` | User-defined function (closure) | [Functions](04-functions.md) |
 | `Builtin` | Rust-native function | [Builtins Reference](11a-builtins.md) |
-| `Variant` | Tagged value (`tag` + optional `payload`) | [Builtins Reference](11a-builtins.md) §ADTs |
+| `Variant` | Tagged value (`tycon: String`, `ctor: String`, optional `payload`) | [Builtins Reference](11a-builtins.md) §ADTs |
 | `Handle` | Open I/O resource (file, socket, etc.) | §Handles below |
 | `Uri` | Parsed URI (scheme + uri string) | §URI Values below |
 | `Timestamp` | Nanosecond-precision instant | [Builtins Reference](11a-builtins.md) §Datetime |
@@ -878,15 +878,11 @@ The Rust representation of dict keys is `HashableValue` — the materializable s
 ```rust
 enum HashableValue {
     Int(i64),
-    Bool(bool),           // Boolean.True / Boolean.False
-    Dict(Vec<(HashableValue, HashableValue)>),  // order-insensitive
-    Variant { tag, payload },
+    Str(Rc<str>),
 }
 ```
 
 Any type with a `Hashable` instance can be a dict key. `Float` is explicitly excluded: IEEE 754 `NaN != NaN` violates the reflexivity law required by `Eq`, and `+0.0 == -0.0` would require equal hashes for different bit patterns.
-
-Dict equality and hashing for `HashableValue::Dict` use a commutative sum `Σ mix(hash(k), hash(v))` with a non-linear mixer (splitmix64 multiply-xor-shift), consistent with tinct's order-insensitive dict equality.
 
 ### `Boolean` — Tinct-Defined
 

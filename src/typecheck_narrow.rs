@@ -461,10 +461,10 @@ pub(crate) fn collect_pattern_bindings(
 
                 let payload_ty = match scrutinee_ty {
                     Type::NominalVariant {
-                        tag: variant_tag,
+                        tycon: variant_tycon,
+                        ctor: variant_ctor,
                         fields,
-                    } if variant_tag == tag => {
-                        // Direct NominalVariant match — extract payload type from fields.
+                    } if format!("{}.{}", variant_tycon, variant_ctor) == *tag => {
                         resolve_payload(fields)
                     }
                     Type::Union(members) => {
@@ -472,11 +472,12 @@ pub(crate) fn collect_pattern_bindings(
                         let mut matching_fields = None;
                         for member in members {
                             if let Type::NominalVariant {
-                                tag: variant_tag,
+                                tycon: variant_tycon,
+                                ctor: variant_ctor,
                                 fields,
                             } = member
                             {
-                                if variant_tag == tag {
+                                if format!("{}.{}", variant_tycon, variant_ctor) == *tag {
                                     matching_fields = Some(fields.clone());
                                     break;
                                 }
@@ -500,25 +501,28 @@ pub(crate) fn collect_pattern_bindings(
                             if let Type::Union(union_members) = member {
                                 for um in union_members {
                                     if let Type::NominalVariant {
-                                        tag: variant_tag,
+                                        tycon: variant_tycon,
+                                        ctor: variant_ctor,
                                         fields,
                                     } = um
                                     {
-                                        if variant_tag == tag {
+                                        if format!("{}.{}", variant_tycon, variant_ctor) == *tag {
                                             payload = resolve_payload(fields);
                                             break 'union_pass;
                                         }
                                     }
                                 }
                             }
-                            // Also accept a bare NominalVariant with non-empty fields in pass 1
                             if matches!(payload, Type::Unknown) {
                                 if let Type::NominalVariant {
-                                    tag: variant_tag,
+                                    tycon: variant_tycon,
+                                    ctor: variant_ctor,
                                     fields,
                                 } = member
                                 {
-                                    if variant_tag == tag && !fields.fields.is_empty() {
+                                    if format!("{}.{}", variant_tycon, variant_ctor) == *tag
+                                        && !fields.fields.is_empty()
+                                    {
                                         payload = resolve_payload(fields);
                                         break 'union_pass;
                                     }
@@ -532,17 +536,16 @@ pub(crate) fn collect_pattern_bindings(
                             let mut empty_fallback = Type::Unknown;
                             for member in members {
                                 if let Type::NominalVariant {
-                                    tag: variant_tag,
+                                    tycon: variant_tycon,
+                                    ctor: variant_ctor,
                                     fields,
                                 } = member
                                 {
-                                    if variant_tag == tag {
+                                    if format!("{}.{}", variant_tycon, variant_ctor) == *tag {
                                         if !fields.fields.is_empty() {
-                                            // Real payload with fields — use immediately
                                             payload = resolve_payload(fields);
                                             break;
                                         } else if matches!(empty_fallback, Type::Unknown) {
-                                            // Empty marker — keep as last resort
                                             empty_fallback = resolve_payload(fields);
                                         }
                                     }

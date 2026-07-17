@@ -46,7 +46,7 @@ Sentinel strings (`"ERR:..."`) are never used in stdlib.
 Result is a **nominal union type** — a discriminated union with two constructors:
 
 ```tinct
-[Result: [type [Ok a] [Error String]]]
+[Result: [type Ok: [value: a] Error: [msg: String]]]
 ```
 
 `Ok` and `Error` are nominal constructors. A value is either `Ok(payload)` or
@@ -227,7 +227,7 @@ to add `[do result ...]` or an explicit `match`.
 ### Type System
 
 Nominal variants (`Ok@T`, `Error@String`) are supported via the typing cluster's C2/C3
-nominal variant sprints. `[Result: [type [Ok a] [Error String]]]` declares a valid nominal
+nominal variant sprints. `[Result: [type Ok: [value: a] Error: [msg: String]]]` declares a valid nominal
 union type using existing machinery. With BAS, the union `Ok@T | Error@String` becomes
 checkable via S-ClsBot (`#Ok & #Error ≤ Never` — nominal tags are disjoint), enabling
 `match` exhaustiveness checking and precise arm types.

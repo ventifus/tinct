@@ -22,9 +22,9 @@
     Unknown
     Proxy
     AnyFn
-    [Dict fields: Any  open: Any  key-type: Any  value-type: Any]
-    [TypeConstructor name: Any]
-    [TypeApplication ctor: Any  args: Any]]
+    Dict: [fields: Any  open: Any  key-type: Any  value-type: Any]
+    TypeConstructor: [name: Any]
+    TypeApplication: [ctor: Any  args: Any]]
 
   Integer: TypeNode.Int
   String:  TypeNode.String
@@ -488,11 +488,13 @@
   Boolean: [type True False]
 
   ProgramItem: [type
-    [File path: String  handle: File]
-    [Expr src:  String]
+    File: [path: String  handle: File]
+    Expr: [src:  String]
   ]
 
-  Result: [type [let a] [Ok a] [Error String]]
+  Result: [type [let a]
+    Ok:    [value: a]
+    Error: [msg: String]]
 
   write-str: [fn [let h s] [h.write s]]
 

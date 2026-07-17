@@ -25,8 +25,8 @@
 #![allow(clippy::result_large_err)]
 
 pub(crate) mod arena;
-// Soft heap-limit allocator: prints diagnostics and exits cleanly before RLIMIT_AS fires.
-pub mod limit_alloc;
+// Memory budget tracking for arena-based allocation.
+pub mod memory_budget;
 // Shared async runtime for QUIC/HTTP3 builtins (block_on helper).
 pub mod ast;
 pub mod async_rt;
@@ -556,7 +556,11 @@ pub fn visit_value<'a, V: ValueVisitor + 'a>(
             value::Value::RevocableDirCap { .. } => Err(Box::new(
                 error::EvalError::value_not_serializable("RevocableDirCap".to_string(), span),
             )),
-            value::Value::Variant { tag, payload } => {
+            value::Value::Variant {
+                tycon,
+                ctor,
+                payload,
+            } => {
                 let payload_output = match payload {
                     Some(thunk_id) => {
                         let thunk = ctx.get_thunk(*thunk_id);
@@ -566,7 +570,7 @@ pub fn visit_value<'a, V: ValueVisitor + 'a>(
                     }
                     None => visitor.visit_null(),
                 };
-                Ok(visitor.visit_variant(tag.clone(), payload_output))
+                Ok(visitor.visit_variant(format!("{}.{}", tycon, ctor), payload_output))
             }
             value::Value::Decimal(d) => Ok(visitor.visit_decimal(*d)),
             value::Value::BigInt(n) => Ok(visitor.visit_bigint(n)),
@@ -947,7 +951,8 @@ mod tests {
     fn test_display_unit_variant() {
         // Unit variants display as their full qualified tag via Rust Display.
         let v = Value::Variant {
-            tag: "Color.Red".to_string(),
+            tycon: "Color".to_string(),
+            ctor: "Red".to_string(),
             payload: None,
         };
         assert_eq!(format!("{v}"), "Color.Red");
@@ -964,11 +969,13 @@ mod tests {
         let ctx = test_ctx().await;
 
         let red_val = Value::Variant {
-            tag: "Color.Red".to_string(),
+            tycon: "Color".to_string(),
+            ctor: "Red".to_string(),
             payload: None,
         };
         let green_val = Value::Variant {
-            tag: "Color.Green".to_string(),
+            tycon: "Color".to_string(),
+            ctor: "Green".to_string(),
             payload: None,
         };
 
@@ -991,7 +998,8 @@ mod tests {
 
         // A unit variant from a different type must produce the same structure.
         let user_val = Value::Variant {
-            tag: "MyBool.Yes".to_string(),
+            tycon: "MyBool".to_string(),
+            ctor: "Yes".to_string(),
             payload: None,
         };
         let user_display = value_to_display_string(&user_val, &ctx, rust_span!())

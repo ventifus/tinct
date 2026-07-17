@@ -1,0 +1,12 @@
+# T-1542: Structural alias — [type [lowercase-keyed dict body]] is unchanged.
+# [type [port: Int hostname: String]] declares NginxConfig as a structural alias
+# (transparent record type). @NginxConfig on a dict expands to the record body.
+# This form (single positional lowercase-keyed dict) is NOT migrated — it remains valid.
+[
+  NginxConfig: [type [port: Int  hostname: String]]
+  cfg: [@NginxConfig [port: 8080  hostname: "localhost"]]
+  p: cfg.port
+  h: cfg.hostname
+]
+=== out
+Dict({"NginxConfig": Dict({}), "cfg": Dict({"port": Int(8080), "hostname": String("localhost")}), "p": Int(8080), "h": String("localhost")})

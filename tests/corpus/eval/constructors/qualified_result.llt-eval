@@ -4,7 +4,7 @@
 # Constructor calls use qualified form (Result.Ok, Result.Error) per T-1086.
 # Pattern match uses the qualified form (Result.Ok, Result.Error).
 [
-  Result: [type [let a] [Ok value: a] [Error msg: String]]
+  Result: [type [let a] Ok: [value: a] Error: [msg: String]]
   ok-val: [Result.Ok value: 42]
   err-val: [Result.Error msg: "fail"]
   ok-matched: [match [Result.Ok value: 1]

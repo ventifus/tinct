@@ -1,13 +1,4 @@
 # tag-of: error when value is not a Variant
 [tag-of 42]
 === error
-type mismatch: expected Variant, got Int (defined at stdlib/prelude.llt:3142:18-3142:40)
-  --> stdlib/prelude.llt:3142:18-3142:40
-   |
-  3142 | """] [let value] [builtin-tag-of value]]
-       |                  ^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-tag-of ...] at stdlib/prelude.llt:3142:18-3142:40
-   |
-  3142 | """] [let value] [builtin-tag-of value]]
-       |                  ^^^^^^^^^^^^^^^^^^^^^^
-  in [tag-of ...] at 1:1-1:12
+type mismatch: expected Variant, got Int

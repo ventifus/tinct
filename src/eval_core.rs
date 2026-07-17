@@ -715,28 +715,42 @@ pub(crate) fn eval_core_expr<'a>(
             // Unit variants materialize directly; payload variants evaluate their inner expression,
             // materialize it, and store as a ThunkId — preserving the laziness invariant that
             // the payload dict's fields remain as thunks until accessed.
-            CoreExpr::Variant { tag, payload } => match payload {
-                None => Ok(Arc::new(Thunk::value(
-                    Value::Variant {
-                        tag: tag.clone(),
-                        payload: None,
-                    },
-                    span.clone(),
-                ))),
-                Some(inner_expr) => {
-                    let payload_thunk = eval_core_expr(inner_expr, env_id, ctx).await?;
-                    let payload_val = materialize(&payload_thunk, Some(&span), ctx).await?;
-                    let payload_id =
-                        ctx.alloc_thunk(0, Arc::new(Thunk::value(payload_val, span.clone())));
-                    Ok(Arc::new(Thunk::value(
+            CoreExpr::Variant { tag, payload } => {
+                let (tycon, ctor) = tag.split_once('.').unwrap_or((tag.as_str(), ""));
+                match payload {
+                    None => Ok(Arc::new(Thunk::value(
                         Value::Variant {
-                            tag: tag.clone(),
-                            payload: Some(payload_id),
+                            tycon: tycon.to_string(),
+                            ctor: ctor.to_string(),
+                            payload: None,
                         },
                         span.clone(),
-                    )))
+                    ))),
+                    Some(inner_expr) => {
+                        let payload_thunk = eval_core_expr(inner_expr, env_id, ctx).await?;
+                        let payload_val = materialize(&payload_thunk, Some(&span), ctx).await?;
+                        let payload_id =
+                            ctx.alloc_thunk(0, Arc::new(Thunk::value(payload_val, span.clone())));
+                        Ok(Arc::new(Thunk::value(
+                            Value::Variant {
+                                tycon: tycon.to_string(),
+                                ctor: ctor.to_string(),
+                                payload: Some(payload_id),
+                            },
+                            span.clone(),
+                        )))
+                    }
                 }
-            },
+            }
+
+            CoreExpr::UnitVariant { tycon, ctor } => Ok(Arc::new(Thunk::value(
+                Value::Variant {
+                    tycon: tycon.clone(),
+                    ctor: ctor.clone(),
+                    payload: None,
+                },
+                span.clone(),
+            ))),
 
             // Sequential: evaluate each expression in order, extending the environment
             // with dict bindings from each intermediate dict expression.

@@ -280,35 +280,16 @@ impl ConstructorSignature {
                 Type::IntLiteral(n) => {
                     constructors.push((ConstructorTag::LiteralInt(*n), 0));
                 }
-                Type::NominalVariant { tag, fields } => {
-                    // Nominal variant — use the declared tag as the constructor name.
-                    // Unlike structural dict patterns (which use DictKey with the field name),
-                    // nominal variants use the declared variant name as the constructor (Variant tag)
-                    // because they are nominally typed — [IntLit value: 42] is not a subtype of
-                    // {value: Int}, it is a distinct nominal variant.
-                    //
-                    // KNOWN ISSUE (Maranget column-consistency): arity is clamped to 0 or 1
-                    // rather than fields.len(). This prevents field-by-field recursive
-                    // exhaustiveness checking on multi-field variant payloads (e.g.,
-                    // [Point x: Int y: Int] with arity 2 would enable nested decomposition).
-                    //
-                    // Why we can't use fields.len() yet:
-                    //   1. Pattern::Constructor has a single `binding`, not per-field bindings.
-                    //   2. ast_pattern_to_coverage produces at most 1 sub_pattern (the binding).
-                    //   3. The parser only accepts [Constructor payload] with one positional arg.
-                    //   Using fields.len() here while the pattern side produces 1 sub-pattern
-                    //   would violate Maranget's column-consistency invariant: wildcard rows
-                    //   would expand to fields.len() wildcards while constructor rows splice
-                    //   only 1 sub-pattern, producing inconsistent matrix row widths.
-                    //
-                    // To fix properly: extend Pattern::Constructor with per-field bindings,
-                    // update the parser to support [Point x y] multi-field patterns, and
-                    // update ast_pattern_to_coverage to produce fields.len() sub-patterns.
-                    //
-                    // B-341: NominalVariant.tag is unqualified (e.g., "Ok" not "Result.Ok").
-                    // Look up the parent TyCon in tycon_env to find the qualified constructor name.
-                    // If not found, fall back to the unqualified tag (builtin or external type).
-                    let qualified_tag = qualify_nominal_tag(tag, tycon_env);
+                Type::NominalVariant {
+                    tycon,
+                    ctor,
+                    fields,
+                } => {
+                    let qualified_tag = if tycon.is_empty() {
+                        ctor.clone()
+                    } else {
+                        format!("{}.{}", tycon, ctor)
+                    };
                     let arity = if fields.fields.is_empty() { 0 } else { 1 };
                     constructors.push((ConstructorTag::Variant(qualified_tag), arity));
                 }
@@ -406,18 +387,18 @@ impl ConstructorSignature {
     /// the elaborated pattern tags produced by `elaborate_pattern`. This mirrors the B-341
     /// fix applied to `from_union`'s NominalVariant arm.
     pub fn from_nominal_variant(
-        tag: &str,
+        tycon: &str,
+        ctor: &str,
         fields: &crate::type_def::Row,
         tycon_env: &TyConEnv,
     ) -> Self {
-        let qualified_tag = qualify_nominal_tag(tag, tycon_env);
+        let qualified_tag = if tycon.is_empty() {
+            ctor.to_string()
+        } else {
+            format!("{}.{}", tycon, ctor)
+        };
 
-        // If the tag is a TyCon name (i.e., a type name, not a specific constructor),
-        // expand to all its constructors. This handles scrutinee types like
-        // NominalVariant { tag: "Boolean" } where "Boolean" is the type name rather
-        // than a constructor — the correct signature for exhaustiveness checking is
-        // the full set of Boolean's constructors [Boolean.True, Boolean.False].
-        if let Some(def) = tycon_env.get(&qualified_tag) {
+        if let Some(def) = tycon_env.get(tycon) {
             if !def.constructors.is_empty() {
                 let constructors = def
                     .constructors
@@ -431,10 +412,6 @@ impl ConstructorSignature {
             }
         }
 
-        // Standard case: the tag is a specific constructor (e.g., "Result.Ok").
-        // Arity matches the pattern side: 0 for unit variants, 1 for payload variants.
-        // See KNOWN ISSUE in from_union for why this is clamped to 0/1 rather than
-        // fields.len() — Pattern::Constructor has a single binding, not per-field.
         let arity = if fields.fields.is_empty() { 0 } else { 1 };
         let constructors = vec![(ConstructorTag::Variant(qualified_tag), arity)];
         ConstructorSignature { constructors }

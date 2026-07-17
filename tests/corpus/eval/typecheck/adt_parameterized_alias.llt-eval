@@ -1,11 +1,11 @@
-# Parameterized ADT alias: [type [let a] [Ok a] [Error String]] must register with
-# one type parameter, enabling correct instantiation at each use site.
+# Parameterized ADT alias: [type [let a] Ok: [value: a] Error: [msg: String]] must
+# register with one type parameter, enabling correct instantiation at each use site.
 # Both constructors are injected: Ok (polymorphic on a) and Error (takes String).
 # At runtime: constructors appear in the type dict as callable functions.
 [
-  Result: [type [let a] [Ok a] [Error String]]
-  v1: [Ok 99]
-  v2: [Error "oops"]
+  Result: [type [let a] Ok: [value: a] Error: [msg: String]]
+  v1: [Result.Ok value: 99]
+  v2: [Result.Error msg: "oops"]
 ]
 === out
-Dict({"Result": Dict({"Ok": Function(), "Error": Function()}), "v1": Variant(Result.Ok, Int(99)), "v2": Variant(Result.Error, String("oops"))})
+Dict({"Result": Dict({"Ok": Function(value), "Error": Function(msg)}), "v1": Variant(Result.Ok, Dict({"value": Int(99)})), "v2": Variant(Result.Error, Dict({"msg": String("oops")}))})

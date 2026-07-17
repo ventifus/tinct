@@ -3,7 +3,7 @@
 # When the match does not cover the constructor, a non-exhaustive error must be raised.
 # This exercises the from_nominal_variant path (not from_union).
 [
-  MyTag: [type [MyTag value: Int]]
+  MyTag: [type MyTag: [value: Int]]
 
   bad-match: [fn [let s@MyTag]
     [match s

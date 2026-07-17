@@ -1,0 +1,14 @@
+# T-1538: Mixed named-key payload constructors and positional unit constructors.
+# [type File: [path: String] Noop] — File is payload, Noop is unit.
+[
+  Op: [type Read: [path: String] Write: [path: String  data: String] Noop]
+  r:  [Op.Read path: "x.txt"]
+  w:  [Op.Write path: "y.txt" data: "hello"]
+  n:  Op.Noop
+  path: [match r
+    [case [let p] [Op.Read p]  p.path]
+    [case [let p] [Op.Write p] p.path]
+    Op.Noop:                   ""]
+]
+=== out
+Dict({"Op": Dict({"Read": Function(path), "Write": Function(path, data), "Noop": Variant(Op.Noop, Null)}), "r": Variant(Op.Read, Dict({"path": String("x.txt")})), "w": Variant(Op.Write, Dict({"path": String("y.txt"), "data": String("hello")})), "n": Variant(Op.Noop, Null), "path": String("x.txt")})

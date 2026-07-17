@@ -3,7 +3,7 @@
 # If the name is not in scope, the T-1154 comment says it acts as a wildcard,
 # meaning payload would NOT be bound and payload.r would fail.
 [
-  Shape: [type [Circle r: Int]]
+  Shape: [type Circle: [r: Int]]
   sh:    [Shape.Circle r: 5]
   area:  [match sh
     [Shape.Circle payload]: [* payload.r payload.r]

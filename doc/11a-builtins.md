@@ -189,14 +189,14 @@ Each predicate materializes its argument and checks the `Value` variant. `num?` 
 
 ## Variant Construction
 
+Variants are constructed through ADT constructors, not through a `variant` builtin. Unit constructors (e.g., `Color.Red`) evaluate to `Value::Variant { tycon: "Color", ctor: "Red", payload: None }`. Payload constructors (e.g., `[Result.Ok value: 42]`) evaluate to `Value::Variant { tycon: "Result", ctor: "Ok", payload: Some(..) }`.
+
 | Builtin | Type | Description |
 |---------|------|-------------|
-| `variant` | `[Fn@Variant [String Any]]` | Construct a variant value: `[variant "Ok" value]` → `Value::Variant { tag: "Ok", payload: Some(value) }` |
-| `tag-of` | `[Fn@String [Variant]]` | Extract tag from variant: `[tag-of [Ok 42]]` → `"Ok"` |
+| `tag-of` | `[Fn@String [Variant]]` | Extract qualified tag from variant: `[tag-of Color.Red]` → `"Color.Red"` (returns `"tycon.ctor"` as a single string) |
 
 **Error cases:**
 
-- `variant`: Type mismatch if tag is not String
 - `tag-of`: Type mismatch if arg is not a Variant
 
 ## Numeric Type Conversion

@@ -10,12 +10,12 @@ runtime; ADTs give it a static type, a name, and exhaustiveness checking in
 `[match]`. External JSON data automatically satisfies variant types when it has
 the right shape — interop is free.
 
-> **Note:** `try` returns nominal `Value::Variant { tag: "Ok"/"Err" }`, not structural `{ok: v}`/`{err: msg}` dicts. Use `[Ok value]`/`[Err msg]` nominal constructors or `[match [try ...] ...]` instead. See [error-patterns.md](error-patterns.md).
+> **Note:** `try` returns nominal `Value::Variant { tycon: "Result", ctor: "Ok"/"Err", .. }`, not structural `{ok: v}`/`{err: msg}` dicts. Use `[Ok value]`/`[Err msg]` nominal constructors or `[match [try ...] ...]` instead. See [error-patterns.md](error-patterns.md).
 
 ## Limitations Under BAS
 
 - **§Design (key-set discrimination)**: Under BAS, S-RcdTop (`src/types.rs:882`) collapses disjoint single-field record unions — e.g., `{ok: T} | {err: S}` — to `Type::Top`. The core premise of structural key-set discrimination does not hold for single-field variants. For discriminated unions, use [nominal variants](nominal-variants.md) instead. Multi-field structural records (e.g., `{ok: Bool, value: T} | {err: Bool, msg: S}`) are not affected by S-RcdTop but require the `@[[all ...]]` intersection annotation form. See [boolean-algebraic-subtyping.md](boolean-algebraic-subtyping.md).
-- **`try` result type**: `try` returns `Value::Variant { tag: "Ok"/"Err" }` (nominal), not structural `{ok: v}/{err: msg}`. See [error-patterns.md](error-patterns.md).
+- **`try` result type**: `try` returns `Value::Variant { tycon: "Result", ctor: "Ok"/"Err", .. }` (nominal), not structural `{ok: v}/{err: msg}`. See [error-patterns.md](error-patterns.md).
 - **`@Record` / `@Dict` semantics**: `@Dict` resolves as a closed empty record; `@Record` does not imply an open record with a row-variable tail (RowVar is not part of BAS). See [parameterized-dict.md](parameterized-dict.md).
 
 ## Design

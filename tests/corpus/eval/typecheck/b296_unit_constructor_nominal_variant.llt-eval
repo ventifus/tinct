@@ -2,7 +2,7 @@
 # A unit constructor is a value (not a function), so it evaluates to Variant(tag, Null).
 # All constructors in a union ADT are exported, not just the first.
 [
-  T: [type [A] [B] [C] [D]]
+  T: [type A B C D]
   a: A
   b: B
   c: C

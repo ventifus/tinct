@@ -3821,34 +3821,38 @@ async fn test_b436_two_unit_constructors_produce_union() {
     // Both North and South should be exported as unit constructors with qualified tags
     let north = env_get(&env, "North").expect("North should be in the exported env");
     assert!(
-        matches!(&north.body, Type::NominalVariant { tag, fields } if tag == "Direction.North" && fields.fields.is_empty()),
-        "North should be NominalVariant{{tag:Direction.North}}, got {:?}",
+        matches!(&north.body, Type::NominalVariant { tycon, ctor, fields } if tycon == "Direction" && ctor == "North" && fields.fields.is_empty()),
+        "North should be NominalVariant{{tycon:Direction, ctor:North}}, got {:?}",
         north.body
     );
 
     let south = env_get(&env, "South").expect("South should be in the exported env");
     assert!(
-        matches!(&south.body, Type::NominalVariant { tag, fields } if tag == "Direction.South" && fields.fields.is_empty()),
-        "South should be NominalVariant{{tag:Direction.South}}, got {:?}",
+        matches!(&south.body, Type::NominalVariant { tycon, ctor, fields } if tycon == "Direction" && ctor == "South" && fields.fields.is_empty()),
+        "South should be NominalVariant{{tycon:Direction, ctor:South}}, got {:?}",
         south.body
     );
 
-    // The type alias itself should be Union of the two constructors
+    // Direction's value scheme is a Dict of constructor types (not a Union).
+    // The Union lives in the type alias env; the value scheme is the constructor dict.
     let dir = env_get(&env, "Direction").expect("Direction should be in the exported env");
     match &dir.body {
-        Type::Union(members) => {
-            assert_eq!(members.len(), 2, "Direction should be a union of 2 members");
-            let has_north = members
-                .iter()
-                .any(|m| matches!(m, Type::NominalVariant { tag, .. } if tag == "Direction.North"));
-            let has_south = members
-                .iter()
-                .any(|m| matches!(m, Type::NominalVariant { tag, .. } if tag == "Direction.South"));
-            assert!(has_north, "Direction union should contain Direction.North");
-            assert!(has_south, "Direction union should contain Direction.South");
+        Type::Dict(row) => {
+            assert!(
+                matches!(row.fields.get("North"), Some(Type::NominalVariant { tycon, ctor, fields })
+                    if tycon == "Direction" && ctor == "North" && fields.fields.is_empty()),
+                "Direction.North should be unit NominalVariant, got {:?}",
+                row.fields.get("North")
+            );
+            assert!(
+                matches!(row.fields.get("South"), Some(Type::NominalVariant { tycon, ctor, fields })
+                    if tycon == "Direction" && ctor == "South" && fields.fields.is_empty()),
+                "Direction.South should be unit NominalVariant, got {:?}",
+                row.fields.get("South")
+            );
         }
         other => panic!(
-            "Direction should be Union of two unit constructors, got {:?}",
+            "Direction should be Dict of constructor types, got {:?}",
             other
         ),
     }

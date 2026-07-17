@@ -6,4 +6,4 @@
   [x: [Ok 42]]
   [Ok x]]
 === out
-Variant(Result.Ok, Int(42))
+Variant(Result.Ok, Dict({"value": Int(42)}))

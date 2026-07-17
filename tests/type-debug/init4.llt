@@ -1,0 +1,20 @@
+--- stage: "type"
+[
+  TypeNode: [type Int String Float Bytes Never Top Unknown Proxy AnyFn
+    [Dict fields: Any  open: Any  key-type: Any  value-type: Any]]
+  Integer: TypeNode.Int
+  String:  TypeNode.String
+  Dict:    [TypeNode.Dict fields: []  open: 1  key-type: TypeNode.Top  value-type: TypeNode.Top]
+]
+
+---
+# Two calls to builtin-narrow with different variadic arg types.
+# If the TypeVar is monomorphic (shared), the second call should produce a type error.
+# If polymorphic (fresh TypeVar per call), both should succeed.
+[
+  call1: [builtin-narrow %cwd "path/one"]
+  call2: [builtin-narrow %cwd 42]
+]
+[
+  [%stderr.write "done\n" %stderr]
+]

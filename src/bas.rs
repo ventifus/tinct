@@ -76,8 +76,12 @@ pub enum Atom {
     TyCon(String),
     /// App of type constructor to arguments (full spine)
     App(Box<Type>, Box<Type>),
-    /// Nominal variant: Tag { fields }
-    NominalVariant { tag: String, fields: Row },
+    /// Nominal variant: TyCon.Ctor { fields }
+    NominalVariant {
+        tycon: String,
+        ctor: String,
+        fields: Row,
+    },
     /// Recursive type: mu var. body
     Recursive { var: String, body: Box<Type> },
     /// Type variable (unresolved inference variable)
@@ -332,8 +336,13 @@ pub fn to_rdnf(ty: &Type) -> Rdnf {
         Type::App(f, a) => vec![vec![SignedAtom::Pos(Atom::App(f.clone(), a.clone()))]],
 
         // NominalVariant: atom
-        Type::NominalVariant { tag, fields } => vec![vec![SignedAtom::Pos(Atom::NominalVariant {
-            tag: tag.clone(),
+        Type::NominalVariant {
+            tycon,
+            ctor,
+            fields,
+        } => vec![vec![SignedAtom::Pos(Atom::NominalVariant {
+            tycon: tycon.clone(),
+            ctor: ctor.clone(),
             fields: fields.clone(),
         })]],
 
@@ -551,18 +560,20 @@ pub fn is_atom_subtype(
         // TyCon: nominal equality
         (Atom::TyCon(n1), Atom::TyCon(n2)) => n1 == n2,
 
-        // NominalVariant: tag must match, fields are covariant
+        // NominalVariant: tycon and ctor must match, fields are covariant
         (
             Atom::NominalVariant {
-                tag: t1,
+                tycon: tycon1,
+                ctor: ctor1,
                 fields: f1,
             },
             Atom::NominalVariant {
-                tag: t2,
+                tycon: tycon2,
+                ctor: ctor2,
                 fields: f2,
             },
         ) => {
-            if t1 != t2 {
+            if tycon1 != tycon2 || ctor1 != ctor2 {
                 return false;
             }
             // Width subtyping on fields: sup must be a subset
@@ -710,16 +721,14 @@ pub fn is_atom_subtype(
         | (Atom::TyCon(_), Atom::Record(_)) => false,
 
         // NominalVariant <: TyCon: the variant is a member of the TyCon family.
-        // Tags always have the form "TypeName.CtorName". Check via tycon_env body lookup
-        // when available; fall back to tag-prefix match otherwise.
-        (Atom::NominalVariant { tag, .. }, Atom::TyCon(n)) => {
+        (Atom::NominalVariant { tycon, .. }, Atom::TyCon(n)) => {
             if let Some(env) = tycon_env {
                 if let Some(def) = env.get(n.as_str()) {
                     let variant_ty = atom_to_type(sub);
                     return Type::is_subtype_bas(&variant_ty, &def.body, tycon_env, sigma);
                 }
             }
-            tag.starts_with(&format!("{}.", n))
+            tycon == n
         }
 
         // NominalVariant vs non-NominalVariant (other kinds): never subtypes
@@ -777,8 +786,13 @@ fn atom_to_type(atom: &Atom) -> Type {
         },
         Atom::TyCon(name) => Type::TyCon(name.clone()),
         Atom::App(f, a) => Type::App(f.clone(), a.clone()),
-        Atom::NominalVariant { tag, fields } => Type::NominalVariant {
-            tag: tag.clone(),
+        Atom::NominalVariant {
+            tycon,
+            ctor,
+            fields,
+        } => Type::NominalVariant {
+            tycon: tycon.clone(),
+            ctor: ctor.clone(),
             fields: fields.clone(),
         },
         Atom::Recursive { var, body } => Type::Recursive {
@@ -1044,7 +1058,18 @@ fn atoms_are_disjoint(a: &Atom, b: &Atom, tycon_env: Option<&TyConEnv>) -> bool 
         (Atom::Function { .. }, Atom::App(_, _)) | (Atom::App(_, _), Atom::Function { .. }) => true,
 
         // NominalVariant: different tags → disjoint
-        (Atom::NominalVariant { tag: t1, .. }, Atom::NominalVariant { tag: t2, .. }) => t1 != t2,
+        (
+            Atom::NominalVariant {
+                tycon: tycon1,
+                ctor: ctor1,
+                ..
+            },
+            Atom::NominalVariant {
+                tycon: tycon2,
+                ctor: ctor2,
+                ..
+            },
+        ) => tycon1 != tycon2 || ctor1 != ctor2,
 
         // NominalVariant vs primitives
         (Atom::NominalVariant { .. }, Atom::Primitive(_))
@@ -1110,34 +1135,47 @@ fn atoms_are_disjoint(a: &Atom, b: &Atom, tycon_env: Option<&TyConEnv>) -> bool 
         | (Atom::SingleFieldRecord { .. }, Atom::TyCon(_)) => true,
         (Atom::TyCon(_), Atom::Function { .. }) | (Atom::Function { .. }, Atom::TyCon(_)) => true,
         // TyCon vs NominalVariant: disjoint only when the variant is NOT a member of the TyCon.
-        // Look up the TyCon's body and check is_subtype(NominalVariant, body).
-        // When tycon_env is unavailable, fall back to tag-prefix: tags are guaranteed to be
-        // "TypeName.CtorName" by lower.rs, so the prefix determines family membership.
-        (Atom::TyCon(n), Atom::NominalVariant { tag, fields }) => {
+        (
+            Atom::TyCon(n),
+            Atom::NominalVariant {
+                tycon,
+                ctor,
+                fields,
+            },
+        ) => {
             if let Some(env) = tycon_env {
                 if let Some(def) = env.get(n.as_str()) {
                     let variant_ty = Type::NominalVariant {
-                        tag: tag.clone(),
+                        tycon: tycon.clone(),
+                        ctor: ctor.clone(),
                         fields: fields.clone(),
                     };
                     let mut sigma = HashSet::new();
                     return !Type::is_subtype_bas(&variant_ty, &def.body, tycon_env, &mut sigma);
                 }
             }
-            !tag.starts_with(&format!("{}.", n))
+            tycon != n
         }
-        (Atom::NominalVariant { tag, fields }, Atom::TyCon(n)) => {
+        (
+            Atom::NominalVariant {
+                tycon,
+                ctor,
+                fields,
+            },
+            Atom::TyCon(n),
+        ) => {
             if let Some(env) = tycon_env {
                 if let Some(def) = env.get(n.as_str()) {
                     let variant_ty = Type::NominalVariant {
-                        tag: tag.clone(),
+                        tycon: tycon.clone(),
+                        ctor: ctor.clone(),
                         fields: fields.clone(),
                     };
                     let mut sigma = HashSet::new();
                     return !Type::is_subtype_bas(&variant_ty, &def.body, tycon_env, &mut sigma);
                 }
             }
-            !tag.starts_with(&format!("{}.", n))
+            tycon != n
         }
 
         // Two Function atoms: conservative — different arities or signatures may still share
@@ -1495,7 +1533,8 @@ mod tests {
     #[test]
     fn test_atom_subtype_nominal_variant_same_tag() {
         let sub = Atom::NominalVariant {
-            tag: "Ok".to_string(),
+            tycon: "Result".to_string(),
+            ctor: "Ok".to_string(),
             fields: Row {
                 fields: {
                     let mut m = IndexMap::new();
@@ -1506,7 +1545,8 @@ mod tests {
             },
         };
         let sup = Atom::NominalVariant {
-            tag: "Ok".to_string(),
+            tycon: "Result".to_string(),
+            ctor: "Ok".to_string(),
             fields: Row {
                 fields: {
                     let mut m = IndexMap::new();
@@ -1523,14 +1563,16 @@ mod tests {
     #[test]
     fn test_atom_subtype_nominal_variant_different_tags() {
         let sub = Atom::NominalVariant {
-            tag: "Ok".to_string(),
+            tycon: "Result".to_string(),
+            ctor: "Ok".to_string(),
             fields: Row {
                 fields: IndexMap::new(),
                 tail: RowTail::Empty,
             },
         };
         let sup = Atom::NominalVariant {
-            tag: "Err".to_string(),
+            tycon: "Result".to_string(),
+            ctor: "Err".to_string(),
             fields: Row {
                 fields: IndexMap::new(),
                 tail: RowTail::Empty,
@@ -2096,19 +2138,20 @@ mod tests {
 
     /// NominalVariant atoms with different tags are disjoint.
     ///
-    /// A value tagged "Color.Red" cannot also be "Color.Blue". The disjointness rule
-    /// at line 1033 checks `t1 != t2`. This test verifies that path fires correctly.
+    /// A value tagged "Color.Red" cannot also be "Color.Blue".
     #[test]
     fn test_atoms_disjoint_nominal_variant_different_tags() {
         let red = Atom::NominalVariant {
-            tag: "Color.Red".to_string(),
+            tycon: "Color".to_string(),
+            ctor: "Red".to_string(),
             fields: Row {
                 fields: IndexMap::new(),
                 tail: RowTail::Empty,
             },
         };
         let blue = Atom::NominalVariant {
-            tag: "Color.Blue".to_string(),
+            tycon: "Color".to_string(),
+            ctor: "Blue".to_string(),
             fields: Row {
                 fields: IndexMap::new(),
                 tail: RowTail::Empty,
@@ -2130,14 +2173,16 @@ mod tests {
     #[test]
     fn test_atoms_not_disjoint_nominal_variant_same_tag() {
         let ok1 = Atom::NominalVariant {
-            tag: "Result.Ok".to_string(),
+            tycon: "Result".to_string(),
+            ctor: "Ok".to_string(),
             fields: Row {
                 fields: IndexMap::new(),
                 tail: RowTail::Empty,
             },
         };
         let ok2 = Atom::NominalVariant {
-            tag: "Result.Ok".to_string(),
+            tycon: "Result".to_string(),
+            ctor: "Ok".to_string(),
             fields: Row {
                 fields: {
                     let mut m = IndexMap::new();
@@ -2147,7 +2192,6 @@ mod tests {
                 tail: RowTail::Empty,
             },
         };
-        // Same tag: NOT disjoint (both are Ok variants — a value could satisfy both)
         assert!(
             !atoms_are_disjoint(&ok1, &ok2, None),
             "NominalVariant atoms with the same tag must NOT be disjoint"

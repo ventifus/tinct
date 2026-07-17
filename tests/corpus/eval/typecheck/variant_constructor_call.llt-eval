@@ -22,4 +22,4 @@
   t5: Status.Success
 ]
 === out
-Dict({"Status": Dict({"Status": Variant(Status.Status, Null), "Success": Variant(Status.Success, Null), "Failure": Variant(Status.Failure, Null)}), "t1": Variant(Result.Ok, Int(42)), "t2": Variant(Status.Failure, String("failed")), "t3": Variant(Result.Ok, Variant(Status.Failure, String("nested"))), "t4": Variant(Maybe.None, Null), "t5": Variant(Status.Success, Null)})
+Dict({"Status": Dict({"Status": Variant(Status.Status, Null), "Success": Variant(Status.Success, Null), "Failure": Variant(Status.Failure, Null)}), "t1": Variant(Result.Ok, Dict({"value": Int(42)})), "t2": Variant(Status.Failure, String("failed")), "t3": Variant(Result.Ok, Dict({"value": Variant(Status.Failure, String("nested"))})), "t4": Variant(Maybe.None, Null), "t5": Variant(Status.Success, Null)})

@@ -1,0 +1,7 @@
+# T-1542 / T-1539: Old positional-arg payload constructor syntax [type [Ok String]]
+# is rejected at parse time after T-1539 lands.
+# Positional form: [Ok String] has uppercase func with positional type arg — old syntax.
+# The error message directs to the new syntax: [type Ok: [fields]].
+[type [Ok String]]
+=== error
+payload constructor syntax has changed: use `Ok: [fields]` instead of `[Ok fields]`

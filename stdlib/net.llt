@@ -127,12 +127,12 @@
   # ============================================================================
 
   SocketAddress: [type
-    [IPv4 host: String  port: Int]
-    [IPv6 host: String  port: Int]
-    [Unix path: String]]
+    IPv4: [host: String  port: Int]
+    IPv6: [host: String  port: Int]
+    Unix: [path: String]]
 
   UdpDatagram: [type
-    [UdpDatagram data: Bytes  source: SocketAddress]]
+    UdpDatagram: [data: Bytes  source: SocketAddress]]
 
   # ============================================================================
   # Datagram typeclass (T-1359)

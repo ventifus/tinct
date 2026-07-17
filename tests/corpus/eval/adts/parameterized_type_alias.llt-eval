@@ -4,7 +4,7 @@
 # Variant auto-unpacking: int-str.first accesses the payload dict's "first" field.
 
 [
-  Pair: [type [let a b] [Pair first: a  second: b]]
+  Pair: [type [let a b] Pair: [first: a  second: b]]
   int-str: [Pair.Pair first: 42  second: "hello"]
 ]
 int-str.first

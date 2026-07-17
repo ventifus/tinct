@@ -2,4 +2,4 @@
 # [do [Ok 42]] → do-fold base case returns the expression directly → [Ok 42].
 [do [Ok 42]]
 === out
-Variant(Result.Ok, Int(42))
+Variant(Result.Ok, Dict({"value": Int(42)}))

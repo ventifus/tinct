@@ -1,5 +1,5 @@
 # Transport variant constructors are properly typed
-# Verifies that the prelude's [type [Tcp] [Udp] ...] declaration
+# Verifies that the prelude's [type Tcp Udp ...] declaration
 # creates typed variant constructors usable with connect builtin
 
 [

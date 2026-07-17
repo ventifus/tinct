@@ -1,8 +1,8 @@
 # T-1481: field_annotations unimplemented — test pins current Boolean.False behavior
 # Named-field constructor with @Child annotated field and [Seq T] type produces role "Seq".
 # This is the exact pattern used by TypeNode.Union in prelude.llt:
-#   [Union@[as-type: [fn [let u] u]  guarding: false]
-#     types@Child: [Seq TypeNode]]
+#   Union@[as-type: [fn [let u] u]  guarding: false]:
+#     [types@Child: [Seq TypeNode]]
 #
 # build_constructor_return_ann (T-1052) generates:
 #   annotation: [as-type: fn  guarding: false  field-annotations: [types: [role: "Seq"]]]
@@ -10,7 +10,7 @@
 # infer_child_role_from_type_expr detects `[Seq T]` → ChildRole::Seq → role string "Seq".
 # The `field-annotations` key is present in annotation-of(Union) and maps to a dict
 # whose "types" key holds {role: "Seq"}.
-[NodeType: [type [Union@[as-type: [fn [let u] u]  guarding: False]
+[NodeType: [type Union@[as-type: [fn [let u] u]  guarding: False]: [
   items@Child: [Seq NodeType]]]]
 [ann: [annotation-of NodeType.Union]]
 [has-field-anns: [has? "field-annotations" ann]]

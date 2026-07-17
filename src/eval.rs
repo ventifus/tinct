@@ -971,8 +971,9 @@ pub fn ground_type_of(v: &Value) -> Type {
         Value::DirCap { .. } | Value::RevocableDirCap { .. } => Type::Unknown,
         Value::NetCap(_) => Type::Unknown,
         // Variant payload types erased (payload ThunkId has no static type without the schema).
-        Value::Variant { tag, .. } => Type::NominalVariant {
-            tag: tag.clone(),
+        Value::Variant { tycon, ctor, .. } => Type::NominalVariant {
+            tycon: tycon.clone(),
+            ctor: ctor.clone(),
             fields: Row {
                 fields: indexmap::IndexMap::new(),
                 tail: crate::type_def::RowTail::Empty,
@@ -1093,11 +1094,8 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type, ctx: &EvalConte
                         _ => false,
                     }
                 } else if !def.constructors.is_empty() {
-                    // Nominal (user-defined) type: value must be a Variant with tag "<name>.*".
-                    // Zero-allocation check: starts_with name AND next byte is '.' (avoids format!).
-                    matches!(value, Value::Variant { tag, .. }
-                        if tag.starts_with(name)
-                            && tag.as_bytes().get(name.len()) == Some(&b'.'))
+                    // Nominal (user-defined) type: value must be a Variant with tycon matching name.
+                    matches!(value, Value::Variant { tycon, .. } if tycon == name)
                 } else {
                     // TyCon found but no builtin_type and no constructors yet (T-1003/T-1018).
                     // Conservative: unknown structure, return false.
@@ -1141,25 +1139,24 @@ pub(crate) fn pattern_type_matches(value: &Value, expected: &Type, ctx: &Arc<Eva
             matches!(value, Value::Function { .. } | Value::Builtin(_))
         }
         Type::Function { .. } => matches!(value, Value::Function { .. }),
-        // App(TyCon(name), _): parameterized nominal type — value must be a Variant with tag "Name.*".
+        // App(TyCon(name), _): parameterized nominal type — value must be a Variant with tycon matching name.
         // This is the generic rule for all user-declared parameterized types (Seq, Option, Map, etc.).
         Type::App(f, _) if matches!(f.as_ref(), Type::TyCon(_)) => {
             if let Type::TyCon(name) = f.as_ref() {
-                matches!(value, Value::Variant { tag, .. }
-                    if tag.starts_with(name.as_str())
-                        && tag.as_bytes().get(name.len()) == Some(&b'.'))
+                matches!(value, Value::Variant { tycon, .. } if tycon == name.as_str())
             } else {
                 false
             }
         }
         // Other TyCon / App: delegate to value_matches_type (handles user-defined nominal types).
         Type::TyCon(_) | Type::App(_, _) => value_matches_type(value, expected, ctx),
-        // NominalVariant: exact tag or "Tag.*" prefix on Value::Variant.
-        Type::NominalVariant { tag, .. } => {
-            matches!(value, Value::Variant { tag: vtag, .. }
-                if vtag == tag
-                    || (vtag.starts_with(tag.as_str())
-                        && vtag.as_bytes().get(tag.len()) == Some(&b'.')))
+        Type::NominalVariant {
+            tycon: expected_tycon,
+            ctor: expected_ctor,
+            ..
+        } => {
+            matches!(value, Value::Variant { tycon, ctor, .. }
+                if tycon == expected_tycon && ctor == expected_ctor)
         }
         // Unknown / Top: always match.
         Type::Unknown | Type::Any => true,
@@ -1994,11 +1991,13 @@ pub(crate) fn match_pattern<'a>(
                 // Constructor pattern: match Value::Variant by tag, bind payload if present
                 match value {
                     Value::Variant {
-                        tag: variant_tag,
+                        tycon: variant_tycon,
+                        ctor: variant_ctor,
                         payload: variant_payload,
                     } => {
-                        // Check if tags match
-                        if tag != variant_tag {
+                        // Check if tags match (reconstruct composite tag from tycon.ctor)
+                        let variant_tag = format!("{}.{}", variant_tycon, variant_ctor);
+                        if tag != &variant_tag {
                             return Ok(None);
                         }
 
@@ -2121,14 +2120,16 @@ pub(crate) fn primitive_eq(a: Value, b: Value) -> bool {
         // Nullary variants: tag equality (covers unit constructors)
         (
             Value::Variant {
-                tag: tag1,
+                tycon: tycon1,
+                ctor: ctor1,
                 payload: None,
             },
             Value::Variant {
-                tag: tag2,
+                tycon: tycon2,
+                ctor: ctor2,
                 payload: None,
             },
-        ) => tag1 == tag2,
+        ) => tycon1 == tycon2 && ctor1 == ctor2,
         // Dict shallow equality: same keys and same thunk IDs (no value materialization).
         // This covers null equality ([] == []) and self-equality for Dicts,
         // without deep structural comparison of values.
@@ -4564,15 +4565,17 @@ mod tests {
         );
         ctx.set_tycon_env(env);
         let tycon = Type::TyCon("Color".to_string());
-        // Variant with matching prefix matches
+        // Variant with matching tycon matches
         let red = Value::Variant {
-            tag: "Color.Red".to_string(),
+            tycon: "Color".to_string(),
+            ctor: "Red".to_string(),
             payload: None,
         };
         assert!(value_matches_type(&red, &tycon, &ctx));
-        // Variant with different prefix does not match
+        // Variant with different tycon does not match
         let wrong = Value::Variant {
-            tag: "Shape.Circle".to_string(),
+            tycon: "Shape".to_string(),
+            ctor: "Circle".to_string(),
             payload: None,
         };
         assert!(!value_matches_type(&wrong, &tycon, &ctx));
@@ -4658,7 +4661,8 @@ mod tests {
 
         // Color.Red variant must pass @Color check.
         let color_red = Value::Variant {
-            tag: "Color.Red".to_string(),
+            tycon: "Color".to_string(),
+            ctor: "Red".to_string(),
             payload: None,
         };
         assert!(
@@ -4668,7 +4672,8 @@ mod tests {
 
         // Color.Green variant must also pass.
         let color_green = Value::Variant {
-            tag: "Color.Green".to_string(),
+            tycon: "Color".to_string(),
+            ctor: "Green".to_string(),
             payload: None,
         };
         assert!(
@@ -4678,7 +4683,8 @@ mod tests {
 
         // A value from a different TyCon must not pass — no cross-TyCon confusion.
         let other = Value::Variant {
-            tag: "Shape.Circle".to_string(),
+            tycon: "Shape".to_string(),
+            ctor: "Circle".to_string(),
             payload: None,
         };
         assert!(
@@ -4721,13 +4727,14 @@ mod tests {
             "String is a primitive type"
         );
         let color_variant = Value::Variant {
-            tag: "Color.Red".to_string(),
+            tycon: "Color".to_string(),
+            ctor: "Red".to_string(),
             payload: None,
         };
         assert_eq!(
             color_variant.value_tycon_name(),
             None,
-            "Variant is matched via TyConDef constructor prefix, not value_tycon_name"
+            "Variant is matched via TyConDef constructor check, not value_tycon_name"
         );
 
         // value_matches_type with an unknown TyCon: structural values return false.

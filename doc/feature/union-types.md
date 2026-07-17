@@ -14,7 +14,7 @@ Parts of this feature were modified by later features:
 
 - **§Full Algebraic Subtyping (Simple-sub)**: The Simple-sub (Parreaux 2020) description was superseded by Boolean-Algebraic Subtyping. The codebase implements BAS (Chau & Parreaux, POPL 2026) — a hybrid system retaining HM unification alongside BAS subtyping via `constrain()`. See [boolean-algebraic-subtyping.md](boolean-algebraic-subtyping.md) (2026-05-09).
 - **§Interaction with `Any`**: `Type::Any` was split into `Type::Unknown` (gradual typing opt-out) and `Type::Top` (true supertype). Any section referring to `Type::Any` uses stale terminology. See [gradual-typing.md](gradual-typing.md) (2026-05-07) and [boolean-algebraic-subtyping.md](boolean-algebraic-subtyping.md) (2026-05-09).
-- **`try` result type**: `try` returns `Value::Variant { tag: "Ok"/"Err" }` (nominal), not structural `{ok: v}/{err: msg}`. See [error-patterns.md](error-patterns.md) (2026-05-09).
+- **`try` result type**: `try` returns `Value::Variant { tycon: "Result", ctor: "Ok"/"Err", .. }` (nominal), not structural `{ok: v}/{err: msg}`. See [error-patterns.md](error-patterns.md) (2026-05-09).
 - **S-RcdTop**: Under BAS, disjoint single-field record unions like `{ok: T} | {err: S}` collapse to `Top` via S-RcdTop (`src/types.rs:882`). Structural discriminated unions of this form are not valid ADTs. Use [nominal variants](nominal-variants.md) instead.
 
 ## Design

@@ -1,4 +1,4 @@
 # Minimal do macro test
 [do result [Ok 42]]
 === out
-Variant(Result.Ok, Int(42))
+Variant(Result.Ok, Dict({"value": Int(42)}))

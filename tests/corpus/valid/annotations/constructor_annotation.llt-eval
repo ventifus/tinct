@@ -2,6 +2,6 @@
 # Priority 2b: Union + ImmediateAt → Dict frame. The annotation PropertyDict is captured
 # on the constructor tag node in the AST as SurfaceExpression::Annotated.
 # Type resolution strips the annotation and uses "Union" as the constructor tag.
-[Color: [type [Union@[guarding: False]  types: String]]]
+[Color: [type Union@[guarding: False]: [types: String]]]
 === out
-["Color": [type [Union@["guarding": False]  "types": String]]]
+["Color": [type Union@["guarding": False]: ["types": String]]]

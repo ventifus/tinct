@@ -1,0 +1,6 @@
+# T-1542 / T-1539: Old payload constructor syntax [type [CtorName field: Type]]
+# is rejected at parse time after T-1539 lands.
+# The error message directs to the new syntax: [type CtorName: [field: Type]].
+[type [File path: String]]
+=== error
+payload constructor syntax has changed: use `File: [path: String]` instead of `[File path: String]`

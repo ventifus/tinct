@@ -3,7 +3,7 @@
 # contains host and port fields — tag is NOT checked. To check the tag, use
 # [case [let p] [Config.ServerCfg p] p.host] first to bind the payload.
 [
-  Config: [type [ServerCfg host: Str port: Int] [LocalCfg]]
+  Config: [type ServerCfg: [host: Str port: Int] LocalCfg]
   cfg:    [Config.ServerCfg host: "localhost" port: 8080]
   result: [match cfg
     [case [let h p] [host: h  port: p] [str h ":" [str p]]]

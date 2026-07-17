@@ -2,7 +2,7 @@
 # Verifies that a non-exhaustive match on a locally-defined nominal type
 # correctly raises a typecheck error listing the missing constructor.
 [
-  Shape: [type [Circle radius: Int] [Square side: Int]]
+  Shape: [type Circle: [radius: Int] Square: [side: Int]]
 
   circle-only: [fn [let s@Shape]
     [match s

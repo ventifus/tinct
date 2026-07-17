@@ -1,0 +1,7 @@
+# T-1539 (extended): Old annotated payload constructor syntax [type [Node@[...] field: Type]]
+# is rejected at parse time. The annotated VarRef in head position of an implied Call
+# is now caught by is_old_payload_ctor (annotation: None restriction removed).
+# The new form is: [type Node@[annotation]: [field: Type]].
+[type [Node@[guarding: Bool] inner: NodeType]]
+=== error
+payload constructor syntax has changed: use `Node@["guarding": Bool]: [fields]` instead of `[Node@["guarding": Bool] fields]`

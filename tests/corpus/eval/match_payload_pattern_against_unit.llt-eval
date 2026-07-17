@@ -1,7 +1,7 @@
 # [Tag n]: (binding pattern) against a unit variant should NOT match — falls through to next arm.
 # D-1 equivalence applies only to [Tag]: (binding: None); [Tag n]: (binding: Some) requires a payload.
 [
-  Shape: [type Shape [Circle r: Int] [Square]]
+  Shape: [type Shape Circle: [r: Int] Square]
 
   unit-shape: Shape.Square
 

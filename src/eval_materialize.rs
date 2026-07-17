@@ -703,6 +703,13 @@ async fn dispatch_state(
     _env_id: u32,
 ) -> Action {
     let thunk_span = thunk.span.clone();
+    if crate::memory_budget::is_oom_flagged() {
+        return Action::Continue(Err(crate::error::EvalError::resource_limit_exceeded(
+            "heap limit exceeded (arena bytes)".to_string(),
+            thunk_span.clone(),
+        )
+        .into()));
+    }
     let origin = thunk.origin.clone();
 
     match state {
@@ -1718,17 +1725,21 @@ pub(crate) async fn apply_cont(
                         }
                         // Unit variant used as a constructor: e.g. `[Result.Ok payload]`.
                         // When a unit Variant (payload: None) is called with exactly one positional
-                        // arg and no named args, treat it as constructing Variant(tag, payload).
-                        Value::Variant { tag, payload: None }
-                            if args.as_ref().is_some_and(|v| v.len() == 1)
-                                && named
-                                    .as_ref()
-                                    .is_none_or(|m| m.as_ref().is_none_or(|b| b.is_empty())) =>
+                        // arg and no named args, treat it as constructing Variant(tycon, ctor, payload).
+                        Value::Variant {
+                            tycon,
+                            ctor,
+                            payload: None,
+                        } if args.as_ref().is_some_and(|v| v.len() == 1)
+                            && named
+                                .as_ref()
+                                .is_none_or(|m| m.as_ref().is_none_or(|b| b.is_empty())) =>
                         {
                             // The arg is a ThunkId — use it directly as the payload.
                             let payload_id = args.as_ref().expect("args set above")[0];
                             let result_val = Value::Variant {
-                                tag,
+                                tycon,
+                                ctor,
                                 payload: Some(payload_id),
                             };
                             // Fast path: the result is immediately materialized — no need to
@@ -3447,7 +3458,7 @@ fn eval_structural_pattern_inner<'a>(
                 //   (a) a unit Variant (payload: None) — the old unit-constructor form
                 //   (b) a Function with return_ann annotation (named-field ctor)
                 let ctor_tag_opt: Option<String> = match &func_val {
-                    Value::Variant { tag, .. } => Some(tag.clone()),
+                    Value::Variant { tycon, ctor, .. } => Some(format!("{}.{}", tycon, ctor)),
                     Value::Function { annotation, .. } => annotation.as_deref().and_then(|ann| {
                         ann.return_ann.as_ref().and_then(|ret_ann| {
                             if let crate::ast::Annotation::Simple(tag) = ret_ann {
@@ -3463,13 +3474,15 @@ fn eval_structural_pattern_inner<'a>(
                 if let Some(ctor_tag) = ctor_tag_opt {
                     // Constructor pattern: match scrutinee tag, bind payload.
                     let Value::Variant {
-                        tag: scrutinee_tag,
+                        tycon: scrutinee_tycon,
+                        ctor: scrutinee_ctor,
                         payload,
                     } = scrutinee_value
                     else {
                         return Ok(false);
                     };
-                    if scrutinee_tag != &ctor_tag {
+                    let scrutinee_tag = format!("{}.{}", scrutinee_tycon, scrutinee_ctor);
+                    if scrutinee_tag != ctor_tag {
                         return Ok(false);
                     }
 
@@ -4620,7 +4633,11 @@ fn force_dict_tree_impl<'a>(
                 }
                 Ok(Value::Dict(new_map))
             }
-            Value::Variant { tag, payload } => {
+            Value::Variant {
+                tycon,
+                ctor,
+                payload,
+            } => {
                 if let Some(payload_id) = payload {
                     let payload_thunk = ctx.get_thunk(*payload_id);
                     let thunk_ptr = Arc::as_ptr(&payload_thunk);
@@ -4636,7 +4653,8 @@ fn force_dict_tree_impl<'a>(
                         Arc::new(Thunk::value(deep_payload, payload_thunk.span.clone()));
                     let deep_id = ctx.alloc_thunk(0, deep_thunk);
                     Ok(Value::Variant {
-                        tag: tag.clone(),
+                        tycon: tycon.clone(),
+                        ctor: ctor.clone(),
                         payload: Some(deep_id),
                     })
                 } else {

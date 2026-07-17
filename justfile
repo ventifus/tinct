@@ -77,6 +77,10 @@ test-one TEST:
     {{container}} run {{run_flags}} -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test {{TEST}} -- --test-threads=1
 
 
+# Verify --max-memory OOM machinery: limit=1 byte → exit code 3, OOM message on stderr.
+test-oom:
+    {{container}} run {{run_flags}} {{rust_image}} sh -c 'cargo build --bin tinct 2>&1 && EC=0; target/debug/tinct --max-memory 1 run --init stdlib/test-loader.llt tests/corpus/eval/simple/basic_key_value.llt-eval 2>oom_stderr.txt || EC=$?; if [ "$EC" = "3" ] && grep -q "out of memory" oom_stderr.txt; then echo "PASS: OOM exit code 3 with expected message"; else echo "FAIL: expected exit 3 with OOM message, got exit $EC"; cat oom_stderr.txt; exit 1; fi'
+
 # Run only lib unit tests (no integration tests)
 # --test-threads=1 prevents OOM from parallel stdlib cache accumulation (same as `just test`)
 test-lib:

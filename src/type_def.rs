@@ -390,11 +390,13 @@ pub enum Type {
     },
     /// Nominal variant — a union member that carries its declared constructor name.
     /// Used for nominal variants like `[Some a]`, `[IntLiteral value: Int span: AstSpan]`, and `None`.
-    /// The `tag` is the constructor name (e.g., "Some", "IntLiteral", "None"), and `fields` are
-    /// the named or positional payload fields.
+    /// The `tycon` is the type constructor name (e.g., "Option", "IntLiteral", "Boolean") and `ctor` is
+    /// the variant constructor name (e.g., "Some", "None", "True"). `fields` are the named or positional
+    /// payload fields.
     /// Distinct from structural `Record` types — nominal variants are never subtypes of records.
     NominalVariant {
-        tag: String,
+        tycon: String,
+        ctor: String,
         fields: Row,
     },
     /// Equirecursive type — `μvar.body`, where `var` is a globally-unique gensym'd binder
@@ -484,14 +486,16 @@ impl PartialEq for Type {
             ) => fn1 == fn2 && args1 == args2,
             (
                 Type::NominalVariant {
-                    tag: tag1,
+                    tycon: tycon1,
+                    ctor: ctor1,
                     fields: fields1,
                 },
                 Type::NominalVariant {
-                    tag: tag2,
+                    tycon: tycon2,
+                    ctor: ctor2,
                     fields: fields2,
                 },
-            ) => tag1 == tag2 && fields1 == fields2,
+            ) => tycon1 == tycon2 && ctor1 == ctor2 && fields1 == fields2,
             // S-861: equirecursive-checker — Recursive equality: same binder name and same body.
             // Globally unique gensym var names mean two Recursive values are equal iff they are the
             // same logical type. Alpha-equivalence (different var names, same body shape) is tested
@@ -568,9 +572,13 @@ impl std::hash::Hash for Type {
                 fn_name.hash(state);
                 args.hash(state);
             }
-            Type::NominalVariant { tag, fields } => {
-                tag.hash(state);
-                // Delegate to Row::hash which is order-independent (sorted by key).
+            Type::NominalVariant {
+                tycon,
+                ctor,
+                fields,
+            } => {
+                tycon.hash(state);
+                ctor.hash(state);
                 fields.hash(state);
             }
             // S-860: equirecursive-types-core
@@ -665,8 +673,13 @@ pub(crate) fn substitute_recvar(ty: &Type, var_name: &str, replacement: &Type) -
                 .map(|a| substitute_recvar(a, var_name, replacement))
                 .collect(),
         },
-        Type::NominalVariant { tag, fields } => Type::NominalVariant {
-            tag: tag.clone(),
+        Type::NominalVariant {
+            tycon,
+            ctor,
+            fields,
+        } => Type::NominalVariant {
+            tycon: tycon.clone(),
+            ctor: ctor.clone(),
             fields: substitute_recvar_row(fields, var_name, replacement),
         },
         // All other variants (primitives, capabilities, leaf constructors, TypeVar with
@@ -1168,9 +1181,18 @@ impl Type {
             // TypeStageApp might overlap with anything (conservative)
             (Type::TypeStageApp { .. }, _) | (_, Type::TypeStageApp { .. }) => false,
             // NominalVariant with different tags are disjoint (nominal disjointness)
-            (Type::NominalVariant { tag: tag1, .. }, Type::NominalVariant { tag: tag2, .. }) => {
-                tag1 != tag2
-            }
+            (
+                Type::NominalVariant {
+                    tycon: tycon1,
+                    ctor: ctor1,
+                    ..
+                },
+                Type::NominalVariant {
+                    tycon: tycon2,
+                    ctor: ctor2,
+                    ..
+                },
+            ) => tycon1 != tycon2 || ctor1 != ctor2,
             // NominalVariant vs Record (both directions)
             (Type::NominalVariant { .. }, Type::Dict(_)) => true,
             (Type::Dict(_), Type::NominalVariant { .. }) => true,
@@ -1337,19 +1359,19 @@ impl Type {
             // NominalVariant: consistent iff tags match and fields are structurally consistent
             (
                 Type::NominalVariant {
-                    tag: tag1,
+                    tycon: tycon1,
+                    ctor: ctor1,
                     fields: fields1,
                 },
                 Type::NominalVariant {
-                    tag: tag2,
+                    tycon: tycon2,
+                    ctor: ctor2,
                     fields: fields2,
                 },
             ) => {
-                // Tags must match for consistency (nominal identity)
-                if tag1 != tag2 {
+                if tycon1 != tycon2 || ctor1 != ctor2 {
                     return false;
                 }
-                // Shared fields must be consistent (same logic as Record ~ Record)
                 for (k, ty1) in &fields1.fields {
                     if let Some(ty2) = fields2.fields.get(k) {
                         if !Type::is_consistent(ty1, ty2) {
@@ -1480,7 +1502,11 @@ impl Type {
                     arg.collect_type_vars(vars);
                 }
             }
-            Type::NominalVariant { tag: _, fields } => {
+            Type::NominalVariant {
+                tycon: _,
+                ctor: _,
+                fields,
+            } => {
                 for ty in fields.fields.values() {
                     ty.collect_type_vars(vars);
                 }
@@ -1526,9 +1552,11 @@ impl Type {
             Type::TypeStageApp { fn_name: _, args } => {
                 args.iter().any(|arg| arg.has_inference_vars())
             }
-            Type::NominalVariant { tag: _, fields } => {
-                fields.fields.values().any(|ty| ty.has_inference_vars())
-            }
+            Type::NominalVariant {
+                tycon: _,
+                ctor: _,
+                fields,
+            } => fields.fields.values().any(|ty| ty.has_inference_vars()),
             Type::Proxy => false,
             // S-860: equirecursive-types-core — recurse into the body.
             // A Recursive type with inference vars in the body is not yet fully concrete.
@@ -1566,9 +1594,11 @@ impl Type {
             Type::Negation(inner) => inner.has_type_stage_app(),
             Type::App(f, a) => f.has_type_stage_app() || a.has_type_stage_app(),
             Type::TyCon(_) => false,
-            Type::NominalVariant { tag: _, fields } => {
-                fields.fields.values().any(|ty| ty.has_type_stage_app())
-            }
+            Type::NominalVariant {
+                tycon: _,
+                ctor: _,
+                fields,
+            } => fields.fields.values().any(|ty| ty.has_type_stage_app()),
             // S-860: equirecursive-types-core — recurse into the body.
             Type::Recursive { var: _, body } => body.has_type_stage_app(),
             _ => false,
@@ -1630,7 +1660,11 @@ impl Type {
                     arg.collect_all_vars(type_vars);
                 }
             }
-            Type::NominalVariant { tag: _, fields } => {
+            Type::NominalVariant {
+                tycon: _,
+                ctor: _,
+                fields,
+            } => {
                 for ty in fields.fields.values() {
                     ty.collect_all_vars(type_vars);
                 }
@@ -1719,7 +1753,11 @@ impl Type {
                 }
                 found
             }
-            Type::NominalVariant { tag: _, fields } => {
+            Type::NominalVariant {
+                tycon: _,
+                ctor: _,
+                fields,
+            } => {
                 let mut found = false;
                 for ty in fields.fields.values() {
                     found |= ty.collect_all_vars_check_occurs(occurs_name, type_vars);
@@ -1794,7 +1832,11 @@ impl Type {
                     arg.collect_all_vars_vec(type_vars);
                 }
             }
-            Type::NominalVariant { tag: _, fields } => {
+            Type::NominalVariant {
+                tycon: _,
+                ctor: _,
+                fields,
+            } => {
                 for ty in fields.fields.values() {
                     ty.collect_all_vars_vec(type_vars);
                 }
@@ -1882,7 +1924,11 @@ impl Type {
                     arg.collect_operator_names(operator_names);
                 }
             }
-            Type::NominalVariant { tag: _, fields } => {
+            Type::NominalVariant {
+                tycon: _,
+                ctor: _,
+                fields,
+            } => {
                 for ty in fields.fields.values() {
                     ty.collect_operator_names(operator_names);
                 }
@@ -2247,14 +2293,19 @@ impl Type {
                 fn_name,
                 args: args.into_iter().map(Type::simplify_type).collect(),
             },
-            Type::NominalVariant { tag, fields } => {
+            Type::NominalVariant {
+                tycon,
+                ctor,
+                fields,
+            } => {
                 let simplified_fields = fields
                     .fields
                     .into_iter()
                     .map(|(k, v)| (k, Type::simplify_type(v)))
                     .collect();
                 Type::NominalVariant {
-                    tag,
+                    tycon,
+                    ctor,
                     fields: Row {
                         fields: simplified_fields,
                         tail: RowTail::Empty,
@@ -2399,13 +2450,25 @@ pub(crate) fn type_payload_cmp(a: &Type, b: &Type) -> std::cmp::Ordering {
             }
             other => other,
         },
-        // NominalVariant: compare by tag first, then by fields (via Display for simplicity)
-        (Type::NominalVariant { tag: tag1, .. }, Type::NominalVariant { tag: tag2, .. }) => {
-            match tag1.cmp(tag2) {
+        // NominalVariant: compare by tycon, then ctor, then fields (via Display for simplicity)
+        (
+            Type::NominalVariant {
+                tycon: tycon1,
+                ctor: ctor1,
+                ..
+            },
+            Type::NominalVariant {
+                tycon: tycon2,
+                ctor: ctor2,
+                ..
+            },
+        ) => match tycon1.cmp(tycon2) {
+            Ordering::Equal => match ctor1.cmp(ctor2) {
                 Ordering::Equal => a.to_string().cmp(&b.to_string()),
                 other => other,
-            }
-        }
+            },
+            other => other,
+        },
         // For complex types (Record, Function, App), use Display representation
         // This is not ideal but ensures stability
         (Type::Dict(_), Type::Dict(_))
@@ -2522,7 +2585,11 @@ pub fn check_kind_wellformed(
             }
             Ok(())
         }
-        Type::NominalVariant { tag: _, fields } => {
+        Type::NominalVariant {
+            tycon: _,
+            ctor: _,
+            fields,
+        } => {
             for field_ty in fields.fields.values() {
                 check_kind_wellformed(field_ty, kind_env, span.clone())?;
             }
@@ -3186,7 +3253,8 @@ mod tests {
     #[test]
     fn test_bas_nominal_variant_same_tag() {
         let sub = Type::NominalVariant {
-            tag: "Ok".into(),
+            tycon: "Result".into(),
+            ctor: "Ok".into(),
             fields: Row {
                 fields: {
                     let mut m = IndexMap::new();
@@ -3197,7 +3265,8 @@ mod tests {
             },
         };
         let sup = Type::NominalVariant {
-            tag: "Ok".into(),
+            tycon: "Result".into(),
+            ctor: "Ok".into(),
             fields: Row {
                 fields: {
                     let mut m = IndexMap::new();
@@ -3213,14 +3282,16 @@ mod tests {
     #[test]
     fn test_bas_nominal_variant_different_tags() {
         let sub = Type::NominalVariant {
-            tag: "Ok".into(),
+            tycon: "Result".into(),
+            ctor: "Ok".into(),
             fields: Row {
                 fields: IndexMap::new(),
                 tail: RowTail::Empty,
             },
         };
         let sup = Type::NominalVariant {
-            tag: "Err".into(),
+            tycon: "Result".into(),
+            ctor: "Err".into(),
             fields: Row {
                 fields: IndexMap::new(),
                 tail: RowTail::Empty,

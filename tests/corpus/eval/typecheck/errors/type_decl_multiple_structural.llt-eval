@@ -1,0 +1,6 @@
+# T-1542 / T-1539: Multiple structural bodies in a [type ...] declaration are rejected.
+# [type [foo: String] [bar: Int]] would be two structural alias bodies — this is an error.
+# Use [or [foo: String] [bar: Int]] for a union of structural types.
+[type [foo: String] [bar: Int]]
+=== error
+structural alias must have exactly one body; use [or ...] for a union of structural types

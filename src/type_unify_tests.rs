@@ -1902,14 +1902,16 @@ async fn test_unify_tycon_expand_nominal_variant_member_ok() {
 
     // Build body: Union([NominalVariant{Red}, NominalVariant{Green}])
     let red = Type::NominalVariant {
-        tag: "Color.Red".to_string(),
+        tycon: "Color".to_string(),
+        ctor: "Red".to_string(),
         fields: crate::type_def::Row {
             fields: IndexMap::new(),
             tail: crate::type_def::RowTail::Empty,
         },
     };
     let green = Type::NominalVariant {
-        tag: "Color.Green".to_string(),
+        tycon: "Color".to_string(),
+        ctor: "Green".to_string(),
         fields: crate::type_def::Row {
             fields: IndexMap::new(),
             tail: crate::type_def::RowTail::Empty,
@@ -1954,14 +1956,16 @@ async fn test_unify_tycon_expand_nominal_variant_non_member_fails() {
     let span = rust_span!();
 
     let red = Type::NominalVariant {
-        tag: "Color.Red".to_string(),
+        tycon: "Color".to_string(),
+        ctor: "Red".to_string(),
         fields: crate::type_def::Row {
             fields: IndexMap::new(),
             tail: crate::type_def::RowTail::Empty,
         },
     };
     let green = Type::NominalVariant {
-        tag: "Color.Green".to_string(),
+        tycon: "Color".to_string(),
+        ctor: "Green".to_string(),
         fields: crate::type_def::Row {
             fields: IndexMap::new(),
             tail: crate::type_def::RowTail::Empty,
@@ -1987,7 +1991,8 @@ async fn test_unify_tycon_expand_nominal_variant_non_member_fails() {
 
     // Blue is not in the union — should fail
     let blue = Type::NominalVariant {
-        tag: "Color.Blue".to_string(),
+        tycon: "Color".to_string(),
+        ctor: "Blue".to_string(),
         fields: crate::type_def::Row {
             fields: IndexMap::new(),
             tail: crate::type_def::RowTail::Empty,
@@ -2013,7 +2018,8 @@ async fn test_unify_tycon_expand_no_registered_body_fails() {
     // "Unknown" is not registered in tycon_env
     let tycon = Type::TyCon("Unknown".to_string());
     let variant = Type::NominalVariant {
-        tag: "Unknown.A".to_string(),
+        tycon: "Unknown".to_string(),
+        ctor: "A".to_string(),
         fields: crate::type_def::Row {
             fields: IndexMap::new(),
             tail: crate::type_def::RowTail::Empty,
@@ -2040,7 +2046,8 @@ async fn test_unify_tycon_expand_symmetric() {
     let span = rust_span!();
 
     let red = Type::NominalVariant {
-        tag: "Color.Red".to_string(),
+        tycon: "Color".to_string(),
+        ctor: "Red".to_string(),
         fields: crate::type_def::Row {
             fields: IndexMap::new(),
             tail: crate::type_def::RowTail::Empty,

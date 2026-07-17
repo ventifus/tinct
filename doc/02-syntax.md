@@ -590,8 +590,8 @@ r@[host: String  port: Int]                     # inline record annotation (no r
 
 # Type alias composition
 T1: [type [record host: String  port: Int]]
-T2: [type [Map T1]]            # Map of T1 values (key: Any) — collection perspective
-T3: [type [Map [String: T1]]]  # Map from String to T1 — lookup perspective
+T2: [type [_ : T1]]            # Map of T1 values (key: Any) — collection perspective
+T3: [type [String: T1]]        # Map from String to T1 — lookup perspective
 process: [fn [hosts@T2] ...]   # alias resolves transitively
 ```
 
@@ -681,8 +681,8 @@ Aliases compose with parameterized type annotations:
 
 ```tinct
 Config:     [type [record host: String  port: Int]]
-Hosts:      [type [Map Any Config]]       # collection of Config values (key: Any)
-NamedHosts: [type [Map [String: Config]]] # lookup: name → Config
+Hosts:      [type [_ : Config]]           # collection of Config values (key: Any)
+NamedHosts: [type [String: Config]]       # lookup: name → Config
 ```
 
 Type aliases are resolved at type-check time — they have no runtime cost.
@@ -691,11 +691,11 @@ Type aliases are resolved at type-check time — they have no runtime cost.
 
 ```tinct
 Color: [type Red Green Blue]                # unit constructors
-Option: [type [let a]  [Some value: a]  None]   # parameterized; Some has a payload field
+Option: [type [let a]  Some: [value: a]  None]   # parameterized; Some has a payload field
 
 # Annotating constructors with @[...]: place the annotation immediately after the constructor name
 TreeNode: [type
-  [Node@[as-type: fn  guarding: Bool]
+  Node@[as-type: fn  guarding: Bool]: [
     left@Child: TreeNode
     value: Int
     right@Child: TreeNode]
@@ -703,7 +703,7 @@ TreeNode: [type
 
 # Annotation fields on constructor names (CtorName@[key: val ...]):
 #   - Placed immediately after the constructor name (ImmediateAt syntax)
-#   - Parsed into SurfaceExpression::Annotated { name, annotation }
+#   - Parsed into SurfaceExpression::VarRef { name, annotation: Some(annotation) }
 #   - At desugar time, stored in the constructor function's FnAnnotation.extra
 #   - annotation-of on the constructor function returns these fields as a dict
 
@@ -1073,7 +1073,7 @@ type_body    = type_param_list? ~ type_ctor*      // sum type (constructors) or 
 type_param_list = "[" ~ "let" ~ param+ ~ "]"
 type_ctor    = ctor_unit | ctor_payload
 ctor_unit    = ctor_name ~ fn_annotation?          // bare name, optional @[...] annotation
-ctor_payload = "[" ~ ctor_name ~ fn_annotation? ~ ctor_field* ~ "]"
+ctor_payload = ctor_name ~ fn_annotation? ~ ":" ~ "[" ~ ctor_field* ~ "]"
 ctor_name    = UPPERCASE ~ ident_cont*             // constructor name must start uppercase
 ctor_field   = field_name ~ fn_annotation? ~ ":" ~ value   // field@[...]: Type
 field_name   = ident_start ~ ident_cont*           // lowercase field name

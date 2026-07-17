@@ -28,7 +28,7 @@ by case. This reuses tinct's existing convention: **uppercase = concrete type**
 |------------|-------------|---------|
 | `[ok: a]` | Structural record | Closed dict with key `"ok"`, value of type `a` |
 | `ok` | Structural unit | String literal `"ok"` |
-| `[Ok a]` | Nominal payload | Constructor `Ok` wrapping a value of type `a` |
+| `Ok: [value: a]` | Nominal payload | Constructor `Ok` wrapping a value of type `a` |
 | `None` | Nominal unit | Constructor `None` with no payload |
 
 ```tinct
@@ -37,15 +37,15 @@ Status:  [type "ok" "err" "pending"]
 Result:  [type [ok: a] [err: Str]]
 
 # Pure nominal (new) — uppercase bare words/forms are nominal constructors
-Option:  [type [Some a] None]
-Either:  [type [Left a] [Right b]]
+Option:  [type Some: [value: a] None]
+Either:  [type Left: [value: a] Right: [value: b]]
 Color:   [type Red Green Blue]
 
 # Mixed — structural and nominal variants in one type
 Outcome: [type
-    [ok: a]          # structural: plain dict, JSON-transparent
-    [Err Str]        # nominal: opaque error wrapper
-    "pending"]       # structural unit: string literal "pending"
+    [ok: a]              # structural: plain dict, JSON-transparent
+    Err: [msg: String]   # nominal: opaque error wrapper
+    "pending"]           # structural unit: string literal "pending"
 ```
 
 ### Construction
@@ -64,9 +64,9 @@ bound directly to `Value::Variant` values; payload constructors are bound to
 closures that wrap their argument:
 
 ```tinct
-wrapped:  [Some 42]       # → Variant { tag: "Some", payload: 42 }
-empty:    None            # → Variant { tag: "None", payload: None }
-colored:  Red             # → Variant { tag: "Red", payload: None }
+wrapped:  [Some 42]       # → Variant { tycon: "Option", ctor: "Some", payload: Some(42) }
+empty:    None            # → Variant { tycon: "Option", ctor: "None", payload: None }
+colored:  Red             # → Variant { tycon: "Color", ctor: "Red", payload: None }
 
 # Constructor functions are first-class values
 wrapped-items: [map Some items]   # wraps each item in Some
@@ -115,13 +115,15 @@ The structural vs nominal distinction in patterns is visually unambiguous:
 A `Value::Variant` variant in the evaluator:
 
 > **⚠ Updated by [arena-patterns.md](arena-patterns.md) (2026-05-04):** The arena migration changed `payload` from `Option<Rc<Thunk>>` to `Option<ThunkId>`.
+> **⚠ Updated by S-923 (2026-07-16):** The `tag` field was split into `tycon` (type constructor name) and `ctor` (constructor name).
 
 ```rust
 pub enum Value {
     // ... existing variants ...
     Variant {
-        tag: String,            // constructor name: "Some", "None", "Ok", "Err"
-        payload: Option<Rc<Thunk>>,  // None for unit constructors
+        tycon: String,          // type constructor: "Option", "Result", "Color"
+        ctor: String,           // constructor name: "Some", "Ok", "Red"
+        payload: Option<ThunkId>,  // None for unit constructors
     },
 }
 ```
@@ -162,24 +164,24 @@ the `[type ...]` declaration form. They do not interconvert:
 This separation is what makes nominal variants worth having. If they interconverted,
 the nominality guarantee (only constructors create variant values) would be lost.
 
-Mixed types (`Outcome: [type [ok: a] [Err Str] "pending"]`) are valid. Nominal arms
-in `[match]` check for `Value::Variant { tag }`, structural arms check for `Value::Dict`
+Mixed types (`Outcome: [type [ok: a] Err: [msg: String] "pending"]`) are valid. Nominal arms
+in `[match]` check for `Value::Variant { tycon, ctor }`, structural arms check for `Value::Dict`
 or string equality. No ambiguity at runtime because `Value::Variant` and `Value::Dict`
 are distinct runtime types.
 
 ### Interaction with Type System
 
-The type-level representation adds `Type::NominalVariant(tag: String, payload: Option<Box<Type>>)`.
+The type-level representation adds `Type::NominalVariant { tycon: String, ctor: String, fields: Row }`.
 A union containing nominal constructors expands to:
 
 ```rust
 Option a = Type::Union([
-    NominalVariant("Some", Some(TypeVar("a"))),
-    NominalVariant("None", None),
+    NominalVariant { tycon: "Option", ctor: "Some", fields: Row { value: TypeVar("a") } },
+    NominalVariant { tycon: "Option", ctor: "None", fields: Row::empty() },
 ])
 ```
 
-`is_subtype(NominalVariant("Some", Int), Union([NominalVariant("Some", a), NominalVariant("None", None)]))` succeeds by `[UNION-INJ-L]` with `a = Int`. `NominalVariant` is **never** a subtype of `Record` — nominal and structural are distinct in subtyping.
+`is_subtype(NominalVariant { ctor: "Some", fields: {value: Int} }, Union([NominalVariant { ctor: "Some", fields: {value: a} }, NominalVariant { ctor: "None", fields: {} }]))` succeeds by `[UNION-INJ-L]` with `a = Int`. `NominalVariant` is **never** a subtype of `Record` — nominal and structural are distinct in subtyping.
 
 Constructor type signatures are registered in the type environment:
 
@@ -235,7 +237,7 @@ Impact: Minor. One new AST variant (`Pattern::Constructor`), well-isolated.
 
 ### Value Representation (`src/value.rs`)
 
-`Value::Variant { tag: String, payload: Option<Rc<Thunk>> }` is added.
+`Value::Variant { tycon: String, ctor: String, payload: Option<ThunkId> }` is added.
 `type-of` returns `"Variant"`. `tag-of` builtin returns the constructor tag as a
 string. Serialization (`value_to_json`) gains the tagged-dict encoding.
 
@@ -245,7 +247,7 @@ Impact: Moderate. `Value` gains a new variant; every exhaustive `match` on
 
 ### Type Representation (`src/types.rs`)
 
-`Type::NominalVariant { tag: String, payload: Option<Box<Type>> }` is added.
+`Type::NominalVariant { tycon: String, ctor: String, fields: Row }` is added.
 Constructor signatures are registered in the type environment at union declaration
 time. `is_subtype` gains rules for `NominalVariant` (never a subtype of `Record`,
 subtype of a `Union` containing the matching `NominalVariant`).
@@ -258,7 +260,7 @@ registration logic.
 At `[type ...]` declaration time with nominal entries: register constructor
 functions in the type environment (`Some : Fn@[Option a] [a]`, `None :
 [Option a]`). In `[match]` arm type-checking: for `[Some v]` patterns, narrow
-the scrutinee to `NominalVariant("Some", _)` and bind `v` to the payload type.
+the scrutinee to `NominalVariant { ctor: "Some", .. }` and bind `v` to the payload type.
 Exhaustiveness checking verifies that nominal constructor arms cover all constructors.
 
 Impact: Moderate.
@@ -268,16 +270,16 @@ Impact: Moderate.
 When a `[type ...]` declaration with nominal entries is evaluated, register
 constructor values in the environment:
 
-- Unit constructors (`None`, `Red`): bind to `Value::Variant { tag, payload: None }`
+- Unit constructors (`None`, `Red`): bind to `Value::Variant { tycon, ctor, payload: None }`
 - Payload constructors (`Some`, `Ok`): bind to a closure
-  `fn(x) → Value::Variant { tag, payload: Some(x) }`
+  `fn(x) → Value::Variant { tycon, ctor, payload: Some(x) }`
 
 Constructor calls like `[Some 42]` are regular function application — the
 evaluator looks up `Some` via `Expr::VarRef`, finds the constructor closure,
 and applies it. No special evaluation path is needed.
 
 `[match]` arm evaluation: for `Pattern::Constructor`, materialize the scrutinee,
-check if it is `Value::Variant { tag }` with the matching tag, bind the payload
+check if it is `Value::Variant { tycon, ctor, .. }` with the matching tycon and ctor, bind the payload
 thunk to the pattern variable.
 
 Impact: Low–Moderate. Constructor registration at `[type]` declaration time

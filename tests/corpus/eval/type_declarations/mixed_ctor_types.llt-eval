@@ -1,0 +1,12 @@
+# T-1542: Mixed unit and payload constructors in a single [type ...] declaration.
+# Red and Blue are bare-word unit constructors; Green is a named-field payload constructor.
+# All three are accessible as qualified names from the Color dict.
+[
+  Color: [type Red Green: [value: Int] Blue]
+  r: Color.Red
+  g: [Color.Green value: 42]
+  b: Color.Blue
+  g-val: g.value
+]
+=== out
+Dict({"Color": Dict({"Red": Variant(Color.Red, Null), "Green": Function(value), "Blue": Variant(Color.Blue, Null)}), "r": Variant(Color.Red, Null), "g": Variant(Color.Green, Dict({"value": Int(42)})), "b": Variant(Color.Blue, Null), "g-val": Int(42)})

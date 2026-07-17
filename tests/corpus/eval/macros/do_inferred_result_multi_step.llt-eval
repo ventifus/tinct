@@ -3,4 +3,4 @@
 # → [Ok 3].
 [do [x: [Ok 1]] [y: [Ok 2]] [Ok [+ x y]]]
 === out
-Variant(Result.Ok, Int(3))
+Variant(Result.Ok, Dict({"value": Int(3)}))

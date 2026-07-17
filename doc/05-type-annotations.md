@@ -720,9 +720,14 @@ error: @ annotations outside type-assert or param contexts not yet supported
 |---|---|---|
 | Structural type expression | transparent alias | no |
 | `[let ...]` + structural body | parameterized transparent alias | no |
-| Uppercase bare words / `[UpperName ...]` forms | nominal ADT | yes |
+| Uppercase bare words and `Name: [fields]` keyed entries | nominal ADT | yes |
 | `[let ...]` + constructors | parameterized nominal ADT | yes |
 | `[builtin-type "X"]` | opaque, Rust-backed | yes |
+
+Three forms in the nominal ADT body:
+- **Unit constructor** — bare uppercase word: `Red`, `None`, `Noop`
+- **Payload constructor** — keyed entry: `Ok: [value: a]`, `Circle: [r: Int]`
+- (Unit constructors with bracket form `[Red]` are no longer valid; use bare words)
 
 ```tinct
 # Transparent aliases
@@ -732,12 +737,12 @@ Pair:        [type [let a b]  [first: a  second: b]]
 
 # Nominal ADTs — constructors accessed via dot
 Signal: [type SIGTERM SIGINT SIGHUP]
-Result: [type [let a]  [Ok value: a]  [Error msg: String]]
-Maybe:  [type [let a]  [Some value: a]  None]
+Result: [type [let a]  Ok: [value: a]  Error: [msg: String]]
+Maybe:  [type [let a]  Some: [value: a]  None]
 Color:  [type Red Green Blue]
 
 # Parameterized with variance annotations
-Tree:   [type [let a@Covariant]  Leaf  [Node value: a  left: [Tree a]  right: [Tree a]]]
+Tree:   [type [let a@Covariant]  Leaf  Node: [value: a  left: [Tree a]  right: [Tree a]]]
 
 # Builtin-type declarations (Rust Value variants)
 Int:    [type [builtin-type "Int"]]
@@ -785,7 +790,7 @@ Constructor patterns use the same dot syntax in pattern head position:
 
 Dot-access in pattern head position is syntactically assembled by the parser via `flatten_dot_access_to_tag` in `src/ast.rs`. Bare uppercase words in constructor patterns are also recognized and rewritten to their qualified form by `typecheck_match.rs`.
 
-**Constructor injection in expression position** — bare `Ok`, `Error`, `Some`, `None` work in expression position because `inject_adt_constructors_expr` (in `src/desugar.rs`) rewrites each `[type ...]` declaration to also inject its constructors as sibling dict entries. For example, declaring `Result: [type [Ok a] [Error String]]` causes `Ok` and `Error` to be injected as callable constructor functions alongside `Result` in the enclosing scope. No separate prelude aliases are needed — and none exist (adding them would cause E030 duplicate key). B-340 tracks the type-checker UX limitation that these injected names are not currently visible to the type checker, which produces spurious T002 "undefined variable" warnings for bare `Ok`/`Error`/`Some`/`None` in user code.
+**Constructor injection in expression position** — bare `Ok`, `Error`, `Some`, `None` work in expression position because `inject_adt_constructors_expr` (in `src/desugar.rs`) rewrites each `[type ...]` declaration to also inject its constructors as sibling dict entries. For example, declaring `Result: [type Ok: [value: a] Error: [msg: String]]` causes `Ok` and `Error` to be injected as callable constructor functions alongside `Result` in the enclosing scope. No separate prelude aliases are needed — and none exist (adding them would cause E030 duplicate key). B-340 tracks the type-checker UX limitation that these injected names are not currently visible to the type checker, which produces spurious T002 "undefined variable" warnings for bare `Ok`/`Error`/`Some`/`None` in user code.
 
 Pattern position requires qualified forms: `[Result.Ok v]:`, `[Maybe.None]:`, etc.
 

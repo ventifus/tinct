@@ -6,7 +6,7 @@
   [x: [%.safe-mod 17 5]]
   [y: [%.safe-mod x 3]]
   [Ok [+ y 10]]]
-  [case [let v] [Result.Ok v]    v]
-  [case [let e] [Result.Error e] -1]]
+  [case [let p] [Result.Ok p]    p.value]
+  [case [let _] [Result.Error]   -1]]
 === out
 Int(12)

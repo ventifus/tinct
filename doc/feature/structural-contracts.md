@@ -33,6 +33,10 @@ The type system checks structure — "is this an Int? is this a String?" — at 
 %@NginxConfig
 
 NginxConfig: [type [port: Int  hostname: String  locations: [path: String  upstream: String]]]
+# Note: [type [lowercase-keyed dict body]] is the structural alias form — a transparent
+# record type. @NginxConfig expands to the record body at annotation resolution time.
+# This form is distinct from payload constructors, which use [type CtorName: [fields]].
+# A structural alias has exactly one lowercase-keyed dict body (no CtorName:).
 
 nginx-schema: [
   port: [min: 1  max: 65535]

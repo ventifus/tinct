@@ -3,9 +3,4 @@
 [tls-layer handle "example.com" []]
 
 === error
-undefined variable: builtin-tls-layer (defined at stdlib/prelude.llt:2712:49-2712:66) (called at 2:1-2:36)
-  --> stdlib/prelude.llt:2712:49-2712:66
-   |
-  2712 | tls-layer@[doc: "Layer TLS over a connection"]: builtin-tls-layer
-       |                                                 ^^^^^^^^^^^^^^^^^
-  in [tls-layer ...] at 2:1-2:36
+undefined variable: builtin-tls-layer

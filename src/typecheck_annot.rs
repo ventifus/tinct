@@ -205,7 +205,11 @@ fn walk_polarity(
         // NominalVariant fields are in covariant position — values stored in a variant
         // constructor are accessible (read), so they vary covariantly.
         // This ensures that `a` in `Result[Ok value: a]` is not classified as Phantom.
-        Type::NominalVariant { fields, .. } => {
+        Type::NominalVariant {
+            tycon: _,
+            ctor: _,
+            fields,
+        } => {
             for t in fields.fields.values() {
                 walk_polarity(t, pol, params, pos_seen, neg_seen, type_env);
             }
@@ -1962,7 +1966,11 @@ fn apply_type_alias_substitution(
             Box::new(apply_type_alias_substitution(f, subst, state)),
             Box::new(apply_type_alias_substitution(arg, subst, state)),
         ),
-        Type::NominalVariant { tag, fields } => {
+        Type::NominalVariant {
+            tycon,
+            ctor,
+            fields,
+        } => {
             let new_fields: indexmap::IndexMap<String, Type> = fields
                 .fields
                 .iter()
@@ -1980,7 +1988,8 @@ fn apply_type_alias_substitution(
                 other => other.clone(),
             };
             Type::NominalVariant {
-                tag: tag.clone(),
+                tycon: tycon.clone(),
+                ctor: ctor.clone(),
                 fields: Row {
                     fields: new_fields,
                     tail: new_tail,
@@ -2883,12 +2892,10 @@ pub(crate) async fn resolve_type_expr(
             {
                 Ok(ty) => Ok(ty),
                 Err(e) if crate::eval::is_constructor_name(name) => {
-                    // Unknown uppercase name: treat as a zero-payload nominal variant constructor.
-                    // This handles variant tags in type alias bodies such as `None` in
-                    // `[type [Option a] [Some a] None]` where `None` has no payload.
-                    let _ = e; // suppress the undefined-type error
+                    let _ = e;
                     Ok(Type::NominalVariant {
-                        tag: name.clone(),
+                        tycon: String::new(),
+                        ctor: name.clone(),
                         fields: Row {
                             fields: indexmap::IndexMap::new(),
                             tail: crate::type_def::RowTail::Empty,
@@ -3174,23 +3181,8 @@ pub(crate) async fn resolve_type_expr(
                         })
                         .collect();
 
-                    // Collect non-annotated positional args (old-style [Some a] payload).
-                    let positional_non_annotated: Vec<_> = args
-                        .iter()
-                        .filter(|arg| {
-                            !matches!(
-                                &arg.expr,
-                                SurfaceExpression::VarRef {
-                                    annotation: Some(_),
-                                    ..
-                                }
-                            )
-                        })
-                        .collect();
-
                     let has_payload_named = !payload_named.is_empty();
                     let has_payload_annotated = !payload_annotated.is_empty();
-                    let has_positional = !positional_non_annotated.is_empty();
 
                     if has_payload_named || has_payload_annotated {
                         // Mixed constants + payload fields, or payload-only.
@@ -3230,49 +3222,17 @@ pub(crate) async fn resolve_type_expr(
                         }
 
                         return Ok(Type::NominalVariant {
-                            tag: name.clone(),
+                            tycon: String::new(),
+                            ctor: name.clone(),
                             fields: Row {
                                 fields: fields_map,
                                 tail: crate::type_def::RowTail::Empty,
                             },
                         });
-                    } else if has_positional {
-                        // Old-style single positional payload: [Some a] → NominalVariant("Some", { "0": a })
-                        // Only valid when exactly one non-annotated positional arg is present.
-                        if positional_non_annotated.len() == 1 {
-                            let payload_ty = Box::pin(resolve_type_expr(
-                                positional_non_annotated[0],
-                                env,
-                                state,
-                                constraints,
-                                ann_mapping,
-                                row_ann_mapping,
-                                type_params_scope,
-                            ))
-                            .await?;
-                            let mut fields_map = indexmap::IndexMap::new();
-                            fields_map.insert("0".to_string(), payload_ty);
-                            return Ok(Type::NominalVariant {
-                                tag: name.clone(),
-                                fields: Row {
-                                    fields: fields_map,
-                                    tail: crate::type_def::RowTail::Empty,
-                                },
-                            });
-                        } else {
-                            return Err(TypeError::new(
-                                format!(
-                                    "nominal constructor {} requires either 0 args, 1 positional arg, or named/annotated payload fields",
-                                    name
-                                ),
-                                node.span.clone(),
-                            ));
-                        }
                     } else {
-                        // No payload: all named_args are constants, no annotated positionals.
-                        // Unit constructor (with or without constants): NominalVariant with empty fields.
                         return Ok(Type::NominalVariant {
-                            tag: name.clone(),
+                            tycon: String::new(),
+                            ctor: name.clone(),
                             fields: Row {
                                 fields: indexmap::IndexMap::new(),
                                 tail: crate::type_def::RowTail::Empty,
@@ -3558,6 +3518,155 @@ pub(crate) async fn resolve_type_dict(
         }
     }
 
+    // Named uppercase-key constructor form: `[type File: [path: String] Noop]`
+    //
+    // Detected when ANY entry has a named key whose name starts with an uppercase letter.
+    // In this form:
+    //   - Named entry with uppercase-first key → payload constructor:
+    //       `File: [path: String]` → NominalVariant { tycon: "TypeName", ctor: "File", fields: {path: String} }
+    //   - Positional entry with bare uppercase VarRef → unit constructor:
+    //       `Noop` → NominalVariant { tycon: "TypeName", ctor: "Noop", fields: {} }
+    //
+    // This is the new syntax for payload constructors (T-1538). The old form
+    // `[File path: String]` (uppercase name in positional head) now produces a parse error.
+    {
+        let has_named_uppercase_key = entries.iter().any(|e| {
+            if let Some(k) = &e.node.key {
+                matches!(&k.expr, SurfaceExpression::VarRef { name, .. }
+                    if crate::eval::is_constructor_name(name))
+            } else {
+                false
+            }
+        });
+
+        if has_named_uppercase_key {
+            let mut members: Vec<Type> = Vec::with_capacity(entries.len());
+            for entry in entries {
+                match &entry.node.key {
+                    Some(key_node) => {
+                        // Named entry: uppercase key is the constructor name, value is payload.
+                        let ctor_name = match &key_node.expr {
+                            SurfaceExpression::VarRef { name, .. } => name.clone(),
+                            _ => {
+                                return Err(TypeError::new(
+                                    "named constructor key must be a bare uppercase word",
+                                    key_node.span.clone(),
+                                ))
+                            }
+                        };
+                        if !crate::eval::is_constructor_name(&ctor_name) {
+                            return Err(TypeError::new(
+                                format!(
+                                    "constructor name must start with an uppercase letter, got `{ctor_name}`"
+                                ),
+                                key_node.span.clone(),
+                            ));
+                        }
+                        // Resolve the payload dict. The value should be a Dict of named fields.
+                        let variant_fields: indexmap::IndexMap<String, Type> = match &entry
+                            .node
+                            .value
+                            .expr
+                        {
+                            SurfaceExpression::Dict(field_entries) => {
+                                let mut fields = indexmap::IndexMap::new();
+                                for fe in field_entries {
+                                    let field_name = match &fe.node.key {
+                                            Some(k) => match &k.expr {
+                                                SurfaceExpression::StringLiteral {
+                                                    content: s,
+                                                    ..
+                                                } => s.clone(),
+                                                SurfaceExpression::VarRef { name, .. } => {
+                                                    name.clone()
+                                                }
+                                                _ => {
+                                                    return Err(TypeError::new(
+                                                        "payload field names must be bare words",
+                                                        k.span.clone(),
+                                                    ))
+                                                }
+                                            },
+                                            None => {
+                                                return Err(TypeError::new(
+                                                    "payload constructor fields must be named (e.g. `path: String`)",
+                                                    fe.span.clone(),
+                                                ))
+                                            }
+                                        };
+                                    let field_ty = Box::pin(resolve_type_expr(
+                                        &fe.node.value,
+                                        env,
+                                        state,
+                                        constraints,
+                                        ann_mapping,
+                                        row_ann_mapping,
+                                        type_params_scope,
+                                    ))
+                                    .await?;
+                                    fields.insert(field_name, field_ty);
+                                }
+                                fields
+                            }
+                            _ => {
+                                // Single non-dict value as payload — resolve as positional field "0".
+                                let payload_ty = Box::pin(resolve_type_expr(
+                                    &entry.node.value,
+                                    env,
+                                    state,
+                                    constraints,
+                                    ann_mapping,
+                                    row_ann_mapping,
+                                    type_params_scope,
+                                ))
+                                .await?;
+                                let mut fields = indexmap::IndexMap::new();
+                                fields.insert("0".to_string(), payload_ty);
+                                fields
+                            }
+                        };
+                        members.push(Type::NominalVariant {
+                            tycon: String::new(),
+                            ctor: ctor_name,
+                            fields: Row {
+                                fields: variant_fields,
+                                tail: crate::type_def::RowTail::Empty,
+                            },
+                        });
+                    }
+                    None => {
+                        // Positional entry: must be a bare uppercase VarRef (unit constructor).
+                        match &entry.node.value.expr {
+                            SurfaceExpression::VarRef { name, .. }
+                                if crate::eval::is_constructor_name(name) =>
+                            {
+                                members.push(Type::NominalVariant {
+                                    tycon: String::new(),
+                                    ctor: name.clone(),
+                                    fields: Row {
+                                        fields: indexmap::IndexMap::new(),
+                                        tail: crate::type_def::RowTail::Empty,
+                                    },
+                                });
+                            }
+                            _ => {
+                                return Err(TypeError::new(
+                                    "in a mixed constructor body, positional entries must be bare uppercase unit constructor names (e.g. `Noop`)",
+                                    entry.span.clone(),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            return Ok(if members.len() == 1 {
+                members.into_iter().next().unwrap()
+            } else {
+                Type::normalize_union(members)
+            });
+        }
+    }
+
     // Nominal variant constructor: [Constructor payload-type] or [Constructor field: Type ...]
     // Matches either form:
     // - Pure positional with uppercase first entry (e.g., [Ok a], [None]):
@@ -3619,9 +3728,9 @@ pub(crate) async fn resolve_type_dict(
                             entries[1..].iter().all(|e| e.node.key.is_none());
                         if all_remaining_positional {
                             if entries.len() == 1 {
-                                // Unit constructor: [None]
                                 return Ok(Type::NominalVariant {
-                                    tag: tag.to_string(),
+                                    tycon: String::new(),
+                                    ctor: tag.to_string(),
                                     fields: Row {
                                         fields: indexmap::IndexMap::new(),
                                         tail: crate::type_def::RowTail::Empty,
@@ -3660,11 +3769,11 @@ pub(crate) async fn resolve_type_dict(
                                         type_params_scope,
                                     )
                                     .await?;
-                                    // Unnamed payload: create record with single field "0"
                                     let mut fields = indexmap::IndexMap::new();
                                     fields.insert("0".to_string(), payload_ty);
                                     return Ok(Type::NominalVariant {
-                                        tag: tag.to_string(),
+                                        tycon: String::new(),
+                                        ctor: tag.to_string(),
                                         fields: Row {
                                             fields,
                                             tail: crate::type_def::RowTail::Empty,
@@ -3722,7 +3831,8 @@ pub(crate) async fn resolve_type_dict(
                                 }
                             }
                             return Ok(Type::NominalVariant {
-                                tag: tag.to_string(),
+                                tycon: String::new(),
+                                ctor: tag.to_string(),
                                 fields: Row {
                                     fields: variant_fields,
                                     tail: crate::type_def::RowTail::Empty,
@@ -3758,7 +3868,8 @@ pub(crate) async fn resolve_type_dict(
                         _ => unreachable!(),
                     };
                     Type::NominalVariant {
-                        tag: name,
+                        tycon: String::new(),
+                        ctor: name,
                         fields: Row {
                             fields: indexmap::IndexMap::new(),
                             tail: crate::type_def::RowTail::Empty,
@@ -4112,7 +4223,12 @@ fn typenode_value_to_type<'a>(
             // T-1555: Value::Annotated is removed; annotated bindings no longer need unwrapping.
 
             // TypeNode Variant values produced by the TypeNode ADT (T-1058 / T-1061).
-            Value::Variant { tag, payload: _ } => {
+            Value::Variant {
+                tycon,
+                ctor,
+                payload: _,
+            } => {
+                let tag = format!("{}.{}", tycon, ctor);
                 match tag.as_str() {
                     // ── Primitive leaf constructors ──────────────────────────────────────
                     // No payload — map directly to concrete Type variants.
@@ -4384,22 +4500,14 @@ fn typenode_value_to_type<'a>(
                     let thunk = ctx.get_thunk(*thunk_id);
                     if let Some(val) = thunk.try_get_materialized() {
                         match val {
-                            Value::Variant { tag, .. } => {
-                                if let Some(dot) = tag.rfind('.') {
-                                    let p = &tag[..dot];
-                                    match &prefix {
-                                        None => prefix = Some(p.to_string()),
-                                        Some(existing) if existing == p => {}
-                                        _ => {
-                                            all_match = false;
-                                            break;
-                                        }
-                                    }
-                                } else {
+                            Value::Variant { tycon, .. } => match &prefix {
+                                None => prefix = Some(tycon.clone()),
+                                Some(existing) if *existing == tycon => {}
+                                _ => {
                                     all_match = false;
                                     break;
                                 }
-                            }
+                            },
                             // Function entries (payload constructors) — still count as the same ADT
                             Value::Function { .. } | Value::Builtin(_) => {}
                             _ => {
@@ -4459,35 +4567,43 @@ fn type_to_typenode_value<'a>(
 
         Some(match ty {
             Type::Int => Value::Variant {
-                tag: "TypeNode.Int".to_string(),
+                tycon: "TypeNode".to_string(),
+                ctor: "Int".to_string(),
                 payload: None,
             },
             Type::Float => Value::Variant {
-                tag: "TypeNode.Float".to_string(),
+                tycon: "TypeNode".to_string(),
+                ctor: "Float".to_string(),
                 payload: None,
             },
             Type::Str => Value::Variant {
-                tag: "TypeNode.String".to_string(),
+                tycon: "TypeNode".to_string(),
+                ctor: "String".to_string(),
                 payload: None,
             },
             Type::Bytes => Value::Variant {
-                tag: "TypeNode.Bytes".to_string(),
+                tycon: "TypeNode".to_string(),
+                ctor: "Bytes".to_string(),
                 payload: None,
             },
             Type::Any => Value::Variant {
-                tag: "TypeNode.Top".to_string(),
+                tycon: "TypeNode".to_string(),
+                ctor: "Top".to_string(),
                 payload: None,
             },
             Type::Never => Value::Variant {
-                tag: "TypeNode.Never".to_string(),
+                tycon: "TypeNode".to_string(),
+                ctor: "Never".to_string(),
                 payload: None,
             },
             Type::Unknown => Value::Variant {
-                tag: "TypeNode.Unknown".to_string(),
+                tycon: "TypeNode".to_string(),
+                ctor: "Unknown".to_string(),
                 payload: None,
             },
             Type::Proxy => Value::Variant {
-                tag: "TypeNode.Proxy".to_string(),
+                tycon: "TypeNode".to_string(),
+                ctor: "Proxy".to_string(),
                 payload: None,
             },
             Type::TypeVar(name, level) => {
@@ -4497,7 +4613,8 @@ fn type_to_typenode_value<'a>(
                 payload.insert(HashableValue::Str("level".into()), alloc_int(*level as i64));
                 let payload_tid = alloc_val(Value::Dict(payload));
                 Value::Variant {
-                    tag: "TypeNode.TypeVar".to_string(),
+                    tycon: "TypeNode".to_string(),
+                    ctor: "TypeVar".to_string(),
                     payload: Some(payload_tid),
                 }
             }
@@ -4520,7 +4637,8 @@ fn type_to_typenode_value<'a>(
                 payload.insert(HashableValue::Str("open".into()), open_tid);
                 let payload_tid = alloc_val(Value::Dict(payload));
                 Value::Variant {
-                    tag: "TypeNode.Dict".to_string(),
+                    tycon: "TypeNode".to_string(),
+                    ctor: "Dict".to_string(),
                     payload: Some(payload_tid),
                 }
             }
@@ -4538,7 +4656,8 @@ fn type_to_typenode_value<'a>(
                 payload.insert(HashableValue::Str("types".into()), types_tid);
                 let payload_tid = alloc_val(Value::Dict(payload));
                 Value::Variant {
-                    tag: "TypeNode.Union".to_string(),
+                    tycon: "TypeNode".to_string(),
+                    ctor: "Union".to_string(),
                     payload: Some(payload_tid),
                 }
             }
@@ -4976,9 +5095,11 @@ pub(crate) fn body_contains_tycon_ref(ty: &Type) -> bool {
             members.iter().any(body_contains_tycon_ref)
         }
         Type::Negation(inner) => body_contains_tycon_ref(inner),
-        Type::NominalVariant { fields, .. } => {
-            // B-366: Check both fields.fields AND fields.tail for TyCon refs.
-            // Matches the pattern from the Record arm and B-356's apply_type_alias_substitution fix.
+        Type::NominalVariant {
+            tycon: _,
+            ctor: _,
+            fields,
+        } => {
             if fields.fields.values().any(body_contains_tycon_ref) {
                 return true;
             }
@@ -5035,9 +5156,11 @@ pub(crate) fn contains_recvar(ty: &Type, var: &str) -> bool {
             members.iter().any(|m| contains_recvar(m, var))
         }
         Type::Negation(inner) => contains_recvar(inner, var),
-        Type::NominalVariant { fields, .. } => {
-            // T-1160: Check both fields.fields AND fields.tail for recursive var refs.
-            // Matches the pattern from the Record arm.
+        Type::NominalVariant {
+            tycon: _,
+            ctor: _,
+            fields,
+        } => {
             if fields.fields.values().any(|t| contains_recvar(t, var)) {
                 return true;
             }
@@ -5398,7 +5521,11 @@ pub(crate) fn expand_all_tycon_apps(ty: &Type, env: &TypeEnv, state: &mut InferS
 
         Type::Negation(inner) => Type::Negation(Box::new(expand_all_tycon_apps(inner, env, state))),
 
-        Type::NominalVariant { tag, fields } => {
+        Type::NominalVariant {
+            tycon,
+            ctor,
+            fields,
+        } => {
             let new_fields: indexmap::IndexMap<String, Type> = fields
                 .fields
                 .iter()
@@ -5416,7 +5543,8 @@ pub(crate) fn expand_all_tycon_apps(ty: &Type, env: &TypeEnv, state: &mut InferS
                 other => other.clone(),
             };
             Type::NominalVariant {
-                tag: tag.clone(),
+                tycon: tycon.clone(),
+                ctor: ctor.clone(),
                 fields: Row {
                     fields: new_fields,
                     tail: new_tail,

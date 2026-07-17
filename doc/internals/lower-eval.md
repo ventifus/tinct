@@ -116,15 +116,15 @@ This produces a runtime type check injected by the type checker, not written by 
 
 ```
 Color: {
-    Red:   Variant { tag: "Color.Red",   payload: None }
-    Green: Variant { tag: "Color.Green", payload: None }
-    Blue:  Variant { tag: "Color.Blue",  payload: None }
+    Red:   Variant { tycon: "Color", ctor: "Red",   payload: None }
+    Green: Variant { tycon: "Color", ctor: "Green", payload: None }
+    Blue:  Variant { tycon: "Color", ctor: "Blue",  payload: None }
 }
 ```
 
-Payload constructors (`[Circle r: Float]`) lower to functions:
+Payload constructors (`Circle: [r: Float]`) lower to functions:
 ```
-Circle: [fn [let r] Variant { tag: "Color.Circle", payload: { r: $r } }]
+Circle: [fn [let r] Variant { tycon: "Color", ctor: "Circle", payload: { r: $r } }]
 ```
 
 A `TypeAlias` in standalone expression position (not a dict-entry value) lowers to `CoreExpr::Dict([])` — an empty dict. There is no name to bind constructors under.

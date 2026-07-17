@@ -314,7 +314,11 @@ async fn field_get_on_value(
             )
             .await
         }
-        Value::Variant { tag, payload } => {
+        Value::Variant {
+            tycon,
+            ctor,
+            payload,
+        } => {
             // Variant auto-unpacking: dot-access on a variant accesses the payload.
             match payload {
                 Some(payload_id) => {
@@ -322,34 +326,34 @@ async fn field_get_on_value(
                     let payload_span = payload_thunk.span.clone();
                     let payload_val = materialize(&payload_thunk, Some(&call_span), ctx).await?;
                     // Recurse with variant_tag set so TyConDef constants can be found.
+                    let composite_tag = format!("{}.{}", tycon, ctor);
                     Box::pin(field_get_on_value(
                         key,
                         payload_val,
                         payload_span,
                         call_span,
-                        Some(tag),
+                        Some(composite_tag),
                         ctx,
                     ))
                     .await
                 }
                 None => {
                     // Unit variant: try TyConDef constructor constants first (T-1358).
+                    let composite_tag = format!("{}.{}", tycon, ctor);
                     if let HashableValue::Str(ref field_name) = key {
-                        if let Some(type_name) = tag.split('.').next() {
-                            if let Some(tycon_env) = ctx.tycon_env.get() {
-                                if let Some(def) = tycon_env.get(type_name) {
-                                    if let Some(constants) =
-                                        def.constructor_constants.get(tag.as_str())
+                        if let Some(tycon_env) = ctx.tycon_env.get() {
+                            if let Some(def) = tycon_env.get(tycon.as_str()) {
+                                if let Some(constants) =
+                                    def.constructor_constants.get(composite_tag.as_str())
+                                {
+                                    if let Some(const_val) =
+                                        constants.get(field_name.as_ref() as &str)
                                     {
-                                        if let Some(const_val) =
-                                            constants.get(field_name.as_ref() as &str)
-                                        {
-                                            let thunk = Arc::new(Thunk::value(
-                                                const_val.clone(),
-                                                call_span.clone(),
-                                            ));
-                                            return Ok(thunk);
-                                        }
+                                        let thunk = Arc::new(Thunk::value(
+                                            const_val.clone(),
+                                            call_span.clone(),
+                                        ));
+                                        return Ok(thunk);
                                     }
                                 }
                             }
@@ -1743,9 +1747,10 @@ pub(crate) fn builtin_get_by_field(
         for (_name, thunk_id) in &dict_entries {
             let entry_thunk = ctx.get_thunk(*thunk_id);
             let entry_val = materialize(&entry_thunk, Some(&call_span), &ctx).await?;
-            if let Value::Variant { ref tag, .. } = entry_val {
-                // tag is "TypeName.CtorName" — prefix before the first '.' is the type name
-                if let Some(prefix) = tag.split('.').next() {
+            if let Value::Variant { ref tycon, .. } = entry_val {
+                // tycon is the type name
+                {
+                    let prefix = tycon;
                     type_name = Some(prefix.to_string());
                     break;
                 }

@@ -7,4 +7,4 @@
 # This test covers the explicit-specifier + bare-constructor path.
 [do result [Ok value: 42]]
 === out
-Variant(Result.Ok, Int(42))
+Variant(Result.Ok, Dict({"value": Int(42)}))

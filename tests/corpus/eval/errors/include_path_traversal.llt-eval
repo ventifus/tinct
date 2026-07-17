@@ -5,40 +5,4 @@
 
 [include %cwd "../../etc/passwd"]
 === error
-open: failed to open file '../../etc/passwd': a path led outside of the filesystem (defined at stdlib/prelude.llt:3434:30-3434:63) (called at stdlib/prelude.llt:3435:20-3435:55)
-  --> stdlib/prelude.llt:3434:30-3434:63
-   |
-  3434 |   [source: [builtin-read-all [open cap path OpenFlag.Readable]]]
-       |                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [open ...] at stdlib/prelude.llt:3434:30-3434:63
-   |
-  3434 |   [source: [builtin-read-all [open cap path OpenFlag.Readable]]]
-       |                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-read-all ...] at stdlib/prelude.llt:3434:12-3434:64
-   |
-  3434 |   [source: [builtin-read-all [open cap path OpenFlag.Readable]]]
-       |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [str ...] at stdlib/prelude.llt:3435:20-3435:55
-   |
-  3435 |   [hash:   [blake3 [str [cap-identity cap] "|" source]]]
-       |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [blake3 ...] at stdlib/prelude.llt:3435:12-3435:56
-   |
-  3435 |   [hash:   [blake3 [str [cap-identity cap] "|" source]]]
-       |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:3436:10-3436:42
-   |
-  3436 |   [match [builtin-include-cache-get hash]
-       |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-include-cache-get ...] at stdlib/prelude.llt:3436:10-3436:42
-   |
-  3436 |   [match [builtin-include-cache-get hash]
-       |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:3436:3-3439:121
-   |
-  3436 |   [match [builtin-include-cache-get hash]
-  3437 |     [case [let result] [IncludeCacheEntry.Cached result] result]
-  3438 |     [IncludeCacheEntry.Pending]:       [error [str "circular include: " path]]
-  3439 |     [IncludeCacheEntry.Missing]:       [include-evaluate-and-cache source path hash cap integrity-hash: integrity-hash]]]
-       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [include ...] at 5:1-5:34
+open: failed to open file '../../etc/passwd': a path led outside of the filesystem

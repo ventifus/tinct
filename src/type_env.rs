@@ -171,8 +171,13 @@ fn rename_single_type_var(ty: &Type, old_name: &str, fresh_name: &str, level: u3
                 .map(|arg| rename_single_type_var(arg, old_name, fresh_name, level))
                 .collect(),
         },
-        Type::NominalVariant { tag, fields } => Type::NominalVariant {
-            tag: tag.clone(),
+        Type::NominalVariant {
+            tycon,
+            ctor,
+            fields,
+        } => Type::NominalVariant {
+            tycon: tycon.clone(),
+            ctor: ctor.clone(),
             fields: rename_single_type_var_in_row(fields, old_name, fresh_name, level),
         },
         // Recursive(μvar.body): rename inside body; do NOT rename the μ-binder itself.

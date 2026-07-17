@@ -519,7 +519,8 @@ pub(crate) fn builtin_recv(
                         // Channel closed
                         ok_val(
                             Value::Variant {
-                                tag: "Closed.Closed".to_string(),
+                                tycon: "Closed".to_string(),
+                                ctor: "Closed".to_string(),
                                 payload: None,
                             },
                             call_span,
@@ -552,7 +553,8 @@ pub(crate) fn builtin_recv(
                         let count_thunk_id = ctx.alloc_thunk(0, count_thunk);
                         ok_val(
                             Value::Variant {
-                                tag: "Lagged.Lagged".to_string(),
+                                tycon: "Lagged".to_string(),
+                                ctor: "Lagged".to_string(),
                                 payload: Some(count_thunk_id),
                             },
                             call_span,
@@ -562,7 +564,8 @@ pub(crate) fn builtin_recv(
                         // Channel closed
                         ok_val(
                             Value::Variant {
-                                tag: "Closed.Closed".to_string(),
+                                tycon: "Closed".to_string(),
+                                ctor: "Closed".to_string(),
                                 payload: None,
                             },
                             call_span,
@@ -598,7 +601,8 @@ pub(crate) fn builtin_recv(
                         // Sender dropped before sending
                         ok_val(
                             Value::Variant {
-                                tag: "Closed.Closed".to_string(),
+                                tycon: "Closed".to_string(),
+                                ctor: "Closed".to_string(),
                                 payload: None,
                             },
                             call_span,
@@ -776,7 +780,8 @@ pub(crate) fn builtin_try_send(
                         // Channel full: return [Full]
                         ok_val(
                             Value::Variant {
-                                tag: "Full.Full".to_string(),
+                                tycon: "Full".to_string(),
+                                ctor: "Full".to_string(),
                                 payload: None,
                             },
                             call_span,
@@ -786,7 +791,8 @@ pub(crate) fn builtin_try_send(
                         // Channel closed: return [Closed] variant, consistent with recv/select-once
                         ok_val(
                             Value::Variant {
-                                tag: "Closed.Closed".to_string(),
+                                tycon: "Closed".to_string(),
+                                ctor: "Closed".to_string(),
                                 payload: None,
                             },
                             call_span,
@@ -996,7 +1002,8 @@ pub(crate) fn builtin_select_once(
                                     // All channels closed — return [Closed]
                                     return ok_val(
                                         Value::Variant {
-                                            tag: "Closed.Closed".to_string(),
+                                            tycon: "Closed".to_string(),
+                                            ctor: "Closed".to_string(),
                                             payload: None,
                                         },
                                         call_span,
@@ -1026,7 +1033,8 @@ pub(crate) fn builtin_select_once(
                                     // All channels closed — return [Closed]
                                     return ok_val(
                                         Value::Variant {
-                                            tag: "Closed.Closed".to_string(),
+                                            tycon: "Closed".to_string(),
+                                            ctor: "Closed".to_string(),
                                             payload: None,
                                         },
                                         call_span,
@@ -1054,7 +1062,8 @@ pub(crate) fn builtin_select_once(
                                 // All channels closed — return [Closed]
                                 return ok_val(
                                     Value::Variant {
-                                        tag: "Closed.Closed".to_string(),
+                                        tycon: "Closed".to_string(),
+                                        ctor: "Closed".to_string(),
                                         payload: None,
                                     },
                                     call_span,
@@ -1086,7 +1095,8 @@ pub(crate) fn builtin_select_once(
                                     // All channels closed — return [Closed]
                                     return ok_val(
                                         Value::Variant {
-                                            tag: "Closed.Closed".to_string(),
+                                            tycon: "Closed".to_string(),
+                                            ctor: "Closed".to_string(),
                                             payload: None,
                                         },
                                         call_span,
@@ -1526,7 +1536,11 @@ pub(crate) fn builtin_signal_channel(
             let head_thunk = ctx.get_thunk(*val_id);
             let head_val = materialize(&head_thunk, Some(&call_span), &ctx).await?;
             let name = match head_val {
-                Value::Variant { ref tag, .. } => tag.clone(),
+                Value::Variant {
+                    ref tycon,
+                    ref ctor,
+                    ..
+                } => format!("{}.{}", tycon, ctor),
                 _ => {
                     return Err(
                         EvalError::type_mismatch("Signal", head_val.type_name(), call_span).into(),
@@ -1589,8 +1603,12 @@ pub(crate) fn builtin_signal_channel(
                                 if result.is_none() {
                                     break;
                                 }
+                                let (sig_tycon, sig_ctor) = sig_name
+                                    .split_once('.')
+                                    .unwrap_or(("", sig_name.as_str()));
                                 let _ = tx_clone.try_send(Value::Variant {
-                                    tag: sig_name.clone(),
+                                    tycon: sig_tycon.to_string(),
+                                    ctor: sig_ctor.to_string(),
                                     payload: None,
                                 });
                             }
@@ -1981,7 +1999,8 @@ pub(crate) fn builtin_with_cancel(
 
         ok_val(
             Value::Variant {
-                tag: "CancelHandle".to_string(),
+                tycon: "CancelHandle".to_string(),
+                ctor: "CancelHandle".to_string(),
                 payload: Some(payload_thunk_id),
             },
             call_span,

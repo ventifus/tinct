@@ -2,7 +2,7 @@
 # [Circle r: 5] calls the Circle constructor with r=5.
 # [Square s: 10] calls the Square constructor with s=10.
 [
-  Shape: [type [Circle r: Integer] [Square s: Integer]]
+  Shape: [type Circle: [r: Integer] Square: [s: Integer]]
   c:  [Circle r: 5]
   sq: [Square s: 10]
 ]

@@ -3,17 +3,4 @@
 # filter should unpack the Seq and keep elements matching the predicate
 [filter [> _ 2] [variant-payload "Wrapper" [1 2 3 4 5]]]
 === error
-filter: expected Dict, got Wrapper (defined at stdlib/prelude.llt:2478:72-2478:96)
-  --> stdlib/prelude.llt:2478:72-2478:96
-   |
-  2478 | filter@[doc: "Keep elements matching predicate"]: [fn [let pred@Fn xs] [builtin-filter pred xs]]
-       |                                                                        ^^^^^^^^^^^^^^^^^^^^^^^^
-  in call $filter at stdlib/prelude.llt:2478:72-2478:96
-   |
-  2478 | filter@[doc: "Keep elements matching predicate"]: [fn [let pred@Fn xs] [builtin-filter pred xs]]
-       |                                                                        ^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-filter ...] at stdlib/prelude.llt:2478:72-2478:96
-   |
-  2478 | filter@[doc: "Keep elements matching predicate"]: [fn [let pred@Fn xs] [builtin-filter pred xs]]
-       |                                                                        ^^^^^^^^^^^^^^^^^^^^^^^^
-  in [filter ...] at 3:1-3:57
+filter: expected Dict, got Wrapper

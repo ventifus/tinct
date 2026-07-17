@@ -1,14 +1,14 @@
-# ADT constructor type enforcement: [Error 42] should produce a type warning
-# because Error expects String but receives Int(42).
-# The [Ok 42] call is valid — Ok is polymorphic on `a`.
+# ADT constructor type enforcement: [Error msg: 42] should produce a type warning
+# because Error.msg expects String but receives Int(42).
+# The [Ok value: 42] call is valid — Ok is polymorphic on `a`.
 # Eval proceeds regardless of type errors (advisory).
 [
-  Result: [type [let a] [Ok a] [Error String]]
-  ok-val:  [Ok 42]
-  err-bad: [Error 42]
+  Result: [type [let a] Ok: [value: a] Error: [msg: String]]
+  ok-val:  [Ok value: 42]
+  err-bad: [Error msg: 42]
 ]
 === out
-Dict({"Result": Dict({"Ok": Function(), "Error": Function()}), "ok-val": Variant(Result.Ok, Int(42)), "err-bad": Variant(Result.Error, Int(42))})
+Dict({"Result": Dict({"Ok": Function(value), "Error": Function(msg)}), "ok-val": Variant(Result.Ok, Dict({"value": Int(42)})), "err-bad": Variant(Result.Error, Dict({"msg": Int(42)}))})
 
 === warn
 [UnificationFailure] cannot unify String with 42

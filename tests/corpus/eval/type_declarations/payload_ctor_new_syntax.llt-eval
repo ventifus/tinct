@@ -1,0 +1,18 @@
+# T-1542: New payload constructor syntax [type CtorName: [field: Type] ...].
+# Verifies that ProgramItem.File and ProgramItem.Expr are callable constructors,
+# and ProgramItem.Noop is a unit variant, using the new keyed-entry syntax.
+[
+  ProgramItem: [type
+    File: [path: String]
+    Expr: [src: String]
+    Noop]
+
+  f: [ProgramItem.File path: "test.llt"]
+  e: [ProgramItem.Expr src: "[1 2 3]"]
+  n: ProgramItem.Noop
+
+  f-path: f.path
+  e-src:  e.src
+]
+=== out
+Dict({"ProgramItem": Dict({"File": Function(path), "Expr": Function(src), "Noop": Variant(ProgramItem.Noop, Null)}), "f": Variant(ProgramItem.File, Dict({"path": String("test.llt")})), "e": Variant(ProgramItem.Expr, Dict({"src": String("[1 2 3]")})), "n": Variant(ProgramItem.Noop, Null), "f-path": String("test.llt"), "e-src": String("[1 2 3]")})

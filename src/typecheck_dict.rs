@@ -278,6 +278,49 @@ fn collect_dependencies(
     deps
 }
 
+/// Build the constructor dict value type for an ADT.
+/// At runtime, ADT names evaluate to a constructor dict where:
+///   - Unit constructors  → NominalVariant values (the value IS the variant)
+///   - Payload constructors → Function values (taking the declared fields as named params)
+/// For non-ADT types (structural aliases, etc.), returns the body type unchanged.
+fn adt_value_type(alias_body: &Type) -> Type {
+    let members: Vec<&Type> = match alias_body {
+        Type::Union(ms) => ms.iter().collect(),
+        nv @ Type::NominalVariant { .. } => vec![nv],
+        _ => return alias_body.clone(),
+    };
+    let mut ctor_dict_fields: indexmap::IndexMap<String, Type> = indexmap::IndexMap::new();
+    for m in members {
+        if let Type::NominalVariant { ctor, fields, .. } = m {
+            let ctor_type = if fields.fields.is_empty() {
+                m.clone()
+            } else {
+                let fn_params: Vec<(Option<String>, Type)> = fields
+                    .fields
+                    .iter()
+                    .map(|(k, v)| (Some(k.clone()), v.clone()))
+                    .collect();
+                let required_count = fn_params.len();
+                Type::Function {
+                    params: fn_params,
+                    ret: Box::new(m.clone()),
+                    variadic: false,
+                    required_count,
+                }
+            };
+            ctor_dict_fields.insert(ctor.clone(), ctor_type);
+        }
+    }
+    if ctor_dict_fields.is_empty() {
+        alias_body.clone()
+    } else {
+        Type::Dict(Row {
+            fields: ctor_dict_fields,
+            tail: RowTail::Empty,
+        })
+    }
+}
+
 pub(crate) async fn infer_dict(
     entries: &[Spanned<SurfaceEntry>],
     env: &Arc<RwLock<Env>>,
@@ -518,34 +561,74 @@ pub(crate) async fn infer_dict(
                     };
                     let qualify_nominal = |ty: Type| -> Type {
                         match ty {
-                            Type::NominalVariant { tag, fields } => Type::NominalVariant {
-                                tag: qualify_tag(&tag),
+                            Type::NominalVariant {
+                                tycon: _,
+                                ctor,
                                 fields,
-                            },
+                            } => {
+                                let qualified_tag = qualify_tag(&ctor);
+                                let (new_tycon, new_ctor) = qualified_tag
+                                    .split_once('.')
+                                    .unwrap_or(("", qualified_tag.as_str()));
+                                Type::NominalVariant {
+                                    tycon: new_tycon.to_string(),
+                                    ctor: new_ctor.to_string(),
+                                    fields,
+                                }
+                            }
                             other => other,
                         }
                     };
                     let qualified_body = match resolved_body {
-                        Type::NominalVariant { tag, fields } => Type::NominalVariant {
-                            tag: qualify_tag(&tag),
+                        Type::NominalVariant {
+                            tycon: _,
+                            ctor,
                             fields,
-                        },
+                        } => {
+                            let qualified_tag = qualify_tag(&ctor);
+                            let (new_tycon, new_ctor) = qualified_tag
+                                .split_once('.')
+                                .unwrap_or(("", qualified_tag.as_str()));
+                            Type::NominalVariant {
+                                tycon: new_tycon.to_string(),
+                                ctor: new_ctor.to_string(),
+                                fields,
+                            }
+                        }
                         Type::Union(members) => Type::normalize_union(
                             members.into_iter().map(qualify_nominal).collect(),
                         ),
                         other => other,
                     };
                     let constructors: Vec<(String, usize)> = match &qualified_body {
-                        Type::NominalVariant { tag, fields } => {
+                        Type::NominalVariant {
+                            tycon,
+                            ctor,
+                            fields,
+                        } => {
                             let arity = if fields.fields.is_empty() { 0 } else { 1 };
-                            vec![(tag.clone(), arity)]
+                            let qualified_tag = if tycon.is_empty() {
+                                ctor.clone()
+                            } else {
+                                format!("{}.{}", tycon, ctor)
+                            };
+                            vec![(qualified_tag, arity)]
                         }
                         Type::Union(members) => members
                             .iter()
                             .filter_map(|m| match m {
-                                Type::NominalVariant { tag, fields } => {
+                                Type::NominalVariant {
+                                    tycon,
+                                    ctor,
+                                    fields,
+                                } => {
                                     let arity = if fields.fields.is_empty() { 0 } else { 1 };
-                                    Some((tag.clone(), arity))
+                                    let qualified_tag = if tycon.is_empty() {
+                                        ctor.clone()
+                                    } else {
+                                        format!("{}.{}", tycon, ctor)
+                                    };
+                                    Some((qualified_tag, arity))
                                 }
                                 _ => None,
                             })
@@ -586,7 +669,6 @@ pub(crate) async fn infer_dict(
                         // Use or_insert to preserve static seed entries (e.g. DirCap with body
                         // Type::DirCap from the initial TypeContext) over dynamic declarations
                         // that produce nominal bodies from tinct [type ...] syntax.
-                        let tycon_constructors = tycon_def.constructors.clone();
                         state.tycon_env.entry(name.clone()).or_insert(tycon_def);
                         // Update the scheme for this alias name with the resolved alias body type.
                         // Pass 1 pre-inserted a fresh TypeVar placeholder for the alias slot; we
@@ -596,29 +678,24 @@ pub(crate) async fn infer_dict(
                         // Only zero-arity aliases are resolved to concrete types at this point;
                         // parameterized aliases stay as TypeVar (they are instantiated on use).
                         if params.is_empty() {
+                            // Build the constructor dict value type and register it.
+                            // adt_value_type produces a Dict where unit ctors → NominalVariant
+                            // and payload ctors → Function, matching what lower.rs produces at
+                            // runtime. Also populate ctor_schemes for unqualified access.
+                            let value_scheme_ty = adt_value_type(&alias_ty);
+                            // Register short-name constructor schemes (e.g. Ok vs Result.Ok).
+                            if let Type::Dict(ref row) = value_scheme_ty {
+                                for (ctor_name, ctor_ty) in &row.fields {
+                                    ctor_schemes.insert(
+                                        ctor_name.clone(),
+                                        TypeScheme::mono(ctor_ty.clone()),
+                                    );
+                                }
+                            }
                             dict_env
                                 .write()
                                 .unwrap()
-                                .insert_scheme(name.clone(), TypeScheme::mono(alias_ty.clone()));
-                            // Collect constructor TypeSchemes so callers can look up constructors
-                            // by their short name (e.g. "True" for Bool.True, "Ok" for Result.Ok).
-                            // Unit constructors get NominalVariant with the qualified tag.
-                            // Payload constructors are typed via the evaluator's desugar path.
-                            for (qualified_tag, arity) in &tycon_constructors {
-                                let short =
-                                    qualified_tag.rsplit('.').next().unwrap_or(qualified_tag);
-                                if *arity == 0 {
-                                    let ctor_ty = Type::NominalVariant {
-                                        tag: qualified_tag.clone(),
-                                        fields: Row {
-                                            fields: indexmap::IndexMap::new(),
-                                            tail: RowTail::Empty,
-                                        },
-                                    };
-                                    ctor_schemes
-                                        .insert(short.to_string(), TypeScheme::mono(ctor_ty));
-                                }
-                            }
+                                .insert_scheme(name.clone(), TypeScheme::mono(value_scheme_ty));
                         }
                     }
                 }
@@ -1162,16 +1239,16 @@ pub(crate) async fn infer_dict(
     // Re-apply zero-arity TypeAlias schemes from state.tycon_env.
     // Pass 4 (generalization) re-inserts each entry's scheme — for TypeAlias entries this
     // produces a generalized TypeVar (the placeholder from Pass 1) rather than the resolved
-    // alias body (Union, NominalVariant, etc.). Re-applying here restores the correct type.
+    // alias body. Re-applying here restores the correct constructor dict value type.
     for (key_name, is_alias, _) in &key_entries {
         if *is_alias {
             if let Some(name) = key_name {
                 if let Some(def) = state.tycon_env.get(name.as_str()) {
                     if def.params.is_empty() {
-                        dict_env
-                            .write()
-                            .unwrap()
-                            .insert_scheme(name.clone(), TypeScheme::mono(def.body.clone()));
+                        dict_env.write().unwrap().insert_scheme(
+                            name.clone(),
+                            TypeScheme::mono(adt_value_type(&def.body)),
+                        );
                     }
                 }
             }

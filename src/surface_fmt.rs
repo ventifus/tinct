@@ -281,7 +281,8 @@ fn collect_free_vars(
         | CoreExpr::Float(_)
         | CoreExpr::Str(_)
         | CoreExpr::Placeholder
-        | CoreExpr::Rest(_) => {}
+        | CoreExpr::Rest(_)
+        | CoreExpr::UnitVariant { .. } => {}
 
         // Variant: tag is a literal, payload may contain variable references.
         CoreExpr::Variant { payload, .. } => {
@@ -567,6 +568,7 @@ fn collect_free_vars_in_quote(
         | CoreExpr::Str(_)
         | CoreExpr::Var { .. }  // includes annotated Var (Var { annotation: Some(_) })
         | CoreExpr::Rest(_)
+        | CoreExpr::UnitVariant { .. }
         | CoreExpr::Placeholder => {}
     }
 }
@@ -971,6 +973,14 @@ fn core_expr_to_tinct(
                 Ok(tag.clone())
             }
         }
+
+        CoreExpr::UnitVariant { tycon, ctor } => {
+            if tycon.is_empty() {
+                Ok(ctor.clone())
+            } else {
+                Ok(format!("{}.{}", tycon, ctor))
+            }
+        }
     }
 }
 
@@ -1313,6 +1323,14 @@ fn core_expr_to_tinct_raw(
                 Ok(tag.clone())
             }
         }
+
+        CoreExpr::UnitVariant { tycon, ctor } => {
+            if tycon.is_empty() {
+                Ok(ctor.clone())
+            } else {
+                Ok(format!("{}.{}", tycon, ctor))
+            }
+        }
     }
 }
 
@@ -1435,7 +1453,11 @@ impl Value {
             Value::Float(f) => fmt_float(*f),
             Value::String { source, start, end } => Ok(fmt_string(&source[*start..*end])),
             Value::Dict(map) => fmt_dict(map, ctx),
-            Value::Variant { tag, payload } => fmt_variant(tag, *payload, ctx),
+            Value::Variant {
+                tycon,
+                ctor,
+                payload,
+            } => fmt_variant(&format!("{}.{}", tycon, ctor), *payload, ctx),
             Value::Builtin(b) => Ok(b.name.to_string()),
             Value::Function {
                 params,

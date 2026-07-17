@@ -3,7 +3,7 @@
 # same as [Tag _]: — users writing [Tag]: mean "match this tag, I don't care about payload."
 [
   Color:   [type Color [Red] [Green] [Blue]]
-  Wrapper: [type Wrapper [Boxed value: Int] [Empty]]
+  Wrapper: [type Wrapper Boxed: [value: Int] Empty]
 
   # [Color.Red]: matches Red (unit variant, no payload) — same as [Color.Red _]:
   match1: [match Color.Red

@@ -203,8 +203,8 @@ pub enum Pattern {
         rest: bool,
     },
     /// Constructor pattern — matches nominal variants by tag, binds payload
-    /// `[Maybe.Some v]` matches `Variant { tag: "Maybe.Some", payload }` and binds `v` to the payload
-    /// `[Maybe.None]` (bracket form) matches `Variant { tag: "Maybe.None", payload: None }` via Constructor { binding: None }
+    /// `[Maybe.Some v]` matches `Variant { tycon: "Maybe", ctor: "Some", payload }` and binds `v` to the payload
+    /// `[Maybe.None]` (bracket form) matches `Variant { tycon: "Maybe", ctor: "None", payload: None }` via Constructor { binding: None }
     Constructor {
         tag: String,
         binding: Option<Box<Spanned<Pattern>>>,
@@ -1373,6 +1373,11 @@ pub enum CoreExpr {
     Variant {
         tag: String,
         payload: Option<Arc<Spanned<CoreExpr>>>,
+    },
+
+    UnitVariant {
+        tycon: String,
+        ctor: String,
     },
 
     // No Pipe variant — the lowering pass rewrites Pipe to Call before evaluation.

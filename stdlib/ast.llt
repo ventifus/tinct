@@ -13,59 +13,59 @@
 
 # Entry type — dict entry (keyed or auto-indexed)
 [type Entry
-  [KeyedEntry   key: String  value: Expr]
-  [UnkeyedEntry value: Expr]]
+  KeyedEntry:   [key: String  value: Expr]
+  UnkeyedEntry: [value: Expr]]
 
 # Annotation type — type annotations in the AST
 [type Annotation
-  [Simple   name: String]                    # @Integer, @Boolean
-  [PropDict entries: [Seq Entry]]         # @[return: T  constraint: ...]
-  Null]                                   # no annotation
+  Simple:   [name: String]                    # @Integer, @Boolean
+  PropDict: [entries: [Seq Entry]]            # @[return: T  constraint: ...]
+  Null]                                       # no annotation
 
 # Expr type — the central expression type
 # Matches the Rust Expr enum in src/ast.rs
 [type Expr
   # Literals — all literal types share the Literal constructor
   # kind: "int"|"float"|"bool"|"str"  value: the literal value  bare: only emitted for kind:"str" nodes (Bool if unquoted, Null for other kinds)
-  [Literal    kind: String  value: Unknown  bare: [Bool Null]]
+  Literal:    [kind: String  value: Unknown  bare: [Bool Null]]
 
   # Variables and references
-  [VarRef     name: String]
-  [DotAccess  target: Expr  field: Unknown]  # field is DotKey (Str or Int)
-  [Pipe       lhs: Expr  rhs: Expr]
+  VarRef:     [name: String]
+  DotAccess:  [target: Expr  field: Unknown]  # field is DotKey (Str or Int)
+  Pipe:       [lhs: Expr  rhs: Expr]
 
   # Collections and calls
-  [Sequential exprs: [Seq Expr]]
-  [Dict       entries: [Seq Entry]]
-  [Call       fn: Expr  args: [Seq Expr]  named-args: [Seq Unknown]  implied: Bool]
+  Sequential: [exprs: [Seq Expr]]
+  Dict:       [entries: [Seq Entry]]
+  Call:       [fn: Expr  args: [Seq Expr]  named-args: [Seq Unknown]  implied: Bool]
 
   # Functions and types
-  [Fn         params: [Seq Unknown]  body: Expr]  # params is Vec<Spanned<Param>> — opaque from LLT
-  [TypeAlias  params: [Seq Str]  body: Expr]
-  [TypeAssert annotation: Annotation  expr: Expr]
-  [Annotated  name: String  annotation: Annotation]
+  Fn:         [params: [Seq Unknown]  body: Expr]  # params is Vec<Spanned<Param>> — opaque from LLT
+  TypeAlias:  [params: [Seq Str]  body: Expr]
+  TypeAssert: [annotation: Annotation  expr: Expr]
+  Annotated:  [name: String  annotation: Annotation]
 
   # Pattern matching
-  [Rest       name: [String Null]]
-  [Match      scrutinee: Expr  arms: [Seq Unknown]]  # arms is Vec<MatchArm> — opaque
-  [LetDecl    bindings: [Seq Expr]]
-  [CaseArm    pattern: Expr  body: Expr]
+  Rest:       [name: [String Null]]
+  Match:      [scrutinee: Expr  arms: [Seq Unknown]]  # arms is Vec<MatchArm> — opaque
+  LetDecl:    [bindings: [Seq Expr]]
+  CaseArm:    [pattern: Expr  body: Expr]
 
   # Macros and quoting
-  [Quote          expr: Expr]
-  [Unquote        expr: Expr]
-  [UnquoteSplice  expr: Expr]
-  [Splice         forms: [Seq Expr]]
-  [SyntaxClass    name: String  pattern: Expr  message: [String Null]]
+  Quote:          [expr: Expr]
+  Unquote:        [expr: Expr]
+  UnquoteSplice:  [expr: Expr]
+  Splice:         [forms: [Seq Expr]]
+  SyntaxClass:    [name: String  pattern: Expr  message: [String Null]]
 
   # Type classes
-  [ClassDecl   name: String  params: [Seq Str]  methods: [Seq Entry]]  # simplified
-  [InstanceDecl class-name: String  arms: [Seq Unknown]]  # arms structure opaque
-  [PatternDecl bindings: [Seq Expr]]
+  ClassDecl:    [name: String  params: [Seq Str]  methods: [Seq Entry]]  # simplified
+  InstanceDecl: [class-name: String  arms: [Seq Unknown]]  # arms structure opaque
+  PatternDecl:  [bindings: [Seq Expr]]
 
   # Special
-  [Placeholder]
-  [ExprError span: Unknown]]  # span is Span — opaque from LLT
+  Placeholder
+  ExprError: [span: Unknown]]  # span is Span — opaque from LLT
 
 # flatten-args — re-extract flat element sequence from a parsed bracket
 #

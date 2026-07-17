@@ -1324,11 +1324,16 @@ pub fn apply_type_with_visited<'a>(
                 })
                 .collect(),
         }),
-        Type::NominalVariant { tag, fields } => {
+        Type::NominalVariant {
+            tycon,
+            ctor,
+            fields,
+        } => {
             let applied_fields =
                 apply_row_with_visited(fields, type_vars, depth + 1, visited_types);
             Cow::Owned(Type::NominalVariant {
-                tag: tag.clone(),
+                tycon: tycon.clone(),
+                ctor: ctor.clone(),
                 fields: applied_fields,
             })
         }
@@ -1745,12 +1750,15 @@ fn lower_levels_check_occurs(
             }
             found
         }
-        Type::NominalVariant { tag: _, fields } => {
+        Type::NominalVariant {
+            tycon: _,
+            ctor: _,
+            fields,
+        } => {
             let mut found = false;
             for ty in fields.fields.values() {
                 found |= lower_levels_check_occurs(ty, occurs_name, cap_level, state);
             }
-            // Lower levels through RowTail::Uniform key and value types
             if let crate::type_def::RowTail::Uniform { key, value } = &fields.tail {
                 if let Some(k) = key {
                     found |= lower_levels_check_occurs(k, occurs_name, cap_level, state);
@@ -2874,49 +2882,48 @@ pub async fn unify(
             unify_rows(row1, row2, state, constraints, span).await
         }
 
-        // NominalVariant unification: tags must match (nominal identity), then unify fields structurally
         (
             Type::NominalVariant {
-                tag: tag1,
+                tycon: tycon1,
+                ctor: ctor1,
                 fields: fields1,
             },
             Type::NominalVariant {
-                tag: tag2,
+                tycon: tycon2,
+                ctor: ctor2,
                 fields: fields2,
             },
         ) => {
-            if tag1 != tag2 {
+            if tycon1 != tycon2 || ctor1 != ctor2 {
                 return Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                     message: format!(
-                        "cannot unify nominal variants with different tags: {} and {}",
-                        tag1, tag2
+                        "cannot unify nominal variants with different tags: {}.{} and {}.{}",
+                        tycon1, ctor1, tycon2, ctor2
                     ),
                     span,
                     notes: vec![],
                     call_stack: vec![],
                 })));
             }
-            // Tags match — unify fields structurally
             unify_rows(fields1, fields2, state, constraints, span).await
         }
 
-        // NominalVariant vs Record: never unifiable (nominal vs structural distinction)
-        (Type::NominalVariant { tag, .. }, Type::Dict(_)) => {
+        (Type::NominalVariant { tycon, ctor, .. }, Type::Dict(_)) => {
             Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                 message: format!(
-                    "cannot unify nominal variant {} with structural record",
-                    tag
+                    "cannot unify nominal variant {}.{} with structural record",
+                    tycon, ctor
                 ),
                 span,
                 notes: vec![],
                 call_stack: vec![],
             })))
         }
-        (Type::Dict(_), Type::NominalVariant { tag, .. }) => {
+        (Type::Dict(_), Type::NominalVariant { tycon, ctor, .. }) => {
             Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                 message: format!(
-                    "cannot unify structural record with nominal variant {}",
-                    tag
+                    "cannot unify structural record with nominal variant {}.{}",
+                    tycon, ctor
                 ),
                 span,
                 notes: vec![],

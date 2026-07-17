@@ -2713,7 +2713,8 @@ mod tests {
         let ctx = test_ctx();
         let variant = alloc(
             Value::Variant {
-                tag: "Color.Red".to_string(),
+                tycon: "Color".to_string(),
+                ctor: "Red".to_string(),
                 payload: None,
             },
             &ctx,
@@ -5286,7 +5287,8 @@ mod tests {
         let ctx = test_ctx();
         let xs = alloc(
             Value::Variant {
-                tag: "Color.Red".to_string(),
+                tycon: "Color".to_string(),
+                ctor: "Red".to_string(),
                 payload: None,
             },
             &ctx,

@@ -1,11 +1,11 @@
 # test_adt_multi_entry_union_declaration — multi-entry union ADT declaration.
-# [type [let a] [Ok a] [Error String]] declares a union with two constructors.
+# [type [let a] Ok: [value: a] Error: [msg: String]] declares a union with two constructors.
 # Both Ok and Error are injected as runtime bindings with their constructor types.
-# Calling Ok with an Int and Error with a String both succeed cleanly.
+# Calling Ok with value: Int and Error with msg: String both succeed cleanly.
 [
-  Result: [type [let a] [Ok a] [Error String]]
-  ok-val:  [Ok 42]
-  err-val: [Error "failed"]
+  Result: [type [let a] Ok: [value: a] Error: [msg: String]]
+  ok-val:  [Result.Ok value: 42]
+  err-val: [Result.Error msg: "failed"]
 ]
 === out
-Dict({"Result": Dict({"Ok": Function(0), "Error": Function(0)}), "ok-val": Variant(Result.Ok, Int(42)), "err-val": Variant(Result.Error, String("failed"))})
+Dict({"Result": Dict({"Ok": Function(value), "Error": Function(msg)}), "ok-val": Variant(Result.Ok, Dict({"value": Int(42)})), "err-val": Variant(Result.Error, Dict({"msg": String("failed")}))})

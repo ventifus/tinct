@@ -4,4 +4,4 @@
 # inside the zero-argument function passed to try.
 [try [fn [] ...]]
 === out
-Variant(Result.Error, String("placeholder `...` was evaluated — replace with an implementation"))
+Variant(Result.Error, Dict({"msg": String("placeholder `...` was evaluated — replace with an implementation")}))

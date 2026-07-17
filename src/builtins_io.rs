@@ -314,10 +314,12 @@ pub(crate) fn builtin_narrow(
                     crate::eval::materialize(&flag_thunk, Some(&call_span), &ctx).await?;
 
                 match flag_val {
-                    Value::Variant { ref tag, .. } => {
-                        // Strip qualifier prefix ("DirCapFlag.Statable" → "Statable") for
+                    Value::Variant {
+                        tycon: _, ref ctor, ..
+                    } => {
+                        // Use ctor name directly ("Statable") for
                         // compatibility with T-974 qualified variant tags.
-                        let flag_name = tag.rfind('.').map_or(tag.as_str(), |pos| &tag[pos + 1..]);
+                        let flag_name = ctor.as_str();
                         match flag_name {
                             "Readable" => requested.readable = true,
                             "Statable" => requested.statable = true,

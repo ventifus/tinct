@@ -327,7 +327,7 @@ enforcement**. The `Type::Union` members already encode the expected arm style:
 Type::Record(fields: {ok: TypeVar(a)}, tail: Open)
 
 // Nominal union member → expects Pattern::Constructor arms
-Type::NominalVariant { tag: "Ok", payload: Some(TypeVar(a)) }
+Type::NominalVariant { tycon: "Result", ctor: "Ok", fields: Row { value: TypeVar(a) } }
 
 // Literal union member → expects Pattern::StringLiteral arms
 Type::StringLiteral("pending")
@@ -340,7 +340,7 @@ arm's pattern to a union member by style:
 fn find_compatible_member<'a>(pattern: &Pattern, members: &'a [Type]) -> Option<&'a Type> {
     members.iter().find(|member| match (pattern, member) {
         (Pattern::Dict(_),                    Type::Record(..))          => true,
-        (Pattern::Constructor { tag, .. },    Type::NominalVariant { tag: t, .. }) => tag == t,
+        (Pattern::Constructor { tag, .. },    Type::NominalVariant { tycon, ctor, .. }) => *tag == format!("{}.{}", tycon, ctor),
         (Pattern::StringLiteral(s),           Type::StringLiteral(t))    => s == t,
         (Pattern::Wildcard,                   _)                         => true,
         _                                                                 => false,
@@ -352,11 +352,11 @@ fn find_compatible_member<'a>(pattern: &Pattern, members: &'a [Type]) -> Option<
 has a compatible style:
 
 ```tinct
-Mixed: [type [ok: a] [Err Str] "pending"]
+Mixed: [type [ok: a] Err: [msg: Str] "pending"]
 
 [match x
     [ok: v]:   [process v]      # → correlates to Record([ok:a])
-    [Err msg]: [handle msg]     # → correlates to NominalVariant("Err", Str)
+    [Err msg]: [handle msg]     # → correlates to NominalVariant { tycon: "Mixed", ctor: "Err", fields: {msg: Str} }
     "pending": [wait]           # → correlates to StringLiteral("pending")
     _:         [error "???"]]   # → wildcard, compatible with all
 ```

@@ -445,8 +445,11 @@ pub(crate) async fn check_call_with_scheme(
         // functions; no special-casing in invoke_function.
         // Type checking mirrors this: NominalVariant with empty fields + 1 positional arg
         // → result type is NominalVariant with inferred arg type as single-field payload.
-        Type::NominalVariant { tag, fields } if fields.fields.is_empty() => {
-            // Only allow exactly 1 positional arg, no named args (matches runtime validation)
+        Type::NominalVariant {
+            tycon,
+            ctor,
+            fields,
+        } if fields.fields.is_empty() => {
             if args.len() != 1 {
                 return Err(vec![TypeError::new(
                     format!(
@@ -463,16 +466,13 @@ pub(crate) async fn check_call_with_scheme(
                 )]);
             }
 
-            // Infer the argument type
             let arg_ty = infer_surface_expr(&args[0], env, state, type_map).await?;
 
-            // Result type: NominalVariant with the arg type as payload.
-            // Runtime stores payload as Some(payload_id), so we model it as a single-field
-            // record with numeric field "0" (consistent with single-positional payload convention).
             let mut payload_fields = indexmap::IndexMap::new();
             payload_fields.insert("0".to_string(), arg_ty);
             Ok(Type::NominalVariant {
-                tag: tag.clone(),
+                tycon: tycon.clone(),
+                ctor: ctor.clone(),
                 fields: Row {
                     fields: payload_fields,
                     tail: crate::type_def::RowTail::Empty,
@@ -1264,8 +1264,11 @@ pub(crate) async fn check_call(
         // functions; no special-casing in invoke_function.
         // Type checking mirrors this: NominalVariant with empty fields + 1 positional arg
         // → result type is NominalVariant with inferred arg type as single-field payload.
-        Type::NominalVariant { tag, fields } if fields.fields.is_empty() => {
-            // Only allow exactly 1 positional arg, no named args (matches runtime validation)
+        Type::NominalVariant {
+            tycon,
+            ctor,
+            fields,
+        } if fields.fields.is_empty() => {
             if args.len() != 1 {
                 return Err(vec![TypeError::new(
                     format!(
@@ -1282,16 +1285,13 @@ pub(crate) async fn check_call(
                 )]);
             }
 
-            // Infer the argument type
             let arg_ty = infer_surface_expr(&args[0], env, state, type_map).await?;
 
-            // Result type: NominalVariant with the arg type as payload.
-            // Runtime stores payload as Some(payload_id), so we model it as a single-field
-            // record with numeric field "0" (consistent with single-positional payload convention).
             let mut payload_fields = indexmap::IndexMap::new();
             payload_fields.insert("0".to_string(), arg_ty);
             Ok(Type::NominalVariant {
-                tag: tag.clone(),
+                tycon: tycon.clone(),
+                ctor: ctor.clone(),
                 fields: Row {
                     fields: payload_fields,
                     tail: crate::type_def::RowTail::Empty,

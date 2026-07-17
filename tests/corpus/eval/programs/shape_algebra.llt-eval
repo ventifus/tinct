@@ -1,5 +1,5 @@
 [
-  Shape: [type [Circle r: Int] [Square s: Int] [Rect w: Int h: Int]]
+  Shape: [type Circle: [r: Int] Square: [s: Int] Rect: [w: Int h: Int]]
   shapes: [
     0: [Shape.Circle r: 3]
     1: [Shape.Square s: 4]

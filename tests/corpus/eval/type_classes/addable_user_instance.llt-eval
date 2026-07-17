@@ -1,6 +1,6 @@
 # User-defined Addable instance for a custom type
 [
-  Vec2: [type [Vec2 x: Float y: Float]]
+  Vec2: [type Vec2: [x: Float y: Float]]
 
   [instance Addable
     [let a@Vec2 b@Vec2 c]: [+: [fn [let u v]

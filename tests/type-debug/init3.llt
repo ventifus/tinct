@@ -1,0 +1,17 @@
+--- stage: "type"
+[
+  TypeNode: [type Int String Float Bytes Never Top Unknown Proxy AnyFn
+    [Dict fields: Any  open: Any  key-type: Any  value-type: Any]]
+  Integer: TypeNode.Int
+  String:  TypeNode.String
+  Dict:    [TypeNode.Dict fields: []  open: 1  key-type: TypeNode.Top  value-type: TypeNode.Top]
+]
+
+---
+# Flat dict (no letrec) — does the error appear once or twice?
+[
+  x: [builtin-narrow %cwd "hello"]
+]
+[
+  [%stderr.write "done\n" %stderr]
+]

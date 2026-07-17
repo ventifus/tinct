@@ -2,4 +2,4 @@
 # Just return the first argument unchanged
 [do result [Ok 99]]
 === out
-Variant(Result.Ok, Int(99))
+Variant(Result.Ok, Dict({"value": Int(99)}))

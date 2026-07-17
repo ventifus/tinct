@@ -562,7 +562,7 @@ pub(crate) fn builtin_encode(
 
         // Extract the tag from the format variant
         let tag = match &fmt_val {
-            Value::Variant { tag, .. } => tag.clone(),
+            Value::Variant { tycon, ctor, .. } => format!("{}.{}", tycon, ctor),
             _ => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-encode".to_string(),

@@ -219,7 +219,7 @@ nfa-accepts: [fn [nfa s]
 ]
 ```
 
-`Pattern` uses `Value::Variant { tag: "Pattern", payload: nfa-dict }`
+`Pattern` uses `Value::Variant { tycon: "Pattern", ctor: "Pattern", payload: nfa-dict }`
 — a nominal variant wrapper. This ensures provenance: only `re-compile`
 produces a `Pattern`; an arbitrary dict cannot accidentally match the
 type even if it has the right shape. The NFA dict is accessible via

@@ -105,10 +105,14 @@ pub async fn format_source_tinct_with_dir(
 
     // Unwrap [Result.Ok s] / surface [Result.Error msg].
     // The formatters return `[try [fn [] [format-file %]]]` which produces
-    // Value::Variant { tag: "Result.Ok", payload: Some(string_thunk) } on success
-    // or Value::Variant { tag: "Result.Error", payload: Some(msg_thunk) } on failure.
+    // Value::Variant { tycon: "Result", ctor: "Ok", payload: Some(string_thunk) } on success
+    // or Value::Variant { tycon: "Result", ctor: "Error", payload: Some(msg_thunk) } on failure.
     match result_val {
-        Value::Variant { tag, payload } if tag == "Result.Ok" => {
+        Value::Variant {
+            tycon,
+            ctor,
+            payload,
+        } if tycon == "Result" && ctor == "Ok" => {
             let payload_id = payload.ok_or_else(|| "formatter Ok has no payload".to_string())?;
             let payload_thunk = ctx.get_thunk(payload_id);
             let ok_val = eval::materialize(&payload_thunk, None, &ctx)
@@ -129,7 +133,11 @@ pub async fn format_source_tinct_with_dir(
                 }
             }
         }
-        Value::Variant { tag, payload } if tag == "Result.Error" => {
+        Value::Variant {
+            tycon,
+            ctor,
+            payload,
+        } if tycon == "Result" && ctor == "Error" => {
             let msg = if let Some(err_id) = payload {
                 let err_thunk = ctx.get_thunk(err_id);
                 let err_val = eval::materialize(&err_thunk, None, &ctx)

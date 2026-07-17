@@ -13,16 +13,4 @@
 # The error should point to the "hello" argument location
 [expect-int "hello"]
 === error
-macro 'expect-int' expansion result failed to evaluate: macro expansion error: expected an integer literal (defined at 13:1-13:21)
-  in [builtin-macro-error ...] at stdlib/prelude.llt:3259:5-3259:47
-   |
-  3259 |     [builtin-macro-error message [first node]]]]
-       |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-if ...] at stdlib/prelude.llt:2461:71-2461:89
-   |
-  2461 | if@[doc: "Conditional (select branch by condition)"]: [fn [let c t e] [builtin-if c t e]]
-       |                                                                       ^^^^^^^^^^^^^^^^^^
-  in materialized at 13:1-13:21
-  in [if ...] at 7:3-9:53
-  in macro:expect-int at 13:1-13:21
-  in in expansion of `expect-int` at 13:1-13:21
+macro 'expect-int' expansion result failed to evaluate: macro expansion error: expected an integer literal

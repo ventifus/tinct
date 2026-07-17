@@ -1,7 +1,7 @@
 # Payload variant comparison via pattern matching — no Equatable instance for Result.
 # [= [Ok value: 1] [Ok value: 1]] goes through catch-all -> Boolean.False.
 # Use pattern matching to compare payload variants.
-[Result: [type [let a] [Ok value: a] [Error msg: Str]]]
+[Result: [type [let a] Ok: [value: a] Error: [msg: Str]]]
 [is-ok-1: [fn [let r] [match r
   [Result.Ok payload]: [= payload.value 1]
   _: Boolean.False]]]

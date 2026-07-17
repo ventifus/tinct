@@ -40,7 +40,7 @@ Multi-field annotations are intersections: `@[x: T  y: U]` = `{x: T} ∧ {y: U}`
 Under BAS, the Result type must use **nominal variants** to be discriminated:
 
 ```tinct
-[Result: [type [Ok a] [Err String]]]
+[Result: [type Ok: [value: a] Err: [msg: String]]]
 === out
 {"Result":{}}
 ```
@@ -159,7 +159,7 @@ A `[type ...]` declaration with uppercase constructor names creates a nominal AD
 1. A type registered in `TyConDef` with `constructors: Vec<(String, usize)>` — qualified tag and payload arity.
 2. A dict value whose fields are the constructors (accessed via dot: `Color.Red`, `Result.Ok`).
 
-Constructor tags are qualified: `"Color.Red"`, `"Result.Ok"`, `"Seq.Cons"`. Nominal identity is preserved through qualified names — two types sharing a bare constructor name (e.g., `Result.Ok` and `Validated.Ok`) are always distinguishable at runtime. `Value::Variant { tag: "Result.Ok" }` not `"Ok"`.
+Constructor tags are qualified: `"Color.Red"`, `"Result.Ok"`, `"Seq.Cons"`. Nominal identity is preserved through qualified names — two types sharing a bare constructor name (e.g., `Result.Ok` and `Validated.Ok`) are always distinguishable at runtime. `Value::Variant { tycon: "Result", ctor: "Ok", payload: None }` not `"Ok"`.
 
 **`expand_named` for nominal ADTs** synthesizes `body` as `TypeNode.Union [TypeNode.TypeConstructor "Color.Red"  TypeNode.TypeConstructor "Color.Green" ...]` at declaration time. `TypeConstructor "Color.Red" <: TypeConstructor "Direction.Red"` is false by name inequality — nominal identity is preserved through constructor names, not through keeping `App(TyCon("Color"))` opaque.
 
@@ -228,7 +228,7 @@ v = Function{..} ∨ v = Builtin{..}
 ────────────────────────────────── [VM-FN]
 v ∈ Fn(τ₁...τₙ → τᵣ)
 
-v = Variant { tag: "Seq.End" } ∨ v = Variant { tag: "Seq.Cons", .. }
+v = Variant { tycon: "Seq", ctor: "End", payload: None } ∨ v = Variant { tycon: "Seq", ctor: "Cons", payload: Some(..) }
 ────────────────────────────────── [VM-SEQ]
 v ∈ App(TyCon("Seq"), τ)    (tag-only check; element type not validated eagerly)
 
@@ -713,7 +713,7 @@ Random-access extension of `ByteStream`. Only file `Handle`s implement this — 
 [class [let Seekable h] [ByteStream h]
   seek: [Fn@Integer [h SeekFrom]]]
 
-SeekFrom: [type [Start pos: Int] [End pos: Int] [Current pos: Int]]
+SeekFrom: [type Start: [pos: Int] End: [pos: Int] Current: [pos: Int]]
 ```
 
 `tell = [seek h [SeekFrom.Current 0]]`. `size = [seek h [SeekFrom.End 0]]`.

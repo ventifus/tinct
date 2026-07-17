@@ -335,7 +335,7 @@ Sum types with payloads use `try` in the standard library:
 
 ```tinct
 [
-  Result: [type [let a] [Ok value: a] [Error msg: String]]
+  Result: [type [let a] Ok: [value: a] Error: [msg: String]]
 
   # try returns Variant(Result.Ok, value) on success, Variant(Result.Error, msg) on failure
   result: [try [fn [] [+ 1 2]]]
@@ -351,11 +351,16 @@ Sum types with payloads use `try` in the standard library:
 
 ## Nominal Variants
 
-`Name: [type ...]` declares a type and injects its constructors into the type dict. Unit constructors are bare uppercase words; payload constructors are bracketed (`[CtorName field: Type ...]`). Constructors are always accessed with their qualified name `TypeName.CtorName` — both in value position and in match patterns.
+`Name: [type ...]` declares a type and injects its constructors into the type dict. There are three forms:
+- **Unit constructors** — bare uppercase words: `Red`, `None`, `Noop`
+- **Payload constructors** — named entries: `CtorName: [field: Type ...]`
+- **Structural alias** — single lowercase-keyed dict body: `[port: Int hostname: String]`
+
+Constructors are always accessed with their qualified name `TypeName.CtorName` — both in value position and in match patterns.
 
 ```tinct
 [
-  Option: [type [let a]  [Some value: a]  None]   # parameterized; None is a bare unit constructor
+  Option: [type [let a]  Some: [value: a]  None]   # parameterized; None is a bare unit constructor
 
   # Constructors are accessed via qualified name: TypeName.CtorName
   nothing: Option.None
@@ -384,7 +389,7 @@ Constructors live inside the type dict, accessible as `TypeName.CtorName`. The v
 
 ```tinct
 [
-  Measure: [type [Length r: Float] Zero]
+  Measure: [type Length: [r: Float] Zero]
 
   m: [Measure.Length r: 2.5]
 
@@ -445,7 +450,7 @@ Patterns appear directly as `pattern: body` pairs inside `[match ...]`:
   # → "#ff0000"
 
   # Payload constructors — [Tag binding] binds the payload dict; access fields with dot
-  Shape: [type [Circle r: Int] [Square s: Int]]
+  Shape: [type Circle: [r: Int] Square: [s: Int]]
   sh: [Shape.Circle r: 5]
 
   area: [match sh
@@ -484,7 +489,7 @@ Patterns compose: a constructor pattern's binding can itself be a dict pattern, 
 
 ```tinct
 [
-  Result: [type [let a] [Ok value: a] [Err msg: String]]
+  Result: [type [let a] Ok: [value: a] Err: [msg: String]]
 
   handle: [fn [let result]
     [match result
@@ -563,7 +568,7 @@ Errors propagate automatically through the thunk graph. Unused values never erro
 
 ```tinct
 [
-  Result: [type [let a] [Ok value: a] [Error msg: String]]
+  Result: [type [let a] Ok: [value: a] Error: [msg: String]]
 
   # raise — always errors, never returns
   validated: [fn [let port@Integer]

@@ -197,21 +197,23 @@ pub fn normalize<'a>(
 /// Handles primitive types. Complex types (App, Union, Record, etc.) return `None`.
 /// Called directly by `evaluate_resolver`.
 fn type_to_typenode(ty: &Type) -> Option<Value> {
-    // Build a leaf TypeNode Variant (no payload) for the given tag name.
-    let leaf = |tag: &str| -> Value {
+    // Build a leaf TypeNode Variant (no payload) for the given constructor name.
+    // tycon is always "TypeNode" for all TypeNode variants.
+    let leaf = |ctor: &str| -> Value {
         Value::Variant {
-            tag: tag.to_string(),
+            tycon: "TypeNode".to_string(),
+            ctor: ctor.to_string(),
             payload: None,
         }
     };
 
     match ty {
-        Type::Int | Type::IntLiteral(_) => Some(leaf("TypeNode.Int")),
-        Type::Float => Some(leaf("TypeNode.Float")),
-        Type::Str | Type::StringLiteral(_) => Some(leaf("TypeNode.String")),
-        Type::Unknown => Some(leaf("TypeNode.Unknown")),
-        Type::Never => Some(leaf("TypeNode.Never")),
-        Type::Any => Some(leaf("TypeNode.Any")),
+        Type::Int | Type::IntLiteral(_) => Some(leaf("Int")),
+        Type::Float => Some(leaf("Float")),
+        Type::Str | Type::StringLiteral(_) => Some(leaf("String")),
+        Type::Unknown => Some(leaf("Unknown")),
+        Type::Never => Some(leaf("Never")),
+        Type::Any => Some(leaf("Any")),
         // Complex types — arithmetic resolvers never receive these.
         // Return None so evaluate_resolver returns None (resolver returns None → Unknown fallback).
         _ => None,
@@ -376,10 +378,10 @@ pub(crate) async fn evaluate_resolver(
 /// Handles leaf constructors (no payload) and the Dict constructor (any payload → open Dict).
 pub(crate) fn typenode_leaf_to_type(val: &Value) -> Option<Type> {
     let tag = match val {
-        Value::Variant { tag, .. } => tag.as_str(),
+        Value::Variant { tycon, ctor, .. } => format!("{}.{}", tycon, ctor),
         _ => return None,
     };
-    match tag {
+    match tag.as_str() {
         "TypeNode.Int" => Some(Type::Int),
         "TypeNode.Float" => Some(Type::Float),
         "TypeNode.String" => Some(Type::Str),
@@ -545,7 +547,13 @@ impl fmt::Display for Type {
                 }
             }
             Type::Never => write!(f, "Never"),
-            Type::NominalVariant { tag, .. } => write!(f, "{}", tag),
+            Type::NominalVariant { tycon, ctor, .. } => {
+                if tycon.is_empty() {
+                    write!(f, "{}", ctor)
+                } else {
+                    write!(f, "{}.{}", tycon, ctor)
+                }
+            }
             Type::App(func, arg) => {
                 if let Some((k, v)) = self.as_map() {
                     return write!(f, "Map[{} {}]", k, v);

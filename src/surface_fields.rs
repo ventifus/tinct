@@ -239,7 +239,8 @@ fn surface_entries_to_list_dict(
             ctx.alloc_thunk(0, Arc::new(Thunk::value(val_val, entry.span.clone()))),
         );
         let entry_variant = Value::Variant {
-            tag: "Entry".into(),
+            tycon: "Expr".into(),
+            ctor: "Entry".into(),
             payload: Some(ctx.alloc_thunk(
                 0,
                 Arc::new(Thunk::value(Value::Dict(payload), entry.span.clone())),
@@ -279,7 +280,8 @@ fn named_args_to_list_dict(
             ),
         );
         let na_variant = Value::Variant {
-            tag: "NamedArg".into(),
+            tycon: "Expr".into(),
+            ctor: "NamedArg".into(),
             payload: Some(ctx.alloc_thunk(
                 0,
                 Arc::new(Thunk::value(Value::Dict(payload), na.span.clone())),
@@ -326,7 +328,8 @@ fn params_to_list_dict(
             ctx.alloc_thunk(0, Arc::new(Thunk::value(ann_val, p.span.clone()))),
         );
         let p_variant = Value::Variant {
-            tag: "Parameter".into(),
+            tycon: "Expr".into(),
+            ctor: "Parameter".into(),
             payload: Some(ctx.alloc_thunk(
                 0,
                 Arc::new(Thunk::value(Value::Dict(payload), p.span.clone())),
@@ -521,7 +524,8 @@ pub fn dot_key_to_value(key: &DotKey, ctx: &std::sync::Arc<crate::eval::EvalCont
                 ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(name), span.clone()))),
             );
             Value::Variant {
-                tag: "Ident".into(),
+                tycon: "DotKey".into(),
+                ctor: "Ident".into(),
                 payload: Some(
                     ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(payload_dict), span))),
                 ),
@@ -534,7 +538,8 @@ pub fn dot_key_to_value(key: &DotKey, ctx: &std::sync::Arc<crate::eval::EvalCont
                 ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Int(*index), span.clone()))),
             );
             Value::Variant {
-                tag: "Index".into(),
+                tycon: "DotKey".into(),
+                ctor: "Index".into(),
                 payload: Some(
                     ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(payload_dict), span))),
                 ),
@@ -577,13 +582,13 @@ fn annotation_inner_to_value(
         ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(&text), span.clone()))),
     );
 
-    let tag = match ann {
+    let (tycon, ctor) = match ann {
         Annotation::Simple(name) => {
             payload_map.insert(
                 HashableValue::Str("name".into()),
                 ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(name), span.clone()))),
             );
-            "Annotation.Simple"
+            ("Annotation", "Simple")
         }
         Annotation::PropertyDict(entries) => {
             // Expose positional entries as a "parts" list (integer-keyed dict of annotation values).
@@ -634,7 +639,8 @@ fn annotation_inner_to_value(
                             ),
                         );
                         Value::Variant {
-                            tag: "Annotation.Annotated".into(),
+                            tycon: "Annotation".into(),
+                            ctor: "Annotated".into(),
                             payload: Some(ctx.alloc_thunk(
                                 0,
                                 Arc::new(Thunk::value(Value::Dict(p), pos_entry.span.clone())),
@@ -663,7 +669,8 @@ fn annotation_inner_to_value(
                             ),
                         );
                         Value::Variant {
-                            tag: "Annotation.Simple".into(),
+                            tycon: "Annotation".into(),
+                            ctor: "Simple".into(),
                             payload: Some(ctx.alloc_thunk(
                                 0,
                                 Arc::new(Thunk::value(Value::Dict(p), pos_entry.span.clone())),
@@ -683,7 +690,8 @@ fn annotation_inner_to_value(
                             ),
                         );
                         Value::Variant {
-                            tag: "Annotation.Unknown".into(),
+                            tycon: "Annotation".into(),
+                            ctor: "Unknown".into(),
                             payload: Some(ctx.alloc_thunk(
                                 0,
                                 Arc::new(Thunk::value(Value::Dict(p), pos_entry.span.clone())),
@@ -730,7 +738,7 @@ fn annotation_inner_to_value(
                     }
                 }
             }
-            "Annotation.PropertyDict"
+            ("Annotation", "PropertyDict")
         }
         Annotation::Annotated(name, inner) => {
             let inner_text = inner.to_string();
@@ -745,13 +753,14 @@ fn annotation_inner_to_value(
                     Arc::new(Thunk::value(string_val(&inner_text), span.clone())),
                 ),
             );
-            "Annotation.Annotated"
+            ("Annotation", "Annotated")
         }
     };
 
     let payload_tid = ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(payload_map), span)));
     Value::Variant {
-        tag: tag.into(),
+        tycon: tycon.into(),
+        ctor: ctor.into(),
         payload: Some(payload_tid),
     }
 }

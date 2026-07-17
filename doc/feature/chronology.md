@@ -208,7 +208,7 @@ The following feature docs correspond to design documents or grouping docs that 
 
 | Feature Doc | What Changed |
 |-------------|-------------|
-| [union-types.md](union-types.md) | `try` returns `Value::Variant { tag: "Ok"/"Err" }` not structural `{ok: v}`/`{err: msg}` |
+| [union-types.md](union-types.md) | `try` returns `Value::Variant { tycon: "Result", ctor: "Ok"/"Err", .. }` not structural `{ok: v}`/`{err: msg}` |
 | [algebraic-data-types.md](algebraic-data-types.md) | Same — `try` result type changed from structural ADT to nominal Result |
 
 ### parameterized-dict → Earlier Dict/Record Semantics

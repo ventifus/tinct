@@ -586,7 +586,8 @@ pub enum Value {
     },
     /// Nominal variant (enum-like value)
     Variant {
-        tag: String,
+        tycon: String,
+        ctor: String,
         payload: Option<ThunkId>,
     },
     /// Exact base-10 decimal (rust_decimal::Decimal, 96-bit software decimal).
@@ -906,11 +907,15 @@ impl fmt::Debug for Value {
                     write!(f, "DirCap(revocable)")
                 }
             }
-            Value::Variant { tag, payload } => {
+            Value::Variant {
+                tycon,
+                ctor,
+                payload,
+            } => {
                 if payload.is_some() {
-                    write!(f, "Variant({tag}, <payload>)")
+                    write!(f, "Variant({}.{}, <payload>)", tycon, ctor)
                 } else {
-                    write!(f, "Variant({tag})")
+                    write!(f, "Variant({}.{})", tycon, ctor)
                 }
             }
             Value::Decimal(d) => write!(f, "Decimal({d})"),
@@ -1004,11 +1009,15 @@ impl fmt::Display for Value {
                     write!(f, "<DirCap (revocable)>")
                 }
             }
-            Value::Variant { tag, payload } => {
+            Value::Variant {
+                tycon,
+                ctor,
+                payload,
+            } => {
                 if payload.is_some() {
-                    write!(f, "{tag}(<payload>)")
+                    write!(f, "{}.{}(<payload>)", tycon, ctor)
                 } else {
-                    write!(f, "{tag}")
+                    write!(f, "{}.{}", tycon, ctor)
                 }
             }
             Value::Decimal(d) => write!(f, "{d}"),

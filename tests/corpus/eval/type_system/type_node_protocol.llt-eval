@@ -38,9 +38,9 @@
   SimpleType: [type
     # Leaf constructor (no @Child fields) — mirrors TypeNode.Int, TypeNode.Float, etc.
     # The @[as-type: fn  guarding: bool] annotation is stored at the constructor level.
-    [Leaf@[as-type: [fn [let t] t]  guarding: Boolean.True]]
+    Leaf@[as-type: [fn [let t] t]  guarding: Boolean.True]: []
     # Branch constructor with one @Child field — mirrors TypeNode.Negation.
-    [Branch@[as-type: [fn [let t] t]  guarding: Boolean.False]
+    Branch@[as-type: [fn [let t] t]  guarding: Boolean.False]: [
       inner@Child: SimpleType]
   ]
 

@@ -7,7 +7,7 @@
 # If p.n is Unknown (bug), [@Integer p.n] would fail type assertion validation.
 # If p.n is Int (correct), [@Integer p.n] typechecks and validates successfully.
 [
-  Result2: [type [MyOk n: Int] [MyErr msg: Str]]
+  Result2: [type MyOk: [n: Int] MyErr: [msg: Str]]
 
   # Type-only test: function with typed parameter; we don't call it at runtime.
   # The type checker must see p.n as Int (not Unknown) for [@Integer p.n] to typecheck.

@@ -4,13 +4,4 @@
 ]
 [f2 []]
 === error
-head: expected Seq, got Dict (defined at stdlib/prelude.llt:2931:15-2931:32)
-  --> stdlib/prelude.llt:2931:15-2931:32
-   |
-  2931 | """] [let xs] [builtin-head xs]]
-       |               ^^^^^^^^^^^^^^^^^
-  in [builtin-head ...] at stdlib/prelude.llt:2931:15-2931:32
-   |
-  2931 | """] [let xs] [builtin-head xs]]
-       |               ^^^^^^^^^^^^^^^^^
-  in [f2 ...] at 5:1-5:8
+head: expected Seq, got Dict

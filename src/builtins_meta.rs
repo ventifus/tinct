@@ -1202,7 +1202,9 @@ pub(crate) fn builtin_tag_of(
         };
         match peeled {
             // Expr.* variants return their full qualified tag (e.g. "Expr.Call", "Expr.VarRef").
-            Value::Variant { tag, .. } => ok_val(string_val(tag), call_span),
+            Value::Variant { tycon, ctor, .. } => {
+                ok_val(string_val(&format!("{}.{}", tycon, ctor)), call_span)
+            }
             _ => Err(Box::new(EvalError::type_mismatch(
                 "Variant",
                 peeled.type_name(),
@@ -1577,7 +1579,7 @@ fn type_name(val: &Value) -> String {
         Value::DirCap { .. } | Value::RevocableDirCap { .. } => "DirCap",
         Value::NetCap(_) => "NetCap",
         Value::File(_) => "File",
-        Value::Variant { tag, .. } => tag.as_str(),
+        Value::Variant { tycon, ctor, .. } => return format!("{}.{}", tycon, ctor),
         Value::Decimal(_) => "Decimal",
         Value::BigInt(_) => "BigInt",
         Value::Uri { .. } => "Uri",
@@ -3590,7 +3592,7 @@ pub(crate) fn builtin_eval_macro_ast(
             .expect("pre-materialized by Strictness::Seq");
 
         let expr_node = match expr_val {
-            Value::Variant { ref tag, .. } if tag.starts_with("Expr.") => {
+            Value::Variant { ref tycon, .. } if tycon == "Expr" => {
                 crate::surface_convert::dict_to_surface_node(&expr_val, &call_span, &ctx).map_err(
                     |e| {
                         EvalError::internal(
@@ -3746,7 +3748,7 @@ pub(crate) fn builtin_eval_types(
         for (_key, val_id) in &input_map {
             let val = materialize(&ctx.get_thunk(*val_id), Some(&call_span), &ctx).await?;
             match val {
-                Value::Variant { ref tag, .. } if tag.starts_with("Expr.") => {
+                Value::Variant { ref tycon, .. } if tycon == "Expr" => {
                     let node = crate::surface_convert::dict_to_surface_node(&val, &call_span, &ctx)
                         .map_err(|e| {
                             EvalError::internal(
@@ -4261,12 +4263,16 @@ fn is_contractive_value<'a>(
 
         match val {
             // Case 1: bare RecursiveRef — non-contractive.
-            Value::Variant { tag, .. } if tag == "TypeNode.RecursiveRef" => false,
+            Value::Variant { tycon, ctor, .. } if tycon == "TypeNode" && ctor == "RecursiveRef" => {
+                false
+            }
 
             // Case 3: Union and Intersect are non-guarding — recurse into all children.
-            Value::Variant { tag, payload }
-                if tag == "TypeNode.Union" || tag == "TypeNode.Intersect" =>
-            {
+            Value::Variant {
+                tycon,
+                ctor,
+                payload,
+            } if tycon == "TypeNode" && (ctor == "Union" || ctor == "Intersect") => {
                 let payload_id = match payload {
                     Some(id) => *id,
                     None => return true,
@@ -4373,7 +4379,7 @@ pub(crate) fn builtin_sequential(
             let thunk = ctx.get_thunk(thunk_id);
             let val = materialize(&thunk, Some(&call_span), &ctx).await?;
             match val {
-                Value::Variant { ref tag, .. } if tag.starts_with("Expr.") => {
+                Value::Variant { ref tycon, .. } if tycon == "Expr" => {
                     let node = crate::surface_convert::dict_to_surface_node(&val, &call_span, &ctx)
                         .map_err(|e| {
                             EvalError::internal(
@@ -4494,7 +4500,7 @@ pub(crate) fn builtin_ast_to_program(
 
         // Convert Expr.* Variant to SurfaceNode
         let expr_node = match expr_val {
-            Value::Variant { ref tag, .. } if tag.starts_with("Expr.") => {
+            Value::Variant { ref tycon, .. } if tycon == "Expr" => {
                 crate::surface_convert::dict_to_surface_node(
                     &expr_val,
                     &call_site_span_actual,
@@ -4584,7 +4590,7 @@ pub(crate) fn builtin_check_type(
             "Float" => matches!(value, Value::Float(_)),
             "Bool" | "Boolean" => matches!(
                 value,
-                Value::Variant { ref tag, .. } if tag.starts_with("Boolean.")
+                Value::Variant { ref tycon, .. } if tycon == "Boolean"
             ),
             "Dict" => matches!(value, Value::Dict(_) | Value::Overlay(_, _)),
             "Null" => matches!(value, Value::Dict(ref d) if d.is_empty()),
@@ -4662,14 +4668,15 @@ pub(crate) fn builtin_cap_env_has(
             _ => false,
         };
 
-        let tag = if found {
-            "Boolean.True"
+        let (tycon, ctor) = if found {
+            ("Boolean", "True")
         } else {
-            "Boolean.False"
+            ("Boolean", "False")
         };
         ok_val(
             Value::Variant {
-                tag: tag.to_string(),
+                tycon: tycon.to_string(),
+                ctor: ctor.to_string(),
                 payload: None,
             },
             call_span,
@@ -4831,18 +4838,16 @@ pub(crate) fn builtin_arena_stats(
         let (thunks_allocated, thunks_live, scope_count) = {
             let arena = ctx.scope_arena.borrow();
             let end = arena.scopes.len() as u32;
-            let mut allocated = 0u64;
             let mut live = 0i64;
             let mut scopes = 0u32;
             for eid in start_env_id..end {
                 let env = &arena.scopes[eid as usize];
-                allocated += env.alloc_count.load(std::sync::atomic::Ordering::Relaxed);
                 live += env.count_live() as i64;
                 scopes += 1;
             }
-            (allocated, live, scopes)
+            (crate::memory_budget::thunk_total(), live, scopes)
         };
-        let heap_bytes = crate::limit_alloc::allocated_bytes();
+        let heap_bytes = crate::memory_budget::allocated_bytes();
         let mut result_map: indexmap::IndexMap<HashableValue, ThunkId> = indexmap::IndexMap::new();
         let alloc_str = |v: Value| ctx.alloc_thunk(0, Arc::new(Thunk::value(v, call_span.clone())));
         result_map.insert(
@@ -5204,7 +5209,8 @@ mod tests {
     #[tokio::test]
     async fn tag_of_bare_variant() {
         let variant = Value::Variant {
-            tag: "Color.Red".to_string(),
+            tycon: "Color".to_string(),
+            ctor: "Red".to_string(),
             payload: None,
         };
         let ctx = test_ctx();
@@ -5226,7 +5232,8 @@ mod tests {
     #[tokio::test]
     async fn tag_of_annotated_variant_single_wrap() {
         let variant = Value::Variant {
-            tag: "SimpleType.Leaf".to_string(),
+            tycon: "SimpleType".to_string(),
+            ctor: "Leaf".to_string(),
             payload: None,
         };
         let annotation = Value::Dict(IndexMap::new());
@@ -5253,7 +5260,8 @@ mod tests {
     #[tokio::test]
     async fn tag_of_annotated_variant_double_wrap() {
         let variant = Value::Variant {
-            tag: "Shape.Circle".to_string(),
+            tycon: "Shape".to_string(),
+            ctor: "Circle".to_string(),
             payload: None,
         };
         let inner_annotated = Value::Annotated {

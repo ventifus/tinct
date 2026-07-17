@@ -4,4 +4,4 @@
 # result monad dict defined in prelude: bind: [fn [let r f] [and-then f r]], pure: Ok.
 [do result [x: [Ok 1]] [Ok [+ x 1]]]
 === out
-Variant(Result.Ok, Int(2))
+Variant(Result.Ok, Dict({"value": Int(2)}))

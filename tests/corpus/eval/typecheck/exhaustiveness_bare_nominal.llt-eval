@@ -3,7 +3,7 @@
 # Coverage checking must use ConstructorSignature::from_nominal_variant (not from_union).
 # The wildcard arm covers all constructors — no non-exhaustive error should be raised.
 [
-  Tag: [type [MyTag value: Int]]
+  Tag: [type MyTag: [value: Int]]
 
   extract: [fn [let s@Tag]
     [match s

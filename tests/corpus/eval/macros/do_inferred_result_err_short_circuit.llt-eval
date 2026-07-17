@@ -3,4 +3,4 @@
 # → and-then [fn [x] [Ok x]] [Error "fail"] → [Error "fail"] (short-circuit).
 [do [x: [Error "fail"]] [Ok x]]
 === out
-Variant(Result.Error, String("fail"))
+Variant(Result.Error, Dict({"msg": String("fail")}))

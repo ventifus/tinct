@@ -6,9 +6,9 @@
 # MyType.Red → Value::Annotated{inner: Variant("MyType.Red", Null), annotation: {category: "primary"}}
 # annotation-of MyType.Red → Dict({"category": "primary"})
 #
-# Type body wrapped in extra brackets [type [Red@[...]]] to force Dict body form in the type
-# checker, avoiding "unknown parameterized type: Red" from the Annotated arm of resolve_type_expr.
-[MyType: [type [Red@[category: "primary"]]]]
+# Type body uses new keyed form [type Red@[...]: []] — annotated unit constructor
+# with empty payload dict, which lower.rs treats as a unit variant with annotation.
+[MyType: [type Red@[category: "primary"]: []]]
 [ann: [annotation-of MyType.Red]]
 [result: [= [get "category" ann] "primary"]]
 === out

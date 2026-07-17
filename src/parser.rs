@@ -527,13 +527,22 @@ enum StackFrame {
         params_consumed: bool,
     },
     /// Type alias: `[type expr]` or `[type [params] expr]` or `[type T1 T2 ...]`
+    ///
+    /// Supports three body forms:
+    /// 1. Positional bare uppercase words → unit constructors: `[type Red Green Blue]`
+    /// 2. Named uppercase-keyed entries + positional bare uppercase words → payload + unit ctors:
+    ///    `[type File: [path: String] Noop]`
+    /// 3. Single positional lowercase-keyed dict → structural alias: `[type [port: Int]]`
     TypeAlias {
         /// Type parameters: (name, optional full annotation from @X in [let a@X b]).
         params: Vec<(String, Option<crate::ast::Spanned<crate::ast::Annotation>>)>,
-        /// Multiple type expressions for multi-entry union declarations.
-        /// Single-entry `[type T]` has exactly one element.
-        /// Multi-entry `[type T1 T2 ...]` has 2+ elements.
-        type_exprs: Vec<Arc<SurfaceNode>>,
+        /// Accumulated type body entries. Each entry is either:
+        /// - `key: None` — positional type expression (unit constructor bare word, or structural body)
+        /// - `key: Some(k)` — named entry: `k` is the constructor name, value is the payload dict
+        type_exprs: Vec<Spanned<SurfaceEntry>>,
+        /// Pending key node from a bare word followed by `:` inside [type ...].
+        /// Holds the constructor name until the payload value arrives.
+        pending_key: Option<Arc<SurfaceNode>>,
         span_start: Position,
     },
     /// Quote special form: `[quote expr]`
@@ -1240,6 +1249,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         stack.push(StackFrame::TypeAlias {
                             params: Vec::new(),
                             type_exprs: Vec::new(),
+                            pending_key: None,
                             span_start: span.start,
                         });
                         i += 1; // Consume the OpenBracket
@@ -2018,8 +2028,23 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                     StackFrame::TypeAlias {
                         params,
                         type_exprs,
+                        pending_key,
                         span_start,
                     } => {
+                        // If there's an unconsumed pending_key, the user wrote `Name:` without
+                        // a payload value — this is a syntax error.
+                        if let Some(key_node) = pending_key {
+                            let key_name = match &key_node.expr {
+                                SurfaceExpression::VarRef { name, .. } => name.clone(),
+                                _ => "Constructor".to_string(),
+                            };
+                            close_bracket_recover!(ParseError {
+                                message: format!(
+                                    "constructor `{key_name}:` requires a payload value (e.g. `{key_name}: [field: Type]`)"
+                                ),
+                                span: Some(span.clone()),
+                            });
+                        }
                         if type_exprs.is_empty() {
                             close_bracket_recover!(ParseError {
                                 message: "type-alias form requires at least one type expression"
@@ -2027,28 +2052,25 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                 span: Some(span.clone()),
                             });
                         } else {
-                            // Multi-entry union: wrap all entries in a single TypeAlias with Union body.
-                            // The type checker will construct Type::Union from multiple entries.
-                            // Single-entry: remains a simple alias (type checker unwraps single-element unions).
-                            let body = if type_exprs.len() == 1 {
-                                type_exprs.into_iter().next().unwrap()
+                            // Build the body.
+                            //
+                            // Single positional entry (no key) → use the entry value directly as body.
+                            //   - `[type [port: Int]]` — structural alias body
+                            //   - `[type Int]` — simple alias
+                            //
+                            // Multiple entries, or a single named entry → wrap in a Dict.
+                            // The type checker detects:
+                            //   - All positional uppercase VarRefs → union of unit constructors
+                            //   - Any named (uppercase-keyed) entry → new payload constructor form
+                            //   - Mixed positional uppercase VarRefs + named entries → mixed union
+                            let body = if type_exprs.len() == 1 && type_exprs[0].node.key.is_none()
+                            {
+                                // Single positional entry — use the value directly as the body.
+                                Arc::clone(&type_exprs.into_iter().next().unwrap().node.value)
                             } else {
-                                // Create a synthetic Dict expression with positional entries.
-                                // The type checker recognizes multiple positional entries as a union.
-                                let entries: Vec<Spanned<SurfaceEntry>> = type_exprs
-                                    .into_iter()
-                                    .map(|e| {
-                                        let entry_span = e.span.clone();
-                                        Spanned::new(
-                                            SurfaceEntry {
-                                                key: None,
-                                                value: e,
-                                            },
-                                            entry_span,
-                                        )
-                                    })
-                                    .collect();
-                                mk(SurfaceExpression::Dict(entries), dict_span(span_start))
+                                // Multi-entry or named-entry — wrap entries in a Dict.
+                                // type_exprs already contains Spanned<SurfaceEntry> with correct key info.
+                                mk(SurfaceExpression::Dict(type_exprs), dict_span(span_start))
                             };
                             let decl = SurfaceDeclaration::TypeAlias { params, body };
                             let spanned_decl = Spanned::new(decl, dict_span(span_start));
@@ -2851,6 +2873,52 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         } else {
                             Some(ParseError {
                                 message: "`:` without a left-hand side in [let ...] form"
+                                    .to_string(),
+                                span: Some(span.clone()),
+                            })
+                        }
+                    }
+                    Some(StackFrame::TypeAlias {
+                        ref mut pending_key,
+                        ref mut type_exprs,
+                        ..
+                    }) => {
+                        // Named constructor form: `File: [path: String]` inside [type ...].
+                        // The last pushed type expression must be a bare uppercase VarRef (the
+                        // constructor name). Pop it from type_exprs and store as pending_key.
+                        if pending_key.is_some() {
+                            // Already have a pending key — double colon error.
+                            Some(ParseError {
+                                message: "`:` without a value (expected constructor payload after `Name:`)"
+                                    .to_string(),
+                                span: Some(span.clone()),
+                            })
+                        } else if let Some(last_entry) = type_exprs.last() {
+                            if last_entry.node.key.is_none() {
+                                match &last_entry.node.value.expr {
+                                    SurfaceExpression::VarRef { name, .. }
+                                        if crate::eval::is_constructor_name(name) =>
+                                    {
+                                        // Pop the last positional entry, use its value as the key.
+                                        let popped = type_exprs.pop().unwrap();
+                                        *pending_key = Some(Arc::clone(&popped.node.value));
+                                        None // Next expression will be the payload value
+                                    }
+                                    _ => Some(ParseError {
+                                        message: "`:` in [type ...] must follow an uppercase constructor name (e.g. `File: [path: String]`)".to_string(),
+                                        span: Some(span.clone()),
+                                    }),
+                                }
+                            } else {
+                                Some(ParseError {
+                                    message: "`:` without a constructor name in [type ...] form"
+                                        .to_string(),
+                                    span: Some(span.clone()),
+                                })
+                            }
+                        } else {
+                            Some(ParseError {
+                                message: "`:` without a constructor name in [type ...] form"
                                     .to_string(),
                                 span: Some(span.clone()),
                             })
@@ -4839,12 +4907,21 @@ fn pop_last_value_from_frame(
             }
         }
         Some(StackFrame::TypeAlias {
-            ref mut type_exprs, ..
+            ref mut type_exprs,
+            ref mut pending_key,
+            ..
         }) => {
             // Pop last type expression so @ annotation can attach to it.
             // This supports `Fn@Number` inside `[type Fn@Number]`.
-            if let Some(last) = type_exprs.pop() {
-                Ok(last)
+            // If a pending_key is set (constructor name before `:` payload), pop that instead.
+            if pending_key.is_some() {
+                // The pending key is the last thing pushed; pop it so annotation can attach.
+                let key = pending_key.take().unwrap();
+                Ok(key)
+            } else if let Some(last_entry) = type_exprs.pop() {
+                // Return the value of the last entry. Keyed entries should not be in
+                // type_exprs yet when this is called (pending_key handles them before commit).
+                Ok(Arc::clone(&last_entry.node.value))
             } else {
                 Err(ParseError {
                     message: "@ annotation requires a preceding expression in type alias"
@@ -5630,8 +5707,23 @@ fn push_expr_to_parent(
             Some(StackFrame::TypeAlias {
                 ref mut params,
                 ref mut type_exprs,
+                ref mut pending_key,
                 ..
             }) => {
+                // If a pending_key is set, this node is the payload value for a named constructor.
+                // Commit the key+value as a named entry: `File: [path: String]`
+                if let Some(key_node) = pending_key.take() {
+                    let entry_span = node.span.clone();
+                    type_exprs.push(Spanned::new(
+                        SurfaceEntry {
+                            key: Some(key_node),
+                            value: node,
+                        },
+                        entry_span,
+                    ));
+                    return Ok(());
+                }
+
                 // First expression: check if it's a LetDecl parameter list
                 if params.is_empty() && type_exprs.is_empty() {
                     // Only LetDecl is supported for type params: [type [let a b c] ...]
@@ -5716,9 +5808,131 @@ fn push_expr_to_parent(
                     }
                 }
 
+                // T-1539: Detect old-form payload constructor syntax.
+                // Two old forms exist:
+                //   (a) Named-arg form: `[CtorName field: Type ...]` — has named args
+                //   (b) Positional-arg form: `[CtorName PositionalType]` — has positional args
+                //
+                // Both are implied Calls whose func is a plain (unannotated) uppercase VarRef.
+                // Any implied Call with an uppercase func inside a [type ...] body is the old form:
+                // in the new syntax, type bodies only accept bare constructor names (VarRef), named
+                // constructors (via pending_key: `Ctor: [fields]`), and [let ...] type params.
+                //
+                // Detection is annotation-sensitive:
+                //   - Unannotated func (`Fn` with no `@`): ANY args (positional or named) = old form.
+                //     `[File field: Type]`      — unannotated, named args → old form
+                //     `[Ok a]`                  — unannotated, positional args → old form
+                //   - Annotated func (`Fn@Integer`): ONLY named args = old form.
+                //     `[Node@[...] field: Type]` — annotated, named args → old form
+                //     `[Fn@Integer [Integer Integer]]` — annotated, positional args → function-type alias, allowed
+                // The new form is `CtorName@[annotation]: [fields]` (keyed entry in type body).
+                //
+                // Structural alias form (single positional dict with all lowercase-keyed entries)
+                // is not affected — it is a Dict node, not a Call node.
+                let is_old_payload_ctor = match &node.expr {
+                    SurfaceExpression::Call {
+                        func,
+                        args,
+                        named_args,
+                        implied: true,
+                    } => match &func.expr {
+                        SurfaceExpression::VarRef {
+                            name, annotation, ..
+                        } if crate::eval::is_constructor_name(name) => {
+                            if annotation.is_some() {
+                                // Annotated func: only named args signal the old payload ctor form.
+                                // Positional args are valid as function-type alias parameters,
+                                // e.g. `[Fn@Integer [Integer Integer]]`.
+                                !named_args.is_empty()
+                            } else {
+                                // Unannotated func: any args (positional or named) = old form.
+                                !args.is_empty() || !named_args.is_empty()
+                            }
+                        }
+                        _ => false,
+                    },
+                    _ => false,
+                };
+                if is_old_payload_ctor {
+                    let (ctor_name, ctor_annotation) = match &node.expr {
+                        SurfaceExpression::Call { func, .. } => match &func.expr {
+                            SurfaceExpression::VarRef {
+                                name, annotation, ..
+                            } => {
+                                let ann_str = annotation.as_ref().map(|a| format!("@{}", a.node));
+                                (name.clone(), ann_str)
+                            }
+                            _ => ("CtorName".to_string(), None),
+                        },
+                        _ => ("CtorName".to_string(), None),
+                    };
+                    let qualified = match &ctor_annotation {
+                        Some(ann) => format!("{ctor_name}{ann}"),
+                        None => ctor_name.clone(),
+                    };
+                    return Err(ParseError {
+                        message: format!(
+                            "payload constructor syntax has changed: use `{qualified}: [fields]` instead of `[{qualified} fields]`"
+                        ),
+                        span: Some(node.span.clone()),
+                    });
+                }
+
+                // T-1539: Detect multiple positional structural dict bodies.
+                // A structural alias must have exactly one body (single positional dict with
+                // lowercase-keyed entries). Multiple positional dicts are ambiguous and invalid.
+                let is_positional_struct_dict = match &node.expr {
+                    SurfaceExpression::Dict(entries) => {
+                        // A dict is "structural" if it has at least one keyed entry where the key
+                        // is a lowercase-starting identifier (not uppercase, not a number).
+                        entries.iter().any(|e| {
+                            if let Some(k) = &e.node.key {
+                                matches!(&k.expr, SurfaceExpression::VarRef { name, .. }
+                                    if name.chars().next().is_some_and(|c| c.is_lowercase()))
+                            } else {
+                                false
+                            }
+                        })
+                    }
+                    _ => false,
+                };
+                if is_positional_struct_dict {
+                    // Check if there's already a structural dict body entry.
+                    let already_has_struct_dict = type_exprs.iter().any(|e| {
+                        if e.node.key.is_some() {
+                            // Keyed entries are named constructors, not structural bodies.
+                            return false;
+                        }
+                        matches!(&e.node.value.expr, SurfaceExpression::Dict(inner)
+                        if inner.iter().any(|ie| {
+                            if let Some(k) = &ie.node.key {
+                                matches!(&k.expr, SurfaceExpression::VarRef { name, .. }
+                                    if name.chars().next().is_some_and(|c| c.is_lowercase()))
+                            } else {
+                                false
+                            }
+                        }))
+                    });
+                    if already_has_struct_dict {
+                        return Err(ParseError {
+                            message: "structural alias must have exactly one body; \
+                                use [or ...] for a union of structural types"
+                                .to_string(),
+                            span: Some(node.span.clone()),
+                        });
+                    }
+                }
+
                 // Not a parameter list (or already have params) — this is a type expression entry.
                 // Multi-entry `[type T1 T2 ...]` accumulates all positional type expressions.
-                type_exprs.push(node);
+                let entry_span = node.span.clone();
+                type_exprs.push(Spanned::new(
+                    SurfaceEntry {
+                        key: None,
+                        value: node,
+                    },
+                    entry_span,
+                ));
                 Ok(())
             }
             Some(StackFrame::Quote {
@@ -7332,9 +7546,10 @@ mod tests {
             other => panic!("expected Dict, got {other:?}"),
         }
 
-        // With [let ...] params: [Pair: [type [let a b] [first: a] [second: b]]]
-        let output =
-            parse("[Pair: [type [let a b] [first: a] [second: b]]]").expect("parse failed");
+        // With [let ...] params and new named-key constructor syntax:
+        // [Pair: [type [let a b] First: [first: a] Second: [second: b]]]
+        let output = parse("[Pair: [type [let a b] First: [first: a] Second: [second: b]]]")
+            .expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::Dict(entries) => {
@@ -7632,7 +7847,10 @@ mod tests {
         assert!(
             output2.errors[0]
                 .message
-                .contains("`:` is not valid inside a type form"),
+                .contains("`:` is not valid inside a type form")
+                || output2.errors[0]
+                    .message
+                    .contains("must follow an uppercase constructor name"),
             "expected error about colon in wrong context for [type x :], got: {}",
             output2.errors[0].message
         );

@@ -20,9 +20,9 @@
     Unknown
     Proxy
     AnyFn
-    [Dict fields: Any  open: Any  key-type: Any  value-type: Any]
-    [TypeConstructor name: Any]
-    [TypeApplication ctor: Any  args: Any]
+    Dict: [fields: Any  open: Any  key-type: Any  value-type: Any]
+    TypeConstructor: [name: Any]
+    TypeApplication: [ctor: Any  args: Any]
     # Opaque Rust value types — no payload, identity-matched by tag name.
     Program
     Document

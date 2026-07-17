@@ -3,7 +3,7 @@
 # Using payload.r in the body gives E002.
 # Correct form: [case [let payload] [Shape.Circle payload] payload.r]
 [
-  Shape: [type [Circle r: Int]]
+  Shape: [type Circle: [r: Int]]
   sh:    [Shape.Circle r: 5]
   area:  [match sh
     [Shape.Circle payload]: payload.r

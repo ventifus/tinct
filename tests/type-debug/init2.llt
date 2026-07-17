@@ -1,0 +1,17 @@
+--- stage: "type"
+[
+  TypeNode: [type Int String Dict: [fields: Any  open: Any  key-type: Any  value-type: Any]]
+  Integer: TypeNode.Int
+  String:  TypeNode.String
+  Dict:    [TypeNode.Dict fields: []  open: 1  key-type: TypeNode.Top  value-type: TypeNode.Top]
+]
+
+---
+# Minimal test: does calling a variadic builtin produce the error?
+[
+  result: [builtin-narrow %cwd "tests/corpus"]
+]
+
+[
+  [%stderr.write "done\n" %stderr]
+]

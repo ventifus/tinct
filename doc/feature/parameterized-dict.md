@@ -25,7 +25,7 @@ evaluation.
 The split matters because:
 
 - **Self-documenting stdlib signatures.** NFA and regex accumulator patterns use homogeneous maps. `stat`, `tls-peer-cert`, and `list-dir` return structural records. Precise types make signatures machine-checkable.
-- **Formal `Dict`.** `Dict: [type [Record Map]]` — a first-class BAS union — gives `@Dict` formal meaning and enables sound union elimination in pattern matching.
+- **Formal `Dict`.** `Dict: [type [or Record Map]]` — a first-class BAS union — gives `@Dict` formal meaning and enables sound union elimination in pattern matching.
 - **Typed reduce pipelines.** `builtin-reduce` accumulating a dict with uniform-value inserts infers `Map@[K: V]` rather than `Any`.
 - **Key-safe access.** `[get k map]` on `Map@[K: V]` returns `V | Null`; `get-or` eliminates the nullable branch.
 
@@ -77,7 +77,7 @@ behavior for structural records, whereas `@Dict` after the split loses this beha
 ### `Dict` as a BAS Union
 
 ```tinct
-Dict: [type [Record Map]]
+Dict: [type [or Record Map]]
 ```
 
 Under BAS, this is a first-class Boolean-algebra union — `Record ∨ Map`. BAS's

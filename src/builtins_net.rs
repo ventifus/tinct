@@ -615,7 +615,7 @@ pub(crate) async fn validate_spki_pins(
             crate::eval::materialize(&fingerprint_thunk, Some(&span), ctx).await?;
 
         let algorithm_tag = match algorithm_val {
-            Value::Variant { tag, .. } => tag,
+            Value::Variant { tycon, ctor, .. } => format!("{}.{}", tycon, ctor),
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "tls-connect opts.pins.algorithm".to_string(),

@@ -1,7 +1,7 @@
 # B-337: Exact-value match on named-field constructor.
 # 2-arg [case ...] form now requires 3 args (T-1151).
 # The new form is [case [let bindings] pattern body].
-[Result: [type [let a] [Ok value: a] [Error msg: Str]]]
+[Result: [type [let a] Ok: [value: a] Error: [msg: Str]]]
 [result: [match [Ok value: 1]
   [case [Ok value: 1] "hit"]
   _: "miss"]]

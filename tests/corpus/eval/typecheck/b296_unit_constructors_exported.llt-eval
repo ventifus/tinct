@@ -2,7 +2,7 @@
 # enclosing dict's type environment. Foo and Bar from MyType are unit constructors
 # that should be usable as values in the same scope.
 [
-  MyType: [type [Foo] [Bar]]
+  MyType: [type Foo Bar]
   x: Foo
   y: Bar
 ]

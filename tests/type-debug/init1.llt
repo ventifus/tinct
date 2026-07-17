@@ -1,0 +1,29 @@
+--- stage: "type"
+[
+  TypeNode: [type
+    Int String Float Bytes Never Top Unknown Proxy AnyFn
+    [Dict fields: Any  open: Any  key-type: Any  value-type: Any]
+    [TypeConstructor name: Any]
+    [TypeApplication ctor: Any  args: Any]]
+  Integer: TypeNode.Int
+  String:  TypeNode.String
+  Dict:    [TypeNode.Dict fields: []  open: 1  key-type: TypeNode.Top  value-type: TypeNode.Top]
+]
+
+---
+# Minimal init: test match over %programs vs find-corpus-files-style call
+[
+  find-something: [fn@Dict [let cap path state@Dict]
+    state]
+
+  result: [match [builtin-eq-int [builtin-dict-length %programs] 0]
+    0: %programs
+    _: [find-something
+          [builtin-narrow %cwd "tests/corpus"]
+          "."
+          []]]
+]
+
+[
+  [%stderr.write [join "" [[builtin-int->string [builtin-dict-length result]] " items\n"]] %stderr]
+]

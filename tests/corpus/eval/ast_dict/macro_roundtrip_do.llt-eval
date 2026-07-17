@@ -4,4 +4,4 @@
 # This test was blocked until the macro-runtime-v2-regression fix.
 [do [x: [Ok 5]] [y: [Ok 7]] [Ok [+ x y]]]
 === out
-Variant(Result.Ok, Int(12))
+Variant(Result.Ok, Dict({"value": Int(12)}))

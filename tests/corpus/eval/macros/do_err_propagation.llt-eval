@@ -4,4 +4,4 @@
   [y: [Error "fail"]]
   [Ok [+ x y]]]
 === out
-Variant(Result.Error, String("fail"))
+Variant(Result.Error, Dict({"msg": String("fail")}))

@@ -1049,7 +1049,11 @@ fn count_unresolved_vars(
             .iter()
             .map(|a| count_unresolved_vars(a, type_vars))
             .sum(),
-        Type::NominalVariant { tag: _, fields } => fields
+        Type::NominalVariant {
+            tycon: _,
+            ctor: _,
+            fields,
+        } => fields
             .fields
             .values()
             .map(|field_ty| count_unresolved_vars(field_ty, type_vars))

@@ -943,9 +943,8 @@ fn extract_doc_from_surface_node(
 #[allow(dead_code)]
 fn collect_nominal_tags(ty: &Type) -> Vec<String> {
     match ty {
-        Type::NominalVariant { tag, .. } => vec![tag.clone()],
+        Type::NominalVariant { tycon, ctor, .. } => vec![format!("{}.{}", tycon, ctor)],
         Type::Union(members) => members.iter().flat_map(collect_nominal_tags).collect(),
-        // Intersection, Seq, Record, and all scalar types carry no nominal tags.
         _ => vec![],
     }
 }
@@ -2501,17 +2500,14 @@ pub(crate) async fn infer_surface_expr(
                 // Compute the arm-local scrutinee type from I-Case3.
                 let arm_scrutinee_ty = match &arm.pattern.node {
                     Pattern::Constructor { tag, .. } => {
-                        // When remaining_scrutinee is already a NominalVariant for this tag,
-                        // use it directly — no intersection needed. The intersection (I-Case3)
-                        // is only meaningful when narrowing a Union to one constructor.
-                        // Intersecting NominalVariant("Circle",{r:Int}) with NominalVariant("Circle",{})
-                        // loses the real field types from the original NominalVariant.
-                        if matches!(&remaining_scrutinee, Type::NominalVariant { tag: t, .. } if t == tag)
+                        let (tycon, ctor) = tag.split_once('.').unwrap_or(("", tag.as_str()));
+                        if matches!(&remaining_scrutinee, Type::NominalVariant { tycon: t, ctor: c, .. } if t == tycon && c == ctor)
                         {
                             remaining_scrutinee.clone()
                         } else {
                             let tag_ty = Type::NominalVariant {
-                                tag: tag.clone(),
+                                tycon: tycon.to_string(),
+                                ctor: ctor.to_string(),
                                 fields: crate::type_def::Row {
                                     fields: indexmap::IndexMap::new(),
                                     tail: crate::type_def::RowTail::Empty,
@@ -2564,8 +2560,10 @@ pub(crate) async fn infer_surface_expr(
                 if arm.guard.is_none() {
                     match &arm.pattern.node {
                         Pattern::Constructor { tag, .. } => {
+                            let (tycon, ctor) = tag.split_once('.').unwrap_or(("", tag.as_str()));
                             let neg_tag = Type::Negation(Box::new(Type::NominalVariant {
-                                tag: tag.clone(),
+                                tycon: tycon.to_string(),
+                                ctor: ctor.to_string(),
                                 fields: crate::type_def::Row {
                                     fields: indexmap::IndexMap::new(),
                                     tail: crate::type_def::RowTail::Empty,
@@ -2590,13 +2588,16 @@ pub(crate) async fn infer_surface_expr(
                 Type::Union(members) => {
                     coverage::ConstructorSignature::from_union(members, tycon_env_ref)
                 }
-                Type::NominalVariant { tag, fields } => {
-                    Some(coverage::ConstructorSignature::from_nominal_variant(
-                        tag,
-                        fields,
-                        tycon_env_ref,
-                    ))
-                }
+                Type::NominalVariant {
+                    tycon,
+                    ctor,
+                    fields,
+                } => Some(coverage::ConstructorSignature::from_nominal_variant(
+                    tycon,
+                    ctor,
+                    fields,
+                    tycon_env_ref,
+                )),
                 // Nominal ADT: scrutinee is a TyCon with declared constructors.
                 // Look up the constructors from tycon_env and build the signature directly.
                 // This handles `[match c Boolean.True: t Boolean.False: e]` where c: TyCon("Boolean").
@@ -2836,34 +2837,18 @@ pub(crate) async fn infer_surface_expr(
                         // A Negation type restricts what values CAN'T inhabit the type, but
                         // doesn't describe the field structure. Return Unknown for any field.
                         Type::Negation(_) => Ok(Type::Unknown),
-                        // Union type: search members for a NominalVariant whose short name
-                        // (after the last '.') matches the field. This handles qualified
-                        // constructor access like Boolean.True, Transport.Tcp, etc. where
-                        // the base expression's type is the union of all constructors.
-                        Type::Union(members) => {
-                            let key = match field {
-                                crate::ast::DotKey::Ident(s) => s.clone(),
-                                crate::ast::DotKey::Int(n) => n.to_string(),
-                            };
-                            for m in members {
-                                if let Type::NominalVariant { tag, .. } = m {
-                                    let short = tag.rsplit('.').next().unwrap_or(tag.as_str());
-                                    if short == key.as_str() {
-                                        return Ok(m.clone());
-                                    }
-                                }
-                            }
-                            // Field not found among union members — return Unknown for gradual
-                            // typing rather than an error, since unions may have runtime-only
-                            // structure that is not statically visible.
-                            Ok(Type::Unknown)
-                        }
+                        // Union type: ADT names now carry a Dict value type (one field per
+                        // constructor), so qualified constructor access (TypeNode.Dict) goes
+                        // through the Type::Dict arm above.  A Union here means a genuinely
+                        // union-typed value (e.g. after match narrowing collapsed to two
+                        // branches) — field access on that is gradual.
+                        Type::Union(_) => Ok(Type::Unknown),
                         // Concrete non-record types: produce an error.
                         // TypeVar cases are handled above; TyCon may expand to a Record so
                         // we allow Unknown for those.
-                        // NominalVariant: a single-constructor type declaration (e.g. StringWriter)
-                        // normalizes to NominalVariant instead of Union, so qualified constructor
-                        // access (StringWriter.Writer) needs gradual treatment here.
+                        // NominalVariant: a narrowed/matched variant value — field access is
+                        // gradual (payload fields can be accessed; constructor dict fields are
+                        // not meaningful on an instance).
                         Type::NominalVariant { .. } => Ok(Type::Unknown),
                         Type::TyCon(_) | Type::App(_, _) => Ok(Type::Unknown),
                         // All other concrete types (Int, Str, Float, Function, etc.): error.

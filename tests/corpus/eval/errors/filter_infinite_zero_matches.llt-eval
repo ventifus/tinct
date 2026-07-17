@@ -4,13 +4,4 @@
 # (the internal loop skips without depth accumulation). Using a bounded input here.
 [head [filter [fn [let n] False] [take 100 [range 0]]]]
 === error
-head on empty collection (defined at stdlib/prelude.llt:2931:15-2931:32)
-  --> stdlib/prelude.llt:2931:15-2931:32
-   |
-  2931 | """] [let xs] [builtin-head xs]]
-       |               ^^^^^^^^^^^^^^^^^
-  in [builtin-head ...] at stdlib/prelude.llt:2931:15-2931:32
-   |
-  2931 | """] [let xs] [builtin-head xs]]
-       |               ^^^^^^^^^^^^^^^^^
-  in [head ...] at 4:1-4:56
+head on empty collection

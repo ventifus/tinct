@@ -19,7 +19,8 @@ use tinct::{
 const EXIT_OK: i32 = 0;
 const EXIT_ERROR: i32 = 1;
 const EXIT_TIMEOUT: i32 = 2;
-// tinct::limit_alloc::EXIT_OOM (3): soft heap-limit exceeded — diagnostics printed, clean exit.
+const EXIT_OOM: i32 = tinct::memory_budget::EXIT_OOM;
+// EXIT_OOM (3): soft heap-limit exceeded — diagnostics printed, clean exit.
 // Note: RLIMIT_AS violations (hard backstop) cause abort via handle_alloc_error, not a clean exit.
 // RLIMIT_CPU violations cause SIGXCPU (soft) or SIGKILL (hard). Both terminate without EXIT_ERROR.
 
@@ -337,7 +338,7 @@ async fn async_main() -> i32 {
     // Works on all platforms; no-op when --max-memory is not passed.
     if let Some(max_bytes) = cli.max_memory {
         if max_bytes > 0 {
-            tinct::limit_alloc::set_limit(max_bytes);
+            tinct::memory_budget::set_limit(max_bytes);
         }
     }
 
@@ -472,8 +473,19 @@ async fn async_main() -> i32 {
     match result {
         Ok(()) => EXIT_OK,
         Err(e) => {
-            eprintln!("{e}");
-            EXIT_ERROR
+            if tinct::memory_budget::is_oom_flagged() {
+                let limit = cli.max_memory.unwrap_or(0);
+                eprintln!("tinct: out of memory (limit: {limit} bytes)");
+                eprintln!(
+                    "  tracked heap (arena): {} bytes",
+                    tinct::memory_budget::allocated_bytes()
+                );
+                eprintln!("  note: dict/string/async heap untracked; actual usage may be higher");
+                EXIT_OOM
+            } else {
+                eprintln!("{e}");
+                EXIT_ERROR
+            }
         }
     }
 }
@@ -2009,7 +2021,8 @@ async fn run_eval(
                         );
                         let payload_id = alloc_val(Value::Dict(payload_dict));
                         Value::Variant {
-                            tag: "ProgramItem.File".to_string(),
+                            tycon: "ProgramItem".to_string(),
+                            ctor: "File".to_string(),
                             payload: Some(payload_id),
                         }
                     } else {
@@ -2037,7 +2050,8 @@ async fn run_eval(
                             .insert(HashableValue::Str("handle".into()), alloc_val(handle_value));
                         let payload_id = alloc_val(Value::Dict(payload_dict));
                         Value::Variant {
-                            tag: "ProgramItem.File".to_string(),
+                            tycon: "ProgramItem".to_string(),
+                            ctor: "File".to_string(),
                             payload: Some(payload_id),
                         }
                     }
@@ -2051,7 +2065,8 @@ async fn run_eval(
                     );
                     let payload_id = alloc_val(Value::Dict(payload_dict));
                     Value::Variant {
-                        tag: "ProgramItem.Expr".to_string(),
+                        tycon: "ProgramItem".to_string(),
+                        ctor: "Expr".to_string(),
                         payload: Some(payload_id),
                     }
                 }
