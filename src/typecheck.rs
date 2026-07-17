@@ -1382,9 +1382,12 @@ pub(crate) async fn infer_surface_expr(
             }
         }
 
-        SurfaceExpression::Pipe { .. } => {
-            unreachable!("Pipe should be desugared before type checking")
-        }
+        SurfaceExpression::Pipe { .. } => Err(vec![TypeError {
+            message: "Pipe should be desugared before type checking".to_string(),
+            span: node.span.clone(),
+            notes: Box::new(Vec::new()),
+            code: None,
+        }]),
 
         SurfaceExpression::Sequential(exprs) => {
             // Multi-expression sequential evaluation (let-binding semantics).

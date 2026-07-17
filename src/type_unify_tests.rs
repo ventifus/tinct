@@ -2131,6 +2131,76 @@ async fn test_constrain_error_absorption() {
     );
 }
 
+/// unify() Error absorption: unify(Error, T) must return Ok(()) and not propagate
+/// a cascade error. This covers the `(Type::Error(_), _) | (_, Type::Error(_)) => Ok(())` arm.
+/// T-1645: Type::Error unifies with everything.
+#[tokio::test]
+async fn test_unify_error_absorption() {
+    let mut state = InferState::new();
+
+    let span = rust_span!();
+
+    // Test unify(Error, Int) — Error on left side
+    let result = unify_sync(
+        &Type::error_cascade(),
+        &Type::Int,
+        &mut state,
+        &mut Vec::new(),
+        span.clone(),
+    )
+    .await;
+    assert!(
+        result.is_ok(),
+        "unify(Error, Int) should absorb silently (Error absorption arm), got: {:?}",
+        result.unwrap_err()
+    );
+
+    // Test unify(Int, Error) — Error on right side (symmetric)
+    let result2 = unify_sync(
+        &Type::Int,
+        &Type::error_cascade(),
+        &mut state,
+        &mut Vec::new(),
+        span.clone(),
+    )
+    .await;
+    assert!(
+        result2.is_ok(),
+        "unify(Int, Error) should absorb silently (Error absorption arm), got: {:?}",
+        result2.unwrap_err()
+    );
+
+    // Test unify(Error, Str) — Error with different concrete type
+    let result3 = unify_sync(
+        &Type::error_cascade(),
+        &Type::Str,
+        &mut state,
+        &mut Vec::new(),
+        span.clone(),
+    )
+    .await;
+    assert!(
+        result3.is_ok(),
+        "unify(Error, Str) should absorb silently (Error absorption arm), got: {:?}",
+        result3.unwrap_err()
+    );
+
+    // Test unify(Str, Error) — symmetric variant
+    let result4 = unify_sync(
+        &Type::Str,
+        &Type::error_cascade(),
+        &mut state,
+        &mut Vec::new(),
+        span,
+    )
+    .await;
+    assert!(
+        result4.is_ok(),
+        "unify(Str, Error) should absorb silently (Error absorption arm), got: {:?}",
+        result4.unwrap_err()
+    );
+}
+
 /// C-Var1: constrain(Int, Union([Str, TypeVar(α), TypeVar(β)])) should add a lower bound
 /// on α and β (multiple TypeVars → bound accumulation path).
 /// With a single TypeVar, C-Var1 binds directly via subst; with multiple TypeVars it uses bounds.

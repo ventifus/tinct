@@ -13,7 +13,7 @@ A thunk is always in exactly one of four states:
    Unevaluated ──────────────────────────→  InProgress(task)
         ↑                                        │         │
         │  reset(state)                          │         │
-        │  [arena migration only]                │         │
+        │  [arena / CEK re-dispatch]             │         │
         └────────────────────────────────────────┘         │
                                                     settle(Ok(v))
                                                     settle(Err(e))
@@ -42,7 +42,7 @@ Settled with an error. Cached forever. All readers receive this error immediatel
 2. **Single ownership**: at most one task evaluates a thunk at any time (`evaluating_task` is set atomically with the state transition in `try_claim()`).
 3. **Notification**: `settled()` resolves exactly once when entering a terminal state. It resolves before any reader can observe the terminal state.
 4. **Evaluate-at-most-once**: `try_claim()` is the sole path into `InProgress`. It is atomic — concurrent callers race and at most one wins.
-5. **Backward transition**: `reset()` (InProgress → Unevaluated) exists exclusively for arena migration. Never use for error recovery.
+5. **Backward transition**: `reset()` (InProgress → Unevaluated) is used for arena migration and CEK machine re-dispatch (e.g. FnCall resolved to a builtin needing argument pre-materialization in `eval_materialize.rs`). Sound in single-threaded LocalSet; backward transition would be unsound under concurrent evaluation. Never use for error recovery.
 
 ---
 
@@ -146,7 +146,7 @@ pub fn try_claim(&self) -> Option<UnevaluatedState>
 pub fn settle(&self, result: Result<Value, Arc<EvalError>>)
 ```
 
-**`reset(state: UnevaluatedState)`** — **[Arena migration only — `src/arena.rs`]** Transitions InProgress → Unevaluated. Clears `evaluating_task`. Does NOT fire `notify`. Never use for error recovery; `is_cacheable()` is gone and all errors are settled via `settle(Err(...))`.
+**`reset(state: UnevaluatedState)`** — Transitions InProgress → Unevaluated. Clears `evaluating_task`. Does NOT fire `notify`. Used for arena migration (`src/arena.rs`) and CEK machine re-dispatch (`eval_materialize.rs`) when a FnCall resolves to a builtin that needs argument pre-materialization. Sound in single-threaded LocalSet; backward transition would be unsound under concurrent evaluation. Never use for error recovery; `is_cacheable()` is gone and all errors are settled via `settle(Err(...))`.
 
 ```rust
 pub fn reset(&self, state: UnevaluatedState)
@@ -336,16 +336,16 @@ async fn dispatch_state(
 ) -> Action
 ```
 
-Pushes `Cont::Memoize` for `thunk` onto `stack`, then maps each variant to the corresponding initial `Action`:
+Settles the thunk directly (synchronous fast path) or pushes `Cont::Memoize` for `thunk` onto `stack` (async path), then maps each variant to the corresponding initial `Action`:
 
-| Variant | Initial Action |
-|---|---|
-| `CoreExpr { expr, env_id }` | `Action::Eval { expr, env_id }` |
-| `Surface { node, env_id, .. }` | `Action::EvalSurface { node, env_id }` |
-| `AstField { node, field }` | `Action::EvalAstField { node, field }` |
-| `BuiltinCall { def, args, .. }` | `Action::CallBuiltin { def, args, .. }` |
-| `FnCall { func, args, .. }` | `Action::CallFn { func, args, .. }` |
-| `Guarded { inner, .. }` | `Action::Materialize { thunk: inner }` |
+| Variant | Settlement | Initial Action |
+|---|---|---|
+| `CoreExpr { expr, env_id }` | async (Memoize pushed) | `Action::Eval { expr, env_id }` |
+| `Surface { node, env_id, .. }` | async (Memoize pushed) | `Action::EvalSurface { node, env_id }` |
+| `AstField { node, field }` | **synchronous** — settles directly | `Action::EvalAstField { node, field }` |
+| `BuiltinCall { def, args, .. }` | synchronous if result materializes immediately; async otherwise | `Action::CallBuiltin { def, args, .. }` |
+| `FnCall { func, args, .. }` | async (Memoize pushed) | `Action::CallFn { func, args, .. }` |
+| `Guarded { inner, .. }` | async (Memoize pushed) | `Action::Materialize { thunk: inner }` |
 
 ### `force_step()` — dependency thunk handling
 

@@ -1212,6 +1212,7 @@ pub struct ThunkInner {
     pub notify: Arc<tokio::sync::Notify>,
 }
 
+#[derive(Debug)]
 pub enum ThunkState {
     Unevaluated,
     InProgress {
@@ -1868,5 +1869,178 @@ impl Environment {
 impl Default for Environment {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::{CoreExpr, Spanned};
+    use crate::test_util::test_span;
+
+    fn test_ctx() -> Arc<crate::eval::EvalContext> {
+        let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
+        crate::eval::EvalContext::new(base_dir, false)
+    }
+
+    #[test]
+    fn test_state_of_unevaluated() {
+        let ctx = test_ctx();
+        let span = test_span(1, 1, 1, 10);
+        let expr = Arc::new(Spanned::new(CoreExpr::Int(42), span.clone()));
+        let thunk = Thunk::core_expr(expr, 0, ctx, span);
+
+        match thunk.state() {
+            ThunkState::Unevaluated => {}
+            other => panic!("Expected Unevaluated, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_state_of_materialized() {
+        let span = test_span(1, 1, 1, 10);
+        let thunk = Thunk::value(Value::Int(42), span);
+
+        match thunk.state() {
+            ThunkState::Materialized(Value::Int(42)) => {}
+            other => panic!("Expected Materialized(Int(42)), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_settle_ok() {
+        let span = test_span(1, 1, 1, 10);
+        let thunk = Thunk::placeholder(span);
+
+        thunk.settle(Ok(Value::Int(1)));
+
+        match thunk.state() {
+            ThunkState::Materialized(Value::Int(1)) => {}
+            other => panic!("Expected Materialized(Int(1)), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_settle_err() {
+        let span = test_span(1, 1, 1, 10);
+        let thunk = Thunk::placeholder(span.clone());
+
+        let error = Arc::new(crate::error::EvalError::internal(
+            "test error".to_string(),
+            span,
+        ));
+        thunk.settle(Err(Arc::clone(&error)));
+
+        match thunk.state() {
+            ThunkState::Failed(e) => {
+                assert_eq!(Arc::as_ptr(&e), Arc::as_ptr(&error));
+            }
+            other => panic!("Expected Failed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_settle_idempotent() {
+        let span = test_span(1, 1, 1, 10);
+        let thunk = Thunk::placeholder(span);
+
+        thunk.settle(Ok(Value::Int(1)));
+        // Second settle should be no-op (OnceCell ignores duplicate set)
+        thunk.settle(Ok(Value::Int(999)));
+
+        match thunk.state() {
+            ThunkState::Materialized(Value::Int(1)) => {}
+            other => panic!("Expected Materialized(Int(1)), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_try_claim_transitions_to_inprogress() {
+        let ctx = test_ctx();
+        let span = test_span(1, 1, 1, 10);
+        let expr = Arc::new(Spanned::new(CoreExpr::Int(42), span.clone()));
+        let thunk = Thunk::core_expr(expr.clone(), 0, ctx.clone(), span);
+
+        let state = thunk.try_claim();
+        assert!(state.is_some(), "try_claim should succeed on unevaluated");
+
+        // Verify the returned state is CoreExpr
+        match state.unwrap() {
+            UnevaluatedState::CoreExpr { expr: e, .. } => {
+                assert_eq!(Arc::as_ptr(&e), Arc::as_ptr(&expr));
+            }
+            other => panic!("Expected CoreExpr state, got {:?}", other),
+        }
+
+        // Verify thunk is now InProgress
+        match thunk.state() {
+            ThunkState::InProgress { .. } => {}
+            other => panic!("Expected InProgress, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_try_claim_returns_none_when_inprogress() {
+        let ctx = test_ctx();
+        let span = test_span(1, 1, 1, 10);
+        let expr = Arc::new(Spanned::new(CoreExpr::Int(42), span.clone()));
+        let thunk = Thunk::core_expr(expr, 0, ctx, span);
+
+        let first_claim = thunk.try_claim();
+        assert!(first_claim.is_some(), "First claim should succeed");
+
+        let second_claim = thunk.try_claim();
+        assert!(second_claim.is_none(), "Second claim should return None");
+    }
+
+    #[test]
+    fn test_reset_restores_unevaluated() {
+        let ctx = test_ctx();
+        let span = test_span(1, 1, 1, 10);
+        let expr = Arc::new(Spanned::new(CoreExpr::Int(42), span.clone()));
+        let thunk = Thunk::core_expr(expr, 0, ctx.clone(), span);
+
+        let state = thunk.try_claim().expect("try_claim should succeed");
+
+        // Verify InProgress
+        match thunk.state() {
+            ThunkState::InProgress { .. } => {}
+            other => panic!("Expected InProgress after claim, got {:?}", other),
+        }
+
+        thunk.reset(state);
+
+        // Verify restored to Unevaluated
+        match thunk.state() {
+            ThunkState::Unevaluated => {}
+            other => panic!("Expected Unevaluated after reset, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_try_get_materialized_convenience() {
+        let span = test_span(1, 1, 1, 10);
+        let thunk = Thunk::value(Value::Int(42), span);
+
+        match thunk.try_get_materialized() {
+            Some(Value::Int(42)) => {}
+            other => panic!("Expected Some(Int(42)), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_get_cached_error_convenience() {
+        let span = test_span(1, 1, 1, 10);
+        let thunk = Thunk::placeholder(span.clone());
+
+        let error = Arc::new(crate::error::EvalError::internal(
+            "test error".to_string(),
+            span,
+        ));
+        thunk.settle(Err(Arc::clone(&error)));
+
+        let cached = thunk.get_cached_error();
+        assert!(cached.is_some(), "get_cached_error should return Some");
+        assert_eq!(cached.unwrap().kind.to_string(), error.kind.to_string());
     }
 }
