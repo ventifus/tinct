@@ -466,3 +466,155 @@ pub(crate) async fn eval_key_core(
     let value = materialize(&thunk, Some(&key_expr.span), ctx).await?;
     value_to_key(&value, &key_expr.span)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, RwLock};
+
+    use indexmap::IndexMap;
+
+    use crate::ast::{SurfaceDocument, SurfaceItem, SurfaceProgram};
+    use crate::error::EvalResult;
+    use crate::eval::EvalContext;
+    use crate::value::{HashableValue, Thunk, ThunkId, Value};
+
+    fn test_ctx() -> Arc<EvalContext> {
+        let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
+        EvalContext::new(base_dir, false)
+    }
+
+    fn empty_env() -> Arc<RwLock<crate::env::Env>> {
+        Arc::new(RwLock::new(crate::env::Env::new()))
+    }
+
+    /// Parse and evaluate a surface expression string using the resolver so
+    /// $name variable references are correctly dispatched via de Bruijn slots.
+    async fn eval_str(
+        src: &str,
+        env: Arc<RwLock<crate::env::Env>>,
+        ctx: &Arc<EvalContext>,
+    ) -> EvalResult<Arc<Thunk>> {
+        use crate::ast::Spanned;
+        use crate::desugar::desugar_surface_program;
+        use crate::resolve::resolve_surface_program;
+        let node = crate::parser::parse_surface_expression(src)
+            .unwrap_or_else(|e| panic!("parse_surface_expression({src:?}) failed: {e:?}"));
+        let span = node.span.clone();
+        let doc = SurfaceDocument {
+            header: IndexMap::new(),
+            items: vec![SurfaceItem::Expr(Arc::clone(&node))],
+        };
+        let program = SurfaceProgram {
+            documents: vec![Spanned::new(Arc::new(doc), span)],
+        };
+        let mut program = program;
+        desugar_surface_program(&mut program);
+        let root_frame: IndexMap<String, u32> = {
+            let arena = ctx.scope_arena.borrow();
+            arena.scopes[0]
+                .iter_named()
+                .map(|(n, slot)| (n.to_string(), slot))
+                .collect()
+        };
+        let _ = env;
+        let (_table, _frames) = resolve_surface_program(&program, &[root_frame]);
+        crate::eval_surface_file(&program, ctx).await
+    }
+
+    async fn materialize(
+        thunk: &Arc<Thunk>,
+        ctx: &Arc<EvalContext>,
+    ) -> crate::error::EvalResult<Value> {
+        crate::eval::materialize(thunk, None, ctx).await
+    }
+
+    async fn mat_id(id: ThunkId, ctx: &Arc<EvalContext>) -> crate::error::EvalResult<Value> {
+        let thunk = ctx.get_thunk(id);
+        materialize(&thunk, ctx).await
+    }
+
+    /// Empty dict `[]` evaluates to an empty Value::Dict.
+    #[tokio::test]
+    async fn test_empty_dict() {
+        let ctx = test_ctx();
+        let thunk = eval_str("[]", empty_env(), &ctx).await.unwrap();
+        let val = materialize(&thunk, &ctx).await.unwrap();
+        match val {
+            Value::Dict(map) => assert!(map.is_empty(), "empty dict must have zero entries"),
+            other => panic!("expected empty Dict, got: {other:?}"),
+        }
+    }
+
+    /// `[x: 42  y: x]` — letrec scope: y can see sibling x.
+    ///
+    /// The dict uses letrec semantics: `y`'s value expression `x` must resolve
+    /// to sibling `x`'s value. This exercises the FlatEnv child-scope allocation
+    /// in eval_dict_core without requiring any builtins.
+    #[tokio::test]
+    async fn test_dict_letrec_value_scope() {
+        let ctx = test_ctx();
+        let thunk = eval_str("[x: 42  y: x]", empty_env(), &ctx).await.unwrap();
+        let val = materialize(&thunk, &ctx).await.unwrap();
+
+        let Value::Dict(map) = val else {
+            panic!("expected Dict, got: {val:?}");
+        };
+
+        let x_id = *map
+            .get(&HashableValue::Str("x".into()))
+            .expect("key 'x' must exist");
+        let y_id = *map
+            .get(&HashableValue::Str("y".into()))
+            .expect("key 'y' must exist");
+
+        let x_val = mat_id(x_id, &ctx).await.unwrap();
+        let y_val = mat_id(y_id, &ctx).await.unwrap();
+
+        assert_eq!(x_val, Value::Int(42), "x must be 42");
+        assert_eq!(y_val, Value::Int(42), "y must equal x (letrec sibling scope)");
+    }
+
+    /// Dict key names do not leak into sibling value scope as bare names.
+    ///
+    /// `[k: "found"  v: 42]` — the value `42` must not accidentally resolve
+    /// to `k`'s value. This guards against key names escaping into sibling scopes.
+    /// After evaluation, `v` must be exactly `Int(42)`, not `String("found")`.
+    #[tokio::test]
+    async fn test_dict_key_not_in_value_scope() {
+        let ctx = test_ctx();
+        let thunk = eval_str("[k: \"found\"  v: 42]", empty_env(), &ctx)
+            .await
+            .unwrap();
+        let val = materialize(&thunk, &ctx).await.unwrap();
+
+        let Value::Dict(map) = val else {
+            panic!("expected Dict, got: {val:?}");
+        };
+
+        // There must be exactly two keys: "k" and "v"
+        assert_eq!(map.len(), 2, "dict must have exactly 2 entries");
+
+        let k_id = *map
+            .get(&HashableValue::Str("k".into()))
+            .expect("key 'k' must exist");
+        let v_id = *map
+            .get(&HashableValue::Str("v".into()))
+            .expect("key 'v' must exist");
+
+        let k_val = mat_id(k_id, &ctx).await.unwrap();
+        let v_val = mat_id(v_id, &ctx).await.unwrap();
+
+        assert_eq!(
+            k_val,
+            crate::value::string_val("found"),
+            "k must be 'found'"
+        );
+        // v must be Int(42) — not the string value of k, proving key names don't
+        // bleed into sibling value scopes.
+        assert_eq!(
+            v_val,
+            Value::Int(42),
+            "v must be Int(42), not the value of k"
+        );
+    }
+}

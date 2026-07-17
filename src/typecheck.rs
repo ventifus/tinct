@@ -709,14 +709,20 @@ pub(crate) async fn typecheck_surface_document(
         let is_last = i == expr_items.len() - 1;
 
         if let SurfaceExpression::Dict(entries) = &surface_node.expr {
-            // Dict expression: use infer_dict to get per-entry schemes for cross-document scoping.
-            // This mirrors typecheck_document which calls infer_dict directly for dict exprs.
-            // infer_dict always returns Ok with best-effort schemes; errors are in the third element.
-            let (dict_ty, schemes, mut dict_errs) =
-                infer_dict(entries, &env, state, type_map, surface_node.span.clone()).await;
+            // Dict expression: use run_typecheck_dict to get per-entry schemes for cross-document
+            // scoping. run_typecheck_dict always returns best-effort schemes; errors are in the
+            // third element (T-1644).
+            let (dict_ty, schemes, mut dict_errs) = typecheck_cek::run_typecheck_dict(
+                entries,
+                &env,
+                state,
+                type_map,
+                surface_node.span.clone(),
+            )
+            .await;
             errors.append(&mut dict_errs);
             table.insert(node_id(surface_node), dict_ty.clone());
-            // Merge nested TypeAssert entries from infer_dict into the document-level table
+            // Merge nested TypeAssert entries from run_typecheck_dict into the document-level table
             for (nid, ty) in state.type_annotation_table.drain() {
                 table.insert(nid, ty);
             }
@@ -1281,10 +1287,10 @@ fn try_resolve_call_dispatch(
 ///
 /// This function is being phased out in favor of `typecheck_cek::run_typecheck`, which
 /// implements the same inference iteratively via a CEK machine (no Rust stack recursion).
-/// `run_typecheck` is the entry point for non-dict top-level expressions; see
-/// `typecheck_surface_document`. `infer_surface_expr` is retained for Decl variants whose
-/// helpers (`infer_class_decl_from_surface`, etc.) remain private to this module, and
-/// for dict inference which delegates via `typecheck_dict::infer_dict`.
+/// `run_typecheck` is the entry point for all top-level expressions. `infer_surface_expr`
+/// is retained for compatibility — its Dict arm now delegates to `run_typecheck_dict`
+/// and its Decl arm calls `infer_class_decl_from_surface`/`infer_instance_decl_from_surface`
+/// directly (both pub(crate) as of T-1641).
 ///
 /// Do not add new callers. New inference code should call `run_typecheck`.
 pub(crate) async fn infer_surface_expr(
@@ -1305,10 +1311,11 @@ pub(crate) async fn infer_surface_expr(
         SurfaceExpression::VarRef {
             name, annotation, ..
         } => {
-            // Slot-indexed fast path: if the resolver assigned de Bruijn coordinates for
-            // this VarRef, try get_scheme_at(level, slot) before falling back to name lookup.
-            // This O(1) path is only taken when the resolution table is present AND this
-            // node has a resolved entry.  Falls back to name-based get_scheme(name) when:
+            // Canonical two-step VarRef scheme lookup: if the resolver assigned de Bruijn
+            // coordinates for this VarRef, try get_scheme_at(level, slot); otherwise fall
+            // back to name-based get_scheme(name). The slot path is only taken when the
+            // resolution table is present AND this node has a resolved entry. Falls back
+            // to name-based lookup when:
             //   - No resolution table (tests, inline programs)
             //   - No entry for this node (free variable)
             //   - get_scheme_at returns None (narrowing frame intervened, extras entry, etc.)
@@ -1431,8 +1438,14 @@ pub(crate) async fn infer_surface_expr(
         }
 
         SurfaceExpression::Dict(entries) => {
-            let (ty, _schemes, errs) =
-                Box::pin(infer_dict(entries, env, state, type_map, node.span.clone())).await;
+            let (ty, _schemes, errs) = Box::pin(typecheck_cek::run_typecheck_dict(
+                entries,
+                env,
+                state,
+                type_map,
+                node.span.clone(),
+            ))
+            .await;
             if errs.is_empty() {
                 Ok(ty)
             } else {
@@ -1449,11 +1462,11 @@ pub(crate) async fn infer_surface_expr(
             // Each expression's result dict extends the type environment for the next.
             // The last expression's type is the overall result type.
             //
-            // For intermediate dict expressions, we call infer_dict directly (not via
-            // infer_surface_expr) to capture per-entry TypeSchemes. This preserves
-            // let-polymorphism across sequential steps: a binding like `id: [fn [let x] x]`
-            // in an earlier step retains its polymorphic scheme `forall a. a -> a`, so
-            // later steps can instantiate it at different types (Damas & Milner, 1982).
+            // For intermediate dict expressions, we call run_typecheck_dict directly to capture
+            // per-entry TypeSchemes. This preserves let-polymorphism across sequential steps:
+            // a binding like `id: [fn [let x] x]` in an earlier step retains its polymorphic
+            // scheme `forall a. a -> a`, so later steps can instantiate it at different types
+            // (Damas & Milner, 1982). T-1644.
             if exprs.is_empty() {
                 return Ok(Type::Dict(Row {
                     fields: indexmap::IndexMap::new(),
@@ -1473,17 +1486,18 @@ pub(crate) async fn infer_surface_expr(
                 }
 
                 // Intermediate expression: infer and extract record bindings.
-                // For Dict expressions, call infer_dict directly to get TypeSchemes
-                // (infer_surface_expr discards them via TypeScheme::mono()).
+                // For Dict expressions, call run_typecheck_dict directly to get TypeSchemes
+                // (infer_surface_expr would discard them via TypeScheme::mono()).
                 if let SurfaceExpression::Dict(entries) = &seq_expr.expr {
-                    let (dict_ty, schemes, dict_errs) = Box::pin(infer_dict(
-                        entries,
-                        &current_env,
-                        state,
-                        type_map,
-                        seq_expr.span.clone(),
-                    ))
-                    .await;
+                    let (dict_ty, schemes, dict_errs) =
+                        Box::pin(typecheck_cek::run_typecheck_dict(
+                            entries,
+                            &current_env,
+                            state,
+                            type_map,
+                            seq_expr.span.clone(),
+                        ))
+                        .await;
                     if !dict_errs.is_empty() {
                         return Err(dict_errs);
                     }
@@ -1492,7 +1506,7 @@ pub(crate) async fn infer_surface_expr(
                         let mut child_env_inner = Env::with_parent(Arc::clone(&current_env));
 
                         // Insert schemes (preserving polymorphism) for entries
-                        // that have generalized TypeSchemes from infer_dict.
+                        // that have generalized TypeSchemes from run_typecheck_dict.
                         // Fall back to mono() for any field in the Record type
                         // that doesn't have a scheme (e.g., auto-indexed entries).
                         for (field_name, scheme) in &schemes {
@@ -1503,7 +1517,7 @@ pub(crate) async fn infer_surface_expr(
                     } else {
                         // Non-dict intermediate (from an explicit Dict expression that
                         // happened to produce a non-Record type) — treat as advisory.
-                        // This can happen when infer_dict returns Error or Unknown.
+                        // This can happen when run_typecheck_dict returns Error or Unknown.
                     }
                 } else {
                     let enclosing_level = state.level;
@@ -1770,7 +1784,7 @@ pub(crate) async fn infer_surface_expr(
                     return Ok(Type::Unknown);
                 }
 
-                // Slot-indexed fast path: try the resolution table before name-based lookup.
+                // Canonical two-step VarRef scheme lookup: try the resolution table before name-based lookup.
                 // Class method VarRefs like `+`, `-`, `*`, `/`, `=`, `<` are registered in
                 // the letrec env under ɪ-prefixed names (e.g. ɪɴꜱᴛᴀɴᴄᴇ⧼Addable∷+⟨Integer⟩⧽),
                 // NOT under their operator symbol. Name-based get_scheme("+") returns None,
@@ -2767,7 +2781,10 @@ pub(crate) async fn infer_surface_expr(
                     let sc_flat: Vec<(String, String)> = superclasses
                         .iter()
                         .flat_map(|(sc_name, sc_params)| {
-                            sc_params.iter().map(|p| (sc_name.clone(), p.clone())).collect::<Vec<_>>()
+                            sc_params
+                                .iter()
+                                .map(|p| (sc_name.clone(), p.clone()))
+                                .collect::<Vec<_>>()
                         })
                         .collect();
                     infer_class_decl_from_surface(
@@ -2788,15 +2805,17 @@ pub(crate) async fn infer_surface_expr(
                 SurfaceDeclaration::InstanceDecl {
                     ref class_name,
                     ref arms,
-                } => Box::pin(infer_instance_decl_from_surface(
-                    class_name,
-                    arms,
-                    node.span.clone(),
-                    env,
-                    state,
-                    type_map,
-                ))
-                .await,
+                } => {
+                    Box::pin(infer_instance_decl_from_surface(
+                        class_name,
+                        arms,
+                        node.span.clone(),
+                        env,
+                        state,
+                        type_map,
+                    ))
+                    .await
+                }
                 SurfaceDeclaration::TypeAlias { .. } => {
                     // Type alias declarations in expression position have no runtime type.
                     // expand_type_alias is async and cannot be called from sync infer_surface_expr.
@@ -2804,23 +2823,11 @@ pub(crate) async fn infer_surface_expr(
                     // Return Any (same sentinel that expand_type_alias returns when successful).
                     Ok(Type::Any)
                 }
-                SurfaceDeclaration::Splice(..) => Err(vec![TypeError::new(
-                    "Splice should be removed by expansion pass before typechecking (internal error)",
-                    node.span.clone(),
-                )]),
-                SurfaceDeclaration::SyntaxClass { .. } => Err(vec![TypeError::new(
-                    "SyntaxClass should be removed by expansion pass before typechecking (internal error)",
+                _ => Err(vec![TypeError::new(
+                    "unexpected declaration in expression position",
                     node.span.clone(),
                 )]),
             }
-        }
-
-        SurfaceExpression::LetDecl { .. } => {
-            // LetDecl in value position is always an error (only valid in binding contexts).
-            Err(vec![TypeError::new(
-                "binding declaration [let ...] is not valid in expression position",
-                node.span.clone(),
-            )])
         }
 
         SurfaceExpression::CaseArm {
@@ -2945,16 +2952,11 @@ pub(crate) async fn infer_surface_expr(
             }
         }
 
-        SurfaceExpression::PatternDecl { .. } => {
-            // PatternDecl should never appear in value positions (only in instance arms)
-            Err(vec![TypeError::new(
-                "pattern declaration is only valid in instance match arms",
-                node.span.clone(),
-            )])
-        }
-
-        SurfaceExpression::Error(_) => Err(vec![TypeError::new(
-            "parse error node in expression position",
+        _ => Err(vec![TypeError::new(
+            format!(
+                "unexpected {} in this context",
+                crate::surface_fields::surface_expr_tag(&node.expr)
+            ),
             node.span.clone(),
         )]),
     };
@@ -2988,9 +2990,10 @@ pub(crate) async fn infer_surface_expr(
 }
 
 /// Type-check a [class ...] declaration from SurfaceDeclaration::ClassDecl fields.
-/// Called from infer_surface_expr (Decl arm) and typecheck_surface_document — no Expr bridge needed.
+/// Called from infer_surface_expr (Decl arm), typecheck_surface_document, and
+/// typecheck_cek::run_typecheck_dict — no Expr bridge needed.
 #[allow(clippy::too_many_arguments)]
-fn infer_class_decl_from_surface(
+pub(crate) fn infer_class_decl_from_surface(
     name: &str,
     params: &[String],
     superclasses: &[(String, String)],
@@ -3104,8 +3107,9 @@ fn infer_class_decl_from_surface(
 type SurfaceMatchArmData<'a> = (Vec<Type>, Span, &'a Vec<Spanned<crate::ast::SurfaceEntry>>);
 
 /// Type-check an [instance ...] declaration from SurfaceDeclaration::InstanceDecl fields.
-/// Called from infer_surface_expr (Decl arm) and typecheck_surface_document — no Expr bridge needed.
-async fn infer_instance_decl_from_surface(
+/// Called from infer_surface_expr (Decl arm), typecheck_surface_document, and
+/// typecheck_cek::run_typecheck_dict — no Expr bridge needed.
+pub(crate) async fn infer_instance_decl_from_surface(
     class_name: &str,
     arms: &[(Arc<SurfaceNode>, Vec<Spanned<crate::ast::SurfaceEntry>>)],
     span: Span,

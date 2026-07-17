@@ -2301,7 +2301,7 @@ Note: Maps a function over the Ok value; passes Error through unchanged.
 """] [let f@[Fn@b [a]] result@[Result a]]
     [match result
         [case [let p]   [Result.Ok p]    [Ok value: [f p.value]]]
-        [case [let p]   [Result.Error p] [Error msg: p.msg]]]
+        [case [let p]   [Result.Error p] [Error msg: p.msg]]]]
 
 result@[doc: "Result monad dict for [do result ...] chains"]:
   [bind: [fn [let r f] [and-then f r]]  pure: Ok]

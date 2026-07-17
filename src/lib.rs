@@ -116,11 +116,8 @@ pub use eval::{
 
 pub use builtins::build_core_env;
 
-/// Import resolution for the type checker.
-pub use imports::{
-    apply_include_type_post_pass, build_type_env, build_type_env_with_cap,
-    get_builtin_core_tycon_env, get_builtin_core_type_env,
-};
+/// Bootstrap type environment from builtin_core.llt.
+pub use imports::{get_builtin_core_tycon_env, get_builtin_core_type_env};
 
 /// Error types with source spans and stack traces.
 pub use error::{

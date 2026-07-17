@@ -340,12 +340,12 @@ Settles the thunk directly (synchronous fast path) or pushes `Cont::Memoize` for
 
 | Variant | Settlement | Initial Action |
 |---|---|---|
-| `CoreExpr { expr, env_id }` | async (Memoize pushed) | `Action::Eval { expr, env_id }` |
-| `Surface { node, env_id, .. }` | async (Memoize pushed) | `Action::EvalSurface { node, env_id }` |
-| `AstField { node, field }` | **synchronous** — settles directly | `Action::EvalAstField { node, field }` |
-| `BuiltinCall { def, args, .. }` | synchronous if result materializes immediately; async otherwise | `Action::CallBuiltin { def, args, .. }` |
-| `FnCall { func, args, .. }` | async (Memoize pushed) | `Action::CallFn { func, args, .. }` |
-| `Guarded { inner, .. }` | async (Memoize pushed) | `Action::Materialize { thunk: inner }` |
+| `CoreExpr { expr, env_id }` | async (Memoize pushed) | `Action::EvalCore { expr, env_id, ctx }` |
+| `Surface { node, env_id, .. }` | async (Memoize pushed) or `Action::Continue(Err(...))` on lower error | `Action::Materialize { thunk: result_thunk, .. }` |
+| `AstField { node, field }` | **synchronous** — settles directly | `Action::Continue(Ok(value))` |
+| `BuiltinCall { def, args, .. }` | synchronous if result available immediately; async otherwise | `Action::Materialize { thunk: arg_thunk, .. }` or `Action::Continue(Ok(v))` |
+| `FnCall { func, args, .. }` | async (Memoize pushed) | `Action::Materialize { thunk: func_thunk, .. }` |
+| `Guarded { inner, .. }` | async (Memoize pushed) | `Action::Materialize { thunk: inner_thunk, .. }` |
 
 ### `force_step()` — dependency thunk handling
 
@@ -355,18 +355,17 @@ When the CEK machine encounters `Action::Materialize { dep_thunk }` for a depend
 // force_step() inner loop for dependency thunk dep_thunk:
 loop {
     match dep_thunk.state() {
-        ThunkState::Materialized(v) => return Action::Return(v),
-        ThunkState::Failed(e) => return Action::Err(Box::new((*e).clone())),
+        ThunkState::Materialized(v) => return Action::Continue(Ok(v)),
+        ThunkState::Failed(e) => return Action::Continue(Err((*e).clone())),
         ThunkState::InProgress { evaluating_task } => {
             let same = match (evaluating_task, tokio::task::try_id()) {
                 (Some(e), Some(c)) => e == c,
                 _                  => true,  // conservative: None = placeholder/letrec
             };
             if same {
-                let cycle_path = TASK_EVAL_STACK.with(|s| s.borrow().clone());
+                let cycle_path = TASK_EVAL_STACK.try_with(|s| s.borrow().clone()).unwrap_or_default();
                 let err = EvalError::circular_dependency(..., cycle_path);
-                dep_thunk.settle(Err(Arc::new(err.clone())));
-                return Action::Err(Box::new(err));
+                return Action::Continue(Err(err));
             }
             dep_thunk.settled().await;  // diamond: different task owns dep_thunk, wait
             // loop and re-read state after notification

@@ -46,36 +46,8 @@ thread_local! {
     ));
 }
 
-/// Wrap a thunk with nominal type validation for pipeline input contracts.
-///
 /// Evaluate a sequence of surface expression nodes as a scope chain, returning the
-/// last expression's thunk lazily.
-///
-/// This is the canonical scope-chaining loop shared by [`eval_surface_document`] and
-/// `builtin_eval` (in `builtins_meta.rs`). Both callers implement identical semantics:
-///
-/// - **Intermediate expressions** (all but the last): lower → eval → materialize.
-///   If the result is a non-empty `Dict` or `Overlay`, ALL `HashableValue::Str` entries are
-///   inserted as lazy thunks into a child environment for subsequent expressions.
-///   Non-dict/overlay results are silently ignored (no error, no scope extension).
-///   This is the `bare-include-scope` behavior.
-///   **Why lazy?** Dead bindings that are never accessed must never fire. Evaluation
-///   is demand-driven: a binding is forced only when a subsequent expression accesses
-///   it. This is the correct lazy evaluation semantics throughout (function bodies and
-///   document-level).
-/// - **Last expression**: lower → eval (lazy). The resulting thunk is returned
-///   without forcing — callers decide when (and whether) to materialize it.
-/// - **Empty slice**: returns a materialized empty-dict thunk (same as an empty doc).
-pub(crate) async fn eval_document_exprs(
-    expr_nodes: &[Arc<SurfaceNode>],
-    ctx: &Arc<EvalContext>,
-) -> EvalResult<Arc<Thunk>> {
-    eval_document_exprs_with_env(expr_nodes, ctx, None)
-        .await
-        .map(|(thunk, _env_id)| thunk)
-}
-
-/// Like `eval_document_exprs` but also returns the document's root FlatEnv EnvId after evaluation.
+/// last expression's thunk lazily and the document's root FlatEnv EnvId after evaluation.
 ///
 /// `parent_env_id`: when `Some(pid)`, the first dict scope in this document is allocated
 /// as a child of `pid` via `alloc_child(pid, ...)`. Each subsequent intermediate dict is
@@ -175,29 +147,6 @@ pub(crate) async fn eval_document_exprs_with_env(
     )
 }
 
-/// Evaluate a SurfaceDocument: a sequence of expression items forming a scope chain.
-///
-/// Each `SurfaceItem::Expr` is lowered to `CoreExpr` via `lower.rs` and evaluated via
-/// `eval_core_expr_pub`. `SurfaceItem::Decl` items are skipped (processed at expand time).
-///
-/// Scope-chain semantics are delegated to [`eval_document_exprs`]:
-/// - Intermediate expressions are materialized to WHNF; Dict/Overlay results promote
-///   their entry thunks (lazily) into a child scope for subsequent expressions.
-/// - The last expression is returned as-is (lazy, any type).
-/// - An empty document returns an empty dict.
-///
-/// Caps enforcement and expects validation are handled by tinct-side loader code
-/// via `builtin-cap-env-has?` and `builtin-check-type` (T-1506, T-1507).
-pub async fn eval_surface_document(
-    doc: &Spanned<Arc<crate::ast::SurfaceDocument>>,
-    ctx: &Arc<EvalContext>,
-) -> EvalResult<Arc<Thunk>> {
-    // Collect expression nodes (skip Decl items — processed by expander) and
-    // delegate the scope-chaining loop to the shared eval_document_exprs function.
-    let expr_nodes: Vec<Arc<SurfaceNode>> = doc.node.expressions().cloned().collect();
-    eval_document_exprs(&expr_nodes, ctx).await
-}
-
 /// Evaluate a SurfaceProgram: one or more documents separated by `---`.
 ///
 /// # Precondition
@@ -216,11 +165,7 @@ pub async fn eval_surface_file(
     program: &SurfaceProgram,
     ctx: &Arc<EvalContext>,
 ) -> EvalResult<Arc<Thunk>> {
-    let mut last = EMPTY_DICT_THUNK.with(Arc::clone);
-    for surface_doc in &program.documents {
-        last = eval_surface_document(surface_doc, ctx).await?;
-    }
-    Ok(last)
+    eval_surface_file_from_env(program, ctx, None).await
 }
 
 /// Evaluate a SurfaceProgram with an optional initial `%` value injected into the environment.
@@ -240,18 +185,38 @@ pub async fn eval_surface_file_with_input(
         // so the resolver assigns % at (level=0, slot=0) in the formatter script.
         // At runtime we allocate a matching child FlatEnv with the input thunk at slot 0.
         // core builtins remain at the root FlatEnv (env_id=0), accessible at level=1.
-        let _child_env_id = {
+        let child_env_id = {
             let mut arena = ctx.scope_arena.borrow_mut();
             let child_id = arena.alloc_child(ScopeId(0), 1);
             arena.push_slot(child_id, "%", input);
             child_id
         };
-        // Evaluate in the child scope so all VarRef lookups see % at the correct level.
-        // TODO: This needs to pass child_env_id to eval_surface_file somehow
-        eval_surface_file(program, ctx).await
+        // Evaluate all documents with child_env_id as the parent scope so every
+        // document's VarRef lookups see % at the correct De Bruijn level.
+        eval_surface_file_from_env(program, ctx, Some(child_env_id.0)).await
     } else {
         eval_surface_file(program, ctx).await
     }
+}
+
+/// Evaluate a SurfaceProgram starting from the given parent env.
+///
+/// Each document's expression scope chain is rooted at `parent_env_id` so that
+/// variable lookups can reach slots defined in that env (e.g. `%` for pipeline input).
+/// When `parent_env_id` is `None`, behavior is identical to `eval_surface_file`.
+async fn eval_surface_file_from_env(
+    program: &SurfaceProgram,
+    ctx: &Arc<EvalContext>,
+    parent_env_id: Option<u32>,
+) -> EvalResult<Arc<Thunk>> {
+    let mut last = EMPTY_DICT_THUNK.with(Arc::clone);
+    for surface_doc in &program.documents {
+        let expr_nodes: Vec<Arc<SurfaceNode>> = surface_doc.node.expressions().cloned().collect();
+        last = eval_document_exprs_with_env(&expr_nodes, ctx, parent_env_id)
+            .await
+            .map(|(thunk, _env_id)| thunk)?;
+    }
+    Ok(last)
 }
 
 // ============================================================================

@@ -2139,8 +2139,10 @@ async fn test_mutual_recursion_without_annotation_ok() {
 async fn test_nested_recursive_fn_in_multi_body_ok() {
     // B-520: recursive fn defined in intermediate dict of a multi-body function should work.
     // This exercises the Sequential handler path (infer_dict for intermediate dicts).
+    // Note: uses `if` (special-cased in type checker) and bare values to avoid needing
+    // builtins `=` or `+` which require the prelude type class env not available in check().
     let result =
-        check("[outer: [fn [let n] [loop: [fn [let i] [if [= i n] n [loop [+ i 1]]]]] [loop 0]]]")
+        check("[outer: [fn [let n] [loop: [fn [let i] [if i n [loop n]]]] [loop n]]]")
             .await;
     assert!(
         result.is_ok(),
@@ -2154,7 +2156,10 @@ async fn test_recursive_function_base_case_return_type() {
     // B-520: recursive function with a base case should infer a concrete return type.
     // If reconciliation fails, β remains unbound and the call site produces Unknown.
     // result must use both f and the call result: both must type-check without error.
-    let result = check("[f: [fn [let n] [if [= n 0] 1 [f [- n 1]]]]  r: [f 3]]").await;
+    // Uses `if` (special-cased in type checker) and Int literals without any
+    // builtins, which require the prelude type class env not available in check().
+    // Exercises: recursive fn pre-binding, letrec call into `f`, return type from base case.
+    let result = check("[f: [fn [let n] [if n 0 [f n]]]  r: [f 3]]").await;
     assert!(
         result.is_ok(),
         "recursive fn with Int base case and call site should type-check: {:?}",
@@ -4006,7 +4011,7 @@ async fn test_match_expr_via_cek_exercises_after_match_arm() {
             .await;
     // Both arms produce string types; union is Str or StringLiteral
     assert!(
-        matches!(&ty, Type::StringLiteral(_) | Type::Str | Type::Unknown),
+        matches!(&ty, Type::StringLiteral(_) | Type::Str),
         "expected string type from match on two string arms, got {:?}",
         ty
     );
@@ -4100,5 +4105,690 @@ async fn test_unknown_annotation_no_error() {
             .iter()
             .map(|e| e.message())
             .collect::<Vec<_>>()
+    );
+}
+
+/// B-524: fn param names must not create false SCC dependency edges to same-named siblings.
+///
+/// `[a: [g 42]  g: [fn [let a] $a]  result: [g "hello"]]`
+///
+/// - `a` genuinely depends on `g` (calls `g 42`).
+/// - `g` has a param named `a` — the body `$a` is a PARAMETER reference, not a free
+///   reference to sibling `a`.
+///
+/// Before the fix, `collect_dependencies` on `g`'s value would emit a dep edge g→a
+/// (because VarRef "a" appears in the body and "a" is in name_to_idx).  Combined with
+/// the genuine a→g edge, this creates a spurious mutual cycle {a, g}, causing joint
+/// letrec inference that unifies g's param type with Int (from `[g 42]`).  With g
+/// constrained to `Int→Int`, calling `[g "hello"]` would be a type error.
+///
+/// After the fix, the dep edge g→a is absent (param `a` shadows sibling `a`).  g is
+/// inferred independently as `Unknown→Unknown` (unannotated param, gradual typing).
+/// Calling `[g "hello"]` is then consistent with Unknown and must produce no type error.
+#[tokio::test]
+async fn test_fn_param_shadow_does_not_create_scc_dep_edge() {
+    // With the fix: g's param 'a' shadows sibling 'a'; no spurious cycle; g: Unknown→Unknown.
+    // Calling g with "hello" must NOT produce a type error.
+    let result = check(r#"[a: [g 42]  g: [fn [let a] $a]  result: [g "hello"]]"#).await;
+    assert!(
+        result.is_ok(),
+        "B-524: [g \"hello\"] must typecheck (g: Unknown\u{2192}Unknown when param shadows \
+         sibling); false SCC dep edge g\u{2192}a would constrain g to Int\u{2192}Int and \
+         reject Str arg. Got errors: {:?}",
+        result.err().map(|es| es
+            .iter()
+            .map(|e| e.message().to_string())
+            .collect::<Vec<_>>())
+    );
+}
+
+// ============================================================================
+// T-1666: CEK machine unit tests — continuations, literals, compute_sccs, helpers
+// ============================================================================
+
+/// T-1666 / Test 1: `run_typecheck` on an Int literal returns `Type::IntLiteral`.
+///
+/// The `Int(n)` arm of `infer_step` returns `Done(Type::IntLiteral(n))` directly
+/// (a leaf expression). This is the simplest possible CEK machine invocation —
+/// single step, no continuation pushed, stack empty on return.
+///
+/// Mutation target: if `infer_step` returned `Type::Int` instead of `Type::IntLiteral`,
+/// this test would fail.
+#[tokio::test]
+async fn test_cek_int_literal_infers_int_literal() {
+    let src = "42";
+    let mut program = crate::parse(src, test_file(src)).unwrap().program;
+    crate::desugar::desugar_surface_program(&mut program);
+    let node = match &program.documents[0].node.items[0] {
+        crate::ast::SurfaceItem::Expr(n) => Arc::clone(n),
+        _ => panic!("expected expression item"),
+    };
+    let env = Arc::new(RwLock::new(crate::env::Env::new()));
+    let mut state = InferState::new();
+    let mut errors: Vec<TypeError> = Vec::new();
+    let mut stack = Vec::new();
+
+    let ty =
+        typecheck_cek::run_typecheck(&node, &env, &mut state, &mut errors, &mut None, &mut stack)
+            .await;
+
+    assert_eq!(
+        ty,
+        Type::IntLiteral(42),
+        "run_typecheck on 42 must yield Type::IntLiteral(42), got {:?}",
+        ty
+    );
+    assert!(
+        errors.is_empty(),
+        "no type errors expected for literal 42; got {:?}",
+        errors
+    );
+}
+
+/// T-1666 / Test 2: `run_typecheck` on a String literal returns `Type::StringLiteral`.
+///
+/// The `StringLiteral { content, .. }` arm of `infer_step` returns
+/// `Done(Type::StringLiteral(content))` — a leaf expression with no continuations.
+///
+/// Mutation target: returning `Type::Str` instead of `Type::StringLiteral` would fail this test.
+#[tokio::test]
+async fn test_cek_string_literal_infers_string_literal() {
+    let src = "\"hello\"";
+    let mut program = crate::parse(src, test_file(src)).unwrap().program;
+    crate::desugar::desugar_surface_program(&mut program);
+    let node = match &program.documents[0].node.items[0] {
+        crate::ast::SurfaceItem::Expr(n) => Arc::clone(n),
+        _ => panic!("expected expression item"),
+    };
+    let env = Arc::new(RwLock::new(crate::env::Env::new()));
+    let mut state = InferState::new();
+    let mut errors: Vec<TypeError> = Vec::new();
+    let mut stack = Vec::new();
+
+    let ty =
+        typecheck_cek::run_typecheck(&node, &env, &mut state, &mut errors, &mut None, &mut stack)
+            .await;
+
+    assert_eq!(
+        ty,
+        Type::StringLiteral("hello".to_string()),
+        "run_typecheck on \"hello\" must yield Type::StringLiteral(\"hello\"), got {:?}",
+        ty
+    );
+    assert!(
+        errors.is_empty(),
+        "no type errors expected for string literal; got {:?}",
+        errors
+    );
+}
+
+/// T-1666 / Test 3: `run_typecheck` on a Float literal returns `Type::Float`.
+///
+/// The `Float(_)` arm of `infer_step` returns `Done(Type::Float)` — a leaf expression.
+/// Note that float literal values are not preserved as distinct literal types (unlike Int
+/// and String), so all floats share the single `Type::Float` type.
+#[tokio::test]
+async fn test_cek_float_literal_infers_float() {
+    let src = "3.14";
+    let mut program = crate::parse(src, test_file(src)).unwrap().program;
+    crate::desugar::desugar_surface_program(&mut program);
+    let node = match &program.documents[0].node.items[0] {
+        crate::ast::SurfaceItem::Expr(n) => Arc::clone(n),
+        _ => panic!("expected expression item"),
+    };
+    let env = Arc::new(RwLock::new(crate::env::Env::new()));
+    let mut state = InferState::new();
+    let mut errors: Vec<TypeError> = Vec::new();
+    let mut stack = Vec::new();
+
+    let ty =
+        typecheck_cek::run_typecheck(&node, &env, &mut state, &mut errors, &mut None, &mut stack)
+            .await;
+
+    assert_eq!(
+        ty,
+        Type::Float,
+        "run_typecheck on 3.14 must yield Type::Float, got {:?}",
+        ty
+    );
+    assert!(
+        errors.is_empty(),
+        "no type errors expected for float literal; got {:?}",
+        errors
+    );
+}
+
+/// T-1666 / Test 4: `run_typecheck` on a Fn expression returns `Type::Function`.
+///
+/// The `Fn` arm of `infer_step` calls `infer_fn_push_cont`, which pushes `AfterFnBody`
+/// and returns `Eval(body, env)`. When the body (`$x`) is inferred and `AfterFnBody`
+/// is popped, the CEK machine assembles and returns a `Function` type.
+///
+/// This test exercises the full `AfterFnBody` continuation path through `apply_cont`.
+///
+/// Mutation target: if `AfterFnBody` were not correctly popped, the return type would
+/// be the body type (Unknown for an undefined `$x`) rather than a Function type.
+#[tokio::test]
+async fn test_cek_fn_expression_infers_function_type() {
+    let src = "[fn [let x] $x]";
+    let mut program = crate::parse(src, test_file(src)).unwrap().program;
+    crate::desugar::desugar_surface_program(&mut program);
+    let node = match &program.documents[0].node.items[0] {
+        crate::ast::SurfaceItem::Expr(n) => Arc::clone(n),
+        _ => panic!("expected expression item"),
+    };
+    let env = Arc::new(RwLock::new(crate::env::Env::new()));
+    let mut state = InferState::new();
+    let mut errors: Vec<TypeError> = Vec::new();
+    let mut stack = Vec::new();
+
+    let ty =
+        typecheck_cek::run_typecheck(&node, &env, &mut state, &mut errors, &mut None, &mut stack)
+            .await;
+
+    assert!(
+        matches!(&ty, Type::Function { .. }),
+        "run_typecheck on [fn [let x] $x] must yield a Function type, got {:?}",
+        ty
+    );
+}
+
+/// T-1666 / Test 5: `AfterFnBody` is correctly applied for a fn with an annotated Int return.
+///
+/// `[fn@Int [let x@Int] $x]` — the return annotation overrides the body type.
+/// With `Int` seeded in `type_stage_map`, `AfterFnBody` should see `return_ann = Some(Type::Int)`
+/// and build a `Function { ret: Int, .. }` type.
+///
+/// This test isolates the `return_ann` override path inside `AfterFnBody` (the branch
+/// `if let Some(ret) = return_ann { ret } else { body_ty }`).
+///
+/// Mutation target: if `return_ann` were ignored, the result would be `Function { ret: Unknown }`
+/// rather than `Function { ret: Int }`.
+#[tokio::test]
+async fn test_cek_after_fn_body_return_annotation_overrides_body_type() {
+    use crate::type_infer::TypeStageEntry;
+
+    // Seed Int in type_stage_map so @Int resolves without error.
+    let src = "[fn@Int [let x@Int] $x]";
+    let mut program = crate::parse(src, test_file(src)).unwrap().program;
+    crate::desugar::desugar_surface_program(&mut program);
+    let node = match &program.documents[0].node.items[0] {
+        crate::ast::SurfaceItem::Expr(n) => Arc::clone(n),
+        _ => panic!("expected expression item"),
+    };
+    let env = Arc::new(RwLock::new(crate::env::Env::new()));
+    let mut state = InferState::new();
+
+    // Seed Int in the type_stage_map so @Int resolves correctly.
+    let mut type_stage_map =
+        std::collections::HashMap::<String, crate::type_infer::TypeStageEntry>::new();
+    type_stage_map.insert("Int".to_string(), TypeStageEntry::Resolved(Type::Int));
+    state.type_stage_map = Some(type_stage_map);
+
+    let mut errors: Vec<TypeError> = Vec::new();
+    let mut stack = Vec::new();
+
+    let ty =
+        typecheck_cek::run_typecheck(&node, &env, &mut state, &mut errors, &mut None, &mut stack)
+            .await;
+
+    match &ty {
+        Type::Function { ret, .. } => {
+            assert_eq!(
+                ret.as_ref(),
+                &Type::Int,
+                "AfterFnBody with @Int return annotation must produce Function {{ ret: Int }}, got ret = {:?}",
+                ret
+            );
+        }
+        other => panic!(
+            "expected Function type from [fn@Int [let x@Int] $x], got {:?}",
+            other
+        ),
+    }
+}
+
+/// T-1666 / Test 6: `AfterTypeAssertInner` — matching annotation produces no error.
+///
+/// `[@Int 42]` with `Int` seeded in `type_stage_map`: the inner expression infers
+/// `IntLiteral(42)`, which is a subtype of `Int`. `AfterTypeAssertInner` calls
+/// `compute_type_assert_mismatch`, finds no mismatch, and returns `Type::Int`.
+///
+/// Mutation target: if `AfterTypeAssertInner` always emitted a type error regardless
+/// of whether types matched, `errors` would be non-empty here.
+#[tokio::test]
+async fn test_cek_type_assert_matching_annotation_no_error() {
+    use crate::type_infer::TypeStageEntry;
+
+    let src = "[@Int 42]";
+    let mut program = crate::parse(src, test_file(src)).unwrap().program;
+    crate::desugar::desugar_surface_program(&mut program);
+    let node = match &program.documents[0].node.items[0] {
+        crate::ast::SurfaceItem::Expr(n) => Arc::clone(n),
+        _ => panic!("expected expression item"),
+    };
+    let env = Arc::new(RwLock::new(crate::env::Env::new()));
+    let mut state = InferState::new();
+
+    let mut type_stage_map =
+        std::collections::HashMap::<String, crate::type_infer::TypeStageEntry>::new();
+    type_stage_map.insert("Int".to_string(), TypeStageEntry::Resolved(Type::Int));
+    state.type_stage_map = Some(type_stage_map);
+
+    let mut errors: Vec<TypeError> = Vec::new();
+    let mut stack = Vec::new();
+
+    let ty =
+        typecheck_cek::run_typecheck(&node, &env, &mut state, &mut errors, &mut None, &mut stack)
+            .await;
+
+    assert!(
+        errors.is_empty(),
+        "[@Int 42]: IntLiteral(42) is subtype of Int — AfterTypeAssertInner must produce no error; got: {:?}",
+        errors.iter().map(|e| e.message()).collect::<Vec<_>>()
+    );
+    assert!(
+        matches!(&ty, Type::Int),
+        "[@Int 42] must return Type::Int (annotation type), got {:?}",
+        ty
+    );
+}
+
+/// T-1666 / Test 7: `AfterTypeAssertInner` — mismatched annotation emits a type error.
+///
+/// `[@Int "hello"]` with `Int` seeded in `type_stage_map`: the inner expression infers
+/// `StringLiteral("hello")`, which is NOT a subtype of `Int`. `AfterTypeAssertInner`
+/// detects the mismatch and pushes a `TypeError`.
+///
+/// This directly tests the mismatch branch of `AfterTypeAssertInner` (the path where
+/// `compute_type_assert_mismatch` returns `Some(errs)` and `has_default` is false).
+///
+/// Mutation target: if `AfterTypeAssertInner` never emitted errors, this test would fail
+/// because `errors` would be empty.
+#[tokio::test]
+async fn test_cek_type_assert_mismatched_annotation_emits_error() {
+    use crate::type_infer::TypeStageEntry;
+
+    let src = "[@Int \"hello\"]";
+    let mut program = crate::parse(src, test_file(src)).unwrap().program;
+    crate::desugar::desugar_surface_program(&mut program);
+    let node = match &program.documents[0].node.items[0] {
+        crate::ast::SurfaceItem::Expr(n) => Arc::clone(n),
+        _ => panic!("expected expression item"),
+    };
+    let env = Arc::new(RwLock::new(crate::env::Env::new()));
+    let mut state = InferState::new();
+
+    let mut type_stage_map =
+        std::collections::HashMap::<String, crate::type_infer::TypeStageEntry>::new();
+    type_stage_map.insert("Int".to_string(), TypeStageEntry::Resolved(Type::Int));
+    state.type_stage_map = Some(type_stage_map);
+
+    let mut errors: Vec<TypeError> = Vec::new();
+    let mut stack = Vec::new();
+
+    let ty =
+        typecheck_cek::run_typecheck(&node, &env, &mut state, &mut errors, &mut None, &mut stack)
+            .await;
+
+    assert!(
+        !errors.is_empty(),
+        "[@Int \"hello\"]: StringLiteral is not a subtype of Int — AfterTypeAssertInner must emit a type error"
+    );
+    // The result type is still Int (the annotated type) so that downstream inference
+    // can proceed using the declared type rather than the mismatched inner type.
+    assert!(
+        matches!(&ty, Type::Int),
+        "[@Int \"hello\"] must return Type::Int (annotation type even on mismatch), got {:?}",
+        ty
+    );
+}
+
+/// T-1666 / Test 8: `AfterSequentialExpr` — result is the type of the last expression.
+///
+/// A `Sequential([e1, e2, e3])` expression evaluates each sub-expression in order and
+/// returns the type of the last one. `AfterSequentialExpr` is pushed for each
+/// intermediate expression and pops forward until the final one.
+///
+/// `Sequential` is produced by the parser for multi-body fn bodies. We construct a
+/// fn with three body expressions (`1`, `3.14`, `"last"`) — the Fn node's body is
+/// `Sequential([1, 3.14, "last"])`. After `AfterFnBody` runs, the ret type is from
+/// `Sequential`, which must be `StringLiteral("last")`.
+///
+/// Mutation target: if `AfterSequentialExpr` returned the type of the FIRST expression
+/// instead of the last, the ret type of the fn would be `IntLiteral(1)` not
+/// `StringLiteral("last")`, and the inner `match &ty { Function { ret, .. } }` assertion
+/// would fail.
+#[tokio::test]
+async fn test_cek_sequential_expr_returns_last_type() {
+    // [fn [let x] 1  3.14  "last"] — multi-body fn: parser wraps the body in Sequential.
+    // The fn body Sequential([1, 3.14, "last"]) exercises AfterSequentialExpr.
+    let src = "[fn [let x] 1  3.14  \"last\"]";
+    let mut program = crate::parse(src, test_file(src)).unwrap().program;
+    crate::desugar::desugar_surface_program(&mut program);
+    let node = match &program.documents[0].node.items[0] {
+        crate::ast::SurfaceItem::Expr(n) => Arc::clone(n),
+        _ => panic!("expected expression item"),
+    };
+    let env = Arc::new(RwLock::new(crate::env::Env::new()));
+    let mut state = InferState::new();
+    let mut errors: Vec<TypeError> = Vec::new();
+    let mut stack = Vec::new();
+
+    let ty =
+        typecheck_cek::run_typecheck(&node, &env, &mut state, &mut errors, &mut None, &mut stack)
+            .await;
+
+    // The fn returns the type of the last body expression (Sequential discards intermediate types).
+    match &ty {
+        Type::Function { ret, .. } => {
+            assert_eq!(
+                ret.as_ref(),
+                &Type::StringLiteral("last".to_string()),
+                "AfterSequentialExpr must return the type of the last expression; \
+                 fn ret must be StringLiteral(\"last\"), got {:?}",
+                ret
+            );
+        }
+        other => panic!("expected Function type from multi-body fn, got {:?}", other),
+    }
+}
+
+/// T-1666 / Test 9: `AfterMatchArm` is pushed for each arm; three-arm match exercises the
+/// self-pushing loop.
+///
+/// `[match 1  1: "one"  2: "two"  _: "other"]` produces three arms. After inferring the
+/// scrutinee, `AfterMatchScrutinee` is popped and pushes `AfterMatchArm` for the first arm.
+/// After each arm body, `AfterMatchArm` self-pushes for the next arm. This test verifies
+/// that a three-arm match completes correctly — exercising the `AfterMatchArm` self-push
+/// path (the branch `remaining_arms.is_empty()` being false for the first two arms).
+///
+/// Mutation target: if `AfterMatchArm` didn't self-push for subsequent arms, the result
+/// would be the first arm's type only, not the collected union.
+#[tokio::test]
+async fn test_cek_match_three_arms_exercises_after_match_arm_self_push() {
+    let src = "[match 1  1: \"one\"  2: \"two\"  _: \"other\"]";
+    let mut program = crate::parse(src, test_file(src)).unwrap().program;
+    crate::desugar::desugar_surface_program(&mut program);
+    let node = match &program.documents[0].node.items[0] {
+        crate::ast::SurfaceItem::Expr(n) => Arc::clone(n),
+        _ => panic!("expected expression item"),
+    };
+    let env = Arc::new(RwLock::new(crate::env::Env::new()));
+    let mut state = InferState::new();
+    let mut errors = Vec::new();
+    let mut stack = Vec::new();
+
+    let ty =
+        typecheck_cek::run_typecheck(&node, &env, &mut state, &mut errors, &mut None, &mut stack)
+            .await;
+
+    // All three arms produce string literals — result must be a string-family type.
+    // The exact union form depends on normalize_union/simplify_type; at minimum it must not be Int.
+    assert!(
+        matches!(&ty, Type::StringLiteral(_) | Type::Str),
+        "three-arm match over string literals must yield a string-family type, got {:?}",
+        ty
+    );
+    // The stack must be fully unwound — no continuations remaining.
+    assert!(
+        stack.is_empty(),
+        "CEK stack must be empty after run_typecheck completes, got {} entries remaining",
+        stack.len()
+    );
+}
+
+/// T-1666 / Test 10: `AfterMatchScrutinee` + `AfterMatchArm` — single-arm match does not
+/// self-push.
+///
+/// `[match 42  _: "any"]` has one arm. After `AfterMatchScrutinee` pops and evaluates
+/// the first (and only) arm body, `AfterMatchArm` is popped with `remaining_arms` empty,
+/// taking the `accumulated_types + [child_ty]` → `Done(union)` path without re-pushing.
+///
+/// This distinguishes the zero-remaining-arms branch from the self-push branch.
+///
+/// Mutation target: if `AfterMatchArm` always self-pushed regardless of `remaining_arms`,
+/// it would loop infinitely or panic.
+#[tokio::test]
+async fn test_cek_match_single_arm_does_not_self_push() {
+    let src = "[match 42  _: \"any\"]";
+    let mut program = crate::parse(src, test_file(src)).unwrap().program;
+    crate::desugar::desugar_surface_program(&mut program);
+    let node = match &program.documents[0].node.items[0] {
+        crate::ast::SurfaceItem::Expr(n) => Arc::clone(n),
+        _ => panic!("expected expression item"),
+    };
+    let env = Arc::new(RwLock::new(crate::env::Env::new()));
+    let mut state = InferState::new();
+    let mut errors = Vec::new();
+    let mut stack = Vec::new();
+
+    let ty =
+        typecheck_cek::run_typecheck(&node, &env, &mut state, &mut errors, &mut None, &mut stack)
+            .await;
+
+    assert!(
+        matches!(&ty, Type::StringLiteral(_) | Type::Str),
+        "single-arm match yielding a string must return a string-family type, got {:?}",
+        ty
+    );
+    assert!(
+        stack.is_empty(),
+        "CEK stack must be fully unwound after single-arm match, got {} remaining",
+        stack.len()
+    );
+}
+
+/// T-1666 / Test 11: `compute_sccs` — mutually recursive bindings form one SCC.
+///
+/// `[a: $b  b: $a]` creates a mutual cycle: `a` references `b` and `b` references `a`.
+/// Tarjan's algorithm (via `compute_sccs`) must place both in the same SCC.
+///
+/// This is the canonical test for mutual recursion detection, which drives the letrec
+/// binding group analysis that allows forward references between dict entries.
+///
+/// Mutation target: if `compute_sccs` treated each entry as an independent singleton,
+/// there would be 2 SCCs instead of 1, and mutual recursion would not be typed correctly.
+#[test]
+fn test_cek_compute_sccs_mutual_recursion_forms_one_scc() {
+    use crate::ast::{SurfaceEntry, SurfaceNode};
+    use crate::test_util::sp;
+
+    fn sn(expr: SurfaceExpression) -> Arc<SurfaceNode> {
+        Arc::new(SurfaceNode::new(
+            expr,
+            crate::ast::Span::rust_source(file!(), line!()),
+        ))
+    }
+
+    fn varref(name: &str) -> Spanned<SurfaceEntry> {
+        sp(SurfaceEntry {
+            key: None,
+            value: sn(SurfaceExpression::VarRef {
+                name: name.to_string(),
+                escaped: false,
+                resolution: crate::ast::Resolution::new(),
+                call_dispatch: crate::ast::CallDispatch::new(),
+                annotation: None,
+            }),
+        })
+    }
+
+    // a references b, b references a → mutual cycle
+    let a_entry = varref("b");
+    let b_entry = varref("a");
+    let entries = vec![a_entry, b_entry];
+    let key_entries: Vec<(Option<String>, bool, bool)> = vec![
+        (Some("a".to_string()), false, true),
+        (Some("b".to_string()), false, true),
+    ];
+
+    let sccs = typecheck_cek::compute_sccs(&entries, &key_entries);
+
+    assert_eq!(
+        sccs.len(),
+        1,
+        "mutual cycle a↔b must produce exactly 1 SCC; got {} SCCs",
+        sccs.len()
+    );
+    let mut indices = sccs[0].indices.clone();
+    indices.sort_unstable();
+    assert_eq!(
+        indices,
+        vec![0, 1],
+        "the single SCC must contain both entries (indices 0 and 1)"
+    );
+}
+
+/// T-1666 / Test 12: `compute_sccs` — a Fn body reference to a sibling creates a dependency.
+///
+/// `[f: [fn [let x] $sibling]  sibling: 42]` — `f`'s fn body references `sibling`.
+/// `collect_dependencies` traverses the fn body and finds the VarRef to `sibling`,
+/// creating an edge f → sibling in the dependency graph.
+///
+/// This verifies the Fn arm in `collect_dependencies` correctly follows into fn bodies
+/// to detect genuine cross-entry dependencies (as opposed to self-references via params).
+///
+/// Mutation target: if the Fn arm did NOT push the body into the worklist, `f` and
+/// `sibling` would be treated as independent singleton SCCs with no ordering guarantee,
+/// and the topological ordering would be wrong.
+#[test]
+fn test_cek_compute_sccs_fn_body_sibling_reference_creates_dependency() {
+    use crate::ast::{SurfaceEntry, SurfaceNode};
+    use crate::test_util::sp;
+
+    fn sn(expr: SurfaceExpression) -> Arc<SurfaceNode> {
+        Arc::new(SurfaceNode::new(
+            expr,
+            crate::ast::Span::rust_source(file!(), line!()),
+        ))
+    }
+
+    fn varref_node(name: &str) -> Arc<SurfaceNode> {
+        sn(SurfaceExpression::VarRef {
+            name: name.to_string(),
+            escaped: false,
+            resolution: crate::ast::Resolution::new(),
+            call_dispatch: crate::ast::CallDispatch::new(),
+            annotation: None,
+        })
+    }
+
+    // f's value is [fn [let x] $sibling] — body contains VarRef("sibling")
+    let param = crate::ast::SurfaceParam {
+        name: "x".to_string(),
+        annotation: None,
+        variadic: false,
+    };
+    let fn_body = varref_node("sibling");
+    let fn_node = sn(SurfaceExpression::Fn {
+        return_ann: None,
+        params: vec![crate::test_util::sp(param)],
+        body: fn_body,
+        desugared: false,
+    });
+    let f_entry = sp(SurfaceEntry {
+        key: None,
+        value: fn_node,
+    });
+    // sibling's value is a literal (no deps)
+    let sibling_entry = sp(SurfaceEntry {
+        key: None,
+        value: sn(SurfaceExpression::Int(42)),
+    });
+
+    let entries = vec![f_entry, sibling_entry];
+    let key_entries: Vec<(Option<String>, bool, bool)> = vec![
+        (Some("f".to_string()), false, true),
+        (Some("sibling".to_string()), false, true),
+    ];
+
+    let sccs = typecheck_cek::compute_sccs(&entries, &key_entries);
+
+    // f depends on sibling → two singleton SCCs with sibling processed first (dependencies first).
+    assert_eq!(
+        sccs.len(),
+        2,
+        "f→sibling creates a dependency edge: expect 2 singleton SCCs; got {} SCCs",
+        sccs.len()
+    );
+
+    // Build output-position map: entry_index → position in sccs output
+    let mut output_pos = [0usize; 2];
+    for (scc_pos, scc) in sccs.iter().enumerate() {
+        for &idx in &scc.indices {
+            output_pos[idx] = scc_pos;
+        }
+    }
+    // sibling (index 1) must be processed before f (index 0) in Tarjan's output.
+    assert!(
+        output_pos[1] < output_pos[0],
+        "sibling must be processed before f (sibling has no deps; f depends on sibling); \
+         got output_pos[sibling]={} output_pos[f]={}",
+        output_pos[1],
+        output_pos[0]
+    );
+}
+
+/// T-1666 / Test 13: `type_contains_typevar` — finds a free TypeVar by name.
+///
+/// `Type::TypeVar("a", 0)` directly contains the typevar "a". The function must
+/// return `true` and correctly match on the name string.
+///
+/// Mutation target: if `type_contains_typevar` always returned `false`, this test fails.
+#[test]
+fn test_cek_type_contains_typevar_finds_free_var() {
+    let ty = Type::TypeVar("a".to_string(), 0);
+    assert!(
+        typecheck_cek::type_contains_typevar(&ty, "a"),
+        "TypeVar(\"a\") must contain typevar \"a\""
+    );
+    assert!(
+        !typecheck_cek::type_contains_typevar(&ty, "b"),
+        "TypeVar(\"a\") must NOT contain typevar \"b\""
+    );
+}
+
+/// T-1666 / Test 14: `type_contains_typevar` — does not find typevar in ground types.
+///
+/// `Type::Int`, `Type::Str`, and `Type::Float` contain no type variables.
+/// All three must return `false` for any queried name.
+///
+/// Mutation target: if `type_contains_typevar` returned `true` for non-TypeVar types
+/// (e.g., hit a wrong match arm), ground-type inference tests would fail spuriously.
+#[test]
+fn test_cek_type_contains_typevar_not_found_in_ground_types() {
+    for ty in &[Type::Int, Type::Str, Type::Float] {
+        assert!(
+            !typecheck_cek::type_contains_typevar(ty, "a"),
+            "ground type {:?} must not contain any typevar",
+            ty
+        );
+    }
+}
+
+/// T-1666 / Test 15: `type_contains_typevar` — finds TypeVar nested inside a Union.
+///
+/// `Type::Union([TypeVar("x"), Type::Int])` contains typevar "x" transitively.
+/// The function must recurse into union members and find the variable.
+///
+/// This tests the `Union(members)` match arm (which iterates with `any()`).
+///
+/// Mutation target: if `type_contains_typevar` did not recurse into union members,
+/// only direct `TypeVar` nodes at the top level would be found, missing nested vars.
+#[test]
+fn test_cek_type_contains_typevar_nested_in_union() {
+    let ty = Type::Union(vec![
+        Type::TypeVar("x".to_string(), 1),
+        Type::Int,
+        Type::Str,
+    ]);
+    assert!(
+        typecheck_cek::type_contains_typevar(&ty, "x"),
+        "Union containing TypeVar(\"x\") must return true for \"x\""
+    );
+    assert!(
+        !typecheck_cek::type_contains_typevar(&ty, "y"),
+        "Union containing TypeVar(\"x\") must return false for \"y\""
     );
 }

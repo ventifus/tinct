@@ -56,6 +56,14 @@ pub fn thunk_total() -> i64 {
     THUNK_TOTAL.load(Relaxed)
 }
 
+/// Reset the OOM flag and limit for test isolation.
+/// Only available in test builds — production code must not clear the OOM flag.
+#[cfg(test)]
+pub fn reset_for_test() {
+    LIMIT.store(0, Relaxed);
+    OOM_FIRED.store(false, Relaxed);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

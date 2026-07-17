@@ -643,12 +643,10 @@ pub(crate) async fn force_step(
                 if let Some(ref span) = mat_span {
                     if cloned.materialization_span.is_none() {
                         cloned.materialization_span = Some(span.clone());
-                        thunk.settle(Err(Arc::new((*cloned).clone())));
                     } else if cloned.materialization_span != Some(span.clone())
                         && !cloned.stack.iter().any(|f| f.definition_span == *span)
                     {
                         cloned.push_frame("materialized".to_string(), span.clone());
-                        thunk.settle(Err(Arc::new((*cloned).clone())));
                     }
                 }
                 return Action::Continue(Err(cloned));
@@ -4573,6 +4571,262 @@ mod deep_tests {
             Some(mat_span),
             "materialization_span should preserve the first value, not overwrite"
         );
+    }
+}
+
+// ============================================================================
+// T-1667: CEK lifecycle unit tests
+// ============================================================================
+
+#[cfg(test)]
+mod cek_lifecycle_tests {
+    use super::*;
+    use crate::test_util::test_span;
+
+    fn test_ctx() -> Arc<EvalContext> {
+        let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
+        EvalContext::new(base_dir, false)
+    }
+
+    /// Verify Cont::Memoize construction: all fields round-trip correctly.
+    ///
+    /// Cont::Memoize is constructed in force_step when a builtin or function returns
+    /// an unevaluated thunk. This test constructs the data struct directly and checks
+    /// that the fields match what was provided — a structural invariant, not a
+    /// behavior test (behavior is covered by test_cont_memoize_caches_result).
+    #[tokio::test]
+    async fn test_cont_memoize_construction() {
+        let span = test_span(1, 1, 1, 10);
+        let thunk = Arc::new(Thunk::value(Value::Int(7), span.clone()));
+        let origin: Option<Arc<str>> = Some(Arc::from("test-origin"));
+
+        let data = MemoizeData {
+            thunk: Arc::clone(&thunk),
+            origin: origin.clone(),
+            thunk_span: span.clone(),
+            mat_span: Some(span.clone()),
+        };
+        let cont = Cont::Memoize(Box::new(data));
+
+        // Extract the boxed data and verify fields
+        let Cont::Memoize(boxed) = cont else {
+            panic!("Expected Cont::Memoize");
+        };
+        assert!(
+            Arc::ptr_eq(&boxed.thunk, &thunk),
+            "thunk field must be the same Arc"
+        );
+        assert_eq!(
+            boxed.origin.as_deref(),
+            Some("test-origin"),
+            "origin field must round-trip"
+        );
+        assert_eq!(boxed.thunk_span, span, "thunk_span field must round-trip");
+        assert_eq!(boxed.mat_span, Some(span), "mat_span field must round-trip");
+    }
+
+    /// Pre-materialized thunk passes straight through force_step as Action::Continue.
+    ///
+    /// When a thunk is already in Materialized state, force_step should return
+    /// Action::Continue(Ok(value)) immediately without pushing any continuations.
+    /// The continuation stack must remain empty after the call.
+    #[tokio::test]
+    async fn test_force_step_materialized() {
+        let span = test_span(1, 1, 1, 5);
+        let ctx = test_ctx();
+
+        // A pre-materialized thunk: created with Thunk::value → already in Materialized state.
+        let thunk = Arc::new(Thunk::value(Value::Int(99), span.clone()));
+
+        assert_eq!(
+            thunk.try_get_materialized(),
+            Some(Value::Int(99)),
+            "Thunk::value must start Materialized"
+        );
+
+        let mut stack: Vec<Cont> = Vec::new();
+        let action = force_step(&thunk, None, &mut stack, &ctx).await;
+
+        // A materialized thunk must return Continue immediately.
+        match action {
+            Action::Continue(Ok(v)) => {
+                assert_eq!(v, Value::Int(99), "expected the materialized value Int(99)");
+            }
+            Action::Continue(Err(e)) => {
+                panic!("expected Action::Continue(Ok(Int(99))), got error: {e}")
+            }
+            Action::Materialize { .. } | Action::EvalCore { .. } => {
+                panic!("expected Action::Continue(Ok(Int(99))), got non-Continue action")
+            }
+        }
+
+        // No continuations should have been pushed for a pre-materialized thunk.
+        assert!(
+            stack.is_empty(),
+            "continuation stack must remain empty for a Materialized thunk"
+        );
+    }
+
+    /// Failed thunk returns its cached error via force_step.
+    ///
+    /// When a thunk is already in Failed state (error cached via settle(Err(...))),
+    /// force_step must return Action::Continue(Err(...)) without re-evaluating.
+    #[tokio::test]
+    async fn test_force_step_failed() {
+        let span = test_span(2, 1, 2, 5);
+        let ctx = test_ctx();
+
+        // Create an Unevaluated thunk and force it to fail by settling with an error.
+        let thunk = Arc::new(Thunk::core_expr(
+            Arc::new(Spanned::new(CoreExpr::Int(0), span.clone())),
+            0,
+            Arc::clone(&ctx),
+            span.clone(),
+        ));
+        // Inject a cached failure directly so we test the Failed branch without
+        // triggering a full eval cycle.
+        let err = EvalError::user_error("sentinel-error".to_string(), span.clone());
+        thunk.settle(Err(Arc::new(err)));
+
+        // Thunk must now be in Failed state.
+        assert!(
+            thunk.get_cached_error().is_some(),
+            "thunk must be in Failed state after settle(Err(...))"
+        );
+
+        let mut stack: Vec<Cont> = Vec::new();
+        let action = force_step(&thunk, None, &mut stack, &ctx).await;
+
+        match action {
+            Action::Continue(Err(e)) => {
+                assert!(
+                    e.kind.to_string().contains("sentinel-error"),
+                    "error must propagate from Failed state: {}",
+                    e.kind
+                );
+            }
+            Action::Continue(Ok(v)) => {
+                panic!("expected Action::Continue(Err(...)), got Ok({v:?})")
+            }
+            Action::Materialize { .. } | Action::EvalCore { .. } => {
+                panic!("expected Action::Continue(Err(...)), got non-Continue action")
+            }
+        }
+
+        // No continuations pushed for a failed thunk.
+        assert!(
+            stack.is_empty(),
+            "continuation stack must remain empty for a Failed thunk"
+        );
+    }
+
+    /// InProgress thunk from the same task produces a circular_dependency error.
+    ///
+    /// The cycle detection branch in force_step fires when:
+    /// - ThunkState::InProgress { evaluating_task } is found, AND
+    /// - the evaluating task matches the current task (same == true).
+    ///
+    /// We simulate this by claiming the thunk's UnevaluatedState (transition to InProgress)
+    /// within a TASK_EVAL_STACK scope, then calling force_step without settling the thunk.
+    #[tokio::test]
+    async fn test_thunk_cycle_detection() {
+        let span = test_span(3, 1, 3, 5);
+        let ctx = test_ctx();
+
+        // Create an unevaluated thunk.
+        let thunk = Arc::new(Thunk::core_expr(
+            Arc::new(Spanned::new(CoreExpr::Int(0), span.clone())),
+            0,
+            Arc::clone(&ctx),
+            span.clone(),
+        ));
+
+        // Transition thunk to InProgress by claiming its UnevaluatedState.
+        // After try_claim() the unevaluated field is None and evaluating_task is set
+        // to the current task id — exactly the InProgress state.
+        let _claimed = thunk.try_claim().expect("fresh thunk must be claimable");
+
+        // Verify InProgress state before calling force_step.
+        assert!(
+            matches!(thunk.state(), ThunkState::InProgress { .. }),
+            "thunk must be InProgress after try_claim"
+        );
+
+        // Run force_step inside a TASK_EVAL_STACK scope so cycle_path reconstruction works.
+        let result = TASK_EVAL_STACK
+            .scope(std::cell::RefCell::new(vec![]), async {
+                let mut stack: Vec<Cont> = Vec::new();
+                force_step(&thunk, None, &mut stack, &ctx).await
+            })
+            .await;
+
+        // force_step must return Action::Continue(Err(circular_dependency)).
+        match result {
+            Action::Continue(Err(e)) => {
+                let msg = e.kind.to_string();
+                assert!(
+                    msg.contains("circular") || msg.contains("cycle") || msg.contains("dependency"),
+                    "expected circular_dependency error, got: {msg}"
+                );
+            }
+            Action::Continue(Ok(v)) => {
+                panic!("expected Action::Continue(Err(circular_dependency)), got Ok({v:?})")
+            }
+            Action::Materialize { .. } | Action::EvalCore { .. } => {
+                panic!(
+                    "expected Action::Continue(Err(circular_dependency)), got non-Continue action"
+                )
+            }
+        }
+
+        // Cycle detection calls thunk.settle(Err(...)) — thunk must be in Failed state.
+        assert!(
+            matches!(thunk.state(), ThunkState::Failed(_)),
+            "cycle detection must settle thunk to Failed; got {:?}",
+            thunk.state()
+        );
+    }
+
+    /// TASK_EVAL_STACK push/pop via try_with works correctly.
+    ///
+    /// EvalStackGuard::push adds an entry and Drop removes it. This test verifies
+    /// the task-local stack is empty before, non-empty after push, and empty again
+    /// after the guard is dropped — using try_with to read the stack state.
+    #[tokio::test]
+    async fn test_eval_stack_guard_push_pop() {
+        let span = test_span(1, 1, 1, 5);
+
+        TASK_EVAL_STACK
+            .scope(std::cell::RefCell::new(vec![]), async move {
+                // Stack must start empty inside the scope.
+                let len_before = TASK_EVAL_STACK
+                    .try_with(|s| s.borrow().len())
+                    .expect("TASK_EVAL_STACK must be set inside scope");
+                assert_eq!(len_before, 0, "stack must be empty before push");
+
+                {
+                    let _guard = EvalStackGuard::push((Arc::from("test-frame"), span.clone()));
+
+                    // Stack must have exactly one entry while guard is alive.
+                    let len_during = TASK_EVAL_STACK
+                        .try_with(|s| s.borrow().len())
+                        .expect("TASK_EVAL_STACK must be set inside scope");
+                    assert_eq!(len_during, 1, "stack must have 1 entry after push");
+
+                    let label = TASK_EVAL_STACK
+                        .try_with(|s| s.borrow()[0].0.to_string())
+                        .expect("TASK_EVAL_STACK must be set inside scope");
+                    assert_eq!(label, "test-frame", "pushed label must match");
+                }
+                // Guard dropped here — pop fires.
+
+                // Stack must be empty again after guard is dropped.
+                let len_after = TASK_EVAL_STACK
+                    .try_with(|s| s.borrow().len())
+                    .expect("TASK_EVAL_STACK must be set inside scope");
+                assert_eq!(len_after, 0, "stack must be empty after guard drop");
+            })
+            .await;
     }
 }
 

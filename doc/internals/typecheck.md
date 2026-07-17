@@ -294,7 +294,7 @@ Note: guard inference for each arm still calls `infer_surface_expr` internally (
 
 **Defined in:** `typecheck_cek.rs`. Carries SCC state across member inferences.
 
-**Current status:** Not yet pushed by `AfterDictPassZero` — the `AfterDictPassZero` handler currently delegates the entire dict inference to `infer_surface_expr` / `infer_dict` (transitional, tracked by T-1644). The `AfterDictSccMember` handler contains the correct SCC-member advance logic but is currently unreachable from the active code path.
+**Current status:** Pushed by `AfterDictPassZero` for each SCC member. The `AfterDictPassZero` handler calls `run_typecheck_dict` which manages the full SCC loop. `AfterDictSccMember` carries the per-SCC state across member inferences within that loop.
 
 **Intended behavior (when T-1644 completes):** pushed by `AfterDictPassZero` for the first SCC member and self-re-pushes for each subsequent member. When an SCC is complete, performs generalization and extends `dict_env`. When all SCCs are processed, returns `Done(dict_type)`.
 
@@ -304,13 +304,13 @@ Note: guard inference for each arm still calls `infer_surface_expr` internally (
 
 **Carries:** `dict_node` (the original Dict AST node for delegation), `entries`, `key_entries`, `env`, `enclosing_level`, `span`.
 
-**What `apply_cont` does (current transitional state):** delegates the full multi-pass dict inference to `infer_surface_expr(&dict_node, ...)`, which calls `infer_dict` in `typecheck_dict.rs`. Returns `Done(dict_type)`. The `AfterTypeAliasReg` → `AfterClassInstancePreReg` → `AfterDictSccMember` chain is not yet invoked.
+**What `apply_cont` does:** calls `run_typecheck_dict(entries, env, state, type_map, span)` which runs the full multi-pass SCC-based dict inference. Returns `Done(dict_type)`.
 
 **Intended behavior (when T-1644 completes):** runs `compute_sccs()`, allocates fresh TypeVars for all entries, performs type alias registration (Pass 2), performs class/instance pre-registration (Pass 0c), pushes `AfterDictSccMember` for the first SCC member, and returns `Eval(first_member.value, scc_env)`.
 
 ### AfterTypeAliasReg
 
-**Current status:** defined and has a handler (returns `Done(child_ty)`), but is not currently pushed by `AfterDictPassZero` since that handler delegates to `infer_surface_expr`. **Currently unreachable.**
+**Status:** handler exists (returns `Done(child_ty)`). Type alias registration is handled inside `run_typecheck_dict` during Pass 2 (synchronously). This continuation is reserved for future incremental dict CEK migration.
 
 **Intended behavior (when T-1644 completes):** pushed by `AfterDictPassZero` to perform Pass 2 (type alias body resolution and TyConDef registration). When all aliases are registered, pushes `AfterClassInstancePreReg`.
 
@@ -388,7 +388,7 @@ apply_cont(AfterDictSccMember, member_ty)
 
 The SCC computation (`compute_sccs`) runs synchronously during `AfterDictPassZero` — it is Tarjan's algorithm implemented iteratively (explicit work stack, no Rust recursion) so it is safe to run inside an async context without blocking. `collect_dependencies` does a worklist walk of each entry's value AST to identify references to sibling bindings.
 
-Both `compute_sccs` and `collect_dependencies` have their canonical implementations in `src/typecheck_cek.rs`. `src/typecheck_dict.rs` retains a delegating shim for `compute_sccs` (and a re-export of `Scc`) so that `infer_dict` can call them without a module path change. Deletion of `typecheck_dict.rs` is tracked by T-1644.
+Both `compute_sccs` and `collect_dependencies` have their canonical implementations in `src/typecheck_cek.rs`. `src/typecheck_dict.rs` retains private delegation shims (`type_contains_typevar`, `adt_value_type`) and compute_sccs unit tests that call the canonical implementations directly.
 
 ---
 
@@ -419,7 +419,7 @@ The key structural difference is that the evaluator operates on `Thunk`s (lazy v
 |---|---|
 | `src/typecheck_cek.rs` | `TypeCheckCont`, `TypeCheckAction`, `run_typecheck`, `infer_step`, `apply_cont`, `compute_sccs` (canonical), `collect_dependencies`, `type_contains_typevar`, `adt_value_type`, `entry_key_name` |
 | `src/typecheck.rs` | Top-level entry points (`typecheck_surface_program_annotation_table`, etc.); declares all typecheck submodules; contains `infer_surface_expr` (transitional — retained for Decl variants and as a bridge from CEK to dict inference) |
-| `src/typecheck_dict.rs` | `infer_dict` — **still the primary dict-inference path** (transitional; T-1644 will delete this file once `AfterDictPassZero` implements the full CEK dict path). Contains delegating shims for `Scc`, `compute_sccs`, and `type_contains_typevar` that delegate to `typecheck_cek.rs`. |
+| `src/typecheck_dict.rs` | Private delegation shims (`type_contains_typevar`, `adt_value_type`) and compute_sccs unit tests. `infer_dict` is deleted — `run_typecheck_dict` in `typecheck_cek.rs` is now the canonical dict-inference path. |
 | `src/typecheck_call.rs` | Surviving helpers after S-930: `widen_literal_types`, `check_dot_access`, `check_dot_access_int`, `is_concrete_type` — call-checking functions absorbed into `AfterCallFunc`/`AfterCallArg` |
 | `src/typecheck_annot.rs` | Annotation resolution: `resolve_annotation` (called from `infer_step` for `TypeAssert` and parameter annotations) |
 | `src/type_normalize.rs` | `evaluate_resolver` — async function for resolving parameterized type-stage types; awaited inline from `infer_step` |

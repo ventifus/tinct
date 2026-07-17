@@ -852,36 +852,34 @@ pub fn span_to_value(
     Value::Dict(map)
 }
 
-/// Return a short static tag name for a `SurfaceExpression` variant.
+/// Return the tinct syntax form for a `SurfaceExpression` variant.
 ///
-/// Used by `Value::Expression` Display and Debug impls to produce readable output
-/// without converting the full AST node to an `Expr.*` variant.
-/// Tags match the `#[expr(tag = "...")]` attribute on each variant (i.e. the
-/// unqualified portion of the runtime `"Expr.<Tag>"` string).
+/// Used in error messages: "unexpected [let ...] in this context".
+/// Shows the tinct source form the user would write, not Rust enum names.
 pub fn surface_expr_tag(expr: &SurfaceExpression) -> &'static str {
     match expr {
         SurfaceExpression::Int(_)
         | SurfaceExpression::U64(_)
         | SurfaceExpression::Float(_)
-        | SurfaceExpression::StringLiteral { .. } => "Literal",
-        SurfaceExpression::VarRef { .. } => "VarRef",
-        SurfaceExpression::Field { .. } => "DotAccess",
-        SurfaceExpression::Pipe { .. } => "Pipe",
-        SurfaceExpression::Sequential(_) => "Sequential",
-        SurfaceExpression::Dict(_) => "Dict",
-        SurfaceExpression::Call { .. } => "Call",
-        SurfaceExpression::Fn { .. } => "Fn",
-        SurfaceExpression::TypeAssert { .. } => "TypeAssert",
-        SurfaceExpression::Rest(..) => "Rest",
-        SurfaceExpression::Match { .. } => "Match",
-        SurfaceExpression::Quote(_) => "Quote",
-        SurfaceExpression::Unquote(_) => "Unquote",
-        SurfaceExpression::UnquoteSplice(_) => "UnquoteSplice",
-        SurfaceExpression::PatternDecl { .. } => "PatternDecl",
-        SurfaceExpression::LetDecl { .. } => "LetDecl",
-        SurfaceExpression::CaseArm { .. } => "CaseArm",
-        SurfaceExpression::Placeholder => "Placeholder",
-        SurfaceExpression::Error(_) => "AstError",
-        SurfaceExpression::Decl(_) => "Decl",
+        | SurfaceExpression::StringLiteral { .. } => "literal",
+        SurfaceExpression::VarRef { .. } => "identifier",
+        SurfaceExpression::Field { .. } => ".field",
+        SurfaceExpression::Pipe { .. } => "|",
+        SurfaceExpression::Sequential(_) => "multi-body",
+        SurfaceExpression::Dict(_) => "[key: value]",
+        SurfaceExpression::Call { .. } => "[f ...]",
+        SurfaceExpression::Fn { .. } => "[fn ...]",
+        SurfaceExpression::TypeAssert { .. } => "@Type",
+        SurfaceExpression::Rest(..) => "...name",
+        SurfaceExpression::Match { .. } => "[match ...]",
+        SurfaceExpression::Quote(_) => "[quote ...]",
+        SurfaceExpression::Unquote(_) => "[unquote ...]",
+        SurfaceExpression::UnquoteSplice(_) => "[unquote-splice ...]",
+        SurfaceExpression::PatternDecl { .. } => "[pattern ...]",
+        SurfaceExpression::LetDecl { .. } => "[let ...]",
+        SurfaceExpression::CaseArm { .. } => "[case ...]",
+        SurfaceExpression::Placeholder => "...",
+        SurfaceExpression::Error(_) => "<parse error>",
+        SurfaceExpression::Decl(_) => "declaration",
     }
 }

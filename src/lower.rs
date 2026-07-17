@@ -37,6 +37,7 @@ pub enum LowerDiagnosticKind {
 /// that need eager error reporting (e.g., document loading) inspect the returned diagnostic
 /// vec rather than waiting for the placeholder to be forced at runtime.
 #[derive(Debug, Clone)]
+#[must_use = "lower diagnostics must be checked; use lower_errors_to_eval_error to convert or explicitly drop with let _ = ..."]
 pub struct LowerDiagnostic {
     pub kind: LowerDiagnosticKind,
     pub message: String,

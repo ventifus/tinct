@@ -621,6 +621,13 @@ pub(crate) fn eval_core_expr<'a>(
     ctx: &'a Arc<EvalContext>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>> + 'a>> {
     Box::pin(async move {
+        if crate::memory_budget::is_oom_flagged() {
+            return Err(crate::error::EvalError::resource_limit_exceeded(
+                "heap limit exceeded (arena bytes)".to_string(),
+                expr.span.clone(),
+            )
+            .into());
+        }
         let span = expr.span.clone();
         match &expr.node {
             // Fast path: literals materialize directly without wrapping in Unevaluated
@@ -944,4 +951,146 @@ pub(crate) fn eval_core_expr<'a>(
         // Type guards are now inline on AST nodes (TypeAnnotation OnceLock);
         // the lowerer wraps them in CoreExpr::TypeAssert. No runtime guard wrapping needed here.
     }) // end Box::pin(async move {
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use crate::ast::{CoreExpr, Spanned};
+    use crate::eval::EvalContext;
+    use crate::test_util::test_span;
+    use crate::value::{string_val, Thunk, Value};
+
+    fn test_ctx() -> Arc<EvalContext> {
+        let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
+        EvalContext::new(base_dir, false)
+    }
+
+    async fn eval_and_materialize(
+        expr: CoreExpr,
+        ctx: &Arc<EvalContext>,
+    ) -> crate::error::EvalResult<Value> {
+        let span = test_span(1, 1, 1, 5);
+        let spanned = Spanned::new(expr, span.clone());
+        let thunk = super::eval_core_expr(&spanned, 0, ctx).await?;
+        crate::eval::materialize(&thunk, Some(&span), ctx).await
+    }
+
+    /// `CoreExpr::Int(42)` evaluates to `Value::Int(42)`.
+    ///
+    /// Int literals are on the fast path in eval_core_expr: they return a
+    /// pre-materialized Thunk::value without going through the CEK machine.
+    #[tokio::test]
+    async fn test_eval_int_literal() {
+        let ctx = test_ctx();
+        let val = eval_and_materialize(CoreExpr::Int(42), &ctx).await.unwrap();
+        assert_eq!(
+            val,
+            Value::Int(42),
+            "CoreExpr::Int(42) must evaluate to Int(42)"
+        );
+    }
+
+    /// `CoreExpr::Str("hello")` evaluates to the corresponding string Value.
+    ///
+    /// String literals are on the fast path: Thunk::value is returned directly.
+    /// We verify the value using string_val to account for the intern/slice representation.
+    #[tokio::test]
+    async fn test_eval_string_literal() {
+        let ctx = test_ctx();
+        let val = eval_and_materialize(CoreExpr::Str("hello".to_string()), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(
+            val,
+            string_val("hello"),
+            "CoreExpr::Str(\"hello\") must evaluate to the string value 'hello'"
+        );
+    }
+
+    /// `CoreExpr::Var` resolves a slot from the FlatEnv arena.
+    ///
+    /// We build a child scope, reserve a named slot, fill it with a known thunk
+    /// (sourced from the root scope), and then evaluate a Var node pointing at
+    /// level=0, slot=0. The returned value must match the injected value.
+    #[tokio::test]
+    async fn test_eval_varref() {
+        let span = test_span(1, 1, 1, 5);
+        let ctx = test_ctx();
+
+        // Step 1: store the known thunk in root scope (scope_id 0) as an anonymous slot.
+        // This gives us a stable ThunkId to use as the source for fill_slot.
+        let known_thunk = Arc::new(Thunk::value(Value::Int(77), span.clone()));
+        let source_thunk_id = ctx.alloc_thunk(0, known_thunk);
+
+        // Step 2: allocate a child scope with 0 pre-reserved slots, then
+        // reserve and fill slot 0 manually (two-phase letrec protocol).
+        let env_id = {
+            let mut arena = ctx.scope_arena.borrow_mut();
+            let root_id = crate::arena::ScopeId(0);
+            let env_id = arena.alloc_child(root_id, 0);
+            let slot_idx = arena.reserve_slot(env_id, "test-binding");
+            assert_eq!(slot_idx, 0, "first reserved slot must be 0");
+            arena.fill_slot(env_id, 0, source_thunk_id);
+            env_id
+        };
+
+        // Build a Var node: level=0 (current scope), slot=0.
+        let var_expr = Spanned::new(
+            CoreExpr::Var {
+                name: "test-binding".to_string(),
+                level: 0,
+                slot: 0,
+                annotation: None,
+            },
+            span.clone(),
+        );
+
+        // Evaluate the Var in env_id — should return the injected thunk.
+        let result_thunk = super::eval_core_expr(&var_expr, env_id.0, &ctx)
+            .await
+            .unwrap();
+        let val = crate::eval::materialize(&result_thunk, Some(&span), &ctx)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            val,
+            Value::Int(77),
+            "CoreExpr::Var at level=0 slot=0 must resolve to the injected Int(77)"
+        );
+    }
+
+    /// B-526: OOM guard fires before CoreExpr dispatch and returns ResourceLimitExceeded.
+    ///
+    /// Sets the memory budget limit to 1 byte and trips the OOM flag, then calls
+    /// eval_core_expr and verifies ResourceLimitExceeded is returned — not a panic
+    /// or a successful evaluation.
+    #[tokio::test]
+    async fn test_eval_core_expr_oom_guard_fires() {
+        use crate::error::ErrorKind;
+
+        let span = test_span(1, 1, 1, 5);
+        let ctx = test_ctx();
+
+        // Trip the OOM flag: set limit to 1 byte, record any allocation.
+        crate::memory_budget::set_limit(1);
+        crate::memory_budget::record_and_check(2); // exceeds limit → sets OOM flag
+
+        let expr = Spanned::new(CoreExpr::Int(42), span.clone());
+        let result = super::eval_core_expr(&expr, 0, &ctx).await;
+
+        // Reset global state so other tests are not affected.
+        crate::memory_budget::reset_for_test();
+
+        match result {
+            Err(e) => assert!(
+                matches!(e.kind, ErrorKind::ResourceLimitExceeded { .. }),
+                "OOM guard must return ResourceLimitExceeded, got: {:?}",
+                e.kind
+            ),
+            Ok(_) => panic!("expected ResourceLimitExceeded from OOM guard, got Ok"),
+        }
+    }
 }
