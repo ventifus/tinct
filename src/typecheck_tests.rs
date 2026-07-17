@@ -2,12 +2,14 @@ use super::*;
 use crate::ast::{SurfaceEntry, SurfaceExpression, SurfaceNode, TypeAnnotationTable};
 use crate::rust_span;
 use crate::type_def::TyConDef;
+use crate::typecheck::process_document;
 use crate::typecheck::typecheck_annot::{
     body_contains_tycon_ref, contains_recvar, expand_all_tycon_apps, expand_named,
     resolve_annotation, resolve_type_name,
 };
 use crate::typecheck::typecheck_narrow::collect_pattern_bindings;
 use crate::types::unify;
+use crate::types::TypeScheme;
 use crate::Annotation;
 use indexmap::IndexMap;
 use std::sync::{Arc, RwLock};
@@ -116,20 +118,12 @@ async fn doc_env_with_prelude(input: &str) -> Arc<RwLock<crate::env::Env>> {
         std::sync::Arc::clone(&arc_env),
     )));
     let mut state = InferState::with_env(std::sync::Arc::clone(&child_env));
-    // TypeAnnotationTable removed — inline writes on AST nodes.
-    let empty_pipeline = Type::Dict(Row {
-        fields: IndexMap::new(),
-        tail: crate::type_def::RowTail::Empty,
-    });
-    let named_types = HashMap::new();
-    let (result_env, _ty, errors) = typecheck_surface_document(
+    let (result_env, _ty, errors) = process_document(
         &program.documents[0].node,
         &arc_env,
         &mut state,
         &mut TypeAnnotationTable::new(),
         &mut None,
-        &empty_pipeline,
-        &named_types,
     )
     .await;
     if !errors.is_empty() {
@@ -169,19 +163,12 @@ async fn doc_tycon_env(
         std::sync::Arc::clone(&arc_env),
     )));
     let mut state = InferState::with_env(std::sync::Arc::clone(&child_env));
-    let empty_pipeline = Type::Dict(Row {
-        fields: IndexMap::new(),
-        tail: crate::type_def::RowTail::Empty,
-    });
-    let named_types = HashMap::new();
-    let (_result_env, _ty, errors) = typecheck_surface_document(
+    let (_result_env, _ty, errors) = process_document(
         &program.documents[0].node,
         &arc_env,
         &mut state,
         &mut TypeAnnotationTable::new(),
         &mut None,
-        &empty_pipeline,
-        &named_types,
     )
     .await;
     if !errors.is_empty() {
@@ -199,29 +186,19 @@ async fn file_env_impl(input: &str) -> Arc<RwLock<crate::env::Env>> {
     crate::desugar::desugar_surface_program(&mut program);
     let mut env: Arc<RwLock<crate::env::Env>> = Arc::new(RwLock::new(crate::env::Env::new()));
     let mut state = InferState::new();
-    // TypeAnnotationTable removed — inline writes on AST nodes.
-    let named_types: HashMap<String, Type> = HashMap::new();
-    let mut pipeline_type = Type::Dict(Row {
-        fields: IndexMap::new(),
-        tail: crate::type_def::RowTail::Empty,
-    });
     for doc_spanned in &program.documents {
         let doc = &doc_spanned.node;
-        let (new_env, doc_output_type, errors) = typecheck_surface_document(
+        let (new_env, _doc_output_type, errors) = process_document(
             doc,
             &env,
             &mut state,
             &mut TypeAnnotationTable::new(),
             &mut None,
-            &pipeline_type,
-            &named_types,
         )
         .await;
         if !errors.is_empty() {
             panic!("file_env: typecheck error: {:?}", errors);
         }
-        // Document names removed — named_types no longer populated from doc.name
-        pipeline_type = doc_output_type;
         env = new_env;
     }
     env
@@ -521,22 +498,13 @@ async fn test_dot_access_typevar_generates_constraint_verified() {
     crate::desugar::desugar_surface_program(&mut program);
     let env: Arc<RwLock<crate::env::Env>> = Arc::new(RwLock::new(crate::env::Env::new()));
     let mut state = InferState::new();
-    // TypeAnnotationTable removed — inline writes on AST nodes.
-    let empty_pipeline = Type::Dict(Row {
-        fields: IndexMap::new(),
-        tail: crate::type_def::RowTail::Empty,
-    });
-    let named_types = HashMap::new();
-
     // Typecheck the document
-    let (doc_env, _ty, errors) = typecheck_surface_document(
+    let (doc_env, _ty, errors) = process_document(
         &program.documents[0].node,
         &env,
         &mut state,
         &mut TypeAnnotationTable::new(),
         &mut None,
-        &empty_pipeline,
-        &named_types,
     )
     .await;
     if !errors.is_empty() {
@@ -1347,19 +1315,19 @@ async fn test_variadic_param_env_binding_is_record() {
 
 #[tokio::test]
 async fn test_level_restored_after_non_dict_record_error() {
-    // Regression test for level restoration in typecheck_document when infer_expr fails
-    // in the Err branch of the non-Dict, non-last expression path in `typecheck_document`.
+    // Cross-document env propagation after a mid-stream error.
     //
-    // SCENARIO: A multi-document program where a non-last document has a type error.
-    // The second document triggers an error (undefined variable `$undefined`), which exercises
-    // the Err branch in the non-Dict path in `typecheck_document`, ensuring state.level is
-    // correctly restored on error.
-    // The third document references a field from the first document - it should still type-check
-    // correctly, proving that state.level was restored even though the second document errored.
+    // SCENARIO: A three-document program where the second document fails. The third document
+    // references a binding from the first document. This test verifies that env propagation
+    // across documents is correct even when an intermediate document errors out: doc 3 can
+    // still see doc 1's bindings (`x: 42`) despite doc 2 failing.
     //
-    // Without level restoration in the Err branch of `typecheck_document`, the third document
-    // would inherit the incremented level from the failed second document, causing generalization
-    // to fail or produce wrong levels for type variables.
+    // Note: under `process_document`, the second document's single expression `[call $undefined]`
+    // is the LAST node (not an intermediate), so state.level is never incremented for it.
+    // The `assert_eq!(state.level, level_after_doc1)` check is trivially true and does NOT test
+    // level restoration — its presence is a historical artifact from the old typecheck_document
+    // implementation. The meaningful assertion here is that doc 3 type-checks successfully and
+    // can see doc 1's bindings through the propagated env.
     let input = r#"
             [x: 42]
             ---
@@ -1373,41 +1341,29 @@ async fn test_level_restored_after_non_dict_record_error() {
     crate::desugar::desugar_surface_program(&mut program);
     let mut env: Arc<RwLock<crate::env::Env>> = Arc::new(RwLock::new(crate::env::Env::new()));
     let mut state = InferState::new();
-    // TypeAnnotationTable removed — inline writes on AST nodes.
-    let named_types: HashMap<String, Type> = HashMap::new();
-    let mut pipeline_type = Type::Dict(Row {
-        fields: IndexMap::new(),
-        tail: crate::type_def::RowTail::Empty,
-    });
-
     // Process first document (should succeed)
-    let (new_env, doc_output_type, errors) = typecheck_surface_document(
+    let (new_env, _doc_output_type, errors) = process_document(
         &program.documents[0].node,
         &env,
         &mut state,
         &mut TypeAnnotationTable::new(),
         &mut None,
-        &pipeline_type,
-        &named_types,
     )
     .await;
     if !errors.is_empty() {
         panic!("first document should type-check, got errors: {:?}", errors);
     }
     env = new_env;
-    pipeline_type = doc_output_type;
 
     let level_after_doc1 = state.level;
 
     // Process second document (should fail with undefined variable)
-    let (_, _, errors) = typecheck_surface_document(
+    let (_, _, errors) = process_document(
         &program.documents[1].node,
         &env,
         &mut state,
         &mut TypeAnnotationTable::new(),
         &mut None,
-        &pipeline_type,
-        &named_types,
     )
     .await;
     assert!(!errors.is_empty(), "second document should fail");
@@ -1416,21 +1372,20 @@ async fn test_level_restored_after_non_dict_record_error() {
         "error should be about undefined variable"
     );
 
-    // CRITICAL: level must be restored after error
+    // state.level check: trivially true under process_document (the single expression in doc 2
+    // is the LAST node, so level is never incremented). Kept as a sanity guard.
     assert_eq!(
         state.level, level_after_doc1,
-        "state.level must be restored to enclosing level after error"
+        "state.level must not have changed after processing the erroring document"
     );
 
-    // Process third document (should succeed, proving level was restored)
-    let (new_env, _, errors) = typecheck_surface_document(
+    // Process third document — must succeed and resolve x from doc 1 via env propagation
+    let (new_env, _, errors) = process_document(
         &program.documents[2].node,
         &env,
         &mut state,
         &mut TypeAnnotationTable::new(),
         &mut None,
-        &pipeline_type,
-        &named_types,
     )
     .await;
     if !errors.is_empty() {
@@ -1954,20 +1909,12 @@ async fn test_narrowing_type_map_hover() {
     let env: Arc<RwLock<crate::env::Env>> = Arc::new(RwLock::new(crate::env::Env::new())); /* TODO(type-foundations): build_prelude_env() deleted */
     let mut state = InferState::new();
     let mut type_map = TypeMap::new();
-    // TypeAnnotationTable removed — inline writes on AST nodes.
-    let empty_pipeline = Type::Dict(Row {
-        fields: IndexMap::new(),
-        tail: crate::type_def::RowTail::Empty,
-    });
-    let named_types = HashMap::new();
-    let _ = typecheck_surface_document(
+    let _ = process_document(
         &program.documents[0].node,
         &env,
         &mut state,
         &mut TypeAnnotationTable::new(),
         &mut Some(&mut type_map),
-        &empty_pipeline,
-        &named_types,
     )
     .await;
 
@@ -4507,26 +4454,22 @@ async fn test_cek_type_assert_mismatched_annotation_emits_error() {
     );
 }
 
-/// T-1666 / Test 8: `AfterSequentialExpr` — result is the type of the last expression.
+/// T-1677 / Test 8: Sequential returns the type of the last expression.
 ///
-/// A `Sequential([e1, e2, e3])` expression evaluates each sub-expression in order and
-/// returns the type of the last one. `AfterSequentialExpr` is pushed for each
-/// intermediate expression and pops forward until the final one.
+/// A `Sequential([e1, e2, ..., en])` expression processes each intermediate body inline
+/// (via `infer_step::Sequential`'s async loop) and returns the type of the last expression.
+/// Intermediate dict bodies extend the env; the last body's type is the Sequential's type.
 ///
-/// `Sequential` is produced by the parser for multi-body fn bodies. We construct a
-/// fn with three body expressions (`1`, `3.14`, `"last"`) — the Fn node's body is
-/// `Sequential([1, 3.14, "last"])`. After `AfterFnBody` runs, the ret type is from
-/// `Sequential`, which must be `StringLiteral("last")`.
+/// `Sequential` is produced by the parser for multi-body fn bodies. We construct a fn
+/// with a dict intermediate body `[a: 1]` and a string last body `"last"`. After
+/// `AfterFnBody` runs, the fn return type must be `StringLiteral("last")`.
 ///
-/// Mutation target: if `AfterSequentialExpr` returned the type of the FIRST expression
-/// instead of the last, the ret type of the fn would be `IntLiteral(1)` not
-/// `StringLiteral("last")`, and the inner `match &ty { Function { ret, .. } }` assertion
-/// would fail.
+/// Mutation target: if Sequential returned the type of the FIRST expression instead of
+/// the last, the ret type would be `Dict(a: IntLiteral(1))` not `StringLiteral("last")`.
 #[tokio::test]
 async fn test_cek_sequential_expr_returns_last_type() {
-    // [fn [let x] 1  3.14  "last"] — multi-body fn: parser wraps the body in Sequential.
-    // The fn body Sequential([1, 3.14, "last"]) exercises AfterSequentialExpr.
-    let src = "[fn [let x] 1  3.14  \"last\"]";
+    // [fn [let x] [a: 1]  "last"] — multi-body fn: dict intermediate, string last.
+    let src = "[fn [let x] [a: 1]  \"last\"]";
     let mut program = crate::parse(src, test_file(src)).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
     let node = match &program.documents[0].node.items[0] {
@@ -4548,8 +4491,58 @@ async fn test_cek_sequential_expr_returns_last_type() {
             assert_eq!(
                 ret.as_ref(),
                 &Type::StringLiteral("last".to_string()),
-                "AfterSequentialExpr must return the type of the last expression; \
+                "Sequential must return the type of the last expression; \
                  fn ret must be StringLiteral(\"last\"), got {:?}",
+                ret
+            );
+        }
+        other => panic!("expected Function type from multi-body fn, got {:?}", other),
+    }
+}
+
+/// T-1677 / Test 8b: Sequential env extension — intermediate dict body bindings are visible
+/// to the last expression.
+///
+/// `[fn [let x] [a: 42] a]` — the intermediate body binds `a: 42`; the last expression
+/// references `a`. For this to type-check without error, the env must be extended with `a`'s
+/// scheme before the last expression is evaluated.
+///
+/// Mutation target: if `infer_step::Sequential` passed the original env (without `a`) to the
+/// last expression, `a` would be an undefined variable and `run_typecheck` would return
+/// `Type::Unknown` or emit an error rather than `IntLiteral(42)`.
+#[tokio::test]
+async fn test_cek_sequential_env_extends_to_last_body() {
+    // [fn [let x] [a: 42]  a] — dict intermediate binds a; last body references a.
+    let src = "[fn [let x] [a: 42]  a]";
+    let mut program = crate::parse(src, test_file(src)).unwrap().program;
+    crate::desugar::desugar_surface_program(&mut program);
+    let node = match &program.documents[0].node.items[0] {
+        crate::ast::SurfaceItem::Expr(n) => Arc::clone(n),
+        _ => panic!("expected expression item"),
+    };
+    let env = Arc::new(RwLock::new(crate::env::Env::new()));
+    let mut state = InferState::new();
+    let mut errors: Vec<TypeError> = Vec::new();
+    let mut stack = Vec::new();
+
+    let ty =
+        typecheck_cek::run_typecheck(&node, &env, &mut state, &mut errors, &mut None, &mut stack)
+            .await;
+
+    assert!(
+        errors.is_empty(),
+        "env extension must make `a` visible to the last body — no type errors expected, got: {:?}",
+        errors
+    );
+
+    // The fn's return type must be IntLiteral(42): the type of `a` from the intermediate dict.
+    match &ty {
+        Type::Function { ret, .. } => {
+            assert_eq!(
+                ret.as_ref(),
+                &Type::IntLiteral(42),
+                "Sequential env extension must make a: 42 visible; \
+                 fn ret must be IntLiteral(42), got {:?}",
                 ret
             );
         }

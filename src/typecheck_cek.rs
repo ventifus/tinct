@@ -28,8 +28,8 @@ use crate::env::Env;
 use crate::type_def::{Row, RowTail, TyConDef};
 use crate::type_infer::Substitution;
 use crate::types::{
-    generalize_with_doc, instantiate_at_level, instantiate_scheme, unify, Constraint, InferState,
-    Kind, Type, TypeAlias, TypeEnv, TypeError, TypeScheme,
+    generalize, generalize_with_doc, instantiate_at_level, instantiate_scheme, unify, Constraint,
+    InferState, Kind, Type, TypeAlias, TypeEnv, TypeError, TypeScheme,
 };
 
 use super::{typecheck_annot, typecheck_call, typecheck_narrow, TypeMap};
@@ -195,12 +195,6 @@ pub(crate) enum TypeCheckCont {
         errors: Vec<TypeError>,
         enclosing_level: u32,
         span: Span,
-    },
-
-    /// After inferring one sequential expression, continue with the next.
-    AfterSequentialExpr {
-        remaining: Vec<Arc<SurfaceNode>>,
-        env: Arc<RwLock<Env>>,
     },
 
     /// After inferring the inner expression of a TypeAssert, validate against expected type.
@@ -406,7 +400,7 @@ async fn infer_step(
             }
         }
 
-        // ===== Sequential — compound: evaluate first, then chain =====
+        // ===== Sequential — compound: process intermediate bodies inline, extending env =====
         SurfaceExpression::Sequential(exprs) => {
             if exprs.is_empty() {
                 return TypeCheckAction::Done(Type::Dict(Row {
@@ -417,13 +411,83 @@ async fn infer_step(
             if exprs.len() == 1 {
                 return TypeCheckAction::Eval(Arc::clone(&exprs[0]), Arc::clone(env));
             }
-            let first = Arc::clone(&exprs[0]);
-            let remaining: Vec<Arc<SurfaceNode>> = exprs[1..].iter().map(Arc::clone).collect();
-            stack.push(TypeCheckCont::AfterSequentialExpr {
-                remaining,
-                env: Arc::clone(env),
-            });
-            TypeCheckAction::Eval(first, Arc::clone(env))
+
+            // Process all intermediate bodies (all but last) inline, extending env after each
+            let mut current_env = Arc::clone(env);
+            let intermediates = &exprs[0..exprs.len() - 1];
+            let last = &exprs[exprs.len() - 1];
+
+            for intermediate in intermediates {
+                // Check if this is a dict — if so, use run_typecheck_dict for proper letrec
+                if let SurfaceExpression::Dict(entries) = &intermediate.expr {
+                    let (_, schemes, mut dict_errs) = run_typecheck_dict(
+                        entries,
+                        &current_env,
+                        state,
+                        type_map,
+                        intermediate.span.clone(),
+                    )
+                    .await;
+                    errors.append(&mut dict_errs);
+
+                    // Extend env with schemes (preserving let-polymorphism)
+                    let mut new_env_inner = Env::with_parent(Arc::clone(&current_env));
+                    for (name, scheme) in &schemes {
+                        new_env_inner.insert_scheme(name.clone(), scheme.clone());
+                    }
+                    super::register_type_aliases_env(
+                        intermediate,
+                        &mut new_env_inner,
+                        state,
+                        errors,
+                    );
+                    current_env = Arc::new(RwLock::new(new_env_inner));
+                } else {
+                    // Non-dict intermediate: increment level, infer, restore level
+                    let enclosing_level = state.level;
+                    state.level += 1;
+
+                    let ty = Box::pin(run_typecheck(
+                        intermediate,
+                        &current_env,
+                        state,
+                        errors,
+                        type_map,
+                        &mut Vec::new(),
+                    ))
+                    .await;
+
+                    state.level = enclosing_level;
+
+                    // If result is a Dict, generalize fields and extend env
+                    match &ty {
+                        Type::Dict(Row { fields, .. }) => {
+                            let mut new_env_inner = Env::with_parent(Arc::clone(&current_env));
+                            for (name, field_ty) in fields {
+                                let scheme = generalize(enclosing_level, field_ty, state);
+                                new_env_inner.insert_scheme(name.clone(), scheme);
+                            }
+                            super::register_type_aliases_env(
+                                intermediate,
+                                &mut new_env_inner,
+                                state,
+                                errors,
+                            );
+                            current_env = Arc::new(RwLock::new(new_env_inner));
+                        }
+                        Type::Unknown | Type::Any => {
+                            // Type::Unknown: gradual type / inference failed — skip
+                            // Type::Any: TypeAlias declaration, no dict type — skip
+                        }
+                        _ => {
+                            errors.push(TypeError::not_a_record(&ty, intermediate.span.clone()));
+                        }
+                    }
+                }
+            }
+
+            // Return Eval action for the last expression with the extended env
+            TypeCheckAction::Eval(Arc::clone(last), current_env)
         }
 
         // ===== Call — compound: handle special cases inline, else eval func first =====
@@ -991,24 +1055,6 @@ async fn apply_cont(
                 // SCC wiring. Full SCC processing is done by run_typecheck_dict, not via this
                 // continuation. This arm should never be reached in the current implementation.
                 TypeCheckAction::Done(Type::Unknown)
-            }
-        }
-
-        // ===== AfterSequentialExpr =====
-        TypeCheckCont::AfterSequentialExpr { remaining, env } => {
-            if remaining.is_empty() {
-                TypeCheckAction::Done(child_ty)
-            } else if remaining.len() == 1 {
-                TypeCheckAction::Eval(Arc::clone(&remaining[0]), env)
-            } else {
-                let next = Arc::clone(&remaining[0]);
-                let new_remaining: Vec<Arc<SurfaceNode>> =
-                    remaining[1..].iter().map(Arc::clone).collect();
-                stack.push(TypeCheckCont::AfterSequentialExpr {
-                    remaining: new_remaining,
-                    env: Arc::clone(&env),
-                });
-                TypeCheckAction::Eval(next, env)
             }
         }
 
@@ -2883,13 +2929,13 @@ pub(crate) async fn entry_key_name(
 /// Returns `(record_type, schemes, errors)` where:
 /// - `record_type` is the inferred `Type::Dict(...)` for the dict literal
 /// - `schemes` is an `IndexMap<String, TypeScheme>` of per-entry generalized schemes (needed
-///   by `typecheck_surface_document` for cross-document scoping and by `Sequential` for
+///   by `process_document` for cross-document scoping and by `Sequential` for
 ///   let-polymorphism across multi-body function steps)
 /// - `errors` is the accumulated vector of type errors (inference is best-effort)
 ///
 /// Called by:
 /// - `AfterDictPassZero` handler (dict expressions encountered during CEK run_typecheck)
-/// - `typecheck_surface_document` (top-level dict expressions in a document)
+/// - `process_document` (top-level dict expressions in a document)
 /// - `run_typecheck`'s Sequential arm (intermediate dict bodies in multi-body functions)
 ///
 /// Tracked by T-1644.

@@ -2,7 +2,7 @@
 //!
 //! Dict inference is fully implemented in `typecheck_cek::run_typecheck_dict`, called from:
 //!   - `AfterDictPassZero` handler in `typecheck_cek::apply_cont`
-//!   - `typecheck_surface_document` (top-level dict expressions)
+//!   - `process_document` (top-level dict expressions)
 //!   - `run_typecheck` Sequential arm (intermediate dict bodies via CEK machine)
 
 #[cfg(test)]

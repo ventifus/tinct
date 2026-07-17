@@ -2418,24 +2418,14 @@ pub(crate) fn builtin_typecheck_doc(
             (state, type_map, parent_env)
         };
 
-        // Call typecheck_surface_document directly to capture the resulting env.
-        // typecheck_surface_document returns (doc_env, result_type, errors) where doc_env is
-        // a child of parent_env extended with type schemes for this document's bindings.
-        // Writing doc_env back to guard.inference_env accumulates type knowledge across
-        // documents so that bindings from document N are visible when type-checking document N+1.
-        let pipeline_type = crate::types::Type::Dict(crate::types::Row {
-            fields: indexmap::IndexMap::new(),
-            tail: crate::type_def::RowTail::Empty,
-        });
-        let named_types = std::collections::HashMap::new();
-        let (doc_env, _result_type, errors) = crate::typecheck::typecheck_surface_document(
+        // process_document processes all items in source order, extends env with schemes from
+        // the last dict body, and returns (doc_env, result_type, errors).
+        let (doc_env, _result_type, errors) = crate::typecheck::process_document(
             &doc_arc,
             &parent_env,
             &mut state,
             &mut type_map,
             &mut None,
-            &pipeline_type,
-            &named_types,
         )
         .await;
 

@@ -282,7 +282,7 @@ pub struct InferState {
     /// different `[type ...]` declarations produces a W042 diagnostic on the second occurrence.
     pub registered_nominal_tags: HashMap<String, Span>,
     /// TypeAnnotationTable for nested TypeAssert nodes: keyed by NodeId of the TypeAssert Arc<SurfaceNode>.
-    /// Populated by the CEK machine's TypeAssert handler. Extracted by typecheck_surface_document
+    /// Populated by the CEK machine's TypeAssert handler. Extracted by process_document
     /// to merge into the document-level annotation table.
     pub type_annotation_table: crate::ast::TypeAnnotationTable,
     /// Resolved types for pipeline `expects:` contracts, keyed by the expects annotation's span.

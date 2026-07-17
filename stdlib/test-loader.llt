@@ -339,6 +339,27 @@
     0: _fundamental-base-tc
     _: _fundamental-base-tc]
 
+  # ── Pragma helpers ───────────────────────────────────────────────────────────
+  # pragma-no-prelude?: true if the first document in a parsed state carries
+  #   pragma: ["no-prelude"]
+  # Evaluated against root-scope-id so pragma values must be plain literals.
+  _has-no-prelude-pragma: [fn [let pragmas n i]
+    [match [builtin-int-gte i n]
+      0: [match [builtin-eq-string [get-or "" i pragmas] "no-prelude"]
+           0: [_has-no-prelude-pragma pragmas n [builtin-int-add i 1]]
+           _: 1]  # found
+      _: 0]]     # exhausted — not found
+
+  pragma-no-prelude?: [fn [let state]
+    [match [builtin-eq-int [builtin-dict-length state.errors] 0]
+      0: 0  # parse failed — treat as no pragma
+      _: [let docs state.parsed.documents]
+         [match [builtin-eq-int [builtin-dict-length docs] 0]
+           0: 0  # no documents
+           _: [meta: [builtin-doc-meta [builtin-get 0 docs] root-scope-id]]
+              [pragmas: [get-or [] "pragma" meta]]
+              [_has-no-prelude-pragma pragmas [builtin-dict-length pragmas] 0]]]]
+
   # ── Pipeline infrastructure ──────────────────────────────────────────────────
   # if-ok: pipeline combinator. Used as [prev-state | [if-ok f pre-args...]].
   # The | operator appends prev-state as the last positional arg, so if-ok receives
@@ -628,15 +649,21 @@
   # No builtin-try at this level — eval-docs captures errors as data internally.
   run-test-pipeline: [fn [let source path prelude-scope-id]
     [capture: [make-string-handle]]
-    [base-scope-id: [builtin-scope-new prelude-scope-id
+    # Parse first so pragma headers are available before the scope is constructed.
+    [parsed-state: [[path: path  errors: []]
+                    | [if-ok load-from-string source]
+                    | [if-ok parse-source]]]
+    # pragma: ["no-prelude"] → use root-scope-id (no prelude); default → prelude.
+    [parent-scope: [match [pragma-no-prelude? parsed-state]
+                     0: prelude-scope-id
+                     _: root-scope-id]]
+    [base-scope-id: [builtin-scope-new parent-scope
                       [%cwd:    %cwd
                        %libdir: %libdir
                        %stdout: capture
                        %stderr: %stderr
                        %args:   %args]]]
-    [[path: path  errors: []]
-     | [if-ok load-from-string source]
-     | [if-ok parse-source]
+    [parsed-state
      | [if-ok eval-docs base-scope-id]
      | [if-ok typecheck-docs fundamental-tc base-scope-id]
      | [if-ok format-output]]]
