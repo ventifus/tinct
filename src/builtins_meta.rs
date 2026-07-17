@@ -69,7 +69,7 @@ fn parse_error_to_dict(
     call_span: &crate::ast::Span,
 ) -> ThunkId {
     use crate::ast::{Position, Span};
-    let alloc = |v: Value| ctx.alloc_thunk(Arc::new(Thunk::new_materialized(v, call_span.clone())));
+    let alloc = |v: Value| ctx.alloc_thunk(0, Arc::new(Thunk::value(v, call_span.clone())));
 
     let span_id = match &err.span {
         Some(s) => make_span_dict(s, ctx, call_span),
@@ -274,75 +274,15 @@ pub(crate) fn builtin_try(
         if args.len() != 1 {
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
-        let func_val = ctx
-            .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
-
-        let call_result = match func_val {
-            Value::Function {
-                params,
-                body,
-                closure_env_id,
-                ..
-            } => {
-                if !params.is_empty() {
-                    return Err(EvalError::type_mismatch_ctx(
-                        "try".to_string(),
-                        "zero-argument function",
-                        &format!("{}-parameter function", params.len()),
-                        call_span.clone(),
-                    )
-                    .into());
-                }
-                // Use invoke_function for correct scope chain handling.
-                // The fn body must evaluate with a proper call frame (alloc_child of closure),
-                // not directly in the closure scope — the resolver expects one extra scope level.
-                let result_thunk = crate::eval_call::invoke_function(&crate::eval::CallContext {
-                    params: &params,
-                    body: &body,
-                    closure_env_id,
-                    positional: &[],
-                    named: None,
-                    default_env_id: closure_env_id,
-                    call_span: call_span.clone(),
-                    origin: None,
-                    ctx: &ctx,
-                })
-                .await
-                .map_err(|e| e)?;
-                materialize(&result_thunk, Some(&call_span), &ctx).await
-            }
-            Value::Builtin(def) => {
-                let builtin_args = BuiltinArgs {
-                    args: vec![],
-                    named: None,
-                    call_span: call_span.clone(),
-                    caller_env_id: 0,
-                    ctx: Arc::clone(&ctx),
-                };
-                match (def.func)(builtin_args).await {
-                    Ok(thunk) => materialize(&thunk, Some(&call_span), &ctx).await,
-                    Err(e) => Err(e),
-                }
-            }
-            _ => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "try".to_string(),
-                    "Function",
-                    func_val.type_name(),
-                    call_span.clone(),
-                )
-                .into())
-            }
-        };
+        let arg_thunk = ctx.get_thunk(args[0]);
+        let call_result = materialize(&arg_thunk, Some(&call_span), &ctx).await;
 
         match call_result {
             Ok(val) => {
                 // Success: {ok: value}. Caller uses [builtin-has-key? "ok" raw] to discriminate.
                 // Both success and failure return Dicts so builtin-has-key? is always safe.
                 let mut map = IndexMap::new();
-                let val_tid = ctx.alloc_thunk(ok_val(val, call_span.clone())?);
+                let val_tid = ctx.alloc_thunk(0, ok_val(val, call_span.clone())?);
                 map.insert(HashableValue::Str("ok".into()), val_tid);
                 ok_val(Value::Dict(map), call_span)
             }
@@ -355,7 +295,7 @@ pub(crate) fn builtin_try(
                 // Failure: {error: message}
                 let mut map = IndexMap::new();
                 let err_tid =
-                    ctx.alloc_thunk(ok_val(string_val(&e.to_string()), call_span.clone())?);
+                    ctx.alloc_thunk(0, ok_val(string_val(&e.to_string()), call_span.clone())?);
                 map.insert(HashableValue::Str("error".into()), err_tid);
                 ok_val(Value::Dict(map), call_span)
             }
@@ -377,8 +317,8 @@ pub(crate) fn builtin_until(
             args,
             named,
             call_span,
+            caller_env_id,
             ctx,
-            ..
         } = ctx_arg;
         reject_named("until", named.as_ref(), call_span.clone())?;
         if args.len() != 3 {
@@ -395,19 +335,18 @@ pub(crate) fn builtin_until(
         let pred_fn_val = materialize(&pred_thunk, Some(&call_span), &ctx).await?;
         let pred_matchable_binding = crate::eval::resolve_matchable_binding_from_fn(&pred_fn_val);
         // Wrap the materialized predicate back into a thunk for use in pending calls.
-        let pred_thunk = Arc::new(Thunk::new_materialized(pred_fn_val, call_span.clone()));
+        let pred_thunk = Arc::new(Thunk::value(pred_fn_val, call_span.clone()));
 
         loop {
             // Create a pending call to pred(val) and materialize it.
-            // T-1558: alloc ThunkIds for func and args; use ctx.current_env_id as caller env.
-            let pred_id = ctx.alloc_thunk(Arc::clone(&pred_thunk));
-            let val_id = ctx.alloc_thunk(Arc::clone(&val_thunk));
-            let pred_result = Arc::new(Thunk::new_pending_call(
+            let pred_id = ctx.alloc_thunk(0, Arc::clone(&pred_thunk));
+            let val_id = ctx.alloc_thunk(0, Arc::clone(&val_thunk));
+            let pred_result = Arc::new(Thunk::fn_call(
                 pred_id,
                 vec![val_id],
                 IndexMap::new(),
                 call_span.clone(),
-                ctx.current_env_id,
+                caller_env_id,
                 val_thunk.span.clone(),
                 Some(Arc::from("until")),
                 Arc::clone(&ctx),
@@ -433,14 +372,14 @@ pub(crate) fn builtin_until(
             } else {
                 // Predicate doesn't hold yet, apply f and materialize to get next value.
                 // T-1558: alloc ThunkIds for func and arg.
-                let f_id = ctx.alloc_thunk(Arc::clone(&f_thunk));
-                let val_id = ctx.alloc_thunk(Arc::clone(&val_thunk));
-                let f_result = Arc::new(Thunk::new_pending_call(
+                let f_id = ctx.alloc_thunk(0, Arc::clone(&f_thunk));
+                let val_id = ctx.alloc_thunk(0, Arc::clone(&val_thunk));
+                let f_result = Arc::new(Thunk::fn_call(
                     f_id,
                     vec![val_id],
                     IndexMap::new(),
                     call_span.clone(),
-                    ctx.current_env_id,
+                    caller_env_id,
                     call_span.clone(),
                     Some(Arc::from("until")),
                     Arc::clone(&ctx),
@@ -450,7 +389,7 @@ pub(crate) fn builtin_until(
                 // Eagerly materialize f(val) and re-wrap as a thunk for the next iteration
                 // This breaks the thunk chain and prevents stack overflow
                 let f_val = materialize(&f_result, Some(&call_span), &ctx).await?;
-                val_thunk = Arc::new(Thunk::new_materialized(f_val, call_span.clone()));
+                val_thunk = Arc::new(Thunk::value(f_val, call_span.clone()));
             }
         }
     })
@@ -591,8 +530,8 @@ pub(crate) fn builtin_apply(
             args,
             named,
             call_span,
+            caller_env_id,
             ctx,
-            ..
         } = ctx_arg;
         // Return a PendingBuiltin thunk that wraps builtin_apply_impl.
         // When materialized, the PendingBuiltin handler will use BuiltinForceArg
@@ -605,7 +544,7 @@ pub(crate) fn builtin_apply(
         } else {
             named
         };
-        Ok(Arc::new(Thunk::new_pending_builtin(
+        Ok(Arc::new(Thunk::builtin_call(
             // force_count=2: pre-materialize both args[0] (function) and args[1] (args-dict)
             // before calling builtin_apply_impl, which uses try_get_materialized().expect(...).
             builtin!("builtin-apply", builtin_apply_impl, [], 2),
@@ -613,7 +552,7 @@ pub(crate) fn builtin_apply(
             named_opt,
             call_span,
             Some(Arc::from("apply")),
-            ctx.current_env_id, // T-1558: caller_env_id
+            caller_env_id,
             ctx,
         )))
     })
@@ -732,10 +671,10 @@ pub(crate) fn builtin_macro_injects(
         // Build an integer-keyed Dict of inject names
         let mut dict = IndexMap::new();
         for (i, name) in inject_names.iter().enumerate() {
-            let id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                string_val(name),
-                call_span.clone(),
-            )));
+            let id = ctx.alloc_thunk(
+                0,
+                Arc::new(Thunk::value(string_val(name), call_span.clone())),
+            );
             dict.insert(HashableValue::Int(i as i64), id);
         }
         ok_val(Value::Dict(dict), call_span)
@@ -893,19 +832,25 @@ pub(crate) fn builtin_ast_of(
             let mut entries = IndexMap::new();
             entries.insert(
                 crate::value::HashableValue::Str("type".into()),
-                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                    string_val("pending-builtin"),
-                    call_span.clone(),
-                ))),
+                ctx.alloc_thunk(
+                    0,
+                    Arc::new(crate::value::Thunk::value(
+                        string_val("pending-builtin"),
+                        call_span.clone(),
+                    )),
+                ),
             );
             entries.insert(
                 crate::value::HashableValue::Str("name".into()),
-                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                    string_val(def.name),
-                    call_span.clone(),
-                ))),
+                ctx.alloc_thunk(
+                    0,
+                    Arc::new(crate::value::Thunk::value(
+                        string_val(def.name),
+                        call_span.clone(),
+                    )),
+                ),
             );
-            return Ok(Arc::new(crate::value::Thunk::new_materialized(
+            return Ok(Arc::new(crate::value::Thunk::value(
                 crate::value::Value::Dict(entries),
                 call_span,
             )));
@@ -916,12 +861,15 @@ pub(crate) fn builtin_ast_of(
             let mut entries = IndexMap::new();
             entries.insert(
                 crate::value::HashableValue::Str("type".into()),
-                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                    string_val("pending-call"),
-                    call_span.clone(),
-                ))),
+                ctx.alloc_thunk(
+                    0,
+                    Arc::new(crate::value::Thunk::value(
+                        string_val("pending-call"),
+                        call_span.clone(),
+                    )),
+                ),
             );
-            return Ok(Arc::new(crate::value::Thunk::new_materialized(
+            return Ok(Arc::new(crate::value::Thunk::value(
                 crate::value::Value::Dict(entries),
                 call_span,
             )));
@@ -932,42 +880,54 @@ pub(crate) fn builtin_ast_of(
             let mut entries = IndexMap::new();
             entries.insert(
                 crate::value::HashableValue::Str("type".into()),
-                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                    string_val("thunk"),
-                    call_span.clone(),
-                ))),
+                ctx.alloc_thunk(
+                    0,
+                    Arc::new(crate::value::Thunk::value(
+                        string_val("thunk"),
+                        call_span.clone(),
+                    )),
+                ),
             );
             entries.insert(
                 crate::value::HashableValue::Str("state".into()),
-                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                    string_val("guarded"),
-                    call_span.clone(),
-                ))),
+                ctx.alloc_thunk(
+                    0,
+                    Arc::new(crate::value::Thunk::value(
+                        string_val("guarded"),
+                        call_span.clone(),
+                    )),
+                ),
             );
-            return Ok(Arc::new(crate::value::Thunk::new_materialized(
+            return Ok(Arc::new(crate::value::Thunk::value(
                 crate::value::Value::Dict(entries),
                 call_span,
             )));
         }
 
         // Check for InProgress
-        if thunk.is_in_progress() {
+        if matches!(thunk.state(), crate::value::ThunkState::InProgress { .. }) {
             let mut entries = IndexMap::new();
             entries.insert(
                 crate::value::HashableValue::Str("type".into()),
-                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                    string_val("thunk"),
-                    call_span.clone(),
-                ))),
+                ctx.alloc_thunk(
+                    0,
+                    Arc::new(crate::value::Thunk::value(
+                        string_val("thunk"),
+                        call_span.clone(),
+                    )),
+                ),
             );
             entries.insert(
                 crate::value::HashableValue::Str("state".into()),
-                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                    string_val("in-progress"),
-                    call_span.clone(),
-                ))),
+                ctx.alloc_thunk(
+                    0,
+                    Arc::new(crate::value::Thunk::value(
+                        string_val("in-progress"),
+                        call_span.clone(),
+                    )),
+                ),
             );
-            return Ok(Arc::new(crate::value::Thunk::new_materialized(
+            return Ok(Arc::new(crate::value::Thunk::value(
                 crate::value::Value::Dict(entries),
                 call_span,
             )));
@@ -978,26 +938,35 @@ pub(crate) fn builtin_ast_of(
             let mut entries = IndexMap::new();
             entries.insert(
                 crate::value::HashableValue::Str("type".into()),
-                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                    string_val("thunk"),
-                    call_span.clone(),
-                ))),
+                ctx.alloc_thunk(
+                    0,
+                    Arc::new(crate::value::Thunk::value(
+                        string_val("thunk"),
+                        call_span.clone(),
+                    )),
+                ),
             );
             entries.insert(
                 crate::value::HashableValue::Str("state".into()),
-                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                    string_val("failed"),
-                    call_span.clone(),
-                ))),
+                ctx.alloc_thunk(
+                    0,
+                    Arc::new(crate::value::Thunk::value(
+                        string_val("failed"),
+                        call_span.clone(),
+                    )),
+                ),
             );
             entries.insert(
                 crate::value::HashableValue::Str("error".into()),
-                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                    string_val(&err.kind.to_string()),
-                    call_span.clone(),
-                ))),
+                ctx.alloc_thunk(
+                    0,
+                    Arc::new(crate::value::Thunk::value(
+                        string_val(&err.kind.to_string()),
+                        call_span.clone(),
+                    )),
+                ),
             );
-            return Ok(Arc::new(crate::value::Thunk::new_materialized(
+            return Ok(Arc::new(crate::value::Thunk::value(
                 crate::value::Value::Dict(entries),
                 call_span,
             )));
@@ -1005,7 +974,7 @@ pub(crate) fn builtin_ast_of(
 
         // Check for Surface (runtime-v2: return Expr.* variant)
         if let Some(node) = thunk.peek_surface_node() {
-            return Ok(Arc::new(crate::value::Thunk::new_materialized(
+            return Ok(Arc::new(crate::value::Thunk::value(
                 crate::surface_convert::surface_node_to_expr_variant(&node, &ctx),
                 call_span,
             )));
@@ -1013,7 +982,7 @@ pub(crate) fn builtin_ast_of(
 
         // Check for AstNodeField (runtime-v2: return the containing SurfaceNode as Expr.* variant)
         if let Some((node, _field)) = thunk.peek_ast_node_field() {
-            return Ok(Arc::new(crate::value::Thunk::new_materialized(
+            return Ok(Arc::new(crate::value::Thunk::value(
                 crate::surface_convert::surface_node_to_expr_variant(&node, &ctx),
                 call_span,
             )));
@@ -1043,10 +1012,13 @@ pub(crate) fn builtin_ast_of(
                 // type: "fn"
                 dict.insert(
                     HashableValue::Str("type".into()),
-                    ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                        string_val("fn"),
-                        call_span.clone(),
-                    ))),
+                    ctx.alloc_thunk(
+                        0,
+                        Arc::new(crate::value::Thunk::value(
+                            string_val("fn"),
+                            call_span.clone(),
+                        )),
+                    ),
                 );
 
                 // doc: string or empty string
@@ -1056,10 +1028,13 @@ pub(crate) fn builtin_ast_of(
                     .unwrap_or("");
                 dict.insert(
                     HashableValue::Str("doc".into()),
-                    ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                        string_val(doc_str),
-                        call_span.clone(),
-                    ))),
+                    ctx.alloc_thunk(
+                        0,
+                        Arc::new(crate::value::Thunk::value(
+                            string_val(doc_str),
+                            call_span.clone(),
+                        )),
+                    ),
                 );
 
                 // return-ann: annotation dict or empty dict (null)
@@ -1069,10 +1044,13 @@ pub(crate) fn builtin_ast_of(
                         call_span.clone(),
                         &ctx,
                     )?,
-                    None => ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                        Value::Dict(IndexMap::new()),
-                        call_span.clone(),
-                    ))),
+                    None => ctx.alloc_thunk(
+                        0,
+                        Arc::new(crate::value::Thunk::value(
+                            Value::Dict(IndexMap::new()),
+                            call_span.clone(),
+                        )),
+                    ),
                 };
                 dict.insert(HashableValue::Str("return-ann".into()), return_ann_tid);
 
@@ -1083,10 +1061,13 @@ pub(crate) fn builtin_ast_of(
                         let mut param_dict = IndexMap::new();
                         param_dict.insert(
                             HashableValue::Str("name".into()),
-                            ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                                string_val(&p.name),
-                                call_span.clone(),
-                            ))),
+                            ctx.alloc_thunk(
+                                0,
+                                Arc::new(crate::value::Thunk::value(
+                                    string_val(&p.name),
+                                    call_span.clone(),
+                                )),
+                            ),
                         );
                         if let Some(ann) = &p.annotation {
                             let ann_tid = crate::surface_convert::annotation_to_thunk_id(
@@ -1096,12 +1077,13 @@ pub(crate) fn builtin_ast_of(
                             )?;
                             param_dict.insert(HashableValue::Str("annotation".into()), ann_tid);
                         }
-                        Ok(
-                            ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
+                        Ok(ctx.alloc_thunk(
+                            0,
+                            Arc::new(crate::value::Thunk::value(
                                 Value::Dict(param_dict),
                                 call_span.clone(),
-                            ))),
-                        )
+                            )),
+                        ))
                     })
                     .collect::<crate::error::EvalResult<Vec<_>>>()?;
 
@@ -1112,7 +1094,7 @@ pub(crate) fn builtin_ast_of(
                 )?;
                 dict.insert(HashableValue::Str("params".into()), params_tid);
 
-                return Ok(Arc::new(crate::value::Thunk::new_materialized(
+                return Ok(Arc::new(crate::value::Thunk::value(
                     Value::Dict(dict),
                     call_span,
                 )));
@@ -1141,7 +1123,7 @@ pub(crate) fn builtin_ast_of(
                 }
             };
 
-            return Ok(Arc::new(crate::value::Thunk::new_materialized(
+            return Ok(Arc::new(crate::value::Thunk::value(
                 crate::surface_convert::surface_node_to_expr_variant(&synthetic_node, &ctx),
                 call_span,
             )));
@@ -1382,8 +1364,10 @@ pub(crate) fn builtin_var_resolution(
                         return Some(r);
                     }
                     for arm in arms {
-                        if let Some(r) = find_in_node(&arm.body, offset) {
-                            return Some(r);
+                        for body_expr in &arm.body {
+                            if let Some(r) = find_in_node(body_expr, offset) {
+                                return Some(r);
+                            }
                         }
                     }
                 }
@@ -1407,8 +1391,7 @@ pub(crate) fn builtin_var_resolution(
             found
         });
 
-        let alloc =
-            |v: Value| ctx.alloc_thunk(Arc::new(Thunk::new_materialized(v, call_span.clone())));
+        let alloc = |v: Value| ctx.alloc_thunk(0, Arc::new(Thunk::value(v, call_span.clone())));
         match found {
             None => ok_val(Value::Dict(IndexMap::new()), call_span),
             Some((level, slot)) => {
@@ -1471,10 +1454,10 @@ pub(crate) fn builtin_annotation_of(
                     if let Some(ref doc_str) = ann.doc {
                         entries.insert(
                             HashableValue::Str("doc".into()),
-                            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                                string_val(doc_str),
-                                call_span.clone(),
-                            ))),
+                            ctx.alloc_thunk(
+                                0,
+                                Arc::new(Thunk::value(string_val(doc_str), call_span.clone())),
+                            ),
                         );
                     }
                     // Expose the return annotation as a string representation of the return type.
@@ -1488,10 +1471,10 @@ pub(crate) fn builtin_annotation_of(
                     if let Some(s) = return_str {
                         entries.insert(
                             HashableValue::Str("return".into()),
-                            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                                string_val(&s),
-                                call_span.clone(),
-                            ))),
+                            ctx.alloc_thunk(
+                                0,
+                                Arc::new(Thunk::value(string_val(&s), call_span.clone())),
+                            ),
                         );
                     }
                     // Flatten all extra fields into the dict (includes evaluated `doc`).
@@ -1500,10 +1483,10 @@ pub(crate) fn builtin_annotation_of(
                     for (key, extra_val) in &ann.extra {
                         entries.insert(
                             HashableValue::Str(key.as_str().into()),
-                            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                                extra_val.clone(),
-                                call_span.clone(),
-                            ))),
+                            ctx.alloc_thunk(
+                                0,
+                                Arc::new(Thunk::value(extra_val.clone(), call_span.clone())),
+                            ),
                         );
                     }
                 }
@@ -1783,10 +1766,8 @@ pub(crate) fn builtin_scopes(
         }; // borrow dropped here
         let mut result: IndexMap<HashableValue, ThunkId> = IndexMap::new();
         for (i, parent_val) in pairs {
-            let thunk_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                parent_val,
-                call_span.clone(),
-            )));
+            let thunk_id =
+                ctx.alloc_thunk(0, Arc::new(Thunk::value(parent_val, call_span.clone())));
             result.insert(HashableValue::Int(i as i64), thunk_id);
         }
         ok_val(Value::Dict(result), call_span)
@@ -1997,10 +1978,10 @@ pub(crate) fn builtin_scope_names(
         }; // borrow dropped here
         let mut result: IndexMap<HashableValue, ThunkId> = IndexMap::new();
         for (name, slot) in named_pairs {
-            let thunk_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Int(slot as i64),
-                call_span.clone(),
-            )));
+            let thunk_id = ctx.alloc_thunk(
+                0,
+                Arc::new(Thunk::value(Value::Int(slot as i64), call_span.clone())),
+            );
             result.insert(HashableValue::Str(name.into()), thunk_id);
         }
         ok_val(Value::Dict(result), call_span)
@@ -2167,8 +2148,7 @@ pub(crate) fn builtin_parse(
         };
 
         // Build the integer-keyed errors Dict.
-        let alloc =
-            |v: Value| ctx.alloc_thunk(Arc::new(Thunk::new_materialized(v, call_span.clone())));
+        let alloc = |v: Value| ctx.alloc_thunk(0, Arc::new(Thunk::value(v, call_span.clone())));
         let mut errors_dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
         for (i, pe) in all_parse_errors.iter().enumerate() {
             let err_id = parse_error_to_dict(pe, &ctx, &call_span);
@@ -2191,18 +2171,13 @@ pub(crate) fn builtin_parse(
         };
 
         // Return {program: Value::Program, errors: integer-keyed Dict of error dicts}.
-        let program_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            program_value,
-            call_span.clone(),
-        )));
+        let program_id =
+            ctx.alloc_thunk(0, Arc::new(Thunk::value(program_value, call_span.clone())));
         let errors_id = alloc(Value::Dict(errors_dict));
         let mut result: IndexMap<HashableValue, ThunkId> = IndexMap::new();
         result.insert(HashableValue::Str("program".into()), program_id);
         result.insert(HashableValue::Str("errors".into()), errors_id);
-        Ok(Arc::new(Thunk::new_materialized(
-            Value::Dict(result),
-            call_span,
-        )))
+        Ok(Arc::new(Thunk::value(Value::Dict(result), call_span)))
     })
 }
 
@@ -2238,34 +2213,22 @@ pub(crate) fn builtin_resolve(
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
 
-        // arg0: Value::Document ONLY
+        // arg0: Document — TypeAssert on the parameter enforces this at the call boundary.
         let doc_val = ctx
             .get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let doc_arc = match doc_val {
-            Value::Document(d) => d,
-            Value::Program { .. } => {
-                return Err(EvalError::user_error(
-                    "builtin-resolve: Value::Program is no longer accepted — \
-                     resolve per-document instead"
-                        .to_string(),
-                    call_span,
-                )
-                .into());
-            }
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "builtin-resolve".to_string(),
-                    "Document",
-                    other.type_name(),
-                    call_span,
-                )
-                .into());
-            }
+        let doc_arc = if let Value::Document(d) = doc_val {
+            d
+        } else {
+            return Err(EvalError::internal(
+                format!("expected Document, got {}", doc_val.type_name()),
+                call_span,
+            )
+            .into());
         };
 
-        // arg1: Dict — frames in format {0: {name-a: 0, name-b: 1}, 1: {name-c: 5}, ...}
+        // arg1: Map[Int, Map[String, Int]] — structure enforced by TypeAssert on frames parameter.
         let frames_val = ctx
             .get_thunk(args[1])
             .try_get_materialized()
@@ -2273,90 +2236,60 @@ pub(crate) fn builtin_resolve(
         let frames_dict = match frames_val {
             Value::Dict(d) => d,
             other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "builtin-resolve frames".to_string(),
-                    "Dict",
-                    other.type_name(),
+                return Err(EvalError::internal(
+                    format!("frames is not a Dict: {}", other.type_name()),
                     call_span,
                 )
-                .into());
+                .into())
             }
         };
 
-        // Decode frames: outer dict is integer-keyed (scope level indices), inner dict is String key → Int value.
-        // Non-integer outer keys are an error — they indicate a malformed frames dict.
-        let mut frame_entries: Vec<(i64, ThunkId)> = Vec::with_capacity(frames_dict.len());
-        for (k, v) in frames_dict.iter() {
-            match k {
-                HashableValue::Int(i) => {
-                    frame_entries.push((*i, *v));
-                }
-                other => {
-                    return Err(EvalError::user_error(
-                        format!(
-                            "builtin-resolve frames: outer keys must be integers (scope level indices), got {:?}",
-                            other
-                        ),
-                        call_span,
-                    )
-                    .into());
-                }
-            }
-        }
+        // Sort frame entries by integer key so outermost (lowest index) comes first.
+        let mut frame_entries: Vec<(i64, ThunkId)> = frames_dict
+            .iter()
+            .map(|(k, v)| match k {
+                HashableValue::Int(i) => (*i, *v),
+                other => panic!("frames outer key is not Int: {:?}", other),
+            })
+            .collect();
         frame_entries.sort_by_key(|(i, _)| *i);
 
         let mut initial_frames: Vec<indexmap::IndexMap<String, u32>> = Vec::new();
         for (_, frame_tid) in frame_entries {
-            let frame_thunk = ctx.get_thunk(frame_tid);
-            let frame_val = crate::eval::materialize(&frame_thunk, Some(&call_span), &ctx).await?;
-            match frame_val {
-                Value::Dict(inner) => {
-                    let mut frame: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
-                    for (k, v_tid) in &inner {
-                        match k {
-                            HashableValue::Str(name) => {
-                                let slot_thunk = ctx.get_thunk(*v_tid);
-                                let slot_val =
-                                    crate::eval::materialize(&slot_thunk, Some(&call_span), &ctx)
-                                        .await?;
-                                match slot_val {
-                                    Value::Int(slot) => {
-                                        frame.insert(name.to_string(), slot as u32);
-                                    }
-                                    other => {
-                                        return Err(EvalError::type_mismatch_ctx(
-                                            "builtin-resolve frames entry".to_string(),
-                                            "Int (slot)",
-                                            other.type_name(),
-                                            call_span,
-                                        )
-                                        .into());
-                                    }
-                                }
-                            }
-                            other => {
-                                return Err(EvalError::type_mismatch_ctx(
-                                    "builtin-resolve frames key".to_string(),
-                                    "String (name)",
-                                    &format!("{:?}", other),
-                                    call_span,
-                                )
-                                .into());
-                            }
-                        }
-                    }
-                    initial_frames.push(frame);
-                }
+            let frame_val =
+                crate::eval::materialize(&ctx.get_thunk(frame_tid), Some(&call_span), &ctx).await?;
+            let inner = match frame_val {
+                Value::Dict(d) => d,
                 other => {
-                    return Err(EvalError::type_mismatch_ctx(
-                        "builtin-resolve frame".to_string(),
-                        "Dict",
-                        other.type_name(),
+                    return Err(EvalError::internal(
+                        format!("frame entry is not a Dict: {}", other.type_name()),
                         call_span,
                     )
-                    .into());
+                    .into())
                 }
+            };
+            let mut frame: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
+            for (k, v_tid) in &inner {
+                let name = match k {
+                    HashableValue::Str(s) => s,
+                    other => panic!("frame inner key is not Str: {:?}", other),
+                };
+                let slot_val =
+                    crate::eval::materialize(&ctx.get_thunk(*v_tid), Some(&call_span), &ctx)
+                        .await?;
+                let slot = match slot_val {
+                    Value::Int(n) => n,
+                    other => {
+                        return Err(EvalError::internal(
+                            format!("slot index is not Int: {}", other.type_name()),
+                            call_span,
+                        )
+                        .into())
+                    }
+                };
+                frame.insert(name.to_string(), slot as u32);
             }
+            initial_frames.push(frame);
         }
 
         // Resolve the document in-place.
@@ -2372,8 +2305,7 @@ pub(crate) fn builtin_resolve(
             crate::resolve::resolve_surface_document_inplace(&doc_arc, &initial_frames);
 
         // Build errors dict from resolve_errors (undefined variables).
-        let alloc =
-            |v: Value| ctx.alloc_thunk(Arc::new(Thunk::new_materialized(v, call_span.clone())));
+        let alloc = |v: Value| ctx.alloc_thunk(0, Arc::new(Thunk::value(v, call_span.clone())));
         let mut errors_dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
         for (i, (name, span)) in resolve_errors.iter().enumerate() {
             let span_id = make_span_dict(span, &ctx, &call_span);
@@ -2407,14 +2339,17 @@ pub(crate) fn builtin_resolve(
         }
 
         // Return {doc: Value::Document, errors: Dict} — NO scope-frames
-        let doc_thunk_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Document(std::sync::Arc::clone(&doc_arc)),
-            call_span.clone(),
-        )));
-        let errors_thunk_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Dict(errors_dict),
-            call_span.clone(),
-        )));
+        let doc_thunk_id = ctx.alloc_thunk(
+            0,
+            Arc::new(Thunk::value(
+                Value::Document(std::sync::Arc::clone(&doc_arc)),
+                call_span.clone(),
+            )),
+        );
+        let errors_thunk_id = ctx.alloc_thunk(
+            0,
+            Arc::new(Thunk::value(Value::Dict(errors_dict), call_span.clone())),
+        );
         let mut result_dict = indexmap::IndexMap::new();
         result_dict.insert(HashableValue::Str("doc".into()), doc_thunk_id);
         result_dict.insert(HashableValue::Str("errors".into()), errors_thunk_id);
@@ -2489,6 +2424,10 @@ pub(crate) fn builtin_typecheck_doc(
             let mut state = crate::types::InferState::new();
             state.tycon_env = guard.tycon_env.clone();
             state.env = Arc::clone(&guard.inference_env);
+            // Thread the eval context and type-stage env so the type normalizer can
+            // evaluate TypeStageApp nodes (e.g. Integer → TypeNode.Int → Type::Int).
+            state.eval_ctx = Some(Arc::clone(&ctx));
+            state.type_stage_env = Some(Arc::clone(&guard.type_stage_env));
             let type_map = crate::ast::TypeAnnotationTable::new();
             let parent_env = Arc::clone(&guard.inference_env);
             (state, type_map, parent_env)
@@ -2519,7 +2458,6 @@ pub(crate) fn builtin_typecheck_doc(
         // - tycon_env: new type constructor definitions from this document
         // - inference_env: the accumulated doc_env so subsequent documents see this document's
         //   type schemes (Hindley-Milner accumulation across files per TypeContextData doc comment)
-        // - type_errors: accumulated type errors from this document (for observability)
         {
             let mut guard = tc_arc.lock().unwrap();
             for (name, def) in &state.tycon_env {
@@ -2529,11 +2467,44 @@ pub(crate) fn builtin_typecheck_doc(
                     .or_insert_with(|| Arc::clone(def));
             }
             guard.inference_env = doc_env;
-            guard.type_errors.extend(errors);
         }
 
-        // Return the same Document Arc (type annotations written inline)
-        ok_val(Value::Document(doc_arc), call_span)
+        // Return {doc: Document, warnings: {0: {message, span, ...}, ...}}
+        // The init program decides how to handle type errors — they are never silently dropped.
+        let alloc = |v: Value| ctx.alloc_thunk(0, Arc::new(Thunk::value(v, call_span.clone())));
+        let mut warnings_dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+        for (i, err) in errors.iter().enumerate() {
+            let span_id = make_span_dict(&err.span, &ctx, &call_span);
+            let mut w: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+            w.insert(
+                HashableValue::Str("kind".into()),
+                alloc(string_val("type-error")),
+            );
+            w.insert(
+                HashableValue::Str("message".into()),
+                alloc(string_val(&err.message)),
+            );
+            w.insert(HashableValue::Str("span".into()), span_id);
+            let mut notes_dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+            for (j, note) in err.notes.iter().enumerate() {
+                notes_dict.insert(HashableValue::Int(j as i64), alloc(string_val(note)));
+            }
+            w.insert(
+                HashableValue::Str("notes".into()),
+                alloc(Value::Dict(notes_dict)),
+            );
+            warnings_dict.insert(HashableValue::Int(i as i64), alloc(Value::Dict(w)));
+        }
+        let mut result: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+        result.insert(
+            HashableValue::Str("doc".into()),
+            alloc(Value::Document(doc_arc)),
+        );
+        result.insert(
+            HashableValue::Str("warnings".into()),
+            alloc(Value::Dict(warnings_dict)),
+        );
+        ok_val(Value::Dict(result), call_span)
     })
 }
 
@@ -3003,11 +2974,8 @@ pub(crate) fn builtin_program_docs(
             });
         let mut result: IndexMap<HashableValue, ThunkId> = IndexMap::new();
         for (i, doc_arc) in doc_arcs {
-            let doc_thunk = Arc::new(Thunk::new_materialized(
-                Value::Document(doc_arc),
-                call_span.clone(),
-            ));
-            result.insert(HashableValue::Int(i as i64), ctx.alloc_thunk(doc_thunk));
+            let doc_thunk = Arc::new(Thunk::value(Value::Document(doc_arc), call_span.clone()));
+            result.insert(HashableValue::Int(i as i64), ctx.alloc_thunk(0, doc_thunk));
         }
         ok_val(Value::Dict(result), call_span)
     })
@@ -3066,10 +3034,7 @@ pub(crate) fn builtin_doc_expressions(
         for item in &doc_arc.items {
             if let crate::ast::SurfaceItem::Expr(node) = item {
                 let expr_val = crate::surface_convert::surface_node_to_expr_variant(node, &ctx);
-                let id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    expr_val,
-                    call_span.clone(),
-                )));
+                let id = ctx.alloc_thunk(0, Arc::new(Thunk::value(expr_val, call_span.clone())));
                 result.insert(HashableValue::Int(i as i64), id);
                 i += 1;
             }
@@ -3170,7 +3135,7 @@ pub(crate) fn builtin_doc_meta(
                 Ok((thunk, _)) => {
                     result.insert(
                         HashableValue::Str(key.clone().into()),
-                        ctx.alloc_thunk(thunk),
+                        ctx.alloc_thunk(0, thunk),
                     );
                 }
                 Err(e) => return Err(e),
@@ -3214,11 +3179,9 @@ pub(crate) fn builtin_builtin_module(
                 // Convert Vec<BuiltinDef> to a Dict
                 let mut dict_map = IndexMap::new();
                 for def in defs {
-                    let builtin_thunk = Arc::new(Thunk::new_materialized(
-                        Value::Builtin(def),
-                        call_span.clone(),
-                    ));
-                    let thunk_id = ctx.alloc_thunk(builtin_thunk);
+                    let builtin_thunk =
+                        Arc::new(Thunk::value(Value::Builtin(def), call_span.clone()));
+                    let thunk_id = ctx.alloc_thunk(0, builtin_thunk);
                     dict_map.insert(HashableValue::Str(def.name.into()), thunk_id);
                 }
                 ok_val(Value::Dict(dict_map), call_span)
@@ -3341,38 +3304,50 @@ pub(crate) fn builtin_eval(
             Ok((result_thunk, new_scope_id)) => {
                 result_map.insert(
                     HashableValue::Str("result".into()),
-                    ctx.alloc_thunk(result_thunk),
+                    ctx.alloc_thunk(0, result_thunk),
                 );
                 result_map.insert(
                     HashableValue::Str("scope-id".into()),
-                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                        Value::Int(new_scope_id as i64),
-                        call_span.clone(),
-                    ))),
+                    ctx.alloc_thunk(
+                        0,
+                        Arc::new(Thunk::value(
+                            Value::Int(new_scope_id as i64),
+                            call_span.clone(),
+                        )),
+                    ),
                 );
                 result_map.insert(
                     HashableValue::Str("errors".into()),
-                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                        Value::Dict(indexmap::IndexMap::new()), // null = success
-                        call_span.clone(),
-                    ))),
+                    ctx.alloc_thunk(
+                        0,
+                        Arc::new(Thunk::value(
+                            Value::Dict(indexmap::IndexMap::new()), // null = success
+                            call_span.clone(),
+                        )),
+                    ),
                 );
             }
             Err(e) => {
                 let msg = format!("{}", e);
                 result_map.insert(
                     HashableValue::Str("result".into()),
-                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                        Value::Dict(indexmap::IndexMap::new()), // null on error
-                        call_span.clone(),
-                    ))),
+                    ctx.alloc_thunk(
+                        0,
+                        Arc::new(Thunk::value(
+                            Value::Dict(indexmap::IndexMap::new()), // null on error
+                            call_span.clone(),
+                        )),
+                    ),
                 );
                 result_map.insert(
                     HashableValue::Str("scope-id".into()),
-                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                        Value::Int(scope_id as i64), // unchanged input parent scope-id
-                        call_span.clone(),
-                    ))),
+                    ctx.alloc_thunk(
+                        0,
+                        Arc::new(Thunk::value(
+                            Value::Int(scope_id as i64), // unchanged input parent scope-id
+                            call_span.clone(),
+                        )),
+                    ),
                 );
                 // errors: integer-keyed Dict<Int, String> matching builtin-parse/builtin-resolve schema.
                 // {0: String(message)} — non-null Dict so callers can check [null? ev.errors].
@@ -3380,25 +3355,22 @@ pub(crate) fn builtin_eval(
                     indexmap::IndexMap::new();
                 errors_map.insert(
                     HashableValue::Int(0),
-                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                        string_val(&msg),
-                        call_span.clone(),
-                    ))),
+                    ctx.alloc_thunk(
+                        0,
+                        Arc::new(Thunk::value(string_val(&msg), call_span.clone())),
+                    ),
                 );
                 result_map.insert(
                     HashableValue::Str("errors".into()),
-                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                        Value::Dict(errors_map),
-                        call_span.clone(),
-                    ))),
+                    ctx.alloc_thunk(
+                        0,
+                        Arc::new(Thunk::value(Value::Dict(errors_map), call_span.clone())),
+                    ),
                 );
             }
         }
 
-        Ok(Arc::new(Thunk::new_materialized(
-            Value::Dict(result_map),
-            call_span,
-        )))
+        Ok(Arc::new(Thunk::value(Value::Dict(result_map), call_span)))
     })
 }
 
@@ -3564,7 +3536,7 @@ pub(crate) fn builtin_current_env(
         if !args.is_empty() {
             return Err(EvalError::arity_mismatch(0, args.len(), call_span).into());
         }
-        Ok(Arc::new(Thunk::new_materialized(
+        Ok(Arc::new(Thunk::value(
             Value::Int(caller_env_id as i64),
             call_span,
         )))
@@ -3690,10 +3662,9 @@ pub(crate) fn builtin_eval_macro_ast(
             .collect();
 
         // ── Step 6: Evaluate and return the result thunk ──────────────────────
-        let eval_ctx = ctx.with_eval_scope(call_site_env_id);
         let (result_thunk, _root_env_id) = crate::eval::eval_document_exprs_with_env(
             &expression_nodes,
-            &eval_ctx,
+            &ctx,
             Some(call_site_env_id),
         )
         .await?;
@@ -3714,8 +3685,8 @@ pub(crate) fn builtin_eval_types(
             args,
             named,
             call_span,
+            caller_env_id,
             ctx,
-            ..
         } = ctx_arg;
 
         if args.len() != 1 {
@@ -3800,188 +3771,19 @@ pub(crate) fn builtin_eval_types(
         // Build integer-keyed Dict of Surface thunks (one per expression)
         let mut result_dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
         for (i, node) in expression_nodes.into_iter().enumerate() {
-            let surface_thunk = Arc::new(Thunk::new_surface(
+            let surface_thunk = Arc::new(Thunk::surface(
                 node,
                 Arc::new(std::collections::HashMap::new()),
                 Arc::new(std::collections::HashMap::new()),
-                ctx.current_env_id,
+                caller_env_id,
                 Arc::clone(&ctx),
                 call_span.clone(),
             ));
-            let surface_thunk_id = ctx.alloc_thunk(surface_thunk);
+            let surface_thunk_id = ctx.alloc_thunk(0, surface_thunk);
             result_dict.insert(HashableValue::Int(i as i64), surface_thunk_id);
         }
 
         ok_val(Value::Dict(result_dict), call_span)
-    })
-}
-
-/// `include-cache-get`: look up the string-keyed include cache by blake3 key.
-///
-/// Takes 1 positional arg (String key). Returns:
-/// - `IncludeCacheEntry.Missing`       — key not in cache
-/// - `IncludeCacheEntry.Pending`       — key is marked as in-progress (cycle detection)
-/// - `IncludeCacheEntry.Cached value`  — cached result thunk
-pub(crate) fn builtin_include_cache_get(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-            ..
-        } = ctx_arg;
-        let val = crate::builtins::expect_one_arg(
-            "include-cache-get",
-            &args,
-            named.as_ref(),
-            &ctx,
-            call_span.clone(),
-        )?;
-        let key = require_string(
-            "include-cache-get",
-            val,
-            ctx.get_thunk(args[0]).span.clone(),
-        )?;
-
-        let entry = ctx
-            .state
-            .lock()
-            .unwrap()
-            .string_include_cache
-            .get(&key)
-            .cloned();
-
-        match entry {
-            None => ok_val(
-                Value::Variant {
-                    tag: "IncludeCacheEntry.Missing".to_string(),
-                    payload: None,
-                },
-                call_span,
-            ),
-            Some(crate::eval::IncludeCacheEntry::Missing) => ok_val(
-                Value::Variant {
-                    tag: "IncludeCacheEntry.Missing".to_string(),
-                    payload: None,
-                },
-                call_span,
-            ),
-            Some(crate::eval::IncludeCacheEntry::Pending) => ok_val(
-                Value::Variant {
-                    tag: "IncludeCacheEntry.Pending".to_string(),
-                    payload: None,
-                },
-                call_span,
-            ),
-            Some(crate::eval::IncludeCacheEntry::Cached(thunk)) => {
-                let payload_id = ctx.alloc_thunk(Arc::clone(&thunk));
-                ok_val(
-                    Value::Variant {
-                        tag: "IncludeCacheEntry.Cached".to_string(),
-                        payload: Some(payload_id),
-                    },
-                    call_span,
-                )
-            }
-        }
-    })
-}
-
-/// `include-cache-put`: insert or update the string-keyed include cache.
-///
-/// Takes 2 positional args: String key and a value.
-/// The value must be an `IncludeCacheEntry.Missing`, `IncludeCacheEntry.Pending`, or `IncludeCacheEntry.Cached x` Variant.
-/// Returns the stored value (pass-through).
-pub(crate) fn builtin_include_cache_put(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-            ..
-        } = ctx_arg;
-
-        reject_named("include-cache-put", named.as_ref(), call_span.clone())?;
-        if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
-        }
-
-        let arg0_thunk = ctx.get_thunk(args[0]);
-        let arg1_thunk = ctx.get_thunk(args[1]);
-        let key_val = arg0_thunk
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
-        let key = require_string("include-cache-put", key_val, arg0_thunk.span.clone())?;
-
-        // The second arg is the entry variant: [Missing], [Pending], or [Cached value]
-        let entry_val = arg1_thunk
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
-
-        let entry = match &entry_val {
-            Value::Variant { tag, payload } => {
-                // Strip qualifier prefix ("IncludeCacheEntry.Pending" → "Pending") for
-                // compatibility with T-974 qualified variant tags (lower.rs constructor dict).
-                let original_tag = tag.as_str();
-                let tag_name = tag
-                    .strip_prefix("IncludeCacheEntry.")
-                    .unwrap_or(tag.as_str());
-                match tag_name {
-                    "Missing" => crate::eval::IncludeCacheEntry::Missing,
-                    "Pending" => crate::eval::IncludeCacheEntry::Pending,
-                    "Cached" => {
-                        let payload_thunk = match payload {
-                            Some(id) => ctx.get_thunk(*id),
-                            None => {
-                                return Err(EvalError::type_mismatch_ctx(
-                                    "include-cache-put".to_string(),
-                                    "IncludeCacheEntry.Cached value",
-                                    "IncludeCacheEntry.Cached (no payload)",
-                                    arg1_thunk.span.clone(),
-                                )
-                                .into())
-                            }
-                        };
-                        crate::eval::IncludeCacheEntry::Cached(payload_thunk)
-                    }
-                    _ => {
-                        return Err(EvalError::type_mismatch_ctx(
-                            "include-cache-put".to_string(),
-                            "IncludeCacheEntry.Missing | IncludeCacheEntry.Pending | IncludeCacheEntry.Cached value",
-                            original_tag,
-                            arg1_thunk.span.clone(),
-                        )
-                        .into())
-                    }
-                } // close match tag_name
-            }
-            _ => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "include-cache-put".to_string(),
-                    "IncludeCacheEntry.Missing | IncludeCacheEntry.Pending | IncludeCacheEntry.Cached value",
-                    entry_val.type_name(),
-                    arg1_thunk.span.clone(),
-                )
-                .into())
-            }
-        };
-
-        ctx.state
-            .lock()
-            .unwrap()
-            .string_include_cache
-            .insert(key, entry);
-
-        // Return an empty dict [] so that include-cache-put can be used as an intermediate
-        // sequential expression in the scope chain (sequential expressions must return Dict).
-        // The stored value is available via include-cache-get; callers don't need the return.
-        ok_val(Value::Dict(IndexMap::new()), call_span)
     })
 }
 
@@ -4022,10 +3824,8 @@ pub(crate) fn builtin_validate(
             Value::Dict(ref d) => d.clone(),
             Value::Overlay(..) => {
                 // Materialize Overlay to Dict before validation
-                let schema_thunk_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    schema.clone(),
-                    call_span.clone(),
-                )));
+                let schema_thunk_id =
+                    ctx.alloc_thunk(0, Arc::new(Thunk::value(schema.clone(), call_span.clone())));
                 let schema_thunk = ctx.get_thunk(schema_thunk_id);
                 let materialized = materialize(&schema_thunk, Some(&call_span), &ctx).await?;
                 match materialized {
@@ -4062,7 +3862,7 @@ pub(crate) fn builtin_validate(
 
         if violations.is_empty() {
             // Success: return data unchanged
-            Ok(Arc::new(Thunk::new_materialized(data, call_span)))
+            Ok(Arc::new(Thunk::value(data, call_span)))
         } else {
             // Failure: throw SchemaViolation with all violations
             Err(EvalError::schema_violation(violations, call_span).into())
@@ -4917,7 +4717,7 @@ pub(crate) fn builtin_arena_new(
             }
         };
         let start_env_id = ctx.scope_arena.borrow_mut().alloc_root(0);
-        Ok(Arc::new(Thunk::new_materialized(
+        Ok(Arc::new(Thunk::value(
             Value::Arena {
                 name,
                 start_env_id: start_env_id.0,
@@ -4982,7 +4782,7 @@ pub(crate) fn builtin_arena_drop(
         // LIFO invariant: start_env_id is the stack top, so everything from
         // start_env_id onward belongs to this arena and can be reclaimed.
         arena_mut.scopes.truncate(start_env_id as usize);
-        Ok(Arc::new(Thunk::new_materialized(
+        Ok(Arc::new(Thunk::value(
             Value::Dict(indexmap::IndexMap::new()),
             call_span,
         )))
@@ -5044,8 +4844,7 @@ pub(crate) fn builtin_arena_stats(
         };
         let heap_bytes = crate::limit_alloc::allocated_bytes();
         let mut result_map: indexmap::IndexMap<HashableValue, ThunkId> = indexmap::IndexMap::new();
-        let alloc_str =
-            |v: Value| ctx.alloc_thunk(Arc::new(Thunk::new_materialized(v, call_span.clone())));
+        let alloc_str = |v: Value| ctx.alloc_thunk(0, Arc::new(Thunk::value(v, call_span.clone())));
         result_map.insert(
             HashableValue::Str("name".into()),
             alloc_str(string_val(&name.to_string())),
@@ -5066,10 +4865,7 @@ pub(crate) fn builtin_arena_stats(
             HashableValue::Str("heap-bytes".into()),
             alloc_str(Value::Int(heap_bytes)),
         );
-        Ok(Arc::new(Thunk::new_materialized(
-            Value::Dict(result_map),
-            call_span,
-        )))
+        Ok(Arc::new(Thunk::value(Value::Dict(result_map), call_span)))
     })
 }
 
@@ -5350,21 +5146,6 @@ pub fn meta_builtins() -> Vec<crate::value::BuiltinDef> {
             0,
             ["cap"]
         ),
-        // ── Include cache ─────────────────────────────────────────────────────────────
-        builtin!(
-            "builtin-include-cache-get",
-            builtin_include_cache_get,
-            [Strictness::Seq],
-            1,
-            ["key"]
-        ),
-        builtin!(
-            "builtin-include-cache-put",
-            builtin_include_cache_put,
-            [],
-            2,
-            ["key", "value"]
-        ),
         // ── Environment access ────────────────────────────────────────────────────────
         // builtin-current-env: zero-arg; returns the calling lexical environment.
         builtin!("builtin-current-env", builtin_current_env, [], 0),
@@ -5383,7 +5164,7 @@ mod tests {
     use crate::value::{string_val, BuiltinArgs, Thunk, Value};
 
     fn thunk(val: Value) -> Arc<Thunk> {
-        Arc::new(Thunk::new_materialized(val, test_span(1, 1, 1, 5)))
+        Arc::new(Thunk::value(val, test_span(1, 1, 1, 5)))
     }
 
     /// Allocate a ThunkId for a Value in the test context. T-1558: BuiltinArgs.args uses ThunkId.
@@ -5391,7 +5172,7 @@ mod tests {
         val: Value,
         ctx: &std::sync::Arc<crate::eval::EvalContext>,
     ) -> crate::arena::ThunkId {
-        ctx.alloc_thunk(thunk(val))
+        ctx.alloc_thunk(0, thunk(val))
     }
 
     fn call_span() -> crate::ast::Span {

@@ -1743,6 +1743,31 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                     ) {
                                         close_bracket_recover!(push_err);
                                     }
+                                    // Drain any AnnotationCollect waiting for this TypeAssert as
+                                    // its value (e.g. `x@[@Integer _]`). Without this call, the
+                                    // early-continue below bypasses the drain at line ~2619, leaving
+                                    // a stale AnnotationCollect on the stack that will corrupt all
+                                    // subsequent `:` token handling in the enclosing frame.
+                                    if let Err(drain_err) = drain_annotation_frames(
+                                        &mut stack,
+                                        &mut current_document_items,
+                                        &token_vec,
+                                        i + 1, // token after the `]`
+                                    ) {
+                                        if !stack.is_empty() {
+                                            i = recover_from_bracket_error(
+                                                drain_err,
+                                                span,
+                                                &token_vec,
+                                                i + 1,
+                                                &mut stack,
+                                                &mut current_document_items,
+                                                &mut recovered_errors,
+                                            );
+                                            continue;
+                                        }
+                                        return Err(drain_err);
+                                    }
                                     // Early continue — don't fall through to the rest of Dict handling
                                     last_significant_span = Some(span.clone());
                                     i += 1;
@@ -2174,8 +2199,8 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
 
                     StackFrame::Match {
                         scrutinee,
-                        arms,
-                        pending_pattern_expr,
+                        mut arms,
+                        mut pending_pattern_expr,
                         pending_pattern,
                         span_start,
                     } => {
@@ -2185,11 +2210,20 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                 span: Some(span.clone()),
                             });
                         } else if pending_pattern_expr.is_some() {
-                            close_bracket_recover!(ParseError {
-                                message: "match pattern must be followed by `:` and a body"
-                                    .to_string(),
-                                span: Some(span.clone()),
-                            });
+                            // A pending_pattern_expr at close-bracket time means the last
+                            // expression was never followed by a colon, so it is not a pattern —
+                            // it is the final body expression of the current arm.
+                            let last_body_expr = pending_pattern_expr.take().unwrap();
+                            if let Some(last_arm) = arms.last_mut() {
+                                last_arm.body.push(last_body_expr);
+                            } else {
+                                close_bracket_recover!(ParseError {
+                                    message:
+                                        "match form has an expression with no arm to belong to"
+                                            .to_string(),
+                                    span: Some(span.clone()),
+                                });
+                            }
                         } else if pending_pattern.is_some() {
                             close_bracket_recover!(ParseError {
                                 message: "match pattern must be followed by a body expression"
@@ -2604,10 +2638,11 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
 
                     StackFrame::AnnotationCollect { .. } => {
                         // AnnotationCollect is not a bracket form; a CloseBracket here means
-                        // the enclosing bracket is closed while waiting for annotation value.
-                        // E.g. `[@` followed immediately by `]` — error.
-                        close_bracket_recover!(ParseError {
-                            message: "annotation @ requires an expression".to_string(),
+                        // the enclosing bracket is closed while an annotation was still pending.
+                        // This is always a parse error — valid code never produces this state.
+                        // Return a fatal error: the parse is fundamentally broken at this point.
+                        return Err(ParseError {
+                            message: "annotation @ requires an expression before `]`".to_string(),
                             span: Some(span.clone()),
                         });
                     }
@@ -2684,7 +2719,8 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             } else {
                                 // No entries at all
                                 Some(ParseError {
-                                    message: "`:` without a key (expected key before `:`)".to_string(),
+                                    message: "`:` without a key (expected key before `:`)"
+                                        .to_string(),
                                     span: Some(span.clone()),
                                 })
                             }
@@ -2780,8 +2816,9 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                     }) => {
                         if pending_key.is_none() {
                             Some(ParseError {
-                                message: "`:` without a key (expected 'pattern' or 'message' before `:`)"
-                                    .to_string(),
+                                message:
+                                    "`:` without a key (expected 'pattern' or 'message' before `:`)"
+                                        .to_string(),
                                 span: Some(span.clone()),
                             })
                         } else {
@@ -2813,15 +2850,25 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             }
                         } else {
                             Some(ParseError {
-                                message: "`:` without a left-hand side in [let ...] form".to_string(),
+                                message: "`:` without a left-hand side in [let ...] form"
+                                    .to_string(),
                                 span: Some(span.clone()),
                             })
                         }
                     }
-                    _ => Some(ParseError {
-                        message:
-                            "`:` can only appear in dict, call, class, instance, match, let, or syntax-class forms"
-                                .to_string(),
+                    Some(frame) => {
+                        let (form_name, open_pos) = frame_info_static(frame);
+                        Some(ParseError {
+                            message: format!(
+                                "`:` is not valid inside a {} form (opened at {}:{})",
+                                form_name, open_pos.line, open_pos.column
+                            ),
+                            span: Some(span.clone()),
+                        })
+                    }
+                    None => Some(ParseError {
+                        message: "`:` at document top level (no enclosing bracket form)"
+                            .to_string(),
                         span: Some(span.clone()),
                     }),
                 };
@@ -4853,10 +4900,18 @@ fn pop_last_value_from_frame(
                     span: Some(span),
                 })
             } else if !arms.is_empty() {
-                // Pop the last arm, restore its pattern+guard as pending, return body
-                let last_arm = arms.pop().unwrap();
-                *pending_pattern = Some((last_arm.pattern, last_arm.guard));
-                Ok(last_arm.body)
+                // Pop the last body expression of the last arm for dot-chaining.
+                // If there is only one body expression, pop the entire arm and restore
+                // its pattern+guard as pending. If there are multiple, pop just the last
+                // body expression (leaving the arm with its remaining body expressions).
+                let last_arm = arms.last_mut().unwrap();
+                if last_arm.body.len() == 1 {
+                    let arm = arms.pop().unwrap();
+                    *pending_pattern = Some((arm.pattern, arm.guard));
+                    Ok(arm.body.into_iter().next().unwrap())
+                } else {
+                    Ok(last_arm.body.pop().unwrap())
+                }
             } else if let Some(s) = scrutinee.take() {
                 Ok(s)
             } else {
@@ -5808,31 +5863,45 @@ fn push_expr_to_parent(
                     arms.push(SurfaceMatchArm {
                         pattern: Spanned::new(Pattern::Wildcard, node.span.clone()),
                         guard: None,
-                        body: node,
+                        body: vec![node],
                         guard_matchable_binding: crate::ast::MatchableBinding::new(),
                     });
                     Ok(())
                 } else if pending_pattern.is_none() && pending_pattern_expr.is_none() {
-                    // No pending pattern or pattern expression — store bracket expressions
-                    // in pending_pattern_expr (they will be converted on colon)
+                    // No pending pattern or pattern expression — this is either the first
+                    // pattern (will be converted on colon) or a body continuation for the
+                    // last arm (if a completed arm exists and no colon follows).
+                    // We can't tell yet which it is, so store it as pending_pattern_expr.
+                    // The colon handler will convert it to a pattern; if no colon comes and
+                    // a new expression arrives, the else branch below handles it.
                     *pending_pattern_expr = Some(node);
                     Ok(())
                 } else if pending_pattern.is_some() {
-                    // We have a pending pattern (converted) — this must be the body
+                    // We have a pending pattern (converted) — this must be the body (first expr)
                     let (pattern, guard) = pending_pattern.take().unwrap();
                     arms.push(SurfaceMatchArm {
                         pattern,
                         guard,
-                        body: node,
+                        body: vec![node],
                         guard_matchable_binding: crate::ast::MatchableBinding::new(),
                     });
                     Ok(())
                 } else {
-                    // pending_pattern_expr is set but not converted yet — error
-                    Err(ParseError {
-                        message: "match pattern must be followed by `:` and a body".to_string(),
-                        span: Some(node.span.clone()),
-                    })
+                    // pending_pattern_expr is set but not converted yet (no colon followed it).
+                    // This means the old pending_pattern_expr was NOT a pattern — it is a body
+                    // continuation for the current arm. Append it to the last arm's body,
+                    // then store the new node as the new pending_pattern_expr.
+                    let old_pending = pending_pattern_expr.take().unwrap();
+                    if let Some(last_arm) = arms.last_mut() {
+                        last_arm.body.push(old_pending);
+                    } else {
+                        return Err(ParseError {
+                            message: "unexpected expression before first match arm (no pattern: body pair yet)".to_string(),
+                            span: Some(old_pending.span.clone()),
+                        });
+                    }
+                    *pending_pattern_expr = Some(node);
+                    Ok(())
                 }
             }
             Some(StackFrame::ClassDecl {
@@ -6804,7 +6873,9 @@ fn stamp_expr(expr: &mut SurfaceExpression, file: &Arc<SourceFile>) {
                 if let Some(guard) = &mut arm.guard {
                     stamp_node(guard, file);
                 }
-                stamp_node(&mut arm.body, file);
+                for body_expr in &mut arm.body {
+                    stamp_node(body_expr, file);
+                }
             }
         }
 
@@ -7545,7 +7616,10 @@ mod tests {
                 || output.errors[0].message.contains("`:` without a key")
                 || output.errors[0]
                     .message
-                    .contains("`:` can only appear in dict, call, class, instance, match, let, or syntax-class forms"),
+                    .contains("`:` is not valid inside a")
+                || output.errors[0]
+                    .message
+                    .contains("`:` at document top level"),
             "expected key-related error for [fn :], got: {}",
             output.errors[0].message
         );
@@ -7556,9 +7630,9 @@ mod tests {
             "expected recovered error for colon in type-alias form"
         );
         assert!(
-            output2.errors[0].message.contains(
-                "`:` can only appear in dict, call, class, instance, match, let, or syntax-class forms"
-            ),
+            output2.errors[0]
+                .message
+                .contains("`:` is not valid inside a type form"),
             "expected error about colon in wrong context for [type x :], got: {}",
             output2.errors[0].message
         );
@@ -9703,5 +9777,251 @@ mod tests {
             }
             other => panic!("expected outer LetDecl, got {other:?}"),
         }
+    }
+
+    /// Regression test: `[@Integer _]` in a match arm must not leave a stale AnnotationCollect
+    /// frame on the stack.
+    ///
+    /// Before the fix: the Dict CloseBracket handler for the floating-annotation / TypeAssert path
+    /// called `push_value(TypeAssert node)` then did `i += 1; continue`, bypassing the
+    /// `drain_annotation_frames` call at line ~2619. If this `[@Integer _]` appeared inside a
+    /// Match frame and the Match's parent was a Dict, the AnnotationCollect was already fully
+    /// consumed (target=Floating, value set) — but because the Dict frame consumed the floating
+    /// annotation internally and then immediately closed, there was nothing left on the stack to
+    /// drain. The real bug is more subtle: the AnnotationCollect for `@Integer` is pushed BEFORE
+    /// `[@Integer _]` opens a Dict sub-frame. After `[@Integer _]` closes via the early-continue
+    /// path, control returns to the Match frame — but only via `push_value(TypeAssert)`, which
+    /// stores it in `pending_pattern_expr`. The AnnotationCollect was already drained when `Integer`
+    /// was pushed into the AnnotationCollect's value field. The actual issue: after the TypeAssert
+    /// early-continue, any outer AnnotationCollect waiting for THIS TypeAssert as its value is
+    /// not drained. In the test-loader.llt case the outer context is a Match frame (no annotation
+    /// collect above it), so the TypeAssert lands in `pending_pattern_expr` correctly — BUT if
+    /// another complete AnnotationCollect happened to be on the stack (e.g. from a different `@`
+    /// earlier that didn't drain), that stale frame would intercept subsequent `:` or value tokens.
+    ///
+    /// This test exercises the minimal reproducer from test-loader.llt line 64:
+    ///   `[fn [let b] [match b [@Integer _]: b _: 1]]`
+    #[test]
+    fn test_type_assert_in_match_arm_pattern() {
+        // This is the minimal form of bool->int from test-loader.llt line 64.
+        // [@Integer _] is a TypeAssert pattern in a match arm — it must parse cleanly.
+        let output = parse("[x: [fn [let b] [match b Boolean.False: 0 [@Integer _]: b _: 1]] x]")
+            .expect("parse should succeed");
+        assert!(
+            output.errors.is_empty(),
+            "expected no parse errors, got: {:?}",
+            output.errors
+        );
+        let items = surf_items(&output.program.documents[0].node);
+        assert_eq!(items.len(), 1, "expected 1 top-level expression (Dict)");
+        match &items[0].expr {
+            SurfaceExpression::Dict(entries) => {
+                assert_eq!(entries.len(), 2, "expected 2 entries: x: <fn> and x");
+                // First entry: x: [fn [let b] [match b ...]]
+                let key0 = entries[0]
+                    .node
+                    .key
+                    .as_ref()
+                    .expect("entry 0 should have key");
+                match &key0.expr {
+                    SurfaceExpression::StringLiteral { content: s, .. } => assert_eq!(s, "x"),
+                    other => panic!("expected key 'x', got {other:?}"),
+                }
+                assert!(
+                    matches!(&entries[0].node.value.expr, SurfaceExpression::Fn { .. }),
+                    "expected Fn as value of 'x', got {:?}",
+                    entries[0].node.value.expr
+                );
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    /// Regression test: after `[@Integer _]: b` completes a match arm, the next dict key
+    /// must be parseable. This isolates the `:` error that manifests in test-loader.llt.
+    /// The parse must succeed and produce the expected Match with 3 arms.
+    #[test]
+    fn test_type_assert_match_arm_followed_by_keyed_entry() {
+        // This matches the shape of the test-loader.llt failure: after a fn containing a
+        // match with [@Type _] arm, the NEXT entry in the outer dict must parse correctly.
+        let output = parse(
+            "[bool->int: [fn [let b] [match b Boolean.False: 0 [@Integer _]: b _: 1]] typecheck-docs: 42]",
+        )
+        .expect("parse should succeed");
+        assert!(
+            output.errors.is_empty(),
+            "expected no parse errors for match-with-type-assert followed by keyed entry, got: {:?}",
+            output.errors
+        );
+        let items = surf_items(&output.program.documents[0].node);
+        assert_eq!(items.len(), 1);
+        match &items[0].expr {
+            SurfaceExpression::Dict(entries) => {
+                assert_eq!(
+                    entries.len(),
+                    2,
+                    "expected 2 entries: bool->int and typecheck-docs"
+                );
+                // Verify the second key is "typecheck-docs"
+                let key1 = entries[1]
+                    .node
+                    .key
+                    .as_ref()
+                    .expect("entry 1 should have key");
+                match &key1.expr {
+                    SurfaceExpression::StringLiteral { content: s, .. } => {
+                        assert_eq!(s, "typecheck-docs")
+                    }
+                    other => panic!("expected key 'typecheck-docs', got {other:?}"),
+                }
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    /// `key@[doc: "..."]: value` — dict entry where key has a property-dict annotation.
+    /// This is used extensively in prelude.llt (e.g., `lines@[doc: "..."]:  [fn ...]`).
+    #[test]
+    fn test_annotated_key_property_dict() {
+        let output = parse(r#"[lines@[doc: "Read all lines."]: [fn [let h] h]  other: 42]"#)
+            .expect("parse should succeed");
+        assert!(
+            output.errors.is_empty(),
+            "expected no errors for key@[annotation]: val, got: {:?}",
+            output.errors
+        );
+        let items = surf_items(&output.program.documents[0].node);
+        match &items[0].expr {
+            SurfaceExpression::Dict(entries) => {
+                assert_eq!(entries.len(), 2, "expected 2 entries");
+                let key0 = entries[0]
+                    .node
+                    .key
+                    .as_ref()
+                    .expect("entry 0 should have key");
+                assert!(
+                    matches!(&key0.expr, SurfaceExpression::VarRef { name, annotation: Some(_), .. } if name == "lines"),
+                    "expected annotated VarRef key 'lines', got {:?}",
+                    key0.expr
+                );
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    /// Minimal repro: fn@[multiline-annotation] loses Fn frame.
+    #[test]
+    fn test_fn_multiline_annotation_does_not_lose_frame() {
+        let src = "[whenM: [fn@[return: Unknown  doc: \"\"\"\nMultiline doc.\n\"\"\"] [let app cond action]\n  [if cond action [app.pure []]]]  other: 42]";
+        let output = parse_with_recovery(src);
+        assert!(
+            output.errors.is_empty(),
+            "fn@[multiline-annotation] lost its frame: {:?}",
+            output.errors
+        );
+    }
+
+    /// Repro: fn@[bind: [a]  return: a] nested type param in annotation.
+    #[test]
+    fn test_fn_annotation_with_nested_type_param() {
+        let src = "[f@[doc: \"x\"]: [fn@[bind: [a]  return: a] [let p d xs] xs]  other: 42]";
+        let output = parse_with_recovery(src);
+        assert!(
+            output.errors.is_empty(),
+            "fn@[bind: [a] return: a] lost its frame: {:?}",
+            output.errors
+        );
+    }
+
+    /// `key@[return: T  doc: """..."""]: value` — multiline triple-quoted doc string in annotation.
+    /// This is the exact pattern used in prelude.llt for functions like `range`, `repeat`, etc.
+    #[test]
+    fn test_annotated_key_multiline_doc() {
+        let src = "[range@[return: Integer  doc: \"\"\"\nMultiline doc.\n\"\"\"]: [fn [let x] x]  other: 42]";
+        let output = parse(src).expect("parse should succeed");
+        assert!(
+            output.errors.is_empty(),
+            "expected no errors for key@[multiline-annotation]: val, got: {:?}",
+            output.errors
+        );
+        let items = surf_items(&output.program.documents[0].node);
+        match &items[0].expr {
+            SurfaceExpression::Dict(entries) => {
+                assert_eq!(entries.len(), 2, "expected 2 entries");
+                let key0 = entries[0]
+                    .node
+                    .key
+                    .as_ref()
+                    .expect("entry 0 should have key");
+                assert!(
+                    matches!(&key0.expr, SurfaceExpression::VarRef { name, annotation: Some(_), .. } if name == "range"),
+                    "expected annotated VarRef key 'range', got {:?}",
+                    key0.expr
+                );
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    /// Binary-search for the exact line in prelude.llt where the Dict frame is lost.
+    /// Reports the first line that causes a colon-at-top-level error when parsing lines 806..N.
+    #[test]
+    fn test_find_prelude_frame_loss_line() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/stdlib/prelude.llt");
+        let content = std::fs::read_to_string(path).expect("failed to read prelude.llt");
+        let lines: Vec<&str> = content.lines().collect();
+
+        fn has_frame_loss(lines: &[&str], start: usize, end: usize) -> bool {
+            // start/end are 1-based line numbers (inclusive)
+            let mut src: String = lines
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i + 1 >= start && *i + 1 <= end)
+                .map(|(_, l)| *l)
+                .collect::<Vec<_>>()
+                .join("\n");
+            src.push_str("\ntest-key: 42\n]");
+            let output = crate::parser::parse_with_recovery(&src);
+            output.errors.iter().any(|e| {
+                e.message.contains("`:` at document top level")
+                    || e.message.contains("`:` is not valid inside")
+            })
+        }
+
+        let dict_start = 800; // opening [ of the second dict
+        let dict_end = lines.len().saturating_sub(2); // exclude the closing ] of the dict
+
+        if !has_frame_loss(&lines, dict_start, dict_end) {
+            // No issue — test passes
+            return;
+        }
+
+        // Binary search for the first line that introduces the frame loss
+        let mut lo = dict_start;
+        let mut hi = dict_end;
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if has_frame_loss(&lines, dict_start, mid) {
+                hi = mid;
+            } else {
+                lo = mid + 1;
+            }
+        }
+
+        // lo is the first line that, when included, causes frame loss.
+        // Show the line and surrounding context.
+        let ctx_start = lo.saturating_sub(3).max(dict_start);
+        let ctx_end = (lo + 3).min(dict_end);
+        let context: Vec<String> = lines
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i + 1 >= ctx_start && *i + 1 <= ctx_end)
+            .map(|(i, l)| format!("{:4}: {}", i + 1, l))
+            .collect();
+        panic!(
+            "Parser loses Dict frame at prelude.llt line {}.\nContext:\n{}\n",
+            lo,
+            context.join("\n")
+        );
     }
 }

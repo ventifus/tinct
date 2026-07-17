@@ -432,7 +432,10 @@ impl fmt::Display for SurfaceExpression {
             SurfaceExpression::Match { scrutinee, arms } => {
                 write!(f, "[match {}", scrutinee)?;
                 for arm in arms {
-                    write!(f, " {} {}", arm.pattern.node, arm.body)?;
+                    write!(f, " {}", arm.pattern.node)?;
+                    for expr in &arm.body {
+                        write!(f, " {}", expr)?;
+                    }
                 }
                 write!(f, "]")
             }
@@ -615,6 +618,9 @@ impl fmt::Display for LiteralPattern {
 
 impl fmt::Display for Span {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if !self.file.path.starts_with('<') {
+            write!(f, "{}:", self.file.path)?;
+        }
         write!(
             f,
             "{}:{}-{}:{}",
@@ -972,15 +978,34 @@ pub(crate) fn flatten_dot_access_to_tag(expr: &SurfaceExpression) -> Option<Stri
 }
 
 /// A match arm in a SurfaceExpression::Match.
+///
+/// `body` is a non-empty Vec of expressions. Single-body arms have `body.len() == 1`.
+/// Multi-body arms have `body.len() > 1` — they work like fn multi-body: each expression
+/// up to the last is an intermediate lazy scope dict; the last is the return value.
+/// The lowerer wraps multi-body in `CoreExpr::Sequential` (same as fn body lowering).
 #[derive(Debug, Clone, PartialEq)]
 pub struct SurfaceMatchArm {
     pub pattern: Spanned<Pattern>,
     pub guard: Option<Arc<SurfaceNode>>,
-    pub body: Arc<SurfaceNode>,
+    /// Non-empty Vec of body expressions. Single-expression arms have `body.len() == 1`.
+    /// Multi-expression arms have all-but-last as intermediate scope dicts and last as result.
+    pub body: Vec<Arc<SurfaceNode>>,
     /// Compile-time-resolved Matchable instance binding name for the guard expression.
     /// Resolved by the type checker after the guard's return type is inferred.
     /// When resolved, the evaluator uses this for direct dispatch instead of call_to_match.
     pub guard_matchable_binding: MatchableBinding,
+}
+
+impl SurfaceMatchArm {
+    /// Returns the final (return-value) body expression. Panics if body is empty (invariant violation).
+    pub fn body_expr(&self) -> &Arc<SurfaceNode> {
+        self.body.last().expect("match arm body must be non-empty")
+    }
+
+    /// Returns true if this arm has more than one body expression (multi-body form).
+    pub fn body_is_multi(&self) -> bool {
+        self.body.len() > 1
+    }
 }
 
 /// Compile-time-only declaration forms — removed from SurfaceExpression so the

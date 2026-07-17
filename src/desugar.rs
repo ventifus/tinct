@@ -36,8 +36,11 @@ use std::sync::Arc;
 /// Mutates the SurfaceProgram in place by replacing SurfaceItem::Expr nodes.
 pub fn desugar_surface_program(program: &mut SurfaceProgram) {
     for doc_spanned in &mut program.documents {
+        let count = Arc::strong_count(&doc_spanned.node);
         desugar_surface_document(
-            Arc::get_mut(&mut doc_spanned.node).expect("desugar runs before any Arc sharing"),
+            Arc::get_mut(&mut doc_spanned.node).unwrap_or_else(|| {
+                panic!("document Arc has {count} strong references, expected 1")
+            }),
         );
     }
 }
@@ -276,7 +279,11 @@ fn desugar_instance_decls_expr(expr: &SurfaceExpression, _span: Span) -> Surface
                         .guard
                         .as_ref()
                         .map(|g| desugar_instance_decls_node(Arc::clone(g)));
-                    let new_body = desugar_instance_decls_node(Arc::clone(&arm.body));
+                    let new_body = arm
+                        .body
+                        .iter()
+                        .map(|e| desugar_instance_decls_node(Arc::clone(e)))
+                        .collect();
                     SurfaceMatchArm {
                         pattern: arm.pattern.clone(),
                         guard: new_guard,
@@ -287,7 +294,11 @@ fn desugar_instance_decls_expr(expr: &SurfaceExpression, _span: Span) -> Surface
                 .collect();
             let changed = !Arc::ptr_eq(&new_scrutinee, scrutinee)
                 || new_arms.iter().zip(arms.iter()).any(|(a, b)| {
-                    !Arc::ptr_eq(&a.body, &b.body)
+                    (a.body.len() != b.body.len()
+                        || a.body
+                            .iter()
+                            .zip(b.body.iter())
+                            .any(|(x, y)| !Arc::ptr_eq(x, y)))
                         || match (&a.guard, &b.guard) {
                             (Some(ag), Some(bg)) => !Arc::ptr_eq(ag, bg),
                             (None, None) => false,
@@ -646,7 +657,9 @@ fn recurse_children_surface(node: &mut Arc<SurfaceNode>, depth: usize) {
         SurfaceExpression::Match { scrutinee, arms } => {
             desugar_surface(scrutinee, depth);
             for arm in arms {
-                desugar_surface(&mut arm.body, depth);
+                for body_expr in &mut arm.body {
+                    desugar_surface(body_expr, depth);
+                }
             }
         }
 

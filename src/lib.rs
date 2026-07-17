@@ -114,7 +114,7 @@ pub use parser::{
 /// Evaluation functions.
 pub use eval::{
     eval_surface_file, eval_surface_file_with_input, invoke_function, materialize, CallContext,
-    EvalConfig, EvalContext, EvalState, TypeContextData,
+    EvalConfig, EvalContext, TypeContextData,
 };
 
 /// Builtin infrastructure: core env builder and resource limits.
@@ -123,7 +123,7 @@ pub use builtins::{build_core_env, MAX_COLLECT_SIZE, MAX_FILE_SIZE};
 /// Import resolution for the type checker.
 pub use imports::{
     apply_include_type_post_pass, build_type_env, build_type_env_with_cap,
-    get_builtin_core_type_env,
+    get_builtin_core_tycon_env, get_builtin_core_type_env,
 };
 
 /// Error types with source spans and stack traces.
@@ -133,7 +133,7 @@ pub use error::{
 };
 
 /// Type error diagnostic formatting.
-pub use types::{format_type_error, TypeError};
+pub use types::{format_type_error, Type, TypeError, TypeScheme};
 
 /// Formatter: canonical source reformatter.
 pub use formatter::{format_source_tinct, format_source_tinct_with_dir};
@@ -176,6 +176,7 @@ pub async fn run_loader_pipeline(
     _no_fs: bool,
     init_source: &str,
     init_path: &str,
+    injected_type_env: Option<Arc<std::sync::RwLock<crate::env::Env>>>,
 ) -> Result<(), String> {
     let loader_sf = Arc::new(SourceFile {
         path: Arc::from(init_path),
@@ -217,14 +218,110 @@ pub async fn run_loader_pipeline(
         eval_ctx.with_scope_frames(Arc::new(all_frames))
     };
 
-    // Typecheck writes type annotations inline on AST nodes. Errors are advisory only.
-    // The returned tycon_env maps type constructor names (e.g. "Boolean", "Seq") to their
-    // TyConDef, populated by [type ...] declarations in the program. Wiring it into
-    // eval_ctx ensures that runtime TypeAssert checks against user-defined nominal types
-    // (e.g. @Boolean on annotated function args) resolve correctly instead of failing
-    // conservatively because tycon_env is None.
-    let (_loader_type_errors, _loader_annotation_table, _loader_expects_resolved) =
-        typecheck::typecheck_surface_program_annotation_table(&loader_program).await;
+    // Two-pass: evaluate type-stage documents first to populate type_stage_env,
+    // then typecheck the full program with the resulting type_stage_env so that
+    // @Integer, @String, etc. resolve correctly via TypeNode.
+    let type_stage_thunks_opt: Option<std::collections::HashMap<String, crate::arena::ThunkId>> = {
+        // Filter type-stage documents (those with stage: "type" in their header).
+        let ts_docs: Vec<_> = loader_program
+            .documents
+            .iter()
+            .filter(|d| {
+                d.node.header.get("stage").map_or(false, |stage_node| {
+                    matches!(
+                        &stage_node.expr,
+                        crate::ast::SurfaceExpression::StringLiteral { content, .. }
+                        if content == "type"
+                    )
+                })
+            })
+            .cloned()
+            .collect();
+
+        if ts_docs.is_empty() {
+            None
+        } else {
+            // Build a mini-program with only the type-stage documents and evaluate it.
+            // The documents are already desugared and resolved from the main program pass —
+            // do NOT re-run desugar (Arc sharing panics) or resolve (would overwrite inline
+            // de Bruijn coordinates with wrong values for empty frames).
+            let ts_program = crate::ast::SurfaceProgram { documents: ts_docs };
+
+            let ts_thunk = eval::eval_surface_file(&ts_program, &eval_ctx_with_frames)
+                .await
+                .map_err(|e| format!("type-stage evaluation failed: {e}"))?;
+            let ts_val = eval::materialize(&ts_thunk, None, &eval_ctx_with_frames)
+                .await
+                .map_err(|e| format!("type-stage materialization failed: {e}"))?;
+            match ts_val {
+                crate::value::Value::Dict(entries) => {
+                    // Build a direct name → ThunkId map. The ThunkIds come directly from the
+                    // tinct dict evaluator and point into the existing scope_arena. No need
+                    // to create a duplicate scope — just force thunks on demand.
+                    let mut thunks: std::collections::HashMap<String, crate::arena::ThunkId> =
+                        std::collections::HashMap::new();
+                    for (key, &thunk_id) in &entries {
+                        if let crate::value::HashableValue::Str(name) = key {
+                            thunks.insert(name.to_string(), thunk_id);
+                        }
+                    }
+                    Some(thunks)
+                }
+                other => {
+                    return Err(format!(
+                        "type-stage evaluation produced {}, expected Dict",
+                        other.type_name()
+                    ));
+                }
+            }
+        }
+    };
+
+    // Typecheck the loader program, seeded with the builtin core type env so that
+    // builtin-* names are in scope. Type errors are real errors — if the loader has
+    // type errors, we cannot proceed.
+    let builtin_env_base = crate::imports::get_builtin_core_type_env()
+        .await
+        .ok_or_else(|| "failed to load builtin core type env".to_string())?;
+    // Chain injected types (from caller) above the builtin env so the type-checker
+    // sees %programs, %cwd, etc. without any builtin_core declarations.
+    let builtin_env = {
+        let mut wrapper = crate::env::Env::with_parent(builtin_env_base);
+        if let Some(ref inj) = injected_type_env {
+            let r = inj.read().unwrap();
+            for (name, slot) in &r.extras {
+                wrapper.extras.insert(name.clone(), slot.clone());
+            }
+        }
+        Arc::new(std::sync::RwLock::new(wrapper))
+    };
+    let seed_tycon_env = crate::imports::get_builtin_core_tycon_env().unwrap_or_default();
+    let (loader_type_errors, _loader_annotation_table, loader_tycon_env) =
+        typecheck::typecheck_surface_program_annotation_table_with_env(
+            &loader_program,
+            builtin_env,
+            Some(Arc::clone(&eval_ctx_with_frames)),
+            None,
+            seed_tycon_env,
+            type_stage_thunks_opt,
+        )
+        .await;
+    // Wire the TyConEnv from the typecheck pass into the eval context so that
+    // value_matches_type and TypeAssert error messages can look up TyCon definitions.
+    eval_ctx_with_frames.set_tycon_env(loader_tycon_env);
+    if !loader_type_errors.is_empty() {
+        let msg = loader_type_errors
+            .iter()
+            .map(|e| {
+                format!(
+                    "{}:{}:{}: {}",
+                    init_path, e.span.start.line, e.span.start.column, e.message
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(msg);
+    }
 
     // Evaluate loader.llt. env already contains all stdlib builtins, %programs, %args,
     // %cwd, %libdir, and any other caps injected by the caller.
@@ -909,12 +1006,9 @@ mod tests {
     #[tokio::test]
     async fn test_display_proxy() {
         let ctx = test_ctx().await;
-        let handler_thunk = Arc::new(Thunk::new_materialized(
-            Value::Int(42),
-            test_span(1, 1, 1, 1),
-        ));
+        let handler_thunk = Arc::new(Thunk::value(Value::Int(42), test_span(1, 1, 1, 1)));
         let proxy = Value::Proxy {
-            handler: ctx.alloc_thunk(handler_thunk),
+            handler: ctx.alloc_thunk(0, handler_thunk),
         };
         let display = value_to_display_string(&proxy, &ctx, rust_span!())
             .await

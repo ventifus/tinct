@@ -77,19 +77,11 @@ fn inject_span_into_expr_variant(
 
     let make_pos = |pos: &Position| -> crate::value::ThunkId {
         let mut d: IndexMap<HashableValue, crate::value::ThunkId> = IndexMap::new();
-        let mk = |n: i64| {
-            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Int(n),
-                synth.clone(),
-            )))
-        };
+        let mk = |n: i64| ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Int(n), synth.clone())));
         d.insert(HashableValue::Str("line".into()), mk(pos.line as i64));
         d.insert(HashableValue::Str("col".into()), mk(pos.column as i64));
         d.insert(HashableValue::Str("offset".into()), mk(pos.offset as i64));
-        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Dict(d),
-            synth.clone(),
-        )))
+        ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(d), synth.clone())))
     };
 
     let span_val = {
@@ -106,13 +98,12 @@ fn inject_span_into_expr_variant(
         } => {
             let payload_thunk = ctx.get_thunk(payload_id);
             if let Some(Value::Dict(mut payload_dict)) = payload_thunk.try_get_materialized() {
-                let span_id =
-                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(span_val, synth.clone())));
+                let span_id = ctx.alloc_thunk(0, Arc::new(Thunk::value(span_val, synth.clone())));
                 payload_dict.insert(HashableValue::Str("span".into()), span_id);
-                let new_payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    Value::Dict(payload_dict),
-                    span.clone(),
-                )));
+                let new_payload_id = ctx.alloc_thunk(
+                    0,
+                    Arc::new(Thunk::value(Value::Dict(payload_dict), span.clone())),
+                );
                 Value::Variant {
                     tag,
                     payload: Some(new_payload_id),
@@ -214,10 +205,7 @@ pub fn core_expr_to_expr_value(
     // Helper to recursively convert child CoreExpr nodes
     let recurse = |child: &Spanned<CoreExpr>| -> ThunkId {
         let child_val = core_expr_to_expr_value(child, ctx);
-        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            child_val,
-            child.span.clone(),
-        )))
+        ctx.alloc_thunk(0, Arc::new(Thunk::value(child_val, child.span.clone())))
     };
 
     // Helper to convert a Vec of CoreExpr to a Dict (auto-indexed)
@@ -227,10 +215,7 @@ pub fn core_expr_to_expr_value(
             let child_id = recurse(child);
             dict.insert(HashableValue::Int(i as i64), child_id);
         }
-        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Dict(dict),
-            synth.clone(),
-        )))
+        ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(dict), synth.clone())))
     };
 
     // Helper to build an Expr.* variant with a payload dict
@@ -244,24 +229,21 @@ pub fn core_expr_to_expr_value(
             let mut payload = IndexMap::new();
             payload.insert(
                 HashableValue::Str("kind".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val("int"),
-                    synth.clone(),
-                ))),
+                ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val("int"), synth.clone()))),
             );
             payload.insert(
                 HashableValue::Str("value".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    Value::Int(*n),
-                    synth.clone(),
-                ))),
+                ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Int(*n), synth.clone()))),
             );
             payload.insert(
                 HashableValue::Str("bare".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    Value::Dict(IndexMap::new()), // Null
-                    synth.clone(),
-                ))),
+                ctx.alloc_thunk(
+                    0,
+                    Arc::new(Thunk::value(
+                        Value::Dict(IndexMap::new()), // Null
+                        synth.clone(),
+                    )),
+                ),
             );
             make_variant("Literal", payload)
         }
@@ -270,24 +252,24 @@ pub fn core_expr_to_expr_value(
             let mut payload = IndexMap::new();
             payload.insert(
                 HashableValue::Str("kind".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val("u64"),
-                    synth.clone(),
-                ))),
+                ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val("u64"), synth.clone()))),
             );
             payload.insert(
                 HashableValue::Str("value".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    Value::Int(*n as i64),
-                    synth.clone(),
-                ))),
+                ctx.alloc_thunk(
+                    0,
+                    Arc::new(Thunk::value(Value::Int(*n as i64), synth.clone())),
+                ),
             );
             payload.insert(
                 HashableValue::Str("bare".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    Value::Dict(IndexMap::new()), // Null
-                    synth.clone(),
-                ))),
+                ctx.alloc_thunk(
+                    0,
+                    Arc::new(Thunk::value(
+                        Value::Dict(IndexMap::new()), // Null
+                        synth.clone(),
+                    )),
+                ),
             );
             make_variant("Literal", payload)
         }
@@ -296,24 +278,24 @@ pub fn core_expr_to_expr_value(
             let mut payload = IndexMap::new();
             payload.insert(
                 HashableValue::Str("kind".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val("float"),
-                    synth.clone(),
-                ))),
+                ctx.alloc_thunk(
+                    0,
+                    Arc::new(Thunk::value(string_val("float"), synth.clone())),
+                ),
             );
             payload.insert(
                 HashableValue::Str("value".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    Value::Float(*f),
-                    synth.clone(),
-                ))),
+                ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Float(*f), synth.clone()))),
             );
             payload.insert(
                 HashableValue::Str("bare".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    Value::Dict(IndexMap::new()), // Null
-                    synth.clone(),
-                ))),
+                ctx.alloc_thunk(
+                    0,
+                    Arc::new(Thunk::value(
+                        Value::Dict(IndexMap::new()), // Null
+                        synth.clone(),
+                    )),
+                ),
             );
             make_variant("Literal", payload)
         }
@@ -322,24 +304,21 @@ pub fn core_expr_to_expr_value(
             let mut payload = IndexMap::new();
             payload.insert(
                 HashableValue::Str("kind".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val("str"),
-                    synth.clone(),
-                ))),
+                ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val("str"), synth.clone()))),
             );
             payload.insert(
                 HashableValue::Str("value".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val(s),
-                    synth.clone(),
-                ))),
+                ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(s), synth.clone()))),
             );
             payload.insert(
                 HashableValue::Str("bare".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    Value::Dict(IndexMap::new()), // Null
-                    synth.clone(),
-                ))),
+                ctx.alloc_thunk(
+                    0,
+                    Arc::new(Thunk::value(
+                        Value::Dict(IndexMap::new()), // Null
+                        synth.clone(),
+                    )),
+                ),
             );
             make_variant("Literal", payload)
         }
@@ -350,10 +329,7 @@ pub fn core_expr_to_expr_value(
             let mut payload = IndexMap::new();
             payload.insert(
                 HashableValue::Str("name".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val(name),
-                    synth.clone(),
-                ))),
+                ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(name), synth.clone()))),
             );
             make_variant("VarRef", payload)
         }
@@ -375,10 +351,13 @@ pub fn core_expr_to_expr_value(
                 let mut arg_dict = IndexMap::new();
                 arg_dict.insert(
                     HashableValue::Str("name".into()),
-                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                        string_val(&named_arg.node.name),
-                        synth.clone(),
-                    ))),
+                    ctx.alloc_thunk(
+                        0,
+                        Arc::new(Thunk::value(
+                            string_val(&named_arg.node.name),
+                            synth.clone(),
+                        )),
+                    ),
                 );
                 arg_dict.insert(
                     HashableValue::Str("value".into()),
@@ -386,26 +365,29 @@ pub fn core_expr_to_expr_value(
                 );
                 named_dict.insert(
                     HashableValue::Int(i as i64),
-                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                        Value::Dict(arg_dict),
-                        named_arg.span.clone(),
-                    ))),
+                    ctx.alloc_thunk(
+                        0,
+                        Arc::new(Thunk::value(Value::Dict(arg_dict), named_arg.span.clone())),
+                    ),
                 );
             }
             payload.insert(
                 HashableValue::Str("named-args".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    Value::Dict(named_dict),
-                    synth.clone(),
-                ))),
+                ctx.alloc_thunk(
+                    0,
+                    Arc::new(Thunk::value(Value::Dict(named_dict), synth.clone())),
+                ),
             );
 
             payload.insert(
                 HashableValue::Str("implied".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    Value::Int(if *implied { 1 } else { 0 }),
-                    synth.clone(),
-                ))),
+                ctx.alloc_thunk(
+                    0,
+                    Arc::new(Thunk::value(
+                        Value::Int(if *implied { 1 } else { 0 }),
+                        synth.clone(),
+                    )),
+                ),
             );
 
             make_variant("Call", payload)
@@ -420,10 +402,13 @@ pub fn core_expr_to_expr_value(
                     HashableValue::Str("key".into()),
                     match &entry.node.key {
                         Some(k) => recurse(k),
-                        None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                            Value::Dict(IndexMap::new()), // Null
-                            synth.clone(),
-                        ))),
+                        None => ctx.alloc_thunk(
+                            0,
+                            Arc::new(Thunk::value(
+                                Value::Dict(IndexMap::new()), // Null
+                                synth.clone(),
+                            )),
+                        ),
                     },
                 );
                 entry_dict.insert(
@@ -432,19 +417,19 @@ pub fn core_expr_to_expr_value(
                 );
                 entries_dict.insert(
                     HashableValue::Int(i as i64),
-                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                        Value::Dict(entry_dict),
-                        entry.span.clone(),
-                    ))),
+                    ctx.alloc_thunk(
+                        0,
+                        Arc::new(Thunk::value(Value::Dict(entry_dict), entry.span.clone())),
+                    ),
                 );
             }
             let mut payload = IndexMap::new();
             payload.insert(
                 HashableValue::Str("entries".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    Value::Dict(entries_dict),
-                    synth.clone(),
-                ))),
+                ctx.alloc_thunk(
+                    0,
+                    Arc::new(Thunk::value(Value::Dict(entries_dict), synth.clone())),
+                ),
             );
             make_variant("Dict", payload)
         }
@@ -461,10 +446,10 @@ pub fn core_expr_to_expr_value(
                 let mut param_dict = IndexMap::new();
                 param_dict.insert(
                     HashableValue::Str("name".into()),
-                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                        string_val(&param.node.name),
-                        synth.clone(),
-                    ))),
+                    ctx.alloc_thunk(
+                        0,
+                        Arc::new(Thunk::value(string_val(&param.node.name), synth.clone())),
+                    ),
                 );
                 param_dict.insert(
                     HashableValue::Str("annotation".into()),
@@ -472,27 +457,30 @@ pub fn core_expr_to_expr_value(
                 );
                 param_dict.insert(
                     HashableValue::Str("variadic".into()),
-                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                        Value::Int(if param.node.variadic { 1 } else { 0 }),
-                        synth.clone(),
-                    ))),
+                    ctx.alloc_thunk(
+                        0,
+                        Arc::new(Thunk::value(
+                            Value::Int(if param.node.variadic { 1 } else { 0 }),
+                            synth.clone(),
+                        )),
+                    ),
                 );
                 params_dict.insert(
                     HashableValue::Int(i as i64),
-                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                        Value::Dict(param_dict),
-                        param.span.clone(),
-                    ))),
+                    ctx.alloc_thunk(
+                        0,
+                        Arc::new(Thunk::value(Value::Dict(param_dict), param.span.clone())),
+                    ),
                 );
             }
 
             let mut payload = IndexMap::new();
             payload.insert(
                 HashableValue::Str("params".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    Value::Dict(params_dict),
-                    synth.clone(),
-                ))),
+                ctx.alloc_thunk(
+                    0,
+                    Arc::new(Thunk::value(Value::Dict(params_dict), synth.clone())),
+                ),
             );
             payload.insert(HashableValue::Str("body".into()), recurse(body));
             payload.insert(
@@ -518,38 +506,44 @@ pub fn core_expr_to_expr_value(
                 // Pattern is Spanned<Pattern> — serialize as opaque for now
                 arm_dict.insert(
                     HashableValue::Str("pattern".into()),
-                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                        Value::Dict(IndexMap::new()), // Opaque
-                        arm.pattern.span.clone(),
-                    ))),
+                    ctx.alloc_thunk(
+                        0,
+                        Arc::new(Thunk::value(
+                            Value::Dict(IndexMap::new()), // Opaque
+                            arm.pattern.span.clone(),
+                        )),
+                    ),
                 );
                 arm_dict.insert(
                     HashableValue::Str("guard".into()),
                     match &arm.guard {
                         Some(g) => recurse(g),
-                        None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                            Value::Dict(IndexMap::new()), // Null
-                            synth.clone(),
-                        ))),
+                        None => ctx.alloc_thunk(
+                            0,
+                            Arc::new(Thunk::value(
+                                Value::Dict(IndexMap::new()), // Null
+                                synth.clone(),
+                            )),
+                        ),
                     },
                 );
                 arm_dict.insert(HashableValue::Str("body".into()), recurse(&arm.body));
                 arms_dict.insert(
                     HashableValue::Int(i as i64),
-                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                        Value::Dict(arm_dict),
-                        synth.clone(),
-                    ))),
+                    ctx.alloc_thunk(
+                        0,
+                        Arc::new(Thunk::value(Value::Dict(arm_dict), synth.clone())),
+                    ),
                 );
             }
             let mut payload = IndexMap::new();
             payload.insert(HashableValue::Str("scrutinee".into()), recurse(scrutinee));
             payload.insert(
                 HashableValue::Str("arms".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    Value::Dict(arms_dict),
-                    synth.clone(),
-                ))),
+                ctx.alloc_thunk(
+                    0,
+                    Arc::new(Thunk::value(Value::Dict(arms_dict), synth.clone())),
+                ),
             );
             make_variant("Match", payload)
         }
@@ -641,19 +635,19 @@ pub fn core_expr_to_expr_value(
             let mut fields = IndexMap::new();
             fields.insert(
                 HashableValue::Str("tag".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val(tag),
-                    synth.clone(),
-                ))),
+                ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(tag), synth.clone()))),
             );
             fields.insert(
                 HashableValue::Str("payload".into()),
                 match payload {
                     Some(p) => recurse(p),
-                    None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                        Value::Dict(IndexMap::new()), // Null
-                        synth.clone(),
-                    ))),
+                    None => ctx.alloc_thunk(
+                        0,
+                        Arc::new(Thunk::value(
+                            Value::Dict(IndexMap::new()), // Null
+                            synth.clone(),
+                        )),
+                    ),
                 },
             );
             make_variant("Variant", fields)
@@ -1160,38 +1154,29 @@ fn extract_list(
 // generated code to use.
 
 pub(crate) fn alloc_str(s: &str, span: &Span, ctx: &Arc<crate::eval::EvalContext>) -> ThunkId {
-    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-        string_val(s),
-        span.clone(),
-    )))
+    ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(s), span.clone())))
 }
 
 pub(crate) fn alloc_bool(b: bool, span: &Span, ctx: &Arc<crate::eval::EvalContext>) -> ThunkId {
-    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-        Value::Int(if b { 1 } else { 0 }),
-        span.clone(),
-    )))
+    ctx.alloc_thunk(
+        0,
+        Arc::new(Thunk::value(
+            Value::Int(if b { 1 } else { 0 }),
+            span.clone(),
+        )),
+    )
 }
 
 pub(crate) fn alloc_int(n: i64, span: &Span, ctx: &Arc<crate::eval::EvalContext>) -> ThunkId {
-    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-        Value::Int(n),
-        span.clone(),
-    )))
+    ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Int(n), span.clone())))
 }
 
 pub(crate) fn alloc_u64(n: u64, span: &Span, ctx: &Arc<crate::eval::EvalContext>) -> ThunkId {
-    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-        Value::U64(n),
-        span.clone(),
-    )))
+    ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::U64(n), span.clone())))
 }
 
 pub(crate) fn alloc_float(f: f64, span: &Span, ctx: &Arc<crate::eval::EvalContext>) -> ThunkId {
-    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-        Value::Float(f),
-        span.clone(),
-    )))
+    ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Float(f), span.clone())))
 }
 
 pub(crate) fn alloc_expr_child(
@@ -1199,7 +1184,7 @@ pub(crate) fn alloc_expr_child(
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> ThunkId {
     let val = surface_node_to_expr_variant(node, ctx);
-    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(val, node.span.clone())))
+    ctx.alloc_thunk(0, Arc::new(Thunk::value(val, node.span.clone())))
 }
 
 /// Allocate an optional child expression node.
@@ -1211,10 +1196,10 @@ pub(crate) fn alloc_expr_child_opt(
 ) -> ThunkId {
     match node {
         Some(n) => alloc_expr_child(n, ctx),
-        None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Dict(IndexMap::new()),
-            rust_span!(),
-        ))),
+        None => ctx.alloc_thunk(
+            0,
+            Arc::new(Thunk::value(Value::Dict(IndexMap::new()), rust_span!())),
+        ),
     }
 }
 
@@ -1224,16 +1209,16 @@ pub(crate) fn alloc_child_list(
 ) -> ThunkId {
     let mut map = IndexMap::new();
     for (i, n) in nodes.iter().enumerate() {
-        let tid = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            surface_node_to_expr_variant(n, ctx),
-            n.span.clone(),
-        )));
+        let tid = ctx.alloc_thunk(
+            0,
+            Arc::new(Thunk::value(
+                surface_node_to_expr_variant(n, ctx),
+                n.span.clone(),
+            )),
+        );
         map.insert(HashableValue::Int(i as i64), tid);
     }
-    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-        Value::Dict(map),
-        rust_span!(),
-    )))
+    ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(map), rust_span!())))
 }
 
 pub(crate) fn alloc_entry_list(
@@ -1247,39 +1232,28 @@ pub(crate) fn alloc_entry_list(
             Some(key_node) => SurfaceExpression::to_expr_variant(key_node, ctx),
             None => Value::Dict(IndexMap::new()),
         };
-        let key_thunk = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            key_val,
-            entry.span.clone(),
-        )));
+        let key_thunk = ctx.alloc_thunk(0, Arc::new(Thunk::value(key_val, entry.span.clone())));
         // value: Expr.* variant
         let val_val = SurfaceExpression::to_expr_variant(&entry.node.value, ctx);
-        let val_thunk = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            val_val,
-            entry.span.clone(),
-        )));
+        let val_thunk = ctx.alloc_thunk(0, Arc::new(Thunk::value(val_val, entry.span.clone())));
         // Build payload dict for Expr.Entry
         let mut payload: IndexMap<HashableValue, ThunkId> = IndexMap::new();
         payload.insert(HashableValue::Str("key".into()), key_thunk);
         payload.insert(HashableValue::Str("value".into()), val_thunk);
-        let payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Dict(payload),
-            entry.span.clone(),
-        )));
+        let payload_id = ctx.alloc_thunk(
+            0,
+            Arc::new(Thunk::value(Value::Dict(payload), entry.span.clone())),
+        );
         // Expr.Entry variant
         let entry_variant = Value::Variant {
             tag: "Expr.Entry".to_string(),
             payload: Some(payload_id),
         };
-        let entry_thunk = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            entry_variant,
-            entry.span.clone(),
-        )));
+        let entry_thunk =
+            ctx.alloc_thunk(0, Arc::new(Thunk::value(entry_variant, entry.span.clone())));
         dict.insert(HashableValue::Int(i as i64), entry_thunk);
     }
-    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-        Value::Dict(dict),
-        rust_span!(),
-    )))
+    ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(dict), rust_span!())))
 }
 
 pub(crate) fn alloc_named_arg_list(
@@ -1291,35 +1265,38 @@ pub(crate) fn alloc_named_arg_list(
         let mut na_payload = IndexMap::new();
         na_payload.insert(
             HashableValue::Str("name".into()),
-            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                string_val(&na.node.name),
-                na.span.clone(),
-            ))),
+            ctx.alloc_thunk(
+                0,
+                Arc::new(Thunk::value(string_val(&na.node.name), na.span.clone())),
+            ),
         );
         na_payload.insert(
             HashableValue::Str("value".into()),
-            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                surface_node_to_expr_variant(&na.node.value, ctx),
-                na.span.clone(),
-            ))),
+            ctx.alloc_thunk(
+                0,
+                Arc::new(Thunk::value(
+                    surface_node_to_expr_variant(&na.node.value, ctx),
+                    na.span.clone(),
+                )),
+            ),
         );
-        let payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Dict(na_payload),
-            na.span.clone(),
-        )));
-        let na_tid = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Variant {
-                tag: "Expr.NamedArg".into(),
-                payload: Some(payload_id),
-            },
-            na.span.clone(),
-        )));
+        let payload_id = ctx.alloc_thunk(
+            0,
+            Arc::new(Thunk::value(Value::Dict(na_payload), na.span.clone())),
+        );
+        let na_tid = ctx.alloc_thunk(
+            0,
+            Arc::new(Thunk::value(
+                Value::Variant {
+                    tag: "Expr.NamedArg".into(),
+                    payload: Some(payload_id),
+                },
+                na.span.clone(),
+            )),
+        );
         na_map.insert(HashableValue::Int(i as i64), na_tid);
     }
-    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-        Value::Dict(na_map),
-        rust_span!(),
-    )))
+    ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(na_map), rust_span!())))
 }
 
 pub(crate) fn alloc_param_list(
@@ -1331,41 +1308,47 @@ pub(crate) fn alloc_param_list(
         let mut p_payload = IndexMap::new();
         p_payload.insert(
             HashableValue::Str("name".into()),
-            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                string_val(&p.node.name),
-                p.span.clone(),
-            ))),
+            ctx.alloc_thunk(
+                0,
+                Arc::new(Thunk::value(string_val(&p.node.name), p.span.clone())),
+            ),
         );
         p_payload.insert(
             HashableValue::Str("variadic".into()),
-            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Int(if p.node.variadic { 1 } else { 0 }),
-                p.span.clone(),
-            ))),
+            ctx.alloc_thunk(
+                0,
+                Arc::new(Thunk::value(
+                    Value::Int(if p.node.variadic { 1 } else { 0 }),
+                    p.span.clone(),
+                )),
+            ),
         );
         let ann_val =
             crate::surface_fields::annotation_opt_to_value(p.node.annotation.as_ref(), ctx);
         p_payload.insert(
             HashableValue::Str("annotation".into()),
-            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(ann_val, p.span.clone()))),
+            ctx.alloc_thunk(0, Arc::new(Thunk::value(ann_val, p.span.clone()))),
         );
-        let param_payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Dict(p_payload),
-            p.span.clone(),
-        )));
-        let p_tid = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Variant {
-                tag: "Expr.Param".into(),
-                payload: Some(param_payload_id),
-            },
-            p.span.clone(),
-        )));
+        let param_payload_id = ctx.alloc_thunk(
+            0,
+            Arc::new(Thunk::value(Value::Dict(p_payload), p.span.clone())),
+        );
+        let p_tid = ctx.alloc_thunk(
+            0,
+            Arc::new(Thunk::value(
+                Value::Variant {
+                    tag: "Expr.Param".into(),
+                    payload: Some(param_payload_id),
+                },
+                p.span.clone(),
+            )),
+        );
         params_map.insert(HashableValue::Int(i as i64), p_tid);
     }
-    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-        Value::Dict(params_map),
-        rust_span!(),
-    )))
+    ctx.alloc_thunk(
+        0,
+        Arc::new(Thunk::value(Value::Dict(params_map), rust_span!())),
+    )
 }
 
 pub(crate) fn alloc_match_arm_list(
@@ -1373,7 +1356,7 @@ pub(crate) fn alloc_match_arm_list(
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> ThunkId {
     let val = crate::surface_fields::match_arms_to_list_dict_pub(arms, ctx);
-    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(val, rust_span!())))
+    ctx.alloc_thunk(0, Arc::new(Thunk::value(val, rust_span!())))
 }
 
 pub(crate) fn alloc_annotation(
@@ -1381,7 +1364,7 @@ pub(crate) fn alloc_annotation(
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> ThunkId {
     let val = crate::surface_fields::annotation_to_value(ann, ctx);
-    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(val, ann.span.clone())))
+    ctx.alloc_thunk(0, Arc::new(Thunk::value(val, ann.span.clone())))
 }
 
 pub(crate) fn alloc_annotation_opt(
@@ -1389,7 +1372,7 @@ pub(crate) fn alloc_annotation_opt(
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> ThunkId {
     let val = crate::surface_fields::annotation_opt_to_value(ann, ctx);
-    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(val, rust_span!())))
+    ctx.alloc_thunk(0, Arc::new(Thunk::value(val, rust_span!())))
 }
 
 pub(crate) fn alloc_string_opt(s: Option<&str>, ctx: &Arc<crate::eval::EvalContext>) -> ThunkId {
@@ -1397,7 +1380,7 @@ pub(crate) fn alloc_string_opt(s: Option<&str>, ctx: &Arc<crate::eval::EvalConte
         Some(name) => string_val(name),
         None => Value::Dict(IndexMap::new()),
     };
-    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(val, rust_span!())))
+    ctx.alloc_thunk(0, Arc::new(Thunk::value(val, rust_span!())))
 }
 
 pub(crate) fn alloc_dot_key(
@@ -1409,12 +1392,12 @@ pub(crate) fn alloc_dot_key(
         DotKey::Ident(name) => string_val(name),
         DotKey::Int(n) => string_val(&n.to_string()),
     };
-    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(val, span.clone())))
+    ctx.alloc_thunk(0, Arc::new(Thunk::value(val, span.clone())))
 }
 
 pub(crate) fn alloc_span(span: &Span, ctx: &Arc<crate::eval::EvalContext>) -> ThunkId {
     let val = crate::surface_fields::span_to_value(span, ctx);
-    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(val, span.clone())))
+    ctx.alloc_thunk(0, Arc::new(Thunk::value(val, span.clone())))
 }
 
 pub(crate) fn make_variant_with_payload(
@@ -1424,7 +1407,7 @@ pub(crate) fn make_variant_with_payload(
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Value {
     let payload_val = Value::Dict(payload);
-    let payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(payload_val, span.clone())));
+    let payload_id = ctx.alloc_thunk(0, Arc::new(Thunk::value(payload_val, span.clone())));
     Value::Variant {
         tag: tag.to_string(),
         payload: Some(payload_id),
@@ -1861,11 +1844,11 @@ pub(crate) fn get_match_arm_list_field_with_aliases(
             _ => None,
         };
         let body_val = get_dict_field(&arm_dict, "body", &[key, &i_str], ctx)?;
-        let body = dict_to_surface_node(&body_val, &arm_fallback_span, ctx)?;
+        let body_node = dict_to_surface_node(&body_val, &arm_fallback_span, ctx)?;
         arms.push(SurfaceMatchArm {
             pattern,
             guard,
-            body,
+            body: vec![body_node],
             guard_matchable_binding: crate::ast::MatchableBinding::new(),
         });
     }
@@ -2003,18 +1986,12 @@ pub fn surface_program_to_dict(
 
     root.insert(
         HashableValue::Str("type".into()),
-        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            string_val("file"),
-            span.clone(),
-        ))),
+        ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val("file"), span.clone()))),
     );
 
     root.insert(
         HashableValue::Str("schema-version".into()),
-        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Int(1),
-            span.clone(),
-        ))),
+        ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Int(1), span.clone()))),
     );
 
     // documents: list of document dicts
@@ -2034,7 +2011,7 @@ pub fn surface_program_to_dict(
         span_to_thunk_id(span.clone(), ctx)?,
     );
 
-    Ok(Arc::new(Thunk::new_materialized(Value::Dict(root), span)))
+    Ok(Arc::new(Thunk::value(Value::Dict(root), span)))
 }
 
 fn span_to_thunk_id(span: Span, ctx: &Arc<crate::eval::EvalContext>) -> EvalResult<ThunkId> {
@@ -2044,66 +2021,81 @@ fn span_to_thunk_id(span: Span, ctx: &Arc<crate::eval::EvalContext>) -> EvalResu
     let mut start_dict = IndexMap::new();
     start_dict.insert(
         HashableValue::Str("line".into()),
-        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Int(span.start.line as i64),
-            span.clone(),
-        ))),
+        ctx.alloc_thunk(
+            0,
+            Arc::new(Thunk::value(
+                Value::Int(span.start.line as i64),
+                span.clone(),
+            )),
+        ),
     );
     start_dict.insert(
         HashableValue::Str("col".into()),
-        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Int(span.start.column as i64),
-            span.clone(),
-        ))),
+        ctx.alloc_thunk(
+            0,
+            Arc::new(Thunk::value(
+                Value::Int(span.start.column as i64),
+                span.clone(),
+            )),
+        ),
     );
     start_dict.insert(
         HashableValue::Str("offset".into()),
-        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Int(span.start.offset as i64),
-            span.clone(),
-        ))),
+        ctx.alloc_thunk(
+            0,
+            Arc::new(Thunk::value(
+                Value::Int(span.start.offset as i64),
+                span.clone(),
+            )),
+        ),
     );
 
     // end position
     let mut end_dict = IndexMap::new();
     end_dict.insert(
         HashableValue::Str("line".into()),
-        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Int(span.end.line as i64),
-            span.clone(),
-        ))),
+        ctx.alloc_thunk(
+            0,
+            Arc::new(Thunk::value(Value::Int(span.end.line as i64), span.clone())),
+        ),
     );
     end_dict.insert(
         HashableValue::Str("col".into()),
-        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Int(span.end.column as i64),
-            span.clone(),
-        ))),
+        ctx.alloc_thunk(
+            0,
+            Arc::new(Thunk::value(
+                Value::Int(span.end.column as i64),
+                span.clone(),
+            )),
+        ),
     );
     end_dict.insert(
         HashableValue::Str("offset".into()),
-        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Int(span.end.offset as i64),
-            span.clone(),
-        ))),
+        ctx.alloc_thunk(
+            0,
+            Arc::new(Thunk::value(
+                Value::Int(span.end.offset as i64),
+                span.clone(),
+            )),
+        ),
     );
 
     dict.insert(
         HashableValue::Str("start".into()),
-        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Dict(start_dict),
-            span.clone(),
-        ))),
+        ctx.alloc_thunk(
+            0,
+            Arc::new(Thunk::value(Value::Dict(start_dict), span.clone())),
+        ),
     );
     dict.insert(
         HashableValue::Str("end".into()),
-        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Dict(end_dict),
-            span.clone(),
-        ))),
+        ctx.alloc_thunk(
+            0,
+            Arc::new(Thunk::value(Value::Dict(end_dict), span.clone())),
+        ),
     );
 
-    Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(dict), span))))
+    Ok(ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(dict), span))))
 }
 
 /// Convert a Vec<ThunkId> to a dict-based list (auto-indexed dict with integer keys).
@@ -2116,7 +2108,7 @@ pub(crate) fn list_to_thunk_id(
     for (i, item) in items.enumerate() {
         dict.insert(HashableValue::Int(i as i64), item);
     }
-    Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(dict), span))))
+    Ok(ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(dict), span))))
 }
 
 pub(crate) fn annotation_to_thunk_id(
@@ -2128,43 +2120,37 @@ pub(crate) fn annotation_to_thunk_id(
 
     dict.insert(
         HashableValue::Str("type".into()),
-        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            string_val("annotation"),
-            span.clone(),
-        ))),
+        ctx.alloc_thunk(
+            0,
+            Arc::new(Thunk::value(string_val("annotation"), span.clone())),
+        ),
     );
 
     match ann {
         Annotation::Simple(name) => {
             dict.insert(
                 HashableValue::Str("kind".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val("simple"),
-                    span.clone(),
-                ))),
+                ctx.alloc_thunk(
+                    0,
+                    Arc::new(Thunk::value(string_val("simple"), span.clone())),
+                ),
             );
             dict.insert(
                 HashableValue::Str("value".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val(name),
-                    span.clone(),
-                ))),
+                ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(name), span.clone()))),
             );
         }
         Annotation::Annotated(name, inner) => {
             dict.insert(
                 HashableValue::Str("kind".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val("annotated"),
-                    span.clone(),
-                ))),
+                ctx.alloc_thunk(
+                    0,
+                    Arc::new(Thunk::value(string_val("annotated"), span.clone())),
+                ),
             );
             dict.insert(
                 HashableValue::Str("name".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val(name),
-                    span.clone(),
-                ))),
+                ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(name), span.clone()))),
             );
             dict.insert(
                 HashableValue::Str("inner".into()),
@@ -2174,10 +2160,7 @@ pub(crate) fn annotation_to_thunk_id(
         Annotation::PropertyDict(entries) => {
             dict.insert(
                 HashableValue::Str("kind".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val("dict"),
-                    span.clone(),
-                ))),
+                ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val("dict"), span.clone()))),
             );
 
             // Convert entries to thunk IDs - these are annotation entries (simpler than regular entries)
@@ -2187,10 +2170,10 @@ pub(crate) fn annotation_to_thunk_id(
                     let mut entry_dict = IndexMap::new();
                     entry_dict.insert(
                         HashableValue::Str("type".into()),
-                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                            string_val("entry"),
-                            e.span.clone(),
-                        ))),
+                        ctx.alloc_thunk(
+                            0,
+                            Arc::new(Thunk::value(string_val("entry"), e.span.clone())),
+                        ),
                     );
 
                     // For annotation dicts, keys are always string literals (bare words).
@@ -2198,19 +2181,22 @@ pub(crate) fn annotation_to_thunk_id(
                     let key_id = match &e.node.key {
                         Some(k) => match &k.expr {
                             crate::ast::SurfaceExpression::StringLiteral { content: s, .. } => ctx
-                                .alloc_thunk(Arc::new(Thunk::new_materialized(
-                                    string_val(s),
+                                .alloc_thunk(
+                                    0,
+                                    Arc::new(Thunk::value(string_val(s), k.span.clone())),
+                                ),
+                            _ => ctx.alloc_thunk(
+                                0,
+                                Arc::new(Thunk::value(
+                                    Value::Dict(IndexMap::new()),
                                     k.span.clone(),
-                                ))),
-                            _ => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                                Value::Dict(IndexMap::new()),
-                                k.span.clone(),
-                            ))),
+                                )),
+                            ),
                         },
-                        None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                            Value::Dict(IndexMap::new()),
-                            e.span.clone(),
-                        ))),
+                        None => ctx.alloc_thunk(
+                            0,
+                            Arc::new(Thunk::value(Value::Dict(IndexMap::new()), e.span.clone())),
+                        ),
                     };
 
                     entry_dict.insert(HashableValue::Str("key".into()), key_id);
@@ -2219,26 +2205,28 @@ pub(crate) fn annotation_to_thunk_id(
                     // or full AST dicts for compound values like [a: Numeric] or Seq@Int.
                     let value_id = match &e.node.value.expr {
                         crate::ast::SurfaceExpression::StringLiteral { content: s, .. } => ctx
-                            .alloc_thunk(Arc::new(Thunk::new_materialized(
-                                string_val(s),
-                                e.node.value.span.clone(),
-                            ))),
-                        crate::ast::SurfaceExpression::Int(n) => ctx.alloc_thunk(Arc::new(
-                            Thunk::new_materialized(Value::Int(*n), e.node.value.span.clone()),
-                        )),
-                        crate::ast::SurfaceExpression::U64(n) => ctx.alloc_thunk(Arc::new(
-                            Thunk::new_materialized(Value::U64(*n), e.node.value.span.clone()),
-                        )),
+                            .alloc_thunk(
+                                0,
+                                Arc::new(Thunk::value(string_val(s), e.node.value.span.clone())),
+                            ),
+                        crate::ast::SurfaceExpression::Int(n) => ctx.alloc_thunk(
+                            0,
+                            Arc::new(Thunk::value(Value::Int(*n), e.node.value.span.clone())),
+                        ),
+                        crate::ast::SurfaceExpression::U64(n) => ctx.alloc_thunk(
+                            0,
+                            Arc::new(Thunk::value(Value::U64(*n), e.node.value.span.clone())),
+                        ),
                         _ => {
                             surface_node_to_thunk_id(&e.node.value, &AstToDictOpts::default(), ctx)?
                         }
                     };
 
                     entry_dict.insert(HashableValue::Str("value".into()), value_id);
-                    Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                        Value::Dict(entry_dict),
-                        e.span.clone(),
-                    ))))
+                    Ok(ctx.alloc_thunk(
+                        0,
+                        Arc::new(Thunk::value(Value::Dict(entry_dict), e.span.clone())),
+                    ))
                 })
                 .collect::<EvalResult<Vec<_>>>()?;
 
@@ -2249,7 +2237,7 @@ pub(crate) fn annotation_to_thunk_id(
         }
     }
 
-    Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(dict), span))))
+    Ok(ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(dict), span))))
 }
 
 /// Convert a `SurfaceDocument` to a ThunkId containing its dict representation.
@@ -2268,10 +2256,10 @@ fn surface_document_to_thunk_id(
 
     dict.insert(
         HashableValue::Str("type".into()),
-        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            string_val("document"),
-            span.clone(),
-        ))),
+        ctx.alloc_thunk(
+            0,
+            Arc::new(Thunk::value(string_val("document"), span.clone())),
+        ),
     );
 
     // expressions: list of expression/declaration dicts (all SurfaceItems, both Expr and Decl)
@@ -2304,10 +2292,10 @@ fn surface_document_to_thunk_id(
         .collect::<EvalResult<_>>()?;
     dict.insert(
         HashableValue::Str("header".into()),
-        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Dict(header_thunks),
-            span.clone(),
-        ))),
+        ctx.alloc_thunk(
+            0,
+            Arc::new(Thunk::value(Value::Dict(header_thunks), span.clone())),
+        ),
     );
 
     // leading-comments: absent when None or empty
@@ -2317,10 +2305,7 @@ fn surface_document_to_thunk_id(
                 let comment_ids: Vec<ThunkId> = comments
                     .iter()
                     .map(|c| {
-                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                            string_val(c),
-                            span.clone(),
-                        )))
+                        ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(c), span.clone())))
                     })
                     .collect();
                 dict.insert(
@@ -2336,7 +2321,7 @@ fn surface_document_to_thunk_id(
         span_to_thunk_id(span.clone(), ctx)?,
     );
 
-    Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(dict), span))))
+    Ok(ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(dict), span))))
 }
 
 /// Convert a `SurfaceDeclaration` to a ThunkId containing its dict representation.
@@ -2361,10 +2346,7 @@ fn surface_decl_to_thunk_id(
                 let params_thunk_ids: Vec<ThunkId> = params
                     .iter()
                     .map(|(name, _ann)| {
-                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                            string_val(name),
-                            span.clone(),
-                        )))
+                        ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(name), span.clone())))
                     })
                     .collect();
                 dict.insert(
@@ -2391,10 +2373,7 @@ fn surface_decl_to_thunk_id(
             variant_tag = "ClassDecl";
             dict.insert(
                 HashableValue::Str("name".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val(name),
-                    span.clone(),
-                ))),
+                ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(name), span.clone()))),
             );
             // params: integer-keyed list of param name strings
             let params_dict: IndexMap<HashableValue, ThunkId> = params
@@ -2403,19 +2382,16 @@ fn surface_decl_to_thunk_id(
                 .map(|(i, p)| {
                     (
                         HashableValue::Int(i as i64),
-                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                            string_val(p),
-                            span.clone(),
-                        ))),
+                        ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(p), span.clone()))),
                     )
                 })
                 .collect();
             dict.insert(
                 HashableValue::Str("params".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    Value::Dict(params_dict),
-                    span.clone(),
-                ))),
+                ctx.alloc_thunk(
+                    0,
+                    Arc::new(Thunk::value(Value::Dict(params_dict), span.clone())),
+                ),
             );
             // superclasses: Seq of [class-name, param1, param2, ...] seqs
             // Only emitted when non-empty (e.g. [class Ord a where Eq a] → [[Eq a]])
@@ -2425,25 +2401,22 @@ fn surface_decl_to_thunk_id(
                     .map(|(class_name, var_names)| {
                         let mut entries: Vec<(HashableValue, ThunkId)> = vec![(
                             HashableValue::Int(0),
-                            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                                string_val(class_name),
-                                span.clone(),
-                            ))),
+                            ctx.alloc_thunk(
+                                0,
+                                Arc::new(Thunk::value(string_val(class_name), span.clone())),
+                            ),
                         )];
                         for (i, var_name) in var_names.iter().enumerate() {
                             entries.push((
                                 HashableValue::Int((i + 1) as i64),
-                                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                                    string_val(var_name),
-                                    span.clone(),
-                                ))),
+                                ctx.alloc_thunk(
+                                    0,
+                                    Arc::new(Thunk::value(string_val(var_name), span.clone())),
+                                ),
                             ));
                         }
                         let inner: IndexMap<HashableValue, ThunkId> = entries.into_iter().collect();
-                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                            Value::Dict(inner),
-                            span.clone(),
-                        )))
+                        ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(inner), span.clone())))
                     })
                     .collect();
                 dict.insert(
@@ -2473,10 +2446,10 @@ fn surface_decl_to_thunk_id(
                 .collect();
             dict.insert(
                 HashableValue::Str("methods".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    Value::Dict(methods_dict),
-                    span.clone(),
-                ))),
+                ctx.alloc_thunk(
+                    0,
+                    Arc::new(Thunk::value(Value::Dict(methods_dict), span.clone())),
+                ),
             );
             // determines: optional integer-keyed list of expression dicts
             if !determines.is_empty() {
@@ -2492,10 +2465,10 @@ fn surface_decl_to_thunk_id(
                     .collect();
                 dict.insert(
                     HashableValue::Str("determines".into()),
-                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                        Value::Dict(determines_dict),
-                        span.clone(),
-                    ))),
+                    ctx.alloc_thunk(
+                        0,
+                        Arc::new(Thunk::value(Value::Dict(determines_dict), span.clone())),
+                    ),
                 );
             }
             // resolver: optional expression dict
@@ -2509,10 +2482,7 @@ fn surface_decl_to_thunk_id(
             if *resolver_injective {
                 dict.insert(
                     HashableValue::Str("injective".into()),
-                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                        Value::Int(1),
-                        span.clone(),
-                    ))),
+                    ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Int(1), span.clone()))),
                 );
             }
         }
@@ -2521,10 +2491,10 @@ fn surface_decl_to_thunk_id(
             variant_tag = "InstanceDecl";
             dict.insert(
                 HashableValue::Str("class".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val(class_name),
-                    span.clone(),
-                ))),
+                ctx.alloc_thunk(
+                    0,
+                    Arc::new(Thunk::value(string_val(class_name), span.clone())),
+                ),
             );
             // arms: integer-keyed list of {pattern, methods} dicts
             let arms_dict: IndexMap<HashableValue, ThunkId> = arms
@@ -2558,26 +2528,26 @@ fn surface_decl_to_thunk_id(
                         .collect();
                     arm_dict.insert(
                         HashableValue::Str("methods".into()),
-                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                            Value::Dict(methods_dict),
-                            span.clone(),
-                        ))),
+                        ctx.alloc_thunk(
+                            0,
+                            Arc::new(Thunk::value(Value::Dict(methods_dict), span.clone())),
+                        ),
                     );
                     Some((
                         HashableValue::Int(i as i64),
-                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                            Value::Dict(arm_dict),
-                            span.clone(),
-                        ))),
+                        ctx.alloc_thunk(
+                            0,
+                            Arc::new(Thunk::value(Value::Dict(arm_dict), span.clone())),
+                        ),
                     ))
                 })
                 .collect();
             dict.insert(
                 HashableValue::Str("arms".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    Value::Dict(arms_dict),
-                    span.clone(),
-                ))),
+                ctx.alloc_thunk(
+                    0,
+                    Arc::new(Thunk::value(Value::Dict(arms_dict), span.clone())),
+                ),
             );
         }
 
@@ -2589,10 +2559,7 @@ fn surface_decl_to_thunk_id(
             variant_tag = "SyntaxClass";
             dict.insert(
                 HashableValue::Str("name".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val(name),
-                    span.clone(),
-                ))),
+                ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(name), span.clone()))),
             );
             dict.insert(
                 HashableValue::Str("pattern".into()),
@@ -2601,10 +2568,7 @@ fn surface_decl_to_thunk_id(
             if let Some(msg) = message {
                 dict.insert(
                     HashableValue::Str("message".into()),
-                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                        string_val(msg),
-                        span.clone(),
-                    ))),
+                    ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(msg), span.clone()))),
                 );
             }
         }
@@ -2617,16 +2581,19 @@ fn surface_decl_to_thunk_id(
             }
             dict.insert(
                 HashableValue::Str("forms".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    Value::Dict(
-                        form_list
-                            .into_iter()
-                            .enumerate()
-                            .map(|(i, v)| (HashableValue::Int(i as i64), v))
-                            .collect(),
-                    ),
-                    span.clone(),
-                ))),
+                ctx.alloc_thunk(
+                    0,
+                    Arc::new(Thunk::value(
+                        Value::Dict(
+                            form_list
+                                .into_iter()
+                                .enumerate()
+                                .map(|(i, v)| (HashableValue::Int(i as i64), v))
+                                .collect(),
+                        ),
+                        span.clone(),
+                    )),
+                ),
             );
         }
     }
@@ -2635,17 +2602,17 @@ fn surface_decl_to_thunk_id(
         HashableValue::Str("span".into()),
         span_to_thunk_id(span.clone(), ctx)?,
     );
-    let payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-        Value::Dict(dict),
-        span.clone(),
-    )));
-    Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-        Value::Variant {
-            tag: variant_tag.to_string(),
-            payload: Some(payload_id),
-        },
-        span,
-    ))))
+    let payload_id = ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(dict), span.clone())));
+    Ok(ctx.alloc_thunk(
+        0,
+        Arc::new(Thunk::value(
+            Value::Variant {
+                tag: variant_tag.to_string(),
+                payload: Some(payload_id),
+            },
+            span,
+        )),
+    ))
 }
 
 /// Override the `bare` field in an `Expr.Literal` (kind: "str") variant's payload.
@@ -2671,15 +2638,16 @@ fn override_bare_in_literal_variant(
         if tag == "Expr.Literal" {
             let payload_thunk = ctx.get_thunk(payload_id);
             if let Some(Value::Dict(mut dict)) = payload_thunk.try_get_materialized() {
-                let new_bare_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    Value::Int(if bare { 1 } else { 0 }),
-                    span.clone(),
-                )));
+                let new_bare_id = ctx.alloc_thunk(
+                    0,
+                    Arc::new(Thunk::value(
+                        Value::Int(if bare { 1 } else { 0 }),
+                        span.clone(),
+                    )),
+                );
                 dict.insert(HashableValue::Str("bare".into()), new_bare_id);
-                let new_payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    Value::Dict(dict),
-                    span.clone(),
-                )));
+                let new_payload_id =
+                    ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(dict), span.clone())));
                 return Value::Variant {
                     tag: tag.clone(),
                     payload: Some(new_payload_id),
@@ -2725,17 +2693,11 @@ fn alloc_entry_list_with_opts(
             }
             None => Value::Dict(IndexMap::new()),
         };
-        let key_thunk = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            key_val,
-            entry.span.clone(),
-        )));
+        let key_thunk = ctx.alloc_thunk(0, Arc::new(Thunk::value(key_val, entry.span.clone())));
 
         // value: Expr.* variant
         let val_val = SurfaceExpression::to_expr_variant(&entry.node.value, ctx);
-        let val_thunk = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            val_val,
-            entry.span.clone(),
-        )));
+        let val_thunk = ctx.alloc_thunk(0, Arc::new(Thunk::value(val_val, entry.span.clone())));
 
         // Build payload dict for Expr.Entry
         let mut payload: IndexMap<HashableValue, ThunkId> = IndexMap::new();
@@ -2752,10 +2714,10 @@ fn alloc_entry_list_with_opts(
                     let comment_ids: Vec<ThunkId> = comments
                         .iter()
                         .map(|c| {
-                            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                                string_val(c),
-                                entry.span.clone(),
-                            )))
+                            ctx.alloc_thunk(
+                                0,
+                                Arc::new(Thunk::value(string_val(c), entry.span.clone())),
+                            )
                         })
                         .collect();
                     let comments_tid =
@@ -2766,41 +2728,37 @@ fn alloc_entry_list_with_opts(
 
             // blank-before: true when there is a blank line before this entry
             let is_blank = comment_maps.blank_before.get(&offset) == Some(&true);
-            let blank_tid = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Int(if is_blank { 1 } else { 0 }),
-                entry.span.clone(),
-            )));
+            let blank_tid = ctx.alloc_thunk(
+                0,
+                Arc::new(Thunk::value(
+                    Value::Int(if is_blank { 1 } else { 0 }),
+                    entry.span.clone(),
+                )),
+            );
             payload.insert(HashableValue::Str("blank-before".into()), blank_tid);
         }
 
         // When no comment maps, always include blank-before: false as default
         if opts.comments.is_none() {
-            let blank_tid = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Int(0),
-                entry.span.clone(),
-            )));
+            let blank_tid =
+                ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Int(0), entry.span.clone())));
             payload.insert(HashableValue::Str("blank-before".into()), blank_tid);
         }
 
-        let payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Dict(payload),
-            entry.span.clone(),
-        )));
+        let payload_id = ctx.alloc_thunk(
+            0,
+            Arc::new(Thunk::value(Value::Dict(payload), entry.span.clone())),
+        );
         // Expr.Entry variant
         let entry_variant = Value::Variant {
             tag: "Expr.Entry".to_string(),
             payload: Some(payload_id),
         };
-        let entry_thunk = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            entry_variant,
-            entry.span.clone(),
-        )));
+        let entry_thunk =
+            ctx.alloc_thunk(0, Arc::new(Thunk::value(entry_variant, entry.span.clone())));
         dict.insert(HashableValue::Int(i as i64), entry_thunk);
     }
-    Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-        Value::Dict(dict),
-        rust_span!(),
-    ))))
+    Ok(ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(dict), rust_span!()))))
 }
 
 /// Convert a SurfaceNode to a ThunkId containing its `Expr.*` variant representation.
@@ -2819,10 +2777,10 @@ fn surface_node_to_thunk_id(
         let entries_tid = alloc_entry_list_with_opts(entries, opts, ctx)?;
         let mut payload: IndexMap<HashableValue, ThunkId> = IndexMap::new();
         payload.insert(HashableValue::Str("entries".into()), entries_tid);
-        let payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Dict(payload),
-            node.span.clone(),
-        )));
+        let payload_id = ctx.alloc_thunk(
+            0,
+            Arc::new(Thunk::value(Value::Dict(payload), node.span.clone())),
+        );
         inject_span_into_expr_variant(
             Value::Variant {
                 tag: "Expr.Dict".to_string(),
@@ -2834,7 +2792,7 @@ fn surface_node_to_thunk_id(
     } else {
         surface_node_to_expr_variant(node, ctx)
     };
-    Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(val, node.span.clone()))))
+    Ok(ctx.alloc_thunk(0, Arc::new(Thunk::value(val, node.span.clone()))))
 }
 
 #[cfg(test)]

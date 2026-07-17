@@ -180,6 +180,7 @@ async fn collect_seq_elements(
 /// Operates entirely on SurfaceNode — no Expr round-trip.
 fn eval_quote_preprocess<'a>(
     node: Arc<crate::ast::SurfaceNode>,
+    env_id: u32,
     ctx: &'a Arc<EvalContext>,
 ) -> std::pin::Pin<
     Box<dyn std::future::Future<Output = EvalResult<Arc<crate::ast::SurfaceNode>>> + 'a>,
@@ -200,7 +201,7 @@ fn eval_quote_preprocess<'a>(
                     &mut Vec::new(),
                     ctx.scope_frames.as_ref().map(|v| v.as_slice()),
                 );
-                let thunk = eval_core_expr(&core, ctx).await?;
+                let thunk = eval_core_expr(&core, env_id, ctx).await?;
                 let value = materialize(&thunk, Some(&inner.span), ctx).await?;
                 value_to_surface_node(&value, inner.span.clone(), ctx)
             }
@@ -228,7 +229,7 @@ fn eval_quote_preprocess<'a>(
                             &mut Vec::new(),
                             ctx.scope_frames.as_ref().map(|v| v.as_slice()),
                         );
-                        let thunk = eval_core_expr(&core, ctx).await?;
+                        let thunk = eval_core_expr(&core, env_id, ctx).await?;
                         let inner_span = inner.span.clone();
                         let value = materialize(&thunk, Some(&inner_span), ctx).await?;
 
@@ -306,9 +307,10 @@ fn eval_quote_preprocess<'a>(
                     } else {
                         // Regular entry - recursively process
                         let processed_value =
-                            eval_quote_preprocess(Arc::clone(&entry.node.value), ctx).await?;
+                            eval_quote_preprocess(Arc::clone(&entry.node.value), env_id, ctx)
+                                .await?;
                         let processed_key = if let Some(ref key_node) = entry.node.key {
-                            Some(eval_quote_preprocess(Arc::clone(key_node), ctx).await?)
+                            Some(eval_quote_preprocess(Arc::clone(key_node), env_id, ctx).await?)
                         } else {
                             None
                         };
@@ -330,7 +332,7 @@ fn eval_quote_preprocess<'a>(
                 named_args,
                 implied,
             } => {
-                let processed_func = eval_quote_preprocess(Arc::clone(func), ctx).await?;
+                let processed_func = eval_quote_preprocess(Arc::clone(func), env_id, ctx).await?;
                 let mut processed_args: Vec<Arc<SurfaceNode>> = Vec::new();
                 for arg in args {
                     // Handle unquote-splicing in call argument position
@@ -341,7 +343,7 @@ fn eval_quote_preprocess<'a>(
                             &mut Vec::new(),
                             ctx.scope_frames.as_ref().map(|v| v.as_slice()),
                         );
-                        let thunk = eval_core_expr(&core, ctx).await?;
+                        let thunk = eval_core_expr(&core, env_id, ctx).await?;
                         let inner_span = inner.span.clone();
                         let value = materialize(&thunk, Some(&inner_span), ctx).await?;
 
@@ -355,14 +357,15 @@ fn eval_quote_preprocess<'a>(
                         }
                     } else {
                         // Regular argument - recursively process
-                        processed_args.push(eval_quote_preprocess(Arc::clone(arg), ctx).await?);
+                        processed_args
+                            .push(eval_quote_preprocess(Arc::clone(arg), env_id, ctx).await?);
                     }
                 }
                 let mut processed_named_args: Vec<Spanned<SurfaceNamedArg>> =
                     Vec::with_capacity(named_args.len());
                 for na in named_args {
                     let processed_value =
-                        eval_quote_preprocess(Arc::clone(&na.node.value), ctx).await?;
+                        eval_quote_preprocess(Arc::clone(&na.node.value), env_id, ctx).await?;
                     processed_named_args.push(Spanned::new(
                         SurfaceNamedArg {
                             name: na.node.name.clone(),
@@ -386,7 +389,7 @@ fn eval_quote_preprocess<'a>(
                 body,
                 desugared,
             } => {
-                let processed_body = eval_quote_preprocess(Arc::clone(body), ctx).await?;
+                let processed_body = eval_quote_preprocess(Arc::clone(body), env_id, ctx).await?;
                 Ok(make_node(SurfaceExpression::Fn {
                     return_ann: return_ann.clone(),
                     params: params.clone(),
@@ -400,7 +403,8 @@ fn eval_quote_preprocess<'a>(
                 field,
                 ..
             } => {
-                let processed_target = eval_quote_preprocess(Arc::clone(target), ctx).await?;
+                let processed_target =
+                    eval_quote_preprocess(Arc::clone(target), env_id, ctx).await?;
                 Ok(make_node(SurfaceExpression::Field {
                     expr: Some(processed_target),
                     field: field.clone(),
@@ -420,8 +424,8 @@ fn eval_quote_preprocess<'a>(
             })),
 
             SurfaceExpression::Pipe { lhs, rhs } => {
-                let processed_lhs = eval_quote_preprocess(Arc::clone(lhs), ctx).await?;
-                let processed_rhs = eval_quote_preprocess(Arc::clone(rhs), ctx).await?;
+                let processed_lhs = eval_quote_preprocess(Arc::clone(lhs), env_id, ctx).await?;
+                let processed_rhs = eval_quote_preprocess(Arc::clone(rhs), env_id, ctx).await?;
                 Ok(make_node(SurfaceExpression::Pipe {
                     lhs: processed_lhs,
                     rhs: processed_rhs,
@@ -431,7 +435,7 @@ fn eval_quote_preprocess<'a>(
             SurfaceExpression::Sequential(exprs) => {
                 let mut processed_exprs = Vec::with_capacity(exprs.len());
                 for e in exprs {
-                    processed_exprs.push(eval_quote_preprocess(Arc::clone(e), ctx).await?);
+                    processed_exprs.push(eval_quote_preprocess(Arc::clone(e), env_id, ctx).await?);
                 }
                 Ok(make_node(SurfaceExpression::Sequential(processed_exprs)))
             }
@@ -441,7 +445,7 @@ fn eval_quote_preprocess<'a>(
                 expr: inner,
                 ..
             } => {
-                let processed_expr = eval_quote_preprocess(Arc::clone(inner), ctx).await?;
+                let processed_expr = eval_quote_preprocess(Arc::clone(inner), env_id, ctx).await?;
                 Ok(make_node(SurfaceExpression::TypeAssert {
                     annotation: annotation.clone(),
                     expr: processed_expr,
@@ -451,17 +455,22 @@ fn eval_quote_preprocess<'a>(
 
             SurfaceExpression::Quote(inner) => {
                 // Nested quote: recurse so inner unquotes are still processed.
-                let processed_inner = eval_quote_preprocess(Arc::clone(inner), ctx).await?;
+                let processed_inner = eval_quote_preprocess(Arc::clone(inner), env_id, ctx).await?;
                 Ok(make_node(SurfaceExpression::Quote(processed_inner)))
             }
 
             SurfaceExpression::Match { scrutinee, arms } => {
-                let processed_scrutinee = eval_quote_preprocess(Arc::clone(scrutinee), ctx).await?;
+                let processed_scrutinee =
+                    eval_quote_preprocess(Arc::clone(scrutinee), env_id, ctx).await?;
                 let mut processed_arms = Vec::with_capacity(arms.len());
                 for arm in arms {
-                    let processed_body = eval_quote_preprocess(Arc::clone(&arm.body), ctx).await?;
+                    let mut processed_body = Vec::with_capacity(arm.body.len());
+                    for body_expr in &arm.body {
+                        processed_body
+                            .push(eval_quote_preprocess(Arc::clone(body_expr), env_id, ctx).await?);
+                    }
                     let processed_guard = if let Some(ref guard) = arm.guard {
-                        Some(eval_quote_preprocess(Arc::clone(guard), ctx).await?)
+                        Some(eval_quote_preprocess(Arc::clone(guard), env_id, ctx).await?)
                     } else {
                         None
                     };
@@ -485,7 +494,8 @@ fn eval_quote_preprocess<'a>(
                 // unquotes inside the alias body to be evaluated.
                 let processed_decl = match decl.as_ref() {
                     SurfaceDeclaration::TypeAlias { params, body } => {
-                        let processed_body = eval_quote_preprocess(Arc::clone(body), ctx).await?;
+                        let processed_body =
+                            eval_quote_preprocess(Arc::clone(body), env_id, ctx).await?;
                         SurfaceDeclaration::TypeAlias {
                             params: params.clone(),
                             body: processed_body,
@@ -497,7 +507,7 @@ fn eval_quote_preprocess<'a>(
                         message,
                     } => {
                         let processed_pattern =
-                            eval_quote_preprocess(Arc::clone(pattern), ctx).await?;
+                            eval_quote_preprocess(Arc::clone(pattern), env_id, ctx).await?;
                         SurfaceDeclaration::SyntaxClass {
                             name: name.clone(),
                             pattern: processed_pattern,
@@ -508,7 +518,7 @@ fn eval_quote_preprocess<'a>(
                         let mut processed_forms = Vec::with_capacity(forms.len());
                         for form in forms {
                             processed_forms
-                                .push(eval_quote_preprocess(Arc::clone(form), ctx).await?);
+                                .push(eval_quote_preprocess(Arc::clone(form), env_id, ctx).await?);
                         }
                         SurfaceDeclaration::Splice(processed_forms)
                     }
@@ -526,13 +536,14 @@ fn eval_quote_preprocess<'a>(
 
 async fn eval_quote_walk(
     node: Arc<crate::ast::SurfaceNode>,
+    env_id: u32,
     ctx: &Arc<EvalContext>,
 ) -> EvalResult<Arc<Thunk>> {
     let span = node.span.clone();
     // Preprocess to handle nested unquotes (rewrites unquote subexpressions)
-    let processed_node = eval_quote_preprocess(node, ctx).await?;
+    let processed_node = eval_quote_preprocess(node, env_id, ctx).await?;
 
-    Ok(Arc::new(Thunk::new_materialized(
+    Ok(Arc::new(Thunk::value(
         crate::surface_convert::surface_node_to_expr_variant(&processed_node, ctx),
         span,
     )))
@@ -553,6 +564,7 @@ async fn eval_quote_walk(
 /// duplicating this logic. The two call sites are identical except for crate-path prefixes.
 pub(crate) async fn extract_fn_annotation_extra(
     return_ann: Option<&crate::ast::Spanned<crate::ast::Annotation>>,
+    env_id: u32,
     ctx: &Arc<EvalContext>,
 ) -> EvalResult<IndexMap<String, Value>> {
     let Some(ann_spanned) = return_ann else {
@@ -601,7 +613,7 @@ pub(crate) async fn extract_fn_annotation_extra(
                 );
 
                 // Evaluate the CoreExpr to a thunk, then materialize to a Value.
-                let thunk = eval_core_expr(&core_expr, ctx).await?;
+                let thunk = eval_core_expr(&core_expr, env_id, ctx).await?;
                 materialize(&thunk, Some(&e.node.value.span), ctx).await?
             }
         };
@@ -614,34 +626,21 @@ pub(crate) async fn extract_fn_annotation_extra(
 
 /// Evaluate a CoreExpr to a thunk.
 ///
-/// Variable lookup uses `ctx.current_env_id` (FlatEnv de Bruijn dispatch, T-1558).
+/// Variable lookup uses `env_id` (FlatEnv de Bruijn dispatch, T-1558).
 /// Dict/call/fn construction uses `ctx` for all scope management.
-///
-/// After T-1558: `env` parameter removed. All scope is via `ctx.current_env_id`.
 pub(crate) fn eval_core_expr<'a>(
     expr: &'a Spanned<CoreExpr>,
+    env_id: u32,
     ctx: &'a Arc<EvalContext>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>> + 'a>> {
     Box::pin(async move {
         let span = expr.span.clone();
         match &expr.node {
             // Fast path: literals materialize directly without wrapping in Unevaluated
-            CoreExpr::Int(n) => Ok(Arc::new(Thunk::new_materialized(
-                Value::Int(*n),
-                span.clone(),
-            ))),
-            CoreExpr::U64(n) => Ok(Arc::new(Thunk::new_materialized(
-                Value::U64(*n),
-                span.clone(),
-            ))),
-            CoreExpr::Float(f) => Ok(Arc::new(Thunk::new_materialized(
-                Value::Float(*f),
-                span.clone(),
-            ))),
-            CoreExpr::Str(s) => Ok(Arc::new(Thunk::new_materialized(
-                string_val(s),
-                span.clone(),
-            ))),
+            CoreExpr::Int(n) => Ok(Arc::new(Thunk::value(Value::Int(*n), span.clone()))),
+            CoreExpr::U64(n) => Ok(Arc::new(Thunk::value(Value::U64(*n), span.clone()))),
+            CoreExpr::Float(f) => Ok(Arc::new(Thunk::value(Value::Float(*f), span.clone()))),
+            CoreExpr::Str(s) => Ok(Arc::new(Thunk::value(string_val(s), span.clone()))),
 
             // Variable lookup with de Bruijn coordinates.
             // Coordinates are assigned at resolve time; slot lookup is fatal on miss —
@@ -657,7 +656,7 @@ pub(crate) fn eval_core_expr<'a>(
                 let thunk = {
                     let arena = ctx.scope_arena.borrow();
                     let level_idx = *level as usize;
-                    match arena.walk_parent_chain(ctx.current_env_id, level_idx) {
+                    match arena.walk_parent_chain(env_id, level_idx) {
                         Ok(target_env_id) => {
                             let slot_idx = *slot as usize;
                             arena.scopes[target_env_id.0 as usize]
@@ -666,7 +665,7 @@ pub(crate) fn eval_core_expr<'a>(
                         }
                         Err(depth_reached) => {
                             // Build a summary of scope levels for diagnostics.
-                            let chain = arena.collect_parent_chain(ctx.current_env_id);
+                            let chain = arena.collect_parent_chain(env_id);
                             let scope_depth = chain.len();
                             let scope_summary: String = chain
                                 .iter()
@@ -717,7 +716,7 @@ pub(crate) fn eval_core_expr<'a>(
             // materialize it, and store as a ThunkId — preserving the laziness invariant that
             // the payload dict's fields remain as thunks until accessed.
             CoreExpr::Variant { tag, payload } => match payload {
-                None => Ok(Arc::new(Thunk::new_materialized(
+                None => Ok(Arc::new(Thunk::value(
                     Value::Variant {
                         tag: tag.clone(),
                         payload: None,
@@ -725,11 +724,11 @@ pub(crate) fn eval_core_expr<'a>(
                     span.clone(),
                 ))),
                 Some(inner_expr) => {
-                    let payload_thunk = eval_core_expr(inner_expr, ctx).await?;
+                    let payload_thunk = eval_core_expr(inner_expr, env_id, ctx).await?;
                     let payload_val = materialize(&payload_thunk, Some(&span), ctx).await?;
-                    let payload_id = ctx
-                        .alloc_thunk(Arc::new(Thunk::new_materialized(payload_val, span.clone())));
-                    Ok(Arc::new(Thunk::new_materialized(
+                    let payload_id =
+                        ctx.alloc_thunk(0, Arc::new(Thunk::value(payload_val, span.clone())));
+                    Ok(Arc::new(Thunk::value(
                         Value::Variant {
                             tag: tag.clone(),
                             payload: Some(payload_id),
@@ -744,17 +743,17 @@ pub(crate) fn eval_core_expr<'a>(
             // Sequential: wrap as CoreExpr thunk — the CEK machine will handle iterative
             // evaluation via SequentialStep continuations.
             // This eliminates async recursion on the Rust stack for deeply nested sequential blocks.
-            CoreExpr::Sequential(_) => Ok(Arc::new(Thunk::new_unevaluated_core(
+            CoreExpr::Sequential(_) => Ok(Arc::new(Thunk::core_expr(
                 Arc::new(expr.clone()),
-                ctx.current_env_id,
+                env_id,
                 Arc::clone(ctx),
                 span.clone(),
             ))),
 
             // Dict: call eval_dict_core directly with the CoreEntry slice.
-            // eval_dict_core uses Thunk::new_unevaluated_core for non-literal dict entries
+            // eval_dict_core uses Thunk::core_expr for non-literal dict entries
             // (UnevaluatedState::CoreExpr), avoiding the per-entry core_expr_to_expr round-trip.
-            CoreExpr::Dict(entries) => eval_dict_core(entries, ctx, &span).await,
+            CoreExpr::Dict(entries) => eval_dict_core(entries, env_id, ctx, &span).await,
 
             // Call: use eval_call_core — no CoreExpr→Expr round-trip for func or named args.
             CoreExpr::Call {
@@ -762,7 +761,18 @@ pub(crate) fn eval_core_expr<'a>(
                 args,
                 named_args,
                 ..
-            } => eval_call_core(func, args, named_args, ctx, &span, Arc::new(expr.clone())).await,
+            } => {
+                eval_call_core(
+                    func,
+                    args,
+                    named_args,
+                    env_id,
+                    ctx,
+                    &span,
+                    Arc::new(expr.clone()),
+                )
+                .await
+            }
 
             // Fn: store body as Arc<Spanned<CoreExpr>> directly — no round-trip to Expr.
             CoreExpr::Fn {
@@ -784,7 +794,7 @@ pub(crate) fn eval_core_expr<'a>(
                 // `doc` is now included in extra: triple-quoted strings desugar to
                 // `[unindent "..."]` (a Call), which is evaluated here at definition time.
                 // T-1124: expression-valued fields are evaluated at function-definition time.
-                let extra = extract_fn_annotation_extra(return_ann.as_ref(), ctx).await?;
+                let extra = extract_fn_annotation_extra(return_ann.as_ref(), env_id, ctx).await?;
 
                 // Derive FnAnnotation.doc from extra["doc"] so triple-quoted doc strings
                 // (evaluated via `[unindent "..."]`) produce the correct runtime string.
@@ -806,12 +816,12 @@ pub(crate) fn eval_core_expr<'a>(
 
                 // Store the body directly as Arc<Spanned<CoreExpr>>.
                 // CoreExpr::Fn.body is already Arc<Spanned<CoreExpr>> — no conversion needed.
-                // Closure captures current_env_id as the FlatEnv scope at definition time.
-                Ok(Arc::new(Thunk::new_materialized(
+                // Closure captures env_id as the FlatEnv scope at definition time.
+                Ok(Arc::new(Thunk::value(
                     Value::Function {
                         params: Rc::new(fn_params),
                         body: Arc::clone(body),
-                        closure_env_id: ctx.current_env_id,
+                        closure_env_id: env_id,
                         annotation,
                     },
                     span.clone(),
@@ -821,9 +831,9 @@ pub(crate) fn eval_core_expr<'a>(
             // TypeAssert: wrap as CoreExpr thunk — force_step's take_core_expr branch
             // handles CoreExpr::TypeAssert inline, pushing a TypeAssertCheck continuation.
             // Wrapping here prevents direct recursion back through eval_core_expr.
-            CoreExpr::TypeAssert { .. } => Ok(Arc::new(Thunk::new_unevaluated_core(
+            CoreExpr::TypeAssert { .. } => Ok(Arc::new(Thunk::core_expr(
                 Arc::new(expr.clone()),
-                ctx.current_env_id,
+                env_id,
                 Arc::clone(ctx),
                 span.clone(),
             ))),
@@ -838,9 +848,9 @@ pub(crate) fn eval_core_expr<'a>(
             // Match: wrap as CoreExpr thunk — the CEK machine will handle iterative
             // evaluation via MatchDispatch and MatchGuardCheck continuations.
             // This eliminates async recursion on the Rust stack for deeply nested match chains.
-            CoreExpr::Match { .. } => Ok(Arc::new(Thunk::new_unevaluated_core(
+            CoreExpr::Match { .. } => Ok(Arc::new(Thunk::core_expr(
                 Arc::new(expr.clone()),
-                ctx.current_env_id,
+                env_id,
                 Arc::clone(ctx),
                 span.clone(),
             ))),
@@ -851,7 +861,7 @@ pub(crate) fn eval_core_expr<'a>(
             // the original name alongside the slot so the round-trip is lossless.
             CoreExpr::Quote(inner) => {
                 let surface_node = crate::lower::core_expr_to_surface_node(inner);
-                eval_quote_walk(surface_node, ctx).await
+                eval_quote_walk(surface_node, env_id, ctx).await
             }
 
             // Unquote: error (only valid inside quote)
@@ -904,20 +914,17 @@ pub(crate) fn eval_core_expr<'a>(
                             .into());
                         }
                     };
-                    let val_thunk = Arc::new(Thunk::new_unevaluated_core(
+                    let val_thunk = Arc::new(Thunk::core_expr(
                         Arc::new(val_expr.clone()),
-                        ctx.current_env_id,
+                        env_id,
                         Arc::clone(ctx),
                         val_expr.span.clone(),
                     ));
-                    let thunk_id = ctx.alloc_thunk(val_thunk);
+                    let thunk_id = ctx.alloc_thunk(env_id, val_thunk);
                     dict.insert(HashableValue::Str(Rc::from(name.as_str())), thunk_id);
                     i += 2;
                 }
-                Ok(Arc::new(Thunk::new_materialized(
-                    Value::Dict(dict),
-                    span.clone(),
-                )))
+                Ok(Arc::new(Thunk::value(Value::Dict(dict), span.clone())))
             }
 
             // CaseArm: error (not an expression)

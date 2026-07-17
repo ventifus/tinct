@@ -121,20 +121,18 @@ fn eval_annotation_property_dict(
                     } else {
                         s.clone()
                     };
-                    Arc::new(Thunk::new_materialized(
+                    Arc::new(Thunk::value(
                         string_val(&processed),
                         entry.node.value.span.clone(),
                     ))
                 }
-                SurfaceExpression::Int(n) => Arc::new(Thunk::new_materialized(
-                    Value::Int(*n),
-                    entry.node.value.span.clone(),
-                )),
-                SurfaceExpression::U64(n) => Arc::new(Thunk::new_materialized(
-                    Value::U64(*n),
-                    entry.node.value.span.clone(),
-                )),
-                SurfaceExpression::Float(f) => Arc::new(Thunk::new_materialized(
+                SurfaceExpression::Int(n) => {
+                    Arc::new(Thunk::value(Value::Int(*n), entry.node.value.span.clone()))
+                }
+                SurfaceExpression::U64(n) => {
+                    Arc::new(Thunk::value(Value::U64(*n), entry.node.value.span.clone()))
+                }
+                SurfaceExpression::Float(f) => Arc::new(Thunk::value(
                     Value::Float(*f),
                     entry.node.value.span.clone(),
                 )),
@@ -149,7 +147,7 @@ fn eval_annotation_property_dict(
             }
         };
 
-        let thunk_id = ctx.alloc_thunk(value_thunk);
+        let thunk_id = ctx.alloc_thunk(0, value_thunk);
         if dict_map.insert(key, thunk_id).is_some() {
             let key_str = match &entry.node.key {
                 Some(k_node) => match &k_node.expr {
@@ -175,7 +173,7 @@ fn eval_annotation_property_dict(
 // eval_dict_core / eval_key_core
 //
 // These functions accept `CoreEntry` / `CoreExpr` slices directly.
-// Non-literal entries use Thunk::new_unevaluated_core (UnevaluatedState::CoreExpr) —
+// Non-literal entries use Thunk::core_expr (UnevaluatedState::CoreExpr) —
 // no CoreExpr→Expr round-trip for dict values.
 //
 // Note: TypeAlias / ClassDecl / InstanceDecl declaration forms in dict value position
@@ -232,6 +230,7 @@ pub(crate) fn core_expr_is_static_key(k: &CoreExpr) -> bool {
 /// there are no `CoreExpr::TypeDecl` entries in the lowered AST.
 pub(crate) async fn eval_dict_core(
     entries: &[Spanned<CoreEntry>],
+    parent_env_id: u32,
     ctx: &Arc<EvalContext>,
     dict_span: &Span,
 ) -> EvalResult<Arc<Thunk>> {
@@ -248,7 +247,7 @@ pub(crate) async fn eval_dict_core(
     let env_id = ctx
         .scope_arena
         .borrow_mut()
-        .alloc_child(crate::arena::ScopeId(ctx.current_env_id), entries.len());
+        .alloc_child(crate::arena::ScopeId(parent_env_id), entries.len());
     let mut slot_idx: u32 = 0;
     // Collect (slot_idx, thunk_id, name) tuples for static-key entries so we can
     // batch-acquire the arena lock once after the loop instead of once per entry.
@@ -266,7 +265,7 @@ pub(crate) async fn eval_dict_core(
             .is_some_and(|k| core_expr_is_static_key(&k.node));
 
         let key = match &entry.node.key {
-            Some(key_expr) => eval_key_core(key_expr, ctx).await?,
+            Some(key_expr) => eval_key_core(key_expr, parent_env_id, ctx).await?,
             None => {
                 let k = HashableValue::Int(auto_index);
                 auto_index = auto_index.checked_add(1).ok_or_else(|| {
@@ -279,24 +278,22 @@ pub(crate) async fn eval_dict_core(
         // Fast path for literal values: Materialized thunks directly (Nix maybeThunk pattern).
         // Non-literal values become CoreExpr thunks pointing to dict_env.
         let value_thunk = match &entry.node.value.node {
-            CoreExpr::Int(n) => Arc::new(Thunk::new_materialized(
-                Value::Int(*n),
-                entry.node.value.span.clone(),
-            )),
-            CoreExpr::U64(n) => Arc::new(Thunk::new_materialized(
+            CoreExpr::Int(n) => {
+                Arc::new(Thunk::value(Value::Int(*n), entry.node.value.span.clone()))
+            }
+            CoreExpr::U64(n) => Arc::new(Thunk::value(
                 Value::BigInt(num_bigint::BigInt::from(*n)),
                 entry.node.value.span.clone(),
             )),
-            CoreExpr::Float(f) => Arc::new(Thunk::new_materialized(
+            CoreExpr::Float(f) => Arc::new(Thunk::value(
                 Value::Float(*f),
                 entry.node.value.span.clone(),
             )),
-            CoreExpr::Str(s) => Arc::new(Thunk::new_materialized(
-                string_val(s),
-                entry.node.value.span.clone(),
-            )),
+            CoreExpr::Str(s) => {
+                Arc::new(Thunk::value(string_val(s), entry.node.value.span.clone()))
+            }
             // Non-literal: use UnevaluatedState::CoreExpr with the FlatEnv dict scope.
-            _ => Arc::new(Thunk::new_unevaluated_core(
+            _ => Arc::new(Thunk::core_expr(
                 Arc::clone(&entry.node.value),
                 env_id.0,
                 Arc::clone(ctx),
@@ -333,7 +330,7 @@ pub(crate) async fn eval_dict_core(
                     // See T-1621 for completing Value::Annotated wrapping for non-literal entries.
                     if let Some(inner_val) = value_thunk.try_get_materialized() {
                         let span = value_thunk.span.clone();
-                        Arc::new(Thunk::new_materialized(
+                        Arc::new(Thunk::value(
                             Value::Annotated {
                                 inner: Box::new(inner_val),
                                 annotation: Box::new(annotation_value),
@@ -356,7 +353,7 @@ pub(crate) async fn eval_dict_core(
 
         // Values go into arena slots (T-1557: Env is type-metadata only).
         // The letrec scope is maintained via arena reserve_slot + fill_slot calls below.
-        let thunk_id = ctx.alloc_thunk(thunk);
+        let thunk_id = ctx.alloc_thunk(0, thunk);
         if dict_map.insert(key, thunk_id).is_some() {
             // key was moved; reconstruct string representation from entry for error message
             let key_str = match &entry.node.key {
@@ -421,7 +418,7 @@ pub(crate) async fn eval_dict_core(
     // resolver/runtime alignment check requires storing the resolver's slot-count per
     // env_id and comparing here; tracked as a future improvement.
 
-    Ok(Arc::new(Thunk::new_materialized(
+    Ok(Arc::new(Thunk::value(
         Value::Dict(dict_map),
         dict_span.clone(),
     )))
@@ -433,6 +430,7 @@ pub(crate) async fn eval_dict_core(
 /// General path materializes the expression via `eval_core_expr`.
 pub(crate) async fn eval_key_core(
     key_expr: &Arc<Spanned<CoreExpr>>,
+    parent_env_id: u32,
     ctx: &Arc<EvalContext>,
 ) -> EvalResult<HashableValue> {
     // Fast path for static keys — avoids thunk creation and materialization
@@ -463,8 +461,8 @@ pub(crate) async fn eval_key_core(
         _ => {}
     }
     // General path: must materialize because IndexMap requires concrete HashableValue keys.
-    // Key expressions evaluate in the parent scope (ctx.current_env_id).
-    let thunk = eval_core_expr(key_expr.as_ref(), ctx).await?;
+    // Key expressions evaluate in the parent scope (parent_env_id).
+    let thunk = eval_core_expr(key_expr.as_ref(), parent_env_id, ctx).await?;
     let value = materialize(&thunk, Some(&key_expr.span), ctx).await?;
     value_to_key(&value, &key_expr.span)
 }

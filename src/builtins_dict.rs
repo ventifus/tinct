@@ -87,8 +87,8 @@ pub(crate) fn builtin_keys(
                 HashableValue::Int(n) => Value::Int(*n),
                 HashableValue::Str(s) => string_val(s),
             };
-            let thunk = Arc::new(Thunk::new_materialized(key_value, origin.clone()));
-            let thunk_id = ctx.alloc_thunk(thunk);
+            let thunk = Arc::new(Thunk::value(key_value, origin.clone()));
+            let thunk_id = ctx.alloc_thunk(0, thunk);
             result.insert(
                 HashableValue::Int(i64::try_from(i).map_err(|_| {
                     EvalError::internal("collection index overflow".to_string(), call_span.clone())
@@ -285,7 +285,7 @@ async fn field_get_on_value(
                                         if let Some(const_val) =
                                             constants.get(field_name.as_ref() as &str)
                                         {
-                                            let thunk = Arc::new(Thunk::new_materialized(
+                                            let thunk = Arc::new(Thunk::value(
                                                 const_val.clone(),
                                                 call_span.clone(),
                                             ));
@@ -308,6 +308,7 @@ async fn field_get_on_value(
             crate::eval_access::invoke_proxy_handler(
                 &handler_thunk,
                 string_val(&key_str),
+                0, // proxy handlers don't need caller scope
                 ctx,
                 &call_span,
             )
@@ -343,7 +344,7 @@ async fn field_get_on_value(
                                         if let Some(const_val) =
                                             constants.get(field_name.as_ref() as &str)
                                         {
-                                            let thunk = Arc::new(Thunk::new_materialized(
+                                            let thunk = Arc::new(Thunk::value(
                                                 const_val.clone(),
                                                 call_span.clone(),
                                             ));
@@ -958,7 +959,7 @@ pub(crate) fn builtin_dict_kv_nth(
                 let mut kv = IndexMap::new();
                 kv.insert(
                     HashableValue::Str("key".into()),
-                    ctx.alloc_thunk(ok_val(key_val, call_span.clone())?),
+                    ctx.alloc_thunk(0, ok_val(key_val, call_span.clone())?),
                 );
                 kv.insert(HashableValue::Str("value".into()), *val_id);
                 ok_val(Value::Dict(kv), call_span)

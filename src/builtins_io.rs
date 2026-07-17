@@ -843,22 +843,22 @@ pub(crate) fn builtin_list_dir(
             let mut dict = IndexMap::new();
             dict.insert(
                 HashableValue::Str("name".into()),
-                ctx.alloc_thunk(ok_val(string_val(&name), call_span.clone())?),
+                ctx.alloc_thunk(0, ok_val(string_val(&name), call_span.clone())?),
             );
             dict.insert(
                 HashableValue::Str("type".into()),
-                ctx.alloc_thunk(ok_val(string_val(file_type), call_span.clone())?),
+                ctx.alloc_thunk(0, ok_val(string_val(file_type), call_span.clone())?),
             );
             dict.insert(
                 HashableValue::Str("size".into()),
-                ctx.alloc_thunk(ok_val(
-                    Value::Int(metadata.len() as i64),
-                    call_span.clone(),
-                )?),
+                ctx.alloc_thunk(
+                    0,
+                    ok_val(Value::Int(metadata.len() as i64), call_span.clone())?,
+                ),
             );
             dict.insert(
                 HashableValue::Str("mtime".into()),
-                ctx.alloc_thunk(ok_val(Value::Int(mtime), call_span.clone())?),
+                ctx.alloc_thunk(0, ok_val(Value::Int(mtime), call_span.clone())?),
             );
 
             entry_values.push(Value::Dict(dict));
@@ -867,7 +867,7 @@ pub(crate) fn builtin_list_dir(
         // Build an integer-keyed Dict from the collected entries
         let mut result: IndexMap<HashableValue, ThunkId> = IndexMap::new();
         for (i, entry) in entry_values.into_iter().enumerate() {
-            let id = ctx.alloc_thunk(ok_val(entry, call_span.clone())?);
+            let id = ctx.alloc_thunk(0, ok_val(entry, call_span.clone())?);
             result.insert(HashableValue::Int(i as i64), id);
         }
         ok_val(Value::Dict(result), call_span)
@@ -953,47 +953,56 @@ pub(crate) fn builtin_stat(
         let mut dict = IndexMap::new();
         dict.insert(
             HashableValue::Str("name".into()),
-            ctx.alloc_thunk(ok_val(string_val(&path), call_span.clone())?),
+            ctx.alloc_thunk(0, ok_val(string_val(&path), call_span.clone())?),
         );
         dict.insert(
             HashableValue::Str("type".into()),
-            ctx.alloc_thunk(ok_val(string_val(file_type), call_span.clone())?),
+            ctx.alloc_thunk(0, ok_val(string_val(file_type), call_span.clone())?),
         );
         dict.insert(
             HashableValue::Str("size".into()),
-            ctx.alloc_thunk(ok_val(
-                Value::Int(metadata.len() as i64),
-                call_span.clone(),
-            )?),
+            ctx.alloc_thunk(
+                0,
+                ok_val(Value::Int(metadata.len() as i64), call_span.clone())?,
+            ),
         );
         dict.insert(
             HashableValue::Str("mtime".into()),
-            ctx.alloc_thunk(ok_val(Value::Int(mtime), call_span.clone())?),
+            ctx.alloc_thunk(0, ok_val(Value::Int(mtime), call_span.clone())?),
         );
         dict.insert(
             HashableValue::Str("mode".into()),
-            ctx.alloc_thunk(ok_val(Value::Int(mode), call_span.clone())?),
+            ctx.alloc_thunk(0, ok_val(Value::Int(mode), call_span.clone())?),
         );
         dict.insert(
             HashableValue::Str("is-dir".into()),
-            ctx.alloc_thunk(ok_val(
-                Value::Int(if metadata.is_dir() { 1 } else { 0 }),
-                call_span.clone(),
-            )?),
+            ctx.alloc_thunk(
+                0,
+                ok_val(
+                    Value::Int(if metadata.is_dir() { 1 } else { 0 }),
+                    call_span.clone(),
+                )?,
+            ),
         );
         dict.insert(
             HashableValue::Str("is-file".into()),
-            ctx.alloc_thunk(ok_val(
-                Value::Int(if metadata.is_file() { 1 } else { 0 }),
-                call_span.clone(),
-            )?),
+            ctx.alloc_thunk(
+                0,
+                ok_val(
+                    Value::Int(if metadata.is_file() { 1 } else { 0 }),
+                    call_span.clone(),
+                )?,
+            ),
         );
         dict.insert(
             HashableValue::Str("is-symlink".into()),
-            ctx.alloc_thunk(ok_val(
-                Value::Int(if metadata.is_symlink() { 1 } else { 0 }),
-                call_span.clone(),
-            )?),
+            ctx.alloc_thunk(
+                0,
+                ok_val(
+                    Value::Int(if metadata.is_symlink() { 1 } else { 0 }),
+                    call_span.clone(),
+                )?,
+            ),
         );
 
         ok_val(Value::Dict(dict), call_span)
@@ -1138,47 +1147,56 @@ pub(crate) fn builtin_stat_symlink(
         let mut dict = IndexMap::new();
         dict.insert(
             HashableValue::Str("name".into()),
-            ctx.alloc_thunk(ok_val(string_val(&path), call_span.clone())?),
+            ctx.alloc_thunk(0, ok_val(string_val(&path), call_span.clone())?),
         );
         dict.insert(
             HashableValue::Str("type".into()),
-            ctx.alloc_thunk(ok_val(string_val(file_type), call_span.clone())?),
+            ctx.alloc_thunk(0, ok_val(string_val(file_type), call_span.clone())?),
         );
         dict.insert(
             HashableValue::Str("size".into()),
-            ctx.alloc_thunk(ok_val(
-                Value::Int(metadata.len() as i64),
-                call_span.clone(),
-            )?),
+            ctx.alloc_thunk(
+                0,
+                ok_val(Value::Int(metadata.len() as i64), call_span.clone())?,
+            ),
         );
         dict.insert(
             HashableValue::Str("mtime".into()),
-            ctx.alloc_thunk(ok_val(Value::Int(mtime), call_span.clone())?),
+            ctx.alloc_thunk(0, ok_val(Value::Int(mtime), call_span.clone())?),
         );
         dict.insert(
             HashableValue::Str("mode".into()),
-            ctx.alloc_thunk(ok_val(Value::Int(mode), call_span.clone())?),
+            ctx.alloc_thunk(0, ok_val(Value::Int(mode), call_span.clone())?),
         );
         dict.insert(
             HashableValue::Str("is-dir".into()),
-            ctx.alloc_thunk(ok_val(
-                Value::Int(if metadata.is_dir() { 1 } else { 0 }),
-                call_span.clone(),
-            )?),
+            ctx.alloc_thunk(
+                0,
+                ok_val(
+                    Value::Int(if metadata.is_dir() { 1 } else { 0 }),
+                    call_span.clone(),
+                )?,
+            ),
         );
         dict.insert(
             HashableValue::Str("is-file".into()),
-            ctx.alloc_thunk(ok_val(
-                Value::Int(if metadata.is_file() { 1 } else { 0 }),
-                call_span.clone(),
-            )?),
+            ctx.alloc_thunk(
+                0,
+                ok_val(
+                    Value::Int(if metadata.is_file() { 1 } else { 0 }),
+                    call_span.clone(),
+                )?,
+            ),
         );
         dict.insert(
             HashableValue::Str("is-symlink".into()),
-            ctx.alloc_thunk(ok_val(
-                Value::Int(if metadata.is_symlink() { 1 } else { 0 }),
-                call_span.clone(),
-            )?),
+            ctx.alloc_thunk(
+                0,
+                ok_val(
+                    Value::Int(if metadata.is_symlink() { 1 } else { 0 }),
+                    call_span.clone(),
+                )?,
+            ),
         );
 
         ok_val(Value::Dict(dict), call_span)
@@ -1858,7 +1876,7 @@ pub(crate) fn builtin_list_xattrs(
         let mut result: IndexMap<HashableValue, ThunkId> = IndexMap::new();
         for (i, name) in names.into_iter().enumerate() {
             let name_str = name.to_string_lossy().to_string();
-            let id = ctx.alloc_thunk(ok_val(string_val(&name_str), call_span.clone())?);
+            let id = ctx.alloc_thunk(0, ok_val(string_val(&name_str), call_span.clone())?);
             result.insert(HashableValue::Int(i as i64), id);
         }
 

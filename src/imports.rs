@@ -27,8 +27,16 @@ const MAX_INCLUDE_DEPTH: usize = 16;
 // calls on the same thread return an `Arc::clone` without re-parsing or re-typechecking.
 thread_local! {
     static BUILTIN_CORE_TYPE_ENV: RefCell<Option<Arc<RwLock<Env>>>> = const { RefCell::new(None) };
+    /// TyConEnv from type-checking builtin_core.llt — contains opaque type defs like BuilderHandle.
+    static BUILTIN_CORE_TYCON_ENV: RefCell<Option<crate::type_def::TyConEnv>> = const { RefCell::new(None) };
     /// Recursion guard: prevents re-entrant calls from within the typecheck of builtin_core.llt.
     static BUILDING_BUILTIN_CORE_ENV: RefCell<bool> = const { RefCell::new(false) };
+}
+
+/// Return the TyConEnv from type-checking `stdlib/builtin_core.llt`.
+/// Returns None if `get_builtin_core_type_env` has not yet been called.
+pub fn get_builtin_core_tycon_env() -> Option<crate::type_def::TyConEnv> {
+    BUILTIN_CORE_TYCON_ENV.with(|c| c.borrow().clone())
 }
 
 /// T-1366 Rust step 2 bootstrap: type-check `stdlib/builtin_core.llt` and return the
@@ -95,7 +103,7 @@ async fn build_builtin_core_type_env_inner() -> Option<Arc<RwLock<Env>>> {
 
     // Typecheck with builtins env as parent.
     // enable_scheme_map=false (no LSP hover needed for bootstrap).
-    let (_errors, _type_map, _doc_map, _scheme_map, _diagnostics, _state, final_env, _annot) =
+    let (_errors, _type_map, _doc_map, _scheme_map, _diagnostics, mut state, final_env, _annot) =
         typecheck_surface_program_with_env(
             &program,
             parent_env,
@@ -106,6 +114,58 @@ async fn build_builtin_core_type_env_inner() -> Option<Arc<RwLock<Env>>> {
             None, // eval_ctx: no EvalContext at bootstrap
         )
         .await;
+
+    // Register opaque builtin TyConDefs. These types are declared as TypeNode leaf
+    // constructors in the type-stage (not as [type X] in the runtime dict), so the
+    // typecheck pass does not create their TyConDefs automatically.
+    // builtin_type: Some(discriminant) enables value_matches_type dispatch.
+    // or_insert_with: if a [type X] declaration already registered an entry (e.g., during
+    // migration), keep it; once tinct-side is fully migrated, all entries will be absent.
+    use crate::type_def::TyConDef;
+    let opaque_types: &[(&str, &str)] = &[
+        ("Program", "Program"),
+        ("Document", "Document"),
+        ("TypeContext", "TypeContext"),
+        ("DirCap", "DirCap"),
+        ("NetCap", "NetCap"),
+        ("Handle", "Handle"),
+        ("File", "File"),
+        ("BuilderHandle", "BuilderHandle"),
+        ("Task", "Task"),
+        ("Channel", "Channel"),
+        ("Context", "Context"),
+        ("ReactiveCell", "ReactiveCell"),
+        ("ClockCap", "ClockCap"),
+        ("Timezone", "Timezone"),
+        ("Decimal", "Decimal"),
+        ("BigInt", "BigInt"),
+        ("QuicSession", "QuicSession"),
+        ("Http2Session", "Http2Session"),
+        ("Http3Session", "Http3Session"),
+        ("Uri", "Uri"),
+        ("Urn", "Urn"),
+    ];
+    for (name, discriminant) in opaque_types {
+        state.tycon_env.entry(name.to_string()).or_insert_with(|| {
+            std::sync::Arc::new(TyConDef {
+                params: vec![],
+                body: crate::types::Type::Unknown,
+                constraints: vec![],
+                variance: vec![],
+                constructors: vec![],
+                builtin_type: Some(discriminant.to_string()),
+                annotation: None,
+                field_annotations: indexmap::IndexMap::new(),
+                constructor_constants: indexmap::IndexMap::new(),
+                definition_span: None,
+            })
+        });
+    }
+
+    // Cache the tycon_env so callers can seed it into downstream typechecks.
+    BUILTIN_CORE_TYCON_ENV.with(|c| {
+        *c.borrow_mut() = Some(state.tycon_env.clone());
+    });
 
     // `final_env` is the child Env containing parent bindings plus new type declarations.
     Some(final_env)
@@ -323,7 +383,9 @@ fn collect_include_paths_from_node(
                 if let Some(ref guard) = arm.guard {
                     collect_include_paths_from_node(guard, paths);
                 }
-                collect_include_paths_from_node(&arm.body, paths);
+                for body_expr in &arm.body {
+                    collect_include_paths_from_node(body_expr, paths);
+                }
             }
         }
         SurfaceExpression::PatternDecl { bindings } => {
@@ -741,7 +803,9 @@ fn apply_include_type_to_node(
                 if let Some(ref guard) = arm.guard {
                     apply_include_type_to_node(guard, include_bindings, type_map);
                 }
-                apply_include_type_to_node(&arm.body, include_bindings, type_map);
+                for body_expr in &arm.body {
+                    apply_include_type_to_node(body_expr, include_bindings, type_map);
+                }
             }
         }
         SurfaceExpression::PatternDecl { bindings } => {

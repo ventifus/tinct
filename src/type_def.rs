@@ -210,6 +210,10 @@ pub struct TyConDef {
     /// after payload access fails, the evaluator looks up `tag` in this map and returns the
     /// constant for that field. This enables `some-rcode.rcode` without a match expression.
     pub constructor_constants: IndexMap<String, IndexMap<String, crate::value::Value>>,
+
+    /// Source span of the `[type ...]` declaration that defined this type constructor.
+    /// Used in error messages to show where conflicting types were defined.
+    pub definition_span: Option<crate::ast::Span>,
 }
 
 impl TyConDef {
@@ -232,6 +236,7 @@ impl TyConDef {
             annotation: None,
             field_annotations: IndexMap::new(),
             constructor_constants: IndexMap::new(),
+            definition_span: None,
         }
     }
 
@@ -251,6 +256,7 @@ impl TyConDef {
             annotation: None,
             field_annotations: IndexMap::new(),
             constructor_constants: IndexMap::new(),
+            definition_span: None,
         }
     }
 }
@@ -3271,6 +3277,7 @@ mod tests {
                     annotation: None,
                     field_annotations: IndexMap::new(),
                     constructor_constants: IndexMap::new(),
+                    definition_span: None,
                 }),
             );
             env

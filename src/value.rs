@@ -54,7 +54,7 @@ pub struct BuiltinArgs {
     pub call_span: Span,
     pub ctx: Arc<crate::eval::EvalContext>,
     /// Caller's scope id — enables scope-based variable lookup in builtins.
-    /// Copied from UnevaluatedState::Builtin.caller_env_id at materialization time.
+    /// Copied from UnevaluatedState::BuiltinCall.caller_env_id at materialization time.
     pub caller_env_id: u32,
 }
 
@@ -809,6 +809,44 @@ impl Value {
         }
     }
 
+    /// Returns the tinct TyCon name for opaque builtin values.
+    ///
+    /// Opaque builtin types are Value variants that map to a declared tinct type but are
+    /// NOT represented as Value::Variant at runtime. For these, type checking must use
+    /// the declared TyCon name directly rather than checking the Variant tag prefix.
+    ///
+    /// Returns None for structural values (Dict, Seq, Int, String, Function, Variant, etc.)
+    /// that are handled through the structural or TyConDef-constructor type-checking paths.
+    pub fn value_tycon_name(&self) -> Option<&'static str> {
+        match self {
+            Value::Program { .. } => Some("Program"),
+            Value::Document(_) => Some("Document"),
+            Value::TypeContext(_) => Some("TypeContext"),
+            // Both DirCap variants map to the declared "DirCap" type.
+            Value::DirCap { .. } | Value::RevocableDirCap { .. } => Some("DirCap"),
+            Value::NetCap(_) => Some("NetCap"),
+            Value::Handle { .. } => Some("Handle"),
+            Value::File(_) => Some("File"),
+            // type_name() returns "Builder" but the declared TyCon is "BuilderHandle".
+            Value::Builder(_) => Some("BuilderHandle"),
+            Value::Task(_) => Some("Task"),
+            Value::Channel(_) => Some("Channel"),
+            Value::Context(_) => Some("Context"),
+            Value::ReactiveCell(_) => Some("ReactiveCell"),
+            Value::ClockCap(_) => Some("ClockCap"),
+            Value::Timezone(_) => Some("Timezone"),
+            Value::Decimal(_) => Some("Decimal"),
+            Value::BigInt(_) => Some("BigInt"),
+            Value::QuicSession(_) => Some("QuicSession"),
+            Value::Http2Session { .. } => Some("Http2Session"),
+            Value::Http3Session(_) => Some("Http3Session"),
+            // All other values (Int, String, Float, Bool, Dict, Overlay, Seq, Function,
+            // Builtin, Variant, Bytes, Uri, Proxy, Annotated, etc.) are handled through
+            // structural type checking or TyConDef constructor matching.
+            _ => None,
+        }
+    }
+
     /// Extract a string slice from a `Value::String`, or `None` if not a string.
     pub fn as_str(&self) -> Option<&str> {
         match self {
@@ -1090,7 +1128,7 @@ pub enum UnevaluatedState {
         ctx: Arc<crate::eval::EvalContext>,
     },
     /// Lazy AST node field access via `surface_node_get_field`.
-    AstNodeField {
+    AstField {
         node: Arc<SurfaceNode>,
         field: &'static str,
         ctx: Arc<crate::eval::EvalContext>,
@@ -1103,7 +1141,7 @@ pub enum UnevaluatedState {
         ctx: Arc<crate::eval::EvalContext>,
     },
     /// Deferred builtin call (was PendingBuiltin).
-    Builtin {
+    BuiltinCall {
         def: BuiltinDef,
         args: Vec<ThunkId>,
         named: Option<IndexMap<String, ThunkId>>,
@@ -1113,7 +1151,7 @@ pub enum UnevaluatedState {
         ctx: Arc<crate::eval::EvalContext>,
     },
     /// Deferred function call (was PendingCall).
-    Call {
+    FnCall {
         func: ThunkId,
         args: Vec<ThunkId>,
         named: Option<Box<IndexMap<String, ThunkId>>>,
@@ -1135,17 +1173,43 @@ pub enum UnevaluatedState {
     },
 }
 
+impl UnevaluatedState {
+    pub fn initial_env_id(&self) -> u32 {
+        match self {
+            UnevaluatedState::CoreExpr { env_id, .. } => *env_id,
+            UnevaluatedState::Surface { env_id, .. } => *env_id,
+            UnevaluatedState::BuiltinCall { caller_env_id, .. } => *caller_env_id,
+            UnevaluatedState::FnCall { caller_env_id, .. } => *caller_env_id,
+            UnevaluatedState::AstField { .. } => 0,
+            UnevaluatedState::Guarded { .. } => 0,
+        }
+    }
+}
+
 /// New thunk structure for async evaluation (Sprint 2B).
 /// Replaces Mutex<ThunkState> with a two-field pair:
 /// - unevaluated: taken (set to None) when evaluation starts
 /// - result: set exactly once when evaluation completes
 #[derive(Debug)]
 pub struct ThunkInner {
-    /// Pre-evaluation state. Set to Some initially, taken (set to None) when evaluation starts.
-    pub unevaluated: Mutex<Option<UnevaluatedState>>,
+    /// Combined: (UnevaluatedState, evaluating_task_id).
+    /// Both fields transition atomically in try_claim().
+    pub unevaluated: Mutex<(Option<UnevaluatedState>, Option<tokio::task::Id>)>,
 
-    /// Post-evaluation result. Set exactly once when evaluation completes (success or failure).
+    /// Terminal result. Set exactly once (OnceCell).
     pub result: tokio::sync::OnceCell<Result<Value, Arc<EvalError>>>,
+
+    /// Resolves when result is set. Allows tasks to await settlement.
+    pub notify: Arc<tokio::sync::Notify>,
+}
+
+pub enum ThunkState {
+    Unevaluated,
+    InProgress {
+        evaluating_task: Option<tokio::task::Id>,
+    },
+    Materialized(Value),
+    Failed(Arc<EvalError>),
 }
 
 /// Lazy evaluation cell: wraps an unevaluated expression, a pending builtin call,
@@ -1158,52 +1222,27 @@ pub struct Thunk {
     pub(crate) create_time_us: u64,
 }
 
-/// Return type of `Thunk::take_pending_builtin`.
-pub type PendingBuiltinParts = (
-    BuiltinDef,
-    Vec<ThunkId>,
-    Option<IndexMap<String, ThunkId>>,
-    Span,
-    u32, // caller_env_id
-    Arc<crate::eval::EvalContext>,
-);
+#[allow(dead_code)]
+pub(crate) struct ThunkPanicGuard(pub(crate) Option<Arc<Thunk>>);
 
-/// Return type of `Thunk::take_pending_call`.
-pub type PendingCallParts = (
-    ThunkId, // func
-    Vec<ThunkId>,
-    Option<IndexMap<String, ThunkId>>,
-    Span,
-    u32, // caller_env_id
-    Arc<crate::eval::EvalContext>,
-    Arc<Spanned<CoreExpr>>,
-);
+#[allow(dead_code)]
+impl ThunkPanicGuard {
+    pub(crate) fn settle(mut self, result: Result<Value, Arc<EvalError>>) {
+        let thunk = self.0.take().unwrap();
+        thunk.settle(result);
+    }
+}
 
-/// Return type of `Thunk::take_core_expr`.
-pub type CoreExprParts = (
-    Arc<Spanned<CoreExpr>>,
-    u32, // env_id
-    Arc<crate::eval::EvalContext>,
-);
-
-/// Return type of `Thunk::take_guarded`.
-pub type GuardedParts = (
-    ThunkId, // inner
-    Type,
-    Vec<String>,
-    Span,
-    Option<crate::error::BlameLabel>,
-    Option<(Arc<Spanned<CoreExpr>>, u32)>, // default: (expr, env_id)
-);
-
-/// Return type of `Thunk::take_surface`.
-pub type SurfaceParts = (
-    Arc<SurfaceNode>,
-    Arc<crate::ast::ResolutionTable>,
-    Arc<crate::ast::TypeAnnotationTable>,
-    u32, // env_id
-    Arc<crate::eval::EvalContext>,
-);
+impl Drop for ThunkPanicGuard {
+    fn drop(&mut self) {
+        if let Some(thunk) = self.0.take() {
+            thunk.settle(Err(Arc::new(EvalError::internal(
+                "thunk evaluation task panicked".to_string(),
+                thunk.span.clone(),
+            ))));
+        }
+    }
+}
 
 impl Thunk {
     /// Helper: extract profiling data (create_parent, create_time_us) from context.
@@ -1221,11 +1260,12 @@ impl Thunk {
     }
 
     /// Create a placeholder thunk for letrec pre-allocation.
-    pub fn new_placeholder(span: Span) -> Self {
+    pub fn placeholder(span: Span) -> Self {
         Self {
             inner: ThunkInner {
-                unevaluated: Mutex::new(None),
+                unevaluated: Mutex::new((None, None)),
                 result: tokio::sync::OnceCell::new(),
+                notify: Arc::new(tokio::sync::Notify::new()),
             },
             span,
             origin: None,
@@ -1235,7 +1275,7 @@ impl Thunk {
     }
 
     /// Create an unevaluated thunk from a CoreExpr body (no Expr round-trip).
-    pub fn new_unevaluated_core(
+    pub fn core_expr(
         expr: Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
         env_id: u32,
         ctx: Arc<crate::eval::EvalContext>,
@@ -1244,8 +1284,12 @@ impl Thunk {
         let (create_parent, create_time_us) = Self::profiling_data(&ctx);
         Self {
             inner: ThunkInner {
-                unevaluated: Mutex::new(Some(UnevaluatedState::CoreExpr { expr, env_id, ctx })),
+                unevaluated: Mutex::new((
+                    Some(UnevaluatedState::CoreExpr { expr, env_id, ctx }),
+                    None,
+                )),
                 result: tokio::sync::OnceCell::new(),
+                notify: Arc::new(tokio::sync::Notify::new()),
             },
             span,
             origin: None,
@@ -1254,10 +1298,11 @@ impl Thunk {
         }
     }
 
-    pub fn new_materialized(value: Value, span: Span) -> Self {
+    pub fn value(value: Value, span: Span) -> Self {
         let inner = ThunkInner {
-            unevaluated: Mutex::new(None),
+            unevaluated: Mutex::new((None, None)),
             result: tokio::sync::OnceCell::new(),
+            notify: Arc::new(tokio::sync::Notify::new()),
         };
         let _ = inner.result.set(Ok(value));
         Self {
@@ -1270,7 +1315,7 @@ impl Thunk {
     }
 
     /// Create a Surface thunk — wraps a SurfaceNode for lazy evaluation.
-    pub fn new_surface(
+    pub fn surface(
         node: std::sync::Arc<crate::ast::SurfaceNode>,
         res: std::sync::Arc<crate::ast::ResolutionTable>,
         types: std::sync::Arc<crate::ast::TypeAnnotationTable>,
@@ -1281,14 +1326,18 @@ impl Thunk {
         let (create_parent, create_time_us) = Self::profiling_data(&ctx);
         Self {
             inner: ThunkInner {
-                unevaluated: Mutex::new(Some(UnevaluatedState::Surface {
-                    node,
-                    res,
-                    types,
-                    env_id,
-                    ctx,
-                })),
+                unevaluated: Mutex::new((
+                    Some(UnevaluatedState::Surface {
+                        node,
+                        res,
+                        types,
+                        env_id,
+                        ctx,
+                    }),
+                    None,
+                )),
                 result: tokio::sync::OnceCell::new(),
+                notify: Arc::new(tokio::sync::Notify::new()),
             },
             span,
             origin: None,
@@ -1297,8 +1346,8 @@ impl Thunk {
         }
     }
 
-    /// Create a lazy AstNodeField thunk.
-    pub fn new_ast_node_field(
+    /// Create a lazy AstField thunk.
+    pub fn ast_field(
         node: std::sync::Arc<crate::ast::SurfaceNode>,
         field: &'static str,
         ctx: Arc<crate::eval::EvalContext>,
@@ -1307,8 +1356,12 @@ impl Thunk {
         let (create_parent, create_time_us) = Self::profiling_data(&ctx);
         Self {
             inner: ThunkInner {
-                unevaluated: Mutex::new(Some(UnevaluatedState::AstNodeField { node, field, ctx })),
+                unevaluated: Mutex::new((
+                    Some(UnevaluatedState::AstField { node, field, ctx }),
+                    None,
+                )),
                 result: tokio::sync::OnceCell::new(),
+                notify: Arc::new(tokio::sync::Notify::new()),
             },
             span,
             origin: None,
@@ -1317,7 +1370,7 @@ impl Thunk {
         }
     }
 
-    pub fn new_pending_builtin(
+    pub fn builtin_call(
         def: BuiltinDef,
         args: Vec<ThunkId>,
         named: Option<IndexMap<String, ThunkId>>,
@@ -1329,15 +1382,19 @@ impl Thunk {
         let (create_parent, create_time_us) = Self::profiling_data(&ctx);
         Self {
             inner: ThunkInner {
-                unevaluated: Mutex::new(Some(UnevaluatedState::Builtin {
-                    def,
-                    args,
-                    named,
-                    call_span: span.clone(),
-                    caller_env_id,
-                    ctx,
-                })),
+                unevaluated: Mutex::new((
+                    Some(UnevaluatedState::BuiltinCall {
+                        def,
+                        args,
+                        named,
+                        call_span: span.clone(),
+                        caller_env_id,
+                        ctx,
+                    }),
+                    None,
+                )),
                 result: tokio::sync::OnceCell::new(),
+                notify: Arc::new(tokio::sync::Notify::new()),
             },
             span,
             origin,
@@ -1347,7 +1404,7 @@ impl Thunk {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn new_pending_call(
+    pub fn fn_call(
         func: ThunkId,
         args: Vec<ThunkId>,
         named: IndexMap<String, ThunkId>,
@@ -1366,16 +1423,20 @@ impl Thunk {
         let (create_parent, create_time_us) = Self::profiling_data(&ctx);
         Self {
             inner: ThunkInner {
-                unevaluated: Mutex::new(Some(UnevaluatedState::Call {
-                    func,
-                    args,
-                    named: named_opt,
-                    call_span,
-                    caller_env_id,
-                    ctx,
-                    original_call,
-                })),
+                unevaluated: Mutex::new((
+                    Some(UnevaluatedState::FnCall {
+                        func,
+                        args,
+                        named: named_opt,
+                        call_span,
+                        caller_env_id,
+                        ctx,
+                        original_call,
+                    }),
+                    None,
+                )),
                 result: tokio::sync::OnceCell::new(),
+                notify: Arc::new(tokio::sync::Notify::new()),
             },
             span,
             origin,
@@ -1384,26 +1445,7 @@ impl Thunk {
         }
     }
 
-    pub fn new_guarded(
-        inner: ThunkId,
-        expected: Type,
-        field_path: Vec<String>,
-        guard_span: Span,
-    ) -> Self {
-        Self::new_guarded_with_blame(inner, expected, field_path, guard_span, None)
-    }
-
-    pub fn new_guarded_with_blame(
-        inner: ThunkId,
-        expected: Type,
-        field_path: Vec<String>,
-        guard_span: Span,
-        blame_label: Option<crate::error::BlameLabel>,
-    ) -> Self {
-        Self::new_guarded_full(inner, expected, field_path, guard_span, blame_label, None)
-    }
-
-    pub fn new_guarded_full(
+    pub fn guarded(
         inner: ThunkId,
         expected: Type,
         field_path: Vec<String>,
@@ -1413,15 +1455,19 @@ impl Thunk {
     ) -> Self {
         Self {
             inner: ThunkInner {
-                unevaluated: Mutex::new(Some(UnevaluatedState::Guarded {
-                    inner,
-                    expected,
-                    field_path,
-                    guard_span: guard_span.clone(),
-                    blame_label,
-                    default,
-                })),
+                unevaluated: Mutex::new((
+                    Some(UnevaluatedState::Guarded {
+                        inner,
+                        expected,
+                        field_path,
+                        guard_span: guard_span.clone(),
+                        blame_label,
+                        default,
+                    }),
+                    None,
+                )),
                 result: tokio::sync::OnceCell::new(),
+                notify: Arc::new(tokio::sync::Notify::new()),
             },
             span: guard_span,
             origin: Some(Arc::from("type guard")),
@@ -1441,9 +1487,58 @@ impl Thunk {
         self.span.clone()
     }
 
-    /// Restore unevaluated state after a non-cacheable error.
-    pub(crate) fn restore_unevaluated(&self, state: UnevaluatedState) {
-        *self.inner.unevaluated.lock().unwrap() = Some(state);
+    pub fn state(&self) -> ThunkState {
+        if let Some(result) = self.inner.result.get() {
+            return match result {
+                Ok(v) => ThunkState::Materialized(v.clone()),
+                Err(e) => ThunkState::Failed(Arc::clone(e)),
+            };
+        }
+        let guard = self.inner.unevaluated.lock().unwrap();
+        match &guard.0 {
+            Some(_) => ThunkState::Unevaluated,
+            None => ThunkState::InProgress {
+                evaluating_task: guard.1,
+            },
+        }
+    }
+
+    pub fn settle(&self, result: Result<Value, Arc<EvalError>>) {
+        let _ = self.inner.result.set(result);
+        {
+            let mut guard = self.inner.unevaluated.lock().unwrap();
+            guard.1 = None;
+        }
+        self.inner.notify.notify_waiters();
+    }
+
+    pub async fn settled(&self) {
+        loop {
+            let notified = self.inner.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.inner.result.get().is_some() {
+                return;
+            }
+            notified.await;
+            if self.inner.result.get().is_some() {
+                return;
+            }
+        }
+    }
+
+    pub fn try_claim(&self) -> Option<UnevaluatedState> {
+        let mut guard = self.inner.unevaluated.lock().unwrap();
+        let (state, task_id) = &mut *guard;
+        let taken = state.take()?;
+        *task_id = tokio::task::try_id();
+        Some(taken)
+    }
+
+    pub fn reset(&self, state: UnevaluatedState) {
+        let mut guard = self.inner.unevaluated.lock().unwrap();
+        guard.0 = Some(state);
+        guard.1 = None;
     }
 
     /// Create a new `Arc<Thunk>` that is identical to `self` but with `new_ctx` replacing
@@ -1453,7 +1548,7 @@ impl Thunk {
         new_ctx: Arc<crate::eval::EvalContext>,
     ) -> Option<Arc<Thunk>> {
         let guard = self.inner.unevaluated.lock().unwrap();
-        let state = match guard.as_ref() {
+        let state = match &guard.0 {
             None => return None,
             Some(s) => s.clone(),
         };
@@ -1481,23 +1576,23 @@ impl Thunk {
                 env_id,
                 ctx: new_ctx,
             },
-            UnevaluatedState::AstNodeField {
+            UnevaluatedState::AstField {
                 node,
                 field,
                 ctx: _,
-            } => UnevaluatedState::AstNodeField {
+            } => UnevaluatedState::AstField {
                 node,
                 field,
                 ctx: new_ctx,
             },
-            UnevaluatedState::Builtin {
+            UnevaluatedState::BuiltinCall {
                 def,
                 args,
                 named,
                 call_span,
                 caller_env_id,
                 ctx: _,
-            } => UnevaluatedState::Builtin {
+            } => UnevaluatedState::BuiltinCall {
                 def,
                 args,
                 named,
@@ -1505,7 +1600,7 @@ impl Thunk {
                 caller_env_id,
                 ctx: new_ctx,
             },
-            UnevaluatedState::Call {
+            UnevaluatedState::FnCall {
                 func,
                 args,
                 named,
@@ -1513,7 +1608,7 @@ impl Thunk {
                 caller_env_id,
                 ctx: _,
                 original_call,
-            } => UnevaluatedState::Call {
+            } => UnevaluatedState::FnCall {
                 func,
                 args,
                 named,
@@ -1540,8 +1635,9 @@ impl Thunk {
         };
         Some(Arc::new(Thunk {
             inner: ThunkInner {
-                unevaluated: Mutex::new(Some(new_state)),
+                unevaluated: Mutex::new((Some(new_state), None)),
                 result: tokio::sync::OnceCell::new(),
+                notify: Arc::new(tokio::sync::Notify::new()),
             },
             span: self.span.clone(),
             origin: self.origin.clone(),
@@ -1551,182 +1647,32 @@ impl Thunk {
     }
 
     pub fn try_get_materialized(&self) -> Option<Value> {
-        self.inner
-            .result
-            .get()
-            .and_then(|r| r.as_ref().ok().cloned())
-    }
-
-    /// Check if the thunk is materialized without cloning the value.
-    pub fn is_materialized(&self) -> bool {
-        self.inner.result.get().is_some_and(|r| r.is_ok())
-    }
-
-    /// Set the thunk to materialized state with the given value.
-    pub fn set_materialized(&self, value: Value) {
-        *self.inner.unevaluated.lock().unwrap() = None;
-        let _ = self.inner.result.set(Ok(value));
-    }
-
-    /// Atomically take the CoreExpr state (if present), transitioning to InProgress.
-    pub fn take_core_expr(&self) -> Option<CoreExprParts> {
-        let mut guard = self.inner.unevaluated.lock().unwrap();
-        match guard.take() {
-            Some(UnevaluatedState::CoreExpr { expr, env_id, ctx }) => Some((expr, env_id, ctx)),
-            other => {
-                *guard = other;
-                None
-            }
+        match self.state() {
+            ThunkState::Materialized(v) => Some(v),
+            _ => None,
         }
     }
 
-    pub fn take_pending_builtin(&self) -> Option<PendingBuiltinParts> {
-        let mut guard = self.inner.unevaluated.lock().unwrap();
-        match guard.take() {
-            Some(UnevaluatedState::Builtin {
-                def,
-                args,
-                named,
-                call_span,
-                caller_env_id,
-                ctx,
-            }) => Some((def, args, named, call_span, caller_env_id, ctx)),
-            other => {
-                *guard = other;
-                None
-            }
-        }
-    }
-
-    pub fn take_pending_call(&self) -> Option<PendingCallParts> {
-        let mut guard = self.inner.unevaluated.lock().unwrap();
-        match guard.take() {
-            Some(UnevaluatedState::Call {
-                func,
-                args,
-                named,
-                call_span,
-                caller_env_id,
-                ctx,
-                original_call,
-            }) => {
-                let named = named.map(|b| *b);
-                Some((
-                    func,
-                    args,
-                    named,
-                    call_span,
-                    caller_env_id,
-                    ctx,
-                    original_call,
-                ))
-            }
-            other => {
-                *guard = other;
-                None
-            }
-        }
-    }
-
-    /// Extract Guarded state components and transition thunk to InProgress.
-    pub fn take_guarded(&self) -> Option<GuardedParts> {
-        let mut guard = self.inner.unevaluated.lock().unwrap();
-        match guard.take() {
-            Some(UnevaluatedState::Guarded {
-                inner,
-                expected,
-                field_path,
-                guard_span,
-                blame_label,
-                default,
-            }) => Some((
-                inner,
-                expected,
-                field_path,
-                guard_span,
-                blame_label,
-                default,
-            )),
-            other => {
-                *guard = other;
-                None
-            }
-        }
-    }
-
-    /// Atomically take the Surface state (if present), transitioning to InProgress.
-    pub fn take_surface(&self) -> Option<SurfaceParts> {
-        let mut guard = self.inner.unevaluated.lock().unwrap();
-        match guard.take() {
-            Some(UnevaluatedState::Surface {
-                node,
-                res,
-                types,
-                env_id,
-                ctx,
-            }) => Some((node, res, types, env_id, ctx)),
-            other => {
-                *guard = other;
-                None
-            }
-        }
-    }
-
-    /// Atomically take the AstNodeField state (if present), transitioning to InProgress.
-    pub fn take_ast_node_field(
-        &self,
-    ) -> Option<(
-        std::sync::Arc<crate::ast::SurfaceNode>,
-        &'static str,
-        Arc<crate::eval::EvalContext>,
-    )> {
-        let mut guard = self.inner.unevaluated.lock().unwrap();
-        match guard.take() {
-            Some(UnevaluatedState::AstNodeField { node, field, ctx }) => Some((node, field, ctx)),
-            other => {
-                *guard = other;
-                None
-            }
-        }
-    }
-
-    /// Return the cached error if the thunk is in Failed state.
     pub fn get_cached_error(&self) -> Option<Box<EvalError>> {
-        self.inner.result.get().and_then(|r| {
-            r.as_ref()
-                .err()
-                .map(|arc_err| Box::new((**arc_err).clone()))
-        })
+        match self.state() {
+            ThunkState::Failed(e) => Some(Box::new((*e).clone())),
+            _ => None,
+        }
     }
 
-    /// Return true if the thunk is currently in the InProgress (blackhole) state.
-    pub fn is_in_progress(&self) -> bool {
-        if self.inner.result.get().is_some() {
-            return false;
-        }
-        self.inner.unevaluated.lock().unwrap().is_none()
-    }
-
-    /// Cache a failed evaluation by transitioning to the Failed state.
-    pub fn cache_failure_once(&self, err: &EvalError) {
-        if let Some(result) = self.inner.result.get() {
-            if result.is_err() {
-                return;
-            }
-        }
-        *self.inner.unevaluated.lock().unwrap() = None;
-        let _ = self.inner.result.set(Err(Arc::new(err.clone())));
+    pub fn is_materialized(&self) -> bool {
+        matches!(self.state(), ThunkState::Materialized(_))
     }
 
     // ========================================================================
     // Non-destructive introspection methods
     // ========================================================================
 
-    /// Peek at the builtin def if this thunk is in Unevaluated Builtin state.
+    /// Peek at the builtin def if this thunk is in Unevaluated BuiltinCall state.
     pub fn peek_builtin_def(&self) -> Option<BuiltinDef> {
         let guard = self.inner.unevaluated.lock().unwrap();
-        match &*guard {
-            Some(UnevaluatedState::Builtin { def, .. }) => Some(*def),
+        match &guard.0 {
+            Some(UnevaluatedState::BuiltinCall { def, .. }) => Some(*def),
             _ => None,
         }
     }
@@ -1734,47 +1680,35 @@ impl Thunk {
     /// Check if this thunk is in Guarded state.
     pub fn is_guarded(&self) -> bool {
         let guard = self.inner.unevaluated.lock().unwrap();
-        matches!(&*guard, Some(UnevaluatedState::Guarded { .. }))
+        matches!(&guard.0, Some(UnevaluatedState::Guarded { .. }))
     }
 
-    /// Check if this thunk is in PendingCall state.
+    /// Check if this thunk is in FnCall state.
     pub fn is_pending_call(&self) -> bool {
         let guard = self.inner.unevaluated.lock().unwrap();
-        matches!(&*guard, Some(UnevaluatedState::Call { .. }))
+        matches!(&guard.0, Some(UnevaluatedState::FnCall { .. }))
     }
 
     /// Peek at the SurfaceNode if this thunk is in Surface state.
     pub fn peek_surface_node(&self) -> Option<std::sync::Arc<crate::ast::SurfaceNode>> {
         let guard = self.inner.unevaluated.lock().unwrap();
-        match &*guard {
+        match &guard.0 {
             Some(UnevaluatedState::Surface { node, .. }) => Some(std::sync::Arc::clone(node)),
             _ => None,
         }
     }
 
-    /// Peek at the AstNodeField if this thunk is in AstNodeField state.
+    /// Peek at the AstField if this thunk is in AstField state.
     pub fn peek_ast_node_field(
         &self,
     ) -> Option<(std::sync::Arc<crate::ast::SurfaceNode>, &'static str)> {
         let guard = self.inner.unevaluated.lock().unwrap();
-        match &*guard {
-            Some(UnevaluatedState::AstNodeField { node, field, .. }) => {
+        match &guard.0 {
+            Some(UnevaluatedState::AstField { node, field, .. }) => {
                 Some((std::sync::Arc::clone(node), *field))
             }
             _ => None,
         }
-    }
-
-    /// Clone the current unevaluated state without consuming it (non-destructive peek).
-    ///
-    /// Returns `None` if the thunk is InProgress (unevaluated=None, result=empty),
-    /// Materialized, or Failed. Returns `Some(state.clone())` if unevaluated.
-    ///
-    /// Used by arena migration to inspect env_id / ThunkId fields in an unevaluated
-    /// thunk without taking ownership of the state.
-    pub fn peek_unevaluated_state(&self) -> Option<UnevaluatedState> {
-        let guard = self.inner.unevaluated.lock().unwrap();
-        guard.as_ref().cloned()
     }
 }
 
@@ -1791,7 +1725,7 @@ impl fmt::Debug for Thunk {
                         }
                         Err(_) => s.field("state", &"Failed"),
                     };
-                } else if guard.is_some() {
+                } else if guard.0.is_some() {
                     s.field("state", &"Unevaluated");
                 } else {
                     s.field("state", &"InProgress");

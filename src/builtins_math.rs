@@ -72,7 +72,7 @@ pub(crate) fn builtin_mul(
         match (&left, &right) {
             (Value::Int(a), Value::Int(b)) => a
                 .checked_mul(*b)
-                .map(|r| Arc::new(Thunk::new_materialized(Value::Int(r), call_span.clone())))
+                .map(|r| Arc::new(Thunk::value(Value::Int(r), call_span.clone())))
                 .ok_or_else(|| EvalError::integer_overflow("*".to_string(), call_span).into()),
             (Value::Float(a), Value::Float(b)) => check_float_result(a * b, "*", call_span),
             (Value::Int(a), Value::Float(b)) => {
@@ -1016,7 +1016,7 @@ pub(crate) fn builtin_int_add(
         match (&a, &b) {
             (Value::Int(x), Value::Int(y)) => x
                 .checked_add(*y)
-                .map(|r| Arc::new(Thunk::new_materialized(Value::Int(r), call_span.clone())))
+                .map(|r| Arc::new(Thunk::value(Value::Int(r), call_span.clone())))
                 .ok_or_else(|| {
                     EvalError::integer_overflow("builtin-int-add".to_string(), call_span).into()
                 }),
@@ -1121,7 +1121,7 @@ pub(crate) fn builtin_int_sub(
         match (&a, &b) {
             (Value::Int(x), Value::Int(y)) => x
                 .checked_sub(*y)
-                .map(|r| Arc::new(Thunk::new_materialized(Value::Int(r), call_span.clone())))
+                .map(|r| Arc::new(Thunk::value(Value::Int(r), call_span.clone())))
                 .ok_or_else(|| {
                     EvalError::integer_overflow("builtin-int-sub".to_string(), call_span).into()
                 }),
@@ -1198,7 +1198,7 @@ pub(crate) fn builtin_int_mul(
         match (&a, &b) {
             (Value::Int(x), Value::Int(y)) => x
                 .checked_mul(*y)
-                .map(|r| Arc::new(Thunk::new_materialized(Value::Int(r), call_span.clone())))
+                .map(|r| Arc::new(Thunk::value(Value::Int(r), call_span.clone())))
                 .ok_or_else(|| {
                     EvalError::integer_overflow("builtin-int-mul".to_string(), call_span).into()
                 }),
@@ -1673,10 +1673,7 @@ mod tests {
     }
 
     fn alloc(ctx: &Arc<crate::eval::EvalContext>, val: Value) -> ThunkId {
-        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            val,
-            test_span(1, 1, 1, 5),
-        )))
+        ctx.alloc_thunk(0, Arc::new(Thunk::value(val, test_span(1, 1, 1, 5))))
     }
 
     /// Drive an async builtin to completion synchronously in tests.

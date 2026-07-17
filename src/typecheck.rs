@@ -290,8 +290,8 @@ pub async fn typecheck_surface_program_with_env(
     }
     // Seed the resolver so that instance binding names (ɪ-prefixed) are visible
     // in scope and method_to_instance can resolve class method VarRefs (cast, +, -, etc.)
-    // to their letrec slots. T-1576: When an eval_ctx is provided, use its current_env_id
-    // and arena to seed the resolver from FlatEnv. Otherwise use bootstrap mode (empty initial_frames).
+    // to their letrec slots. T-1576: When an eval_ctx is provided, use its scope_arena
+    // to seed the resolver from FlatEnv. Otherwise use bootstrap mode (empty initial_frames).
     state.resolution_table = if let Some(ref ctx) = state.eval_ctx {
         let root_frame: indexmap::IndexMap<String, u32> = {
             let arena = ctx.scope_arena.borrow();

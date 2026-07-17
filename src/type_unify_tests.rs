@@ -1505,6 +1505,7 @@ async fn test_tycondef_construction() {
         annotation: None,
         field_annotations: indexmap::IndexMap::new(),
         constructor_constants: indexmap::IndexMap::new(),
+        definition_span: None,
     };
 
     assert_eq!(def.variance, vec![Variance::Covariant]);
@@ -1527,6 +1528,7 @@ async fn test_tycondef_multi_variance() {
         annotation: None,
         field_annotations: indexmap::IndexMap::new(),
         constructor_constants: indexmap::IndexMap::new(),
+        definition_span: None,
     };
 
     assert_eq!(def.variance.len(), 2);
@@ -1547,6 +1549,7 @@ async fn test_tycondef_builtin_type() {
         annotation: None,
         field_annotations: indexmap::IndexMap::new(),
         constructor_constants: indexmap::IndexMap::new(),
+        definition_span: None,
     };
 
     assert_eq!(def.builtin_type, Some("Seq".to_string()));
@@ -1803,6 +1806,7 @@ async fn test_tycondef_partialeq() {
         annotation: None,
         field_annotations: indexmap::IndexMap::new(),
         constructor_constants: indexmap::IndexMap::new(),
+        definition_span: None,
     };
     let def2 = TyConDef {
         params: vec![],
@@ -1814,6 +1818,7 @@ async fn test_tycondef_partialeq() {
         annotation: None,
         field_annotations: indexmap::IndexMap::new(),
         constructor_constants: indexmap::IndexMap::new(),
+        definition_span: None,
     };
     assert_eq!(def1, def2);
 }
@@ -1831,6 +1836,7 @@ async fn test_tycondef_partialeq_different_variance() {
         annotation: None,
         field_annotations: indexmap::IndexMap::new(),
         constructor_constants: indexmap::IndexMap::new(),
+        definition_span: None,
     };
     let def2 = TyConDef {
         params: vec![],
@@ -1842,6 +1848,7 @@ async fn test_tycondef_partialeq_different_variance() {
         annotation: None,
         field_annotations: indexmap::IndexMap::new(),
         constructor_constants: indexmap::IndexMap::new(),
+        definition_span: None,
     };
     assert_ne!(def1, def2);
 }
@@ -1921,6 +1928,7 @@ async fn test_unify_tycon_expand_nominal_variant_member_ok() {
         annotation: None,
         field_annotations: indexmap::IndexMap::new(),
         constructor_constants: indexmap::IndexMap::new(),
+        definition_span: None,
     });
     state.tycon_env.insert("Color".to_string(), tycon_def);
 
@@ -1971,6 +1979,7 @@ async fn test_unify_tycon_expand_nominal_variant_non_member_fails() {
         annotation: None,
         field_annotations: indexmap::IndexMap::new(),
         constructor_constants: indexmap::IndexMap::new(),
+        definition_span: None,
     });
     state.tycon_env.insert("Color".to_string(), tycon_def);
 
@@ -2049,6 +2058,7 @@ async fn test_unify_tycon_expand_symmetric() {
         annotation: None,
         field_annotations: indexmap::IndexMap::new(),
         constructor_constants: indexmap::IndexMap::new(),
+        definition_span: None,
     });
     state
         .tycon_env

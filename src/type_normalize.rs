@@ -317,10 +317,10 @@ pub(crate) async fn evaluate_resolver(
     let arg_thunk_ids: Vec<crate::arena::ThunkId> = type_args
         .into_iter()
         .map(|val| {
-            eval_ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                val,
-                crate::rust_span!(),
-            )))
+            eval_ctx.alloc_thunk(
+                0,
+                Arc::new(crate::value::Thunk::value(val, crate::rust_span!())),
+            )
         })
         .collect();
 
@@ -329,7 +329,15 @@ pub(crate) async fn evaluate_resolver(
         .await
         .ok()?;
 
-    // Dispatch: resolver must be a Function
+    // Dispatch: if no args and the resolved value is already a TypeNode constant (not a
+    // function), convert it directly. This handles leaf bindings like `Integer: TypeNode.Int`.
+    if args.is_empty() {
+        if let Some(ty) = typenode_leaf_to_type(&resolver_val) {
+            return Some(ty);
+        }
+    }
+
+    // Otherwise: resolver must be a Function (e.g. Map, Seq — parameterized type constructors).
     let (params, body, closure_env_id) = match resolver_val {
         Value::Function {
             params,
@@ -360,23 +368,58 @@ pub(crate) async fn evaluate_resolver(
         .await
         .ok()?;
 
-    // Step 7: Convert result TypeNode Value back to Type
-    match &result_val {
-        Value::Variant { tag, payload: None } => {
-            match tag.as_str() {
-                "TypeNode.Int" | "TypeNode.Integer" => Some(Type::Int),
-                "TypeNode.Float" => Some(Type::Float),
-                "TypeNode.String" | "TypeNode.Str" => Some(Type::Str),
-                // TypeNode.Bool has no direct Type equivalent — fall through to None
-                "TypeNode.Never" => Some(Type::Never),
-                // TypeNode.Unknown → Type::Unknown (gradual ?); TypeNode.Any → Type::Any (top).
-                // Distinct semantics: Unknown is the gradual type (bottom of the info lattice),
-                // Any is the unconstrained top (τ <: Any for all τ). Keep them separate.
-                "TypeNode.Unknown" => Some(Type::Unknown),
-                "TypeNode.Any" => Some(Type::Any),
-                _ => None,
-            }
-        }
+    // Step 7: Convert result TypeNode Value back to Type (from a parameterized constructor call)
+    typenode_leaf_to_type(&result_val)
+}
+
+/// Convert a TypeNode variant value to a Type.
+/// Handles leaf constructors (no payload) and the Dict constructor (any payload → open Dict).
+pub(crate) fn typenode_leaf_to_type(val: &Value) -> Option<Type> {
+    let tag = match val {
+        Value::Variant { tag, .. } => tag.as_str(),
+        _ => return None,
+    };
+    match tag {
+        "TypeNode.Int" => Some(Type::Int),
+        "TypeNode.Float" => Some(Type::Float),
+        "TypeNode.String" => Some(Type::Str),
+        "TypeNode.Bytes" => Some(Type::Bytes),
+        "TypeNode.Never" => Some(Type::Never),
+        "TypeNode.Unknown" => Some(Type::Unknown),
+        "TypeNode.Top" => Some(Type::Any),
+        "TypeNode.Proxy" => Some(Type::Proxy),
+        // Dict with any payload → open structural dict (any keys, any values)
+        "TypeNode.Dict" => Some(Type::Dict(crate::types::Row {
+            fields: indexmap::IndexMap::new(),
+            tail: crate::type_def::RowTail::Uniform {
+                key: None,
+                value: Box::new(Type::Any),
+            },
+        })),
+        // Opaque builtin types — each maps to a TyCon that value_matches_type dispatches
+        // via TyConDef.builtin_type. The discriminant string here must match the string
+        // registered in build_builtin_core_type_env_inner and the arm in value_matches_type.
+        "TypeNode.Program" => Some(Type::TyCon("Program".to_string())),
+        "TypeNode.Document" => Some(Type::TyCon("Document".to_string())),
+        "TypeNode.TypeContext" => Some(Type::TyCon("TypeContext".to_string())),
+        "TypeNode.DirCap" => Some(Type::TyCon("DirCap".to_string())),
+        "TypeNode.NetCap" => Some(Type::TyCon("NetCap".to_string())),
+        "TypeNode.Handle" => Some(Type::TyCon("Handle".to_string())),
+        "TypeNode.File" => Some(Type::TyCon("File".to_string())),
+        "TypeNode.BuilderHandle" => Some(Type::TyCon("BuilderHandle".to_string())),
+        "TypeNode.Task" => Some(Type::TyCon("Task".to_string())),
+        "TypeNode.Channel" => Some(Type::TyCon("Channel".to_string())),
+        "TypeNode.Context" => Some(Type::TyCon("Context".to_string())),
+        "TypeNode.ReactiveCell" => Some(Type::TyCon("ReactiveCell".to_string())),
+        "TypeNode.ClockCap" => Some(Type::TyCon("ClockCap".to_string())),
+        "TypeNode.Timezone" => Some(Type::TyCon("Timezone".to_string())),
+        "TypeNode.Decimal" => Some(Type::TyCon("Decimal".to_string())),
+        "TypeNode.BigInt" => Some(Type::TyCon("BigInt".to_string())),
+        "TypeNode.QuicSession" => Some(Type::TyCon("QuicSession".to_string())),
+        "TypeNode.Http2Session" => Some(Type::TyCon("Http2Session".to_string())),
+        "TypeNode.Http3Session" => Some(Type::TyCon("Http3Session".to_string())),
+        "TypeNode.Uri" => Some(Type::TyCon("Uri".to_string())),
+        "TypeNode.Urn" => Some(Type::TyCon("Urn".to_string())),
         _ => None,
     }
 }

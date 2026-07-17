@@ -333,8 +333,7 @@ pub fn migrate_flat_env(
             }
             Some(src_arc) => {
                 // Allocate a placeholder into new_env_id at the next slot (= slot_idx).
-                let placeholder =
-                    Arc::new(crate::value::Thunk::new_placeholder(src_arc.span.clone()));
+                let placeholder = Arc::new(crate::value::Thunk::placeholder(src_arc.span.clone()));
                 let new_tid = arena.push_slot(new_env_id, &mig_name, Arc::clone(&placeholder));
                 debug_assert_eq!(
                     new_tid.slot, slot_idx as u32,
@@ -358,14 +357,14 @@ pub fn migrate_flat_env(
                 // Materialized: migrate the value recursively.
                 let migrated =
                     migrate_value(&value, src_range, dst_env_id, thunk_map, env_map, arena);
-                placeholder.set_materialized(migrated);
-            } else if let Some(state) = src_arc.peek_unevaluated_state() {
+                placeholder.settle(Ok(migrated));
+            } else if let Some(state) = src_arc.try_claim() {
                 // Unevaluated: translate all env_id / ThunkId fields so the migrated thunk
                 // does not reference dropped Scopes after arena-drop src.
                 let translated = translate_unevaluated_state(
                     state, src_range, dst_env_id, thunk_map, env_map, arena,
                 );
-                placeholder.restore_unevaluated(translated);
+                placeholder.reset(translated);
             }
             // If state is None (InProgress/concurrent transition), the placeholder stays
             // as-is — forcing it will return a circular_dependency error, which is correct
@@ -517,7 +516,7 @@ fn translate_unevaluated_state(
                 ctx,
             }
         }
-        UnevaluatedState::Builtin {
+        UnevaluatedState::BuiltinCall {
             def,
             args,
             named,
@@ -550,7 +549,7 @@ fn translate_unevaluated_state(
                     })
                     .collect()
             });
-            UnevaluatedState::Builtin {
+            UnevaluatedState::BuiltinCall {
                 def,
                 args: new_args,
                 named: new_named,
@@ -559,7 +558,7 @@ fn translate_unevaluated_state(
                 ctx,
             }
         }
-        UnevaluatedState::Call {
+        UnevaluatedState::FnCall {
             func,
             args,
             named,
@@ -598,7 +597,7 @@ fn translate_unevaluated_state(
                         .collect(),
                 )
             });
-            UnevaluatedState::Call {
+            UnevaluatedState::FnCall {
                 func: new_func,
                 args: new_args,
                 named: new_named,
@@ -636,8 +635,8 @@ fn translate_unevaluated_state(
             }
         }
         // AstNodeField has no env_id or ThunkId fields — return as-is.
-        UnevaluatedState::AstNodeField { node, field, ctx } => {
-            UnevaluatedState::AstNodeField { node, field, ctx }
+        UnevaluatedState::AstField { node, field, ctx } => {
+            UnevaluatedState::AstField { node, field, ctx }
         }
     }
 }
@@ -668,15 +667,15 @@ pub fn migrate_thunk_id(
         //      This breaks any cycles: if the value's nested ThunkIds refer back to thunk_id,
         //      migrate_thunk_id will find it in thunk_map and return new_tid immediately.
         //   2. Recurse into migrate_value (safe — thunk_map already has our entry).
-        //   3. Fill the placeholder with the fully-migrated value via set_materialized.
-        let placeholder = Arc::new(crate::value::Thunk::new_placeholder(src_thunk.span.clone()));
+        //   3. Fill the placeholder with the fully-migrated value via settle.
+        let placeholder = Arc::new(crate::value::Thunk::placeholder(src_thunk.span.clone()));
         let new_tid = arena.push_slot(dst_env_id, "#mig", Arc::clone(&placeholder));
         thunk_map.insert(thunk_id, new_tid);
         // Recurse now that thunk_map has the cycle-breaking entry.
         let migrated_value =
             migrate_value(&value, src_range, dst_env_id, thunk_map, env_map, arena);
         // Fill the placeholder (same Arc already in the slot) with the migrated value.
-        placeholder.set_materialized(migrated_value);
+        placeholder.settle(Ok(migrated_value));
         new_tid
     } else {
         // Unevaluated thunk — translate all env_id / ThunkId fields in the UnevaluatedState
@@ -689,22 +688,17 @@ pub fn migrate_thunk_id(
         //   2. Translate the UnevaluatedState — all env_ids and ThunkIds in src_range are
         //      remapped through migrate_flat_env / migrate_thunk_id.
         //   3. Replace the placeholder's unevaluated field with the translated state.
-        let placeholder = Arc::new(crate::value::Thunk::new_placeholder(src_thunk.span.clone()));
+        let placeholder = Arc::new(crate::value::Thunk::placeholder(src_thunk.span.clone()));
         let new_tid = arena.push_slot(dst_env_id, "#mig", Arc::clone(&placeholder));
         thunk_map.insert(thunk_id, new_tid);
 
-        // Peek the unevaluated state WITHOUT consuming it (source thunk stays intact).
-        // If None (InProgress/Materialized/Failed), the thunk is already handled above;
-        // a concurrent transition between our try_get_materialized check and this peek
-        // is safe — worst case we create a placeholder that stays as-is (safe: the
-        // Arc<Thunk> result channel is set atomically by the materializer on the original).
-        if let Some(state) = src_thunk.peek_unevaluated_state() {
+        if let Some(state) = src_thunk.try_claim() {
             let translated = translate_unevaluated_state(
                 state, src_range, dst_env_id, thunk_map, env_map, arena,
             );
             // Write the translated state into the placeholder thunk.
-            // new_placeholder() sets unevaluated=None; we must set it to Some(translated).
-            placeholder.restore_unevaluated(translated);
+            // placeholder() sets unevaluated=None; we must set it to Some(translated).
+            placeholder.reset(translated);
         }
         // If state is None here (concurrent materialization between the two checks),
         // the placeholder stays as a placeholder — harmless because the caller should
@@ -749,7 +743,7 @@ mod tests {
         let mut arena = ScopeArena::new();
         let env_id = arena.alloc_root(0);
 
-        let thunk = Arc::new(Thunk::new_materialized(Value::Int(42), test_span()));
+        let thunk = Arc::new(Thunk::value(Value::Int(42), test_span()));
         let id = arena.push_slot(env_id, "x", Arc::clone(&thunk));
 
         assert_eq!(id.scope_id, env_id.0);
@@ -764,9 +758,9 @@ mod tests {
         let mut arena = ScopeArena::new();
         let env_id = arena.alloc_root(0);
 
-        let t1 = Arc::new(Thunk::new_materialized(Value::Int(1), test_span()));
-        let t2 = Arc::new(Thunk::new_materialized(Value::Int(2), test_span()));
-        let t3 = Arc::new(Thunk::new_materialized(Value::Int(3), test_span()));
+        let t1 = Arc::new(Thunk::value(Value::Int(1), test_span()));
+        let t2 = Arc::new(Thunk::value(Value::Int(2), test_span()));
+        let t3 = Arc::new(Thunk::value(Value::Int(3), test_span()));
 
         let id1 = arena.push_slot(env_id, "a", Arc::clone(&t1));
         let id2 = arena.push_slot(env_id, "b", Arc::clone(&t2));
@@ -800,7 +794,7 @@ mod tests {
 
         // Allocate a source thunk in a separate scope.
         let src_env = arena.alloc_root(0);
-        let thunk = Arc::new(Thunk::new_materialized(Value::Int(99), test_span()));
+        let thunk = Arc::new(Thunk::value(Value::Int(99), test_span()));
         let src_tid = arena.push_slot(src_env, "src", Arc::clone(&thunk));
 
         arena.fill_slot(env_id, slot_idx, src_tid);
@@ -844,9 +838,9 @@ mod tests {
         let mut arena = ScopeArena::new();
         let id = arena.alloc_root(3);
 
-        let t0 = Arc::new(Thunk::new_materialized(Value::Int(10), rust_span!()));
-        let t1 = Arc::new(Thunk::new_materialized(Value::Int(20), rust_span!()));
-        let t2 = Arc::new(Thunk::new_materialized(Value::Int(30), rust_span!()));
+        let t0 = Arc::new(Thunk::value(Value::Int(10), rust_span!()));
+        let t1 = Arc::new(Thunk::value(Value::Int(20), rust_span!()));
+        let t2 = Arc::new(Thunk::value(Value::Int(30), rust_span!()));
 
         let tid0 = arena.push_slot(id, "a", Arc::clone(&t0));
         let tid1 = arena.push_slot(id, "b", Arc::clone(&t1));
@@ -923,8 +917,8 @@ mod tests {
             0
         );
 
-        let t1 = Arc::new(Thunk::new_materialized(Value::Int(1), test_span()));
-        let t2 = Arc::new(Thunk::new_materialized(Value::Int(2), test_span()));
+        let t1 = Arc::new(Thunk::value(Value::Int(1), test_span()));
+        let t2 = Arc::new(Thunk::value(Value::Int(2), test_span()));
         arena.push_slot(env_id, "a", t1);
         arena.push_slot(env_id, "b", t2);
 
@@ -941,7 +935,7 @@ mod tests {
         let mut arena = ScopeArena::new();
         let env_id = arena.alloc_root(0);
 
-        let thunk = Arc::new(Thunk::new_materialized(Value::Int(42), test_span()));
+        let thunk = Arc::new(Thunk::value(Value::Int(42), test_span()));
         let id = arena.push_slot(env_id, "x", Arc::clone(&thunk));
 
         // Verify thunk is present
@@ -968,11 +962,11 @@ mod tests {
     fn test_push_slot_returns_stable_thunkid() {
         let mut arena = ScopeArena::new();
         let env_id = arena.alloc_root(0);
-        let thunk1 = Arc::new(crate::value::Thunk::new_materialized(
+        let thunk1 = Arc::new(crate::value::Thunk::value(
             crate::value::Value::Int(1),
             rust_span!(),
         ));
-        let thunk2 = Arc::new(crate::value::Thunk::new_materialized(
+        let thunk2 = Arc::new(crate::value::Thunk::value(
             crate::value::Value::Int(2),
             rust_span!(),
         ));
@@ -995,7 +989,7 @@ mod tests {
     fn test_drop_scope_clears_slots() {
         let mut arena = ScopeArena::new();
         let env_id = arena.alloc_root(0);
-        let thunk = Arc::new(crate::value::Thunk::new_materialized(
+        let thunk = Arc::new(crate::value::Thunk::value(
             crate::value::Value::Int(42),
             rust_span!(),
         ));
@@ -1010,7 +1004,7 @@ mod tests {
         let mut arena = ScopeArena::new();
         let env0 = arena.alloc_root(0);
         let env1 = arena.alloc_child(env0, 0);
-        let thunk = Arc::new(crate::value::Thunk::new_materialized(
+        let thunk = Arc::new(crate::value::Thunk::value(
             crate::value::Value::Int(99),
             rust_span!(),
         ));
@@ -1030,7 +1024,7 @@ mod tests {
         let env_id = arena.alloc_root(0);
 
         // Push a named slot first (slot 0).
-        let named_thunk = Arc::new(Thunk::new_materialized(Value::Int(100), rust_span!()));
+        let named_thunk = Arc::new(Thunk::value(Value::Int(100), rust_span!()));
         let src_id = arena.push_slot(env_id, "first", Arc::clone(&named_thunk));
         assert_eq!(src_id.slot, 0);
 
@@ -1042,14 +1036,14 @@ mod tests {
         let src2_id = arena.push_slot(
             env2,
             "src2",
-            Arc::new(Thunk::new_materialized(Value::Int(200), rust_span!())),
+            Arc::new(Thunk::value(Value::Int(200), rust_span!())),
         );
 
         // Fill slot 1 of env_id from env2 slot 0.
         arena.fill_slot(env_id, slot1, src2_id);
 
         // Push another named slot (slot 2).
-        let anon_thunk = Arc::new(Thunk::new_materialized(Value::Int(300), rust_span!()));
+        let anon_thunk = Arc::new(Thunk::value(Value::Int(300), rust_span!()));
         let anon_id = arena.push_slot(env_id, "third", anon_thunk);
 
         // All three ThunkIds must be distinct and retrieve the correct values.
@@ -1110,7 +1104,7 @@ mod tests {
     fn test_use_after_free_panics() {
         let mut arena = ScopeArena::new();
         let env_id = arena.alloc_root(0);
-        let thunk = Arc::new(crate::value::Thunk::new_materialized(
+        let thunk = Arc::new(crate::value::Thunk::value(
             crate::value::Value::Int(1),
             rust_span!(),
         ));
@@ -1125,7 +1119,7 @@ mod tests {
         use crate::eval::EvalContext;
 
         // Create a placeholder thunk (unfilled)
-        let thunk = Arc::new(Thunk::new_placeholder(rust_span!()));
+        let thunk = Arc::new(Thunk::placeholder(rust_span!()));
 
         // Create a minimal test context
         let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
@@ -1152,8 +1146,8 @@ mod tests {
         // Allocate two dict entries in the source scope
         let key1 = HashableValue::Str("a".into());
         let key2 = HashableValue::Str("b".into());
-        let thunk1 = Arc::new(Thunk::new_materialized(Value::Int(1), test_span()));
-        let thunk2 = Arc::new(Thunk::new_materialized(Value::Int(2), test_span()));
+        let thunk1 = Arc::new(Thunk::value(Value::Int(1), test_span()));
+        let thunk2 = Arc::new(Thunk::value(Value::Int(2), test_span()));
         let tid1 = arena.push_slot(src_env_id, "a", thunk1);
         let tid2 = arena.push_slot(src_env_id, "b", thunk2);
 
@@ -1296,8 +1290,8 @@ mod tests {
         let mut arena = ScopeArena::new();
         let env_id = arena.alloc_root(3);
 
-        let t1 = Arc::new(Thunk::new_materialized(Value::Int(1), test_span()));
-        let t2 = Arc::new(Thunk::new_materialized(Value::Int(2), test_span()));
+        let t1 = Arc::new(Thunk::value(Value::Int(1), test_span()));
+        let t2 = Arc::new(Thunk::value(Value::Int(2), test_span()));
 
         let _tid1 = arena.push_slot(env_id, "x", t1);
         let _tid2 = arena.push_slot(env_id, "y", t2);
@@ -1320,7 +1314,7 @@ mod tests {
 
         // We need a minimal EvalContext to create unevaluated thunks.
         // Use a placeholder approach: construct the UnevaluatedState directly via
-        // Thunk::new_guarded (which has no env_id) to test the Guarded path,
+        // Thunk::guarded (which has no env_id) to test the Guarded path,
         // and verify the inner ThunkId is translated.
 
         let mut arena = ScopeArena::new();
@@ -1333,7 +1327,7 @@ mod tests {
         let src_range = src_env_id.0..(src_env_id.0 + 1);
 
         // Allocate a materialized thunk in src_env_id (the inner target for Guarded).
-        let inner_thunk = Arc::new(Thunk::new_materialized(Value::Int(77), rust_span!()));
+        let inner_thunk = Arc::new(Thunk::value(Value::Int(77), rust_span!()));
         let inner_tid = arena.push_slot(src_env_id, "inner", Arc::clone(&inner_thunk));
         assert!(
             src_range.contains(&inner_tid.scope_id),
@@ -1341,11 +1335,13 @@ mod tests {
         );
 
         // Create a Guarded thunk in src_env_id whose inner ThunkId points to inner_tid.
-        let guarded_thunk = Arc::new(Thunk::new_guarded(
+        let guarded_thunk = Arc::new(Thunk::guarded(
             inner_tid,
             crate::types::Type::Int,
             vec![],
             rust_span!(),
+            None,
+            None,
         ));
         let guarded_tid = arena.push_slot(src_env_id, "guarded", Arc::clone(&guarded_thunk));
 
@@ -1370,9 +1366,9 @@ mod tests {
         // The migrated thunk must have its inner ThunkId remapped to dst.
         let migrated_arc = arena.get_thunk(new_tid);
         let state = migrated_arc
-            .peek_unevaluated_state()
+            .try_claim()
             .expect("migrated thunk must still be unevaluated after migration (not forced)");
-        match state {
+        match &state {
             UnevaluatedState::Guarded { inner, .. } => {
                 assert!(
                     !src_range.contains(&inner.scope_id),
@@ -1384,7 +1380,7 @@ mod tests {
                     "migrated Guarded.inner must point to dst_env_id"
                 );
                 // The inner thunk at the translated location must hold the materialized value.
-                let inner_arc = arena.get_thunk(inner);
+                let inner_arc = arena.get_thunk(*inner);
                 assert_eq!(
                     inner_arc.try_get_materialized(),
                     Some(Value::Int(77)),
@@ -1393,9 +1389,10 @@ mod tests {
             }
             other => panic!(
                 "expected Guarded state after migration, got {:?}",
-                std::mem::discriminant(&other)
+                std::mem::discriminant(other)
             ),
         }
+        migrated_arc.reset(state);
 
         // Drop the source scope — the migrated thunk must remain valid.
         arena.drop_scope(src_env_id);
@@ -1403,7 +1400,7 @@ mod tests {
         // Verify the migrated thunk's inner is still readable from dst (no use-after-free).
         let migrated_arc2 = arena.get_thunk(new_tid);
         let state2 = migrated_arc2
-            .peek_unevaluated_state()
+            .try_claim()
             .expect("migrated thunk must still be unevaluated after source drop");
         match state2 {
             UnevaluatedState::Guarded { inner, .. } => {

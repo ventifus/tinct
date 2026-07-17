@@ -1540,10 +1540,7 @@ async fn run_eval(
             dir: Rc::new(cwd_dir),
             perms: tinct::DirPerms::full(),
         };
-        let cwd_thunk = Arc::new(tinct::Thunk::new_materialized(
-            cwd_value,
-            tinct::rust_span!(),
-        ));
+        let cwd_thunk = Arc::new(tinct::Thunk::value(cwd_value, tinct::rust_span!()));
         env.write()
             .unwrap()
             .insert_slot_name_only("%cwd".to_string());
@@ -1559,10 +1556,7 @@ async fn run_eval(
             name: "root".into(),
             start_env_id: 0,
         };
-        let arena_thunk = Arc::new(tinct::Thunk::new_materialized(
-            arena_value,
-            tinct::rust_span!(),
-        ));
+        let arena_thunk = Arc::new(tinct::Thunk::value(arena_value, tinct::rust_span!()));
         env.write()
             .unwrap()
             .insert_slot_name_only("%arena".to_string());
@@ -1621,10 +1615,7 @@ async fn run_eval(
                     dir: libdir_dir_for_cap,
                     perms: tinct::DirPerms::full(),
                 };
-                let libdir_thunk = Arc::new(tinct::Thunk::new_materialized(
-                    libdir_value,
-                    tinct::rust_span!(),
-                ));
+                let libdir_thunk = Arc::new(tinct::Thunk::value(libdir_value, tinct::rust_span!()));
                 env.write()
                     .unwrap()
                     .insert_slot_name_only("%libdir".to_string());
@@ -1650,10 +1641,7 @@ async fn run_eval(
                 dir: dir_for_cap,
                 perms,
             };
-            let cap_thunk = Arc::new(tinct::Thunk::new_materialized(
-                cap_value,
-                tinct::rust_span!(),
-            ));
+            let cap_thunk = Arc::new(tinct::Thunk::value(cap_value, tinct::rust_span!()));
             // Inject as `%NAME` (auto-prefix %).
             let scoped_name = if name.starts_with('%') {
                 name.to_string()
@@ -1706,10 +1694,7 @@ async fn run_eval(
         // Create NetCap values and inject them as `%NAME`.
         for (name, entries) in net_caps {
             let cap_value = Value::NetCap(Rc::new(entries));
-            let cap_thunk = Arc::new(tinct::Thunk::new_materialized(
-                cap_value,
-                tinct::rust_span!(),
-            ));
+            let cap_thunk = Arc::new(tinct::Thunk::value(cap_value, tinct::rust_span!()));
             env.write().unwrap().insert_slot_name_only(name.clone());
             deferred_cap_thunks.push((name, cap_thunk));
         }
@@ -1742,10 +1727,7 @@ async fn run_eval(
             Value::ClockCap(Rc::new(ClockCapInner::Real))
         };
 
-        let cap_thunk = Arc::new(tinct::Thunk::new_materialized(
-            cap_value,
-            tinct::rust_span!(),
-        ));
+        let cap_thunk = Arc::new(tinct::Thunk::value(cap_value, tinct::rust_span!()));
         env.write()
             .unwrap()
             .insert_slot_name_only("%clock".to_string());
@@ -1974,15 +1956,16 @@ async fn run_eval(
             ctx.set_libdir_dir(Arc::clone(libdir_rc));
         }
         // Initialize TypeContext so loader.llt can call [builtin-get-type-context].
-        // tycon_env starts empty — it is populated by uses-scope calling builtin-typecheck-doc
-        // for each module in the --- uses: header (core first, then io, etc.).
+        // tycon_env seeded with builtin_core TyCons (Program, DirCap, etc.) so runtime
+        // value_matches_type checks have definition spans for clear error messages.
+        // Accumulated further by builtin-typecheck-doc calls during loading.
         ctx.init_type_context(tinct::TypeContextData {
             type_stage_env: std::sync::Arc::new(std::sync::RwLock::new(tinct::Env::new())),
             type_stage_scope_id: None,
             inference_env: tinct::get_builtin_core_type_env()
                 .await
                 .expect("builtin_core type env unavailable at startup"),
-            tycon_env: std::collections::HashMap::new(),
+            tycon_env: tinct::get_builtin_core_tycon_env().unwrap_or_default(),
             type_errors: Vec::new(),
         });
         ctx
@@ -1993,13 +1976,13 @@ async fn run_eval(
     // allocated with its name ("%libdir", "%cwd", etc.) so the resolver assigns de Bruijn
     // coordinates for it. Ordering MUST match registration order above.
     for (name, thunk) in deferred_cap_thunks {
-        eval_ctx.alloc_named_thunk(&name, thunk);
+        eval_ctx.alloc_named_thunk(0, &name, thunk);
     }
 
     // Helper: allocate a value as a materialized thunk in the eval_ctx arena and return its ThunkId.
     // Used to build Value::Dict entries (which use ThunkId, not Arc<Thunk>).
     let alloc_val = |v: Value| -> ThunkId {
-        eval_ctx.alloc_thunk(Arc::new(Thunk::new_materialized(v, tinct::rust_span!())))
+        eval_ctx.alloc_thunk(0, Arc::new(Thunk::value(v, tinct::rust_span!())))
     };
 
     // Build %programs as an integer-keyed Value::Dict.
@@ -2114,16 +2097,11 @@ async fn run_eval(
     // Inject %programs and %args into the stdlib environment so loader.llt can see them.
     // T-1557: Register slot names in env (for resolver) and thunks in arena (for evaluator).
     {
-        let programs_thunk = std::sync::Arc::new(tinct::Thunk::new_materialized(
-            programs_dict,
-            tinct::rust_span!(),
-        ));
-        eval_ctx.alloc_named_thunk("%programs", programs_thunk);
-        let args_thunk = std::sync::Arc::new(tinct::Thunk::new_materialized(
-            args_dict,
-            tinct::rust_span!(),
-        ));
-        eval_ctx.alloc_named_thunk("%args", args_thunk);
+        let programs_thunk =
+            std::sync::Arc::new(tinct::Thunk::value(programs_dict, tinct::rust_span!()));
+        eval_ctx.alloc_named_thunk(0, "%programs", programs_thunk);
+        let args_thunk = std::sync::Arc::new(tinct::Thunk::value(args_dict, tinct::rust_span!()));
+        eval_ctx.alloc_named_thunk(0, "%args", args_thunk);
     }
 
     // Wrap the evaluation section in an async block so profiling cleanup runs unconditionally
@@ -2161,8 +2139,54 @@ async fn run_eval(
                 (include_str!("../stdlib/loader.llt"), "stdlib/loader.llt")
             };
 
-        tinct::run_loader_pipeline(&eval_ctx, &libdir_for_loader, no_fs, init_source, init_path)
-            .await
+        // Build injected type env: declares the types of every value injected into the
+        // init program's scope by this CLI context. The type-checker for the init program
+        // uses this so injected names like %programs, %cwd, %args are typed rather than
+        // "undefined variable". Each injection site in main.rs is responsible for its type.
+        let injected_type_env = {
+            use tinct::{Env, Type};
+            let dircap = || Type::TyCon("DirCap".to_string());
+            let dict = || Type::TyCon("Dict".to_string());
+            let netcap = || Type::TyCon("NetCap".to_string());
+            let mut inj = Env::new();
+            // CLI-injected values: types match what is actually injected above.
+            inj.insert_injected("%programs".to_string(), dict());
+            inj.insert_injected("%args".to_string(), dict());
+            inj.insert_injected("%cwd".to_string(), dircap());
+            inj.insert_injected("%libdir".to_string(), dircap());
+            // User --cap-fs entries: each becomes a %NAME: DirCap.
+            for (name, _cap_dir, _perms) in open_cap_fs_entries(&cap_fs, no_fs).unwrap_or_default()
+            {
+                let scoped = if name.starts_with('%') {
+                    name.clone()
+                } else {
+                    format!("%{name}")
+                };
+                inj.insert_injected(scoped, dircap());
+            }
+            // User --cap-net entries: each becomes a %NAME: NetCap.
+            for entry in &cap_net {
+                if let Some((name, _)) = entry.split_once('=') {
+                    let scoped = if name.starts_with('%') {
+                        name.to_string()
+                    } else {
+                        format!("%{name}")
+                    };
+                    inj.insert_injected(scoped, netcap());
+                }
+            }
+            Some(std::sync::Arc::new(std::sync::RwLock::new(inj)))
+        };
+
+        tinct::run_loader_pipeline(
+            &eval_ctx,
+            &libdir_for_loader,
+            no_fs,
+            init_source,
+            init_path,
+            injected_type_env,
+        )
+        .await
     })
     .await; // end of eval_result async block
 

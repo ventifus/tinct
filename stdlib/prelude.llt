@@ -1,4 +1,4 @@
---- stage: type  uses: ["core" "meta"]
+--- stage: "type"  uses: ["core" "meta"]
 # ============================================================================
 # Type-Stage Prelude
 # ============================================================================
@@ -73,12 +73,6 @@
 # Boolean type — needed by child-field? and other type-stage predicates.
   Boolean: [type True False]
 
-  # IncludeCacheEntry: three-state variant for the content-addressed include cache.
-  # Used by builtin-include-cache-get and builtin-include-cache-put Rust primitives.
-  # Missing        — not yet loaded (or previously failed)
-  # Pending        — currently being evaluated (circular if seen again)
-  # [Cached value] — previously evaluated result
-  IncludeCacheEntry: [type Missing Pending [Cached value: Any]]
 
   # ============================================================================
   # Type-Stage Utilities (equirecursive-annotation-system, S-857)
@@ -696,7 +690,7 @@ partition-finish: [fn@[bind: [a]  return: a] [let result@a] result]
 
 # group-by-get-bucket: retrieve existing bucket for key k from acc dict, or [] if missing.
 group-by-get-bucket: [fn@Dict [let k acc@Dict]
-    [match [raw-to-result [builtin-try [fn [let] [builtin-get k acc]]]]
+    [match [raw-to-result [builtin-try [builtin-get k acc]]]
         [case [let v] [Result.Ok v]    v]
         [case [let _] [Result.Error]   []]]]
 
@@ -751,7 +745,7 @@ scope-to-frames: [fn [let scope-id]
 # retry-impl: recursive countdown helper for retry.
 # Attempts thunk. On success returns value. On failure, if n > 0 retries.
 retry-impl: [fn@[bind: [a]  return: a] [let n@Integer thunk@[Fn@a []]]
-    [match [raw-to-result [builtin-try thunk]]
+    [match [raw-to-result [builtin-try [thunk]]]
         [case [let v] [Result.Ok v]    v]
         [case [let _] [Result.Error]   [match [builtin-int-gte n 1]
                        0: [builtin-raise "retry limit exceeded"]
@@ -1694,7 +1688,7 @@ find-first@[doc: "Find first element matching predicate; errors if none found"]:
 
 # Return the first element satisfying pred, or default if none found.
 find-first-or@[doc: "Find first matching element or return default"]: [fn@[bind: [a]  return: a] [let pred@[Fn@Boolean [a]] default@a xs]
-    [try-or-impl [raw-to-result [builtin-try [fn [let] [find-first pred xs]]]] default]]
+    [try-or-impl [raw-to-result [builtin-try [find-first pred xs]]] default]]
 
 # Group elements of xs into a dict of lists, keyed by the result of applying f.
 # Elements with the same key are collected together (insertion order preserved).
@@ -1959,7 +1953,7 @@ Example: [try-or [fn [] [/ 10 2]] 99] => 5
 
 Note: Wraps the function call in error handling. Returns the function's result if successful, or the default value if an error occurs. Inherently materializing: must materialize body to catch errors.
 """] [let f@[Fn@a []] default@a]
-    [try-or-impl [raw-to-result [builtin-try f]] default]]
+    [try-or-impl [raw-to-result [builtin-try [f]]] default]]
 
 # ============================================================================
 # Seq Type (Lazy Linked-List Sequence)
@@ -3115,7 +3109,7 @@ to-float@[doc: "Parse String to Float"]: builtin-to-float
 # Evaluation control
 try@[doc: "Catch errors from a zero-arg function; returns Result.Ok on success or Result.Error on failure"]:
     [fn@[bind: [a]  return: [Result a]] [let f@[Fn@a []]]
-        [raw-to-result [builtin-try f]]]
+        [raw-to-result [builtin-try [f]]]]
 apply@[doc: "Apply function to a dict of arguments"]: builtin-apply
 partial@[doc: "Pre-fill leading arguments of f. Returns a function that accepts the remaining arguments and calls [f bound... extra...]."]:
     [fn [let f ...bound]
@@ -3196,7 +3190,7 @@ describe-fn-impl@[doc: "Internal helper for describe — builds introspection di
     [ann: [get-or "return-ann" [] ast]]
     [doc: [if [= ann []] ""
             [if [builtin-eq-string [builtin-get "kind" [@Dict ann]] "dict"]
-              [doc-entry: [try-or-impl [raw-to-result [builtin-try [fn [let] [head [filter [fn [let e] [builtin-eq-string [builtin-get "key" e] "doc"]] [builtin-get "entries" [@Dict ann]]]]]]] []]
+              [doc-entry: [try-or-impl [raw-to-result [builtin-try [head [filter [fn [let e] [builtin-eq-string [builtin-get "key" e] "doc"]] [builtin-get "entries" [@Dict ann]]]]]] []]
                 [if [= doc-entry []] "" [builtin-get "value" doc-entry]]]
               ""]]]
     [doc:        doc
@@ -3327,9 +3321,6 @@ eval-types@[doc: "Evaluate expressions in the type-stage environment"]: builtin-
 blake3@[doc: "Compute the BLAKE3 cryptographic hash of a string, returning a hex-encoded digest."]: builtin-blake3
 cap-identity@[doc: "Return a stable string identity for a DirCap (used for content-addressed caching keys)."]: builtin-cap-identity
 # cap-data removed: operated on Value::Handle/WriteHandle which no longer exist.
-include-cache-get@[doc: "Look up the include cache by BLAKE3 key. Returns IncludeCacheEntry (Missing/Pending/Cached)."]: builtin-include-cache-get
-include-cache-put@[doc: "Insert a value into the include cache by BLAKE3 key."]: builtin-include-cache-put
-
 # scope-to-frames: Convert a scope-id to an auto-indexed Dict of name-to-slot dicts for resolver initial_frames.
 # Returns auto-indexed Dict {0: outermost-frame, ..., N: innermost-frame} (outermost scope first).
 # Used by loader.llt to construct initial_frames for resolve_surface_document_inplace.
@@ -3378,8 +3369,9 @@ Named document sections (--- name: "foo") accumulate as %foo bindings in scope.
       [sc:     [builtin-scope-new st.scope-id [merge uses [%: st.percent]]]]
       [frames: [scope-to-frames sc]]
       [res:    [builtin-resolve doc frames]]
-      [typed:  [builtin-typecheck-doc res.doc tc]]
-      [ev:     [builtin-eval typed sc]]
+      [tc-result: [builtin-typecheck-doc res.doc tc]]
+      [typed:     tc-result.doc]
+      [ev:        [builtin-eval typed sc]]
       [doc-name: [>> [if [null? ev.errors] [] [raise [builtin-get 0 ev.errors]]]
                      [get-or "" "name" meta]]]
       [next-sc: [builtin-scope-new ev.scope-id
@@ -3946,45 +3938,8 @@ Example:
 # Self-Hosted Include
 # ============================================================================
 #
-# include: load, resolve, and evaluate a tinct file from a DirCap. Uses the
-# new thin meta API (scope-id based). Content-addressed memoization with a
-# three-state cache: Missing | Pending | Cached.
-#
-# The IncludeCacheEntry variant type is declared in the type-stage prelude
-# (--- stage: type) so it is available in the type namespace.
-# At runtime the cache holds: Missing | Pending | [Cached value]
-#
-# Note: the full loader pipeline (eval-file, eval-document-runtime, cli-pipeline,
-# etc.) lives in stdlib/loader.llt. prelude.llt only provides include for
-# use by user code and by the loader itself during bootstrapping.
-#
-# See doc/whatif/include-decomposition.md for full design rationale.
-
-# IncludeCacheEntry runtime variant constructors.
-# Also declared in the type-stage section (line ~76) for the type namespace.
-#
-# Two declarations exist intentionally:
-#   Type-stage declaration (--- stage: type): uses unqualified tag semantics at the type level —
-#     the type checker sees bare "Missing", "Pending", "Cached" constructor names.
-#   Runtime declaration (here): injects constructors with qualified tags (T-974) so that
-#     inject_adt_constructors_expr produces "IncludeCacheEntry.Missing" etc. in the runtime env.
-#   Rust builtins (builtin-include-cache-get) return fully qualified tags
-#     ("IncludeCacheEntry.Missing", "IncludeCacheEntry.Pending", "IncludeCacheEntry.Cached").
-#     builtin-include-cache-put accepts both qualified and unqualified tags via strip_prefix fallback.
-IncludeCacheEntry: [type Missing Pending [Cached value: Any]]
-# Constructors Missing, Pending, Cached are automatically exported by the type checker
-# (B-296 fix) — no explicit re-exports needed.
-
 # include: load, resolve, and evaluate a tinct file from a DirCap.
-#
-# Uses the new thin meta API (scope-id based). Parse, desugar, split by stage,
-# evaluate type-stage documents first, then runtime documents.
-#
-# Content-addressed memoization (blake3 hash of source) provides both result
-# caching and circular include detection via a three-state cache:
-#   Missing      — not yet loaded (or failed — reset after error)
-#   Pending      — currently being evaluated (circular if seen again)
-#   [Cached val] — previously evaluated result
+# Uses the thin meta API (scope-id based). Errors propagate naturally.
 #
 # %prelude: a scope-id injected by the loader representing the prelude scope.
 # Included files start with % = [] (they do not inherit the caller's pipeline input).
@@ -3994,38 +3949,19 @@ Load, resolve, and evaluate a tinct file from a DirCap.
 cap:  DirCap — confines filesystem access
 path: String — file path relative to cap
 
-Uses content-addressed memoization: blake3(cap-identity + "|" + source).
-Detects circular includes via Pending cache state.
 Included files start with % = [] (fresh pipeline input).
-
 Requires %prelude (scope-id Int) to be in scope — injected by the loader.
 """] [let cap@DirCap path@String integrity-hash@[default: Absent.Absent]]
   [source: [read-all [open cap path "read"]]]
-  # Hash verification (T-1615): if integrity-hash is provided, verify source before using.
-  # blake3 takes a String and returns a hex digest. Source is already a String here.
   [_verify: [if [absent? integrity-hash] []
     [actual-hash: [blake3 source]]
     [if [= actual-hash integrity-hash] []
       [raise [join "" ["hash mismatch for " path ": expected " integrity-hash " got " actual-hash]]]]]]
-  [hash:   [blake3 [join "" [[cap-identity cap] "|" source]]]]
-  [match [builtin-include-cache-get hash]
-    [case [let r] [IncludeCacheEntry.Cached r] r.value]
-    [IncludeCacheEntry.Pending]: [raise [join "" ["circular include: " path]]]
-    [IncludeCacheEntry.Missing]:
-      [builtin-include-cache-put hash IncludeCacheEntry.Pending]
-      [result: [try [fn []
-        [pr:        [builtin-parse [str-bytes-raw source] path]]
-        [desugared: [builtin-desugar pr.program]]
-        [docs:      [builtin-program-docs desugared]]
-        [tc:        [builtin-make-type-ctx]]
-        [eval-program desugared [] %prelude tc]]]]
-      [match result
-        [case [let v] [Result.Ok v]
-          [builtin-include-cache-put hash [IncludeCacheEntry.Cached value: v]]
-          v]
-        [case [let e] [Result.Error e]
-          [builtin-include-cache-put hash IncludeCacheEntry.Missing]
-          [raise e]]]]]]
+  [pr:        [builtin-parse [str-bytes-raw source] path]]
+  [desugared: [builtin-desugar pr.program]]
+  [docs:      [builtin-program-docs desugared]]
+  [tc:        [builtin-make-type-ctx]]
+  [eval-program desugared [] %prelude tc]]
 
 # lines: Read all lines from a protocol dict handle. Returns a Seq of String.
 # Reads the entire content via read-all, then splits on newlines.

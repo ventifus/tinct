@@ -60,27 +60,7 @@ where
                 // thread-local LocalSet's run_until to drive both the future and any
                 // spawn_local tasks concurrently. We spin-poll the combined future so
                 // spawned tasks make progress while the caller awaits their handles.
-                LOCAL_SET.with(|ls| {
-                    // SAFETY: `ls` is a thread-local static whose address is valid for
-                    // the entire lifetime of this thread. We raw-pointer-cast it to `&'static`
-                    // only to satisfy `LocalSet::run_until`'s `&self` lifetime requirement
-                    // inside `poll_future_sync`, which is otherwise unable to hold a
-                    // reference into the `with` closure. The raw pointer remains valid
-                    // throughout because:
-                    //
-                    // 1. `poll_future_sync` completes synchronously on this same thread
-                    //    before `with` returns, so the thread-local is alive for the
-                    //    entire duration.
-                    // 2. No other thread can access this thread-local.
-                    // 3. Spawned tasks do not capture `ls_static` itself — they are
-                    //    `'static` futures that write into heap allocations such as
-                    //    `Arc<Thunk>` or `Arc<Mutex<TaskState>>`. The reference to the
-                    //    LocalSet is not reachable from any spawned task's data, so
-                    //    there is no risk of `ls_static` escaping via an Arc or similar.
-                    let ls_static: &'static tokio::task::LocalSet =
-                        unsafe { &*(ls as *const tokio::task::LocalSet) };
-                    poll_future_sync(ls_static.run_until(fut))
-                })
+                LOCAL_SET.with(|ls| poll_future_sync(ls.run_until(fut)))
             }
         }
         Err(_) => {
@@ -126,19 +106,9 @@ where
 /// executor, not this function.
 fn poll_future_sync<F: Future>(fut: F) -> F::Output {
     use std::pin::Pin;
-    use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+    use std::task::{Context, Poll};
 
-    // No-op waker: wake() does nothing because we spin unconditionally.
-    const VTABLE: RawWakerVTable = RawWakerVTable::new(
-        |ptr| RawWaker::new(ptr, &VTABLE), // clone
-        |_| {},                            // wake
-        |_| {},                            // wake_by_ref
-        |_| {},                            // drop
-    );
-    let raw = RawWaker::new(std::ptr::null(), &VTABLE);
-    // SAFETY: the vtable functions are all no-ops or return a valid RawWaker.
-    let waker = unsafe { Waker::from_raw(raw) };
-    let mut cx = Context::from_waker(&waker);
+    let mut cx = Context::from_waker(std::task::Waker::noop());
 
     let mut fut = std::pin::pin!(fut);
     loop {

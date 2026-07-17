@@ -162,7 +162,9 @@ pub(crate) fn stq_walk_node_unknown(node: &SurfaceNode, spans: &mut HashSet<(usi
         SurfaceExpression::Match { scrutinee, arms } => {
             stq_walk_node_unknown(scrutinee, spans);
             for arm in arms {
-                stq_walk_node_unknown(&arm.body, spans);
+                for body_expr in &arm.body {
+                    stq_walk_node_unknown(body_expr, spans);
+                }
                 if let Some(guard) = &arm.guard {
                     stq_walk_node_unknown(guard, spans);
                 }
@@ -300,7 +302,9 @@ pub(crate) fn stq_walk_node_overbroad(
         SurfaceExpression::Match { scrutinee, arms } => {
             stq_walk_node_overbroad(scrutinee, type_map, diagnostics);
             for arm in arms {
-                stq_walk_node_overbroad(&arm.body, type_map, diagnostics);
+                for body_expr in &arm.body {
+                    stq_walk_node_overbroad(body_expr, type_map, diagnostics);
+                }
                 if let Some(guard) = &arm.guard {
                     stq_walk_node_overbroad(guard, type_map, diagnostics);
                 }
@@ -441,7 +445,9 @@ pub(crate) fn stq_collect_node_spans(node: &SurfaceNode, map: &mut HashMap<(usiz
         SurfaceExpression::Match { scrutinee, arms } => {
             stq_collect_node_spans(scrutinee, map);
             for arm in arms {
-                stq_collect_node_spans(&arm.body, map);
+                for body_expr in &arm.body {
+                    stq_collect_node_spans(body_expr, map);
+                }
                 if let Some(guard) = &arm.guard {
                     stq_collect_node_spans(guard, map);
                 }
@@ -597,7 +603,9 @@ pub(crate) fn scan_explicit_unknown_t011(
             SurfaceExpression::Match { scrutinee, arms } => {
                 emit_t011_for_node(scrutinee, diagnostics);
                 for arm in arms {
-                    emit_t011_for_node(&arm.body, diagnostics);
+                    for body_expr in &arm.body {
+                        emit_t011_for_node(body_expr, diagnostics);
+                    }
                     if let Some(guard) = &arm.guard {
                         emit_t011_for_node(guard, diagnostics);
                     }

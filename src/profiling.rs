@@ -129,7 +129,7 @@ impl SpanRecord {
     pub fn to_value(&self, ctx: &Arc<EvalContext>) -> Value {
         /// Allocate a materialized thunk into the arena and return the ThunkId.
         fn alloc(val: Value, ctx: &Arc<EvalContext>) -> crate::value::ThunkId {
-            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(val, rust_span!())))
+            ctx.alloc_thunk(0, Arc::new(Thunk::value(val, rust_span!())))
         }
 
         /// The tinct empty-value sentinel (empty dict = `[]`).
@@ -434,7 +434,7 @@ impl ProfilingCollector {
         let mut dict = IndexMap::new();
         for (i, s) in spans.into_iter().enumerate() {
             let span_dict = s.to_value(ctx);
-            let id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(span_dict, rust_span!())));
+            let id = ctx.alloc_thunk(0, Arc::new(Thunk::value(span_dict, rust_span!())));
             dict.insert(HashableValue::Int(i as i64), id);
         }
         Value::Dict(dict)

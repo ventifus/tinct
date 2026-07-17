@@ -419,7 +419,7 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             0,
             ["msg"]
         ),
-        builtin!("builtin-try", builtin_try, [Strictness::Id], 1, ["f"]),
+        builtin!("builtin-try", builtin_try, [], 0, ["expr"]),
         // ── Type introspection ────────────────────────────────────────────────────────
         builtin!(
             "builtin-type-of",

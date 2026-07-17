@@ -714,14 +714,17 @@ fn extract_cert_info(
     use crate::value::HashableValue;
     info.insert(
         HashableValue::Str("_raw_der".into()),
-        ctx.alloc_thunk(ok_val(
-            Value::Bytes {
-                source: Rc::from(cert_der.as_ref()),
-                start: 0,
-                end: cert_der.len(),
-            },
-            span,
-        )?),
+        ctx.alloc_thunk(
+            0,
+            ok_val(
+                Value::Bytes {
+                    source: Rc::from(cert_der.as_ref()),
+                    start: 0,
+                    end: cert_der.len(),
+                },
+                span,
+            )?,
+        ),
     );
 
     Ok(Value::Dict(info))
@@ -811,7 +814,7 @@ async fn extract_sans(
     let mut dict: indexmap::IndexMap<crate::value::HashableValue, crate::value::ThunkId> =
         indexmap::IndexMap::new();
     for (i, val) in sans_list.into_iter().enumerate() {
-        let id = ctx.alloc_thunk(ok_val(val, span.clone())?);
+        let id = ctx.alloc_thunk(0, ok_val(val, span.clone())?);
         dict.insert(crate::value::HashableValue::Int(i as i64), id);
     }
     Ok(Value::Dict(dict))
@@ -1683,7 +1686,7 @@ async fn http_request_h2(config: &Http2RequestConfig<'_>) -> EvalResult<Arc<Thun
             Ok(s) => s.to_string(),
             Err(_) => String::from_utf8_lossy(value.as_bytes()).into_owned(),
         };
-        headers_map.insert(k, ctx.alloc_thunk(ok_val(string_val(&v), span.clone())?));
+        headers_map.insert(k, ctx.alloc_thunk(0, ok_val(string_val(&v), span.clone())?));
     }
 
     // Collect body as a String (UTF-8, lossy).
@@ -1703,15 +1706,15 @@ async fn http_request_h2(config: &Http2RequestConfig<'_>) -> EvalResult<Arc<Thun
     let mut inner = IndexMap::new();
     inner.insert(
         crate::value::HashableValue::Str("status".into()),
-        ctx.alloc_thunk(ok_val(Value::Int(status), span.clone())?),
+        ctx.alloc_thunk(0, ok_val(Value::Int(status), span.clone())?),
     );
     inner.insert(
         crate::value::HashableValue::Str("headers".into()),
-        ctx.alloc_thunk(ok_val(Value::Dict(headers_map), span.clone())?),
+        ctx.alloc_thunk(0, ok_val(Value::Dict(headers_map), span.clone())?),
     );
     inner.insert(
         crate::value::HashableValue::Str("body".into()),
-        ctx.alloc_thunk(ok_val(string_val(&body_string), span.clone())?),
+        ctx.alloc_thunk(0, ok_val(string_val(&body_string), span.clone())?),
     );
 
     // Return {status: Int, headers: Dict, body: String} directly.
@@ -1813,7 +1816,7 @@ fn http_request_h3(
                 String::from_utf8_lossy(value.as_bytes()).into_owned()
             }
         };
-        headers_map.insert(k, ctx.alloc_thunk(ok_val(string_val(&v), span.clone())?));
+        headers_map.insert(k, ctx.alloc_thunk(0, ok_val(string_val(&v), span.clone())?));
     }
 
     // Collect response body DATA frames.
@@ -1847,15 +1850,15 @@ fn http_request_h3(
     let mut inner = IndexMap::new();
     inner.insert(
         crate::value::HashableValue::Str("status".into()),
-        ctx.alloc_thunk(ok_val(Value::Int(status), span.clone())?),
+        ctx.alloc_thunk(0, ok_val(Value::Int(status), span.clone())?),
     );
     inner.insert(
         crate::value::HashableValue::Str("headers".into()),
-        ctx.alloc_thunk(ok_val(Value::Dict(headers_map), span.clone())?),
+        ctx.alloc_thunk(0, ok_val(Value::Dict(headers_map), span.clone())?),
     );
     inner.insert(
         crate::value::HashableValue::Str("body".into()),
-        ctx.alloc_thunk(ok_val(string_val(&body_string), span.clone())?),
+        ctx.alloc_thunk(0, ok_val(string_val(&body_string), span.clone())?),
     );
 
     // Return {status: Int, headers: Dict, body: String} directly.
@@ -2176,7 +2179,7 @@ fn icmp_ping_impl(
     let mut result = IndexMap::new();
     result.insert(
         HashableValue::Str("latency-ms".into()),
-        ctx.alloc_thunk(ok_val(Value::Int(latency_ms), span.clone())?),
+        ctx.alloc_thunk(0, ok_val(Value::Int(latency_ms), span.clone())?),
     );
     ok_val(Value::Dict(result), span)
 }
@@ -2344,7 +2347,7 @@ pub(crate) fn builtin_recv_datagram(
                 let mut dict = IndexMap::new();
                 dict.insert(
                     HashableValue::Str("data".into()),
-                    ctx.alloc_thunk(ok_val(data_bytes, call_span.clone())?),
+                    ctx.alloc_thunk(0, ok_val(data_bytes, call_span.clone())?),
                 );
                 ok_val(Value::Dict(dict), call_span.clone())
             };
@@ -2432,7 +2435,7 @@ pub(crate) fn builtin_uri(
             // scheme (lowercase)
             dict.insert(
                 HashableValue::Str("scheme".into()),
-                ctx.alloc_thunk(ok_val(string_val(parsed.scheme()), call_span.clone())?),
+                ctx.alloc_thunk(0, ok_val(string_val(parsed.scheme()), call_span.clone())?),
             );
 
             // username (split from userinfo)
@@ -2443,7 +2446,7 @@ pub(crate) fn builtin_uri(
             };
             dict.insert(
                 HashableValue::Str("username".into()),
-                ctx.alloc_thunk(ok_val(username, call_span.clone())?),
+                ctx.alloc_thunk(0, ok_val(username, call_span.clone())?),
             );
 
             // password (split from userinfo)
@@ -2453,7 +2456,7 @@ pub(crate) fn builtin_uri(
             };
             dict.insert(
                 HashableValue::Str("password".into()),
-                ctx.alloc_thunk(ok_val(password, call_span.clone())?),
+                ctx.alloc_thunk(0, ok_val(password, call_span.clone())?),
             );
 
             // host (null for non-hierarchical; strip IPv6 brackets)
@@ -2463,7 +2466,7 @@ pub(crate) fn builtin_uri(
             };
             dict.insert(
                 HashableValue::Str("host".into()),
-                ctx.alloc_thunk(ok_val(host, call_span.clone())?),
+                ctx.alloc_thunk(0, ok_val(host, call_span.clone())?),
             );
 
             // port (null if not specified)
@@ -2473,13 +2476,13 @@ pub(crate) fn builtin_uri(
             };
             dict.insert(
                 HashableValue::Str("port".into()),
-                ctx.alloc_thunk(ok_val(port, call_span.clone())?),
+                ctx.alloc_thunk(0, ok_val(port, call_span.clone())?),
             );
 
             // path (always present per RFC 3986)
             dict.insert(
                 HashableValue::Str("path".into()),
-                ctx.alloc_thunk(ok_val(string_val(parsed.path()), call_span.clone())?),
+                ctx.alloc_thunk(0, ok_val(string_val(parsed.path()), call_span.clone())?),
             );
 
             // query (null if absent)
@@ -2489,7 +2492,7 @@ pub(crate) fn builtin_uri(
             };
             dict.insert(
                 HashableValue::Str("query".into()),
-                ctx.alloc_thunk(ok_val(query, call_span.clone())?),
+                ctx.alloc_thunk(0, ok_val(query, call_span.clone())?),
             );
 
             // fragment (null if absent)
@@ -2499,7 +2502,7 @@ pub(crate) fn builtin_uri(
             };
             dict.insert(
                 HashableValue::Str("fragment".into()),
-                ctx.alloc_thunk(ok_val(fragment, call_span.clone())?),
+                ctx.alloc_thunk(0, ok_val(fragment, call_span.clone())?),
             );
 
             return ok_val(Value::Dict(dict), call_span);
@@ -2522,17 +2525,17 @@ pub(crate) fn builtin_uri(
 
         dict.insert(
             HashableValue::Str("scheme".into()),
-            ctx.alloc_thunk(ok_val(
-                string_val(&scheme.to_lowercase()),
-                call_span.clone(),
-            )?),
+            ctx.alloc_thunk(
+                0,
+                ok_val(string_val(&scheme.to_lowercase()), call_span.clone())?,
+            ),
         );
 
         // Non-hierarchical URIs: all null for userinfo/host/port
         for key in ["username", "password", "host", "port"] {
             dict.insert(
                 HashableValue::Str(key.into()),
-                ctx.alloc_thunk(ok_val(Value::Dict(IndexMap::new()), call_span.clone())?),
+                ctx.alloc_thunk(0, ok_val(Value::Dict(IndexMap::new()), call_span.clone())?),
             );
         }
 
@@ -2541,14 +2544,14 @@ pub(crate) fn builtin_uri(
         // For urn:isbn:123, path is "isbn:123"
         dict.insert(
             HashableValue::Str("path".into()),
-            ctx.alloc_thunk(ok_val(string_val(rest), call_span.clone())?),
+            ctx.alloc_thunk(0, ok_val(string_val(rest), call_span.clone())?),
         );
 
         // query and fragment: null (non-hierarchical URIs typically don't have these)
         for key in ["query", "fragment"] {
             dict.insert(
                 HashableValue::Str(key.into()),
-                ctx.alloc_thunk(ok_val(Value::Dict(IndexMap::new()), call_span.clone())?),
+                ctx.alloc_thunk(0, ok_val(Value::Dict(IndexMap::new()), call_span.clone())?),
             );
         }
 
@@ -2601,7 +2604,7 @@ pub(crate) fn builtin_url(
         // scheme (lowercase)
         dict.insert(
             HashableValue::Str("scheme".into()),
-            ctx.alloc_thunk(ok_val(string_val(parsed.scheme()), call_span.clone())?),
+            ctx.alloc_thunk(0, ok_val(string_val(parsed.scheme()), call_span.clone())?),
         );
 
         // username (split from userinfo)
@@ -2612,7 +2615,7 @@ pub(crate) fn builtin_url(
         };
         dict.insert(
             HashableValue::Str("username".into()),
-            ctx.alloc_thunk(ok_val(username, call_span.clone())?),
+            ctx.alloc_thunk(0, ok_val(username, call_span.clone())?),
         );
 
         // password (split from userinfo)
@@ -2622,16 +2625,16 @@ pub(crate) fn builtin_url(
         };
         dict.insert(
             HashableValue::Str("password".into()),
-            ctx.alloc_thunk(ok_val(password, call_span.clone())?),
+            ctx.alloc_thunk(0, ok_val(password, call_span.clone())?),
         );
 
         // host (always present for URLs; unwrap is safe)
         dict.insert(
             HashableValue::Str("host".into()),
-            ctx.alloc_thunk(ok_val(
-                string_val(parsed.host_str().unwrap()),
-                call_span.clone(),
-            )?),
+            ctx.alloc_thunk(
+                0,
+                ok_val(string_val(parsed.host_str().unwrap()), call_span.clone())?,
+            ),
         );
 
         // port (default to scheme default if not specified)
@@ -2642,7 +2645,7 @@ pub(crate) fn builtin_url(
         });
         dict.insert(
             HashableValue::Str("port".into()),
-            ctx.alloc_thunk(ok_val(Value::Int(i64::from(port)), call_span.clone())?),
+            ctx.alloc_thunk(0, ok_val(Value::Int(i64::from(port)), call_span.clone())?),
         );
 
         // path (always present per RFC 3986; default to "/" if empty)
@@ -2653,7 +2656,7 @@ pub(crate) fn builtin_url(
         };
         dict.insert(
             HashableValue::Str("path".into()),
-            ctx.alloc_thunk(ok_val(string_val(path), call_span.clone())?),
+            ctx.alloc_thunk(0, ok_val(string_val(path), call_span.clone())?),
         );
 
         // query (null if absent)
@@ -2663,7 +2666,7 @@ pub(crate) fn builtin_url(
         };
         dict.insert(
             HashableValue::Str("query".into()),
-            ctx.alloc_thunk(ok_val(query, call_span.clone())?),
+            ctx.alloc_thunk(0, ok_val(query, call_span.clone())?),
         );
 
         // fragment (null if absent)
@@ -2673,7 +2676,7 @@ pub(crate) fn builtin_url(
         };
         dict.insert(
             HashableValue::Str("fragment".into()),
-            ctx.alloc_thunk(ok_val(fragment, call_span.clone())?),
+            ctx.alloc_thunk(0, ok_val(fragment, call_span.clone())?),
         );
 
         ok_val(Value::Dict(dict), call_span)
@@ -2762,11 +2765,11 @@ pub(crate) fn builtin_urn(
 
         dict.insert(
             HashableValue::Str("nid".into()),
-            ctx.alloc_thunk(ok_val(string_val(nid), call_span.clone())?),
+            ctx.alloc_thunk(0, ok_val(string_val(nid), call_span.clone())?),
         );
         dict.insert(
             HashableValue::Str("nss".into()),
-            ctx.alloc_thunk(ok_val(string_val(nss), call_span.clone())?),
+            ctx.alloc_thunk(0, ok_val(string_val(nss), call_span.clone())?),
         );
 
         // r-component (null if absent)
@@ -2776,7 +2779,7 @@ pub(crate) fn builtin_urn(
         };
         dict.insert(
             HashableValue::Str("r-component".into()),
-            ctx.alloc_thunk(ok_val(r_val, call_span.clone())?),
+            ctx.alloc_thunk(0, ok_val(r_val, call_span.clone())?),
         );
 
         // q-component (null if absent)
@@ -2786,7 +2789,7 @@ pub(crate) fn builtin_urn(
         };
         dict.insert(
             HashableValue::Str("q-component".into()),
-            ctx.alloc_thunk(ok_val(q_val, call_span.clone())?),
+            ctx.alloc_thunk(0, ok_val(q_val, call_span.clone())?),
         );
 
         // fragment (null if absent)
@@ -2796,7 +2799,7 @@ pub(crate) fn builtin_urn(
         };
         dict.insert(
             HashableValue::Str("fragment".into()),
-            ctx.alloc_thunk(ok_val(frag_val, call_span.clone())?),
+            ctx.alloc_thunk(0, ok_val(frag_val, call_span.clone())?),
         );
 
         ok_val(Value::Dict(dict), call_span)
@@ -2955,6 +2958,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                 annotation: None,
                 field_annotations: indexmap::IndexMap::new(),
                 constructor_constants: indexmap::IndexMap::new(),
+                definition_span: None,
             }),
         );
     }

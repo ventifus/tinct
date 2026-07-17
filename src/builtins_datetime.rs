@@ -60,10 +60,7 @@ pub fn builtin_parse_timestamp(
         // Convert to nanoseconds since epoch
         let nanos = i64::try_from(ts.as_nanosecond()).unwrap_or(i64::MAX);
 
-        Ok(Arc::new(Thunk::new_materialized(
-            Value::Timestamp(nanos),
-            call_span,
-        )))
+        Ok(Arc::new(Thunk::value(Value::Timestamp(nanos), call_span)))
     })
 }
 
@@ -102,7 +99,7 @@ pub fn builtin_format_timestamp(
         // Format as RFC 3339 string
         let s = ts.to_string();
 
-        Ok(Arc::new(Thunk::new_materialized(string_val(&s), call_span)))
+        Ok(Arc::new(Thunk::value(string_val(&s), call_span)))
     })
 }
 
@@ -136,10 +133,7 @@ pub fn builtin_timestamp_to_unix(
 
         let seconds = nanos / 1_000_000_000;
 
-        Ok(Arc::new(Thunk::new_materialized(
-            Value::Int(seconds),
-            call_span,
-        )))
+        Ok(Arc::new(Thunk::value(Value::Int(seconds), call_span)))
     })
 }
 
@@ -170,10 +164,7 @@ pub fn builtin_unix_to_timestamp(
             .checked_mul(1_000_000_000)
             .ok_or_else(|| dt_err("unix->timestamp overflow", call_span.clone()))?;
 
-        Ok(Arc::new(Thunk::new_materialized(
-            Value::Timestamp(nanos),
-            call_span,
-        )))
+        Ok(Arc::new(Thunk::value(Value::Timestamp(nanos), call_span)))
     })
 }
 
@@ -204,10 +195,7 @@ pub fn builtin_now(args: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<
             ClockCapInner::Fixed(nanos) => *nanos,
         };
 
-        Ok(Arc::new(Thunk::new_materialized(
-            Value::Timestamp(nanos),
-            call_span,
-        )))
+        Ok(Arc::new(Thunk::value(Value::Timestamp(nanos), call_span)))
     })
 }
 
@@ -236,7 +224,7 @@ pub fn builtin_fixed_clock(
             }
         };
 
-        Ok(Arc::new(Thunk::new_materialized(
+        Ok(Arc::new(Thunk::value(
             Value::ClockCap(Rc::new(ClockCapInner::Fixed(nanos))),
             call_span,
         )))
@@ -291,10 +279,7 @@ pub fn builtin_timestamp_add(
             .checked_add(d_nanos)
             .ok_or_else(|| dt_err("timestamp-add overflow", call_span.clone()))?;
 
-        Ok(Arc::new(Thunk::new_materialized(
-            Value::Timestamp(result),
-            call_span,
-        )))
+        Ok(Arc::new(Thunk::value(Value::Timestamp(result), call_span)))
     })
 }
 
@@ -346,10 +331,7 @@ pub fn builtin_timestamp_diff(
             .checked_sub(t2_nanos)
             .ok_or_else(|| dt_err("timestamp-diff overflow", call_span.clone()))?;
 
-        Ok(Arc::new(Thunk::new_materialized(
-            Value::Duration(result),
-            call_span,
-        )))
+        Ok(Arc::new(Thunk::value(Value::Duration(result), call_span)))
     })
 }
 
@@ -397,7 +379,7 @@ pub fn builtin_timestamp_lt(
             }
         };
 
-        Ok(Arc::new(Thunk::new_materialized(
+        Ok(Arc::new(Thunk::value(
             Value::Int(if t1_nanos < t2_nanos { 1 } else { 0 }),
             call_span,
         )))
@@ -448,7 +430,7 @@ pub fn builtin_timestamp_gt(
             }
         };
 
-        Ok(Arc::new(Thunk::new_materialized(
+        Ok(Arc::new(Thunk::value(
             Value::Int(if t1_nanos > t2_nanos { 1 } else { 0 }),
             call_span,
         )))
@@ -499,7 +481,7 @@ pub fn builtin_timestamp_eq(
             }
         };
 
-        Ok(Arc::new(Thunk::new_materialized(
+        Ok(Arc::new(Thunk::value(
             Value::Int(if t1_nanos == t2_nanos { 1 } else { 0 }),
             call_span,
         )))
@@ -540,10 +522,7 @@ pub fn builtin_timestamp_year(
         let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
         let year = dt.year() as i64;
 
-        Ok(Arc::new(Thunk::new_materialized(
-            Value::Int(year),
-            call_span,
-        )))
+        Ok(Arc::new(Thunk::value(Value::Int(year), call_span)))
     })
 }
 
@@ -581,10 +560,7 @@ pub fn builtin_timestamp_month(
         let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
         let month = dt.month() as i64;
 
-        Ok(Arc::new(Thunk::new_materialized(
-            Value::Int(month),
-            call_span,
-        )))
+        Ok(Arc::new(Thunk::value(Value::Int(month), call_span)))
     })
 }
 
@@ -622,10 +598,7 @@ pub fn builtin_timestamp_day(
         let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
         let day = dt.day() as i64;
 
-        Ok(Arc::new(Thunk::new_materialized(
-            Value::Int(day),
-            call_span,
-        )))
+        Ok(Arc::new(Thunk::value(Value::Int(day), call_span)))
     })
 }
 
@@ -663,10 +636,7 @@ pub fn builtin_timestamp_hour(
         let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
         let hour = dt.hour() as i64;
 
-        Ok(Arc::new(Thunk::new_materialized(
-            Value::Int(hour),
-            call_span,
-        )))
+        Ok(Arc::new(Thunk::value(Value::Int(hour), call_span)))
     })
 }
 
@@ -704,10 +674,7 @@ pub fn builtin_timestamp_minute(
         let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
         let minute = dt.minute() as i64;
 
-        Ok(Arc::new(Thunk::new_materialized(
-            Value::Int(minute),
-            call_span,
-        )))
+        Ok(Arc::new(Thunk::value(Value::Int(minute), call_span)))
     })
 }
 
@@ -745,10 +712,7 @@ pub fn builtin_timestamp_second(
         let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
         let second = dt.second() as i64;
 
-        Ok(Arc::new(Thunk::new_materialized(
-            Value::Int(second),
-            call_span,
-        )))
+        Ok(Arc::new(Thunk::value(Value::Int(second), call_span)))
     })
 }
 
@@ -788,51 +752,63 @@ pub fn builtin_timestamp_parts(
         let mut map = IndexMap::new();
         map.insert(
             HashableValue::Str("year".into()),
-            args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Int(dt.year() as i64),
-                call_span.clone(),
-            ))),
+            args.ctx.alloc_thunk(
+                0,
+                Arc::new(Thunk::value(
+                    Value::Int(dt.year() as i64),
+                    call_span.clone(),
+                )),
+            ),
         );
         map.insert(
             HashableValue::Str("month".into()),
-            args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Int(dt.month() as i64),
-                call_span.clone(),
-            ))),
+            args.ctx.alloc_thunk(
+                0,
+                Arc::new(Thunk::value(
+                    Value::Int(dt.month() as i64),
+                    call_span.clone(),
+                )),
+            ),
         );
         map.insert(
             HashableValue::Str("day".into()),
-            args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Int(dt.day() as i64),
-                call_span.clone(),
-            ))),
+            args.ctx.alloc_thunk(
+                0,
+                Arc::new(Thunk::value(Value::Int(dt.day() as i64), call_span.clone())),
+            ),
         );
         map.insert(
             HashableValue::Str("hour".into()),
-            args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Int(dt.hour() as i64),
-                call_span.clone(),
-            ))),
+            args.ctx.alloc_thunk(
+                0,
+                Arc::new(Thunk::value(
+                    Value::Int(dt.hour() as i64),
+                    call_span.clone(),
+                )),
+            ),
         );
         map.insert(
             HashableValue::Str("minute".into()),
-            args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Int(dt.minute() as i64),
-                call_span.clone(),
-            ))),
+            args.ctx.alloc_thunk(
+                0,
+                Arc::new(Thunk::value(
+                    Value::Int(dt.minute() as i64),
+                    call_span.clone(),
+                )),
+            ),
         );
         map.insert(
             HashableValue::Str("second".into()),
-            args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Int(dt.second() as i64),
-                call_span.clone(),
-            ))),
+            args.ctx.alloc_thunk(
+                0,
+                Arc::new(Thunk::value(
+                    Value::Int(dt.second() as i64),
+                    call_span.clone(),
+                )),
+            ),
         );
 
-        Ok(Arc::new(Thunk::new_materialized(
-            Value::Dict(map),
-            call_span,
-        )))
+        Ok(Arc::new(Thunk::value(Value::Dict(map), call_span)))
     })
 }
 
@@ -859,10 +835,7 @@ pub fn builtin_duration_nanos(
             _ => return Err(dt_err("duration-nanos requires an Int", call_span.clone())),
         };
 
-        Ok(Arc::new(Thunk::new_materialized(
-            Value::Duration(nanos),
-            call_span,
-        )))
+        Ok(Arc::new(Thunk::value(Value::Duration(nanos), call_span)))
     })
 }
 
@@ -893,10 +866,7 @@ pub fn builtin_timestamp_nanos(
             _ => return Err(dt_err("timestamp-nanos requires an Int", call_span.clone())),
         };
 
-        Ok(Arc::new(Thunk::new_materialized(
-            Value::Timestamp(nanos),
-            call_span,
-        )))
+        Ok(Arc::new(Thunk::value(Value::Timestamp(nanos), call_span)))
     })
 }
 
@@ -932,10 +902,7 @@ pub fn builtin_duration_seconds(
             .checked_mul(1_000_000_000)
             .ok_or_else(|| dt_err("duration-seconds overflow", call_span.clone()))?;
 
-        Ok(Arc::new(Thunk::new_materialized(
-            Value::Duration(nanos),
-            call_span,
-        )))
+        Ok(Arc::new(Thunk::value(Value::Duration(nanos), call_span)))
     })
 }
 
@@ -972,10 +939,7 @@ pub fn builtin_duration_minutes(
             .and_then(|s| s.checked_mul(1_000_000_000))
             .ok_or_else(|| dt_err("duration-minutes overflow", call_span.clone()))?;
 
-        Ok(Arc::new(Thunk::new_materialized(
-            Value::Duration(nanos),
-            call_span,
-        )))
+        Ok(Arc::new(Thunk::value(Value::Duration(nanos), call_span)))
     })
 }
 
@@ -1007,10 +971,7 @@ pub fn builtin_duration_hours(
             .and_then(|s| s.checked_mul(1_000_000_000))
             .ok_or_else(|| dt_err("duration-hours overflow", call_span.clone()))?;
 
-        Ok(Arc::new(Thunk::new_materialized(
-            Value::Duration(nanos),
-            call_span,
-        )))
+        Ok(Arc::new(Thunk::value(Value::Duration(nanos), call_span)))
     })
 }
 
@@ -1042,10 +1003,7 @@ pub fn builtin_duration_days(
             .and_then(|s| s.checked_mul(1_000_000_000))
             .ok_or_else(|| dt_err("duration-days overflow", call_span.clone()))?;
 
-        Ok(Arc::new(Thunk::new_materialized(
-            Value::Duration(nanos),
-            call_span,
-        )))
+        Ok(Arc::new(Thunk::value(Value::Duration(nanos), call_span)))
     })
 }
 
@@ -1079,10 +1037,7 @@ pub fn builtin_duration_to_seconds(
 
         let seconds = nanos / 1_000_000_000;
 
-        Ok(Arc::new(Thunk::new_materialized(
-            Value::Int(seconds),
-            call_span,
-        )))
+        Ok(Arc::new(Thunk::value(Value::Int(seconds), call_span)))
     })
 }
 
@@ -1114,10 +1069,7 @@ pub fn builtin_duration_to_nanos(
             }
         };
 
-        Ok(Arc::new(Thunk::new_materialized(
-            Value::Int(nanos),
-            call_span,
-        )))
+        Ok(Arc::new(Thunk::value(Value::Int(nanos), call_span)))
     })
 }
 
@@ -1184,7 +1136,7 @@ pub fn builtin_load_tz(args: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalRes
             )
         })?;
 
-        Ok(Arc::new(Thunk::new_materialized(
+        Ok(Arc::new(Thunk::value(
             Value::Timezone(Rc::new(tz)),
             call_span,
         )))
@@ -1243,65 +1195,83 @@ pub fn builtin_timestamp_in_tz(
         let mut map = IndexMap::new();
         map.insert(
             HashableValue::Str("year".into()),
-            args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Int(dt.year() as i64),
-                call_span.clone(),
-            ))),
+            args.ctx.alloc_thunk(
+                0,
+                Arc::new(Thunk::value(
+                    Value::Int(dt.year() as i64),
+                    call_span.clone(),
+                )),
+            ),
         );
         map.insert(
             HashableValue::Str("month".into()),
-            args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Int(dt.month() as i64),
-                call_span.clone(),
-            ))),
+            args.ctx.alloc_thunk(
+                0,
+                Arc::new(Thunk::value(
+                    Value::Int(dt.month() as i64),
+                    call_span.clone(),
+                )),
+            ),
         );
         map.insert(
             HashableValue::Str("day".into()),
-            args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Int(dt.day() as i64),
-                call_span.clone(),
-            ))),
+            args.ctx.alloc_thunk(
+                0,
+                Arc::new(Thunk::value(Value::Int(dt.day() as i64), call_span.clone())),
+            ),
         );
         map.insert(
             HashableValue::Str("hour".into()),
-            args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Int(dt.hour() as i64),
-                call_span.clone(),
-            ))),
+            args.ctx.alloc_thunk(
+                0,
+                Arc::new(Thunk::value(
+                    Value::Int(dt.hour() as i64),
+                    call_span.clone(),
+                )),
+            ),
         );
         map.insert(
             HashableValue::Str("minute".into()),
-            args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Int(dt.minute() as i64),
-                call_span.clone(),
-            ))),
+            args.ctx.alloc_thunk(
+                0,
+                Arc::new(Thunk::value(
+                    Value::Int(dt.minute() as i64),
+                    call_span.clone(),
+                )),
+            ),
         );
         map.insert(
             HashableValue::Str("second".into()),
-            args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Int(dt.second() as i64),
-                call_span.clone(),
-            ))),
+            args.ctx.alloc_thunk(
+                0,
+                Arc::new(Thunk::value(
+                    Value::Int(dt.second() as i64),
+                    call_span.clone(),
+                )),
+            ),
         );
         map.insert(
             HashableValue::Str("offset-seconds".into()),
-            args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Int(dt.offset().seconds() as i64),
-                call_span.clone(),
-            ))),
+            args.ctx.alloc_thunk(
+                0,
+                Arc::new(Thunk::value(
+                    Value::Int(dt.offset().seconds() as i64),
+                    call_span.clone(),
+                )),
+            ),
         );
         map.insert(
             HashableValue::Str("tz-name".into()),
-            args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                string_val(dt.time_zone().iana_name().unwrap_or("Unknown")),
-                call_span.clone(),
-            ))),
+            args.ctx.alloc_thunk(
+                0,
+                Arc::new(Thunk::value(
+                    string_val(dt.time_zone().iana_name().unwrap_or("Unknown")),
+                    call_span.clone(),
+                )),
+            ),
         );
 
-        Ok(Arc::new(Thunk::new_materialized(
-            Value::Dict(map),
-            call_span,
-        )))
+        Ok(Arc::new(Thunk::value(Value::Dict(map), call_span)))
     })
 }
 
@@ -1437,10 +1407,7 @@ pub fn builtin_local_to_timestamp(
         let ts = zoned.timestamp();
         let nanos = i64::try_from(ts.as_nanosecond()).unwrap_or(i64::MAX);
 
-        Ok(Arc::new(Thunk::new_materialized(
-            Value::Timestamp(nanos),
-            call_span,
-        )))
+        Ok(Arc::new(Thunk::value(Value::Timestamp(nanos), call_span)))
     })
 }
 
@@ -1473,10 +1440,7 @@ pub fn builtin_local_tz_name(
         // 2. Parse TZ environment variable
         // 3. Have platform-specific fallbacks
         // For now, return UTC as a safe default
-        Ok(Arc::new(Thunk::new_materialized(
-            string_val("UTC"),
-            call_span,
-        )))
+        Ok(Arc::new(Thunk::value(string_val("UTC"), call_span)))
     })
 }
 

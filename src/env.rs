@@ -76,6 +76,26 @@ impl Env {
         }
     }
 
+    /// Insert a name-only typed entry (no de Bruijn slot) for an injected runtime value.
+    /// Used by the CLI to register capability types (%programs, %cwd, etc.) so the
+    /// type-checker can see them. The `ty` is wrapped in a monomorphic TypeScheme.
+    pub fn insert_injected(&mut self, name: String, ty: crate::types::Type) {
+        self.extras.insert(
+            name,
+            EnvSlot {
+                scheme: Some(crate::types::TypeScheme {
+                    type_vars: vec![],
+                    constraints: vec![],
+                    body: ty,
+                    label_vars: vec![],
+                    kind_vars: vec![],
+                    doc: None,
+                    inner_schemes: None,
+                }),
+            },
+        );
+    }
+
     /// Create an empty environment with the given parent.
     pub fn with_parent(parent: Arc<RwLock<Env>>) -> Self {
         Self {

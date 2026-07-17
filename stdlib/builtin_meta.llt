@@ -2,44 +2,11 @@
 # Bodies are Placeholder — valid tinct, errors if forced (builtins are Rust-side).
 
 [
-  # ── Opaque runtime types ──────────────────────────────────────────────────
-  # Program: a parsed+resolved AST (output of builtin-parse / builtin-resolve).
-  Program:     [type Program]
-  # TypeContext: accumulated type-checker state (type env + type-stage env).
-  TypeContext:  [type TypeContext]
-
   # ── AST and evaluation ─────────────────────────────────────────────────────
-  # parse: parse source bytes at path, return Program with documents and errors.
-  builtin-parse:             [fn@Program  [let src@Bytes path@String] ...]
-  # desugar: desugar a Program (apply $_ transformation, pipe lowering, etc.).
-  builtin-desugar:           [fn@Program  [let prog@Program] ...]
-  # resolve: resolve VarRef de Bruijn coords in a document against scope frames.
-  builtin-resolve:           [fn@Dict     [let doc@Document frames@Dict] ...]
-  # eval: evaluate a resolved+typed document in a scope; returns {result, scope-id, errors}.
-  builtin-eval:              [fn@Dict     [let typed@Document scope-id@Int] ...]
-  # typecheck-doc: type-check a single resolved document against a TypeContext.
-  builtin-typecheck-doc:     [fn@Document [let doc@Document tc@TypeContext] ...]
-  # program-docs: return auto-indexed dict of documents in a Program.
-  builtin-program-docs:      [fn@Dict     [let prog@Program] ...]
-  # doc-meta: evaluate a document's --- header in a scope, returning the result dict.
-  builtin-doc-meta:          [fn@Dict     [let doc@Document scope-id@Int] ...]
-  # doc-expressions: return auto-indexed dict of Expr-variant values from a document's expression items.
-  # Decl items (type declarations, class/instance declarations, etc.) are skipped.
-  builtin-doc-expressions:   [fn@Dict     [let doc@Document] ...]
   # eval-types: evaluate only type-stage documents, returning a Program.
   builtin-eval-types:        [fn@Program  [let prog@Any] ...]
   # eval-macro-ast: evaluate a macro-produced Expr.* AST in the call-site scope.
   builtin-eval-macro-ast:    [fn@Any      [let ast@Any] ...]
-
-  # ── Scope arena primitives ────────────────────────────────────────────────
-  # scopes: return all scopes as {scope-id: parent-id | [], ...}.
-  builtin-scopes:            [fn@Dict [let] ...]
-  # scope-new: create a new child scope with given parent and bindings.
-  builtin-scope-new:         [fn@Int  [let parent@Any bindings@Dict] ...]
-  # scope-names: return direct name-to-slot bindings for a scope.
-  builtin-scope-names:       [fn@Dict [let scope-id@Int] ...]
-  # scope-parent: return parent scope-id or [] for root.
-  builtin-scope-parent:      [fn@Any  [let scope-id@Int] ...]
 
   # ── Type-checking context ──────────────────────────────────────────────────
   # get-type-context: retrieve the EvalContext's TypeContext handle.
@@ -86,13 +53,7 @@
   # Note: builtin-narrow and builtin-cap-env-has? are Core-46 — declared in builtin_core.llt.
   builtin-cap-identity:      [fn@String  [let cap@DirCap] ...]
 
-  # ── Include cache ─────────────────────────────────────────────────────────
-  # include-cache-get: get a cached include result by content hash.
-  builtin-include-cache-get: [fn@Any     [let key@String] ...]
-  # include-cache-put: store an include result at content hash key.
-  builtin-include-cache-put: [fn@Any     [let key@String val@Any] ...]
-
-  # ── Hashing ───────────────────────────────────────────────────────────────
+# ── Hashing ───────────────────────────────────────────────────────────────
   builtin-blake3:            [fn@String  [let s@String] ...]
 
   # ── Numeric coercions ─────────────────────────────────────────────────────

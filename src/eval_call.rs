@@ -41,34 +41,32 @@ pub(crate) fn func_label_core(expr: &CoreExpr) -> Option<Arc<str>> {
 ///
 /// # Implementation notes
 ///
-/// Arguments use `Thunk::new_unevaluated_core` (storing `Arc<Spanned<CoreExpr>>` directly)
+/// Arguments use `Thunk::core_expr` (storing `Arc<Spanned<CoreExpr>>` directly)
 /// — no per-arg allocation. The function expression is evaluated directly via
 /// `eval_core_expr`, avoiding bridge round-trips.
 pub(crate) async fn eval_call_core(
     func_expr: &Spanned<CoreExpr>,
     args: &[Arc<Spanned<CoreExpr>>],
     named_args: &[Spanned<CoreNamedArg>],
+    caller_env_id: u32,
     ctx: &Arc<EvalContext>,
     call_span: &Span,
     original_call: Arc<Spanned<CoreExpr>>,
 ) -> EvalResult<Arc<Thunk>> {
-    // Evaluate the function as a thunk using eval_core_expr directly.
-    // Variable lookup uses ctx.current_env_id (FlatEnv T-1558).
-    let func_thunk = eval_core_expr(func_expr, ctx).await?;
-    let func_id = ctx.alloc_thunk(func_thunk);
+    let func_thunk = eval_core_expr(func_expr, caller_env_id, ctx).await?;
+    let func_id = ctx.alloc_thunk(caller_env_id, func_thunk);
 
     // Wrap positional arguments as Unevaluated CoreExpr thunks, allocated as ThunkIds.
-    let caller_env_id = ctx.current_env_id;
     let pos_ids: Vec<ThunkId> = args
         .iter()
         .map(|arg| {
-            let t = Arc::new(Thunk::new_unevaluated_core(
+            let t = Arc::new(Thunk::core_expr(
                 Arc::clone(arg),
                 caller_env_id,
                 Arc::clone(ctx),
                 arg.span.clone(),
             ));
-            ctx.alloc_thunk(t)
+            ctx.alloc_thunk(caller_env_id, t)
         })
         .collect();
 
@@ -78,19 +76,19 @@ pub(crate) async fn eval_call_core(
     } else {
         let mut m = IndexMap::with_capacity(named_args.len());
         for na in named_args {
-            let t = Arc::new(Thunk::new_unevaluated_core(
+            let t = Arc::new(Thunk::core_expr(
                 Arc::clone(&na.node.value),
                 caller_env_id,
                 Arc::clone(ctx),
                 na.node.value.span.clone(),
             ));
-            m.insert(na.node.name.clone(), ctx.alloc_thunk(t));
+            m.insert(na.node.name.clone(), ctx.alloc_thunk(caller_env_id, t));
         }
         m
     };
 
     // Return PendingCall thunk — function dispatch deferred to PendingCallDispatch in run().
-    Ok(Arc::new(Thunk::new_pending_call(
+    Ok(Arc::new(Thunk::fn_call(
         func_id,
         pos_ids,
         named_ids,
@@ -144,7 +142,7 @@ pub async fn invoke_function(ctx: &CallContext<'_>) -> EvalResult<Arc<Thunk>> {
         e.set_arity_callee(ctx.origin.clone());
         e
     })?;
-    let mut thunk = Thunk::new_unevaluated_core(
+    let mut thunk = Thunk::core_expr(
         Arc::clone(ctx.body),
         call_env_id,
         Arc::clone(ctx.ctx),
@@ -303,7 +301,7 @@ pub(crate) async fn bind_args_thunks(
     //
     // For positional and named args that are already ThunkIds, use fill_slot directly
     // to copy the Arc<Thunk> reference without allocating a redundant intermediate slot.
-    // For defaults (SurfaceNode), allocate a new Thunk::new_surface and then fill.
+    // For defaults (SurfaceNode), allocate a new Thunk::surface and then fill.
     for (i, param) in regular_params.iter().enumerate() {
         if i < positional.len() {
             // Positional arg: copy the ThunkId's Arc<Thunk> directly into the call frame slot.
@@ -320,7 +318,7 @@ pub(crate) async fn bind_args_thunks(
                 // Default param: evaluate lazily in the default_env scope.
                 // Use empty res/types tables — defaults are surface nodes whose variable
                 // references resolve by name lookup in the default_env chain at force time.
-                let default_thunk = Arc::new(Thunk::new_surface(
+                let default_thunk = Arc::new(Thunk::surface(
                     default_node,
                     Arc::new(std::collections::HashMap::new()),
                     Arc::new(std::collections::HashMap::new()),
@@ -328,7 +326,7 @@ pub(crate) async fn bind_args_thunks(
                     Arc::clone(ctx),
                     call_span.clone(),
                 ));
-                let default_id = ctx.alloc_thunk(default_thunk);
+                let default_id = ctx.alloc_thunk(call_env_id.0, default_thunk);
                 ctx.scope_arena
                     .borrow_mut()
                     .fill_slot(call_env_id, i as u32, default_id);
@@ -336,7 +334,7 @@ pub(crate) async fn bind_args_thunks(
             // else: required param with no coverage — already caught by arity check.
         } else if let Some(default_node) = get_default(param) {
             // Default param (no named args provided).
-            let default_thunk = Arc::new(Thunk::new_surface(
+            let default_thunk = Arc::new(Thunk::surface(
                 default_node,
                 Arc::new(std::collections::HashMap::new()),
                 Arc::new(std::collections::HashMap::new()),
@@ -344,7 +342,7 @@ pub(crate) async fn bind_args_thunks(
                 Arc::clone(ctx),
                 call_span.clone(),
             ));
-            let default_id = ctx.alloc_thunk(default_thunk);
+            let default_id = ctx.alloc_thunk(call_env_id.0, default_thunk);
             ctx.scope_arena
                 .borrow_mut()
                 .fill_slot(call_env_id, i as u32, default_id);
@@ -381,11 +379,11 @@ pub(crate) async fn bind_args_thunks(
         }
 
         let variadic_slot = regular_params.len() as u32;
-        let variadic_thunk = Arc::new(Thunk::new_materialized(
+        let variadic_thunk = Arc::new(Thunk::value(
             crate::value::Value::Dict(variadic_dict),
             call_span.clone(),
         ));
-        let variadic_id = ctx.alloc_thunk(variadic_thunk);
+        let variadic_id = ctx.alloc_thunk(call_env_id.0, variadic_thunk);
         ctx.scope_arena
             .borrow_mut()
             .fill_slot(call_env_id, variadic_slot, variadic_id);
@@ -408,7 +406,7 @@ pub(crate) fn split_variadic(params: &[Param]) -> (&[Param], Option<&Param>) {
 /// `[fn [let x@[default: 42]] ...]`
 ///
 /// Returns the `Arc<SurfaceNode>` of the default expression directly — no Expr conversion.
-/// The caller wraps this in a lazy `Thunk::new_surface` using empty resolution/type tables
+/// The caller wraps this in a lazy `Thunk::surface` using empty resolution/type tables
 /// (name-based lookup in the caller env is correct for default expressions).
 pub(crate) fn get_default(param: &Param) -> Option<Arc<SurfaceNode>> {
     param

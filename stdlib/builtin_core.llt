@@ -3,58 +3,97 @@
 # Every entry in core_builtins() in src/builtins_core.rs must be declared here.
 # Bodies are Placeholder — valid tinct, errors if forced (builtins are Rust-side).
 
+--- stage: "type"
+# Type-stage definitions for primitive types.
+# These TypeNode values are evaluated first by the two-pass loader so that
+# @Integer, @String, etc. in the runtime section resolve to concrete types.
 [
-  # ── Opaque runtime types ──────────────────────────────────────────────────
-  # Program: parsed+resolved AST from builtin-parse / builtin-resolve.
-  Program:      [type Program]
-  # TypeContext: accumulated type-checker state.
-  TypeContext:  [type TypeContext]
-  # File: raw OS file handle (Value::File).
-  File:         [type File]
+  # Minimal TypeNode declaration for bootstrap — full declaration is in prelude.llt.
+  # Constructors used by this type-stage section only.
+  TypeNode: [type
+    Int
+    String
+    Float
+    Bytes
+    Never
+    Top
+    Unknown
+    Proxy
+    AnyFn
+    [Dict fields: Any  open: Any  key-type: Any  value-type: Any]
+    [TypeConstructor name: Any]
+    [TypeApplication ctor: Any  args: Any]
+    # Opaque Rust value types — no payload, identity-matched by tag name.
+    Program
+    Document
+    TypeContext
+    DirCap
+    NetCap
+    Handle
+    File
+    BuilderHandle
+    Task
+    Channel
+    Context
+    ReactiveCell
+    ClockCap
+    Timezone
+    Decimal
+    BigInt
+    QuicSession
+    Http2Session
+    Http3Session
+    Uri
+    Urn]
 
-  # ── Rust-backed primitive types ───────────────────────────────────────────
-  # Bootstrap fallback: these declarations allow builtin_core.llt to be type-checked
-  # before prelude loads (when type-stage TypeNode values aren't yet available).
-  # In user code (prelude loaded), the type-stage takes priority: Integer resolves
-  # to TypeNode.Int → Type::Int, not TyCon("Integer"). See resolve_type_head ordering.
-  Integer: [type Integer]
-  String:  [type String]
-  Float:   [type Float]
-  # Bytes has no bare TypeNode in the type-stage (the type-stage Bytes is a function
-  # for @[Bytes N] parameterized form). Bare @Bytes resolves through this declaration.
-  Bytes:   [type Bytes]
-  Never:   [type Never]
-  Any:     [type Any]
-  Unknown: [type Unknown]
-  Proxy:   [type Proxy]
-  Dict:    [type Dict]
-  Expr:    [type Expr]
+  Integer:      TypeNode.Int
+  String:       TypeNode.String
+  Float:        TypeNode.Float
+  Bytes:        TypeNode.Bytes
+  Never:        TypeNode.Never
+  Any:          TypeNode.Top
+  Unknown:      TypeNode.Unknown
+  Proxy:        TypeNode.Proxy
+  Dict:         [TypeNode.Dict fields: []  open: 1  key-type: TypeNode.Top  value-type: TypeNode.Top]
+  Program:      TypeNode.Program
+  Document:     TypeNode.Document
+  TypeContext:  TypeNode.TypeContext
+  DirCap:       TypeNode.DirCap
+  NetCap:       TypeNode.NetCap
+  Handle:       TypeNode.Handle
+  File:         TypeNode.File
+  BuilderHandle: TypeNode.BuilderHandle
+  Task:         TypeNode.Task
+  Channel:      TypeNode.Channel
+  Context:      TypeNode.Context
+  ReactiveCell: TypeNode.ReactiveCell
+  ClockCap:     TypeNode.ClockCap
+  Timezone:     TypeNode.Timezone
+  Decimal:      TypeNode.Decimal
+  BigInt:       TypeNode.BigInt
+  QuicSession:  TypeNode.QuicSession
+  Http2Session: TypeNode.Http2Session
+  Http3Session: TypeNode.Http3Session
+  Uri:          TypeNode.Uri
+  Urn:          TypeNode.Urn
+]
 
-  # ── Capability types ──────────────────────────────────────────────────────
-  DirCap:  [type DirCap]
-  NetCap:  [type NetCap]
-  ClockCap:[type ClockCap]
-  Handle:  [type Handle]
-  Url:     [type Url]
+---
+[
+  # ── Opaque types ──────────────────────────────────────────────────────────
+  # All opaque Rust value types (Program, Document, TypeContext, DirCap, etc.)
+  # are declared in the type-stage section above as unit constructors in the
+  # TypeNode ADT. They are NOT declared here with [type X] — those entries
+  # create nominal TyConDefs expecting Value::Variant at runtime, which never
+  # matches actual opaque Rust Value variants.
+  # Primitive types (Integer, String, Float, Bytes, etc.) are also type-stage.
 
-  # ── Opaque Rust handle types ──────────────────────────────────────────────
-  BuilderHandle: [type BuilderHandle]
-  Task:          [type [let a] Task]
-  Channel:       [type [let a] Channel]
-  Context:       [type Context]
-  ReactiveCell:  [type [let a] ReactiveCell]
-  QuicSession:   [type QuicSession]
-  Http2Session:  [type Http2Session]
-  Http3Session:  [type Http3Session]
-  Timezone:      [type Timezone]
-  Uri:           [type Uri]
-  Urn:           [type Urn]
-  Decimal:       [type Decimal]
-  BigInt:        [type BigInt]
+  # Url is a tinct nominal type (not an opaque Rust Value variant) — kept here.
+  Url: [type Url]
 
   # ── Control flow ──────────────────────────────────────────────────────────
   builtin-raise: [fn@Never  [let msg@String] ...]
-  builtin-try:   [fn@[bind: [a]] [let f@[Fn@a []]] ...]
+  builtin-try:   [fn@[bind: [a]  return: [or [ok: a] [error: String]]] [let expr@a] ...]
 
   # ── Arithmetic — monomorphic typed variants ───────────────────────────────
   # Each variant handles exactly one type combination. Cross-type arithmetic
@@ -132,7 +171,7 @@
   builtin-cap-env-has?:  [fn@Integer [let name@String env@Any] ...]
 
   # ── I/O ───────────────────────────────────────────────────────────────────
-  builtin-narrow:        [fn@DirCap  [let cap@DirCap ...sub] ...]
+  builtin-narrow:        [fn@DirCap  [let cap@DirCap path@String] ...]
   builtin-list-dir:      [fn@Dict    [let cap@DirCap path@String] ...]
   builtin-path-dir:      [fn@DirCap  [let path@String] ...]
   builtin-file-open:     [fn@File    [let cap@DirCap path@String mode@String] ...]
@@ -141,13 +180,24 @@
   builtin-write-stderr:  [fn@[bind: [h] return: h] [let s@String h] ...]
 
   # ── Pipeline primitives ────────────────────────────────────────────────────
+  # parse: parse source bytes at path, return Program with documents and errors.
   builtin-parse:          [fn@Program  [let src@Bytes path@String] ...]
+  # desugar: desugar a Program (apply $_ transformation, pipe lowering, etc.).
   builtin-desugar:        [fn@Program  [let prog@Program] ...]
-  builtin-resolve:        [fn@Dict     [let doc@Document frames@Dict] ...]
+  # resolve: resolve VarRef de Bruijn coords in a document against scope frames.
+  # frames: {frame-index: {var-name: slot-index}, ...}
+  builtin-resolve:        [fn@Dict     [let doc@Document frames@[Map Int [Map String Int]]] ...]
+  # eval: evaluate a resolved+typed document in a scope; returns {result, scope-id, errors}.
   builtin-eval:           [fn@Dict     [let typed@Document scope-id@Int] ...]
-  builtin-typecheck-doc:  [fn@Document [let doc@Document tc@TypeContext] ...]
+  # typecheck-doc: type-check a single resolved document against a TypeContext.
+  # Returns {doc: Document, warnings: {0: {kind, message, span, notes}, ...}}
+  builtin-typecheck-doc:  [fn@Dict     [let doc@Document tc@TypeContext] ...]
+  # program-docs: return auto-indexed dict of documents in a Program.
   builtin-program-docs:      [fn@Dict     [let prog@Program] ...]
+  # doc-meta: evaluate a document's --- header in a scope, returning the result dict.
   builtin-doc-meta:          [fn@Dict     [let doc@Document scope-id@Int] ...]
+  # doc-expressions: return auto-indexed dict of Expr-variant values from a document's expression items.
+  # Decl items (type declarations, class/instance declarations, etc.) are skipped.
   builtin-doc-expressions:   [fn@Dict     [let doc@Document] ...]
 
   # ── Scope arena primitives ────────────────────────────────────────────────

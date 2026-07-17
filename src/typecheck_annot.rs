@@ -1499,168 +1499,29 @@ pub(crate) async fn resolve_annotation(
             .await
         }
         Annotation::Annotated(name, inner) => {
-            // Parameterized type annotations: Seq@Int, Map@[String: Int], Record@[field: Type]
-            // Note: "Seq" no longer has a special case — it resolves through TyCon lookup like
-            // any other user-declared parameterized type (type-foundations S-894).
-            match name.as_str() {
-                "Map" => {
-                    // Resolve the inner annotation for key and value types
-                    match inner.as_ref() {
-                        Annotation::Simple(_) => {
-                            // @Map@T (single type) → Map[fresh_key: T]
-                            // Use a fresh TypeVar for the key so callers can unify against
-                            // concrete key types instead of being stuck with Unknown.
-                            let map_span = span.clone();
-                            let value_type = Box::pin(resolve_annotation(
-                                inner,
-                                env,
-                                span,
-                                state,
-                                constraints,
-                                ann_mapping,
-                                row_ann_mapping,
-                                type_params_scope,
-                            ))
-                            .await?;
-                            Ok(Type::map(state.fresh_type_var(&map_span), value_type))
-                        }
-                        Annotation::PropertyDict(surface_entries) => {
-                            // @Map@[key: K value: V] → Map(K, V)
-                            // Look for keyed entries named "key" and "value". If both are
-                            // present, resolve them and build Map(K, V). If only "value" (or
-                            // any single positional entry), treat as Map(Unknown, V).
-                            // Fall back to resolving as a positional type list for other forms.
-                            let key_entry = surface_entries.iter().find(|e| {
-                                e.node.key.as_ref().is_some_and(|k| {
-                                    matches!(&k.expr, SurfaceExpression::StringLiteral { content: s, .. } if s == "key")
-                                })
-                            });
-                            let value_entry = surface_entries.iter().find(|e| {
-                                e.node.key.as_ref().is_some_and(|k| {
-                                    matches!(&k.expr, SurfaceExpression::StringLiteral { content: s, .. } if s == "value")
-                                })
-                            });
-                            if let Some(v_entry) = value_entry {
-                                let key_ty = if let Some(k_entry) = key_entry {
-                                    resolve_type_expr(
-                                        &k_entry.node.value,
-                                        env,
-                                        state,
-                                        constraints,
-                                        ann_mapping,
-                                        row_ann_mapping,
-                                        type_params_scope,
-                                    )
-                                    .await?
-                                } else {
-                                    Type::Unknown
-                                };
-                                let value_ty = resolve_type_expr(
-                                    &v_entry.node.value,
-                                    env,
-                                    state,
-                                    constraints,
-                                    ann_mapping,
-                                    row_ann_mapping,
-                                    type_params_scope,
-                                )
-                                .await?;
-                                Ok(Type::map(key_ty, value_ty))
-                            } else {
-                                // No "value:" key — delegate to resolve_type_dict which handles
-                                // positional forms like [Map K V] (though nested inside @Map@).
-                                Box::pin(resolve_type_dict(
-                                    surface_entries,
-                                    env,
-                                    span,
-                                    state,
-                                    constraints,
-                                    ann_mapping,
-                                    row_ann_mapping,
-                                    type_params_scope,
-                                ))
-                                .await
-                            }
-                        }
-                        _ => {
-                            // Other forms like @Map@Annotated — treat as single value type.
-                            // Use a fresh TypeVar for the key so callers can unify against
-                            // concrete key types instead of being stuck with Unknown.
-                            let map_span = span.clone();
-                            let value_type = Box::pin(resolve_annotation(
-                                inner,
-                                env,
-                                span,
-                                state,
-                                constraints,
-                                ann_mapping,
-                                row_ann_mapping,
-                                type_params_scope,
-                            ))
-                            .await?;
-                            Ok(Type::map(state.fresh_type_var(&map_span), value_type))
-                        }
-                    }
-                }
-                "Handle" => {
-                    // @Handle@CapType — parameterized handle type in TypeAssert/annotation context.
-                    //
-                    // The inner annotation is the capability row argument. Examples:
-                    //   @Handle@DirCap            → Handle(DirCap)
-                    //   @Handle@NetCap            → Handle(NetCap)
-                    //   @Handle@[Readable]        → Handle(Record { readable: {} })
-                    //   @Handle@Unknown           → Handle(Unknown)  (gradual handle)
-                    //
-                    // Resolve the inner annotation as a capability type and wrap in Handle.
-                    let cap_type = Box::pin(resolve_annotation(
-                        inner,
-                        env,
-                        span,
-                        state,
-                        constraints,
-                        ann_mapping,
-                        row_ann_mapping,
-                        type_params_scope,
-                    ))
-                    .await?;
-                    Ok(Type::handle(cap_type))
-                }
-                _ => {
-                    // Try TyConDef lookup for user-defined parameterized types (T-949).
-                    // Handles `@Tree@Int` where Tree is a user-defined TyCon with arity 1.
-                    if let Some(def) = env.lookup_tycon_def(name) {
-                        if def.arity() >= 1 {
-                            // Resolve the inner annotation as the first type argument.
-                            let arg = Box::pin(resolve_annotation(
-                                inner,
-                                env,
-                                span,
-                                state,
-                                constraints,
-                                ann_mapping,
-                                row_ann_mapping,
-                                type_params_scope,
-                            ))
-                            .await?;
-                            // Expand via expand_named; falls back to App(TyCon, arg) for
-                            // builtins and ADTs (which expand_named returns as App chains).
-                            return Ok(expand_named(name, &[arg.clone()], env, state)
-                                .unwrap_or_else(|| {
-                                    Type::App(Box::new(Type::TyCon(name.clone())), Box::new(arg))
-                                }));
-                        } else if def.arity() == 0 {
-                            // Zero-arity TyCon with annotation — expand via expand_named.
-                            return Ok(expand_named(name, &[], env, state)
-                                .unwrap_or_else(|| Type::TyCon(name.clone())));
-                        }
-                    }
-                    // Unknown parameterized type — no TyConDef found
-                    Err(TypeError::new(
-                        format!("unknown parameterized type: {}", name),
-                        span,
-                    ))
-                }
-            }
+            // @Name@Inner means: apply type constructor `name` to type argument `inner`.
+            // One path for all types — resolve the argument, then delegate to resolve_type_head
+            // which handles TyCons, type-stage functions, classes, and kind constructors uniformly.
+            let arg = Box::pin(resolve_annotation(
+                inner,
+                env,
+                span.clone(),
+                state,
+                constraints,
+                ann_mapping,
+                row_ann_mapping,
+                type_params_scope,
+            ))
+            .await?;
+            Box::pin(resolve_type_head(
+                name,
+                &[arg],
+                env,
+                state,
+                constraints,
+                span,
+            ))
+            .await
         }
         Annotation::PropertyDict(surface_entries) => {
             // PropertyDict can mean different things depending on its keys:
@@ -2340,10 +2201,40 @@ async fn resolve_type_head(
         return Ok(fresh_ty);
     }
 
-    // Step 3: type_stage_env — After T-1557, Env no longer stores runtime values; thunks
-    // live exclusively in the ScopeArena (EvalContext.scope_arena). Name-based thunk lookup via
-    // get_value_by_name is no longer possible from Env. This step falls through to
-    // tycon_env (Step 4) for type resolution.
+    // Step 3a: direct ThunkId lookup — for bootstrap two-pass where ThunkIds come directly
+    // from evaluating the type-stage dict. Force the thunk and convert via typenode_leaf_to_type.
+    if let (Some(thunks), Some(eval_ctx)) = (&state.type_stage_thunks, &state.eval_ctx) {
+        if let Some(&thunk_id) = thunks.get(name) {
+            let thunk = eval_ctx.get_thunk(thunk_id);
+            match crate::eval::materialize(&thunk, None, eval_ctx).await {
+                Ok(val) => {
+                    if let Some(ty) = crate::type_normalize::typenode_leaf_to_type(&val) {
+                        return Ok(ty);
+                    }
+                    // Value was not a TypeNode leaf — fall through to tycon_env
+                }
+                Err(e) => {
+                    return Err(crate::types::TypeError::new(
+                        format!(
+                            "type-stage thunk for '{}' failed to materialize: {}",
+                            name, e
+                        ),
+                        span,
+                    ));
+                }
+            }
+        }
+    }
+
+    // Step 3b: type_stage_env — look up via evaluate_resolver (for the normal loader path
+    // where the type-stage scope is set up by builtin-tc-with-scope).
+    if let (Some(ts_env), Some(eval_ctx)) = (&state.type_stage_env, &state.eval_ctx) {
+        if let Some(ty) =
+            crate::type_normalize::evaluate_resolver(name, args, ts_env, eval_ctx).await
+        {
+            return Ok(ty);
+        }
+    }
 
     // Step 4: tycon_env — bootstrap fallback for types declared in builtin_core.llt that
     // were not found in the type-stage (e.g., DirCap, NetCap, TypeContext, and primitive
@@ -4554,19 +4445,16 @@ fn type_to_typenode_value<'a>(
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<Value>> + 'a>> {
     Box::pin(async move {
         let alloc_str = |s: &str| -> crate::value::ThunkId {
-            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                crate::value::string_val(s),
-                span.clone(),
-            )))
+            ctx.alloc_thunk(
+                0,
+                Arc::new(Thunk::value(crate::value::string_val(s), span.clone())),
+            )
         };
         let alloc_int = |n: i64| -> crate::value::ThunkId {
-            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Int(n),
-                span.clone(),
-            )))
+            ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Int(n), span.clone())))
         };
         let alloc_val = |v: Value| -> crate::value::ThunkId {
-            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(v, span.clone())))
+            ctx.alloc_thunk(0, Arc::new(Thunk::value(v, span.clone())))
         };
 
         Some(match ty {
@@ -4712,11 +4600,8 @@ pub(crate) async fn eval_type_stage_value(
     let arg_thunks: Vec<crate::arena::ThunkId> = args
         .iter()
         .map(|v| {
-            let t = std::sync::Arc::new(crate::value::Thunk::new_materialized(
-                v.clone(),
-                origin_span.clone(),
-            ));
-            ctx.alloc_thunk(t)
+            let t = std::sync::Arc::new(crate::value::Thunk::value(v.clone(), origin_span.clone()));
+            ctx.alloc_thunk(0, t)
         })
         .collect();
 
@@ -4796,7 +4681,7 @@ pub(crate) async fn eval_type_stage_value(
 ///
 /// ```text
 /// SurfaceNode (annotation expr)
-///   → Thunk::new_surface in type-stage env
+///   → Thunk::surface in type-stage env
 ///   → materialize(...).await   (produces TypeNode Value)
 ///   → TypeNode.as-type lookup + eval_type_stage_value
 ///       (normalizes user-defined constructors to primitive TypeNode forms)
@@ -4890,11 +4775,11 @@ pub(crate) async fn eval_type_stage_expr(
     // Wrap the SurfaceNode in a lazy thunk that will evaluate it in the eval env.
     // Use empty resolution and type-annotation tables (no pre-resolved coordinates);
     // name lookup falls through to the tier-2 name-based path in the evaluator.
-    let surface_thunk = Arc::new(Thunk::new_surface(
+    let surface_thunk = Arc::new(Thunk::surface(
         Arc::clone(node),
         Arc::new(std::collections::HashMap::new()),
         Arc::new(std::collections::HashMap::new()),
-        ctx.current_env_id,
+        0, // root scope
         Arc::clone(&ctx),
         node_span.clone(),
     ));

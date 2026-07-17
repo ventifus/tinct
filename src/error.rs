@@ -571,42 +571,45 @@ impl ErrorKind {
         }
     }
 
-    /// Returns `false` for errors that must not be cached in Failed thunk state.
-    /// All errors are cacheable — a failed thunk is always stored in Failed state
-    /// and subsequent accesses return the cached error without re-evaluation.
-    ///
-    /// # INVARIANT
-    /// This method and `is_catchable()` serve distinct semantic roles:
-    /// - **Cacheability**: Enforces Launchbury (1993) thunk state machine
-    ///   monotonicity. All errors transition to Failed state and are memoized.
-    /// - **Catchability**: Defines user-facing `try` semantics per Nix `tryEval`
-    ///   model. Non-catchable errors propagate to the runtime regardless of
-    ///   try/catch constructs.
-    ///
-    /// Cross-reference: see `is_catchable()` for `try` semantics.
-    pub fn is_cacheable(&self) -> bool {
-        true
-    }
-
     /// Returns `false` for errors that must not be caught by `try`.
     /// Resource limit errors (`ResourceLimitExceeded`) should propagate to the
     /// runtime, not be suppressible by user code.
     /// Follows GHC's StackOverflow and Racket's exn:fail:resource semantics.
     ///
-    /// # INVARIANT
-    /// This method and `is_cacheable()` serve distinct semantic roles:
     /// `ResourceLimitExceeded` is non-catchable (resource limits are safety
-    /// boundaries) but IS cacheable (hitting a limit will always fail again —
-    /// deterministic).
-    /// - **Catchability**: Defines user-facing `try` semantics per Nix `tryEval`
-    ///   model. Non-catchable errors propagate to the runtime regardless of
-    ///   try/catch constructs.
-    /// - **Cacheability**: Enforces Launchbury (1993) thunk state machine
-    ///   monotonicity. All errors transition to Failed state and are memoized.
-    ///
-    /// Cross-reference: see `is_cacheable()` for thunk state machine semantics.
+    /// boundaries), but all errors are always cached in Failed thunk state per
+    /// Launchbury (1993) thunk state machine monotonicity.
     pub fn is_catchable(&self) -> bool {
         !matches!(self, Self::ResourceLimitExceeded { .. })
+    }
+
+    /// Returns the label for the definition_span field in error Display output.
+    ///
+    /// For `TypeAssertFailed`, the definition_span holds the thunk_span — the source location
+    /// where the value was produced. "value from" is more accurate than the generic "defined at"
+    /// because the span describes a value, not a definition site.
+    ///
+    /// All other errors use "defined at", which describes the definition site of the
+    /// problematic expression.
+    pub fn definition_span_label(&self) -> &'static str {
+        match self {
+            Self::TypeAssertFailed { .. } => "value from",
+            _ => "defined at",
+        }
+    }
+
+    /// Returns the label for the materialization_span field in error Display output.
+    ///
+    /// For `TypeAssertFailed`, the materialization_span holds the expr_span — the source location
+    /// of the `[@Type ...]` annotation. "asserted at" names the annotation site precisely.
+    ///
+    /// All other errors fall back to `infer_materialization_verb`, which inspects the
+    /// stack frames to choose between "called at", "accessed at", and "materialized at".
+    pub fn materialization_span_label(&self, stack: &[StackFrame]) -> &'static str {
+        match self {
+            Self::TypeAssertFailed { .. } => "asserted at",
+            _ => infer_materialization_verb(stack),
+        }
     }
 }
 
@@ -809,10 +812,9 @@ impl fmt::Display for ErrorKind {
                 if !cycle_path.is_empty() {
                     write!(f, "\n  cycle:")?;
                     for (label, span) in cycle_path {
-                        write!(f, " {} ({})", label, span)?;
-                        write!(f, " →")?;
+                        write!(f, "\n    {label} at {span}")?;
                     }
-                    write!(f, " [back to {}]", name)?;
+                    write!(f, "\n    → back to {name}")?;
                 }
                 Ok(())
             }
@@ -1628,34 +1630,11 @@ fn infer_materialization_verb(stack: &[StackFrame]) -> &'static str {
     "materialized at"
 }
 
-/// Returns true when a SourceFile has a path that can be shown in error messages.
-/// Synthetic files with paths starting with '<' (e.g. `<parse>`, `<tokenize>`) are
-/// excluded from path display. Rust source files (.rs) from rust_span!() ARE shown —
-/// they point to the Rust code that created the synthetic node, which is useful attribution.
-fn is_real_source_file(sf: &crate::ast::SourceFile) -> bool {
-    !sf.path.starts_with('<')
-}
-
-/// Format a span location string, prefixing with the file path when available.
-/// Used for both the primary error location and stack frame locations.
-///
-/// When the span carries an embedded `SourceFile`, formats as `"path:line:col-line:col"`.
-/// Otherwise formats as `"line:col-line:col"` (position only).
-fn format_span_location(span: &Span) -> String {
-    let sf = &span.file;
-    if is_real_source_file(sf) {
-        format!("{}:{}", sf.path, span)
-    } else {
-        format!("{}", span)
-    }
-}
-
 /// Write a source snippet for a stack frame's span, if the span carries file content.
 /// Outputs `\n   |\n{snippet}` — same style as the primary error snippet but for frames.
 fn write_frame_snippet(f: &mut fmt::Formatter<'_>, span: &Span) -> fmt::Result {
-    let sf = &span.file;
-    if is_real_source_file(sf) {
-        if let Some(snippet) = render_span_snippet(&sf.content, span.clone()) {
+    if !span.file.path.starts_with('<') {
+        if let Some(snippet) = render_span_snippet(&span.file.content, span.clone()) {
             write!(f, "\n   |")?;
             for line in snippet.lines() {
                 write!(f, "\n{}", line)?;
@@ -1667,21 +1646,20 @@ fn write_frame_snippet(f: &mut fmt::Formatter<'_>, span: &Span) -> fmt::Result {
 
 impl fmt::Display for EvalError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Primary error line: "kind-message (defined at file:line:col)"
+        // Primary error line: "kind-message (label file:line:col)"
         // File path comes from the embedded SourceFile in definition_span, not a separate field.
-        write!(
-            f,
-            "{} (defined at {})",
-            self.kind,
-            format_span_location(&self.definition_span),
-        )?;
+        // The label ("defined at", "value from", etc.) is determined by the error kind.
+        let def_label = self.kind.definition_span_label();
+        write!(f, "{} ({def_label} {})", self.kind, self.definition_span,)?;
 
         // Only show materialization span if it differs from definition span (doc/10-errors.md:820)
         // Written here (inline on the first line) before the snippet block.
+        // The verb ("materialized at", "called at", "asserted at", etc.) is determined by the
+        // error kind; for most errors it is further refined by inspecting the stack frames.
         if let Some(ref mat_span) = self.materialization_span {
             if mat_span != &self.definition_span {
-                let verb = infer_materialization_verb(&self.stack);
-                write!(f, " ({verb} {})", format_span_location(mat_span))?;
+                let verb = self.kind.materialization_span_label(&self.stack);
+                write!(f, " ({verb} {})", mat_span)?;
             }
         }
 
@@ -1690,11 +1668,11 @@ impl fmt::Display for EvalError {
         // Positioned after the first line so the snippet does not disrupt span location inline text.
         {
             let sf = &self.definition_span.file;
-            if is_real_source_file(sf) {
+            if !sf.path.starts_with('<') {
                 if let Some(snippet) =
                     render_span_snippet(&sf.content, self.definition_span.clone())
                 {
-                    write!(f, "\n  --> {}:{}", sf.path, self.definition_span)?;
+                    write!(f, "\n  --> {}", self.definition_span)?;
                     write!(f, "\n   |")?;
                     // render_span_snippet returns lines like "  N | line" and "  N | ^^^"
                     for line in snippet.lines() {
@@ -1706,11 +1684,7 @@ impl fmt::Display for EvalError {
 
         // Secondary span: "evaluated to X" label pointing at a related source location.
         if let Some((ref sec_span, ref sec_label)) = self.secondary_span {
-            write!(
-                f,
-                "\n  note: {sec_label} at {}",
-                format_span_location(sec_span)
-            )?;
+            write!(f, "\n  note: {sec_label} at {}", sec_span)?;
         }
 
         // Display all visible stack frames
@@ -1719,8 +1693,7 @@ impl fmt::Display for EvalError {
                 continue;
             }
 
-            let loc = format_span_location(&frame.definition_span);
-            write!(f, "\n  in {} at {}", frame.label, loc)?;
+            write!(f, "\n  in {} at {}", frame.label, frame.definition_span)?;
             write_frame_snippet(f, &frame.definition_span)?;
         }
 
@@ -2007,6 +1980,26 @@ mod tests {
     }
 
     #[test]
+    fn test_circular_dependency_cycle_path_format() {
+        let def_span = test_span(1, 1, 1, 5);
+        let path = vec![
+            (std::sync::Arc::from("[f ...]"), test_span(10, 1, 10, 8)),
+            (std::sync::Arc::from("[g ...]"), test_span(20, 3, 20, 10)),
+        ];
+        let err = EvalError::circular_dependency("x", def_span, path);
+        let s = err.kind.to_string();
+        // Each cycle entry on its own line, indented, with "at" separator.
+        assert!(s.contains("\n    [f ...] at "), "got: {s}");
+        assert!(s.contains("\n    [g ...] at "), "got: {s}");
+        assert!(s.contains("\n    → back to x"), "got: {s}");
+        // Entries must NOT be on the same line as "cycle:".
+        assert!(
+            !s.contains("cycle: ["),
+            "cycle entries must be on separate lines; got: {s}"
+        );
+    }
+
+    #[test]
     fn test_eval_error_display_basic() {
         let span = test_span(3, 5, 3, 10);
         let err = EvalError::internal("oops".to_string(), span);
@@ -2225,7 +2218,7 @@ bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.
     // Exhaustiveness enforcement: Rust's #[deny(non_exhaustive_omitted_patterns)] only works
     // for enums from external crates. For same-crate ErrorKind, this test helper + the
     // self-equality assertion below enforce that every variant is covered in code(), Display,
-    // is_catchable(), and is_cacheable().
+    // and is_catchable().
     /// Centralized variant list for test coverage. Adding a new ErrorKind variant
     /// without updating this list will cause test failures (runtime, not compile-time).
     fn all_error_kind_variants() -> Vec<ErrorKind> {
@@ -2395,151 +2388,6 @@ bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.
         assert_eq!(format!("{}", ArityBound::Range(2, 2)), "2 arguments");
         assert_eq!(format!("{}", ArityBound::Range(1, 3)), "1 to 3 arguments");
         assert_eq!(format!("{}", ArityBound::Range(0, 5)), "0 to 5 arguments");
-    }
-
-    #[test]
-    fn test_is_cacheable() {
-        // All ErrorKind variants ARE cacheable (can be stored in Failed thunk state).
-        // ResourceLimitExceeded IS cacheable (resource limits are absolute,
-        // not context-dependent — a failed resource limit check
-        // will fail consistently regardless of when it's retried).
-        assert!(ErrorKind::KeyNotFound {
-            key: "foo".to_string(),
-            available_keys: vec![],
-        }
-        .is_cacheable());
-        assert!(ErrorKind::UndefinedVariable {
-            name: "x".to_string()
-        }
-        .is_cacheable());
-        assert!(ErrorKind::TypeMismatch {
-            context: None,
-            expected: "Int".to_string(),
-            got: "String".to_string()
-        }
-        .is_cacheable());
-        assert!(ErrorKind::TypeAssertFailed {
-            expected: "Int".to_string(),
-            got: "String".to_string()
-        }
-        .is_cacheable());
-        assert!(ErrorKind::ArityMismatch {
-            expected: ArityBound::Exact(1),
-            got: 2,
-            callee: None,
-            params: vec![]
-        }
-        .is_cacheable());
-        assert!(ErrorKind::MissingRequiredParam {
-            param: "x".to_string(),
-            callee: None,
-        }
-        .is_cacheable());
-        assert!(ErrorKind::NamedArgConflict {
-            param: "x".to_string(),
-            callee: None,
-        }
-        .is_cacheable());
-        assert!(ErrorKind::UnknownNamedArg {
-            name: "x".to_string(),
-            valid_params: vec![],
-            callee: None,
-        }
-        .is_cacheable());
-        assert!(ErrorKind::NamedArgRejected {
-            builtin: "test".to_string()
-        }
-        .is_cacheable());
-        assert!(ErrorKind::DuplicateKey {
-            key: "x".to_string()
-        }
-        .is_cacheable());
-        assert!(ErrorKind::DivisionByZero {
-            op: "/".to_string()
-        }
-        .is_cacheable());
-        assert!(ErrorKind::IntegerOverflow {
-            op: "+".to_string()
-        }
-        .is_cacheable());
-        assert!(ErrorKind::FloatNotFinite {
-            builtin: "test".to_string(),
-            value: f64::NAN
-        }
-        .is_cacheable());
-        assert!(ErrorKind::EmptyCollection {
-            op: "head".to_string()
-        }
-        .is_cacheable());
-        assert!(ErrorKind::ValueNotSerializable {
-            value_type: "Function".to_string()
-        }
-        .is_cacheable());
-        assert!(ErrorKind::FloatOutOfRange {
-            builtin: "floor".to_string(),
-            value: 1e20
-        }
-        .is_cacheable());
-        assert!(ErrorKind::ResourceLimitExceeded {
-            message: "test".to_string(),
-        }
-        .is_cacheable());
-        assert!(ErrorKind::IncludeIoError {
-            path: "test.llt".to_string(),
-            detail: "no such file".to_string()
-        }
-        .is_cacheable());
-        assert!(ErrorKind::IncludeCycle {
-            path: "test.llt".to_string()
-        }
-        .is_cacheable());
-        assert!(ErrorKind::IncludeFileTooLarge {
-            path: "big.llt".to_string(),
-            size: 100_000_000,
-            limit: 10_000_000
-        }
-        .is_cacheable());
-        assert!(ErrorKind::IncludeHashMismatch {
-            path: "x.llt".to_string(),
-            expected: "blake3:abc".to_string(),
-            actual: "blake3:def".to_string()
-        }
-        .is_cacheable());
-        assert!(ErrorKind::IncludeHashRequired {
-            path: "x.llt".to_string()
-        }
-        .is_cacheable());
-        assert!(ErrorKind::ParseConversion {
-            builtin: "to-int".to_string(),
-            input: "abc".to_string(),
-            target: "Int".to_string()
-        }
-        .is_cacheable());
-        assert!(ErrorKind::UriParseError {
-            detail: "error".to_string()
-        }
-        .is_cacheable());
-        assert!(ErrorKind::CircularDependency {
-            name: "x".to_string(),
-            cycle_path: Vec::new(),
-        }
-        .is_cacheable());
-        assert!(ErrorKind::MatchExhaustion {
-            scrutinee_type: "Int".to_string()
-        }
-        .is_cacheable());
-        assert!(ErrorKind::DuplicateVariable {
-            name: "x".to_string()
-        }
-        .is_cacheable());
-        assert!(ErrorKind::UserError {
-            message: "test".to_string()
-        }
-        .is_cacheable());
-        assert!(ErrorKind::Internal {
-            message: "test".to_string()
-        }
-        .is_cacheable());
     }
 
     #[test]
@@ -3068,19 +2916,6 @@ bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.
     }
 
     #[test]
-    fn test_resource_limit_exceeded_is_cacheable() {
-        // ResourceLimitExceeded IS cacheable
-        // (resource limits are absolute, not context-dependent)
-        let err = ErrorKind::ResourceLimitExceeded {
-            message: "upper: output would exceed 64 MB limit".to_string(),
-        };
-        assert!(
-            err.is_cacheable(),
-            "ResourceLimitExceeded should be cacheable"
-        );
-    }
-
-    #[test]
     fn test_resource_limit_exceeded_display() {
         let err = EvalError::resource_limit_exceeded(
             "collect: exceeded maximum collection size (1000000)".to_string(),
@@ -3365,7 +3200,6 @@ bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.
         assert!(matches!(err.kind, ErrorKind::UserError { .. }));
         assert_eq!(err.kind.to_string(), "custom error message");
         assert!(err.kind.is_catchable());
-        assert!(err.kind.is_cacheable());
     }
 
     #[test]
@@ -3378,7 +3212,6 @@ bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.
             "floor does not accept named arguments"
         );
         assert!(err.kind.is_catchable());
-        assert!(err.kind.is_cacheable());
     }
 
     #[test]
@@ -3388,7 +3221,6 @@ bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.
         assert!(matches!(err.kind, ErrorKind::IntegerOverflow { .. }));
         assert_eq!(err.kind.to_string(), "*: integer overflow");
         assert!(err.kind.is_catchable());
-        assert!(err.kind.is_cacheable());
     }
 
     #[test]
@@ -3417,7 +3249,6 @@ bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.
         assert!(matches!(err.kind, ErrorKind::DivisionByZero { .. }));
         assert_eq!(err.kind.to_string(), "%: division by zero");
         assert!(err.kind.is_catchable());
-        assert!(err.kind.is_cacheable());
     }
 
     #[test]
@@ -3427,7 +3258,6 @@ bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.
         assert!(matches!(err.kind, ErrorKind::FloatNotFinite { .. }));
         assert!(err.kind.to_string().contains("not a finite number"));
         assert!(err.kind.is_catchable());
-        assert!(err.kind.is_cacheable());
     }
 
     #[test]
@@ -3437,7 +3267,6 @@ bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.
         assert!(matches!(err.kind, ErrorKind::EmptyCollection { .. }));
         assert_eq!(err.kind.to_string(), "tail on empty collection");
         assert!(err.kind.is_catchable());
-        assert!(err.kind.is_cacheable());
     }
 
     #[test]
@@ -3447,7 +3276,6 @@ bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.
         assert!(matches!(err.kind, ErrorKind::ValueNotSerializable { .. }));
         assert_eq!(err.kind.to_string(), "cannot serialize Builtin to JSON");
         assert!(err.kind.is_catchable());
-        assert!(err.kind.is_cacheable());
     }
 
     #[test]
@@ -3457,7 +3285,6 @@ bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.
         assert!(matches!(err.kind, ErrorKind::FloatOutOfRange { .. }));
         assert!(err.kind.to_string().contains("out of range for Int"));
         assert!(err.kind.is_catchable());
-        assert!(err.kind.is_cacheable());
     }
 
     #[test]
@@ -3467,7 +3294,6 @@ bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.
         assert!(matches!(err.kind, ErrorKind::UndefinedVariable { .. }));
         assert_eq!(err.kind.to_string(), "undefined variable: myvar");
         assert!(err.kind.is_catchable());
-        assert!(err.kind.is_cacheable());
     }
 
     #[test]
@@ -3480,7 +3306,6 @@ bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.
             "type assertion failed: expected Bool, got String"
         );
         assert!(err.kind.is_catchable());
-        assert!(err.kind.is_cacheable());
     }
 
     #[test]
@@ -3493,7 +3318,6 @@ bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.
             "parameter 'separator' received both positional and named argument"
         );
         assert!(err.kind.is_catchable());
-        assert!(err.kind.is_cacheable());
     }
 
     #[test]
@@ -3512,7 +3336,6 @@ bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.
         assert!(err.kind.to_string().contains("sep"));
         assert!(err.kind.to_string().contains("limit"));
         assert!(err.kind.is_catchable());
-        assert!(err.kind.is_cacheable());
     }
 
     #[test]
@@ -3522,7 +3345,6 @@ bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.
         assert!(matches!(err.kind, ErrorKind::DuplicateKey { .. }));
         assert_eq!(err.kind.to_string(), "duplicate key: host");
         assert!(err.kind.is_catchable());
-        assert!(err.kind.is_cacheable());
     }
 
     #[test]
@@ -3542,11 +3364,6 @@ bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.
             !err.kind.is_catchable(),
             "ResourceLimitExceeded must not be catchable"
         );
-        // ResourceLimitExceeded IS cacheable (deterministic — always fails)
-        assert!(
-            err.kind.is_cacheable(),
-            "ResourceLimitExceeded should be cacheable"
-        );
     }
 
     #[test]
@@ -3564,7 +3381,6 @@ bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.
             .contains("cannot access \"missing.llt\""));
         assert!(err.kind.to_string().contains("No such file or directory"));
         assert!(err.kind.is_catchable());
-        assert!(err.kind.is_cacheable());
     }
 
     #[test]
@@ -3575,7 +3391,6 @@ bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.
         assert!(err.kind.to_string().contains("circular include detected"));
         assert!(err.kind.to_string().contains("recursive.llt"));
         assert!(err.kind.is_catchable());
-        assert!(err.kind.is_cacheable());
     }
 
     #[test]
@@ -3588,7 +3403,6 @@ bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.
         assert!(err.kind.to_string().contains("20000000"));
         assert!(err.kind.to_string().contains("10485760"));
         assert!(err.kind.is_catchable());
-        assert!(err.kind.is_cacheable());
     }
 
     #[test]
@@ -3606,7 +3420,6 @@ bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.
         assert!(err.kind.to_string().contains("blake3:aabbcc"));
         assert!(err.kind.to_string().contains("blake3:112233"));
         assert!(err.kind.is_catchable());
-        assert!(err.kind.is_cacheable());
     }
 
     #[test]
@@ -3617,7 +3430,6 @@ bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.
         assert!(err.kind.to_string().contains("integrity hash required"));
         assert!(err.kind.to_string().contains("untrusted.llt"));
         assert!(err.kind.is_catchable());
-        assert!(err.kind.is_cacheable());
     }
 
     #[test]
@@ -3635,7 +3447,6 @@ bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.
             "to-float: cannot parse \"not-a-number\" as Float"
         );
         assert!(err.kind.is_catchable());
-        assert!(err.kind.is_cacheable());
     }
 
     #[test]
@@ -3648,7 +3459,6 @@ bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.
             "missing argument for required parameter 'separator'"
         );
         assert!(err.kind.is_catchable());
-        assert!(err.kind.is_cacheable());
     }
 
     // ── render_span_snippet tests ──────────────────────────────────────────
@@ -3954,32 +3764,28 @@ bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.
     }
 
     #[test]
-    fn test_format_span_location_with_file() {
-        // A span with file: Some("prelude.llt") must format as "prelude.llt:3:5-3:10".
-        // Regression guard: if format_span_location drops the file prefix, this fails.
+    fn test_span_display_with_real_file() {
+        // Span::Display is the single canonical renderer — includes file for real source files.
         let span = span_with_file("prelude.llt");
-        let location = format_span_location(&span);
-        assert_eq!(
-            location, "prelude.llt:3:5-3:10",
-            "format_span_location must prefix with the file path when span.file is Some"
-        );
+        assert_eq!(format!("{span}"), "prelude.llt:3:5-3:10");
     }
 
     #[test]
-    fn test_format_span_location_without_file() {
-        // test_span() embeds src/test_util.rs as the source file (via rust_span!().file).
-        // format_span_location prefixes the file path for any span whose file path doesn't
-        // start with '<' (is_real_source_file). test_span's file qualifies as real.
-        let span = test_span(3, 5, 3, 10);
-        let location = format_span_location(&span);
-        assert_eq!(
-            location, "src/test_util.rs:3:5-3:10",
-            "format_span_location must prefix with file when span.file is a real source file"
+    fn test_span_display_with_synthetic_file() {
+        // Synthetic paths starting with '<' are omitted from display (position only).
+        let span = span_with_file("<parse>");
+        assert_eq!(format!("{span}"), "3:5-3:10");
+    }
+
+    #[test]
+    fn test_span_display_rust_file() {
+        // rust_span!() carries a real Rust file path — must display with file and not panic.
+        let span = rust_span!();
+        let s = format!("{span}");
+        assert!(
+            s.contains("src/"),
+            "rust span must include file path, got: {s}"
         );
-        // rust_span!() carries a Rust file path — verify it doesn't panic.
-        let rust_location = format_span_location(&rust_span!());
-        // Rust file paths use '/' on Unix; this just verifies no panic occurs.
-        let _ = rust_location;
     }
 
     #[test]

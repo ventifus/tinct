@@ -905,7 +905,21 @@ fn lower_expr(
                         .guard
                         .as_ref()
                         .map(|g| Arc::new(lower_inner(g, diagnostics, scope_frames))),
-                    body: Arc::new(lower_inner(&arm.body, diagnostics, scope_frames)),
+                    body: Arc::new(if arm.body.len() == 1 {
+                        lower_inner(arm.body_expr(), diagnostics, scope_frames)
+                    } else {
+                        // Multi-body: wrap in Sequential, same as fn multi-body lowering.
+                        // The evaluator evaluates each expression in order and returns the last.
+                        Spanned::new(
+                            CoreExpr::Sequential(
+                                arm.body
+                                    .iter()
+                                    .map(|e| Arc::new(lower_inner(e, diagnostics, scope_frames)))
+                                    .collect(),
+                            ),
+                            arm.body_expr().span.clone(),
+                        )
+                    }),
                     guard_matchable_binding: arm.guard_matchable_binding.clone(),
                 })
                 .collect(),
@@ -1129,7 +1143,7 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
                 .map(|arm| SurfaceMatchArm {
                     pattern: arm.pattern.clone(),
                     guard: arm.guard.as_ref().map(|g| core_expr_to_surface_node(g)),
-                    body: core_expr_to_surface_node(&arm.body),
+                    body: vec![core_expr_to_surface_node(&arm.body)],
                     guard_matchable_binding: crate::ast::MatchableBinding::new(),
                 })
                 .collect(),

@@ -292,8 +292,10 @@ impl SurfaceResolver {
                         self.walk_surface_node(guard);
                     }
 
-                    // Walk body inside the pattern scope
-                    self.walk_surface_node(&arm.body);
+                    // Walk all body expressions inside the pattern scope
+                    for body_expr in &arm.body {
+                        self.walk_surface_node(body_expr);
+                    }
 
                     if has_bindings {
                         self.exit_scope();
@@ -907,7 +909,9 @@ mod tests {
                     if let Some(guard) = &arm.guard {
                         collect_varrefs_in_node(guard, name, out);
                     }
-                    collect_varrefs_in_node(&arm.body, name, out);
+                    for body_expr in &arm.body {
+                        collect_varrefs_in_node(body_expr, name, out);
+                    }
                 }
             }
             SurfaceExpression::CaseArm {

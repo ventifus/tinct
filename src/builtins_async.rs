@@ -162,10 +162,7 @@ fn build_dict_from_vec(
     for (i, id) in items.into_iter().enumerate() {
         dict.insert(crate::value::HashableValue::Int(i as i64), id);
     }
-    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-        Value::Dict(dict),
-        call_span,
-    )))
+    ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(dict), call_span)))
 }
 
 /// `task`: Spawn a concurrent evaluation.
@@ -224,9 +221,7 @@ pub(crate) fn builtin_task(
                         )
                         .into());
                     }
-                    // T-1558: Use closure_env_id as the call scope.
-                    let scoped_ctx = ctx_clone.with_eval_scope(closure_env_id);
-                    let thunk = eval_core_expr(&body, &scoped_ctx).await?;
+                    let thunk = eval_core_expr(&body, closure_env_id, &ctx_clone).await?;
                     materialize(&thunk, None, &ctx_clone).await
                 }
                 Value::Builtin(def) => {
@@ -552,11 +547,9 @@ pub(crate) fn builtin_recv(
                     Ok(value) => ok_val(value, call_span),
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         // Subscriber too slow, missed n messages
-                        let count_thunk = Arc::new(Thunk::new_materialized(
-                            Value::Int(n as i64),
-                            call_span.clone(),
-                        ));
-                        let count_thunk_id = ctx.alloc_thunk(count_thunk);
+                        let count_thunk =
+                            Arc::new(Thunk::value(Value::Int(n as i64), call_span.clone()));
+                        let count_thunk_id = ctx.alloc_thunk(0, count_thunk);
                         ok_val(
                             Value::Variant {
                                 tag: "Lagged.Lagged".to_string(),
@@ -726,14 +719,20 @@ pub(crate) fn builtin_oneshot_channel(
         };
 
         // Return {0: receiver, 1: sender}
-        let sender_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::OneshotSender(Arc::new(sender_inner)),
-            call_span.clone(),
-        )));
-        let receiver_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::OneshotReceiver(Arc::new(receiver_inner)),
-            call_span.clone(),
-        )));
+        let sender_id = ctx.alloc_thunk(
+            0,
+            Arc::new(Thunk::value(
+                Value::OneshotSender(Arc::new(sender_inner)),
+                call_span.clone(),
+            )),
+        );
+        let receiver_id = ctx.alloc_thunk(
+            0,
+            Arc::new(Thunk::value(
+                Value::OneshotReceiver(Arc::new(receiver_inner)),
+                call_span.clone(),
+            )),
+        );
         let mut dict = indexmap::IndexMap::new();
         dict.insert(HashableValue::Int(0), receiver_id);
         dict.insert(HashableValue::Int(1), sender_id);
@@ -1128,14 +1127,12 @@ pub(crate) fn builtin_select_once(
                             // T-1555 gap: par-map closures skip bind_args_thunks — single-param function body evaluated
                             // directly in closure_env_id rather than a dedicated call frame. Pattern variables not bound
                             // in FlatEnv. Tracked as T-1555 match-arm-closures gap.
-                            let scoped_ctx = ctx.with_eval_scope(closure_env_id);
-                            eval_core_expr(&body, &scoped_ctx).await?
+                            eval_core_expr(&body, closure_env_id, &ctx).await?
                         }
                         Value::Builtin(def) => {
                             // Call builtin with the value — return result thunk directly.
-                            let arg_thunk =
-                                Arc::new(Thunk::new_materialized(value, call_span.clone()));
-                            let arg_id = ctx.alloc_thunk(arg_thunk);
+                            let arg_thunk = Arc::new(Thunk::value(value, call_span.clone()));
+                            let arg_id = ctx.alloc_thunk(0, arg_thunk);
                             (def.func)(BuiltinArgs {
                                 args: vec![arg_id],
                                 named: None,
@@ -1256,15 +1253,15 @@ pub(crate) fn builtin_par_map(
                         // T-1555 gap: par-map closures skip bind_args_thunks — single-param function body evaluated
                         // directly in closure_env_id rather than a dedicated call frame. Pattern variables not bound
                         // in FlatEnv. Tracked as T-1555 match-arm-closures gap.
-                        let scoped_ctx = ctx_clone.with_eval_scope(closure_env_id);
-                        let result_thunk = eval_core_expr(&body, &scoped_ctx).await?;
+                        let result_thunk =
+                            eval_core_expr(&body, closure_env_id, &ctx_clone).await?;
                         materialize(&result_thunk, None, &ctx_clone).await
                     }
                     Value::Builtin(def) => {
                         // Call builtin with the item
                         let item_thunk_arg =
-                            Arc::new(Thunk::new_materialized(item_val, call_span_clone.clone()));
-                        let item_arg_id = ctx_clone.alloc_thunk(item_thunk_arg);
+                            Arc::new(Thunk::value(item_val, call_span_clone.clone()));
+                        let item_arg_id = ctx_clone.alloc_thunk(0, item_thunk_arg);
                         let result = (def.func)(BuiltinArgs {
                             args: vec![item_arg_id],
                             named: None,
@@ -1309,10 +1306,8 @@ pub(crate) fn builtin_par_map(
                     ).into());
                 }
             };
-            let result_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                result_val,
-                call_span.clone(),
-            )));
+            let result_id =
+                ctx.alloc_thunk(0, Arc::new(Thunk::value(result_val, call_span.clone())));
             result_ids.push(result_id);
         }
 
@@ -1347,7 +1342,7 @@ pub(crate) fn builtin_par_filter(
         let pred_fn_val = materialize(&pred_thunk, Some(&call_span), &ctx).await?;
         let pred_matchable_binding = crate::eval::resolve_matchable_binding_from_fn(&pred_fn_val);
         // Re-wrap as a materialized thunk so tasks can still use the standard call path.
-        let pred_thunk = Arc::new(Thunk::new_materialized(pred_fn_val, call_span.clone()));
+        let pred_thunk = Arc::new(Thunk::value(pred_fn_val, call_span.clone()));
 
         // Materialize the sequence
         let seq_val = materialize(&seq_thunk, Some(&call_span), &ctx).await?;
@@ -1396,16 +1391,14 @@ pub(crate) fn builtin_par_filter(
                         // T-1555 gap: par-filter closures skip bind_args_thunks — single-param function body evaluated
                         // directly in closure_env_id rather than a dedicated call frame. Pattern variables not bound
                         // in FlatEnv. Tracked as T-1555 match-arm-closures gap.
-                        let scoped_ctx = ctx_clone.with_eval_scope(closure_env_id);
-                        let result_thunk = eval_core_expr(&body, &scoped_ctx).await?;
+                        let result_thunk =
+                            eval_core_expr(&body, closure_env_id, &ctx_clone).await?;
                         materialize(&result_thunk, None, &ctx_clone).await?
                     }
                     Value::Builtin(def) => {
-                        let arg_thunk = Arc::new(Thunk::new_materialized(
-                            item_val.clone(),
-                            call_span_clone.clone(),
-                        ));
-                        let arg_id = ctx_clone.alloc_thunk(arg_thunk);
+                        let arg_thunk =
+                            Arc::new(Thunk::value(item_val.clone(), call_span_clone.clone()));
+                        let arg_id = ctx_clone.alloc_thunk(0, arg_thunk);
                         let result_thunk = (def.func)(BuiltinArgs {
                             args: vec![arg_id],
                             named: None,
@@ -1974,22 +1967,17 @@ pub(crate) fn builtin_with_cancel(
 
         // Build the payload dict with the same structure as before
         let mut payload_dict = IndexMap::new();
-        let child_ctx_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            child_ctx_val,
-            call_span.clone(),
-        )));
-        let cancel_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            cancel_val,
-            call_span.clone(),
-        )));
+        let child_ctx_id =
+            ctx.alloc_thunk(0, Arc::new(Thunk::value(child_ctx_val, call_span.clone())));
+        let cancel_id = ctx.alloc_thunk(0, Arc::new(Thunk::value(cancel_val, call_span.clone())));
         payload_dict.insert(HashableValue::Str("child-ctx".into()), child_ctx_id);
         payload_dict.insert(HashableValue::Str("cancel".into()), cancel_id);
 
         // Wrap the dict in a Variant with tag "CancelHandle"
-        let payload_thunk_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Dict(payload_dict),
-            call_span.clone(),
-        )));
+        let payload_thunk_id = ctx.alloc_thunk(
+            0,
+            Arc::new(Thunk::value(Value::Dict(payload_dict), call_span.clone())),
+        );
 
         ok_val(
             Value::Variant {

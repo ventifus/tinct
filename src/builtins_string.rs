@@ -929,11 +929,8 @@ pub(crate) fn builtin_str_map_chars(
         for ch in s.chars() {
             let ch_str = ch.to_string();
             // Wrap each char as a materialized thunk, then register it in the arena.
-            let char_thunk = Arc::new(Thunk::new_materialized(
-                string_val(&ch_str),
-                call_span.clone(),
-            ));
-            let char_tid = ctx.alloc_thunk(char_thunk);
+            let char_thunk = Arc::new(Thunk::value(string_val(&ch_str), call_span.clone()));
+            let char_tid = ctx.alloc_thunk(0, char_thunk);
 
             // Call f(char_tid) — dispatch on Value::Function vs Value::Builtin.
             let call_result_thunk = match &func_val {

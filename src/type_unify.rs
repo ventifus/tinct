@@ -2531,10 +2531,30 @@ pub async fn unify(
             match (def1, def2) {
                 (Some(d1), Some(d2)) if !Arc::ptr_eq(d1, d2) => {
                     // Same name but different TyConDef objects — cross-scope shadowing.
+                    let loc1 = d1
+                        .definition_span
+                        .as_ref()
+                        .map(|s| {
+                            format!(
+                                " (defined at {}:{}:{})",
+                                s.file.path, s.start.line, s.start.column
+                            )
+                        })
+                        .unwrap_or_default();
+                    let loc2 = d2
+                        .definition_span
+                        .as_ref()
+                        .map(|s| {
+                            format!(
+                                " (defined at {}:{}:{})",
+                                s.file.path, s.start.line, s.start.column
+                            )
+                        })
+                        .unwrap_or_default();
                     Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                         message: format!(
-                            "type constructor '{n1}' refers to two distinct definitions \
-                             (cross-scope shadowing): cannot unify {a} with {b}"
+                            "type constructor '{n1}' refers to two distinct definitions: \
+                             {n1}{loc1} vs {n1}{loc2}"
                         ),
                         span,
                         notes: vec![],
@@ -3061,20 +3081,18 @@ pub async fn unify(
         }
 
         // [U-SUBSUME]: concrete type subsumption fallback (Pierce & Turner 2000)
-        // When both sides are ground types (no type variables), check the subtype
-        // relation in both directions. Bidirectional because unification is symmetric --
-        // the original actual/expected roles are lost after structural decomposition.
+        // When both sides are ground types (no type variables), check directed subtyping:
+        // a (actual) must be a subtype of b (expected). Unidirectional — the caller is
+        // responsible for swapping arguments in contravariant positions.
         // The substitution is not modified (no variables to bind).
         _ if !a.has_inference_vars() && !b.has_inference_vars() => {
-            if Type::is_subtype(&a, &b, Some(&state.tycon_env))
-                || Type::is_subtype(&b, &a, Some(&state.tycon_env))
-            {
+            if Type::is_subtype(&a, &b, Some(&state.tycon_env)) {
                 Ok(())
             } else {
                 Err(TypeError::from(TypeErrorTyped::UnificationFailure(
                     UnificationFailure {
-                        expected: a.clone(),
-                        got: b.clone(),
+                        expected: b.clone(),
+                        got: a.clone(),
                         span,
                         notes: vec![],
                         call_stack: vec![],

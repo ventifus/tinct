@@ -103,7 +103,7 @@ pub const MAX_COLLECT_SIZE: usize = 1_000_000;
 pub(crate) const MAX_STRING_SIZE: usize = 64 * 1024 * 1024;
 
 pub(crate) fn ok_val(v: Value, span: Span) -> EvalResult<Arc<Thunk>> {
-    Ok(Arc::new(Thunk::new_materialized(v, span)))
+    Ok(Arc::new(Thunk::value(v, span)))
 }
 
 /// Convert a `Value::Bytes` slice into a lazy collection of `Value::Int` (one per byte).
@@ -431,9 +431,9 @@ pub(crate) use crate::builtins_dict::{
 pub(crate) use crate::builtins_meta::{
     builtin_annotation_of, builtin_apply, builtin_ast_of, builtin_big_int, builtin_blake3,
     builtin_cap_identity, builtin_decimal, builtin_eval, builtin_eval_types, builtin_force,
-    builtin_gensym, builtin_include_cache_get, builtin_include_cache_put, builtin_llt_repr,
-    builtin_macro_error, builtin_macro_injects, builtin_make_annotated, builtin_raise,
-    builtin_span_of, builtin_tag_of, builtin_try, builtin_type_of, builtin_until, builtin_validate,
+    builtin_gensym, builtin_llt_repr, builtin_macro_error, builtin_macro_injects,
+    builtin_make_annotated, builtin_raise, builtin_span_of, builtin_tag_of, builtin_try,
+    builtin_type_of, builtin_until, builtin_validate,
 };
 
 // String builtins: str, split, replace, trim, trim-start, trim-end,
@@ -631,7 +631,7 @@ pub(crate) fn builtin_proxy(
         if args.len() != 1 {
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
-        Ok(Arc::new(Thunk::new_materialized(
+        Ok(Arc::new(Thunk::value(
             Value::Proxy { handler: args[0] },
             call_span,
         )))
@@ -709,12 +709,12 @@ mod tests {
 
     /// Helper: wrap a Value in a materialized Thunk (Arc).
     fn thunk(val: Value) -> Arc<Thunk> {
-        Arc::new(Thunk::new_materialized(val, test_span(1, 1, 1, 5)))
+        Arc::new(Thunk::value(val, test_span(1, 1, 1, 5)))
     }
 
     /// Helper: allocate a Value as a ThunkId in the given ctx's arena.
     fn alloc(val: Value, ctx: &Arc<crate::eval::EvalContext>) -> ThunkId {
-        ctx.alloc_thunk(thunk(val))
+        ctx.alloc_thunk(0, thunk(val))
     }
 
     fn no_named() -> Option<IndexMap<String, ThunkId>> {
@@ -805,11 +805,11 @@ mod tests {
             type_guard: crate::ast::TypeAnnotation::new(),
             provenance: crate::ast::Provenance::new(),
         });
-        Arc::new(Thunk::new_surface(
+        Arc::new(Thunk::surface(
             node,
             Arc::new(std::collections::HashMap::new()),
             Arc::new(std::collections::HashMap::new()),
-            ctx.current_env_id,
+            0, // root scope
             Arc::clone(ctx),
             test_span(1, 1, 1, 10),
         ))
@@ -825,12 +825,12 @@ mod tests {
     ) -> ThunkId {
         let mut id_map: IndexMap<HashableValue, ThunkId> = IndexMap::with_capacity(map.len());
         for (k, v) in map {
-            id_map.insert(k, ctx.alloc_thunk(v));
+            id_map.insert(k, ctx.alloc_thunk(0, v));
         }
-        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Dict(id_map),
-            test_span(1, 1, 1, 5),
-        )))
+        ctx.alloc_thunk(
+            0,
+            Arc::new(Thunk::value(Value::Dict(id_map), test_span(1, 1, 1, 5))),
+        )
     }
 
     /// Helper: materialize the thunk identified by `id` in `ctx`'s arena.
@@ -2145,11 +2145,10 @@ mod tests {
 
     #[tokio::test]
     async fn try_success_returns_ok_dict() {
-        // builtin-try returns {ok: value} on success.
+        // Any thunk forced by builtin-try wraps its value in {ok: ...}.
         let ctx = test_ctx();
-        let func = parse_eval("[fn [let] 42]", &ctx).await;
         let result = mat(builtin_try(BuiltinArgs {
-            args: vec![alloc(func, &ctx)],
+            args: vec![alloc(Value::Int(42), &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -2172,9 +2171,8 @@ mod tests {
     #[tokio::test]
     async fn try_success_with_string_body() {
         let ctx = test_ctx();
-        let func = parse_eval("[fn [let] \"hello\"]", &ctx).await;
         let result = mat(builtin_try(BuiltinArgs {
-            args: vec![alloc(func, &ctx)],
+            args: vec![alloc(string_val("hello".into()), &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -2195,42 +2193,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn try_non_function_type_error() {
+    async fn try_any_value_is_valid() {
+        // Any value — including a function — is valid input. It is wrapped in {ok: ...}, not called.
         let ctx = test_ctx();
-        let err = run(builtin_try(BuiltinArgs {
-            args: vec![alloc(Value::Int(42), &ctx)],
-            named: no_named(),
-            call_span: call_span(),
-            ctx,
-            caller_env_id: 0,
-        }))
-        .await
-        .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("expected Function"),
-            "got: {}",
-            err.kind
-        );
-    }
-
-    #[tokio::test]
-    async fn try_non_zero_arg_function_error() {
-        let ctx = test_ctx();
-        let func = parse_eval("[fn [let x] $x]", &ctx).await;
-        let err = run(builtin_try(BuiltinArgs {
+        let func = parse_eval("[fn [let x] x]", &ctx).await;
+        let result = mat(builtin_try(BuiltinArgs {
             args: vec![alloc(func, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: 0,
         }))
-        .await
-        .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("zero-argument function"),
-            "got: {}",
-            err.kind
-        );
+        .await;
+        if let Value::Dict(map) = result {
+            assert!(
+                map.contains_key(&HashableValue::Str("ok".into())),
+                "function value should be wrapped in {{ok: ...}}"
+            );
+        } else {
+            panic!("expected Dict {{ok: ...}}");
+        }
     }
 
     #[tokio::test]
@@ -2253,21 +2235,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn try_with_builtin_success() {
+    async fn try_pending_builtin_success() {
+        // A PendingBuiltin thunk is forced by builtin-try; successful result wrapped in {ok: ...}.
         fn ok_builtin(
             _ctx: BuiltinArgs,
         ) -> Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>>>> {
             Box::pin(async move { ok_val(Value::Int(99), rust_span!()) })
         }
         let ctx = test_ctx();
-        let b = Value::Builtin(crate::value::BuiltinDef {
-            func: ok_builtin,
-            name: "ok",
-            pos_strictness: &[],
-            force_count: 0,
-        });
+        let ok_def = builtin!("ok", ok_builtin, [], 0);
+        let pending_id = ctx.alloc_thunk(
+            0,
+            Arc::new(Thunk::builtin_call(
+                ok_def,
+                vec![],
+                None,
+                call_span(),
+                None,
+                0,
+                Arc::clone(&ctx),
+            )),
+        );
         let result = mat(builtin_try(BuiltinArgs {
-            args: vec![alloc(b, &ctx)],
+            args: vec![pending_id],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -2288,7 +2278,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn try_with_builtin_failure() {
+    async fn try_catches_error_from_pending_builtin() {
+        // Errors from forcing a PendingBuiltin thunk are caught and returned as {error: ...}.
         fn err_builtin(
             ctx: BuiltinArgs,
         ) -> Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -2298,14 +2289,21 @@ mod tests {
             })
         }
         let ctx = test_ctx();
-        let b = Value::Builtin(crate::value::BuiltinDef {
-            func: err_builtin,
-            name: "fail",
-            pos_strictness: &[],
-            force_count: 0,
-        });
+        let err_def = builtin!("fail", err_builtin, [], 0);
+        let pending_id = ctx.alloc_thunk(
+            0,
+            Arc::new(Thunk::builtin_call(
+                err_def,
+                vec![],
+                None,
+                call_span(),
+                None,
+                0,
+                Arc::clone(&ctx),
+            )),
+        );
         let result = mat(builtin_try(BuiltinArgs {
-            args: vec![alloc(b, &ctx)],
+            args: vec![pending_id],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -2319,7 +2317,6 @@ mod tests {
                     .copied()
                     .expect("failure dict must have 'error' key");
                 let err_val = mat_id(err_tid, &ctx).await;
-                // builtin-try uses e.to_string() which includes error code and span.
                 let s = format!("{err_val}");
                 assert!(
                     s.contains("builtin error"),
@@ -2332,7 +2329,7 @@ mod tests {
 
     #[tokio::test]
     async fn try_resource_limit_exceeded_not_catchable() {
-        // ResourceLimitExceeded errors should NOT be caught by $try - they should propagate
+        // ResourceLimitExceeded errors should NOT be caught — they must propagate.
         fn resource_limit_builtin(
             ctx: BuiltinArgs,
         ) -> Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -2345,23 +2342,29 @@ mod tests {
                 .into())
             })
         }
-        let b = Value::Builtin(crate::value::BuiltinDef {
-            func: resource_limit_builtin,
-            name: "resource_fail",
-            pos_strictness: &[],
-            force_count: 0,
-        });
         let ctx = test_ctx();
+        let rl_def = builtin!("resource_fail", resource_limit_builtin, [], 0);
+        let pending_id = ctx.alloc_thunk(
+            0,
+            Arc::new(Thunk::builtin_call(
+                rl_def,
+                vec![],
+                None,
+                call_span(),
+                None,
+                0,
+                Arc::clone(&ctx),
+            )),
+        );
         let err = run(builtin_try(BuiltinArgs {
-            args: vec![alloc(b, &ctx)],
+            args: vec![pending_id],
             named: no_named(),
             call_span: call_span(),
-            ctx,
+            ctx: Arc::clone(&ctx),
             caller_env_id: 0,
         }))
         .await
         .unwrap_err();
-        // Should propagate as error, not return err dict
         assert!(
             err.kind.to_string().contains("exceeded resource limit"),
             "expected resource limit error to propagate, got: {}",

@@ -15,6 +15,7 @@ use crate::value::{Thunk, Value};
 pub(crate) async fn invoke_proxy_handler(
     handler: &Arc<Thunk>,
     key_val: Value,
+    caller_env_id: u32,
     ctx: &Arc<EvalContext>,
     access_span: &Span,
 ) -> EvalResult<Arc<Thunk>> {
@@ -22,8 +23,8 @@ pub(crate) async fn invoke_proxy_handler(
     // access clones the materialized Value. Consider eager materialization in
     // builtin_proxy for hot proxy access.
     let handler_val = materialize(handler, Some(access_span), ctx).await?;
-    let key_arg = Arc::new(Thunk::new_materialized(key_val, access_span.clone()));
-    let key_arg_id = ctx.alloc_thunk(key_arg);
+    let key_arg = Arc::new(Thunk::value(key_val, access_span.clone()));
+    let key_arg_id = ctx.alloc_thunk(0, key_arg);
     match handler_val {
         Value::Function {
             params,
@@ -44,13 +45,13 @@ pub(crate) async fn invoke_proxy_handler(
             })
             .await
         }
-        Value::Builtin(def) => Ok(Arc::new(Thunk::new_pending_builtin(
+        Value::Builtin(def) => Ok(Arc::new(Thunk::builtin_call(
             def,
             vec![key_arg_id],
             None,
             access_span.clone(),
             Some(Arc::from("proxy field access")),
-            ctx.current_env_id, // T-1558: caller_env_id
+            caller_env_id,
             Arc::clone(ctx),
         ))),
         _ => Err(EvalError::type_mismatch(
