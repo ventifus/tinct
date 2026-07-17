@@ -290,14 +290,16 @@ async fn test_unify_variadic_zero_with_concrete_arity() {
     let any_function = Type::Function {
         params: vec![],
         ret: Box::new(Type::Unknown),
-        variadic: true,
+        typed_variadics: vec![],
+        rest: Some(Box::new(("rest".to_string(), Type::Unknown))),
         required_count: 0,
     };
 
     let concrete_fn = Type::Function {
         params: vec![(None, Type::Int)],
         ret: Box::new(Type::TyCon("Boolean".to_string())),
-        variadic: false,
+        typed_variadics: vec![],
+        rest: None,
         required_count: 1,
     };
 
@@ -326,14 +328,16 @@ async fn test_unify_variadic_zero_with_zero_non_variadic() {
     let any_function = Type::Function {
         params: vec![],
         ret: Box::new(Type::Unknown),
-        variadic: true,
+        typed_variadics: vec![],
+        rest: Some(Box::new(("rest".to_string(), Type::Unknown))),
         required_count: 0,
     };
 
     let concrete_fn = Type::Function {
         params: vec![],
         ret: Box::new(Type::Int),
-        variadic: false,
+        typed_variadics: vec![],
+        rest: None,
         required_count: 0,
     };
 
@@ -361,7 +365,8 @@ async fn test_unify_variadic_zero_with_multi_param() {
     let any_function = Type::Function {
         params: vec![],
         ret: Box::new(Type::Unknown),
-        variadic: true,
+        typed_variadics: vec![],
+        rest: Some(Box::new(("rest".to_string(), Type::Unknown))),
         required_count: 0,
     };
 
@@ -372,7 +377,8 @@ async fn test_unify_variadic_zero_with_multi_param() {
             (None, Type::TyCon("Boolean".to_string())),
         ],
         ret: Box::new(Type::Float),
-        variadic: false,
+        typed_variadics: vec![],
+        rest: None,
         required_count: 3,
     };
 
@@ -397,14 +403,16 @@ async fn test_is_subtype_concrete_to_any_function() {
     let concrete_fn = Type::Function {
         params: vec![(None, Type::Int)],
         ret: Box::new(Type::TyCon("Boolean".to_string())),
-        variadic: false,
+        typed_variadics: vec![],
+        rest: None,
         required_count: 1,
     };
 
     let any_function = Type::Function {
         params: vec![],
         ret: Box::new(Type::Unknown),
-        variadic: true,
+        typed_variadics: vec![],
+        rest: Some(Box::new(("rest".to_string(), Type::Unknown))),
         required_count: 0,
     };
 
@@ -424,13 +432,15 @@ async fn test_is_subtype_any_function_reflexivity() {
     let any_fn1 = Type::Function {
         params: vec![],
         ret: Box::new(Type::Unknown),
-        variadic: true,
+        typed_variadics: vec![],
+        rest: Some(Box::new(("rest".to_string(), Type::Unknown))),
         required_count: 0,
     };
     let any_fn2 = Type::Function {
         params: vec![],
         ret: Box::new(Type::Unknown),
-        variadic: true,
+        typed_variadics: vec![],
+        rest: Some(Box::new(("rest".to_string(), Type::Unknown))),
         required_count: 0,
     };
 
@@ -453,14 +463,16 @@ async fn test_unify_two_any_functions() {
     let any_function_1 = Type::Function {
         params: vec![],
         ret: Box::new(Type::Unknown),
-        variadic: true,
+        typed_variadics: vec![],
+        rest: Some(Box::new(("rest".to_string(), Type::Unknown))),
         required_count: 0,
     };
 
     let any_function_2 = Type::Function {
         params: vec![],
         ret: Box::new(Type::Unknown),
-        variadic: true,
+        typed_variadics: vec![],
+        rest: Some(Box::new(("rest".to_string(), Type::Unknown))),
         required_count: 0,
     };
 
@@ -489,14 +501,16 @@ async fn test_unify_concrete_fn_with_any_function_symmetric() {
     let concrete_fn = Type::Function {
         params: vec![(None, Type::Int)],
         ret: Box::new(Type::TyCon("Boolean".to_string())),
-        variadic: false,
+        typed_variadics: vec![],
+        rest: None,
         required_count: 1,
     };
 
     let any_function = Type::Function {
         params: vec![],
         ret: Box::new(Type::Unknown),
-        variadic: true,
+        typed_variadics: vec![],
+        rest: Some(Box::new(("rest".to_string(), Type::Unknown))),
         required_count: 0,
     };
 
@@ -525,14 +539,16 @@ async fn test_is_consistent_any_function_with_concrete() {
     let any_function = Type::Function {
         params: vec![],
         ret: Box::new(Type::Unknown),
-        variadic: true,
+        typed_variadics: vec![],
+        rest: Some(Box::new(("rest".to_string(), Type::Unknown))),
         required_count: 0,
     };
 
     let concrete_fn = Type::Function {
         params: vec![(None, Type::Int)],
         ret: Box::new(Type::TyCon("Boolean".to_string())),
-        variadic: false,
+        typed_variadics: vec![],
+        rest: None,
         required_count: 1,
     };
 
@@ -552,7 +568,8 @@ async fn test_is_consistent_any_function_with_multi_param() {
     let any_function = Type::Function {
         params: vec![],
         ret: Box::new(Type::Unknown),
-        variadic: true,
+        typed_variadics: vec![],
+        rest: Some(Box::new(("rest".to_string(), Type::Unknown))),
         required_count: 0,
     };
 
@@ -563,7 +580,8 @@ async fn test_is_consistent_any_function_with_multi_param() {
             (Some("x".to_string()), Type::TyCon("Boolean".to_string())),
         ],
         ret: Box::new(Type::Float),
-        variadic: false,
+        typed_variadics: vec![],
+        rest: None,
         required_count: 3,
     };
 
@@ -578,14 +596,16 @@ async fn test_is_consistent_any_function_with_zero_param_non_variadic() {
     let any_function = Type::Function {
         params: vec![],
         ret: Box::new(Type::Unknown),
-        variadic: true,
+        typed_variadics: vec![],
+        rest: Some(Box::new(("rest".to_string(), Type::Unknown))),
         required_count: 0,
     };
 
     let zero_param_fn = Type::Function {
         params: vec![],
         ret: Box::new(Type::Int),
-        variadic: false,
+        typed_variadics: vec![],
+        rest: None,
         required_count: 0,
     };
 
@@ -600,7 +620,8 @@ async fn test_types_are_disjoint_function_vs_int() {
     let fn_ty = Type::Function {
         params: vec![(None, Type::Int)],
         ret: Box::new(Type::TyCon("Boolean".to_string())),
-        variadic: false,
+        typed_variadics: vec![],
+        rest: None,
         required_count: 1,
     };
 
@@ -619,7 +640,8 @@ async fn test_types_are_disjoint_function_vs_primitives() {
     let fn_ty = Type::Function {
         params: vec![],
         ret: Box::new(Type::Unknown),
-        variadic: true,
+        typed_variadics: vec![],
+        rest: Some(Box::new(("rest".to_string(), Type::Unknown))),
         required_count: 0,
     };
 
@@ -639,7 +661,8 @@ async fn test_types_are_disjoint_function_vs_literals() {
     let fn_ty = Type::Function {
         params: vec![(None, Type::Int)],
         ret: Box::new(Type::Str),
-        variadic: false,
+        typed_variadics: vec![],
+        rest: None,
         required_count: 1,
     };
 
@@ -661,7 +684,8 @@ async fn test_types_are_disjoint_function_vs_record() {
     let fn_ty = Type::Function {
         params: vec![(None, Type::Int)],
         ret: Box::new(Type::TyCon("Boolean".to_string())),
-        variadic: false,
+        typed_variadics: vec![],
+        rest: None,
         required_count: 1,
     };
 
@@ -955,7 +979,8 @@ async fn test_types_are_disjoint_function_vs_tycon_app() {
     let fn_ty = Type::Function {
         params: vec![],
         ret: Box::new(Type::Unknown),
-        variadic: true,
+        typed_variadics: vec![],
+        rest: Some(Box::new(("rest".to_string(), Type::Unknown))),
         required_count: 0,
     };
 
@@ -976,7 +1001,8 @@ async fn test_types_are_disjoint_function_vs_map() {
     let fn_ty = Type::Function {
         params: vec![(None, Type::Int)],
         ret: Box::new(Type::Str),
-        variadic: false,
+        typed_variadics: vec![],
+        rest: None,
         required_count: 1,
     };
 
@@ -997,14 +1023,16 @@ async fn test_types_are_not_disjoint_function_vs_function() {
     let fn1 = Type::Function {
         params: vec![(None, Type::Int)],
         ret: Box::new(Type::TyCon("Boolean".to_string())),
-        variadic: false,
+        typed_variadics: vec![],
+        rest: None,
         required_count: 1,
     };
 
     let fn2 = Type::Function {
         params: vec![(None, Type::Str)],
         ret: Box::new(Type::Float),
-        variadic: false,
+        typed_variadics: vec![],
+        rest: None,
         required_count: 1,
     };
 

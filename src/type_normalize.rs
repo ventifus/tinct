@@ -550,8 +550,9 @@ impl fmt::Display for Type {
             }
             Type::Function {
                 params,
+                typed_variadics,
+                rest,
                 ret,
-                variadic,
                 required_count: _,
             } => {
                 // Parenthesize nested function return types for clarity
@@ -581,8 +582,11 @@ impl fmt::Display for Type {
                         }
                     }
                 }
-                if *variadic {
-                    write!(f, " ...")?;
+                for (name, ty) in typed_variadics {
+                    write!(f, " ...{}@{}", name, ty)?;
+                }
+                if let Some(r) = rest {
+                    write!(f, " ...{}", r.0)?;
                 }
                 write!(f, "]")
             }

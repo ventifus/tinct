@@ -926,7 +926,12 @@ pub fn ground_type_of(v: &Value) -> Type {
             Type::Function {
                 params: params.iter().map(|_| (None, Type::Unknown)).collect(),
                 ret: Box::new(Type::Unknown),
-                variadic: is_variadic,
+                typed_variadics: vec![],
+                rest: if is_variadic {
+                    Some(Box::new(("rest".to_string(), Type::Unknown)))
+                } else {
+                    None
+                },
                 required_count: n,
             }
         }
@@ -1097,10 +1102,11 @@ pub(crate) fn pattern_type_matches(value: &Value, expected: &Type, ctx: &Arc<Eva
         Type::Dict(_) => matches!(value, Value::Dict(_) | Value::Overlay(..)),
         // @Fn (variadic, 0 required params): matches any callable including Builtin.
         Type::Function {
-            variadic,
+            typed_variadics,
+            rest,
             required_count,
             ..
-        } if *variadic && *required_count == 0 => {
+        } if (!typed_variadics.is_empty() || rest.is_some()) && *required_count == 0 => {
             matches!(value, Value::Function { .. } | Value::Builtin(_))
         }
         Type::Function { .. } => matches!(value, Value::Function { .. }),
@@ -5750,10 +5756,14 @@ mod tests {
             annotation: None,
         };
         match ground_type_of(&non_variadic) {
-            Type::Function { variadic, .. } => {
+            Type::Function {
+                typed_variadics,
+                rest,
+                ..
+            } => {
                 assert!(
-                    !variadic,
-                    "non-variadic function must have variadic: false in ground_type_of"
+                    typed_variadics.is_empty() && rest.is_none(),
+                    "non-variadic function must not have typed_variadics or rest in ground_type_of"
                 );
             }
             other => panic!(
@@ -5782,13 +5792,14 @@ mod tests {
         };
         match ground_type_of(&variadic_fn) {
             Type::Function {
-                variadic,
+                typed_variadics,
+                rest,
                 required_count,
                 ..
             } => {
                 assert!(
-                    variadic,
-                    "variadic function must have variadic: true in ground_type_of"
+                    !typed_variadics.is_empty() || rest.is_some(),
+                    "variadic function must have rest in ground_type_of"
                 );
                 assert_eq!(
                     required_count, 2,
@@ -5813,10 +5824,14 @@ mod tests {
             annotation: None,
         };
         match ground_type_of(&only_variadic) {
-            Type::Function { variadic, .. } => {
+            Type::Function {
+                typed_variadics,
+                rest,
+                ..
+            } => {
                 assert!(
-                    variadic,
-                    "single variadic param must have variadic: true in ground_type_of"
+                    !typed_variadics.is_empty() || rest.is_some(),
+                    "single variadic param must have rest in ground_type_of"
                 );
             }
             other => panic!(

@@ -279,10 +279,21 @@ pub enum Type {
     Bytes,
     Dict(Row),
     Function {
-        params: Vec<(Option<String>, Type)>, // (param_name, param_type) — None = positional-only
+        /// Fixed (non-variadic) parameters: (param_name, param_type).
+        /// None name = positional-only.
+        params: Vec<(Option<String>, Type)>,
+        /// Typed variadic buckets in declaration order: (bucket_name, Seq[T]).
+        /// Each bucket collects positional args whose type is consistent with T.
+        /// Match semantics: declaration order = match priority, first match wins.
+        typed_variadics: Vec<(String, Type)>,
+        /// Untyped variadic fallback: (name, TypeVar_whole_dict).
+        /// Collects all positional args that don't match any typed bucket,
+        /// plus unmatched named args as string-keyed entries.
+        /// At most one; must be last (same as wildcard must be last in match).
+        /// Boxed to avoid infinite-size Type enum (Type contains Type in rest).
+        rest: Option<Box<(String, Type)>>,
         ret: Box<Type>,
-        variadic: bool,
-        /// Number of parameters that must be supplied — params without a `default:` annotation.
+        /// Number of fixed params that must be supplied — params without a `default:` annotation.
         /// Callers may omit the trailing `params.len() - required_count` parameters.
         /// For all builtin functions, `required_count == params.len()` (no optional params).
         /// Excluded from PartialEq and Hash so two function types with the same structure but
@@ -434,20 +445,23 @@ impl PartialEq for Type {
                 Type::Function {
                     params: p1,
                     ret: r1,
-                    variadic: v1,
+                    typed_variadics: tv1,
+                    rest: rest1,
                     required_count: _,
                 },
                 Type::Function {
                     params: p2,
                     ret: r2,
-                    variadic: v2,
+                    typed_variadics: tv2,
+                    rest: rest2,
                     required_count: _,
                 },
             ) => {
                 p1.len() == p2.len()
                     && p1.iter().zip(p2).all(|((_, t1), (_, t2))| t1 == t2)
                     && r1 == r2
-                    && v1 == v2
+                    && tv1 == tv2
+                    && rest1 == rest2
             }
             (Type::Proxy, Type::Proxy) => true,
             (Type::TypeVar(n1, _), Type::TypeVar(n2, _)) => n1 == n2,
@@ -545,17 +559,17 @@ impl std::hash::Hash for Type {
             }
             Type::Function {
                 params,
+                typed_variadics,
+                rest,
                 ret,
-                variadic,
                 required_count: _,
             } => {
-                // Hash parameter types (ignore names for equality).
-                // required_count is intentionally excluded to match PartialEq semantics.
                 for (_, ty) in params {
                     ty.hash(state);
                 }
+                typed_variadics.hash(state);
+                rest.hash(state);
                 ret.hash(state);
-                variadic.hash(state);
             }
             Type::TypeVar(name, _) => name.hash(state), // Ignore level
             Type::Union(members) => members.hash(state),
@@ -635,15 +649,25 @@ pub(crate) fn substitute_recvar(ty: &Type, var_name: &str, replacement: &Type) -
         Type::Function {
             params,
             ret,
-            variadic,
+            typed_variadics,
+            rest,
             required_count,
         } => Type::Function {
             params: params
                 .iter()
                 .map(|(name, ty)| (name.clone(), substitute_recvar(ty, var_name, replacement)))
                 .collect(),
+            typed_variadics: typed_variadics
+                .iter()
+                .map(|(name, ty)| (name.clone(), substitute_recvar(ty, var_name, replacement)))
+                .collect(),
+            rest: rest.as_ref().map(|boxed| {
+                Box::new((
+                    boxed.0.clone(),
+                    substitute_recvar(&boxed.1, var_name, replacement),
+                ))
+            }),
             ret: Box::new(substitute_recvar(ret, var_name, replacement)),
-            variadic: *variadic,
             required_count: *required_count,
         },
         Type::Union(members) => Type::Union(
@@ -998,13 +1022,15 @@ impl Type {
                 Type::Function {
                     params: sub_p,
                     ret: sub_r,
-                    variadic: sub_v,
+                    typed_variadics: sub_tv,
+                    rest: sub_rest,
                     required_count: _,
                 },
                 Type::Function {
                     params: sup_p,
                     ret: sup_r,
-                    variadic: sup_v,
+                    typed_variadics: sup_tv,
+                    rest: sup_rest,
                     required_count: _,
                 },
             ) => {
@@ -1013,10 +1039,12 @@ impl Type {
                 // This ensures `[@Fn f]` accepts lambdas of any arity at runtime, where
                 // ground_type_of produces Function{params:[Unknown..], ret:Unknown} with
                 // concrete param count that would otherwise fail the length equality check.
-                let sup_is_any_fn = sup_p.is_empty() && *sup_v;
+                let sup_is_variadic = !sup_tv.is_empty() || sup_rest.is_some();
+                let sup_is_any_fn = sup_p.is_empty() && sup_is_variadic;
                 if sup_is_any_fn {
                     // sub is any function → any function is consistent with top-of-fn-lattice
-                    let sub_is_any_fn = sub_p.is_empty() && *sub_v;
+                    let sub_is_variadic = !sub_tv.is_empty() || sub_rest.is_some();
+                    let sub_is_any_fn = sub_p.is_empty() && sub_is_variadic;
                     if sub_is_any_fn {
                         return Self::is_consistent_subtype(sub_r, sup_r);
                     }
@@ -1028,8 +1056,12 @@ impl Type {
                 // function with the same declared param count. Consistent subtyping cannot
                 // paper over that difference: a caller that passes extra arguments to a
                 // non-variadic function will fail at runtime, regardless of Unknown positions.
+                let sub_is_variadic = !sub_tv.is_empty() || sub_rest.is_some();
+                let sup_is_variadic_check = !sup_tv.is_empty() || sup_rest.is_some();
                 sub_p.len() == sup_p.len()
-                    && sub_v == sup_v
+                    && sub_is_variadic == sup_is_variadic_check
+                    && sub_tv == sup_tv
+                    && sub_rest == sup_rest
                     && sub_p.iter().zip(sup_p.iter()).all(
                         |((_sub_name, sub_ty), (_sup_name, sup_ty))| {
                             Self::is_consistent_subtype(sup_ty, sub_ty) // contravariant
@@ -1227,26 +1259,32 @@ impl Type {
                 Type::Function {
                     params: p1,
                     ret: r1,
-                    variadic: v1,
+                    typed_variadics: tv1,
+                    rest: rest1,
                     required_count: _,
                 },
                 Type::Function {
                     params: p2,
                     ret: r2,
-                    variadic: v2,
+                    typed_variadics: tv2,
+                    rest: rest2,
                     required_count: _,
                 },
             ) => {
                 // Special case: any-function (Function{params:[], variadic:true}) is consistent
                 // with all function types under gradual typing (Garcia et al. 2016).
-                let a_is_any_fn = p1.is_empty() && *v1;
-                let b_is_any_fn = p2.is_empty() && *v2;
+                let a_is_variadic = !tv1.is_empty() || rest1.is_some();
+                let b_is_variadic = !tv2.is_empty() || rest2.is_some();
+                let a_is_any_fn = p1.is_empty() && a_is_variadic;
+                let b_is_any_fn = p2.is_empty() && b_is_variadic;
                 if a_is_any_fn || b_is_any_fn {
                     return true;
                 }
 
                 // Normal structural consistency for concrete function types
-                v1 == v2
+                a_is_variadic == b_is_variadic
+                    && tv1 == tv2
+                    && rest1 == rest2
                     && p1.len() == p2.len()
                     && p1
                         .iter()
@@ -1468,7 +1506,8 @@ impl Type {
             Type::Function {
                 params,
                 ret,
-                variadic: _,
+                typed_variadics: _,
+                rest: _,
                 required_count: _,
             } => {
                 for (_name, p_ty) in params {
@@ -1526,7 +1565,8 @@ impl Type {
             Type::Function {
                 params,
                 ret,
-                variadic: _,
+                typed_variadics: _,
+                rest: _,
                 required_count: _,
             } => {
                 params.iter().any(|(_name, p_ty)| p_ty.has_inference_vars())
@@ -1572,7 +1612,8 @@ impl Type {
             Type::Function {
                 params,
                 ret,
-                variadic: _,
+                typed_variadics: _,
+                rest: _,
                 required_count: _,
             } => {
                 params.iter().any(|(_name, p_ty)| p_ty.has_type_stage_app())
@@ -1615,7 +1656,8 @@ impl Type {
             Type::Function {
                 params,
                 ret,
-                variadic: _,
+                typed_variadics: _,
+                rest: _,
                 required_count: _,
             } => {
                 for (_name, p_ty) in params {
@@ -1699,7 +1741,8 @@ impl Type {
             Type::Function {
                 params,
                 ret,
-                variadic: _,
+                typed_variadics: _,
+                rest: _,
                 required_count: _,
             } => {
                 let mut found = false;
@@ -1788,7 +1831,8 @@ impl Type {
             Type::Function {
                 params,
                 ret,
-                variadic: _,
+                typed_variadics: _,
+                rest: _,
                 required_count: _,
             } => {
                 for (_name, p_ty) in params {
@@ -1888,7 +1932,8 @@ impl Type {
             Type::Function {
                 params,
                 ret,
-                variadic: _,
+                typed_variadics: _,
+                rest: _,
                 required_count: _,
             } => {
                 for (_name, p_ty) in params {
@@ -2258,19 +2303,26 @@ impl Type {
             }
             Type::Function {
                 params,
+                typed_variadics,
+                rest,
                 ret,
-                variadic,
                 required_count,
             } => {
                 let params = params
                     .into_iter()
                     .map(|(name, ty)| (name, Type::simplify_type(ty)))
                     .collect();
+                let typed_variadics = typed_variadics
+                    .into_iter()
+                    .map(|(n, t)| (n, Type::simplify_type(t)))
+                    .collect();
+                let rest = rest.map(|b| Box::new((b.0, Type::simplify_type(b.1))));
                 let ret = Box::new(Type::simplify_type(*ret));
                 Type::Function {
                     params,
+                    typed_variadics,
+                    rest,
                     ret,
-                    variadic,
                     required_count,
                 }
             }
@@ -2316,13 +2368,28 @@ impl Type {
     /// All builtin functions use this constructor. For user-defined functions with `default:`
     /// annotations, `infer_fn_push_cont` in `typecheck_cek.rs` computes `required_count` directly
     /// (B-349: the fix for spurious arity errors on calls omitting optional params).
-    pub fn fn_type(params: Vec<(Option<String>, Type)>, ret: Type, variadic: bool) -> Self {
+    /// Construct a non-variadic function type. All builtins use this.
+    /// For variadic functions, use direct struct construction with typed_variadics/rest.
+    pub fn fn_type(params: Vec<(Option<String>, Type)>, ret: Type) -> Self {
         let required_count = params.len();
         Type::Function {
             params,
+            typed_variadics: vec![],
+            rest: None,
             ret: Box::new(ret),
-            variadic,
             required_count,
+        }
+    }
+
+    /// Returns true if this function accepts variadic arguments.
+    pub fn is_variadic(&self) -> bool {
+        match self {
+            Type::Function {
+                typed_variadics,
+                rest,
+                ..
+            } => !typed_variadics.is_empty() || rest.is_some(),
+            _ => false,
         }
     }
 
@@ -2756,13 +2823,15 @@ mod tests {
         let variadic = Type::Function {
             params: vec![(Some("x".to_string()), Type::Int)],
             ret: Box::new(Type::Int),
-            variadic: true,
+            typed_variadics: vec![],
+            rest: Some(Box::new(("rest".to_string(), Type::Unknown))),
             required_count: 1,
         };
         let non_variadic = Type::Function {
             params: vec![(Some("x".to_string()), Type::Int)],
             ret: Box::new(Type::Int),
-            variadic: false,
+            typed_variadics: vec![],
+            rest: None,
             required_count: 1,
         };
         assert!(
@@ -2782,13 +2851,15 @@ mod tests {
         let non_variadic = Type::Function {
             params: vec![(Some("x".to_string()), Type::Int)],
             ret: Box::new(Type::Int),
-            variadic: false,
+            typed_variadics: vec![],
+            rest: None,
             required_count: 1,
         };
         let variadic = Type::Function {
             params: vec![(Some("x".to_string()), Type::Int)],
             ret: Box::new(Type::Int),
-            variadic: true,
+            typed_variadics: vec![],
+            rest: Some(Box::new(("rest".to_string(), Type::Unknown))),
             required_count: 1,
         };
         assert!(
@@ -2803,7 +2874,8 @@ mod tests {
         let variadic = Type::Function {
             params: vec![(Some("x".to_string()), Type::Int)],
             ret: Box::new(Type::Int),
-            variadic: true,
+            typed_variadics: vec![],
+            rest: Some(Box::new(("rest".to_string(), Type::Unknown))),
             required_count: 1,
         };
         assert!(
@@ -2818,7 +2890,8 @@ mod tests {
         let non_variadic = Type::Function {
             params: vec![(Some("x".to_string()), Type::Int)],
             ret: Box::new(Type::Int),
-            variadic: false,
+            typed_variadics: vec![],
+            rest: None,
             required_count: 1,
         };
         assert!(
@@ -2836,13 +2909,15 @@ mod tests {
         let variadic_unknown = Type::Function {
             params: vec![(Some("x".to_string()), Type::Unknown)],
             ret: Box::new(Type::Unknown),
-            variadic: true,
+            typed_variadics: vec![],
+            rest: Some(Box::new(("rest".to_string(), Type::Unknown))),
             required_count: 1,
         };
         let non_variadic_unknown = Type::Function {
             params: vec![(Some("x".to_string()), Type::Unknown)],
             ret: Box::new(Type::Unknown),
-            variadic: false,
+            typed_variadics: vec![],
+            rest: None,
             required_count: 1,
         };
         assert!(
@@ -3212,7 +3287,8 @@ mod tests {
         let f = Type::Function {
             params: vec![(None, Type::Int)],
             ret: Box::new(Type::Str),
-            variadic: false,
+            typed_variadics: vec![],
+            rest: None,
             required_count: 1,
         };
         assert!(Type::is_subtype(&f, &f, None));
@@ -3225,13 +3301,15 @@ mod tests {
         let sub = Type::Function {
             params: vec![(None, Type::Int)],
             ret: Box::new(Type::Str),
-            variadic: false,
+            typed_variadics: vec![],
+            rest: None,
             required_count: 1,
         };
         let sup = Type::Function {
             params: vec![(None, Type::IntLiteral(42))],
             ret: Box::new(Type::Str),
-            variadic: false,
+            typed_variadics: vec![],
+            rest: None,
             required_count: 1,
         };
         assert!(Type::is_subtype(&sub, &sup, None));
@@ -3243,13 +3321,15 @@ mod tests {
         let sub = Type::Function {
             params: vec![(None, Type::Int)],
             ret: Box::new(Type::IntLiteral(42)),
-            variadic: false,
+            typed_variadics: vec![],
+            rest: None,
             required_count: 1,
         };
         let sup = Type::Function {
             params: vec![(None, Type::Int)],
             ret: Box::new(Type::Int),
-            variadic: false,
+            typed_variadics: vec![],
+            rest: None,
             required_count: 1,
         };
         assert!(Type::is_subtype(&sub, &sup, None));

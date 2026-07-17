@@ -1258,7 +1258,8 @@ pub fn apply_type_with_visited<'a>(
         Type::Function {
             params,
             ret,
-            variadic,
+            typed_variadics,
+            rest,
             required_count,
         } => Cow::Owned(Type::Function {
             params: params
@@ -1271,10 +1272,26 @@ pub fn apply_type_with_visited<'a>(
                     )
                 })
                 .collect(),
+            typed_variadics: typed_variadics
+                .iter()
+                .map(|(name, ty)| {
+                    (
+                        name.clone(),
+                        apply_type_with_visited(ty, type_vars, depth + 1, visited_types)
+                            .into_owned(),
+                    )
+                })
+                .collect(),
+            rest: rest.as_ref().map(|boxed| {
+                Box::new((
+                    boxed.0.clone(),
+                    apply_type_with_visited(&boxed.1, type_vars, depth + 1, visited_types)
+                        .into_owned(),
+                ))
+            }),
             ret: Box::new(
                 apply_type_with_visited(ret, type_vars, depth + 1, visited_types).into_owned(),
             ),
-            variadic: *variadic,
             required_count: *required_count,
         }),
         Type::Union(members) => {
@@ -1680,7 +1697,8 @@ fn lower_levels_check_occurs(
         Type::Function {
             params,
             ret,
-            variadic: _,
+            typed_variadics: _,
+            rest: _,
             required_count: _,
         } => {
             let mut found = false;
@@ -2375,13 +2393,15 @@ pub async fn unify(
             Type::Function {
                 params: p1,
                 ret: r1,
-                variadic: v1,
+                typed_variadics: tv1,
+                rest: rest1,
                 required_count: _,
             },
             Type::Function {
                 params: p2,
                 ret: r2,
-                variadic: v2,
+                typed_variadics: tv2,
+                rest: rest2,
                 required_count: _,
             },
         ) => {
@@ -2391,8 +2411,10 @@ pub async fn unify(
             // non-variadic (different semantics: zero-param variadic accepts any args, zero-param
             // non-variadic accepts exactly zero args).
             // This enables precise function type predicate narrowing (fn-narrowing-variadic sprint).
-            let is_any_function_1 = p1.is_empty() && *v1;
-            let is_any_function_2 = p2.is_empty() && *v2;
+            let is_variadic_1 = !tv1.is_empty() || rest1.is_some();
+            let is_variadic_2 = !tv2.is_empty() || rest2.is_some();
+            let is_any_function_1 = p1.is_empty() && is_variadic_1;
+            let is_any_function_2 = p2.is_empty() && is_variadic_2;
 
             // Apply special case when one side is zero-param variadic and the other has params.
             if is_any_function_1 && !p2.is_empty() {
@@ -2416,12 +2438,20 @@ pub async fn unify(
                     call_stack: vec![],
                 })));
             }
-            if v1 != v2 {
+            if is_variadic_1 != is_variadic_2 || tv1 != tv2 || rest1 != rest2 {
                 return Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                     message: format!(
                         "variadic mismatch: {} vs {}",
-                        if *v1 { "variadic" } else { "non-variadic" },
-                        if *v2 { "variadic" } else { "non-variadic" }
+                        if is_variadic_1 {
+                            "variadic"
+                        } else {
+                            "non-variadic"
+                        },
+                        if is_variadic_2 {
+                            "variadic"
+                        } else {
+                            "non-variadic"
+                        }
                     ),
                     span,
                     notes: vec![],

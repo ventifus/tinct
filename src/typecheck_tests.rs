@@ -568,7 +568,8 @@ async fn test_fn_unannotated() {
         Type::Function {
             params,
             ret,
-            variadic: _,
+            typed_variadics: _,
+            rest: _,
             ..
         } => {
             // Unannotated params use Unknown (gradual typing escape hatch).
@@ -935,7 +936,8 @@ async fn test_fn_type_display_round_trip() {
             (None, Type::TypeVar("b".into(), 0)),
         ],
         ret: Box::new(Type::TypeVar("c".into(), 0)),
-        variadic: false,
+        typed_variadics: vec![],
+        rest: None,
         required_count: 2,
     };
     assert_eq!(format!("{ty}"), "Fn@c [a b]");
@@ -1560,7 +1562,8 @@ async fn test_check_expr_lambda_arity_mismatch() {
     let expected_ty = Type::Function {
         params: vec![(None, Type::Str)],
         ret: Box::new(Type::Int),
-        variadic: false,
+        typed_variadics: vec![],
+        rest: None,
         required_count: 1,
     };
 

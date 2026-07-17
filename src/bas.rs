@@ -69,7 +69,8 @@ pub enum Atom {
     Function {
         params: Vec<(Option<String>, Type)>,
         ret: Box<Type>,
-        variadic: bool,
+        typed_variadics: Vec<(String, Type)>,
+        rest: Option<Box<(String, Type)>>,
         required_count: usize,
     },
     /// Type constructor application: App(TyCon("Seq"), Int) etc.
@@ -263,12 +264,14 @@ pub fn to_rdnf(ty: &Type) -> Rdnf {
         Type::Function {
             params,
             ret,
-            variadic,
+            typed_variadics,
+            rest,
             required_count,
         } => vec![vec![SignedAtom::Pos(Atom::Function {
             params: params.clone(),
             ret: ret.clone(),
-            variadic: *variadic,
+            typed_variadics: typed_variadics.clone(),
+            rest: rest.clone(),
             required_count: *required_count,
         })]],
 
@@ -480,19 +483,23 @@ pub fn is_atom_subtype(
             Atom::Function {
                 params: sub_p,
                 ret: sub_r,
-                variadic: sv,
+                typed_variadics: sub_tv,
+                rest: sub_rest,
                 required_count: _,
             },
             Atom::Function {
                 params: sup_p,
                 ret: sup_r,
-                variadic: pv,
+                typed_variadics: sup_tv,
+                rest: sup_rest,
                 required_count: _,
             },
         ) => {
             // Any-function special cases (zero-param variadic)
-            let sub_is_any = sub_p.is_empty() && *sv;
-            let sup_is_any = sup_p.is_empty() && *pv;
+            let sub_is_variadic = !sub_tv.is_empty() || sub_rest.is_some();
+            let sup_is_variadic = !sup_tv.is_empty() || sup_rest.is_some();
+            let sub_is_any = sub_p.is_empty() && sub_is_variadic;
+            let sup_is_any = sup_p.is_empty() && sup_is_variadic;
 
             if sub_is_any && sup_is_any {
                 return Type::is_subtype_bas(sub_r, sup_r, tycon_env, sigma);
@@ -504,7 +511,9 @@ pub fn is_atom_subtype(
                 return false;
             }
 
-            sv == pv
+            sub_is_variadic == sup_is_variadic
+                && sub_tv == sup_tv
+                && sub_rest == sup_rest
                 && sub_p.len() == sup_p.len()
                 && sub_p
                     .iter()
@@ -776,12 +785,14 @@ fn atom_to_type(atom: &Atom) -> Type {
         Atom::Function {
             params,
             ret,
-            variadic,
+            typed_variadics,
+            rest,
             required_count,
         } => Type::Function {
             params: params.clone(),
             ret: ret.clone(),
-            variadic: *variadic,
+            typed_variadics: typed_variadics.clone(),
+            rest: rest.clone(),
             required_count: *required_count,
         },
         Atom::TyCon(name) => Type::TyCon(name.clone()),
@@ -2214,14 +2225,16 @@ mod tests {
         let sub = Atom::Function {
             params: vec![(None, Type::Int)],
             ret: Box::new(Type::Any),
-            variadic: false,
+            typed_variadics: vec![],
+            rest: None,
             required_count: 1,
         };
         // sup: Fn(param: IntLiteral(42)) -> Any
         let sup = Atom::Function {
             params: vec![(None, Type::IntLiteral(42))],
             ret: Box::new(Type::Any),
-            variadic: false,
+            typed_variadics: vec![],
+            rest: None,
             required_count: 1,
         };
         let mut sigma = HashSet::new();
@@ -2244,14 +2257,16 @@ mod tests {
         let sub = Atom::Function {
             params: vec![(None, Type::IntLiteral(42))],
             ret: Box::new(Type::Any),
-            variadic: false,
+            typed_variadics: vec![],
+            rest: None,
             required_count: 1,
         };
         // sup: Fn(param: Int) -> Any
         let sup = Atom::Function {
             params: vec![(None, Type::Int)],
             ret: Box::new(Type::Any),
-            variadic: false,
+            typed_variadics: vec![],
+            rest: None,
             required_count: 1,
         };
         let mut sigma = HashSet::new();

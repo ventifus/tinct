@@ -1027,7 +1027,8 @@ fn count_unresolved_vars(
         Type::Function {
             params,
             ret,
-            variadic: _,
+            typed_variadics: _,
+            rest: _,
             required_count: _,
         } => {
             let param_count: usize = params

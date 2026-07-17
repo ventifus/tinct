@@ -1338,7 +1338,8 @@ async fn resolve_fn_type(
                 let ty = Type::Function {
                     params: vec![],
                     ret: Box::new(ret),
-                    variadic: false,
+                    typed_variadics: vec![],
+                    rest: None,
                     required_count: 0,
                 };
                 crate::types::check_kind_wellformed(&ty, &state.kind_env(), span)?;
@@ -1376,7 +1377,8 @@ async fn resolve_fn_type(
             let ty = Type::Function {
                 params: vec![],
                 ret: Box::new(ret),
-                variadic: false,
+                typed_variadics: vec![],
+                rest: None,
                 required_count: 0,
             };
             crate::types::check_kind_wellformed(&ty, &state.kind_env(), span)?;
@@ -1949,7 +1951,8 @@ fn apply_type_alias_substitution(
         Type::Function {
             params,
             ret,
-            variadic,
+            typed_variadics,
+            rest,
             required_count,
         } => Type::Function {
             params: params
@@ -1961,8 +1964,22 @@ fn apply_type_alias_substitution(
                     )
                 })
                 .collect(),
+            typed_variadics: typed_variadics
+                .iter()
+                .map(|(name, ty)| {
+                    (
+                        name.clone(),
+                        apply_type_alias_substitution(ty, subst, state),
+                    )
+                })
+                .collect(),
+            rest: rest.as_ref().map(|boxed| {
+                Box::new((
+                    boxed.0.clone(),
+                    apply_type_alias_substitution(&boxed.1, subst, state),
+                ))
+            }),
             ret: Box::new(apply_type_alias_substitution(ret, subst, state)),
-            variadic: *variadic,
             required_count: *required_count,
         },
         Type::Union(members) => Type::Union(
@@ -2501,7 +2518,8 @@ fn expand_alias_body_guarded(
         Type::Function {
             params,
             ret,
-            variadic,
+            typed_variadics,
+            rest,
             required_count,
         } => {
             let new_params = params
@@ -2523,6 +2541,44 @@ fn expand_alias_body_guarded(
                     ))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
+            let new_typed_variadics = typed_variadics
+                .iter()
+                .map(|(name, ty)| {
+                    Ok::<_, TypeError>((
+                        name.clone(),
+                        expand_alias_body_guarded(
+                            ty,
+                            env,
+                            state,
+                            ann_mapping,
+                            row_ann_mapping,
+                            alias_guard,
+                            current_alias,
+                            depth,
+                            span.clone(),
+                        )?,
+                    ))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let new_rest = rest
+                .as_ref()
+                .map(|boxed| {
+                    Ok::<_, TypeError>(Box::new((
+                        boxed.0.clone(),
+                        expand_alias_body_guarded(
+                            &boxed.1,
+                            env,
+                            state,
+                            ann_mapping,
+                            row_ann_mapping,
+                            alias_guard,
+                            current_alias,
+                            depth,
+                            span.clone(),
+                        )?,
+                    )))
+                })
+                .transpose()?;
             let new_ret = Box::new(expand_alias_body_guarded(
                 ret,
                 env,
@@ -2536,8 +2592,9 @@ fn expand_alias_body_guarded(
             )?);
             Ok(Type::Function {
                 params: new_params,
+                typed_variadics: new_typed_variadics,
+                rest: new_rest,
                 ret: new_ret,
-                variadic: *variadic,
                 required_count: *required_count,
             })
         }
@@ -3075,7 +3132,8 @@ pub(crate) async fn resolve_type_expr(
                     return Ok(Type::Function {
                         params,
                         ret: Box::new(ret),
-                        variadic: false,
+                        typed_variadics: vec![],
+                        rest: None,
                         required_count,
                     });
                 }
@@ -4277,7 +4335,8 @@ fn typenode_value_to_type<'a>(
                     "TypeNode.AnyFn" => Some(Type::Function {
                         params: vec![],
                         ret: Box::new(Type::Any),
-                        variadic: true,
+                        typed_variadics: vec![],
+                        rest: Some(Box::new(("rest".to_string(), Type::Unknown))),
                         required_count: 0,
                     }),
 
@@ -4405,7 +4464,8 @@ fn typenode_value_to_type<'a>(
                         Some(Type::Function {
                             params,
                             ret: Box::new(ret_type),
-                            variadic: false,
+                            typed_variadics: vec![],
+                            rest: None,
                             required_count,
                         })
                     }
@@ -5518,15 +5578,22 @@ pub(crate) fn expand_all_tycon_apps(ty: &Type, env: &TypeEnv, state: &mut InferS
         Type::Function {
             params,
             ret,
-            variadic,
+            typed_variadics,
+            rest,
             required_count,
         } => Type::Function {
             params: params
                 .iter()
                 .map(|(name, p)| (name.clone(), expand_all_tycon_apps(p, env, state)))
                 .collect(),
+            typed_variadics: typed_variadics
+                .iter()
+                .map(|(name, p)| (name.clone(), expand_all_tycon_apps(p, env, state)))
+                .collect(),
+            rest: rest.as_ref().map(|boxed| {
+                Box::new((boxed.0.clone(), expand_all_tycon_apps(&boxed.1, env, state)))
+            }),
             ret: Box::new(expand_all_tycon_apps(ret, env, state)),
-            variadic: *variadic,
             required_count: *required_count,
         },
 
@@ -5748,7 +5815,8 @@ async fn try_resolve_fn_type_expr(
     Ok(Some(Type::Function {
         params,
         ret: Box::new(ret),
-        variadic: false,
+        typed_variadics: vec![],
+        rest: None,
         required_count,
     }))
 }

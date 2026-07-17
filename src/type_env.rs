@@ -124,7 +124,8 @@ fn rename_single_type_var(ty: &Type, old_name: &str, fresh_name: &str, level: u3
         Type::Function {
             params,
             ret,
-            variadic,
+            typed_variadics,
+            rest,
             required_count,
         } => Type::Function {
             params: params
@@ -137,7 +138,21 @@ fn rename_single_type_var(ty: &Type, old_name: &str, fresh_name: &str, level: u3
                 })
                 .collect(),
             ret: Box::new(rename_single_type_var(ret, old_name, fresh_name, level)),
-            variadic: *variadic,
+            typed_variadics: typed_variadics
+                .iter()
+                .map(|(n, t)| {
+                    (
+                        n.clone(),
+                        rename_single_type_var(t, old_name, fresh_name, level),
+                    )
+                })
+                .collect(),
+            rest: rest.as_ref().map(|b| {
+                Box::new((
+                    b.0.clone(),
+                    rename_single_type_var(&b.1, old_name, fresh_name, level),
+                ))
+            }),
             required_count: *required_count,
         },
         // Type::Seq and Type::Map don't exist as variants; they are represented as
@@ -2192,7 +2207,8 @@ mod help_suggestion_tests {
                     Type::Function {
                         params: vec![(None, seq_b.clone()), (None, seq_b.clone())],
                         ret: Box::new(seq_b.clone()),
-                        variadic: false,
+                        typed_variadics: vec![],
+                        rest: None,
                         required_count: 2,
                     },
                 );

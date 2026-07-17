@@ -1251,7 +1251,8 @@ pub(crate) async fn check_surface_expr(
         SurfaceExpression::Fn { params, .. },
         Type::Function {
             params: exp_params,
-            variadic: exp_variadic,
+            typed_variadics: exp_tv,
+            rest: exp_rest,
             required_count: exp_required,
             ..
         },
@@ -1261,7 +1262,8 @@ pub(crate) async fn check_surface_expr(
             let actual_count = params.len();
             let expected_count = exp_params.len();
             let min_required = *exp_required;
-            let max_allowed = if *exp_variadic {
+            let exp_variadic = !exp_tv.is_empty() || exp_rest.is_some();
+            let max_allowed = if exp_variadic {
                 usize::MAX
             } else {
                 expected_count
@@ -1270,7 +1272,7 @@ pub(crate) async fn check_surface_expr(
                 return Err(vec![TypeError::new(
                     format!(
                         "arity mismatch: expected {} arguments, got {}",
-                        if *exp_variadic {
+                        if exp_variadic {
                             format!("at least {}", min_required)
                         } else {
                             expected_count.to_string()

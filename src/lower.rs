@@ -204,7 +204,8 @@ pub(crate) fn annotation_name_to_type(name: &str) -> crate::type_def::Type {
         "Fn" | "Function" | "Builtin" => Type::Function {
             params: vec![],
             ret: Box::new(Type::Any),
-            variadic: true,
+            typed_variadics: vec![],
+            rest: Some(Box::new(("rest".to_string(), Type::Unknown))),
             required_count: 0,
         },
         // Named types: look up via TyCon for Boolean, Seq, etc.

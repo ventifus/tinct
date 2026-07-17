@@ -128,7 +128,8 @@ pub(crate) fn extract_narrowings(cond: &Arc<SurfaceNode>) -> Vec<Narrowing> {
                                 ty: Type::Function {
                                     params: vec![],
                                     ret: Box::new(Type::Unknown),
-                                    variadic: true,
+                                    typed_variadics: vec![],
+                                    rest: Some(Box::new(("rest".to_string(), Type::Unknown))),
                                     required_count: 0,
                                 },
                             }];

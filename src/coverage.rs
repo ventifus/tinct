@@ -1723,7 +1723,8 @@ mod tests {
             Type::Function {
                 params: vec![],
                 ret: Box::new(Type::Int),
-                variadic: false,
+                typed_variadics: vec![],
+                rest: None,
                 required_count: 0,
             },
         ];

@@ -76,15 +76,22 @@ impl Substitution {
             Type::Function {
                 params,
                 ret,
-                variadic,
+                typed_variadics,
+                rest,
                 required_count,
             } => Type::Function {
                 params: params
                     .iter()
                     .map(|(n, t)| (n.clone(), Self::apply_inner(t, map)))
                     .collect(),
+                typed_variadics: typed_variadics
+                    .iter()
+                    .map(|(n, t)| (n.clone(), Self::apply_inner(t, map)))
+                    .collect(),
+                rest: rest
+                    .as_ref()
+                    .map(|boxed| Box::new((boxed.0.clone(), Self::apply_inner(&boxed.1, map)))),
                 ret: Box::new(Self::apply_inner(ret, map)),
-                variadic: *variadic,
                 required_count: *required_count,
             },
             // App(f, a): type constructor application — substitute into both sides.

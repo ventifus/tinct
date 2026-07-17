@@ -787,7 +787,12 @@ async fn apply_cont(
             let fn_type = Type::Function {
                 params,
                 ret: Box::new(fn_ret_ty),
-                variadic: is_variadic,
+                typed_variadics: vec![],
+                rest: if is_variadic {
+                    Some(Box::new(("rest".to_string(), Type::Unknown)))
+                } else {
+                    None
+                },
                 required_count,
             };
             // Record the function type with the Fn node's span so that scan_type_quality
@@ -1343,7 +1348,8 @@ async fn infer_var_ref(
                 Type::Function {
                     params: vec![],
                     ret: Box::new(ret_ty),
-                    variadic: false,
+                    typed_variadics: vec![],
+                    rest: None,
                     required_count: 0,
                 }
             } else {
@@ -1709,7 +1715,8 @@ async fn apply_cont_call_func(
         Type::Function {
             params,
             ret,
-            variadic,
+            typed_variadics,
+            rest,
             required_count,
         } => {
             // Instantiate if needed
@@ -1725,14 +1732,25 @@ async fn apply_cont_call_func(
                     Type::Function {
                         params,
                         ret,
-                        variadic,
+                        typed_variadics,
+                        rest,
                         required_count,
-                    } => (params, *ret, variadic, required_count),
+                    } => (
+                        params,
+                        *ret,
+                        !typed_variadics.is_empty() || rest.is_some(),
+                        required_count,
+                    ),
                     _ => unreachable!("instantiate_at_level preserves Function variant"),
                 }
             } else {
                 // CALL-MONO: use as-is
-                (params.clone(), (**ret).clone(), *variadic, *required_count)
+                (
+                    params.clone(),
+                    (**ret).clone(),
+                    !typed_variadics.is_empty() || rest.is_some(),
+                    *required_count,
+                )
             };
 
             if args.is_empty() {
@@ -1944,12 +1962,14 @@ async fn apply_cont_call_func(
                 .filter(|m| {
                     if let Type::Function {
                         params,
-                        variadic,
+                        typed_variadics,
+                        rest,
                         required_count,
                         ..
                     } = m
                     {
-                        n_total >= *required_count && (*variadic || n_positional <= params.len())
+                        let is_var = !typed_variadics.is_empty() || rest.is_some();
+                        n_total >= *required_count && (is_var || n_positional <= params.len())
                     } else {
                         false
                     }
@@ -1977,11 +1997,14 @@ async fn apply_cont_call_func(
                     .into_iter()
                     .min_by_key(|m| {
                         if let Type::Function {
-                            params, variadic, ..
+                            params,
+                            typed_variadics,
+                            rest,
+                            ..
                         } = m
                         {
-                            // Non-variadic with smaller params wins; variadic pushed to back.
-                            if *variadic {
+                            let is_var = !typed_variadics.is_empty() || rest.is_some();
+                            if is_var {
                                 (usize::MAX, params.len())
                             } else {
                                 (0, params.len())
@@ -2029,12 +2052,14 @@ async fn apply_cont_call_func(
                 .filter(|m| {
                     if let Type::Function {
                         params,
-                        variadic,
+                        typed_variadics,
+                        rest,
                         required_count,
                         ..
                     } = m
                     {
-                        n_total >= *required_count && (*variadic || n_positional <= params.len())
+                        let is_var = !typed_variadics.is_empty() || rest.is_some();
+                        n_total >= *required_count && (is_var || n_positional <= params.len())
                     } else {
                         false
                     }
@@ -2059,10 +2084,14 @@ async fn apply_cont_call_func(
                     .into_iter()
                     .min_by_key(|m| {
                         if let Type::Function {
-                            params, variadic, ..
+                            params,
+                            typed_variadics,
+                            rest,
+                            ..
                         } = m
                         {
-                            if *variadic {
+                            let is_var = !typed_variadics.is_empty() || rest.is_some();
+                            if is_var {
                                 (usize::MAX, params.len())
                             } else {
                                 (0, params.len())
@@ -3227,7 +3256,8 @@ pub(crate) fn adt_value_type(alias_body: &Type) -> Type {
                 Type::Function {
                     params: fn_params,
                     ret: Box::new(m.clone()),
-                    variadic: false,
+                    typed_variadics: vec![],
+                    rest: None,
                     required_count,
                 }
             };
@@ -3382,7 +3412,12 @@ pub(crate) async fn run_typecheck_dict(
                     let fn_type = Type::Function {
                         params: fn_params,
                         ret: Box::new(ret_var.clone()),
-                        variadic: is_variadic,
+                        typed_variadics: vec![],
+                        rest: if is_variadic {
+                            Some(Box::new(("rest".to_string(), Type::Unknown)))
+                        } else {
+                            None
+                        },
                         required_count,
                     };
                     if !is_alias {
