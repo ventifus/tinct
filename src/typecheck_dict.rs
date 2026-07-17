@@ -1,35 +1,9 @@
-//! Dict type inference shims — delegation to canonical implementations in typecheck_cek.rs.
+//! Dict type inference — `compute_sccs` unit tests.
 //!
-//! # T-1644 complete: infer_dict deleted
-//!
-//! The full dict inference implementation has moved to `typecheck_cek::run_typecheck_dict`,
-//! called from:
+//! Dict inference is fully implemented in `typecheck_cek::run_typecheck_dict`, called from:
 //!   - `AfterDictPassZero` handler in `typecheck_cek::apply_cont`
 //!   - `typecheck_surface_document` (top-level dict expressions)
-//!   - `infer_surface_expr::Dict` arm (nested dicts)
-//!   - `infer_surface_expr::Sequential` arm (intermediate dict bodies)
-//!
-//! The Decl arm in `typecheck_cek::infer_step` now calls
-//! `infer_class_decl_from_surface` and `infer_instance_decl_from_surface` directly
-//! (both pub(crate) as of T-1641).
-//!
-//! Private shims retained: `type_contains_typevar`, `adt_value_type` (unused outside tests).
-//! Tests retained: `compute_sccs` unit tests (call canonical impl in typecheck_cek directly).
-
-use crate::types::Type;
-
-/// Occurs check: delegates to typecheck_cek::type_contains_typevar (canonical implementation).
-#[allow(dead_code)]
-fn type_contains_typevar(ty: &Type, name: &str) -> bool {
-    super::typecheck_cek::type_contains_typevar(ty, name)
-}
-
-/// Build the constructor dict value type for an ADT.
-/// Delegates to the canonical implementation in `typecheck_cek`.
-#[allow(dead_code)]
-fn adt_value_type(alias_body: &Type) -> Type {
-    super::typecheck_cek::adt_value_type(alias_body)
-}
+//!   - `run_typecheck` Sequential arm (intermediate dict bodies via CEK machine)
 
 #[cfg(test)]
 mod tests {

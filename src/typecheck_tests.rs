@@ -68,9 +68,23 @@ async fn infer(input: &str) -> Type {
         crate::ast::SurfaceItem::Expr(n) => n,
         _ => panic!("expected expression item"),
     };
-    infer_surface_expr(node, &arc_env, &mut state, &mut None)
-        .await
-        .unwrap()
+    let mut local_errors: Vec<TypeError> = Vec::new();
+    let mut local_stack = Vec::new();
+    let ty = Box::pin(typecheck_cek::run_typecheck(
+        node,
+        &arc_env,
+        &mut state,
+        &mut local_errors,
+        &mut None,
+        &mut local_stack,
+    ))
+    .await;
+    assert!(
+        local_errors.is_empty(),
+        "infer helper: unexpected type errors: {:?}",
+        local_errors
+    );
+    ty
 }
 
 async fn doc_env(input: &str) -> Arc<RwLock<crate::env::Env>> {
@@ -340,9 +354,18 @@ async fn test_dict_multiple_errors() {
         crate::ast::SurfaceItem::Expr(n) => n,
         _ => panic!("expected expression item"),
     };
-    let errs = infer_surface_expr(node, &env, &mut state, &mut None)
-        .await
-        .unwrap_err();
+    let mut local_errors: Vec<TypeError> = Vec::new();
+    let mut local_stack = Vec::new();
+    let _ty = Box::pin(typecheck_cek::run_typecheck(
+        node,
+        &env,
+        &mut state,
+        &mut local_errors,
+        &mut None,
+        &mut local_stack,
+    ))
+    .await;
+    let errs = local_errors;
     assert_eq!(errs.len(), 2, "infer_expr should return all dict errors");
     assert!(errs[0].message().contains("undefined1"));
     assert!(errs[1].message().contains("undefined2"));
@@ -540,7 +563,7 @@ async fn test_dot_access_typevar_generates_constraint_verified() {
 #[tokio::test]
 async fn test_type_alias_cycle_resolves_to_unknown() {
     // With two-pass registration, circular aliases resolve to Unknown.
-    // The register_type_aliases path pre-registers both, so both resolve.
+    // The register_type_aliases_env path pre-registers both, so both resolve.
     // But infer_dict still uses the single-pass approach, so using a
     // circular alias in an annotation within the same dict produces an
     // error (the alias wasn't registered in dict_env when A's body is resolved).
@@ -641,14 +664,24 @@ async fn test_check_call_with_scheme_non_function_scheme() {
         crate::ast::SurfaceItem::Expr(n) => n,
         _ => panic!("expected expression item"),
     };
-    let result = infer_surface_expr(node, &parent_env, &mut state, &mut None).await;
+    let mut local_errors: Vec<TypeError> = Vec::new();
+    let mut local_stack = Vec::new();
+    let _ty = Box::pin(typecheck_cek::run_typecheck(
+        node,
+        &parent_env,
+        &mut state,
+        &mut local_errors,
+        &mut None,
+        &mut local_stack,
+    ))
+    .await;
 
     // Must produce a not_a_function error, not a panic.
     assert!(
-        result.is_err(),
+        !local_errors.is_empty(),
         "calling a non-function polymorphic scheme should be an error"
     );
-    let errors = result.unwrap_err();
+    let errors = local_errors;
     assert!(
         errors
             .iter()
@@ -1204,13 +1237,27 @@ async fn test_call_any_callee_populates_type_map_for_positional_args() {
         crate::ast::SurfaceItem::Expr(n) => n,
         _ => panic!("expected expression item"),
     };
-    let result = infer_surface_expr(node, &parent_env, &mut state, &mut Some(&mut type_map)).await;
+    let mut local_errors: Vec<TypeError> = Vec::new();
+    let mut local_stack = Vec::new();
+    let result_ty = Box::pin(typecheck_cek::run_typecheck(
+        node,
+        &parent_env,
+        &mut state,
+        &mut local_errors,
+        &mut Some(&mut type_map),
+        &mut local_stack,
+    ))
+    .await;
 
-    // The call to an Any-typed function returns Any.
+    // The call to an Any-typed function returns Unknown.
+    assert!(
+        local_errors.is_empty(),
+        "calling Any-typed callee should produce no type errors, got: {local_errors:?}"
+    );
     assert_eq!(
-        result,
-        Ok(Type::Unknown),
-        "calling Any-typed callee should return Type::Unknown, got: {result:?}"
+        result_ty,
+        Type::Unknown,
+        "calling Any-typed callee should return Type::Unknown, got: {result_ty:?}"
     );
 
     // Extract the span of the `42` argument from the parsed AST to look it up in type_map.
@@ -2142,8 +2189,7 @@ async fn test_nested_recursive_fn_in_multi_body_ok() {
     // Note: uses `if` (special-cased in type checker) and bare values to avoid needing
     // builtins `=` or `+` which require the prelude type class env not available in check().
     let result =
-        check("[outer: [fn [let n] [loop: [fn [let i] [if i n [loop n]]]] [loop n]]]")
-            .await;
+        check("[outer: [fn [let n] [loop: [fn [let i] [if i n [loop n]]]] [loop n]]]").await;
     assert!(
         result.is_ok(),
         "recursive fn in intermediate dict should type-check: {:?}",
@@ -2676,9 +2722,21 @@ async fn test_placeholder_has_type_unknown() {
         crate::ast::SurfaceItem::Expr(n) => n,
         _ => panic!("expected expression item"),
     };
-    let ty = infer_surface_expr(node, &env, &mut state, &mut None)
-        .await
-        .unwrap();
+    let mut local_errors: Vec<TypeError> = Vec::new();
+    let mut local_stack = Vec::new();
+    let ty = Box::pin(typecheck_cek::run_typecheck(
+        node,
+        &env,
+        &mut state,
+        &mut local_errors,
+        &mut None,
+        &mut local_stack,
+    ))
+    .await;
+    assert!(
+        local_errors.is_empty(),
+        "Placeholder should not produce type errors; got: {local_errors:?}"
+    );
     assert_eq!(
         ty,
         Type::Unknown,

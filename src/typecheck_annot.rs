@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
-use super::{check_surface_expr, contains_unknown_or_top, infer_surface_expr, TypeMap};
+use super::{check_surface_expr, contains_unknown_or_top, TypeMap};
 use crate::ast::{Annotation, Span, Spanned, SurfaceEntry, SurfaceExpression, SurfaceNode};
 use crate::env::Env;
 use crate::rust_span;
@@ -327,7 +327,25 @@ pub(crate) async fn resolve_type_assert(
 
     // Validate the default value type — hard error if the default cannot satisfy the asserted type.
     if let Some(default_node) = annotation.node.get_property("default") {
-        match infer_surface_expr(default_node, env, state, type_map).await {
+        let mut local_errors: Vec<TypeError> = Vec::new();
+        let mut local_stack = Vec::new();
+        let default_ty_result = {
+            let default_ty = Box::pin(super::typecheck_cek::run_typecheck(
+                default_node,
+                env,
+                state,
+                &mut local_errors,
+                type_map,
+                &mut local_stack,
+            ))
+            .await;
+            if local_errors.is_empty() {
+                Ok(default_ty)
+            } else {
+                Err(local_errors)
+            }
+        };
+        match default_ty_result {
             Ok(default_ty) => {
                 // Apply type_vars bindings to both types before comparison — access-chain constraints
                 // may have bound TypeVars (e.g., $data.name generates row-variable
@@ -1872,7 +1890,7 @@ async fn instantiate_tycon_def(
                     }
                 }
                 // If param_name is not in type_subst, it's a bug (params and constraints were
-                // built together in register_type_aliases). We silently skip for robustness.
+                // built together in register_type_aliases_env). We silently skip for robustness.
             }
         }
         // HasField constraints (if any) are not relevant to type alias instantiation — skip.

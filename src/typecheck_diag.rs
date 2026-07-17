@@ -1,8 +1,8 @@
 //! Type quality diagnostics: T010/T011/T012 scanning subsystem.
-#![allow(dead_code)]
 //!
 //! This module is completely standalone — it only reads [`TypeMap`] and [`SurfaceProgram`]
 //! and emits [`TypeDiagnostic`]s. It does NOT call back into inference.
+#![allow(dead_code)]
 
 use std::collections::{HashMap, HashSet};
 

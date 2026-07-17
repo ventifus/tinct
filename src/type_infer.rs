@@ -231,7 +231,7 @@ pub struct InferState {
     /// Enabled by setting this to `Some(SchemeMap::new())` before running inference.
     pub scheme_map: Option<SchemeMap>,
     /// Expected return type of the currently-inferring function (if annotated).
-    /// Set by infer_fn when entering a function body with an explicit return annotation,
+    /// Set by `infer_fn_push_cont` (CEK) when entering a function body with an explicit return annotation,
     /// cleared when exiting. Used for inferred [do] macro to determine which monad to use.
     pub expected_return: Option<Type>,
     /// Accumulated type diagnostics (warnings, hints).
@@ -282,7 +282,7 @@ pub struct InferState {
     /// different `[type ...]` declarations produces a W042 diagnostic on the second occurrence.
     pub registered_nominal_tags: HashMap<String, Span>,
     /// TypeAnnotationTable for nested TypeAssert nodes: keyed by NodeId of the TypeAssert Arc<SurfaceNode>.
-    /// Populated by infer_surface_expr's TypeAssert handler. Extracted by typecheck_surface_document
+    /// Populated by the CEK machine's TypeAssert handler. Extracted by typecheck_surface_document
     /// to merge into the document-level annotation table.
     pub type_annotation_table: crate::ast::TypeAnnotationTable,
     /// Resolved types for pipeline `expects:` contracts, keyed by the expects annotation's span.
@@ -292,7 +292,7 @@ pub struct InferState {
     pub expects_resolved: HashMap<crate::ast::Span, crate::types::Type>,
     /// Resolution table for slot-indexed TypeEnv lookups (optional fast path).
     ///
-    /// When set, `infer_surface_expr`'s VarRef handler uses the resolved (level, slot)
+    /// When set, the CEK machine's VarRef handler uses the resolved (level, slot)
     /// coordinates to call `env.get_type_at(level, slot)` — O(1) per-level — before
     /// falling back to the O(chain) name-based `env.get(name)`.
     ///

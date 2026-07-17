@@ -2325,7 +2325,7 @@ impl Type {
     ///
     /// Use this constructor for functions with no optional parameters (all params required).
     /// All builtin functions use this constructor. For user-defined functions with `default:`
-    /// annotations, `infer_fn` in `typecheck_match.rs` computes `required_count` directly
+    /// annotations, `infer_fn_push_cont` in `typecheck_cek.rs` computes `required_count` directly
     /// (B-349: the fix for spurious arity errors on calls omitting optional params).
     pub fn fn_type(params: Vec<(Option<String>, Type)>, ret: Type, variadic: bool) -> Self {
         let required_count = params.len();

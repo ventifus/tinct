@@ -1,9 +1,8 @@
 //! CEK machine for type inference — iterative loop with explicit continuations.
 //!
-//! Eliminates recursive calls to `infer_surface_expr` by converting the type checker
-//! to a continuation-passing style (CPS) machine with defunctionalized continuations.
-//! This prevents stack overflow on deeply nested expressions and provides an inspectable
-//! continuation stack for error reporting.
+//! Implements the full type checker as a continuation-passing style (CPS) machine with
+//! defunctionalized continuations. This prevents stack overflow on deeply nested expressions
+//! and provides an inspectable continuation stack for error reporting.
 //!
 //! Architecture:
 //! - Control register: current `Arc<SurfaceNode>` to infer OR a completed `Type` result
@@ -1060,8 +1059,8 @@ async fn apply_cont(
                     &default_resolved,
                     &expected_resolved,
                     Some(&state.tycon_env),
-                ) || ((contains_unknown_or_top_local(&default_resolved)
-                    || contains_unknown_or_top_local(&expected_resolved))
+                ) || ((super::contains_unknown_or_top(&default_resolved)
+                    || super::contains_unknown_or_top(&expected_resolved))
                     && Type::is_consistent(&default_resolved, &expected_resolved));
                 if !passes {
                     errors.push(TypeError::new(
@@ -1885,7 +1884,7 @@ async fn apply_call_args_poly(
             other => other.clone(),
         };
 
-        // Gradual typing boundary guard (per check_call_args pattern in typecheck_call.rs).
+        // Gradual typing boundary guard: Unknown-typed arg flowing into concrete param.
         // When an Unknown/Any arg flows into a concrete parameter, attach a runtime guard so
         // the evaluator can enforce the type contract at the Unknown→concrete boundary.
         if matches!(&widened_arg, Type::Unknown | Type::Any)
@@ -2510,22 +2509,12 @@ fn field_type_from_base(
     }
 }
 
-// ===== Inline helper: contains_unknown_or_top =====
-//
-// Delegates to the canonical implementation in typecheck.rs (now pub(crate)).
-// Previously a local copy missing the TypeVar arm; using the canonical version
-// ensures correctness including TypeVar-as-gradual semantics (Siek & Taha 2006).
+// ===== Helper functions =====
 
-fn contains_unknown_or_top_local(ty: &Type) -> bool {
-    super::contains_unknown_or_top(ty)
-}
-
-// ===== Helper functions (duplicated from typecheck_dict.rs for CEK-internal use) =====
-
-/// Tarjan's algorithm for computing SCCs in topological order.
-/// Returns SCCs in reverse topological order (dependencies before dependents).
+/// Compute strongly connected components of dict entry dependency graph using Tarjan's algorithm.
 ///
-/// Uses an iterative worklist implementation to avoid stack overflow on large dicts.
+/// Returns SCCs in reverse topological order (dependencies before dependents).
+/// Uses an iterative worklist to avoid stack overflow on large dicts.
 pub(crate) fn compute_sccs(
     entries: &[Spanned<SurfaceEntry>],
     key_entries: &[(Option<String>, bool, bool)],
@@ -2800,8 +2789,8 @@ pub(crate) fn type_contains_typevar(ty: &Type, name: &str) -> bool {
 /// where unit constructors → NominalVariant values and payload constructors → Functions.
 /// For non-ADT types, returns the body type unchanged.
 ///
-/// Called by `infer_dict` in `typecheck_dict.rs` (via a delegation shim) and will be used
-/// directly by the full dict CEK path once T-1644 implements `AfterDictPassZero` → pass transitions.
+/// Called from `run_typecheck_dict` Pass 2 (type alias registration) and from
+/// `AfterDictPassZero` handler when building constructor scheme types.
 pub(crate) fn adt_value_type(alias_body: &Type) -> Type {
     let members: Vec<&Type> = match alias_body {
         Type::Union(ms) => ms.iter().collect(),
@@ -2888,9 +2877,8 @@ pub(crate) async fn entry_key_name(
 
 /// Dict type inference via multi-pass binding analysis (Passes 0–4).
 ///
-/// This is the CEK-path replacement for `typecheck_dict::infer_dict`. It performs the
-/// same multi-pass algorithm but uses `run_typecheck` for entry inference instead of
-/// `infer_surface_expr`, eliminating the recursive call chain.
+/// Performs the multi-pass dict inference algorithm using `run_typecheck` for entry inference,
+/// eliminating the recursive call chain of the old `infer_dict`.
 ///
 /// Returns `(record_type, schemes, errors)` where:
 /// - `record_type` is the inferred `Type::Dict(...)` for the dict literal
@@ -2902,7 +2890,7 @@ pub(crate) async fn entry_key_name(
 /// Called by:
 /// - `AfterDictPassZero` handler (dict expressions encountered during CEK run_typecheck)
 /// - `typecheck_surface_document` (top-level dict expressions in a document)
-/// - `infer_surface_expr::Sequential` arm (intermediate dict bodies in multi-body functions)
+/// - `run_typecheck`'s Sequential arm (intermediate dict bodies in multi-body functions)
 ///
 /// Tracked by T-1644.
 pub(crate) async fn run_typecheck_dict(
