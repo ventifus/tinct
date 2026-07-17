@@ -197,6 +197,24 @@ pub(crate) enum TypeCheckCont {
         span: Span,
     },
 
+    /// After evaluating a non-Dict intermediate body in a Sequential, extend env and continue.
+    ///
+    /// Pushed by `infer_step::Sequential` when encountering a non-Dict intermediate body.
+    /// This replaces the `Box::pin(run_typecheck(...))` recursive call — the CEK machine
+    /// must remain fully iterative (Ager et al. 2003).
+    AfterSequentialNonDictIntermediate {
+        /// Span of the just-evaluated intermediate (for `not_a_record` error attribution).
+        intermediate_span: Span,
+        /// Remaining intermediate bodies after the current one.
+        remaining_intermediates: Vec<Arc<SurfaceNode>>,
+        /// The last expression — evaluated after all intermediates are processed.
+        last: Arc<SurfaceNode>,
+        /// Accumulated env before extending with this intermediate's result.
+        env: Arc<RwLock<Env>>,
+        /// `state.level` at push time — restored after evaluation.
+        enclosing_level: u32,
+    },
+
     /// After inferring the inner expression of a TypeAssert, validate against expected type.
     AfterTypeAssertInner {
         expected: Type,
@@ -417,7 +435,7 @@ async fn infer_step(
             let intermediates = &exprs[0..exprs.len() - 1];
             let last = &exprs[exprs.len() - 1];
 
-            for intermediate in intermediates {
+            for (i, intermediate) in intermediates.iter().enumerate() {
                 // Check if this is a dict — if so, use run_typecheck_dict for proper letrec
                 if let SurfaceExpression::Dict(entries) = &intermediate.expr {
                     let (_, schemes, mut dict_errs) = run_typecheck_dict(
@@ -443,50 +461,26 @@ async fn infer_step(
                     );
                     current_env = Arc::new(RwLock::new(new_env_inner));
                 } else {
-                    // Non-dict intermediate: increment level, infer, restore level
-                    let enclosing_level = state.level;
+                    // Non-Dict intermediate: push continuation, return Eval — no recursion.
+                    // The AfterSequentialNonDictIntermediate handler resumes after evaluation,
+                    // extends env, and continues processing remaining intermediates.
+                    let enc_level = state.level;
                     state.level += 1;
-
-                    let ty = Box::pin(run_typecheck(
-                        intermediate,
-                        &current_env,
-                        state,
-                        errors,
-                        type_map,
-                        &mut Vec::new(),
-                    ))
-                    .await;
-
-                    state.level = enclosing_level;
-
-                    // If result is a Dict, generalize fields and extend env
-                    match &ty {
-                        Type::Dict(Row { fields, .. }) => {
-                            let mut new_env_inner = Env::with_parent(Arc::clone(&current_env));
-                            for (name, field_ty) in fields {
-                                let scheme = generalize(enclosing_level, field_ty, state);
-                                new_env_inner.insert_scheme(name.clone(), scheme);
-                            }
-                            super::register_type_aliases_env(
-                                intermediate,
-                                &mut new_env_inner,
-                                state,
-                                errors,
-                            );
-                            current_env = Arc::new(RwLock::new(new_env_inner));
-                        }
-                        Type::Unknown | Type::Any => {
-                            // Type::Unknown: gradual type / inference failed — skip
-                            // Type::Any: TypeAlias declaration, no dict type — skip
-                        }
-                        _ => {
-                            errors.push(TypeError::not_a_record(&ty, intermediate.span.clone()));
-                        }
-                    }
+                    stack.push(TypeCheckCont::AfterSequentialNonDictIntermediate {
+                        intermediate_span: intermediate.span.clone(),
+                        remaining_intermediates: intermediates[i + 1..]
+                            .iter()
+                            .map(Arc::clone)
+                            .collect(),
+                        last: Arc::clone(last),
+                        env: Arc::clone(&current_env),
+                        enclosing_level: enc_level,
+                    });
+                    return TypeCheckAction::Eval(Arc::clone(intermediate), current_env);
                 }
             }
 
-            // Return Eval action for the last expression with the extended env
+            // All intermediates were Dict — return Eval for the last expression
             TypeCheckAction::Eval(Arc::clone(last), current_env)
         }
 
@@ -1056,6 +1050,79 @@ async fn apply_cont(
                 // continuation. This arm should never be reached in the current implementation.
                 TypeCheckAction::Done(Type::Unknown)
             }
+        }
+
+        // ===== AfterSequentialNonDictIntermediate =====
+        TypeCheckCont::AfterSequentialNonDictIntermediate {
+            intermediate_span,
+            remaining_intermediates,
+            last,
+            env,
+            enclosing_level,
+        } => {
+            // Restore level (was incremented before pushing this continuation).
+            state.level = enclosing_level;
+
+            // Extend env based on the type of the just-evaluated non-Dict intermediate.
+            let mut current_env = env;
+            match &child_ty {
+                Type::Dict(Row { fields, .. }) => {
+                    let mut new_env_inner = Env::with_parent(Arc::clone(&current_env));
+                    for (name, field_ty) in fields {
+                        let scheme = generalize(enclosing_level, field_ty, state);
+                        new_env_inner.insert_scheme(name.clone(), scheme);
+                    }
+                    // register_type_aliases_env is a no-op for non-Dict nodes (intermediate was
+                    // not a Dict expression, so the node has no type alias entries to register).
+                    current_env = Arc::new(RwLock::new(new_env_inner));
+                }
+                Type::Unknown | Type::Any => {}
+                _ => errors.push(TypeError::not_a_record(&child_ty, intermediate_span)),
+            }
+
+            // Process remaining intermediates iteratively (Dict inline, non-Dict via continuation).
+            for (i, intermediate) in remaining_intermediates.iter().enumerate() {
+                if let SurfaceExpression::Dict(entries) = &intermediate.expr {
+                    let (_, schemes, mut dict_errs) = run_typecheck_dict(
+                        entries,
+                        &current_env,
+                        state,
+                        type_map,
+                        intermediate.span.clone(),
+                    )
+                    .await;
+                    errors.append(&mut dict_errs);
+                    let mut new_env_inner = Env::with_parent(Arc::clone(&current_env));
+                    for (name, scheme) in &schemes {
+                        new_env_inner.insert_scheme(name.clone(), scheme.clone());
+                    }
+                    super::register_type_aliases_env(
+                        intermediate,
+                        &mut new_env_inner,
+                        state,
+                        errors,
+                    );
+                    current_env = Arc::new(RwLock::new(new_env_inner));
+                } else {
+                    // Another non-Dict intermediate — push new continuation, return Eval.
+                    let enc_level = state.level;
+                    state.level += 1;
+                    stack.push(TypeCheckCont::AfterSequentialNonDictIntermediate {
+                        intermediate_span: intermediate.span.clone(),
+                        remaining_intermediates: remaining_intermediates[i + 1..]
+                            .iter()
+                            .map(Arc::clone)
+                            .collect(),
+                        last: Arc::clone(&last),
+                        env: Arc::clone(&current_env),
+                        enclosing_level: enc_level,
+                    });
+                    return TypeCheckAction::Eval(Arc::clone(intermediate), current_env);
+                }
+            }
+
+            // All remaining intermediates processed — evaluate the last expression.
+            TypeCheckAction::Eval(last, current_env)
         }
 
         // ===== AfterTypeAssertInner =====

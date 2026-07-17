@@ -149,7 +149,7 @@ pub async fn typecheck_surface_program_annotation_table_with_env(
     for doc_spanned in &program.documents {
         let doc = &doc_spanned.node;
 
-        let (new_env, _doc_output_type, mut doc_errors) =
+        let (new_env, _, mut doc_errors) =
             process_document(doc, &env, &mut state, &mut table, &mut None).await;
         env = new_env;
         // Collect all errors (type errors + advisory) without blocking propagation.
@@ -329,7 +329,7 @@ pub async fn typecheck_surface_program_with_env(
             None
         };
 
-        let (new_env, _doc_output_type, mut doc_errors) = process_document(
+        let (new_env, _, mut doc_errors) = process_document(
             doc,
             &env,
             &mut state,
@@ -485,13 +485,7 @@ pub(crate) async fn process_document(
         .collect();
 
     if nodes.is_empty() {
-        let mut result_env_inner = Env::with_parent(Arc::clone(parent_env));
-        // Cross-document % threading: insert the document's output type as % so subsequent
-        // documents see the result of this document as their pipeline input. This is NOT
-        // the within-document % injection removed by D2 (C-438) — D2 removed the injection
-        // that made % visible to the CURRENT document's type inference. This injection makes
-        // the current document's OUTPUT visible to the NEXT document.
-        result_env_inner.insert("%".to_string(), empty_dict_ty.clone());
+        let result_env_inner = Env::with_parent(Arc::clone(parent_env));
         return (
             Arc::new(RwLock::new(result_env_inner)),
             empty_dict_ty,
@@ -582,6 +576,7 @@ pub(crate) async fn process_document(
         last_dict_schemes = Some(schemes);
         dict_ty
     } else {
+        state.level += 1;
         let ty = typecheck_cek::run_typecheck(
             &last_node,
             &current_env,
@@ -591,6 +586,7 @@ pub(crate) async fn process_document(
             &mut Vec::new(),
         )
         .await;
+        state.level = enclosing_level;
         for (nid, ty) in state.type_annotation_table.drain() {
             table.insert(nid, ty);
         }
@@ -614,10 +610,6 @@ pub(crate) async fn process_document(
         }
     }
     register_type_aliases_env(&last_node, &mut result_env_inner, state, &mut errors);
-    // Cross-document % threading: insert this document's output type as % so subsequent
-    // documents see it as their pipeline input. Not a D2 violation — D2 removed the injection
-    // that pre-seeded % in the CURRENT document's working env; this threads % to the NEXT doc.
-    result_env_inner.insert("%".to_string(), result_ty.clone());
 
     (Arc::new(RwLock::new(result_env_inner)), result_ty, errors)
 }

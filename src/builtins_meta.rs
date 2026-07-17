@@ -2420,7 +2420,7 @@ pub(crate) fn builtin_typecheck_doc(
 
         // process_document processes all items in source order, extends env with schemes from
         // the last dict body, and returns (doc_env, result_type, errors).
-        let (doc_env, _result_type, errors) = crate::typecheck::process_document(
+        let (doc_env, _, errors) = crate::typecheck::process_document(
             &doc_arc,
             &parent_env,
             &mut state,

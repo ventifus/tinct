@@ -107,6 +107,11 @@ async fn doc_env_with_builtins(input: &str) -> Arc<RwLock<crate::env::Env>> {
 }
 
 async fn doc_env_with_prelude(input: &str) -> Arc<RwLock<crate::env::Env>> {
+    doc_env_and_type(input).await.0
+}
+
+/// Returns (result_env, result_type) for the first document of input, with prelude in scope.
+async fn doc_env_and_type(input: &str) -> (Arc<RwLock<crate::env::Env>>, Type) {
     let mut program = crate::parse(input, test_file(input)).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
     // get_builtin_core_type_env returns Arc<RwLock<Env>>; use directly (no bridge needed).
@@ -118,7 +123,7 @@ async fn doc_env_with_prelude(input: &str) -> Arc<RwLock<crate::env::Env>> {
         std::sync::Arc::clone(&arc_env),
     )));
     let mut state = InferState::with_env(std::sync::Arc::clone(&child_env));
-    let (result_env, _ty, errors) = process_document(
+    let (result_env, result_ty, errors) = process_document(
         &program.documents[0].node,
         &arc_env,
         &mut state,
@@ -129,14 +134,11 @@ async fn doc_env_with_prelude(input: &str) -> Arc<RwLock<crate::env::Env>> {
     if !errors.is_empty() {
         panic!("doc_env_with_prelude: typecheck error: {:?}", errors);
     }
-    result_env
+    (result_env, result_ty)
 }
 
 async fn result_type(input: &str) -> Type {
-    let env = doc_env(input).await;
-    let guard = env.read().unwrap();
-    let body = guard.get_scheme("%").unwrap().body.clone();
-    body
+    doc_env_and_type(input).await.1
 }
 
 async fn result_field(input: &str, field: &str) -> Type {
@@ -188,7 +190,7 @@ async fn file_env_impl(input: &str) -> Arc<RwLock<crate::env::Env>> {
     let mut state = InferState::new();
     for doc_spanned in &program.documents {
         let doc = &doc_spanned.node;
-        let (new_env, _doc_output_type, errors) = process_document(
+        let (new_env, _, errors) = process_document(
             doc,
             &env,
             &mut state,
@@ -684,40 +686,9 @@ async fn test_intermediate_non_dict_error() {
 }
 
 // -- % pipeline --
-
-#[tokio::test]
-async fn test_pipeline_percent() {
-    let env = file_env("[x: 42]\n---\n[y: %]").await;
-    let result = env_get(&env, "%").unwrap().body.clone();
-    match result {
-        Type::Dict(Row { fields, .. }) => {
-            let y = fields.get("y").expect("field 'y' should exist");
-            assert!(
-                matches!(y, Type::Dict(..)),
-                "expected % to be Record, got {y}"
-            );
-        }
-        other => panic!("expected Record result, got {other}"),
-    }
-}
-
-#[tokio::test]
-async fn test_pipeline_percent_type() {
-    let env = file_env("[x: 1]\n---\n[y: %.x]").await;
-    let result = env_get(&env, "%").unwrap().body.clone();
-    match result {
-        Type::Dict(Row { fields, .. }) => {
-            let y = fields.get("y").expect("field 'y' should exist");
-            // x has type IntLiteral(1), so %.x has type IntLiteral(1)
-            assert_eq!(
-                *y,
-                Type::IntLiteral(1),
-                "expected %.x to propagate IntLiteral(1), got {y}"
-            );
-        }
-        other => panic!("expected Record result, got {other}"),
-    }
-}
+// test_pipeline_percent and test_pipeline_percent_type removed — % threading between
+// documents is owned by tinct code (loader/include), not by Rust test helpers.
+// These behaviors are covered by corpus tests.
 
 // -- Annotation resolution --
 
