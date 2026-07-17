@@ -353,7 +353,7 @@
   pragma-no-prelude?: [fn [let state]
     [match [builtin-eq-int [builtin-dict-length state.errors] 0]
       0: 0  # parse failed — treat as no pragma
-      _: [let docs state.parsed.documents]
+      _: [docs: state.parsed.documents]
          [match [builtin-eq-int [builtin-dict-length docs] 0]
            0: 0  # no documents
            _: [meta: [builtin-doc-meta [builtin-get 0 docs] root-scope-id]]
