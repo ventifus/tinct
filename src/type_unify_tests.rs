@@ -2103,7 +2103,7 @@ async fn test_constrain_error_absorption() {
     let span = rust_span!();
 
     let result = constrain(
-        &Type::error_cascade(),
+        &Type::error_note("test error sentinel"),
         &Type::Int,
         &mut state,
         &mut Vec::new(),
@@ -2118,7 +2118,7 @@ async fn test_constrain_error_absorption() {
 
     let result2 = constrain(
         &Type::Int,
-        &Type::error_cascade(),
+        &Type::error_note("test error sentinel"),
         &mut state,
         &mut Vec::new(),
         span,
@@ -2142,7 +2142,7 @@ async fn test_unify_error_absorption() {
 
     // Test unify(Error, Int) — Error on left side
     let result = unify_sync(
-        &Type::error_cascade(),
+        &Type::error_note("test error sentinel"),
         &Type::Int,
         &mut state,
         &mut Vec::new(),
@@ -2158,7 +2158,7 @@ async fn test_unify_error_absorption() {
     // Test unify(Int, Error) — Error on right side (symmetric)
     let result2 = unify_sync(
         &Type::Int,
-        &Type::error_cascade(),
+        &Type::error_note("test error sentinel"),
         &mut state,
         &mut Vec::new(),
         span.clone(),
@@ -2172,7 +2172,7 @@ async fn test_unify_error_absorption() {
 
     // Test unify(Error, Str) — Error with different concrete type
     let result3 = unify_sync(
-        &Type::error_cascade(),
+        &Type::error_note("test error sentinel"),
         &Type::Str,
         &mut state,
         &mut Vec::new(),
@@ -2188,7 +2188,7 @@ async fn test_unify_error_absorption() {
     // Test unify(Str, Error) — symmetric variant
     let result4 = unify_sync(
         &Type::Str,
-        &Type::error_cascade(),
+        &Type::error_note("test error sentinel"),
         &mut state,
         &mut Vec::new(),
         span,

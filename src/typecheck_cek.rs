@@ -754,6 +754,28 @@ async fn apply_cont(
                             ));
                         }
                     }
+                    // For intersection annotations: validate that the inferred body type is
+                    // consistent with each Function member of the intersection.
+                    // This catches cases where a fn@[all Fn1 Fn2] annotation is inconsistent
+                    // with the actual inferred body type.
+                    if let Type::Intersection(members) = &declared_ret {
+                        let body_resolved = state.subst.apply(&child_ty);
+                        let body_is_concrete =
+                            !matches!(body_resolved, Type::Unknown | Type::Any | Type::TypeVar(..));
+                        if body_is_concrete {
+                            for member in members {
+                                if matches!(member, Type::Function { .. }) {
+                                    if !Type::is_consistent_subtype(&body_resolved, member) {
+                                        errors.push(TypeError::type_mismatch(
+                                            member,
+                                            &body_resolved,
+                                            node_span.clone(),
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
                     match &declared_ret {
                         Type::Unknown => child_ty,
                         _ => declared_ret,
@@ -1349,8 +1371,9 @@ async fn infer_var_ref(
                 ty
             }
         } else {
-            errors.push(err);
-            Type::Error(Arc::new(vec![]))
+            let typed_err = crate::type_errors::TypeErrorTyped::from(err);
+            errors.push(TypeError::from(typed_err.clone()));
+            Type::error_with(vec![typed_err])
         }
     }
 }
@@ -1614,6 +1637,49 @@ async fn infer_get_in_call(
     Type::Unknown
 }
 
+// ===== Inline helper: evaluate args for error collection =====
+
+/// Evaluate each positional and named argument in isolation (with a fresh local stack)
+/// to collect any errors nested inside them. Return types are discarded.
+///
+/// Used when an arity mismatch or other definite call-site failure is detected: we still
+/// want to surface errors inside the arguments (e.g., calling an undefined function as an
+/// arg), but we do not want to unify arg types against params — there are none to unify
+/// against in the correct correspondence.
+async fn eval_args_for_errors(
+    args: &[Arc<SurfaceNode>],
+    named_args: &[Spanned<SurfaceNamedArg>],
+    env: &Arc<RwLock<Env>>,
+    state: &mut InferState,
+    errors: &mut Vec<TypeError>,
+    type_map: &mut Option<&mut TypeMap>,
+) {
+    for arg in args {
+        let mut local_stack = Vec::new();
+        let _ = Box::pin(run_typecheck(
+            arg,
+            env,
+            state,
+            errors,
+            type_map,
+            &mut local_stack,
+        ))
+        .await;
+    }
+    for na in named_args {
+        let mut local_stack = Vec::new();
+        let _ = Box::pin(run_typecheck(
+            &na.node.value,
+            env,
+            state,
+            errors,
+            type_map,
+            &mut local_stack,
+        ))
+        .await;
+    }
+}
+
 // ===== Inline helper: call func type dispatch =====
 
 async fn apply_cont_call_func(
@@ -1632,32 +1698,11 @@ async fn apply_cont_call_func(
     // (to collect any nested errors) but does NOT emit a not_a_function diagnostic.
     // The error is already recorded at the definition site; re-emitting it here
     // creates a cascade that obscures the root cause.
-    if matches!(func_ty, Type::Error(_)) {
-        for arg in &args {
-            let mut local_stack = Vec::new();
-            let _ = Box::pin(run_typecheck(
-                arg,
-                &env,
-                state,
-                errors,
-                type_map,
-                &mut local_stack,
-            ))
-            .await;
-        }
-        for na in &named_args {
-            let mut local_stack = Vec::new();
-            let _ = Box::pin(run_typecheck(
-                &na.node.value,
-                &env,
-                state,
-                errors,
-                type_map,
-                &mut local_stack,
-            ))
-            .await;
-        }
-        return TypeCheckAction::Done(Type::Unknown);
+    // Return Type::Error (not Unknown) — this is a definite failure; Unknown would
+    // silently pass downstream consistency checks and mask the error.
+    if let Type::Error(payload) = &func_ty {
+        eval_args_for_errors(&args, &named_args, &env, state, errors, type_map).await;
+        return TypeCheckAction::Done(Type::Error(payload.clone()));
     }
 
     match &func_ty {
@@ -1691,7 +1736,7 @@ async fn apply_cont_call_func(
             };
 
             if args.is_empty() {
-                // No positional args — handle named args and return
+                // No positional args — arity is checked inside finalize_call_no_positional_args.
                 let result = finalize_call_no_positional_args(
                     inst_params,
                     inst_ret,
@@ -1708,7 +1753,33 @@ async fn apply_cont_call_func(
                 return TypeCheckAction::Done(result);
             }
 
-            // Start evaluating positional args
+            // Positional args present: check arity BEFORE pushing any AfterCallArg continuation.
+            // This prevents type unification from running with the wrong number of arguments,
+            // which would produce misleading type errors downstream.
+            {
+                let n_positional = args.len();
+                let n_named = named_args.len();
+                let n_total = n_positional + n_named;
+                let min_req = if inst_variadic && !inst_params.is_empty() {
+                    inst_required.saturating_sub(1)
+                } else {
+                    inst_required
+                };
+                if n_total < min_req || (!inst_variadic && n_positional > inst_params.len()) {
+                    eval_args_for_errors(&args, &named_args, &env, state, errors, type_map).await;
+                    let typed_err = crate::type_errors::TypeErrorTyped::new(
+                        format!(
+                            "arity mismatch: expected {} argument(s), got {}",
+                            min_req, n_total
+                        ),
+                        span.clone(),
+                    );
+                    errors.push(TypeError::from(typed_err.clone()));
+                    return TypeCheckAction::Done(Type::error_with(vec![typed_err]));
+                }
+            }
+
+            // Arity is correct. Start evaluating positional args.
             let first_arg = Arc::clone(&args[0]);
             let arg_nodes: Vec<Arc<SurfaceNode>> = args.iter().map(Arc::clone).collect();
             let remaining: Vec<Arc<SurfaceNode>> = args[1..].iter().map(Arc::clone).collect();
@@ -1796,21 +1867,25 @@ async fn apply_cont_call_func(
         } if fields.fields.is_empty() => {
             // Unit variant constructor: wraps a single arg
             if args.len() != 1 {
-                errors.push(TypeError::new(
+                eval_args_for_errors(&args, &named_args, &env, state, errors, type_map).await;
+                let typed_err = crate::type_errors::TypeErrorTyped::new(
                     format!(
                         "unit variant constructor takes exactly 1 argument, got {}",
                         args.len()
                     ),
                     span,
-                ));
-                return TypeCheckAction::Done(Type::Unknown);
+                );
+                errors.push(TypeError::from(typed_err.clone()));
+                return TypeCheckAction::Done(Type::error_with(vec![typed_err]));
             }
             if !named_args.is_empty() {
-                errors.push(TypeError::new(
+                eval_args_for_errors(&args, &named_args, &env, state, errors, type_map).await;
+                let typed_err = crate::type_errors::TypeErrorTyped::new(
                     "unit variant constructor does not accept named arguments",
                     span,
-                ));
-                return TypeCheckAction::Done(Type::Unknown);
+                );
+                errors.push(TypeError::from(typed_err.clone()));
+                return TypeCheckAction::Done(Type::error_with(vec![typed_err]));
             }
             let tycon = tycon.clone();
             let ctor = ctor.clone();
@@ -1838,12 +1913,181 @@ async fn apply_cont_call_func(
             })
         }
 
+        // Extract all Function-typed members from the intersection.
+        // An intersection function type means the value satisfies all member signatures;
+        // at a call site we select the unique member whose arity matches the supplied args.
+        Type::Intersection(members) => {
+            let fn_members: Vec<Type> = members
+                .iter()
+                .filter(|m| matches!(m, Type::Function { .. }))
+                .cloned()
+                .collect();
+
+            if fn_members.is_empty() {
+                let typed_err = crate::type_errors::TypeErrorTyped::new(
+                    format!(
+                        "expected function type, got intersection of non-function types: {}",
+                        func_ty
+                    ),
+                    call_node.span.clone(),
+                );
+                errors.push(TypeError::from(typed_err.clone()));
+                return TypeCheckAction::Done(Type::error_with(vec![typed_err]));
+            }
+
+            let n_positional = args.len();
+            let n_named = named_args.len();
+            let n_total = n_positional + n_named;
+
+            let matching: Vec<Type> = fn_members
+                .into_iter()
+                .filter(|m| {
+                    if let Type::Function {
+                        params,
+                        variadic,
+                        required_count,
+                        ..
+                    } = m
+                    {
+                        n_total >= *required_count && (*variadic || n_positional <= params.len())
+                    } else {
+                        false
+                    }
+                })
+                .collect();
+
+            if matching.is_empty() {
+                let typed_err = crate::type_errors::TypeErrorTyped::new(
+                    format!(
+                        "no overload of intersection type accepts {} argument(s)",
+                        n_total
+                    ),
+                    call_node.span.clone(),
+                );
+                errors.push(TypeError::from(typed_err.clone()));
+                return TypeCheckAction::Done(Type::error_with(vec![typed_err]));
+            }
+
+            // Pick the most specific overload: smallest params.len() that fits,
+            // preferring non-variadic over variadic.
+            let selected = if matching.len() == 1 {
+                matching.into_iter().next().unwrap()
+            } else {
+                matching
+                    .into_iter()
+                    .min_by_key(|m| {
+                        if let Type::Function {
+                            params, variadic, ..
+                        } = m
+                        {
+                            // Non-variadic with smaller params wins; variadic pushed to back.
+                            if *variadic {
+                                (usize::MAX, params.len())
+                            } else {
+                                (0, params.len())
+                            }
+                        } else {
+                            (usize::MAX, usize::MAX)
+                        }
+                    })
+                    .unwrap()
+            };
+
+            Box::pin(apply_cont_call_func(
+                selected, args, named_args, env, span, call_node, state, errors, type_map, stack,
+            ))
+            .await
+        }
+
+        // For a union of function types at a call site, we select the member(s) matching
+        // the supplied arity and union their return types.
+        Type::Union(members) => {
+            let fn_members: Vec<Type> = members
+                .iter()
+                .filter(|m| matches!(m, Type::Function { .. }))
+                .cloned()
+                .collect();
+
+            if fn_members.is_empty() {
+                let typed_err = crate::type_errors::TypeErrorTyped::new(
+                    format!(
+                        "expected function type, got union of non-function types: {}",
+                        func_ty
+                    ),
+                    call_node.span.clone(),
+                );
+                errors.push(TypeError::from(typed_err.clone()));
+                return TypeCheckAction::Done(Type::error_with(vec![typed_err]));
+            }
+
+            let n_positional = args.len();
+            let n_named = named_args.len();
+            let n_total = n_positional + n_named;
+
+            let matching: Vec<Type> = fn_members
+                .into_iter()
+                .filter(|m| {
+                    if let Type::Function {
+                        params,
+                        variadic,
+                        required_count,
+                        ..
+                    } = m
+                    {
+                        n_total >= *required_count && (*variadic || n_positional <= params.len())
+                    } else {
+                        false
+                    }
+                })
+                .collect();
+
+            if matching.is_empty() {
+                let typed_err = crate::type_errors::TypeErrorTyped::new(
+                    format!("no overload of union type accepts {} argument(s)", n_total),
+                    call_node.span.clone(),
+                );
+                errors.push(TypeError::from(typed_err.clone()));
+                return TypeCheckAction::Done(Type::error_with(vec![typed_err]));
+            }
+
+            // Pick the most specific overload: smallest params.len() that fits,
+            // preferring non-variadic over variadic.
+            let selected = if matching.len() == 1 {
+                matching.into_iter().next().unwrap()
+            } else {
+                matching
+                    .into_iter()
+                    .min_by_key(|m| {
+                        if let Type::Function {
+                            params, variadic, ..
+                        } = m
+                        {
+                            if *variadic {
+                                (usize::MAX, params.len())
+                            } else {
+                                (0, params.len())
+                            }
+                        } else {
+                            (usize::MAX, usize::MAX)
+                        }
+                    })
+                    .unwrap()
+            };
+
+            Box::pin(apply_cont_call_func(
+                selected, args, named_args, env, span, call_node, state, errors, type_map, stack,
+            ))
+            .await
+        }
+
         _ => {
-            errors.push(TypeError::new(
+            eval_args_for_errors(&args, &named_args, &env, state, errors, type_map).await;
+            let typed_err = crate::type_errors::TypeErrorTyped::new(
                 format!("expected function type, got {}", func_ty),
                 call_node.span.clone(),
-            ));
-            TypeCheckAction::Done(Type::Unknown)
+            );
+            errors.push(TypeError::from(typed_err.clone()));
+            TypeCheckAction::Done(Type::error_with(vec![typed_err]))
         }
     }
 }
@@ -1869,11 +2113,12 @@ async fn finalize_call_no_positional_args(
     };
 
     if named_args.is_empty() && min_required > 0 {
-        errors.push(TypeError::new(
+        let typed_err = crate::type_errors::TypeErrorTyped::new(
             format!("arity mismatch: expected {} arguments, got 0", min_required),
             span.clone(),
-        ));
-        return state.apply(&ret);
+        );
+        errors.push(TypeError::from(typed_err.clone()));
+        return Type::error_with(vec![typed_err]);
     }
 
     let mut consumed: std::collections::HashSet<usize> = std::collections::HashSet::new();
@@ -1968,16 +2213,19 @@ async fn apply_call_args_poly(
     };
     let total_supplied = arg_types.len() + named_args.len();
 
-    // Arity check
+    // Arity check — this is a post-collection check (all args already evaluated).
+    // Return Type::Error rather than the return type to ensure definite failures
+    // do not flow silently through downstream consistency checks.
     if total_supplied < min_required || (!fn_variadic && arg_types.len() > param_types.len()) {
-        errors.push(TypeError::new(
+        let typed_err = crate::type_errors::TypeErrorTyped::new(
             format!(
                 "arity mismatch: expected {} arguments, got {}",
                 min_required, total_supplied
             ),
             span.clone(),
-        ));
-        return TypeCheckAction::Done(state.apply(&fn_ret));
+        );
+        errors.push(TypeError::from(typed_err.clone()));
+        return TypeCheckAction::Done(Type::error_with(vec![typed_err]));
     }
 
     // Unify positional args against params (Robinson unification via unify())
@@ -2038,7 +2286,39 @@ async fn apply_call_args_poly(
                     None
                 }
             } else if matches!(variadic_param_ty, Type::TypeVar(_, _)) {
-                Some(variadic_param_ty.clone())
+                // Unannotated variadic: heterogeneous dict. Build a specific positional dict
+                // from the actual variadic args and unify the whole dict against the TypeVar.
+                // This correctly types args as {0: T0, 1: T1, ...} without any homogeneity constraint.
+                let variadic_positional = &arg_types[non_variadic_param_count..];
+                if !variadic_positional.is_empty() {
+                    let mut fields = indexmap::IndexMap::new();
+                    for (i, ty) in variadic_positional.iter().enumerate() {
+                        let widened = match ty {
+                            Type::IntLiteral(_) => Type::Int,
+                            Type::StringLiteral(_) => Type::Str,
+                            other => other.clone(),
+                        };
+                        fields.insert(i.to_string(), widened);
+                    }
+                    let variadic_dict = Type::Dict(Row {
+                        fields,
+                        tail: RowTail::Empty,
+                    });
+                    let mut constraints = std::mem::take(&mut state.constraints);
+                    if let Err(e) = Box::pin(unify(
+                        variadic_param_ty,
+                        &variadic_dict,
+                        state,
+                        &mut constraints,
+                        span.clone(),
+                    ))
+                    .await
+                    {
+                        errors.push(e);
+                    }
+                    state.constraints = constraints;
+                }
+                None // no per-element loop
             } else {
                 None
             };
@@ -2244,14 +2524,34 @@ async fn infer_fn_push_cont(
 
     for p in params {
         let param_ty = if p.node.variadic {
-            let elem_ty = state.fresh_type_var(&p.span);
-            Type::Dict(Row {
-                fields: indexmap::IndexMap::new(),
-                tail: RowTail::Uniform {
-                    key: None,
-                    value: Box::new(elem_ty),
-                },
-            })
+            if let Some(ann) = &p.node.annotation {
+                // Annotated variadic (e.g., ...xs@[Seq Int]): resolve annotation for the bucket type.
+                match typecheck_annot::resolve_annotation(
+                    &ann.node,
+                    &stub_type_env,
+                    ann.span.clone(),
+                    state,
+                    &mut constraints,
+                    &mut ann_mapping_opt,
+                    &mut row_ann_mapping_opt,
+                    None,
+                )
+                .await
+                {
+                    Ok(ty) => ty,
+                    Err(e) => {
+                        errors.push(e);
+                        // Fall back to a bare TypeVar for the whole dict.
+                        state.fresh_type_var(&p.span)
+                    }
+                }
+            } else {
+                // Unannotated variadic (...args): heterogeneous dict — bare TypeVar for the whole dict.
+                // Do NOT use Dict(Uniform(elem_ty)) — Uniform implies homogeneity which the spec forbids
+                // for unannotated variadics. Each call site will unify this TypeVar with the specific
+                // {0: T0, 1: T1, ..., "name": Tnamed} dict built from the actual variadic args.
+                state.fresh_type_var(&p.span)
+            }
         } else if let Some(ann) = &p.node.annotation {
             match typecheck_annot::resolve_annotation(
                 &ann.node,
@@ -2612,12 +2912,14 @@ fn field_type_from_base(
         Type::Union(_) => Type::Unknown,
         Type::NominalVariant { .. } => Type::Unknown,
         Type::TyCon(_) | Type::App(_, _) => Type::Unknown,
+        Type::Error(payload) => Type::Error(payload.clone()),
         other => {
-            errors.push(TypeError::new(
+            let typed_err = crate::type_errors::TypeErrorTyped::new(
                 format!("expected record type for field access, but got {}", other),
                 span.clone(),
-            ));
-            Type::Unknown
+            );
+            errors.push(TypeError::from(typed_err.clone()));
+            Type::error_with(vec![typed_err])
         }
     }
 }

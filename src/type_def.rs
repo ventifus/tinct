@@ -313,10 +313,9 @@ pub enum Type {
     /// absorption), so parent expressions can continue inference without spurious downstream
     /// errors. `is_subtype(Error, _)` returns false; Error is not a subtype of anything.
     ///
-    /// The payload carries the errors that caused this `Error` node. An empty `Vec` is a
-    /// "bare cascade sentinel" — prefer `Type::error_note(msg)` when any description is
-    /// available, `Type::error_with(errs)` to propagate causal errors, or `Type::error_cascade()`
-    /// only in tests / when genuinely no context exists.
+    /// The payload carries the errors that caused this `Error` node. An empty `Vec` is
+    /// FORBIDDEN — always use `Type::error_note(msg)` or `Type::error_with(errs)`.
+    /// Every Error must carry causal context; empty payloads make blame impossible.
     Error(Arc<Vec<TypeErrorTyped>>),
     /// Directory capability — wraps cap_std::fs::Dir. Injected via CLI --cap-fs or
     /// runtime env (cwd, libdir). Represents authority to access a specific directory tree.
@@ -761,16 +760,6 @@ pub(crate) fn extract_tycon_spine(ty: &Type) -> Option<(&str, Vec<&Type>)> {
 
 impl Type {
     // ── Error constructors and accessors ────────────────────────────────────────
-
-    /// Construct an Error node with empty payload — **test-only**.
-    ///
-    /// Production code must NEVER use this. Every `Type::Error` in production must carry the
-    /// causal errors that produced it (`error_with`) or at minimum a message (`error_note`).
-    /// An empty payload makes blame information impossible to reconstruct.
-    #[cfg(test)]
-    pub fn error_cascade() -> Self {
-        Type::Error(Arc::new(vec![]))
-    }
 
     /// Construct an Error node carrying the errors that caused it.
     pub fn error_with(errs: Vec<TypeErrorTyped>) -> Self {
@@ -2923,8 +2912,16 @@ mod tests {
 
     #[test]
     fn test_bas_error_not_subtype() {
-        assert!(!Type::is_subtype(&Type::error_cascade(), &Type::Int, None));
-        assert!(!Type::is_subtype(&Type::Int, &Type::error_cascade(), None));
+        assert!(!Type::is_subtype(
+            &Type::error_note("test error sentinel"),
+            &Type::Int,
+            None
+        ));
+        assert!(!Type::is_subtype(
+            &Type::Int,
+            &Type::error_note("test error sentinel"),
+            None
+        ));
     }
 
     #[test]
@@ -3009,11 +3006,19 @@ mod tests {
 
         // TypeVar vs Error: Error guard fires first → false on BOTH sides.
         assert!(
-            !Type::is_subtype(&Type::TypeVar("a".into(), 0), &Type::error_cascade(), None),
+            !Type::is_subtype(
+                &Type::TypeVar("a".into(), 0),
+                &Type::error_note("test error sentinel"),
+                None
+            ),
             "TypeVar(a) <: Error must be false (Error guard fires first)"
         );
         assert!(
-            !Type::is_subtype(&Type::error_cascade(), &Type::TypeVar("a".into(), 0), None),
+            !Type::is_subtype(
+                &Type::error_note("test error sentinel"),
+                &Type::TypeVar("a".into(), 0),
+                None
+            ),
             "Error <: TypeVar(a) must be false (Error guard fires first)"
         );
 

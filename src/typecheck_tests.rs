@@ -1234,42 +1234,38 @@ async fn test_call_any_callee_populates_type_map_for_positional_args() {
 // -- Variadic param type inference --
 
 #[tokio::test]
-async fn test_variadic_param_type_is_any() {
-    // Variadic params collect extra positional args into an open integer-keyed record.
-    //
-    // Grammar: variadic_param = @{ "..." ~ param_name } — no @annotation syntax.
-    // The param_types override at infer_fn ensures the function type reflects
-    // Record(Uniform) for the variadic slot.
+async fn test_variadic_param_type_is_typevar() {
+    // Unannotated variadic params collect extra positional args into a heterogeneous dict.
+    // Per the 2026-05-14 spec decision (Option C hybrid), unannotated ...args has no
+    // element-type constraint — the param type is a bare TypeVar for the whole dict.
+    // (Previously wrongly typed as Dict(Uniform(TypeVar_elem)) which imposed homogeneity.)
 
-    // Basic variadic: single param, collects all positional args
     let ty = result_field("[f: [fn [let ...rest] $rest]]", "f").await;
     match ty {
         Type::Function { params, .. } => {
             assert_eq!(params.len(), 1, "variadic function should have 1 param");
             assert!(
-                matches!(&params[0].1, Type::Dict(row) if matches!(&row.tail, crate::type_def::RowTail::Uniform { .. })),
-                "variadic param should have type Record(Uniform), got: {:?}",
+                matches!(&params[0].1, Type::TypeVar(_, _)),
+                "unannotated variadic param should have bare TypeVar type (heterogeneous dict), got: {:?}",
                 params[0]
             );
         }
         other => panic!("expected Function type for f, got {other}"),
     }
-    // Note: sub-case with a@Integer b@Integer removed — uses @Integer (builtin_core type).
 }
 
 #[tokio::test]
-async fn test_variadic_param_env_binding_is_record() {
-    // The env binding for a variadic param inside the function body is Record(Uniform).
-    //
-    // If the body references $rest, its inferred type comes from the env binding.
-    // Returning $rest should give the function a Record(Uniform) return type.
+async fn test_variadic_param_env_binding_is_typevar() {
+    // The env binding for an unannotated variadic param is a bare TypeVar.
+    // Returning $rest from a variadic function should give a TypeVar return type
+    // (the whole variadic dict type, not a homogeneous Record(Uniform)).
 
     let ty = result_field("[f: [fn [let x ...rest] $rest]]", "f").await;
     match ty {
         Type::Function { ret, .. } => {
             assert!(
-                matches!(ret.as_ref(), Type::Dict(row) if matches!(&row.tail, crate::type_def::RowTail::Uniform { .. })),
-                "function returning variadic param should have Record(Uniform) return type, got: {ret:?}"
+                matches!(ret.as_ref(), Type::TypeVar(_, _)),
+                "function returning unannotated variadic param should have TypeVar return type, got: {ret:?}"
             );
         }
         other => panic!("expected Function type for f, got {other}"),
@@ -1691,7 +1687,7 @@ async fn test_error_absorbed_in_unify_does_not_corrupt_substitution() {
     let mut constraints = Vec::new();
     let result = unify(
         &Type::TypeVar("a".into(), 1),
-        &Type::error_cascade(),
+        &Type::error_note("test error sentinel"),
         &mut state,
         &mut constraints,
         span,
