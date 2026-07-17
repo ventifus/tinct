@@ -1244,12 +1244,17 @@ async fn test_variadic_param_type_is_typevar() {
 
     let ty = result_field("[f: [fn [let ...rest] $rest]]", "f").await;
     match ty {
-        Type::Function { params, .. } => {
-            assert_eq!(params.len(), 1, "variadic function should have 1 param");
+        Type::Function { params, rest, .. } => {
+            assert_eq!(params.len(), 0, "variadic-only function should have 0 fixed params");
             assert!(
-                matches!(&params[0].1, Type::TypeVar(_, _)),
-                "unannotated variadic param should have bare TypeVar type (heterogeneous dict), got: {:?}",
-                params[0]
+                rest.is_some(),
+                "unannotated variadic should populate the rest field"
+            );
+            let rest_ty = &rest.unwrap().1;
+            assert!(
+                matches!(rest_ty, Type::TypeVar(_, _)),
+                "unannotated variadic rest should have bare TypeVar type (heterogeneous dict), got: {:?}",
+                rest_ty
             );
         }
         other => panic!("expected Function type for f, got {other}"),

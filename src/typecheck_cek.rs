@@ -75,9 +75,12 @@ pub(crate) enum TypeCheckCont {
         saved_expected_return: Option<Type>,
         /// Pre-resolved return annotation type (overrides body type when concrete).
         return_ann: Option<Type>,
-        /// Resolved param types.
+        /// Resolved fixed param types (non-variadic).
         params: Vec<(Option<String>, Type)>,
-        is_variadic: bool,
+        /// Typed variadic buckets: (name, Seq[T]) in declaration order.
+        typed_variadics: Vec<(String, Type)>,
+        /// Untyped variadic fallback: (name, TypeVar_whole_dict).
+        rest: Option<Box<(String, Type)>>,
         required_count: usize,
         node_span: Span,
     },
@@ -727,7 +730,8 @@ async fn apply_cont(
             saved_expected_return,
             return_ann,
             params,
-            is_variadic,
+            typed_variadics,
+            rest,
             required_count,
             node_span,
         } => {
@@ -787,12 +791,8 @@ async fn apply_cont(
             let fn_type = Type::Function {
                 params,
                 ret: Box::new(fn_ret_ty),
-                typed_variadics: vec![],
-                rest: if is_variadic {
-                    Some(Box::new(("rest".to_string(), Type::Unknown)))
-                } else {
-                    None
-                },
+                typed_variadics,
+                rest,
                 required_count,
             };
             // Record the function type with the Fn node's span so that scan_type_quality
@@ -2550,6 +2550,8 @@ async fn infer_fn_push_cont(
     // Resolve param annotations and build fn env
     let mut fn_env_inner = Env::with_parent(Arc::clone(env));
     let mut param_types: Vec<(Option<String>, Type)> = Vec::new();
+    let mut typed_variadics: Vec<(String, Type)> = Vec::new();
+    let mut rest: Option<Box<(String, Type)>> = None;
 
     for p in params {
         let param_ty = if p.node.variadic {
@@ -2604,17 +2606,22 @@ async fn infer_fn_push_cont(
             Type::Unknown
         };
         fn_env_inner.insert(p.node.name.clone(), param_ty.clone());
-        param_types.push((Some(p.node.name.clone()), param_ty));
+        if p.node.variadic {
+            // Variadic param: goes into typed_variadics or rest, not fixed params.
+            if p.node.annotation.is_some() {
+                typed_variadics.push((p.node.name.clone(), param_ty));
+            } else {
+                rest = Some(Box::new((p.node.name.clone(), param_ty)));
+            }
+        } else {
+            param_types.push((Some(p.node.name.clone()), param_ty));
+        }
     }
 
     let fn_env_arc = Arc::new(RwLock::new(fn_env_inner));
 
-    let is_variadic = params.iter().any(|p| p.node.variadic);
-    let required_count = if is_variadic {
-        params.len().saturating_sub(1)
-    } else {
-        params.len()
-    };
+    // required_count = number of fixed (non-variadic) params
+    let required_count = param_types.len();
 
     let saved_level = state.level;
     let saved_expected_return = state.expected_return.clone();
@@ -2625,7 +2632,8 @@ async fn infer_fn_push_cont(
         saved_expected_return,
         return_ann: return_ann_type,
         params: param_types,
-        is_variadic,
+        typed_variadics,
+        rest,
         required_count,
         node_span: node.span.clone(),
     });
