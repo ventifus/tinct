@@ -5605,35 +5605,10 @@ fn push_expr_to_parent(
                             });
                         }
 
-                        // Validate variadic constraints before extracting:
-                        // 1. At most one variadic param
-                        // 2. Variadic must be last (after ignoring Placeholders)
-                        // 3. Variadic params cannot be annotated (Rest is never Annotated)
-                        let variadic_count = bindings
-                            .iter()
-                            .filter(|b| matches!(&b.expr, SurfaceExpression::Rest(Some(_), _)))
-                            .count();
-                        if variadic_count > 1 {
-                            return Err(ParseError {
-                                message: "only one variadic parameter (...name) is allowed per fn"
-                                    .to_string(),
-                                span: Some(node.span.clone()),
-                            });
-                        }
-                        if variadic_count == 1 {
-                            // Find the last non-Placeholder binding and check it's variadic
-                            let last_non_placeholder = bindings
-                                .iter()
-                                .rfind(|b| !matches!(&b.expr, SurfaceExpression::Placeholder));
-                            if let Some(last) = last_non_placeholder {
-                                if !matches!(&last.expr, SurfaceExpression::Rest(Some(_), _)) {
-                                    return Err(ParseError {
-                                        message: "variadic parameter (...name) must be the last parameter".to_string(),
-                                        span: Some(node.span.clone()),
-                                    });
-                                }
-                            }
-                        }
+                        // No variadic validation at parse time — variadics are just annotated
+                        // parameters with `...` prefix. The type system handles ordering
+                        // constraints (untyped fallback must be last, etc.) the same way
+                        // match exhaustiveness handles wildcard ordering.
 
                         // Extract parameters from LetDecl bindings
                         *params_consumed = true;
@@ -8408,29 +8383,27 @@ mod tests {
 
     #[test]
     fn test_fn_param_variadic_not_last() {
-        // [let ...args x] — variadic param not last: parse produces an error
-        // (fatal or recovered) because the variadic must be the last param.
+        // [let ...args x] — variadic followed by fixed param: parser accepts this.
+        // Ordering constraints (untyped fallback must be last) are enforced by the
+        // type system, not the parser. Parameters are match patterns — the parser is
+        // as general and permissive as possible.
         let result = parse(
             "[fn [let ...args x] $x]",
             test_file("[fn [let ...args x] $x]"),
         );
-        let has_error = result.is_err() || !result.unwrap().errors.is_empty();
-        assert!(has_error, "expected parse error for param after variadic");
+        assert!(result.is_ok(), "parser should accept variadic in non-last position");
     }
 
     #[test]
     fn test_fn_multiple_variadic() {
-        // [let ...args ...rest] — multiple variadic params: parse produces an error
-        // (fatal or recovered) because only one variadic is allowed per fn.
+        // [let ...args ...rest] — multiple variadic params: parser accepts this.
+        // From the parser's perspective, variadics are just annotated things with `...` prefix.
+        // The type system handles multi-variadic routing via match semantics.
         let result = parse(
             "[fn [let ...args ...rest] $x]",
             test_file("[fn [let ...args ...rest] $x]"),
         );
-        let has_error = result.is_err() || !result.unwrap().errors.is_empty();
-        assert!(
-            has_error,
-            "expected parse error for multiple variadic params"
-        );
+        assert!(result.is_ok(), "parser should accept multiple variadics");
     }
 
     #[test]
