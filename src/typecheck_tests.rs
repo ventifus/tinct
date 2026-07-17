@@ -2,6 +2,11 @@ use super::*;
 use crate::ast::{SurfaceEntry, SurfaceExpression, SurfaceNode, TypeAnnotationTable};
 use crate::rust_span;
 use crate::type_def::TyConDef;
+use crate::typecheck::typecheck_annot::{
+    body_contains_tycon_ref, contains_recvar, expand_all_tycon_apps, expand_named,
+    resolve_annotation, resolve_type_name,
+};
+use crate::typecheck::typecheck_narrow::collect_pattern_bindings;
 use crate::types::unify;
 use crate::Annotation;
 use indexmap::IndexMap;

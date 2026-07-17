@@ -38,18 +38,8 @@ pub(crate) mod typecheck_call;
 #[path = "typecheck_cek.rs"]
 pub(crate) mod typecheck_cek;
 
-#[allow(unused_imports)]
-use typecheck_annot::*;
-#[allow(unused_imports)]
-use typecheck_call::*;
-#[allow(unused_imports)]
-use typecheck_diag::*;
-#[allow(unused_imports)]
-use typecheck_dict::*;
-#[allow(unused_imports)]
-use typecheck_match::*;
-#[allow(unused_imports)]
-use typecheck_narrow::*;
+use typecheck_diag::{scan_explicit_unknown_t011, scan_type_quality};
+use typecheck_narrow::{extract_param_indices, extract_pattern_types, patterns_overlap, types_can_unify};
 
 /// Map from source span `(start_offset, end_offset)` to inferred type. Populated during type
 /// checking so LSP hover/diagnostics can look up types without re-running inference. Offsets
