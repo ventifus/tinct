@@ -27,25 +27,29 @@ Key properties:
 ## Entry Points
 
 ```rust
-pub fn parse(input: &str) -> Result<ParseOutput, ParseError>
+pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseError>
 ```
 
-Parse a complete tinct source string using a synthetic `SourceFile`. Returns `Ok(ParseOutput)` on success (including partial recovery from bracket-internal errors) or `Err(ParseError)` on fatal parse failure.
-
-```rust
-pub fn parse_with_file(
-    source: &str,
-    file: Arc<SourceFile>,
-) -> Result<ParseOutput, ParseError>
-```
-
-Same as `parse`, but associates the output spans with a provided `SourceFile` (for accurate file path and content in error messages and stack traces). Used by the main evaluation pipeline.
+Parse a complete tinct source string. The caller always provides a `SourceFile` (created with
+`Arc::new(SourceFile { path: ..., content: ... })`). Returns `Ok(ParseOutput)` on success
+(including partial recovery from bracket-internal errors) or `Err(ParseError)` on fatal parse
+failure. There is no anonymous variant — every call carries a meaningful file identity. Tokens
+carry the `SourceFile` from the moment the lexer creates them, so all spans have correct
+attribution from the start.
 
 ```rust
 pub fn parse_surface_expression(input: &str) -> Result<Arc<SurfaceNode>, ParseError>
 ```
 
-Parse a single tinct expression (not a full program). Used by tests and the REPL.
+Parse a single tinct expression (not a full program). Uses `"<expression>"` as the synthetic
+file name. Used by tests and the REPL.
+
+```rust
+pub fn parse_with_recovery(input: &str) -> ParseOutput
+```
+
+Like `parse`, but always succeeds. Fatal errors are returned in `ParseOutput.errors` rather
+than as `Err(...)`. Uses `"<recovery>"` as the synthetic file name.
 
 ---
 

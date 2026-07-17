@@ -916,7 +916,7 @@ impl EvalContext {
     /// Set the source file name for FnAnnotation (LSP hover) and child context propagation.
     /// Must be called on a freshly created context before any Arc::clone shares it.
     /// Propagated through `with_base_dir` to child contexts (nested includes).
-    /// Note: backtrace frame filenames are embedded in `Span.file` (populated by `parse_with_file`),
+    /// Note: backtrace frame filenames are embedded in `Span.file` (populated by `parse()`),
     /// not derived from this field.
     pub fn set_source_file(&mut self, file: Option<String>) {
         if let Some(config) = Arc::get_mut(&mut self.config) {
@@ -5232,7 +5232,13 @@ mod tests {
 ]
         "#;
 
-        let parsed = crate::parse(source).expect("parse should succeed");
+        let test_file = || {
+            Arc::new(crate::ast::SourceFile {
+                path: Arc::from(file!()),
+                content: Arc::from(source),
+            })
+        };
+        let parsed = crate::parse(source, test_file()).expect("parse should succeed");
         let mut surface_program = parsed.program;
         crate::desugar::desugar_surface_program(&mut surface_program);
         // Resolve without env: dict siblings ($a, $b, $c) are resolved by scope tracking.

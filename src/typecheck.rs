@@ -134,7 +134,24 @@ pub async fn typecheck_surface_program_annotation_table_with_env(
     state.eval_ctx = eval_ctx;
     state.type_stage_env = type_stage_env;
     state.tycon_env = seed_tycon_env;
-    state.type_stage_map = type_stage_map;
+    // Always seed type_stage_map with Unknown → Type::Unknown so that `@Unknown`
+    // (the gradual-typing escape hatch) resolves through the unified Step 3 path
+    // in resolve_type_head. Production callers supply a full map from type-stage
+    // documents; this seed is merged in regardless so `Unknown` is always available.
+    // The caller-supplied entries win on conflict (or_insert semantics below).
+    let mut effective_type_stage_map = {
+        let mut m = std::collections::HashMap::new();
+        m.insert(
+            "Unknown".to_string(),
+            crate::type_infer::TypeStageEntry::Resolved(crate::types::Type::Unknown),
+        );
+        m
+    };
+    if let Some(caller_map) = type_stage_map {
+        // Caller entries override the seed (production type-stage map takes precedence).
+        effective_type_stage_map.extend(caller_map);
+    }
+    state.type_stage_map = Some(effective_type_stage_map);
     // Compute and store the resolution table for slot-indexed VarRef lookup.
     // No runtime env at the type-checker path; pass empty initial_frames for bootstrap mode.
     let (resolve_table, _frames) = crate::resolve::resolve_surface_program(program, &[]);
@@ -282,6 +299,20 @@ pub async fn typecheck_surface_program_with_env(
     // resolved directly in resolve_type_name without a type-stage env call.
     state.type_stage_env = type_stage_env;
     state.eval_ctx = eval_ctx;
+    // Seed type_stage_map with Unknown → Type::Unknown so that `@Unknown` resolves
+    // through the unified Step 3 path in resolve_type_head. This function is called
+    // by typecheck_source (corpus tests, LSP diagnostics) which do not evaluate
+    // type-stage documents. The full production loader uses
+    // typecheck_surface_program_annotation_table_with_env instead (which has its own
+    // equivalent seed). The seed ensures `@Unknown` never requires a special case.
+    {
+        let mut seed = std::collections::HashMap::new();
+        seed.insert(
+            "Unknown".to_string(),
+            crate::type_infer::TypeStageEntry::Resolved(crate::types::Type::Unknown),
+        );
+        state.type_stage_map = Some(seed);
+    }
     // Seed tycon_env from the TypeContext's accumulated TyConDefs. This propagates
     // opaque types (DirCap, File, ClockCap, Handle, etc.) declared in builtin_core.llt
     // to subsequent module type-checks (builtin_io.llt, builtin_async.llt, ...) so that
@@ -1349,7 +1380,7 @@ pub(crate) async fn infer_surface_expr(
                     let stub_env = crate::types::TypeEnv::new();
                     let mut constraints: Vec<crate::types::Constraint> = Vec::new();
                     if name == "Fn" || name == "Function" {
-                        let ret_ty = typecheck_annot::resolve_annotation(
+                        let ret_ty = match typecheck_annot::resolve_annotation(
                             &ann.node,
                             &stub_env,
                             ann.span.clone(),
@@ -1360,7 +1391,10 @@ pub(crate) async fn infer_surface_expr(
                             None,
                         )
                         .await
-                        .unwrap_or(Type::Unknown);
+                        {
+                            Ok(ty) => ty,
+                            Err(e) => return Err(vec![e]),
+                        };
                         state
                             .failed_bindings
                             .insert(name.clone(), node.span.clone());
@@ -1371,7 +1405,7 @@ pub(crate) async fn infer_surface_expr(
                             required_count: 0,
                         });
                     }
-                    let ty = typecheck_annot::resolve_annotation(
+                    let ty = match typecheck_annot::resolve_annotation(
                         &ann.node,
                         &stub_env,
                         ann.span.clone(),
@@ -1382,7 +1416,10 @@ pub(crate) async fn infer_surface_expr(
                         None,
                     )
                     .await
-                    .unwrap_or(Type::Unknown);
+                    {
+                        Ok(ty) => ty,
+                        Err(e) => return Err(vec![e]),
+                    };
                     state
                         .failed_bindings
                         .insert(name.clone(), node.span.clone());
@@ -2148,6 +2185,10 @@ pub(crate) async fn infer_surface_expr(
                 let mut ann_mapping_opt = Some(&mut ann_mapping_str);
                 let mut row_ann_mapping_str: HashMap<String, String> = HashMap::new();
                 let mut row_ann_mapping_opt = Some(&mut row_ann_mapping_str);
+                // Accumulate annotation errors so that all param annotations are validated
+                // even when the return annotation fails. Mirrors infer_fn_push_cont (CEK path)
+                // which pushes errors and continues rather than returning early.
+                let mut ann_errors: Vec<TypeError> = Vec::new();
 
                 // Step 1: Resolve return annotation FIRST so bind: TypeVars are registered
                 // in ann_mapping_str before param annotations are resolved.
@@ -2168,7 +2209,7 @@ pub(crate) async fn infer_surface_expr(
                         {
                             // fn metadata dict: resolve_fn_metadata populates bind: TypeVars
                             // into ann_mapping_str and returns the extracted return type directly.
-                            let (ret_ty, _doc) = typecheck_annot::resolve_fn_metadata(
+                            match typecheck_annot::resolve_fn_metadata(
                                 entries,
                                 &stub_type_env,
                                 ret_ann.span.clone(),
@@ -2179,12 +2220,19 @@ pub(crate) async fn infer_surface_expr(
                                 None,
                             )
                             .await
-                            .map_err(|e| vec![TypeError::from(e)])?;
-                            Some(ret_ty)
+                            {
+                                Ok((ret_ty, _doc)) => Some(ret_ty),
+                                Err(e) => {
+                                    ann_errors.push(TypeError::from(e));
+                                    None
+                                }
+                            }
                         }
                         _ => {
                             // Non-metadata annotation: use resolve_annotation normally.
-                            typecheck_annot::resolve_annotation(
+                            // On failure, accumulate the error and treat the return type as
+                            // absent (None) so param annotations are still validated.
+                            match typecheck_annot::resolve_annotation(
                                 &ret_ann.node,
                                 &stub_type_env,
                                 ret_ann.span.clone(),
@@ -2195,7 +2243,13 @@ pub(crate) async fn infer_surface_expr(
                                 None,
                             )
                             .await
-                            .ok()
+                            {
+                                Ok(ty) => Some(ty),
+                                Err(e) => {
+                                    ann_errors.push(e);
+                                    None
+                                }
+                            }
                         }
                     };
                     Some(resolved)
@@ -2217,7 +2271,7 @@ pub(crate) async fn infer_surface_expr(
                             },
                         })
                     } else if let Some(ann) = &p.node.annotation {
-                        typecheck_annot::resolve_annotation(
+                        match typecheck_annot::resolve_annotation(
                             &ann.node,
                             &stub_type_env,
                             ann.span.clone(),
@@ -2228,12 +2282,23 @@ pub(crate) async fn infer_surface_expr(
                             None,
                         )
                         .await
-                        .map_err(|e| vec![e])?
+                        {
+                            Ok(ty) => ty,
+                            Err(e) => {
+                                ann_errors.push(e);
+                                Type::Unknown
+                            }
+                        }
                     } else {
                         Type::Unknown
                     };
                     fn_env_inner.insert(p.node.name.clone(), param_ty.clone());
                     param_types.push((Some(p.node.name.clone()), param_ty));
+                }
+                // All param annotations have been validated. If any annotation failed,
+                // return all errors now — the fn type cannot be soundly inferred.
+                if !ann_errors.is_empty() {
+                    return Err(ann_errors);
                 }
                 let fn_env_arc = Arc::new(RwLock::new(fn_env_inner));
                 let body_ty =
@@ -2750,14 +2815,12 @@ pub(crate) async fn infer_surface_expr(
             }
         }
 
-        SurfaceExpression::LetDecl { bindings } => {
+        SurfaceExpression::LetDecl { .. } => {
             // LetDecl in value position is always an error (only valid in binding contexts).
-            let msg = if bindings.len() > 1 {
-                "multi-element [let ...] pattern not yet supported — use single binding".to_string()
-            } else {
-                "binding declaration [let ...] is not valid in expression position".to_string()
-            };
-            Err(vec![TypeError::new(msg, node.span.clone())])
+            Err(vec![TypeError::new(
+                "binding declaration [let ...] is not valid in expression position",
+                node.span.clone(),
+            )])
         }
 
         SurfaceExpression::CaseArm {
@@ -2890,11 +2953,8 @@ pub(crate) async fn infer_surface_expr(
             )])
         }
 
-        SurfaceExpression::Error(span) => Err(vec![TypeError::new(
-            format!(
-                "syntax error at {}:{} (cannot typecheck error node)",
-                span.start.line, span.start.column
-            ),
+        SurfaceExpression::Error(_) => Err(vec![TypeError::new(
+            "parse error node in expression position",
             node.span.clone(),
         )]),
     };

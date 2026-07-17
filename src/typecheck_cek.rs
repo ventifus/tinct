@@ -339,14 +339,10 @@ async fn infer_step(
             ))
         }
 
-        SurfaceExpression::LetDecl { bindings } => {
-            let msg = if bindings.len() > 1 {
-                "multi-element [let ...] pattern not yet supported — use single binding".to_string()
-            } else {
-                "binding declaration [let ...] is not valid in expression position".to_string()
-            };
-            errors.push(TypeError::new(msg.clone(), node.span.clone()));
-            TypeCheckAction::Done(Type::error_note(msg))
+        SurfaceExpression::LetDecl { .. } => {
+            let msg = "binding declaration [let ...] is not valid in expression position";
+            errors.push(TypeError::new(msg, node.span.clone()));
+            TypeCheckAction::Done(Type::error_note(msg.to_string()))
         }
 
         SurfaceExpression::PatternDecl { .. } => {
@@ -359,13 +355,10 @@ async fn infer_step(
             ))
         }
 
-        SurfaceExpression::Error(span) => {
-            let msg = format!(
-                "syntax error at {}:{} (cannot typecheck error node)",
-                span.start.line, span.start.column
-            );
-            errors.push(TypeError::new(msg.clone(), node.span.clone()));
-            TypeCheckAction::Done(Type::error_note(msg))
+        SurfaceExpression::Error(_) => {
+            let msg = "parse error node in expression position";
+            errors.push(TypeError::new(msg, node.span.clone()));
+            TypeCheckAction::Done(Type::error_note(msg.to_string()))
         }
 
         SurfaceExpression::Quote(_inner) => TypeCheckAction::Done(Type::Dict(Row {
@@ -440,8 +433,9 @@ async fn infer_step(
                     });
                     TypeCheckAction::Eval(Arc::clone(inner), Arc::clone(env))
                 }
-                Err(_) => {
-                    // Annotation resolution failed — just evaluate inner and return its type
+                Err(e) => {
+                    // Annotation resolution failed — report the error and evaluate inner without asserting
+                    errors.push(e);
                     TypeCheckAction::Eval(Arc::clone(inner), Arc::clone(env))
                 }
             }
@@ -1153,7 +1147,7 @@ async fn infer_var_ref(
             let stub_env = TypeEnv::new();
             let mut constraints: Vec<Constraint> = Vec::new();
             if name == "Fn" || name == "Function" {
-                let ret_ty = typecheck_annot::resolve_annotation(
+                let ret_ty = match typecheck_annot::resolve_annotation(
                     &ann.node,
                     &stub_env,
                     ann.span.clone(),
@@ -1164,7 +1158,13 @@ async fn infer_var_ref(
                     None,
                 )
                 .await
-                .unwrap_or(Type::Unknown);
+                {
+                    Ok(ty) => ty,
+                    Err(e) => {
+                        errors.push(e);
+                        Type::Unknown
+                    }
+                };
                 state
                     .failed_bindings
                     .insert(name.to_string(), node.span.clone());
@@ -1175,7 +1175,7 @@ async fn infer_var_ref(
                     required_count: 0,
                 }
             } else {
-                let ty = typecheck_annot::resolve_annotation(
+                let ty = match typecheck_annot::resolve_annotation(
                     &ann.node,
                     &stub_env,
                     ann.span.clone(),
@@ -1186,7 +1186,13 @@ async fn infer_var_ref(
                     None,
                 )
                 .await
-                .unwrap_or(Type::Unknown);
+                {
+                    Ok(ty) => ty,
+                    Err(e) => {
+                        errors.push(e);
+                        Type::Unknown
+                    }
+                };
                 state
                     .failed_bindings
                     .insert(name.to_string(), node.span.clone());
@@ -2056,7 +2062,7 @@ async fn infer_fn_push_cont(
                     }
                 }
             }
-            _ => typecheck_annot::resolve_annotation(
+            _ => match typecheck_annot::resolve_annotation(
                 &ret_ann.node,
                 &stub_type_env,
                 ret_ann.span.clone(),
@@ -2067,7 +2073,13 @@ async fn infer_fn_push_cont(
                 None,
             )
             .await
-            .ok(),
+            {
+                Ok(ty) => Some(ty),
+                Err(e) => {
+                    errors.push(e);
+                    None
+                }
+            },
         };
         resolved
     } else {

@@ -815,9 +815,16 @@ mod tests {
     use super::*;
     use crate::ast::{node_id, NodeId, SurfaceExpression};
 
+    fn test_file(src: &str) -> Arc<crate::ast::SourceFile> {
+        Arc::new(crate::ast::SourceFile {
+            path: Arc::from(file!()),
+            content: Arc::from(src),
+        })
+    }
+
     /// Parse `src`, desugar, and resolve. Returns (program, table).
     fn parse_and_resolve(src: &str) -> (crate::ast::SurfaceProgram, ResolutionTable) {
-        let output = crate::parser::parse(src).expect("parse failed");
+        let output = crate::parser::parse(src, test_file(src)).expect("parse failed");
         let mut program = output.program;
         crate::desugar::desugar_surface_program(&mut program);
         // No runtime env in unit tests — dict-internal and lexical references still

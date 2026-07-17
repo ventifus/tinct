@@ -748,10 +748,17 @@ mod tests {
 
     /// Parse and evaluate an LLT snippet, returning the result value.
     ///
+    fn test_file(src: &str) -> Arc<crate::ast::SourceFile> {
+        Arc::new(crate::ast::SourceFile {
+            path: Arc::from(file!()),
+            content: Arc::from(src),
+        })
+    }
+
     /// Uses the stdlib environment so that builtins are available in the body.
     /// The snippet should be a complete expression (e.g. `"[fn [let] 42]"`).
     async fn parse_eval(llt_src: &str, ctx: &Arc<crate::eval::EvalContext>) -> Value {
-        let parsed = crate::parser::parse(llt_src)
+        let parsed = crate::parser::parse(llt_src, test_file(llt_src))
             .unwrap_or_else(|e| panic!("parse_eval: parse failed for {:?}: {}", llt_src, e));
         let mut program = parsed.program;
         crate::desugar::desugar_surface_program(&mut program);

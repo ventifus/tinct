@@ -546,6 +546,7 @@ async fn extract_is_narrowing(
     ann: &Annotation,
     _env: &Arc<RwLock<Env>>,
     state: &mut InferState,
+    errors: &mut Vec<TypeError>,
     constraints: &mut Vec<Constraint>,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
@@ -562,7 +563,7 @@ async fn extract_is_narrowing(
                         SurfaceExpression::VarRef { name, .. } => Annotation::Simple(name.clone()),
                         _ => return None,
                     };
-                    return resolve_annotation(
+                    return match resolve_annotation(
                         &ann_for_value,
                         &stub_type_env,
                         entry.node.value.span.clone(),
@@ -573,7 +574,13 @@ async fn extract_is_narrowing(
                         None,
                     )
                     .await
-                    .ok();
+                    {
+                        Ok(ty) => Some(ty),
+                        Err(e) => {
+                            errors.push(e);
+                            None
+                        }
+                    };
                 }
             }
         }
@@ -678,12 +685,14 @@ pub(crate) async fn infer_fn(
     // name — the narrowing type is derived from the annotation alone.
     let mut param_narrowings: Vec<Option<Type>> = Vec::new();
     let mut has_any_narrowing = false;
+    let mut narrowing_errors: Vec<TypeError> = Vec::new();
     for p in params.iter() {
         let narrowing = if let Some(ann) = &p.node.annotation {
             extract_is_narrowing(
                 &ann.node,
                 env,
                 state,
+                &mut narrowing_errors,
                 constraints,
                 &mut ann_mapping_opt,
                 &mut row_ann_mapping_opt,
@@ -696,6 +705,9 @@ pub(crate) async fn infer_fn(
             has_any_narrowing = true;
         }
         param_narrowings.push(narrowing);
+    }
+    if !narrowing_errors.is_empty() {
+        return Err(narrowing_errors);
     }
     // Store narrowings on InferState for the caller to consume and attach to the TypeScheme.
     // Only populate if at least one param has a narrowing annotation (avoid allocating for

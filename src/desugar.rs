@@ -953,8 +953,15 @@ mod tests {
     //   1. The single-arm instance IS transformed to SurfaceExpression::Dict.
     //   2. The multi-arm instance is NOT transformed (still SurfaceExpression::Decl(InstanceDecl)).
 
+    fn test_file(src: &str) -> Arc<crate::ast::SourceFile> {
+        Arc::new(crate::ast::SourceFile {
+            path: Arc::from(file!()),
+            content: Arc::from(src),
+        })
+    }
+
     fn parse_program(src: &str) -> SurfaceProgram {
-        crate::parser::parse(src)
+        crate::parser::parse(src, test_file(src))
             .unwrap_or_else(|e| panic!("parse failed: {e:?}"))
             .program
     }

@@ -1,3 +1,4 @@
+--- pragma: ["no-prelude"]
 [hello: "world"]
 === out
 ["hello": "world"]

@@ -89,7 +89,7 @@ async fn build_builtin_core_type_env_inner() -> Option<Arc<RwLock<Env>>> {
     });
 
     // Parse — extract .program from ParseOutput
-    let mut program = crate::parser::parse_with_file(source, sf).ok()?.program;
+    let mut program = crate::parser::parse(source, sf).ok()?.program;
 
     // Desugar
     crate::desugar::desugar_surface_program(&mut program);
@@ -539,8 +539,8 @@ async fn resolve_includes(
             content: Arc::from(content.as_str()),
         });
 
-        // Parse the file, stamping all spans with the SourceFile.
-        let parsed = match parser::parse_with_file(&content, sf) {
+        // Parse the file — spans carry the SourceFile from token creation (no post-hoc stamping).
+        let parsed = match parser::parse(&content, sf) {
             Ok(p) => p,
             Err(_) => continue, // Skip unparseable files
         };
@@ -935,6 +935,13 @@ pub async fn build_type_env_with_cap(
 mod tests {
     use super::*;
 
+    fn test_file(src: &str) -> Arc<crate::ast::SourceFile> {
+        Arc::new(crate::ast::SourceFile {
+            path: Arc::from(file!()),
+            content: Arc::from(src),
+        })
+    }
+
     #[test]
     fn test_collect_include_paths_empty() {
         let program = SurfaceProgram { documents: vec![] };
@@ -948,7 +955,7 @@ mod tests {
             [include %cwd "foo.llt"]
             [include %libdir "bar.llt"]
         "#;
-        let program = parser::parse(source).unwrap().program;
+        let program = parser::parse(source, test_file(source)).unwrap().program;
         let paths = collect_include_paths(&program);
         assert_eq!(paths.len(), 2);
         assert_eq!(paths[0].1, Some("%cwd".to_string()));
@@ -962,7 +969,7 @@ mod tests {
         let source = r#"
             [include [str "foo" ".llt"]]
         "#;
-        let program = parser::parse(source).unwrap().program;
+        let program = parser::parse(source, test_file(source)).unwrap().program;
         let paths = collect_include_paths(&program);
         // Dynamic include should be skipped
         assert_eq!(paths.len(), 0);
@@ -976,7 +983,7 @@ mod tests {
     #[test]
     fn collect_include_paths_finds_explicit_call_form() {
         let source = r#"[call $include %cwd "foo.llt"]"#;
-        let program = parser::parse(source).unwrap().program;
+        let program = parser::parse(source, test_file(source)).unwrap().program;
         let paths = collect_include_paths(&program);
         assert_eq!(paths.len(), 1, "expected exactly one include path");
         assert_eq!(paths[0].1, Some("%cwd".to_string()));
@@ -987,7 +994,7 @@ mod tests {
     #[test]
     fn collect_include_paths_skips_bare_includes() {
         let source = r#"[include "foo.llt"]"#;
-        let program = parser::parse(source).unwrap().program;
+        let program = parser::parse(source, test_file(source)).unwrap().program;
         let paths = collect_include_paths(&program);
         assert_eq!(paths.len(), 0, "bare includes should be skipped");
     }
@@ -1054,7 +1061,7 @@ mod tests {
         let source = r#"
             [x: 42]
         "#;
-        let program = parser::parse(source).unwrap().program;
+        let program = parser::parse(source, test_file(source)).unwrap().program;
 
         // Without any includes, the binding map should be empty
         let (_env, bindings) = build_type_env(&program, None).await;
@@ -1082,7 +1089,7 @@ mod tests {
         // Parse a source with a cap-qualified include call.
         // We use %cwd (cap var) with a path literal "foo.llt".
         let source = r#"[include %cwd "foo.llt"]"#;
-        let program = parser::parse(source).unwrap().program;
+        let program = parser::parse(source, test_file(source)).unwrap().program;
 
         // Find the span of the path string argument ("foo.llt") by walking the AST.
         // We need this span as the key into include_bindings.
@@ -1141,7 +1148,7 @@ mod tests {
         use std::collections::HashMap;
 
         let source = r#"[include %cwd "foo.llt"]"#;
-        let program = parser::parse(source).unwrap().program;
+        let program = parser::parse(source, test_file(source)).unwrap().program;
 
         let include_bindings: HashMap<Span, Vec<(String, Type)>> = HashMap::new();
         let mut type_map = TypeMap::new();
@@ -1164,7 +1171,7 @@ mod tests {
 
         // The include call is nested inside a dict entry.
         let source = r#"[io: [include %cwd "io.llt"]]"#;
-        let program = parser::parse(source).unwrap().program;
+        let program = parser::parse(source, test_file(source)).unwrap().program;
 
         // Find the path-argument span.
         let include_paths = collect_include_paths(&program);

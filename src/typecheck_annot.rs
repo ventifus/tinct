@@ -2332,10 +2332,12 @@ pub(crate) async fn resolve_type_name(
             state.kind_env.insert(fresh.clone(), Kind::Label);
             return Ok(fresh_ty);
         }
-        // Operator and Label are kinds, not types — handled above.
-        // All other fundamental types (Integer, String, Float, Bytes, Never, Any, Unknown,
-        // Proxy, Dict, Expr) are declared in builtin_core.llt and resolved through tycon_env
-        // via resolve_type_head. No hardcoded Rust-type shortcuts here.
+        // All fundamental types (Integer, String, Float, Bytes, Never, Any,
+        // Proxy, Dict, Expr, Unknown) are declared in builtin_core.llt and resolved through
+        // the type_stage_map/type_stage_env/tycon_env chain in resolve_type_head.
+        // `@Unknown` resolves via type_stage_map (seeded with Unknown → Type::Unknown in
+        // typecheck_surface_program_annotation_table for test paths, and populated from
+        // type-stage documents in production). Operator and Label are handled above.
         _ => {
             if name.starts_with(|c: char| c.is_lowercase()) {
                 // Type parameter scope enforcement (T-1100 / T-951).

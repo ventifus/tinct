@@ -131,20 +131,9 @@ const MAX_LEX_DEPTH: usize = 256;
 /// Tokenize input string into a flat token stream.
 ///
 /// Returns a vector of spanned tokens or an error if the input is malformed.
-pub fn tokenize(input: &str) -> Result<Vec<Spanned<Token>>, LexError> {
-    let sf = Arc::new(SourceFile {
-        path: Arc::from("<tokenize>"),
-        content: Arc::from(input),
-    });
-    Lexer::new(input, sf).tokenize()
-}
-
-/// Tokenize input string with an explicit source file for accurate span attribution.
-pub fn tokenize_with_file(
-    input: &str,
-    source_file: Arc<SourceFile>,
-) -> Result<Vec<Spanned<Token>>, LexError> {
-    Lexer::new(input, source_file).tokenize()
+/// Requires an explicit source file for accurate span attribution.
+pub fn tokenize(input: &str, file: Arc<SourceFile>) -> Result<Vec<Spanned<Token>>, LexError> {
+    Lexer::new(input, file).tokenize()
 }
 
 struct Lexer<'a> {
@@ -1330,8 +1319,15 @@ pub(crate) fn fmt_bytes(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    fn test_file(src: &str) -> Arc<SourceFile> {
+        Arc::new(SourceFile {
+            path: Arc::from(file!()),
+            content: Arc::from(src),
+        })
+    }
+
     fn tok(input: &str) -> Vec<Token> {
-        tokenize(input)
+        tokenize(input, test_file(input))
             .unwrap()
             .into_iter()
             .map(|s| s.node)
@@ -1339,7 +1335,7 @@ mod tests {
     }
 
     fn tok_err(input: &str) -> String {
-        tokenize(input).unwrap_err().message
+        tokenize(input, test_file(input)).unwrap_err().message
     }
 
     #[test]
@@ -1946,7 +1942,7 @@ mod tests {
 
     #[test]
     fn test_position_tracking() {
-        let result = tokenize("a\nb").unwrap();
+        let result = tokenize("a\nb", test_file("a\nb")).unwrap();
         assert_eq!(result[0].span.start.line, 1);
         assert_eq!(result[0].span.start.column, 1);
         assert_eq!(result[1].span.start.line, 1);
@@ -1958,7 +1954,7 @@ mod tests {
     #[test]
     fn test_bare_cr_line_tracking() {
         // Test bare CR (Mac Classic line ending) increments line counter
-        let result = tokenize("a\rb").unwrap();
+        let result = tokenize("a\rb", test_file("a\rb")).unwrap();
         assert_eq!(result.len(), 3); // Identifier, Newline, Identifier
         assert_eq!(result[0].span.start.line, 1);
         assert_eq!(result[0].span.start.column, 1);
@@ -2139,7 +2135,7 @@ mod tests {
     fn test_lex_depth_limit() {
         // 257 opening brackets exceeds MAX_LEX_DEPTH (256) — lexer must return an error.
         let input = "[".repeat(257);
-        let result = tokenize(&input);
+        let result = tokenize(&input, test_file(&input));
         assert!(result.is_err(), "expected error for 257 nested brackets");
         let err = result.unwrap_err();
         assert!(

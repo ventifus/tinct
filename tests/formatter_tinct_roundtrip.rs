@@ -2,7 +2,15 @@
 // Verifies that formatting is idempotent and parseable
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use tinct::{format_source_tinct, parse};
+
+fn test_file(src: &str) -> Arc<tinct::ast::SourceFile> {
+    Arc::new(tinct::ast::SourceFile {
+        path: Arc::from(file!()),
+        content: Arc::from(src),
+    })
+}
 
 // format_source_tinct is async; run it synchronously inside the large-stack thread.
 fn fmt_sync(input: &str, script: &std::path::Path) -> Result<String, String> {
@@ -52,7 +60,7 @@ fn test_tinct_formatter_compact_simple_dict() {
 
         let formatted = fmt_sync(input, &compact_script()).expect("formatter failed");
         assert!(!formatted.is_empty(), "formatter produced empty output");
-        parse(&formatted).expect("formatted output is not parseable");
+        parse(&formatted, test_file(&formatted)).expect("formatted output is not parseable");
         let formatted_again =
             fmt_sync(&formatted, &compact_script()).expect("second format failed");
         assert_eq!(formatted, formatted_again, "formatter is not idempotent");
@@ -72,7 +80,7 @@ fn test_tinct_formatter_pretty_simple_dict() {
 
         let formatted = fmt_sync(input, &pretty_script()).expect("formatter failed");
         assert!(!formatted.is_empty(), "formatter produced empty output");
-        parse(&formatted).expect("formatted output is not parseable");
+        parse(&formatted, test_file(&formatted)).expect("formatted output is not parseable");
         let formatted_again = fmt_sync(&formatted, &pretty_script()).expect("second format failed");
         assert_eq!(formatted, formatted_again, "formatter is not idempotent");
     });
@@ -89,7 +97,8 @@ fn test_tinct_formatter_compact_literals() {
 ]"#;
 
         let formatted = fmt_sync(input, &compact_script()).expect("formatter failed");
-        let parsed = parse(&formatted).expect("formatted output is not parseable");
+        let parsed =
+            parse(&formatted, test_file(&formatted)).expect("formatted output is not parseable");
         assert_eq!(parsed.program.documents.len(), 1);
         assert_eq!(parsed.program.documents[0].node.expressions().count(), 1);
     });
@@ -107,7 +116,7 @@ fn test_tinct_formatter_pretty_nested_dict() {
 ]"#;
 
         let formatted = fmt_sync(input, &pretty_script()).expect("formatter failed");
-        parse(&formatted).expect("formatted output is not parseable");
+        parse(&formatted, test_file(&formatted)).expect("formatted output is not parseable");
         let formatted_again = fmt_sync(&formatted, &pretty_script()).expect("second format failed");
         assert_eq!(formatted, formatted_again);
     });
@@ -118,7 +127,7 @@ fn test_tinct_formatter_compact_function() {
     run_with_large_stack(|| {
         let input = "[add: [fn [x y] [+ x y]]]";
         let formatted = fmt_sync(input, &compact_script()).expect("formatter failed");
-        parse(&formatted).expect("formatted output is not parseable");
+        parse(&formatted, test_file(&formatted)).expect("formatted output is not parseable");
         let formatted_again =
             fmt_sync(&formatted, &compact_script()).expect("second format failed");
         assert_eq!(formatted, formatted_again);
@@ -130,7 +139,7 @@ fn test_tinct_formatter_compact_call() {
     run_with_large_stack(|| {
         let input = "[[fn [x] [+ x 1]] 42]";
         let formatted = fmt_sync(input, &compact_script()).expect("formatter failed");
-        parse(&formatted).expect("formatted output is not parseable");
+        parse(&formatted, test_file(&formatted)).expect("formatted output is not parseable");
         let formatted_again =
             fmt_sync(&formatted, &compact_script()).expect("second format failed");
         assert_eq!(formatted, formatted_again);
@@ -143,7 +152,7 @@ fn test_tinct_formatter_compact_empty_dict() {
         let input = "[]";
         let formatted = fmt_sync(input, &compact_script()).expect("formatter failed");
         assert_eq!(formatted, "[]\n", "empty dict not formatted correctly");
-        parse(&formatted).expect("formatted output is not parseable");
+        parse(&formatted, test_file(&formatted)).expect("formatted output is not parseable");
     });
 }
 
@@ -152,7 +161,7 @@ fn test_tinct_formatter_compact_auto_indexed() {
     run_with_large_stack(|| {
         let input = "[1 2 3]";
         let formatted = fmt_sync(input, &compact_script()).expect("formatter failed");
-        parse(&formatted).expect("formatted output is not parseable");
+        parse(&formatted, test_file(&formatted)).expect("formatted output is not parseable");
         let formatted_again =
             fmt_sync(&formatted, &compact_script()).expect("second format failed");
         assert_eq!(formatted, formatted_again);
@@ -172,7 +181,7 @@ fn test_tinct_formatter_compact_keyed_entry() {
             formatted.contains("8080"),
             "formatted output missing value 8080: {formatted}"
         );
-        parse(&formatted).expect("formatted output is not parseable");
+        parse(&formatted, test_file(&formatted)).expect("formatted output is not parseable");
         let formatted_again =
             fmt_sync(&formatted, &compact_script()).expect("second format failed");
         assert_eq!(formatted, formatted_again);
@@ -189,7 +198,7 @@ fn test_tinct_formatter_compact_multiline_to_oneline() {
             !trimmed.contains('\n'),
             "compact formatter should not produce newlines in dict body: {formatted}"
         );
-        parse(&formatted).expect("formatted output is not parseable");
+        parse(&formatted, test_file(&formatted)).expect("formatted output is not parseable");
         let formatted_again =
             fmt_sync(&formatted, &compact_script()).expect("second format failed");
         assert_eq!(formatted, formatted_again);
@@ -214,7 +223,7 @@ fn test_tinct_formatter_pretty_comments_preserved() {
             formatted.contains("# server configuration"),
             "pretty formatter should preserve comments in block-mode dicts: {formatted}"
         );
-        parse(&formatted).expect("formatted output is not parseable");
+        parse(&formatted, test_file(&formatted)).expect("formatted output is not parseable");
         let formatted_again = fmt_sync(&formatted, &pretty_script()).expect("second format failed");
         assert_eq!(formatted, formatted_again);
     });
@@ -229,7 +238,7 @@ fn test_tinct_formatter_compact_string_quoted() {
             formatted.contains('"'),
             "compact formatter should quote string literals: {formatted}"
         );
-        parse(&formatted).expect("formatted output is not parseable");
+        parse(&formatted, test_file(&formatted)).expect("formatted output is not parseable");
     });
 }
 
@@ -240,7 +249,7 @@ fn test_tinct_formatter_compact_bool() {
         let formatted = fmt_sync(input, &compact_script()).expect("formatter failed");
         assert!(formatted.contains("true"), "missing 'true': {formatted}");
         assert!(formatted.contains("false"), "missing 'false': {formatted}");
-        parse(&formatted).expect("formatted output is not parseable");
+        parse(&formatted, test_file(&formatted)).expect("formatted output is not parseable");
     });
 }
 
@@ -249,7 +258,7 @@ fn test_tinct_formatter_compact_match_expr() {
     run_with_large_stack(|| {
         let input = "[result: [match x 1: \"one\" 2: \"two\" _: \"other\"]]";
         let formatted = fmt_sync(input, &compact_script()).expect("formatter failed");
-        parse(&formatted).expect("formatted output is not parseable");
+        parse(&formatted, test_file(&formatted)).expect("formatted output is not parseable");
         let formatted_again =
             fmt_sync(&formatted, &compact_script()).expect("second format failed");
         assert_eq!(formatted, formatted_again);
@@ -265,7 +274,7 @@ fn test_tinct_formatter_pretty_multi_document() {
             formatted.contains("---"),
             "pretty formatter should preserve document separators: {formatted}"
         );
-        parse(&formatted).expect("formatted output is not parseable");
+        parse(&formatted, test_file(&formatted)).expect("formatted output is not parseable");
         let formatted_again = fmt_sync(&formatted, &pretty_script()).expect("second format failed");
         assert_eq!(formatted, formatted_again);
     });
@@ -276,7 +285,7 @@ fn test_tinct_formatter_compact_multi_document() {
     run_with_large_stack(|| {
         let input = "[x: 1]\n---\n[y: 2]";
         let formatted = fmt_sync(input, &compact_script()).expect("formatter failed");
-        parse(&formatted).expect("formatted output is not parseable");
+        parse(&formatted, test_file(&formatted)).expect("formatted output is not parseable");
         let formatted_again =
             fmt_sync(&formatted, &compact_script()).expect("second format failed");
         assert_eq!(formatted, formatted_again);

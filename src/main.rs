@@ -12,8 +12,8 @@ use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::Arc;
 use tinct::{
-    build_core_env, literate, parse, parse_with_file, string_val, EvalContext, HashableValue,
-    SourceFile, Thunk, ThunkId, Value,
+    build_core_env, literate, parse, string_val, EvalContext, HashableValue, SourceFile, Thunk,
+    ThunkId, Value,
 };
 // Exit codes for llt eval
 const EXIT_OK: i32 = 0;
@@ -2290,7 +2290,7 @@ async fn run_fmt(
     // Parse once and run the type checking pipeline on the parsed AST.
     // This avoids the double-parse that would happen if we called typecheck_source().
     if strict {
-        let output = parse_with_file(&source, Arc::clone(&sf))
+        let output = parse(&source, Arc::clone(&sf))
             .map_err(|e| tinct::format_parse_error(&e, &source, file_path))?;
 
         // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
@@ -2422,7 +2422,7 @@ async fn run_lint(
     let source = String::from(&*sf.content);
 
     // Parse the file
-    let output = parse_with_file(&source, Arc::clone(&sf))
+    let output = parse(&source, Arc::clone(&sf))
         .map_err(|e| tinct::format_parse_error(&e, &source, file_path))?;
 
     // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
@@ -2530,7 +2530,7 @@ fn run_hash(file_path: &str) -> Result<(), String> {
 /// Read LLT source from a file path or stdin (when path is `-`).
 ///
 /// Returns an `Arc<SourceFile>` with both the path and content, ready to be
-/// threaded into `parse_with_file` so that all spans in the parsed AST carry
+/// threaded into `parse()` so that all spans in the parsed AST carry
 /// a reference to the originating source file.
 // AMBIENT-OK: CLI entry point reading operator-specified file.
 #[allow(clippy::disallowed_types)]
@@ -2621,7 +2621,11 @@ async fn run_literate_lint(tangled: &str, config: &LiterateConfig<'_>) -> Result
     let strict = config.strict;
 
     // Parse the tangled source.
-    let output = parse(tangled).map_err(|e| {
+    let tangle_file = Arc::new(tinct::SourceFile {
+        path: Arc::from(markdown_path.to_string().as_str()),
+        content: Arc::from(tangled),
+    });
+    let output = parse(tangled, tangle_file).map_err(|e| {
         if strict {
             tinct::format_parse_error(&e, tangled, markdown_path)
         } else {
@@ -2721,7 +2725,7 @@ struct ContractSection {
 async fn run_describe(file_path: &str) -> Result<(), String> {
     let sf = read_source(file_path)?;
     let source = String::from(&*sf.content);
-    let output = parse_with_file(&source, Arc::clone(&sf)).map_err(|e| format!("{e}"))?;
+    let output = parse(&source, Arc::clone(&sf)).map_err(|e| format!("{e}"))?;
 
     // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
     let mut program = output.program;

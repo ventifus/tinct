@@ -1025,9 +1025,9 @@ fn recover_from_failed_open(
 /// `SurfaceExpression::Error` node and skipping to the matching `]`. Recovered errors are collected
 /// in `ParseOutput.errors`. Fatal errors (lexer failure, unclosed brackets) still
 /// cause this function to return `Err(...)`.
-pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
+pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseError> {
     // Tokenize the input via the lexer
-    let tokens = lexer::tokenize(input).map_err(|e| ParseError {
+    let tokens = lexer::tokenize(source, Arc::clone(&file)).map_err(|e| ParseError {
         message: e.message,
         span: Some(e.span),
     })?;
@@ -4659,9 +4659,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
     }
 
     // Source file from the token stream — used for all synthetic end-of-file spans.
-    // tokenize() produces "<tokenize>"; parse_with_file stamps the actual file afterward.
-    // Source file from the token stream — used for all synthetic end-of-file spans.
-    // tokenize() produces "<tokenize>"; parse_with_file stamps the actual file afterward.
+    // tokenize() now receives the file from parse(), so all tokens carry the correct file.
     // For empty input (no tokens, no significant spans), fall back to this Rust source
     // location — honest attribution of where the fallback was constructed.
     let eof_file: Arc<crate::ast::SourceFile> = token_vec
@@ -4755,7 +4753,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                 column: 1,
             },
             end: Position {
-                offset: input.len(),
+                offset: source.len(),
                 line: 1,
                 column: 1,
             },
@@ -4775,7 +4773,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                 column: 1,
             },
             end: Position {
-                offset: input.len(),
+                offset: source.len(),
                 line: 1,
                 column: 1,
             },
@@ -6881,7 +6879,11 @@ fn push_value(
 /// top-level declarations can be displayed uniformly. For callers needing the raw
 /// `SurfaceProgram`, use `parse()` directly.
 pub fn parse_surface_expression(input: &str) -> Result<Arc<SurfaceNode>, ParseError> {
-    let output = parse(input)?;
+    let file = Arc::new(SourceFile {
+        path: Arc::from("<expression>"),
+        content: Arc::from(input),
+    });
+    let output = parse(input, file)?;
     let surface = &output.program;
 
     if surface.documents.is_empty() {
@@ -6913,7 +6915,7 @@ pub fn parse_surface_expression(input: &str) -> Result<Arc<SurfaceNode>, ParseEr
 /// Parse tinct source text with error recovery.
 ///
 /// This function ALWAYS succeeds (returns a `ParseOutput`), even when there are parse errors.
-/// Unlike `parse()` and `parse()` (which return `Err` on fatal errors like lexer failure
+/// Unlike `parse()` (which returns `Err` on fatal errors like lexer failure
 /// or unclosed brackets at top level), this function converts all fatal errors into
 /// `ParseOutput.errors` and returns a synthetic AST.
 ///
@@ -6925,7 +6927,11 @@ pub fn parse_surface_expression(input: &str) -> Result<Arc<SurfaceNode>, ParseEr
 /// Use this function when you want to report ALL parse errors at once (e.g. in an LSP
 /// diagnostic pass or a batch linting tool) and always need an AST, even if it's empty.
 pub fn parse_with_recovery(input: &str) -> ParseOutput {
-    match parse(input) {
+    let file = Arc::new(SourceFile {
+        path: Arc::from("<recovery>"),
+        content: Arc::from(input),
+    });
+    match parse(input, file) {
         Ok(output) => output,
         Err(fatal_error) => {
             // Fatal error (lexer failure, unclosed brackets, etc.)
@@ -6979,332 +6985,21 @@ pub fn format_parse_error(err: &ParseError, source: &str, file_name: &str) -> St
     out
 }
 
-/// Stamp every `Span.file` field in a `SurfaceNode` tree with the given `SourceFile`.
-///
-/// Uses `Arc::make_mut` to avoid cloning nodes that are not shared (the parser
-/// always produces fresh `Arc<SurfaceNode>` nodes with a single owner at creation
-/// time, so `make_mut` never clones in practice).
-fn stamp_node(node: &mut Arc<SurfaceNode>, file: &Arc<SourceFile>) {
-    let n = Arc::make_mut(node);
-    n.span.file = Arc::clone(file);
-    stamp_expr(&mut n.expr, file);
-}
-
-/// Stamp all spans inside a `SurfaceExpression`.
-fn stamp_expr(expr: &mut SurfaceExpression, file: &Arc<SourceFile>) {
-    match expr {
-        SurfaceExpression::Int(_)
-        | SurfaceExpression::U64(_)
-        | SurfaceExpression::Float(_)
-        | SurfaceExpression::StringLiteral { .. }
-        | SurfaceExpression::VarRef {
-            annotation: None, ..
-        }
-        | SurfaceExpression::Rest(..)
-        | SurfaceExpression::Placeholder => {}
-
-        SurfaceExpression::Error(span) => {
-            span.file = Arc::clone(file);
-        }
-
-        SurfaceExpression::Field { expr, .. } => {
-            if let Some(inner) = expr {
-                stamp_node(inner, file);
-            }
-        }
-
-        SurfaceExpression::Pipe { lhs, rhs } => {
-            stamp_node(lhs, file);
-            stamp_node(rhs, file);
-        }
-
-        SurfaceExpression::Sequential(nodes) => {
-            for n in nodes {
-                stamp_node(n, file);
-            }
-        }
-
-        SurfaceExpression::Dict(entries) => {
-            for entry in entries {
-                entry.span.file = Arc::clone(file);
-                if let Some(key) = &mut entry.node.key {
-                    stamp_node(key, file);
-                }
-                stamp_node(&mut entry.node.value, file);
-            }
-        }
-
-        SurfaceExpression::Call {
-            func,
-            args,
-            named_args,
-            ..
-        } => {
-            stamp_node(func, file);
-            for arg in args {
-                stamp_node(arg, file);
-            }
-            for named in named_args {
-                named.span.file = Arc::clone(file);
-                stamp_node(&mut named.node.value, file);
-            }
-        }
-
-        SurfaceExpression::Fn {
-            return_ann,
-            params,
-            body,
-            ..
-        } => {
-            if let Some(ann) = return_ann {
-                stamp_annotation_spanned(ann, file);
-            }
-            for param in params {
-                param.span.file = Arc::clone(file);
-                if let Some(ann) = &mut param.node.annotation {
-                    stamp_annotation_spanned(ann, file);
-                }
-            }
-            stamp_node(body, file);
-        }
-
-        SurfaceExpression::TypeAssert {
-            annotation, expr, ..
-        } => {
-            stamp_annotation_spanned(annotation, file);
-            stamp_node(expr, file);
-        }
-
-        // Annotated VarRef: stamp the annotation stored in the VarRef's annotation field.
-        SurfaceExpression::VarRef {
-            annotation: Some(annotation),
-            ..
-        } => {
-            stamp_annotation_spanned(annotation, file);
-        }
-
-        SurfaceExpression::Match { scrutinee, arms } => {
-            stamp_node(scrutinee, file);
-            for arm in arms {
-                stamp_pattern_spanned(&mut arm.pattern, file);
-                if let Some(guard) = &mut arm.guard {
-                    stamp_node(guard, file);
-                }
-                for body_expr in &mut arm.body {
-                    stamp_node(body_expr, file);
-                }
-            }
-        }
-
-        SurfaceExpression::Quote(inner)
-        | SurfaceExpression::Unquote(inner)
-        | SurfaceExpression::UnquoteSplice(inner) => {
-            stamp_node(inner, file);
-        }
-
-        SurfaceExpression::PatternDecl { bindings } | SurfaceExpression::LetDecl { bindings } => {
-            for b in bindings {
-                stamp_node(b, file);
-            }
-        }
-
-        SurfaceExpression::CaseArm {
-            let_bindings,
-            pattern,
-            body,
-        } => {
-            stamp_node(let_bindings, file);
-            stamp_node(pattern, file);
-            stamp_node(body, file);
-        }
-
-        SurfaceExpression::Decl(decl) => {
-            stamp_decl(decl, file);
-        }
-    }
-}
-
-/// Stamp all spans inside a `SurfaceDeclaration`.
-fn stamp_decl(decl: &mut SurfaceDeclaration, file: &Arc<SourceFile>) {
-    match decl {
-        SurfaceDeclaration::TypeAlias { body, .. } => {
-            stamp_node(body, file);
-        }
-        SurfaceDeclaration::ClassDecl {
-            methods,
-            determines,
-            resolver,
-            ..
-        } => {
-            for entry in methods {
-                entry.span.file = Arc::clone(file);
-                if let Some(key) = &mut entry.node.key {
-                    stamp_node(key, file);
-                }
-                stamp_node(&mut entry.node.value, file);
-            }
-            for d in determines {
-                stamp_node(d, file);
-            }
-            if let Some(r) = resolver {
-                stamp_node(r, file);
-            }
-        }
-        SurfaceDeclaration::InstanceDecl { arms, .. } => {
-            for (pattern, entries) in arms {
-                stamp_node(pattern, file);
-                for entry in entries {
-                    entry.span.file = Arc::clone(file);
-                    if let Some(key) = &mut entry.node.key {
-                        stamp_node(key, file);
-                    }
-                    stamp_node(&mut entry.node.value, file);
-                }
-            }
-        }
-        SurfaceDeclaration::SyntaxClass { pattern, .. } => {
-            stamp_node(pattern, file);
-        }
-        SurfaceDeclaration::Splice(nodes) => {
-            for n in nodes {
-                stamp_node(n, file);
-            }
-        }
-    }
-}
-
-/// Stamp the `span.file` on a `Spanned<Annotation>` and recurse into the annotation.
-fn stamp_annotation_spanned(ann: &mut Spanned<Annotation>, file: &Arc<SourceFile>) {
-    ann.span.file = Arc::clone(file);
-    stamp_annotation(&mut ann.node, file);
-}
-
-/// Stamp all spans inside an `Annotation`.
-fn stamp_annotation(ann: &mut Annotation, file: &Arc<SourceFile>) {
-    match ann {
-        Annotation::Simple(_) | Annotation::Annotated(_, _) => {}
-        Annotation::PropertyDict(entries) => {
-            for entry in entries {
-                entry.span.file = Arc::clone(file);
-                if let Some(key) = &mut entry.node.key {
-                    stamp_node(key, file);
-                }
-                stamp_node(&mut entry.node.value, file);
-            }
-        }
-    }
-}
-
-/// Stamp the `span.file` on a `Spanned<Pattern>` and recurse into the pattern.
-fn stamp_pattern_spanned(pat: &mut Spanned<Pattern>, file: &Arc<SourceFile>) {
-    pat.span.file = Arc::clone(file);
-    stamp_pattern(&mut pat.node, file);
-}
-
-/// Stamp all spans inside a `Pattern`.
-fn stamp_pattern(pat: &mut Pattern, file: &Arc<SourceFile>) {
-    match pat {
-        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(..) => {}
-
-        Pattern::TypeAssertPending {
-            annotation, inner, ..
-        } => {
-            annotation.span.file = Arc::clone(file);
-            if let Some(inner_pat) = inner {
-                stamp_pattern_spanned(inner_pat, file);
-            }
-        }
-
-        Pattern::TypeAssert { inner, .. } => {
-            if let Some(inner_pat) = inner {
-                stamp_pattern_spanned(inner_pat, file);
-            }
-        }
-
-        Pattern::Dict { fields, .. } => {
-            for (_, sub) in fields {
-                stamp_pattern_spanned(sub, file);
-            }
-        }
-
-        Pattern::Constructor { binding, .. } => {
-            if let Some(b) = binding {
-                stamp_pattern_spanned(b, file);
-            }
-        }
-
-        Pattern::Or(alts) => {
-            for alt in alts {
-                stamp_pattern_spanned(alt, file);
-            }
-        }
-
-        Pattern::Predicate { .. } => {} // predicate expr spans not stamped (evaluated at match time)
-    }
-}
-
-/// Stamp the `file` field on every span in a `SurfaceProgram` in place.
-///
-/// This is the entry point used by `parse_with_file` after calling `parse()`.
-pub fn stamp_spans_with_file(program: &mut SurfaceProgram, file: &Arc<SourceFile>) {
-    for doc in &mut program.documents {
-        doc.span.file = Arc::clone(file);
-        let doc_node = Arc::get_mut(&mut doc.node)
-            .expect("stamp_spans_with_file runs immediately after parse, before any Arc sharing");
-        // Stamp document-level header nodes
-        for (_, header_node) in &mut doc_node.header {
-            stamp_node(header_node, file);
-        }
-        for item in &mut doc_node.items {
-            match item {
-                SurfaceItem::Expr(node) => {
-                    stamp_node(node, file);
-                }
-                SurfaceItem::Decl(decl) => {
-                    decl.span.file = Arc::clone(file);
-                    stamp_decl(&mut decl.node, file);
-                }
-            }
-        }
-    }
-}
-
-/// Parse tinct source and stamp every span with the given `SourceFile`.
-///
-/// Equivalent to calling `parse(source)` followed by `stamp_spans_with_file`.
-/// Use this when you have a `SourceFile` handle for the input (e.g., after reading
-/// from a file path or stdin) and want error diagnostics to include the file name.
-pub fn parse_with_file(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseError> {
-    let mut output = match parse(source) {
-        Ok(output) => output,
-        Err(mut fatal) => {
-            // Stamp the fatal error's span with the correct file before propagating.
-            // parse() uses tokenize() (with path "<tokenize>"); without this, fatal
-            // errors such as "unclosed bracket" would show the wrong filename.
-            if let Some(span) = &mut fatal.span {
-                span.file = Arc::clone(&file);
-            }
-            return Err(fatal);
-        }
-    };
-    stamp_spans_with_file(&mut output.program, &file);
-    // Also stamp any recovered-error spans
-    for err in &mut output.errors {
-        if let Some(span) = &mut err.span {
-            span.file = Arc::clone(&file);
-        }
-    }
-    Ok(output)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn test_file(src: &str) -> Arc<SourceFile> {
+        Arc::new(SourceFile {
+            path: Arc::from(file!()),
+            content: Arc::from(src),
+        })
+    }
+
     /// Helper: parse successfully and return the first expression from the first document.
     /// Returns `Arc<SurfaceNode>` directly — no ast_convert bridge needed.
     fn parse_surf_node(input: &str) -> Arc<SurfaceNode> {
-        let output = parse(input).expect("parse failed");
+        let output = parse(input, test_file(input)).expect("parse failed");
         let first_doc = &output.program.documents[0].node;
         match first_doc.items.first() {
             Some(SurfaceItem::Expr(node)) => Arc::clone(node),
@@ -7327,7 +7022,8 @@ mod tests {
 
     #[test]
     fn test_empty_dict() {
-        let output = parse("[]").expect("parse failed");
+        let src = "[]";
+        let output = parse(src, test_file(src)).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         assert_eq!(items.len(), 1);
         match &items[0].expr {
@@ -7340,7 +7036,8 @@ mod tests {
 
     #[test]
     fn test_dict_one_value() {
-        let output = parse("[42]").expect("parse failed");
+        let src = "[42]";
+        let output = parse(src, test_file(src)).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         assert_eq!(items.len(), 1);
         match &items[0].expr {
@@ -7358,7 +7055,8 @@ mod tests {
 
     #[test]
     fn test_keyed_entry() {
-        let output = parse("[a: 1 b: 2]").expect("parse failed");
+        let src = "[a: 1 b: 2]";
+        let output = parse(src, test_file(src)).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::Dict(entries) => {
@@ -7390,7 +7088,8 @@ mod tests {
 
     #[test]
     fn test_call_simple() {
-        let output = parse("[call $f 1 2]").expect("parse failed");
+        let src = "[call $f 1 2]";
+        let output = parse(src, test_file(src)).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::Call {
@@ -7414,7 +7113,8 @@ mod tests {
 
     #[test]
     fn test_call_named_args() {
-        let output = parse("[call $f x: 1]").expect("parse failed");
+        let src = "[call $f x: 1]";
+        let output = parse(src, test_file(src)).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::Call {
@@ -7441,7 +7141,8 @@ mod tests {
 
     #[test]
     fn test_fn_simple() {
-        let output = parse("[fn [let] 42]").expect("parse failed");
+        let src = "[fn [let] 42]";
+        let output = parse(src, test_file(src)).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::Fn {
@@ -7461,7 +7162,8 @@ mod tests {
 
     #[test]
     fn test_type_alias() {
-        let output = parse("[type 42]").expect("parse failed");
+        let src = "[type 42]";
+        let output = parse(src, test_file(src)).expect("parse failed");
         // [type ...] is a declaration — access via SurfaceItem::Decl, not expressions
         let items = &output.program.documents[0].node.items;
         assert_eq!(items.len(), 1, "expected one item");
@@ -7490,7 +7192,8 @@ mod tests {
     #[test]
     fn test_type_alias_in_dict_entry_value() {
         // Single-entry: [Name: [type String]]
-        let output = parse("[Name: [type String]]").expect("parse failed");
+        let src = "[Name: [type String]]";
+        let output = parse(src, test_file(src)).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         assert_eq!(items.len(), 1, "expected one expression item");
         match &items[0].expr {
@@ -7523,7 +7226,8 @@ mod tests {
         }
 
         // Multi-entry union: [Result: [type A B C]]
-        let output = parse("[Result: [type A B C]]").expect("parse failed");
+        let src2 = "[Result: [type A B C]]";
+        let output = parse(src2, test_file(src2)).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::Dict(entries) => {
@@ -7562,8 +7266,8 @@ mod tests {
 
         // With [let ...] params and new named-key constructor syntax:
         // [Pair: [type [let a b] First: [first: a] Second: [second: b]]]
-        let output = parse("[Pair: [type [let a b] First: [first: a] Second: [second: b]]]")
-            .expect("parse failed");
+        let src3 = "[Pair: [type [let a b] First: [first: a] Second: [second: b]]]";
+        let output = parse(src3, test_file(src3)).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::Dict(entries) => {
@@ -7607,7 +7311,7 @@ mod tests {
             input.push(']');
         }
 
-        let err = parse(&input).unwrap_err();
+        let err = parse(&input, test_file(&input)).unwrap_err();
         assert!(
             err.message.contains("maximum nesting depth exceeded"),
             "expected depth-limit error message, got: {}",
@@ -7639,7 +7343,7 @@ mod tests {
             input.push(']');
         }
 
-        let result = parse(&input);
+        let result = parse(&input, test_file(&input));
         assert!(
             result.is_ok(),
             "parsing {DEPTH} levels of nesting should succeed (limit is {MAX_PARSE_DEPTH}), got: {:?}",
@@ -7664,7 +7368,7 @@ mod tests {
             input.push(']');
         }
 
-        let result = parse(&input);
+        let result = parse(&input, test_file(&input));
         assert!(
             result.is_ok(),
             "exactly MAX_PARSE_DEPTH levels should succeed (check fires before push), got: {:?}",
@@ -7674,7 +7378,8 @@ mod tests {
 
     #[test]
     fn test_type_assert_simple() {
-        let output = parse("[@Number 42]").expect("parse failed");
+        let src = "[@Number 42]";
+        let output = parse(src, test_file(src)).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::TypeAssert {
@@ -7694,7 +7399,8 @@ mod tests {
     fn test_bracket_access_removed_parses_as_two_expressions() {
         // $a[0] — BracketAccess syntax removed. Now parses as two separate expressions:
         // VarRef("a") and Dict([Int(0)]). The `[` is always OpenBracket.
-        let output = parse("$a[0]").expect("parse failed");
+        let src = "$a[0]";
+        let output = parse(src, test_file(src)).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         assert_eq!(items.len(), 2);
         match &items[0].expr {
@@ -7722,7 +7428,8 @@ mod tests {
 
     #[test]
     fn test_call_empty() {
-        let output = parse("[call]").expect("recovery should succeed");
+        let src = "[call]";
+        let output = parse(src, test_file(src)).expect("recovery should succeed");
         assert!(
             !output.errors.is_empty(),
             "expected recovered error for empty call form"
@@ -7737,7 +7444,8 @@ mod tests {
     #[test]
     fn test_call_func_as_named_arg() {
         // [call f: $x] — first arg is Named("f", ...) which is forbidden as func
-        let output = parse("[call f: $x]").expect("recovery should succeed");
+        let src = "[call f: $x]";
+        let output = parse(src, test_file(src)).expect("recovery should succeed");
         assert!(
             !output.errors.is_empty(),
             "expected recovered error for named-arg func"
@@ -7752,7 +7460,8 @@ mod tests {
     #[test]
     fn test_dict_pending_key_no_value() {
         // [a:] — key with no value before closing bracket
-        let output = parse("[a:]").expect("recovery should succeed");
+        let src = "[a:]";
+        let output = parse(src, test_file(src)).expect("recovery should succeed");
         assert!(
             !output.errors.is_empty(),
             "expected recovered error for key without value"
@@ -7767,7 +7476,8 @@ mod tests {
     #[test]
     fn test_call_pending_named_arg_no_value() {
         // [call $f x:] — named arg x with no value before closing bracket
-        let output = parse("[call $f x:]").expect("recovery should succeed");
+        let src = "[call $f x:]";
+        let output = parse(src, test_file(src)).expect("recovery should succeed");
         assert!(
             !output.errors.is_empty(),
             "expected recovered error for named arg without value"
@@ -7781,7 +7491,8 @@ mod tests {
 
     #[test]
     fn test_type_alias_empty() {
-        let output = parse("[type]").expect("recovery should succeed");
+        let src = "[type]";
+        let output = parse(src, test_file(src)).expect("recovery should succeed");
         assert!(
             !output.errors.is_empty(),
             "expected recovered error for empty type-alias"
@@ -7818,7 +7529,8 @@ mod tests {
     #[test]
     fn test_type_assert_no_expr() {
         // [@Number] — floating annotation but no expression to annotate → error
-        let output = parse("[@Number]").expect("recovery should succeed");
+        let src = "[@Number]";
+        let output = parse(src, test_file(src)).expect("recovery should succeed");
         assert!(
             !output.errors.is_empty(),
             "expected recovered error for type-assert without expression"
@@ -7835,7 +7547,8 @@ mod tests {
     fn test_colon_outside_dict_call() {
         // [fn :] — "fn" not followed by colon directly → Fn form.
         // Then ":" in Fn frame → "`:` can only appear in dict, call, class, instance, match, let, or syntax-class forms" (recovered).
-        let output = parse("[fn :]").expect("recovery should succeed");
+        let src = "[fn :]";
+        let output = parse(src, test_file(src)).expect("recovery should succeed");
         assert!(
             !output.errors.is_empty(),
             "expected recovered error for colon in fn form"
@@ -7853,7 +7566,8 @@ mod tests {
             output.errors[0].message
         );
         // Also test the true "colon outside dict/call" case: colon in a TypeAlias frame
-        let output2 = parse("[type x :]").expect("recovery should succeed");
+        let src2 = "[type x :]";
+        let output2 = parse(src2, test_file(src2)).expect("recovery should succeed");
         assert!(
             !output2.errors.is_empty(),
             "expected recovered error for colon in type-alias form"
@@ -7873,7 +7587,8 @@ mod tests {
     #[test]
     fn test_colon_without_key_in_dict() {
         // [:] — colon with no preceding key in a dict
-        let output = parse("[:]").expect("recovery should succeed");
+        let src = "[:]";
+        let output = parse(src, test_file(src)).expect("recovery should succeed");
         assert!(
             !output.errors.is_empty(),
             "expected recovered error for colon without key"
@@ -7888,7 +7603,8 @@ mod tests {
     #[test]
     fn test_fn_multiple_bodies() {
         // [fn [let] 1 2] — two body expressions in an fn form (Sequential wrapping)
-        let output = parse("[fn [let] 1 2]").expect("parse should succeed");
+        let src = "[fn [let] 1 2]";
+        let output = parse(src, test_file(src)).expect("parse should succeed");
         assert!(
             output.errors.is_empty(),
             "multi-expression fn bodies should parse successfully via Sequential, got errors: {:?}",
@@ -7911,7 +7627,8 @@ mod tests {
     #[test]
     fn test_type_alias_multiple_exprs() {
         // [type 1 2] — multi-entry type-alias form (union declaration)
-        let output = parse("[type 1 2]").expect("parse should succeed");
+        let src = "[type 1 2]";
+        let output = parse(src, test_file(src)).expect("parse should succeed");
         assert!(
             output.errors.is_empty(),
             "multi-entry [type T1 T2 ...] should parse without errors, got: {:?}",
@@ -7951,7 +7668,8 @@ mod tests {
     #[test]
     fn test_type_alias_old_form_params_rejected() {
         // [type [a b] Body] — old-form params (no `let`) must be rejected
-        let output = parse("[type [a b] Int]").expect("recovery should succeed");
+        let src = "[type [a b] Int]";
+        let output = parse(src, test_file(src)).expect("recovery should succeed");
         assert!(
             !output.errors.is_empty(),
             "expected error for old-form type params [type [a b] Int], got no errors"
@@ -7966,7 +7684,8 @@ mod tests {
     #[test]
     fn test_type_alias_old_form_single_param_rejected() {
         // [type [a] Body] — old-form single param (no `let`) must be rejected
-        let output = parse("[type [a] Int]").expect("recovery should succeed");
+        let src = "[type [a] Int]";
+        let output = parse(src, test_file(src)).expect("recovery should succeed");
         assert!(
             !output.errors.is_empty(),
             "expected error for old-form type params [type [a] Int], got no errors"
@@ -7981,7 +7700,8 @@ mod tests {
     #[test]
     fn test_type_alias_let_params_accepted() {
         // [type [let a b] Body] — new form with `let` must be accepted
-        let output = parse("[type [let a b] Int]").expect("parse failed");
+        let src = "[type [let a b] Int]";
+        let output = parse(src, test_file(src)).expect("parse failed");
         assert!(
             output.errors.is_empty(),
             "[type [let a b] Body] should parse without errors, got: {:?}",
@@ -8005,7 +7725,8 @@ mod tests {
     #[test]
     fn test_type_alias_let_zero_params_accepted() {
         // [type [let] Body] — zero-param alias with explicit let bracket
-        let output = parse("[type [let] Int]").expect("parse failed");
+        let output =
+            parse("[type [let] Int]", test_file("[type [let] Int]")).expect("parse failed");
         assert!(
             output.errors.is_empty(),
             "[type [let] Body] should parse without errors, got: {:?}",
@@ -8026,7 +7747,8 @@ mod tests {
     #[test]
     fn test_type_alias_uppercase_type_expr_not_flagged() {
         // [type [or Int Null]] — type expression with uppercase names is NOT flagged as old-form params
-        let output = parse("[type [or Int Null]]").expect("parse failed");
+        let output =
+            parse("[type [or Int Null]]", test_file("[type [or Int Null]]")).expect("parse failed");
         assert!(
             output.errors.is_empty(),
             "[type [or Int Null]] should parse without errors, got: {:?}",
@@ -8053,7 +7775,8 @@ mod tests {
         // [@Number 1 2] — floating @Number with 2 positional entries in the bracket.
         // The TypeAssert unwrap only fires for single-entry dicts; with 2 entries the
         // Dict is returned as-is (floating annotation not applied to individual entries).
-        let output = parse("[@Number 1 2]").expect("parse should succeed");
+        let output =
+            parse("[@Number 1 2]", test_file("[@Number 1 2]")).expect("parse should succeed");
         let items = &output.program.documents[0].node.items;
         assert_eq!(items.len(), 1, "expected one item");
         match &items[0] {
@@ -8080,7 +7803,7 @@ mod tests {
     #[test]
     fn test_fn_empty() {
         // [fn] — fn with no body
-        let output = parse("[fn]").expect("recovery should succeed");
+        let output = parse("[fn]", test_file("[fn]")).expect("recovery should succeed");
         assert!(
             !output.errors.is_empty(),
             "expected recovered error for empty fn form"
@@ -8099,7 +7822,7 @@ mod tests {
     #[test]
     fn test_keyword_as_dict_key() {
         // [call: 1] — "call" followed by colon → dict, not a call form (Fix 2)
-        let output = parse("[call: 1]").expect("parse failed");
+        let output = parse("[call: 1]", test_file("[call: 1]")).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::Dict(entries) => {
@@ -8121,7 +7844,11 @@ mod tests {
     #[test]
     fn test_all_keywords_as_dict_keys() {
         // [call: 1 fn: 2 type: 3] — all three keywords as dict keys
-        let output = parse("[call: 1 fn: 2 type: 3]").expect("parse failed");
+        let output = parse(
+            "[call: 1 fn: 2 type: 3]",
+            test_file("[call: 1 fn: 2 type: 3]"),
+        )
+        .expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::Dict(entries) => {
@@ -8150,7 +7877,7 @@ mod tests {
     #[test]
     fn test_whitespace_in_form_classification() {
         // "[ call $f]" — leading whitespace before keyword; peek skips it → still a Call form
-        let output = parse("[ call $f]").expect("parse failed");
+        let output = parse("[ call $f]", test_file("[ call $f]")).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::Call {
@@ -8173,7 +7900,7 @@ mod tests {
     #[test]
     fn test_keyed_entry_with_bracket_value() {
         // [a: [1]] — dict with keyed entry whose value is a nested dict (Fix 1)
-        let output = parse("[a: [1]]").expect("parse failed");
+        let output = parse("[a: [1]]", test_file("[a: [1]]")).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::Dict(entries) => {
@@ -8202,7 +7929,8 @@ mod tests {
     #[test]
     fn test_call_named_arg_bracket_value() {
         // [call $f x: [1]] — call with named arg whose value is a nested dict (Fix 1)
-        let output = parse("[call $f x: [1]]").expect("parse failed");
+        let output =
+            parse("[call $f x: [1]]", test_file("[call $f x: [1]]")).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::Call {
@@ -8236,7 +7964,8 @@ mod tests {
     #[test]
     fn test_call_only_named_args() {
         // [call $f x: 1 y: 2] — call with func and two named args, no positional
-        let output = parse("[call $f x: 1 y: 2]").expect("parse failed");
+        let output =
+            parse("[call $f x: 1 y: 2]", test_file("[call $f x: 1 y: 2]")).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::Call {
@@ -8268,7 +7997,7 @@ mod tests {
 
     #[test]
     fn test_unmatched_closing_bracket() {
-        let err = parse("]").unwrap_err();
+        let err = parse("]", test_file("]")).unwrap_err();
         assert!(
             err.message.contains("unmatched closing bracket"),
             "expected 'unmatched closing bracket' error, got: {}",
@@ -8278,7 +8007,7 @@ mod tests {
 
     #[test]
     fn test_unclosed_bracket() {
-        let err = parse("[").unwrap_err();
+        let err = parse("[", test_file("[")).unwrap_err();
         assert!(
             err.message.contains("unclosed bracket"),
             "expected 'unclosed bracket' error, got: {}",
@@ -8289,7 +8018,8 @@ mod tests {
     #[test]
     fn test_call_colon_without_key() {
         // [call $f :] — colon inside Call frame with pending_key=None (no preceding identifier)
-        let output = parse("[call $f :]").expect("recovery should succeed");
+        let output =
+            parse("[call $f :]", test_file("[call $f :]")).expect("recovery should succeed");
         assert!(
             !output.errors.is_empty(),
             "expected recovered error for colon without name in call frame"
@@ -8305,7 +8035,7 @@ mod tests {
     fn test_annotation_invalid_token() {
         // [@123] — floating annotation with Int(123) as the annotation value, then no expression
         // → error because there's nothing to annotate.
-        let output = parse("[@123]").expect("recovery should succeed");
+        let output = parse("[@123]", test_file("[@123]")).expect("recovery should succeed");
         assert!(
             !output.errors.is_empty(),
             "expected recovered error for floating annotation with no expression"
@@ -8321,7 +8051,7 @@ mod tests {
     #[test]
     fn test_mixed_keyed_and_auto_indexed() {
         // [a: 1 2 b: 3] — keyed, auto-indexed, keyed entries
-        let output = parse("[a: 1 2 b: 3]").expect("parse failed");
+        let output = parse("[a: 1 2 b: 3]", test_file("[a: 1 2 b: 3]")).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::Dict(entries) => {
@@ -8377,7 +8107,8 @@ mod tests {
 
     #[test]
     fn test_fn_params_simple() {
-        let output = parse("[fn [let x y] $x]").expect("parse failed");
+        let output =
+            parse("[fn [let x y] $x]", test_file("[fn [let x y] $x]")).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::Fn {
@@ -8405,7 +8136,8 @@ mod tests {
 
     #[test]
     fn test_fn_params_annotated() {
-        let output = parse("[fn [let x@Int] $x]").expect("parse failed");
+        let output =
+            parse("[fn [let x@Int] $x]", test_file("[fn [let x@Int] $x]")).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::Fn { params, .. } => {
@@ -8428,7 +8160,11 @@ mod tests {
 
     #[test]
     fn test_fn_return_annotation() {
-        let output = parse("[fn@Number [let x] $x]").expect("parse failed");
+        let output = parse(
+            "[fn@Number [let x] $x]",
+            test_file("[fn@Number [let x] $x]"),
+        )
+        .expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::Fn {
@@ -8448,7 +8184,11 @@ mod tests {
 
     #[test]
     fn test_fn_variadic() {
-        let output = parse("[fn [let ...args] $args]").expect("parse failed");
+        let output = parse(
+            "[fn [let ...args] $args]",
+            test_file("[fn [let ...args] $args]"),
+        )
+        .expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::Fn { params, .. } => {
@@ -8463,7 +8203,7 @@ mod tests {
 
     #[test]
     fn test_dot_access_simple() {
-        let output = parse("$a.b").expect("parse failed");
+        let output = parse("$a.b", test_file("$a.b")).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::Field { expr, field, .. } => {
@@ -8480,7 +8220,7 @@ mod tests {
 
     #[test]
     fn test_dot_access_chain() {
-        let output = parse("$a.b.c").expect("parse failed");
+        let output = parse("$a.b.c", test_file("$a.b.c")).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::Field {
@@ -8517,7 +8257,7 @@ mod tests {
     #[test]
     fn test_dot_access_inside_call() {
         // [call $fn $a.b]
-        let output = parse("[call $fn $a.b]").expect("parse failed");
+        let output = parse("[call $fn $a.b]", test_file("[call $fn $a.b]")).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::Call {
@@ -8551,7 +8291,7 @@ mod tests {
     #[test]
     fn test_dot_access_inside_dict() {
         // [x: $y.z]
-        let output = parse("[x: $y.z]").expect("parse failed");
+        let output = parse("[x: $y.z]", test_file("[x: $y.z]")).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::Dict(entries) => {
@@ -8580,7 +8320,7 @@ mod tests {
     #[test]
     fn test_leading_dot_parent_scope() {
         // `.x` with no preceding expression — leading-dot form, expr: None
-        let output = parse(".x").expect("parse failed");
+        let output = parse(".x", test_file(".x")).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::Field { expr, field, .. } => {
@@ -8594,7 +8334,7 @@ mod tests {
     #[test]
     fn test_leading_dot_inside_dict() {
         // `[outer-x: .x]` — leading-dot inside a dict value
-        let output = parse("[outer-x: .x]").expect("parse failed");
+        let output = parse("[outer-x: .x]", test_file("[outer-x: .x]")).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::Dict(entries) => {
@@ -8616,7 +8356,8 @@ mod tests {
 
     #[test]
     fn test_doc_separator() {
-        let output = parse("[a: 1]\n---\n[b: 2]").expect("parse failed");
+        let output =
+            parse("[a: 1]\n---\n[b: 2]", test_file("[a: 1]\n---\n[b: 2]")).expect("parse failed");
         assert_eq!(output.program.documents.len(), 2);
 
         // First document
@@ -8650,7 +8391,8 @@ mod tests {
 
     #[test]
     fn test_comment_leading() {
-        let output = parse("# comment\n[a: 1]").expect("parse failed");
+        let output =
+            parse("# comment\n[a: 1]", test_file("# comment\n[a: 1]")).expect("parse failed");
         assert!(!output.leading_comments.is_empty());
         // Comments are attached by offset of next significant token
         // We just verify that we have at least one comment collected
@@ -8668,7 +8410,10 @@ mod tests {
     fn test_fn_param_variadic_not_last() {
         // [let ...args x] — variadic param not last: parse produces an error
         // (fatal or recovered) because the variadic must be the last param.
-        let result = parse("[fn [let ...args x] $x]");
+        let result = parse(
+            "[fn [let ...args x] $x]",
+            test_file("[fn [let ...args x] $x]"),
+        );
         let has_error = result.is_err() || !result.unwrap().errors.is_empty();
         assert!(has_error, "expected parse error for param after variadic");
     }
@@ -8677,7 +8422,10 @@ mod tests {
     fn test_fn_multiple_variadic() {
         // [let ...args ...rest] — multiple variadic params: parse produces an error
         // (fatal or recovered) because only one variadic is allowed per fn.
-        let result = parse("[fn [let ...args ...rest] $x]");
+        let result = parse(
+            "[fn [let ...args ...rest] $x]",
+            test_file("[fn [let ...args ...rest] $x]"),
+        );
         let has_error = result.is_err() || !result.unwrap().errors.is_empty();
         assert!(
             has_error,
@@ -8691,7 +8439,7 @@ mod tests {
         // `1..5` lexes as Int(1), Dot, Dot, Int(5). The first Dot triggers dot-access on Int(1)
         // but the next token is another Dot (not an identifier) → parse error at top level.
         // At top level (stack empty), the parser returns Err rather than recovering.
-        let err = parse("1..5").unwrap_err();
+        let err = parse("1..5", test_file("1..5")).unwrap_err();
         assert!(
             err.message.contains("expected field name") || err.message.contains("found Dot"),
             "expected a dot-access parse error, got: {}",
@@ -8702,7 +8450,7 @@ mod tests {
     #[test]
     fn test_doc_separator_inside_bracket() {
         // --- inside a bracket expression
-        let err = parse("[---]").unwrap_err();
+        let err = parse("[---]", test_file("[---]")).unwrap_err();
         assert!(
             err.message
                 .contains("document separator cannot appear inside"),
@@ -8717,7 +8465,7 @@ mod tests {
     fn test_whitespace_allows_dot_access() {
         // "$a .b" has whitespace before dot; dot access is not whitespace-sensitive (unlike '['),
         // so this parses as a single DotAccess expression (same as "$a.b").
-        let output = parse("$a .b").expect("parse failed");
+        let output = parse("$a .b", test_file("$a .b")).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         assert_eq!(
             items.len(),
@@ -8745,7 +8493,7 @@ mod tests {
     #[test]
     fn test_bracket_parses_as_separate_dict() {
         // "$a [0]" parses as two separate expressions: VarRef and Dict([Int(0)])
-        let output = parse("$a [0]").expect("parse failed");
+        let output = parse("$a [0]", test_file("$a [0]")).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         assert_eq!(
             items.len(),
@@ -8772,7 +8520,11 @@ mod tests {
     #[test]
     fn test_fn_params_mixed() {
         // [fn [let x y@Int ...rest] $x] — simple + annotated + variadic
-        let output = parse("[fn [let x y@Int ...rest] $x]").expect("parse failed");
+        let output = parse(
+            "[fn [let x y@Int ...rest] $x]",
+            test_file("[fn [let x y@Int ...rest] $x]"),
+        )
+        .expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::Fn { params, body, .. } => {
@@ -8809,7 +8561,11 @@ mod tests {
     #[test]
     fn test_fn_both_annotations() {
         // [fn@Number [let x@Int] $x] — return annotation + annotated param
-        let output = parse("[fn@Number [let x@Int] $x]").expect("parse failed");
+        let output = parse(
+            "[fn@Number [let x@Int] $x]",
+            test_file("[fn@Number [let x@Int] $x]"),
+        )
+        .expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::Fn {
@@ -8850,7 +8606,7 @@ mod tests {
     fn test_dot_access_on_dict_literal() {
         // "[x: 1].x" — dot access immediately after closing bracket (no whitespace)
         // The lexer emits Dot (access operator) after ']' since CloseBracket is in access context.
-        let output = parse("[x: 1].x").expect("parse failed");
+        let output = parse("[x: 1].x", test_file("[x: 1].x")).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         assert_eq!(items.len(), 1, "expected 1 expression (Field)");
         match &items[0].expr {
@@ -8877,7 +8633,11 @@ mod tests {
     #[test]
     fn test_comment_trailing() {
         // "[a: 1] # trailing comment" — comment on same line as dict → trailing
-        let output = parse("[a: 1] # trailing comment").expect("parse failed");
+        let output = parse(
+            "[a: 1] # trailing comment",
+            test_file("[a: 1] # trailing comment"),
+        )
+        .expect("parse failed");
         assert!(
             !output.trailing_comments.is_empty(),
             "expected at least one trailing comment"
@@ -8896,7 +8656,11 @@ mod tests {
     #[test]
     fn test_multiple_doc_separators() {
         // Three documents separated by two ---
-        let output = parse("[a: 1]\n---\n[b: 2]\n---\n[c: 3]").expect("parse failed");
+        let output = parse(
+            "[a: 1]\n---\n[b: 2]\n---\n[c: 3]",
+            test_file("[a: 1]\n---\n[b: 2]\n---\n[c: 3]"),
+        )
+        .expect("parse failed");
         assert_eq!(
             output.program.documents.len(),
             3,
@@ -8950,7 +8714,7 @@ mod tests {
     #[test]
     fn test_fn_empty_params() {
         // [fn [let] 42] — fn with explicit empty param list, body Int(42)
-        let output = parse("[fn [let] 42]").expect("parse failed");
+        let output = parse("[fn [let] 42]", test_file("[fn [let] 42]")).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::Fn {
@@ -8974,7 +8738,8 @@ mod tests {
         // "[fn [let x@Int] $x]"
         //  0123456789012345678
         //  offset 9 = 'x', offset 10 = '@', offset 11..13 = "Int"
-        let output = parse("[fn [let x@Int] $x]").expect("parse failed");
+        let output =
+            parse("[fn [let x@Int] $x]", test_file("[fn [let x@Int] $x]")).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::Fn { params, .. } => {
@@ -8997,7 +8762,8 @@ mod tests {
 
     #[test]
     fn test_duplicate_key() {
-        let output = parse("[a: 1  a: 2]").expect("recovery should succeed");
+        let output =
+            parse("[a: 1  a: 2]", test_file("[a: 1  a: 2]")).expect("recovery should succeed");
         assert!(
             !output.errors.is_empty(),
             "expected recovered error for duplicate key"
@@ -9017,7 +8783,7 @@ mod tests {
     #[test]
     fn test_empty_document_explicit() {
         // --- is the LLT document separator
-        let output = parse("---\n[a: 1]").expect("parse failed");
+        let output = parse("---\n[a: 1]", test_file("---\n[a: 1]")).expect("parse failed");
         assert_eq!(output.program.documents.len(), 2);
         assert_eq!(output.program.documents[0].node.expressions().count(), 0);
         assert_eq!(output.program.documents[1].node.expressions().count(), 1);
@@ -9045,7 +8811,8 @@ mod tests {
 
     #[test]
     fn test_comment_collection() {
-        let output = parse("# my comment\n[a: 1]").expect("parse failed");
+        let output =
+            parse("# my comment\n[a: 1]", test_file("# my comment\n[a: 1]")).expect("parse failed");
         assert!(
             !output.leading_comments.is_empty(),
             "expected leading_comments to be non-empty"
@@ -9067,7 +8834,7 @@ mod tests {
     fn test_bracket_form_span_line_column() {
         // Dict on line 4 (after 3 comment lines)
         let input = "# Line 1\n# Line 2\n# Line 3\n[x: 10\n y: 20]";
-        let output = parse(input).expect("parse failed");
+        let output = parse(input, test_file(input)).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         // The first item is the dict; its span should start at line 4, column 1
         assert_eq!(items[0].span.start.line, 4, "Dict should start on line 4");
@@ -9078,7 +8845,7 @@ mod tests {
 
         // Also test a nested bracket form
         let input2 = "# Line 1\n[outer: [inner: 1]]";
-        let output2 = parse(input2).expect("parse failed");
+        let output2 = parse(input2, test_file(input2)).expect("parse failed");
         let items2 = surf_items(&output2.program.documents[0].node);
         match &items2[0].expr {
             SurfaceExpression::Dict(entries) => {
@@ -9114,7 +8881,7 @@ mod tests {
     fn test_bracket_form_span_variants() {
         // Call form on line 3
         let input_call = "# Line 1\n# Line 2\n[call $f 1]";
-        let output = parse(input_call).expect("parse failed");
+        let output = parse(input_call, test_file(input_call)).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::Call { .. } => {
@@ -9125,7 +8892,7 @@ mod tests {
 
         // Fn form on line 3
         let input_fn = "# Line 1\n# Line 2\n[fn [let x] $x]";
-        let output = parse(input_fn).expect("parse failed");
+        let output = parse(input_fn, test_file(input_fn)).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::Fn { .. } => {
@@ -9136,7 +8903,7 @@ mod tests {
 
         // TypeAlias form on line 3 — [type ...] is a declaration, access via SurfaceItem::Decl
         let input_type = "# Line 1\n# Line 2\n[type Int]";
-        let output = parse(input_type).expect("parse failed");
+        let output = parse(input_type, test_file(input_type)).expect("parse failed");
         let items = &output.program.documents[0].node.items;
         assert_eq!(items.len(), 1, "expected one item");
         match &items[0] {
@@ -9151,7 +8918,7 @@ mod tests {
 
         // TypeAssert form on line 3
         let input_assert = "# Line 1\n# Line 2\n[@Int 42]";
-        let output = parse(input_assert).expect("parse failed");
+        let output = parse(input_assert, test_file(input_assert)).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::TypeAssert { .. } => {
@@ -9168,7 +8935,8 @@ mod tests {
     fn test_call_newline_colon_not_dict() {
         // [call\n: x] — newline before colon should not create dict with "call" key
         // Instead, it's a call form with zero args followed by unexpected colon (recovered)
-        let output = parse("[call\n: x]").expect("recovery should succeed");
+        let output =
+            parse("[call\n: x]", test_file("[call\n: x]")).expect("recovery should succeed");
         assert!(
             !output.errors.is_empty(),
             "expected recovered error for colon without name in call form"
@@ -9187,7 +8955,8 @@ mod tests {
     #[test]
     fn test_recovery_single_error_inside_brackets() {
         // [a:] — key without value; recovered with SurfaceExpression::Error node
-        let output = parse("[a:]").expect("recovery should succeed");
+        let src = "[a:]";
+        let output = parse(src, test_file(src)).expect("recovery should succeed");
         assert_eq!(output.errors.len(), 1, "expected exactly 1 recovered error");
         assert!(
             output.errors[0].message.contains("key without value"),
@@ -9209,7 +8978,7 @@ mod tests {
     #[test]
     fn test_recovery_multiple_errors() {
         // Two consecutive broken bracket forms at document level
-        let output = parse("[a:] [b:]").expect("recovery should succeed");
+        let output = parse("[a:] [b:]", test_file("[a:] [b:]")).expect("recovery should succeed");
         assert_eq!(
             output.errors.len(),
             2,
@@ -9238,7 +9007,8 @@ mod tests {
     #[test]
     fn test_recovery_error_in_nested_brackets() {
         // [outer: [inner:]] — inner bracket has key without value; outer should still parse
-        let output = parse("[outer: [inner:]]").expect("recovery should succeed");
+        let output = parse("[outer: [inner:]]", test_file("[outer: [inner:]]"))
+            .expect("recovery should succeed");
         assert_eq!(output.errors.len(), 1, "expected 1 recovered error");
         assert!(
             output.errors[0].message.contains("key without value"),
@@ -9315,7 +9085,8 @@ mod tests {
     fn test_recovery_partial_dict_preservation() {
         // [a: 1  a: 2] — has one valid entry (a: 1) before the duplicate key error
         // Should recover with a partial dict containing the valid entry plus an error entry
-        let output = parse("[a: 1  a: 2]").expect("recovery should succeed");
+        let output =
+            parse("[a: 1  a: 2]", test_file("[a: 1  a: 2]")).expect("recovery should succeed");
         assert_eq!(output.errors.len(), 1, "expected exactly 1 recovered error");
         assert!(
             output.errors[0].message.contains("duplicate key"),
@@ -9386,7 +9157,8 @@ mod tests {
     fn test_skip_to_closing_bracket() {
         // Tokenize "[a [b c] d]" and verify skip_to_closing_bracket from index 1
         // (just past the opening '[') finds the matching ']' at the end.
-        let tokens = crate::lexer::tokenize("[a [b c] d]").expect("tokenize failed");
+        let src = "[a [b c] d]";
+        let tokens = crate::lexer::tokenize(src, test_file(src)).expect("tokenize failed");
         // tokens: [ Identifier("a") OpenBracket Identifier("b") Identifier("c") CloseBracket Identifier("d") CloseBracket
         // from_idx=1 (Identifier("a")), depth starts at 1
         let close = skip_to_closing_bracket(&tokens, 1);
@@ -9763,7 +9535,7 @@ mod tests {
     fn test_format_parse_error() {
         // Create a parse error with a span — use unclosed bracket which is always fatal
         let source = "[a: 1";
-        let err = parse(source).unwrap_err();
+        let err = parse(source, test_file(source)).unwrap_err();
 
         // Format it with the new function
         let formatted = format_parse_error(&err, source, "test.llt");
@@ -9798,7 +9570,11 @@ mod tests {
     #[test]
     fn test_fn_params_letdecl_simple() {
         // Test [fn [let x y] body] — LetDecl as parameter list
-        let output = parse("[fn [let x y] [+ $x $y]]").expect("parse failed");
+        let output = parse(
+            "[fn [let x y] [+ $x $y]]",
+            test_file("[fn [let x y] [+ $x $y]]"),
+        )
+        .expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::Fn {
@@ -9825,7 +9601,11 @@ mod tests {
     #[test]
     fn test_fn_params_letdecl_annotated() {
         // Test [fn [let x@Int y] body] — LetDecl with annotations
-        let output = parse("[fn [let x@Int y] [+ $x $y]]").expect("parse failed");
+        let output = parse(
+            "[fn [let x@Int y] [+ $x $y]]",
+            test_file("[fn [let x@Int y] [+ $x $y]]"),
+        )
+        .expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::Fn { params, .. } => {
@@ -9852,7 +9632,11 @@ mod tests {
     #[test]
     fn test_fn_params_letdecl_mixed() {
         // Test [fn [let x@Int y@String z] body]
-        let output = parse("[fn [let x@Int y@String z] $x]").expect("parse failed");
+        let output = parse(
+            "[fn [let x@Int y@String z] $x]",
+            test_file("[fn [let x@Int y@String z] $x]"),
+        )
+        .expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::Fn { params, .. } => {
@@ -9873,7 +9657,8 @@ mod tests {
         // Test [fn [let x ...y] body] — x is a plain param, ...y is variadic.
         // In [let ...], whitespace between ... and the name is insignificant:
         // `... y` parses identically to `...y` (both create a variadic param named y).
-        let output = parse("[fn [let x ...y] $x]").expect("parse failed");
+        let output =
+            parse("[fn [let x ...y] $x]", test_file("[fn [let x ...y] $x]")).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::Fn { params, .. } => {
@@ -9896,7 +9681,11 @@ mod tests {
         // NOTE: Eval-level coverage (calling the function with args) is blocked by the
         // ThunkStateGuard aliasing hazard (see TODO.md sprint-2b-shim-removal). When
         // that hazard is resolved, add an eval integration test here.
-        let output = parse("[fn [let x@Int y] [+ $x $y]]").expect("parse failed");
+        let output = parse(
+            "[fn [let x@Int y] [+ $x $y]]",
+            test_file("[fn [let x@Int y] [+ $x $y]]"),
+        )
+        .expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::Fn { params, .. } => {
@@ -9927,7 +9716,7 @@ mod tests {
     #[test]
     fn test_parse_output_as_surface_program() {
         // Test the ParseOutput::as_surface_program() bridge method.
-        let output = parse("[a: 1  b: 2]").expect("parse failed");
+        let output = parse("[a: 1  b: 2]", test_file("[a: 1  b: 2]")).expect("parse failed");
         let surface = output.as_surface_program();
 
         // Should have one document
@@ -9962,7 +9751,7 @@ mod tests {
     #[test]
     fn test_let_nested_let_inner_is_proper_letdecl() {
         // [let [let x y]] — outer LetDecl with one binding: an inner LetDecl
-        let output = parse("[let [let x y]]").expect("parse failed");
+        let output = parse("[let [let x y]]", test_file("[let [let x y]]")).expect("parse failed");
         assert!(
             output.errors.is_empty(),
             "expected no parse errors for [let [let x y]], got: {:?}",
@@ -10037,8 +9826,9 @@ mod tests {
     fn test_type_assert_in_match_arm_pattern() {
         // This is the minimal form of bool->int from test-loader.llt line 64.
         // [@Integer _] is a TypeAssert pattern in a match arm — it must parse cleanly.
-        let output = parse("[x: [fn [let b] [match b Boolean.False: 0 [@Integer _]: b _: 1]] x]")
-            .expect("parse should succeed");
+        let src_type_assert = "[x: [fn [let b] [match b Boolean.False: 0 [@Integer _]: b _: 1]] x]";
+        let output =
+            parse(src_type_assert, test_file(src_type_assert)).expect("parse should succeed");
         assert!(
             output.errors.is_empty(),
             "expected no parse errors, got: {:?}",
@@ -10076,10 +9866,8 @@ mod tests {
     fn test_type_assert_match_arm_followed_by_keyed_entry() {
         // This matches the shape of the test-loader.llt failure: after a fn containing a
         // match with [@Type _] arm, the NEXT entry in the outer dict must parse correctly.
-        let output = parse(
-            "[bool->int: [fn [let b] [match b Boolean.False: 0 [@Integer _]: b _: 1]] typecheck-docs: 42]",
-        )
-        .expect("parse should succeed");
+        let src_arm_keyed = "[bool->int: [fn [let b] [match b Boolean.False: 0 [@Integer _]: b _: 1]] typecheck-docs: 42]";
+        let output = parse(src_arm_keyed, test_file(src_arm_keyed)).expect("parse should succeed");
         assert!(
             output.errors.is_empty(),
             "expected no parse errors for match-with-type-assert followed by keyed entry, got: {:?}",
@@ -10115,8 +9903,9 @@ mod tests {
     /// This is used extensively in prelude.llt (e.g., `lines@[doc: "..."]:  [fn ...]`).
     #[test]
     fn test_annotated_key_property_dict() {
-        let output = parse(r#"[lines@[doc: "Read all lines."]: [fn [let h] h]  other: 42]"#)
-            .expect("parse should succeed");
+        let src_annotated_key = r#"[lines@[doc: "Read all lines."]: [fn [let h] h]  other: 42]"#;
+        let output =
+            parse(src_annotated_key, test_file(src_annotated_key)).expect("parse should succeed");
         assert!(
             output.errors.is_empty(),
             "expected no errors for key@[annotation]: val, got: {:?}",
@@ -10170,7 +9959,7 @@ mod tests {
     #[test]
     fn test_annotated_key_multiline_doc() {
         let src = "[range@[return: Integer  doc: \"\"\"\nMultiline doc.\n\"\"\"]: [fn [let x] x]  other: 42]";
-        let output = parse(src).expect("parse should succeed");
+        let output = parse(src, test_file(src)).expect("parse should succeed");
         assert!(
             output.errors.is_empty(),
             "expected no errors for key@[multiline-annotation]: val, got: {:?}",

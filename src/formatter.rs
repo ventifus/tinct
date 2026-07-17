@@ -15,12 +15,14 @@ pub async fn format_source_tinct_with_dir(
     script_path: &std::path::Path,
     base_dir: Option<cap_std::fs::Dir>,
 ) -> Result<String, String> {
+    use crate::ast::SourceFile;
     use crate::desugar;
     use crate::eval::{self, EvalContext};
     use crate::parser::parse;
     use crate::resolve;
     use crate::typecheck;
     use crate::value::Value;
+    use std::sync::Arc;
 
     // Determine mode from script name: compact.llt → minimal AST; everything else → full AST.
     let compact = script_path.file_stem().and_then(|s| s.to_str()) == Some("compact");
@@ -41,7 +43,11 @@ pub async fn format_source_tinct_with_dir(
     };
 
     // Parse the input source (no env/ctx needed yet).
-    let parse_output = parse(input).map_err(|e| format!("{e}"))?;
+    let file = Arc::new(SourceFile {
+        path: Arc::from("<formatter>"),
+        content: Arc::from(input),
+    });
+    let parse_output = parse(input, file).map_err(|e| format!("{e}"))?;
 
     // Load the formatter script BEFORE creating env/ctx.
     // AMBIENT-OK: formatter script loaded from stdlib path.
@@ -52,8 +58,12 @@ pub async fn format_source_tinct_with_dir(
             script_path.display()
         )
     })?;
-    let formatter_parsed =
-        parse(&formatter_source).map_err(|e| format!("formatter parse error: {e}"))?;
+    let formatter_file = Arc::new(SourceFile {
+        path: Arc::from(script_path.display().to_string()),
+        content: Arc::from(formatter_source.clone()),
+    });
+    let formatter_parsed = parse(&formatter_source, formatter_file)
+        .map_err(|e| format!("formatter parse error: {e}"))?;
 
     // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
     let mut formatter_program = formatter_parsed.program;

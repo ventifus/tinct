@@ -2113,18 +2113,17 @@ pub(crate) fn builtin_parse(
             })?
             .to_string();
 
-        // Parse — use parse_with_file so spans carry the path for error messages.
+        // Parse — spans carry the path for error messages via the SourceFile.
         // Fatal parse errors (lexer failure, unclosed brackets) are captured in the
         // errors list rather than raised, so callers can inspect them programmatically.
         let source_file = Arc::new(crate::ast::SourceFile {
             path: Arc::from(path_str.as_str()),
             content: Arc::from(source.as_str()),
         });
-        let (parsed, fatal_errors) =
-            match crate::parser::parse_with_file(&source, Arc::clone(&source_file)) {
-                Ok(output) => (Some(output), vec![]),
-                Err(fatal) => (None, vec![fatal]),
-            };
+        let (parsed, fatal_errors) = match crate::parser::parse(&source, Arc::clone(&source_file)) {
+            Ok(output) => (Some(output), vec![]),
+            Err(fatal) => (None, vec![fatal]),
+        };
 
         // Build errors list: fatal error (if any) + recovered errors from ParseOutput.
         let all_parse_errors: Vec<crate::parser::ParseError> = if let Some(ref output) = parsed {

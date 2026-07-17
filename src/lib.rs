@@ -106,9 +106,7 @@ pub use ast::{
     SurfaceExpression, SurfaceNode, SurfaceProgram, TypeAnnotation,
 };
 /// Parser entry points and error type.
-pub use parser::{
-    format_parse_error, parse, parse_surface_expression, parse_with_file, ParseError, ParseOutput,
-};
+pub use parser::{format_parse_error, parse, parse_surface_expression, ParseError, ParseOutput};
 
 /// Evaluation functions.
 pub use eval::{
@@ -180,7 +178,7 @@ pub async fn run_loader_pipeline(
         path: Arc::from(init_path),
         content: Arc::from(init_source),
     });
-    let loader_parsed = parse_with_file(init_source, Arc::clone(&loader_sf))
+    let loader_parsed = parse(init_source, Arc::clone(&loader_sf))
         .map_err(|e| format!("{init_path} parse error: {e}"))?;
     let mut loader_program = loader_parsed.program;
 
@@ -385,7 +383,11 @@ pub async fn run_loader_pipeline(
 /// `=== warn` section is present). For corpus tests that only care about type *errors*
 /// (not quality diagnostics), use [`typecheck_source_errors_only`] instead.
 pub async fn typecheck_source(input: &str) -> Result<(), String> {
-    let parsed = parse(input).map_err(|e| format!("{e}"))?;
+    let file = Arc::new(SourceFile {
+        path: Arc::from("<typecheck>"),
+        content: Arc::from(input),
+    });
+    let parsed = parse(input, file).map_err(|e| format!("{e}"))?;
     // PIPELINE INVARIANT: parse -> desugar -> typecheck.
     let mut program = parsed.program;
     desugar::desugar_surface_program(&mut program);
@@ -418,7 +420,11 @@ pub async fn typecheck_source(input: &str) -> Result<(), String> {
 /// programs type-check without errors but may legitimately contain polymorphic or
 /// open-record patterns that produce `Unknown` in intermediate type-map entries.
 pub async fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
-    let parsed = parse(input).map_err(|e| format!("{e}"))?;
+    let file = Arc::new(SourceFile {
+        path: Arc::from("<typecheck>"),
+        content: Arc::from(input),
+    });
+    let parsed = parse(input, file).map_err(|e| format!("{e}"))?;
     // PIPELINE INVARIANT: parse -> desugar -> typecheck.
     let mut program = parsed.program;
     desugar::desugar_surface_program(&mut program);
@@ -971,6 +977,13 @@ mod tests {
         super::value_to_display_string(val, ctx, span).await
     }
 
+    fn test_file(src: &str) -> Arc<SourceFile> {
+        Arc::new(SourceFile {
+            path: Arc::from(file!()),
+            content: Arc::from(src),
+        })
+    }
+
     async fn test_ctx() -> Arc<eval::EvalContext> {
         let base_dir = test_util::test_caps().root.try_clone().unwrap();
         eval::EvalContext::new_empty(base_dir, false)
@@ -1073,7 +1086,9 @@ mod tests {
         // Parse the source manually to get a real AST with spans.
         // Move `program` out of ParseOutput directly — cloning would increase Arc reference
         // counts and cause `desugar_surface_program`'s `Arc::get_mut` to panic.
-        let mut program = parse(source).expect("parse should succeed").program;
+        let mut program = parse(source, test_file(source))
+            .expect("parse should succeed")
+            .program;
         desugar::desugar_surface_program(&mut program);
         // T-1576: test path uses bootstrap mode (no arena yet).
         let (_table, _frames) = resolve::resolve_surface_program(&program, &[]);
