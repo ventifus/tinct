@@ -27,11 +27,26 @@ use std::sync::Arc;
 ///
 /// This replaces the old `resolve_file()` mutation of `VarRef.resolved: RefCell<...>`.
 /// The SurfaceExpression tree is immutable; all resolution data lives in the table.
+/// Whether a scope frame is a letrec dict scope or not.
+///
+/// Used by `resolve_name_parent` to implement leading-dot (`.name`) parent-scope lookup:
+/// the nearest `Dict` scope and all non-`Dict` scopes above it are skipped, and the search
+/// starts from the scope immediately outside the skipped `Dict` scope.
+#[derive(Clone, Copy, PartialEq)]
+enum ScopeKind {
+    /// A letrec dict scope — the scope created when entering a `[k1: v1  k2: v2 ...]` dict.
+    /// Leading-dot `.name` skips to above the nearest Dict scope.
+    Dict,
+    /// Any other scope: fn params, let/case arm bindings, initial (root) frames.
+    /// Leading-dot does not skip these when searching for the Dict boundary.
+    Other,
+}
+
 struct SurfaceResolver {
-    /// Each scope frame is an IndexMap<String, u32> mapping name → actual slot index.
-    /// The stored u32 is the real FlatEnv slot, not the IndexMap ordinal position.
-    /// The explicit u32 value is dropped — position IS the slot.
-    scopes: Vec<indexmap::IndexMap<String, u32>>,
+    /// Each scope frame is an (IndexMap<String, u32>, ScopeKind) pair.
+    /// The IndexMap maps name → actual slot index; ScopeKind marks whether this is
+    /// a letrec dict scope (for leading-dot parent-scope resolution).
+    scopes: Vec<(indexmap::IndexMap<String, u32>, ScopeKind)>,
     table: ResolutionTable,
     /// Unresolved VarRefs in expression position: (name, span).
     /// Populated only when suppress_depth == 0.  Positions that are NOT runtime
@@ -54,17 +69,19 @@ impl SurfaceResolver {
         }
     }
 
-    fn enter_scope(&mut self, keys: &[String]) {
+    fn enter_scope(&mut self, keys: &[String], kind: ScopeKind) {
         let mut scope: indexmap::IndexMap<String, u32> =
             indexmap::IndexMap::with_capacity(keys.len());
         for (slot, key) in keys.iter().enumerate() {
             scope.insert(key.clone(), slot as u32);
         }
-        self.scopes.push(scope);
+        self.scopes.push((scope, kind));
     }
 
     fn enter_scope_from_frame(&mut self, frame: &indexmap::IndexMap<String, u32>) {
-        self.scopes.push(frame.clone());
+        // Initial frames (root builtins, capabilities, external frames) are Other —
+        // they are not letrec dict scopes and leading-dot does not skip them.
+        self.scopes.push((frame.clone(), ScopeKind::Other));
     }
 
     fn exit_scope(&mut self) {
@@ -74,7 +91,7 @@ impl SurfaceResolver {
     }
 
     fn resolve_name(&self, name: &str) -> Option<(u32, u32)> {
-        for (offset, scope) in self.scopes.iter().rev().enumerate() {
+        for (offset, (scope, _)) in self.scopes.iter().rev().enumerate() {
             if let Some(&slot) = scope.get(name) {
                 let level = u32::try_from(offset).expect("scope depth overflow");
                 return Some((level, slot));
@@ -83,32 +100,29 @@ impl SurfaceResolver {
         None
     }
 
-    /// Resolve a class method name to ANY matching instance binding in scope.
+    /// Resolve `name` starting from the parent scope — skipping the nearest Dict scope
+    /// and all non-Dict scopes above it (between the current position and the Dict scope).
     ///
-    /// When `resolve_name` fails (method name not directly in scope), this searches
-    /// all scope entries for instance bindings whose method component matches `name`.
-    /// The instance binding name format is `ɪɴꜱᴛᴀɴᴄᴇ⧼{class}∷{method}⟨{args}⟩⧽`.
+    /// This implements leading-dot `.name` semantics: the current letrec dict's own scope
+    /// is bypassed so that `.name` refers to the binding in the enclosing scope, not the
+    /// dict entry being defined.
     ///
-    /// Returns coordinates of the first matching binding. The type checker overrides
-    /// via `call_dispatch` when it can determine the specific instance; this is the
-    /// resolver's best-effort fallback so the OnceLock is set and the lowerer doesn't
-    /// emit "undefined variable".
-    fn method_to_instance(&self, name: &str) -> Option<(u32, u32)> {
-        // Instance binding format: "ɪɴꜱᴛᴀɴᴄᴇ⧼{class}∷{method}⟨{args}⟩⧽" (with args)
-        //                      or: "ɪɴꜱᴛᴀɴᴄᴇ⧼{class}∷{method}⧽"            (no args)
-        // Match on "∷{name}⟨" or "∷{name}⧽" appearing in the binding name.
-        let needle_with_args = format!("∷{}⟨", name);
-        let needle_no_args = format!("∷{}⧽", name);
-        for (offset, scope) in self.scopes.iter().rev().enumerate() {
-            for (binding, _) in scope {
-                if binding.starts_with('ɪ')
-                    && (binding.contains(&needle_with_args) || binding.contains(&needle_no_args))
-                {
-                    if let Some(&slot) = scope.get(binding) {
-                        let level = u32::try_from(offset).expect("scope depth overflow");
-                        return Some((level, slot));
-                    }
+    /// Examples (scopes listed innermost-first):
+    /// - `[dict_scope, fn_params]`: skip dict_scope → search fn_params ✓
+    /// - `[fn_scope, dict_scope, outer]`: skip fn_scope (Other), skip dict_scope (Dict) → search outer ✓
+    /// - `[inner_dict, outer_dict, fn_params]`: skip inner_dict (Dict) → search outer_dict ✓
+    fn resolve_name_parent(&self, name: &str) -> Option<(u32, u32)> {
+        let mut passed_dict = false;
+        for (offset, (scope, kind)) in self.scopes.iter().rev().enumerate() {
+            if !passed_dict {
+                if *kind == ScopeKind::Dict {
+                    passed_dict = true;
                 }
+                continue; // skip everything up to and including the nearest Dict scope
+            }
+            if let Some(&slot) = scope.get(name) {
+                let level = u32::try_from(offset).expect("scope depth overflow");
+                return Some((level, slot));
             }
         }
         None
@@ -124,12 +138,6 @@ impl SurfaceResolver {
                 name, resolution, ..
             } => {
                 if let Some(coords) = self.resolve_name(name) {
-                    resolution.set(Some(coords));
-                    self.table.insert(node_id(arc), coords);
-                } else if let Some(coords) = self.method_to_instance(name) {
-                    // Class method name not in direct scope — resolve to the first
-                    // matching instance binding. The type checker overrides via
-                    // call_dispatch when it can identify the specific instance.
                     resolution.set(Some(coords));
                     self.table.insert(node_id(arc), coords);
                 } else if self.suppress_depth == 0 && name != "_" {
@@ -164,7 +172,7 @@ impl SurfaceResolver {
                     }
                 }
 
-                self.enter_scope(&static_keys);
+                self.enter_scope(&static_keys, ScopeKind::Dict);
                 for entry in entries {
                     self.walk_surface_node(&entry.node.value);
                 }
@@ -184,7 +192,7 @@ impl SurfaceResolver {
                     }
                 }
                 let param_names: Vec<String> = params.iter().map(|p| p.node.name.clone()).collect();
-                self.enter_scope(&param_names);
+                self.enter_scope(&param_names, ScopeKind::Other);
                 self.walk_surface_node(body);
                 self.exit_scope();
             }
@@ -197,7 +205,7 @@ impl SurfaceResolver {
                     if !is_last {
                         if let Some(keys) = surface_node_static_keys(e) {
                             if !keys.is_empty() {
-                                self.enter_scope(&keys);
+                                self.enter_scope(&keys, ScopeKind::Dict);
                                 injected += 1;
                             }
                         }
@@ -242,11 +250,15 @@ impl SurfaceResolver {
                         let _ = resolution.set(Some(coords));
                     }
                 } else if let crate::ast::DotKey::Ident(name) = field {
-                    // Leading-dot `.name`: resolve the name in the current scope.
-                    if let Some(coords) = self.resolve_name(name) {
+                    // Leading-dot `.name`: look up in the PARENT scope, skipping the
+                    // nearest enclosing letrec dict scope. This prevents `[k: .k ...]`
+                    // from creating a circular self-reference.
+                    // `.a.b.c` chains work correctly: only this innermost `expr: None`
+                    // case uses parent lookup; outer `.b` / `.c` use normal field-get.
+                    if let Some(coords) = self.resolve_name_parent(name) {
                         let _ = resolution.set(Some(coords));
                     } else {
-                        // Resolver ran but name not found — emit error node, not MAX/MAX.
+                        // Resolver ran but name not found in parent — emit error node.
                         let _ = resolution.set(None);
                     }
                 }
@@ -284,7 +296,7 @@ impl SurfaceResolver {
                     // allocating an empty IndexMap and pushing/popping it is pure overhead.
                     let has_bindings = !bound_names.is_empty();
                     if has_bindings {
-                        self.enter_scope(&bound_names);
+                        self.enter_scope(&bound_names, ScopeKind::Other);
                     }
 
                     // Walk guard (if present) inside the pattern scope
@@ -340,7 +352,7 @@ impl SurfaceResolver {
                 };
                 let has_bindings = !bound_names.is_empty();
                 if has_bindings {
-                    self.enter_scope(&bound_names);
+                    self.enter_scope(&bound_names, ScopeKind::Other);
                 }
                 self.walk_surface_node(pattern);
                 self.walk_surface_node(body);
@@ -535,7 +547,7 @@ impl SurfaceResolver {
                     if !is_last_expr {
                         if let Some(keys) = surface_node_static_keys(node) {
                             if !keys.is_empty() {
-                                self.enter_scope(&keys);
+                                self.enter_scope(&keys, ScopeKind::Dict);
                                 injected += 1;
                             }
                         }
@@ -548,9 +560,12 @@ impl SurfaceResolver {
             }
         }
 
-        // Capture injected frames before exiting
+        // Capture injected frames (strip ScopeKind — callers only need name→slot maps)
         let start = self.scopes.len() - injected;
-        let frames: Vec<_> = self.scopes[start..].iter().cloned().collect();
+        let frames: Vec<_> = self.scopes[start..]
+            .iter()
+            .map(|(m, _)| m.clone())
+            .collect();
 
         for _ in 0..injected {
             self.exit_scope();
@@ -655,9 +670,8 @@ pub fn resolve_surface_program(
 /// 1. Keyed entries — VarRef or string literal keys become static scope slots.
 /// 2. Anonymous InstanceDecl entries (no outer key) — the lowerer flattens these into
 ///    ɪ-prefixed binding names (`ɪɴꜱᴛᴀɴᴄᴇ⧼Class∷method⟨T⟩⧽`) in the outer dict.
-///    We register those same names here so `method_to_instance` can find them within
-///    the same letrec scope (e.g., `[< y x]` inside `>` in the same dict as the
-///    Comparable instance).
+///    We register those same names so the resolver can find instance methods directly
+///    when they are referenced from within the same letrec scope.
 fn surface_dict_static_keys(entries: &[Spanned<SurfaceEntry>]) -> Vec<String> {
     let mut keys = Vec::new();
     for entry in entries {

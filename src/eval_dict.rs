@@ -279,7 +279,12 @@ pub(crate) async fn eval_dict_core(
         // When the key is a string (named binding), the name goes on the thunk's span so it
         // is visible for stack traces, scope-frame reconstruction, and type-stage lookup.
         let entry_span = if let HashableValue::Str(ref name) = key {
-            entry.node.value.span.clone().with_name(std::sync::Arc::from(name.as_ref()))
+            entry
+                .node
+                .value
+                .span
+                .clone()
+                .with_name(std::sync::Arc::from(name.as_ref()))
         } else {
             entry.node.value.span.clone()
         };

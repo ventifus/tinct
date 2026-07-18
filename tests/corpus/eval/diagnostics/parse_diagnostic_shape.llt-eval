@@ -1,0 +1,15 @@
+# builtin-parse returns diagnostics with level, kind, message fields on parse error.
+# Verifies the unified diagnostic protocol shape for parse errors.
+# Expected: unclosed bracket produces a diagnostic with level="error" and kind="parse-error".
+[call [fn [let]
+  [r: [builtin-parse [builtin-str-bytes "[unclosed"] "test.llt"]]
+  [d: [builtin-get 0 r.diagnostics]]
+  [has-level: [builtin-has-key? "level" d]]
+  [has-kind:  [builtin-has-key? "kind" d]]
+  [has-msg:   [builtin-has-key? "message" d]]
+  [level-ok:  [builtin-eq-string [builtin-get "level" d] "error"]]
+  [kind-ok:   [builtin-eq-string [builtin-get "kind" d] "parse-error"]]
+  [all-ok:    [builtin-int-add [builtin-int-add [builtin-int-add has-level has-kind] has-msg] [builtin-int-add level-ok kind-ok]]]
+  all-ok]]
+=== out
+Int(5)

@@ -31,7 +31,8 @@ pub struct NormCtxt {
     /// Pre-built map from type-stage name → ThunkId for O(1) resolver lookup.
     /// Populated from `InferState.type_stage_map` by production callers in type_unify.rs.
     /// `None` in test/bootstrap contexts — TypeStageApp nodes remain stuck.
-    pub type_stage_map: Option<std::collections::HashMap<String, crate::type_infer::TypeStageEntry>>,
+    pub type_stage_map:
+        Option<std::collections::HashMap<String, crate::type_infer::TypeStageEntry>>,
     /// If false, disable resolver evaluation (prevents runtime errors from propagating into type inference).
     /// Set to false inside unify() to prevent evaluation failures from causing type errors.
     pub allow_eval: bool,

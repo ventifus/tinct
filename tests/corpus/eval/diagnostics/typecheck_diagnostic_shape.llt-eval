@@ -1,0 +1,22 @@
+# builtin-typecheck-doc returns diagnostics with level and kind fields.
+# Uses a simple program with an unresolved VarRef which triggers T010 (Unknown type).
+# With empty resolver frames, any VarRef produces T010 warning via scan_type_quality.
+[call [fn [let]
+  [src: [builtin-str-bytes "[x: some-name]"]]
+  [parsed: [builtin-parse src "test.llt"]]
+  [desugared: [builtin-desugar parsed.program]]
+  [docs: [builtin-program-docs desugared]]
+  [doc: [builtin-get 0 docs]]
+  [resolved: [builtin-resolve doc []]]
+  [tc: [builtin-make-type-ctx]]
+  [typed: [builtin-typecheck-doc resolved.doc tc]]
+  [n: [builtin-dict-length typed.diagnostics]]
+  [has-diag: [builtin-int-gt n 0]]
+  [d: [builtin-get 0 typed.diagnostics]]
+  [has-level: [builtin-has-key? "level" d]]
+  [has-kind: [builtin-has-key? "kind" d]]
+  [has-msg: [builtin-has-key? "message" d]]
+  [all-ok: [builtin-int-add [builtin-int-add has-diag has-level] [builtin-int-add has-kind has-msg]]]
+  all-ok]]
+=== out
+Int(4)

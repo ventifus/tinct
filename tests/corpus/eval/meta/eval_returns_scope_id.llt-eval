@@ -1,4 +1,4 @@
-# builtin-eval returns {result, scope-id, errors} with scope-id as a positive Int.
+# builtin-eval returns {result, scope-id, diagnostics} with scope-id as a positive Int.
 # The scope-id is the new child scope created for the evaluated document.
 # Pipeline: parse -> desugar -> program-docs -> resolve -> typecheck-doc -> eval.
 [call [fn [let]
@@ -10,10 +10,10 @@
   [resolved: [builtin-resolve doc0 []]]
   [tc:       [builtin-make-type-ctx]]
   [typed:    [builtin-typecheck-doc resolved.doc tc]]
-  [evout:    [builtin-eval typed 0]]
+  [evout:    [builtin-eval typed.doc 0]]
   [sid-is-int: [builtin-eq-string [builtin-type-of evout.scope-id] "Int"]]
   [sid-gt-0:   [builtin-int-gt evout.scope-id 0]]
-  [no-errors:  [if [null? evout.errors] 1 0]]
+  [no-errors:  [if [null? evout.diagnostics] 1 0]]
   [builtin-int-add [builtin-int-add sid-is-int sid-gt-0] no-errors]]]
 === out
 Int(3)

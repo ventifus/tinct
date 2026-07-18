@@ -1,0 +1,17 @@
+# Verify diagnostic dict has all expected fields: level, kind, message, span, notes, call-stack, macro-expand, blame.
+# Uses a parse error as it's the simplest to trigger.
+[call [fn [let]
+  [r: [builtin-parse [builtin-str-bytes "[unclosed"] "test.llt"]]
+  [d: [builtin-get 0 r.diagnostics]]
+  [has-level: [builtin-has-key? "level" d]]
+  [has-kind: [builtin-has-key? "kind" d]]
+  [has-message: [builtin-has-key? "message" d]]
+  [has-span: [builtin-has-key? "span" d]]
+  [has-notes: [builtin-has-key? "notes" d]]
+  [has-call-stack: [builtin-has-key? "call-stack" d]]
+  [has-macro-expand: [builtin-has-key? "macro-expand" d]]
+  [has-blame: [builtin-has-key? "blame" d]]
+  [all-ok: [builtin-int-add [builtin-int-add [builtin-int-add has-level has-kind] [builtin-int-add has-message has-span]] [builtin-int-add [builtin-int-add has-notes has-call-stack] [builtin-int-add has-macro-expand has-blame]]]]
+  all-ok]]
+=== out
+Int(8)

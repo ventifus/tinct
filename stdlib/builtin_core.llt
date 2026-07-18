@@ -180,17 +180,18 @@
   builtin-write-stderr:  [fn@[bind: [h] return: h] [let s@String h] ...]
 
   # ── Pipeline primitives ────────────────────────────────────────────────────
-  # parse: parse source bytes at path, return Program with documents and errors.
-  builtin-parse:          [fn@Program  [let src@Bytes path@String] ...]
+  # parse: parse source bytes at path, return {program, diagnostics}.
+  builtin-parse:          [fn@Dict     [let src@Bytes path@String] ...]
   # desugar: desugar a Program (apply $_ transformation, pipe lowering, etc.).
   builtin-desugar:        [fn@Program  [let prog@Program] ...]
   # resolve: resolve VarRef de Bruijn coords in a document against scope frames.
   # frames: {frame-index: {var-name: slot-index}, ...}
+  # Returns {doc, diagnostics}.
   builtin-resolve:        [fn@Dict     [let doc@Document frames@[Map Int [Map String Int]]] ...]
-  # eval: evaluate a resolved+typed document in a scope; returns {result, scope-id, errors}.
+  # eval: evaluate a resolved+typed document in a scope; returns {result, scope-id, diagnostics}.
   builtin-eval:           [fn@Dict     [let typed@Document scope-id@Integer] ...]
   # typecheck-doc: type-check a single resolved document against a TypeContext.
-  # Returns {doc: Document, warnings: {0: {kind, message, span, notes}, ...}}
+  # Returns {doc, diagnostics}.
   builtin-typecheck-doc:  [fn@Dict     [let doc@Document tc@TypeContext] ...]
   # program-docs: return auto-indexed dict of documents in a Program.
   builtin-program-docs:      [fn@Dict     [let prog@Program] ...]

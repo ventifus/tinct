@@ -9,9 +9,7 @@
 #
 # NOTE: May OOM during prelude loading (~3.5 GB). T-1586 tracks resolution.
 [call [fn [let]
-  [all-scopes: [builtin-scopes]]
-  [root-id:    [head [keys [filter-entries all-scopes [fn [let _ p] [null? p]]]]]]
-  [base-scope: [builtin-scope-new root-id [x: 10]]]
+  [base-scope: [builtin-scope-new 0 [x: 10]]]
   [ext-scope:  [builtin-scope-new base-scope [y: 20]]]
   [src:        [builtin-str-bytes "[sum: [builtin-int-add x y]]"]]
   [parsed:     [builtin-parse src "test.llt"]]

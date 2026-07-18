@@ -339,7 +339,7 @@
 
   # ── Diagnostic formatting ─────────────────────────────────────────────────
   # Each diagnostic is a unified error dict:
-  #   {kind, message, span: {file, start-line, start-col, end-line, end-col},
+  #   {level, kind, message, span: {file, start-line, start-col, end-line, end-col},
   #    notes, call-stack, macro-expand, blame}
   # Formatted as: "file:start-line:start-col: kind — message\n"
   # Uses only core builtins — safe to call before prelude is loaded.
@@ -374,8 +374,8 @@
     [bytes:         [read-file handle [builtin-bytes]]]
     [parse-result:  [builtin-parse bytes path]]
     # Stop on parse errors. Emit first (data dependency via builtin-int-add), then raise.
-    [n-parse:       [builtin-dict-length parse-result.errors]]
-    [_pe:           [builtin-dict-length [emit-diagnostics parse-result.errors]]]
+    [n-parse:       [builtin-dict-length parse-result.diagnostics]]
+    [_pe:           [builtin-dict-length [emit-diagnostics parse-result.diagnostics]]]
     [match [builtin-eq-int [builtin-int-add n-parse _pe] 0]
       0: [builtin-raise [join "" [[builtin-int->string n-parse] " parse error(s) in " path]]]
       _: []]
@@ -392,15 +392,15 @@
       [scope:   [builtin-scope-new acc.scope-id uses]]
       [frames:  [scope-to-frames scope]]
       [res:     [builtin-resolve doc frames]]
-      [n-re:    [builtin-dict-length res.errors]]
-      [_re:     [builtin-dict-length [emit-diagnostics res.errors]]]
+      [n-re:    [builtin-dict-length res.diagnostics]]
+      [_re:     [builtin-dict-length [emit-diagnostics res.diagnostics]]]
       [match [builtin-eq-int [builtin-int-add n-re _re] 0]
         0: [builtin-raise [join "" [[builtin-int->string n-re] " resolve error(s) in " path]]]
         _: []]
       [typed:   [builtin-typecheck-doc res.doc acc.tc]]
       [ev:      [builtin-eval typed scope]]
-      [match [null? ev.errors]
-        0: [builtin-raise [builtin-get 0 ev.errors]]
+      [match [null? ev.diagnostics]
+        0: [builtin-raise ev.diagnostics.0.message]
         _: [call [fn [let]
              [doc-name:   [get-or "" "name" meta]]
              [next-scope: [builtin-scope-new ev.scope-id
@@ -479,8 +479,8 @@
     # Per-document resolve against the fully-constructed scope for correct de Bruijn coords.
     [frames: [scope-to-frames full-scope-r3]]
     [doc-resolved: [builtin-resolve doc frames]]
-    [n-re: [builtin-dict-length doc-resolved.errors]]
-    [_re:  [builtin-dict-length [emit-diagnostics doc-resolved.errors]]]
+    [n-re: [builtin-dict-length doc-resolved.diagnostics]]
+    [_re:  [builtin-dict-length [emit-diagnostics doc-resolved.diagnostics]]]
     [match [builtin-eq-int [builtin-int-add n-re _re] 0]
       0: [builtin-raise "resolve error(s)"]
       _: []]
@@ -491,13 +491,13 @@
     [doc-arena-name: [get-or "doc" "name" meta]]
     [doc-arena: [builtin-arena-new doc-arena-name]]
     [eval-result: [builtin-eval typed full-scope-r3]]
-    [match [null? eval-result.errors]
+    [match [null? eval-result.diagnostics]
       0: # Error path: drop per-doc arena, then raise error.
          [call [fn [let]
            [_drop: [builtin-arena-drop doc-arena]]
            [match [builtin-int-gte [builtin-dict-length [builtin-type-of _drop]] 0]
-             0: [builtin-raise [builtin-get 0 eval-result.errors]]
-             _: [builtin-raise [builtin-get 0 eval-result.errors]]]]]
+             0: [builtin-raise eval-result.diagnostics.0.message]
+             _: [builtin-raise eval-result.diagnostics.0.message]]]]]
       _: # Success path: migrate result to root arena, drop per-doc arena, then validate.
          [call [fn [let]
            [migrated-result: [builtin-arena-migrate eval-result.result doc-arena %arena]]
@@ -542,7 +542,7 @@
     [bytes:        [read-file item.handle [builtin-bytes]]]
     [parse-result: [builtin-parse bytes item.path]]
     # Emit parse errors as a data dependency (no >> needed).
-    [_pe:          [builtin-dict-length [emit-diagnostics parse-result.errors]]]
+    [_pe:          [builtin-dict-length [emit-diagnostics parse-result.diagnostics]]]
     [match [builtin-eq-int _pe 0]
       0: [builtin-raise "parse error(s)"]
       _: []]
@@ -564,7 +564,7 @@
     [bytes:        [builtin-str-bytes src]]
     [parse-result: [builtin-parse bytes "<expr>"]]
     # Emit parse errors as a data dependency (no >> needed).
-    [_pe:          [builtin-dict-length [emit-diagnostics parse-result.errors]]]
+    [_pe:          [builtin-dict-length [emit-diagnostics parse-result.diagnostics]]]
     [match [builtin-eq-int _pe 0]
       0: [builtin-raise "parse error(s)"]
       _: []]

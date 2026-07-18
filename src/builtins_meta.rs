@@ -55,11 +55,20 @@ use crate::value::{string_val, BuiltinArgs, HashableValue, Strictness, Thunk, Va
 
 // ── Unified error dict helpers ────────────────────────────────────────────────
 
+/// Helper to map DiagnosticLevel to string for TypeDiagnostic level field.
+fn diagnostic_level_str(level: crate::error::DiagnosticLevel) -> &'static str {
+    match level {
+        crate::error::DiagnosticLevel::Info => "info",
+        crate::error::DiagnosticLevel::Warn => "warning",
+        crate::error::DiagnosticLevel::Err => "error",
+    }
+}
+
 /// Build a unified error dict from a `ParseError` for return from `builtin-parse`.
 ///
-/// Schema: `{kind, message, span, notes, call-stack, macro-expand, blame}`
-/// `kind` is always `"parse-error"`. `span` uses the ParseError's optional span
-/// (defaults to a zero-span if absent).
+/// Schema: `{level, kind, message, span, notes, call-stack, macro-expand, blame}`
+/// `level` is always `"error"`. `kind` is always `"parse-error"`. `span` uses the
+/// ParseError's optional span (defaults to a zero-span if absent).
 fn parse_error_to_dict(
     err: &crate::parser::ParseError,
     ctx: &Arc<crate::eval::EvalContext>,
@@ -76,6 +85,10 @@ fn parse_error_to_dict(
     };
 
     let mut w: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+    w.insert(
+        HashableValue::Str("level".into()),
+        alloc(string_val("error")),
+    );
     w.insert(
         HashableValue::Str("kind".into()),
         alloc(string_val("parse-error")),
@@ -101,6 +114,84 @@ fn parse_error_to_dict(
         HashableValue::Str("blame".into()),
         alloc(Value::Dict(IndexMap::new())),
     );
+    alloc(Value::Dict(w))
+}
+
+/// Build a unified error dict from an `EvalError` for return from `builtin-eval`.
+///
+/// Schema: `{level, kind, message, span, notes, call-stack, macro-expand, blame}`
+/// `level` is always `"error"` (eval errors are always error-level).
+/// `kind` is always `"eval-error"`.
+fn eval_error_to_dict(
+    err: &crate::error::EvalError,
+    ctx: &Arc<crate::eval::EvalContext>,
+    call_span: &crate::ast::Span,
+) -> ThunkId {
+    let alloc = |v: Value| ctx.alloc_thunk(0, Arc::new(Thunk::value(v, call_span.clone())));
+
+    let span_id = make_span_dict(&err.definition_span, ctx, call_span);
+
+    let mut w: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+    w.insert(
+        HashableValue::Str("level".into()),
+        alloc(string_val("error")),
+    );
+    w.insert(
+        HashableValue::Str("kind".into()),
+        alloc(string_val("eval-error")),
+    );
+    w.insert(
+        HashableValue::Str("message".into()),
+        alloc(string_val(&format!("{}", err))),
+    );
+    w.insert(HashableValue::Str("span".into()), span_id);
+    w.insert(
+        HashableValue::Str("notes".into()),
+        alloc(Value::Dict(IndexMap::new())),
+    );
+
+    // Build call-stack: {0: {name, span}, 1: {name, span}, ...}
+    let mut stack_dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+    for (i, frame) in err.stack.iter().enumerate() {
+        let mut frame_dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+        frame_dict.insert(
+            HashableValue::Str("name".into()),
+            alloc(string_val(&frame.label)),
+        );
+        frame_dict.insert(
+            HashableValue::Str("span".into()),
+            make_span_dict(&frame.definition_span, ctx, call_span),
+        );
+        stack_dict.insert(HashableValue::Int(i as i64), alloc(Value::Dict(frame_dict)));
+    }
+    w.insert(
+        HashableValue::Str("call-stack".into()),
+        alloc(Value::Dict(stack_dict)),
+    );
+
+    // Build macro-expand: {name, span} or {}
+    let macro_expand_dict = if let Some((name, span)) = &err.macro_expansion {
+        let mut m: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+        m.insert(HashableValue::Str("name".into()), alloc(string_val(name)));
+        m.insert(
+            HashableValue::Str("span".into()),
+            make_span_dict(span, ctx, call_span),
+        );
+        Value::Dict(m)
+    } else {
+        Value::Dict(IndexMap::new())
+    };
+    w.insert(
+        HashableValue::Str("macro-expand".into()),
+        alloc(macro_expand_dict),
+    );
+
+    // Build blame: {} for now (BlameLabel doesn't expose string-accessible fields easily)
+    w.insert(
+        HashableValue::Str("blame".into()),
+        alloc(Value::Dict(IndexMap::new())),
+    );
+
     alloc(Value::Dict(w))
 }
 
@@ -2144,13 +2235,13 @@ pub(crate) fn builtin_parse(
             expects_resolved: std::sync::Arc::new(std::collections::HashMap::new()),
         };
 
-        // Return {program: Value::Program, errors: integer-keyed Dict of error dicts}.
+        // Return {program: Value::Program, diagnostics: integer-keyed Dict of diagnostic dicts}.
         let program_id =
             ctx.alloc_thunk(0, Arc::new(Thunk::value(program_value, call_span.clone())));
         let errors_id = alloc(Value::Dict(errors_dict));
         let mut result: IndexMap<HashableValue, ThunkId> = IndexMap::new();
         result.insert(HashableValue::Str("program".into()), program_id);
-        result.insert(HashableValue::Str("errors".into()), errors_id);
+        result.insert(HashableValue::Str("diagnostics".into()), errors_id);
         Ok(Arc::new(Thunk::value(Value::Dict(result), call_span)))
     })
 }
@@ -2285,6 +2376,10 @@ pub(crate) fn builtin_resolve(
             let span_id = make_span_dict(span, &ctx, &call_span);
             let mut w: IndexMap<HashableValue, ThunkId> = IndexMap::new();
             w.insert(
+                HashableValue::Str("level".into()),
+                alloc(string_val("error")),
+            );
+            w.insert(
                 HashableValue::Str("kind".into()),
                 alloc(string_val("resolve-error")),
             );
@@ -2312,7 +2407,7 @@ pub(crate) fn builtin_resolve(
             errors_dict.insert(HashableValue::Int(i as i64), alloc(Value::Dict(w)));
         }
 
-        // Return {doc: Value::Document, errors: Dict} — NO scope-frames
+        // Return {doc: Value::Document, diagnostics: Dict} — NO scope-frames
         let doc_thunk_id = ctx.alloc_thunk(
             0,
             Arc::new(Thunk::value(
@@ -2326,7 +2421,7 @@ pub(crate) fn builtin_resolve(
         );
         let mut result_dict = indexmap::IndexMap::new();
         result_dict.insert(HashableValue::Str("doc".into()), doc_thunk_id);
-        result_dict.insert(HashableValue::Str("errors".into()), errors_thunk_id);
+        result_dict.insert(HashableValue::Str("diagnostics".into()), errors_thunk_id);
         ok_val(Value::Dict(result_dict), call_span)
     })
 }
@@ -2414,9 +2509,7 @@ pub(crate) fn builtin_typecheck_doc(
                 let arena = ctx.scope_arena.borrow();
                 let chain = arena.collect_parent_chain(scope_id);
                 for sid in &chain {
-                    for (slot, thunk_opt) in
-                        arena.scopes[sid.0 as usize].slots.iter().enumerate()
-                    {
+                    for (slot, thunk_opt) in arena.scopes[sid.0 as usize].slots.iter().enumerate() {
                         if let Some(thunk) = thunk_opt {
                             if let Some(name) = thunk.span.name.as_deref() {
                                 let thunk_id = crate::arena::ThunkId {
@@ -2439,6 +2532,10 @@ pub(crate) fn builtin_typecheck_doc(
             (state, type_map, parent_env)
         };
 
+        // Enable type_map population so scan_type_quality can work
+        let mut type_map_inner = crate::typecheck::TypeMap::new();
+        let mut type_map_ref: Option<&mut crate::typecheck::TypeMap> = Some(&mut type_map_inner);
+
         // process_document processes all items in source order, extends env with schemes from
         // the last dict body, and returns (doc_env, result_type, errors).
         let (doc_env, _, errors) = crate::typecheck::process_document(
@@ -2446,9 +2543,26 @@ pub(crate) fn builtin_typecheck_doc(
             &parent_env,
             &mut state,
             &mut type_map,
-            &mut None,
+            &mut type_map_ref,
         )
         .await;
+
+        // Collect TypeDiagnostics from state.diagnostics (T013 ambiguous constraints)
+        let mut type_diagnostics: Vec<crate::error::TypeDiagnostic> =
+            std::mem::take(&mut state.diagnostics);
+
+        // Build a temporary SurfaceProgram wrapping just this document for scan_type_quality
+        let program = crate::ast::SurfaceProgram {
+            documents: vec![crate::ast::Spanned {
+                node: std::sync::Arc::clone(&doc_arc),
+                span: call_span.clone(),
+            }],
+        };
+        crate::typecheck::typecheck_diag::scan_type_quality(
+            &type_map_inner,
+            &program,
+            &mut type_diagnostics,
+        );
 
         // Write results back to TypeContext:
         // - tycon_env: new type constructor definitions from this document
@@ -2465,13 +2579,19 @@ pub(crate) fn builtin_typecheck_doc(
             guard.inference_env = doc_env;
         }
 
-        // Return {doc: Document, warnings: {0: {message, span, ...}, ...}}
-        // The init program decides how to handle type errors — they are never silently dropped.
+        // Build unified diagnostics dict: TypeErrors (level="error") + TypeDiagnostics (level mapped)
         let alloc = |v: Value| ctx.alloc_thunk(0, Arc::new(Thunk::value(v, call_span.clone())));
-        let mut warnings_dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
-        for (i, err) in errors.iter().enumerate() {
+        let mut diagnostics_dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+        let mut diag_index = 0i64;
+
+        // Add TypeErrors as level="error", kind="type-error"
+        for err in errors.iter() {
             let span_id = make_span_dict(&err.span, &ctx, &call_span);
             let mut w: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+            w.insert(
+                HashableValue::Str("level".into()),
+                alloc(string_val("error")),
+            );
             w.insert(
                 HashableValue::Str("kind".into()),
                 alloc(string_val("type-error")),
@@ -2489,9 +2609,6 @@ pub(crate) fn builtin_typecheck_doc(
                 HashableValue::Str("notes".into()),
                 alloc(Value::Dict(notes_dict)),
             );
-            // call-stack, macro-expand, blame: empty dicts per the diagnostic dict protocol.
-            // loader.llt and test-loader.llt always access these keys; missing keys crash with
-            // "key not found: call-stack".
             w.insert(
                 HashableValue::Str("call-stack".into()),
                 alloc(Value::Dict(IndexMap::new())),
@@ -2504,16 +2621,55 @@ pub(crate) fn builtin_typecheck_doc(
                 HashableValue::Str("blame".into()),
                 alloc(Value::Dict(IndexMap::new())),
             );
-            warnings_dict.insert(HashableValue::Int(i as i64), alloc(Value::Dict(w)));
+            diagnostics_dict.insert(HashableValue::Int(diag_index), alloc(Value::Dict(w)));
+            diag_index += 1;
         }
+
+        // Add TypeDiagnostics with level mapped from DiagnosticLevel
+        for diag in type_diagnostics.iter() {
+            let span_id = make_span_dict(&diag.span, &ctx, &call_span);
+            let mut w: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+            w.insert(
+                HashableValue::Str("level".into()),
+                alloc(string_val(diagnostic_level_str(diag.level))),
+            );
+            w.insert(
+                HashableValue::Str("kind".into()),
+                alloc(string_val(diag.code)),
+            );
+            w.insert(
+                HashableValue::Str("message".into()),
+                alloc(string_val(&diag.message)),
+            );
+            w.insert(HashableValue::Str("span".into()), span_id);
+            w.insert(
+                HashableValue::Str("notes".into()),
+                alloc(Value::Dict(IndexMap::new())),
+            );
+            w.insert(
+                HashableValue::Str("call-stack".into()),
+                alloc(Value::Dict(IndexMap::new())),
+            );
+            w.insert(
+                HashableValue::Str("macro-expand".into()),
+                alloc(Value::Dict(IndexMap::new())),
+            );
+            w.insert(
+                HashableValue::Str("blame".into()),
+                alloc(Value::Dict(IndexMap::new())),
+            );
+            diagnostics_dict.insert(HashableValue::Int(diag_index), alloc(Value::Dict(w)));
+            diag_index += 1;
+        }
+
         let mut result: IndexMap<HashableValue, ThunkId> = IndexMap::new();
         result.insert(
             HashableValue::Str("doc".into()),
             alloc(Value::Document(doc_arc)),
         );
         result.insert(
-            HashableValue::Str("warnings".into()),
-            alloc(Value::Dict(warnings_dict)),
+            HashableValue::Str("diagnostics".into()),
+            alloc(Value::Dict(diagnostics_dict)),
         );
         ok_val(Value::Dict(result), call_span)
     })
@@ -3295,7 +3451,7 @@ pub(crate) fn builtin_eval(
             crate::eval::eval_document_exprs_with_env(&expression_nodes, &ctx, Some(scope_id))
                 .await;
 
-        // Build result dict: {result, scope-id, errors}
+        // Build result dict: {result, scope-id, diagnostics}
         let mut result_map: indexmap::IndexMap<HashableValue, ThunkId> = indexmap::IndexMap::new();
         match eval_result {
             Ok((result_thunk, new_scope_id)) => {
@@ -3314,7 +3470,7 @@ pub(crate) fn builtin_eval(
                     ),
                 );
                 result_map.insert(
-                    HashableValue::Str("errors".into()),
+                    HashableValue::Str("diagnostics".into()),
                     ctx.alloc_thunk(
                         0,
                         Arc::new(Thunk::value(
@@ -3325,7 +3481,6 @@ pub(crate) fn builtin_eval(
                 );
             }
             Err(e) => {
-                let msg = format!("{}", e);
                 result_map.insert(
                     HashableValue::Str("result".into()),
                     ctx.alloc_thunk(
@@ -3346,19 +3501,14 @@ pub(crate) fn builtin_eval(
                         )),
                     ),
                 );
-                // errors: integer-keyed Dict<Int, String> matching builtin-parse/builtin-resolve schema.
-                // {0: String(message)} — non-null Dict so callers can check [null? ev.errors].
+                // diagnostics: integer-keyed Dict<Int, ErrorDict> matching unified diagnostic schema.
+                // {0: {level, kind, message, span, ...}} — non-null Dict so callers can check [null? ev.diagnostics].
+                let err_id = eval_error_to_dict(&e, &ctx, &call_span);
                 let mut errors_map: indexmap::IndexMap<HashableValue, ThunkId> =
                     indexmap::IndexMap::new();
-                errors_map.insert(
-                    HashableValue::Int(0),
-                    ctx.alloc_thunk(
-                        0,
-                        Arc::new(Thunk::value(string_val(&msg), call_span.clone())),
-                    ),
-                );
+                errors_map.insert(HashableValue::Int(0), err_id);
                 result_map.insert(
-                    HashableValue::Str("errors".into()),
+                    HashableValue::Str("diagnostics".into()),
                     ctx.alloc_thunk(
                         0,
                         Arc::new(Thunk::value(Value::Dict(errors_map), call_span.clone())),

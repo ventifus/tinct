@@ -1,0 +1,20 @@
+# builtin-resolve returns diagnostics with level and kind fields on resolve error.
+# Verifies that undefined variable produces a diagnostic with level="error" and kind="resolve-error".
+[call [fn [let]
+  [src: [builtin-str-bytes "[x: undefined-var]"]]
+  [parsed: [builtin-parse src "test.llt"]]
+  [desugared: [builtin-desugar parsed.program]]
+  [docs: [builtin-program-docs desugared]]
+  [doc: [builtin-get 0 docs]]
+  [resolved: [builtin-resolve doc []]]
+  [n: [builtin-dict-length resolved.diagnostics]]
+  [has-diag: [builtin-int-gt n 0]]
+  [d: [builtin-get 0 resolved.diagnostics]]
+  [has-level: [builtin-has-key? "level" d]]
+  [has-kind: [builtin-has-key? "kind" d]]
+  [level-ok: [builtin-eq-string [builtin-get "level" d] "error"]]
+  [kind-ok: [builtin-eq-string [builtin-get "kind" d] "resolve-error"]]
+  [all-ok: [builtin-int-add [builtin-int-add [builtin-int-add has-diag has-level] has-kind] [builtin-int-add level-ok kind-ok]]]
+  all-ok]]
+=== out
+Int(5)

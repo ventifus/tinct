@@ -1,0 +1,15 @@
+# builtin-typecheck-doc returns empty diagnostics dict on successful type check.
+# Verifies that well-typed code with no VarRefs produces zero diagnostics.
+[call [fn [let]
+  [src: [builtin-str-bytes "[x: 42]"]]
+  [parsed: [builtin-parse src "test.llt"]]
+  [desugared: [builtin-desugar parsed.program]]
+  [docs: [builtin-program-docs desugared]]
+  [doc: [builtin-get 0 docs]]
+  [resolved: [builtin-resolve doc []]]
+  [tc: [builtin-make-type-ctx]]
+  [typed: [builtin-typecheck-doc resolved.doc tc]]
+  [n: [builtin-dict-length typed.diagnostics]]
+  n]]
+=== out
+Int(0)

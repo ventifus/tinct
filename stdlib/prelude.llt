@@ -3375,7 +3375,7 @@ Named document sections (--- name: "foo") accumulate as %foo bindings in scope.
       [tc-result: [builtin-typecheck-doc res.doc tc]]
       [typed:     tc-result.doc]
       [ev:        [builtin-eval typed sc]]
-      [doc-name: [>> [if [null? ev.errors] [] [raise [builtin-get 0 ev.errors]]]
+      [doc-name: [>> [if [null? ev.diagnostics] [] [raise ev.diagnostics.0.message]]
                      [get-or "" "name" meta]]]
       [next-sc: [builtin-scope-new ev.scope-id
                   [if [= "" doc-name]

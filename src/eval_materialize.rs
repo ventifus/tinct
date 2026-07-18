@@ -1743,11 +1743,42 @@ pub(crate) async fn apply_cont(
                             Action::Continue(Ok(result_val))
                         }
                         other => {
-                            let err = EvalError::type_mismatch(
-                                "Function or Builtin",
-                                other.type_name(),
-                                call_span.clone(),
-                            );
+                            // Extract the name of what was called (from original_call or call_span).
+                            let callee_label: Option<String> = call_span
+                                .name
+                                .as_deref()
+                                .map(|s| s.to_string())
+                                .or_else(|| {
+                                    if let crate::ast::CoreExpr::Call { ref func, .. } =
+                                        original_call.node
+                                    {
+                                        if let crate::ast::CoreExpr::Var { ref name, .. } =
+                                            func.node
+                                        {
+                                            return Some(name.clone());
+                                        }
+                                    }
+                                    None
+                                });
+                            // For Dict values, list the first few keys to help identification.
+                            let got_detail = match &other {
+                                crate::value::Value::Dict(map) if !map.is_empty() => {
+                                    let keys: Vec<String> =
+                                        map.keys().take(5).map(|k| format!("{k}")).collect();
+                                    let ellipsis = if map.len() > 5 { ", ..." } else { "" };
+                                    format!("Dict {{{}{}}}", keys.join(", "), ellipsis)
+                                }
+                                _ => other.type_name().to_string(),
+                            };
+                            let message = if let Some(name) = callee_label {
+                                format!(
+                                    "expected Function or Builtin, but `{}` evaluated to {}",
+                                    name, got_detail
+                                )
+                            } else {
+                                format!("expected Function or Builtin, got {}", got_detail)
+                            };
+                            let err = EvalError::user_error(message, call_span.clone());
                             let decorated = decorate(Box::new(err));
                             // eval_stack_guard pops on drop (armed)
                             thunk.settle(Err(Arc::new((*decorated).clone())));

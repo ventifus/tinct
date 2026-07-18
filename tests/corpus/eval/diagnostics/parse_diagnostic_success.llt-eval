@@ -1,0 +1,8 @@
+# builtin-parse returns empty diagnostics dict on successful parse.
+# Verifies that valid syntax produces zero diagnostics.
+[call [fn [let]
+  [r: [builtin-parse [builtin-str-bytes "[x: 1]"] "test.llt"]]
+  [n: [builtin-dict-length r.diagnostics]]
+  n]]
+=== out
+Int(0)

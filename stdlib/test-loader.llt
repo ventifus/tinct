@@ -258,10 +258,34 @@
   emit-diagnostics: [fn [let diagnostics]
     [_emit-loop diagnostics 0 [builtin-dict-length diagnostics] 0]]
 
+  # _count-errors-inner: count diagnostics with level "error"
+  _count-errors-inner: [fn [let diags n i acc]
+    [match [builtin-int-gte i n]
+      0: [match [builtin-eq-string [builtin-dict-nth diags i].level "error"]
+           0: [_count-errors-inner diags n [builtin-int-add i 1] acc]
+           _: [_count-errors-inner diags n [builtin-int-add i 1] [builtin-int-add acc 1]]]
+      _: acc]]
+
+  count-errors: [fn [let diags]
+    [_count-errors-inner diags [builtin-dict-length diags] 0 0]]
+
+  # _append-diags-inner: append new-diags to acc, re-indexing from offset
+  _append-diags-inner: [fn [let acc new-diags n offset i]
+    [match [builtin-int-gte i n]
+      0: [_append-diags-inner
+           [merge acc [make-entry [builtin-int-add offset i] [builtin-dict-nth new-diags i]]]
+           new-diags n offset [builtin-int-add i 1]]
+      _: acc]]
+
+  append-diags: [fn [let acc new-diags]
+    [n:      [builtin-dict-length new-diags]]
+    [offset: [builtin-dict-length acc]]
+    [_append-diags-inner acc new-diags n offset 0]]
+
   # uses-scope: for each module name, parse+typecheck its declaration file and
   # accumulate a flat Dict of runtime builtin implementations.
   # Declaration files (builtin_NAME.llt) are optional — if absent, builtin-try
-  # catches the error. Typecheck is forced via typed.warnings data dependency (no >>).
+  # catches the error. Typecheck is forced via typed.diagnostics data dependency (no >>).
   # seed-tc: the TypeContext to use for all module type-checks.
   # seed-scope-id: the parent scope to use for declaration file scopes.
   # Caller builds it explicitly — no implicit global fallback. This is the same
@@ -288,8 +312,8 @@
                  [meta:  [builtin-doc-meta doc decl-scope-id]]
                  [stage: [get-or "runtime" "stage" meta]]
                  [match [builtin-eq-string stage "type"]
-                   0: [ts: [merge acc.ts [make-entry [builtin-dict-length acc.ts] doc]]  rt: acc.rt]
-                   _: [ts: acc.ts  rt: [merge acc.rt [make-entry [builtin-dict-length acc.rt] doc]]]]]
+                   0: [ts: acc.ts  rt: [merge acc.rt [make-entry [builtin-dict-length acc.rt] doc]]]
+                   _: [ts: [merge acc.ts [make-entry [builtin-dict-length acc.ts] doc]]  rt: acc.rt]]]
                [ts: []  rt: []]
                decl-docs]]
              # Pass 1: evaluate type-stage docs to get a scope with TypeNode values.
@@ -311,12 +335,12 @@
              # Pass 2: typecheck all docs with the enriched TypeContext.
              # VarRef resolution still uses decl-scope-id (annotation types come
              # from the TypeContext, not from VarRef resolution frames).
-             [resolve-errors: [reduce
+             [resolve-diagnostics: [reduce
                [fn [let acc doc]
                  [frames: [scope-to-frames decl-scope-id]]
                  [r: [builtin-resolve doc frames]]
-                 [builtin-int-add acc [builtin-dict-length r.errors]]]
-               0
+                 [append-diags acc r.diagnostics]]
+               []
                decl-docs]]
              [typed-docs: [reduce
                [fn [let acc doc]
@@ -326,17 +350,16 @@
                  [merge acc [make-entry [builtin-dict-length acc] tc-result]]]
                []
                decl-docs]]
-             [warnings: [reduce
-               [fn [let acc tdoc] [merge acc tdoc.warnings]]
+             [tc-diagnostics: [reduce
+               [fn [let acc tdoc] [append-diags acc tdoc.diagnostics]]
                []
                typed-docs]]
-             [match [builtin-eq-int resolve-errors 0]
-               0: warnings
-               _: warnings]]]]
-         warnings:    [match [builtin-has-key? "ok" tc-result]
+             [all-diagnostics: [append-diags resolve-diagnostics tc-diagnostics]]
+             all-diagnostics]]]]
+         diagnostics:    [match [builtin-has-key? "ok" tc-result]
              0: []
              _: [builtin-get "ok" tc-result]]
-         n-w:         [emit-diagnostics warnings]
+         n-w:         [emit-diagnostics diagnostics]
          module-impl: [builtin-module name]]
         # n-w (count of warnings written) is the condition — forces all writes before merge.
         [match [builtin-int-gte n-w 0]
@@ -384,7 +407,7 @@
       _: 0]]     # exhausted — not found
 
   pragma-no-prelude?: [fn [let state]
-    [match [builtin-eq-int [builtin-dict-length state.errors] 0]
+    [match [builtin-eq-int [count-errors state.diagnostics] 0]
       0: 0  # parse failed — treat as no pragma
       _: [docs: state.parsed.documents]
          [match [builtin-eq-int [builtin-dict-length docs] 0]
@@ -397,12 +420,12 @@
   # if-ok: pipeline combinator. Used as [prev-state | [if-ok f pre-args...]].
   # The | operator appends prev-state as the last positional arg, so if-ok receives
   # [f pre-arg0 ... pre-argN state] all variadic in ...args. State is always last.
-  # Calls [f pre-arg0 ... pre-argN state] when state.errors is empty; passes state
+  # Calls [f pre-arg0 ... pre-argN state] when state.diagnostics has no errors; passes state
   # through unchanged on failure. Supports 0, 1, or 2 pre-args before state.
   if-ok: [fn [let f ...args]
     [n:     [builtin-dict-length args]]
     [state: [builtin-dict-nth args [builtin-int-sub n 1]]]
-    [match [builtin-eq-int [builtin-dict-length state.errors] 0]
+    [match [builtin-eq-int [count-errors state.diagnostics] 0]
       0: state
       _: [match [builtin-int-sub n 1]
            0: [f state]
@@ -426,15 +449,13 @@
 
   # ── Stage: parse-source ───────────────────────────────────────────────────────
   # Parses state.bytes into state.parsed and desugars the program.
-  # On parse errors: emits diagnostics and sets state.errors (as an error-message string).
+  # On parse errors: emits diagnostics and sets state.diagnostics.
   parse-source: [fn [let state]
     [r:  [builtin-parse state.bytes state.path]]
-    [n:  [builtin-dict-length r.errors]]
-    [_e: [emit-diagnostics r.errors]]
+    [n:  [builtin-dict-length r.diagnostics]]
+    [_e: [emit-diagnostics r.diagnostics]]
     [match [builtin-eq-int [builtin-int-add n _e] 0]
-      0: [merge state [errors: [make-entry 0
-            [reduce [fn [let acc d] [builtin-string-concat acc [format-diagnostic d]]]
-                    "" r.errors]]]]
+      0: [merge state [diagnostics: r.diagnostics]]
       _: [call [fn [let]
            [desugared: [builtin-desugar r.program]]
            [docs: [builtin-program-docs desugared]]
@@ -456,17 +477,17 @@
       [scope:   [builtin-scope-new acc.scope-id uses]]
       [frames:  [scope-to-frames scope]]
       [res:     [builtin-resolve doc frames]]
-      [n-re:    [builtin-dict-length res.errors]]
-      [_re:     [emit-diagnostics res.errors]]
+      [n-re:    [builtin-dict-length res.diagnostics]]
+      [_re:     [emit-diagnostics res.diagnostics]]
       [match [builtin-eq-int [builtin-int-add n-re _re] 0]
         0: [builtin-raise [reduce [fn [let acc d] [builtin-string-concat acc [format-diagnostic d]]]
-                                  "" res.errors]]
+                                  "" res.diagnostics]]
         _: [call [fn [let]
              [tc-result: [builtin-typecheck-doc res.doc acc.tc]]
              [typed:     tc-result.doc]
              [ev:        [builtin-eval typed scope]]
-             [match [null? ev.errors]
-               0: [builtin-raise [builtin-get 0 ev.errors]]
+             [match [null? ev.diagnostics]
+               0: [builtin-raise ev.diagnostics.0.message]
                _: [call [fn [let]
                     [doc-name: [get-or "" "name" meta]]
                     [next-scope: [builtin-scope-new ev.scope-id
@@ -512,7 +533,7 @@
   # ── Stage: typecheck-program ──────────────────────────────────────────────────
   # Typechecks each document in state.parsed.documents using state._tc.
   # Uses builtin-typecheck-doc (per-document API).
-  # Adds: tc-warnings.
+  # Adds: tc-diagnostics.
   typecheck-program: [fn [let state]
     [typed-docs: [reduce
       [fn [let acc doc]
@@ -522,18 +543,18 @@
         [merge acc [make-entry [builtin-dict-length acc] typed]]]
       []
       state.parsed.documents]]
-    [all-warnings: [reduce
+    [all-diagnostics: [reduce
       [fn [let acc tdoc]
         [reduce
           [fn [let wacc w] [merge wacc [make-entry [builtin-dict-length wacc] w]]]
           acc
-          tdoc.warnings]]
+          tdoc.diagnostics]]
       []
       typed-docs]]
-    [_e: [emit-diagnostics all-warnings]]
+    [_e: [emit-diagnostics all-diagnostics]]
     [match [builtin-int-gte _e 0]
-      0: [merge state [tc-warnings: all-warnings]]
-      _: [merge state [tc-warnings: all-warnings]]]]
+      0: [merge state [tc-diagnostics: all-diagnostics]]
+      _: [merge state [tc-diagnostics: all-diagnostics]]]]
 ]
 
 # ============================================================================
@@ -599,7 +620,7 @@
   # manages the per-test arena, and handles caps/expects validation.
 
   # eval-docs: resolve+eval all documents against base-scope.
-  # Errors are captured into state.errors (String) rather than propagated as raises.
+  # Errors are captured into state.diagnostics rather than propagated as raises.
   # Adds: scope-id, last-result, program.
   eval-docs: [fn [let base-scope state]
     [try-result: [builtin-try [call [fn []
@@ -610,16 +631,16 @@
           [scope: [builtin-scope-new st.scope-id uses]]
           [frames: [scope-to-frames scope]]
           [r:     [builtin-resolve doc frames]]
-          [n-re:  [builtin-dict-length r.errors]]
-          [_re:   [emit-diagnostics r.errors]]
+          [n-re:  [builtin-dict-length r.diagnostics]]
+          [_re:   [emit-diagnostics r.diagnostics]]
           [match [builtin-eq-int [builtin-int-add n-re _re] 0]
             0: [builtin-raise [reduce [fn [let acc d] [builtin-string-concat acc [format-diagnostic d]]]
-                                      "" r.errors]]
+                                      "" r.diagnostics]]
             _: [call [fn [let]
-                 [typed: [builtin-typecheck-doc r.doc st.tc]]
+                 [typed: [builtin-typecheck-doc r.doc st.tc].doc]
                  [ev:    [builtin-eval typed scope]]
-                 [match [null? ev.errors]
-                   0: [builtin-raise [builtin-get 0 ev.errors]]
+                 [match [null? ev.diagnostics]
+                   0: [builtin-raise ev.diagnostics.0.message]
                    _: [call [fn [let]
                         # T-1507: Validate --- caps: declarations against the evaluated scope.
                         [caps-list: [get-or [] "caps" meta]]
@@ -644,7 +665,9 @@
        tc:         test-state.tc
        documents:  state.parsed.documents]]]]]
     [match [builtin-has-key? "ok" try-result]
-      0: [merge state [errors: [make-entry 0 [builtin-get "error" try-result]]]]
+      0: [merge state [diagnostics: [make-entry 0
+            [level: "error"  kind: "eval-error"  message: [builtin-get "error" try-result]
+             span: []  notes: []  call-stack: []  macro-expand: []  blame: []]]]]
       _: [merge state
            [scope-id:   [builtin-get "ok" try-result].scope-id
             last-result: [builtin-get "ok" try-result].last-result
@@ -652,7 +675,7 @@
             documents:  state.parsed.documents]]]]
 
   # typecheck-docs: typecheck state.documents against base-scope.
-  # Adds: tc-warnings.
+  # Adds: tc-diagnostics.
   typecheck-docs: [fn [let tc base-scope state]
     [typed-docs: [match [builtin-int-gte [builtin-dict-length [builtin-type-of state.scope-id]] 0]
       0: []
@@ -664,30 +687,32 @@
              [merge acc [make-entry [builtin-dict-length acc] typed]]]
            []
            state.documents]]]
-    [all-warnings: [reduce
+    [all-diagnostics: [reduce
       [fn [let acc tdoc]
         [reduce
           [fn [let wacc w] [merge wacc [make-entry [builtin-dict-length wacc] w]]]
           acc
-          tdoc.warnings]]
+          tdoc.diagnostics]]
       []
       typed-docs]]
-    [_e: [emit-diagnostics all-warnings]]
+    [_e: [emit-diagnostics all-diagnostics]]
     [match [builtin-int-gte _e 0]
-      0: [merge state [tc-warnings: all-warnings]]
-      _: [merge state [tc-warnings: all-warnings]]]]
+      0: [merge state [tc-diagnostics: all-diagnostics]]
+      _: [merge state [tc-diagnostics: all-diagnostics]]]]
 
   # format-output: format state.last-result into state.output using builtin-llt-repr.
   format-output: [fn [let state]
     [merge state [output: [builtin-string-concat [builtin-llt-repr state.last-result] "\n"]]]]
 
   # run-test-pipeline: evaluate a test source string through the full pipeline.
-  # Returns a state dict with output and tc-warnings on success, or errors on failure.
+  # Returns a state dict with output and tc-diagnostics on success, or diagnostics on failure.
   # No builtin-try at this level — eval-docs captures errors as data internally.
   run-test-pipeline: [fn [let source path prelude-scope-id]
     [capture: [make-string-handle]]
     # Parse first so pragma headers are available before the scope is constructed.
-    [parsed-state: [[path: path  errors: []]
+    # .path references the function parameter from the parent scope, not the letrec
+    # binding 'path' that this dict creates — avoiding a trivial self-reference.
+    [parsed-state: [[path: .path  diagnostics: []]
                     | [if-ok load-from-string source]
                     | [if-ok parse-source]]]
     # pragma: ["no-prelude"] → use root-scope-id (no prelude); default → prelude.
@@ -758,14 +783,14 @@
     [expected-warn:  [extract-section content "warn"]]
     [expected-error: [extract-section content "error"]]
 
-    # Run test through the pipeline. Errors are returned as state.errors (no builtin-try needed).
+    # Run test through the pipeline. Errors are returned as state.diagnostics (no builtin-try needed).
     [pipe-result: [run-test-pipeline source p.path prelude-scope-id]]
 
-    [try-ok: [builtin-eq-int [builtin-dict-length pipe-result.errors] 0]]
+    [try-ok: [builtin-eq-int [count-errors pipe-result.diagnostics] 0]]
 
     # Extract the formatter output or an ERROR: prefix.
     [raw-output: [match try-ok
-        0: [builtin-string-concat "ERROR: " pipe-result.errors.0]
+        0: [builtin-string-concat "ERROR: " [builtin-dict-nth pipe-result.diagnostics 0].message]
         _: pipe-result.output]]
 
     # Strip trailing newline from formatter output (formatters add a final \n).
@@ -773,7 +798,7 @@
         0: raw-output
         _: [strip-trailing-newline raw-output]]]
 
-    [eval-warnings: [match try-ok 0: [] _: pipe-result.tc-warnings]]
+    [eval-warnings: [match try-ok 0: [] _: pipe-result.tc-diagnostics]]
 
     # === error: substring match; === out: exact match
     [out-passed: [match [builtin-eq-string expected-error ""]
@@ -876,10 +901,10 @@
 # ============================================================================
 
 [
-  # Prelude loading pipeline. Each stage short-circuits via if-ok when errors is non-empty.
+  # Prelude loading pipeline. Each stage short-circuits via if-ok when diagnostics has errors.
   # %prelude is a lazy forward reference to _prelude — safe because prelude captures it in
   # closures but never forces it during its own loading (only at user call-time).
-  _prelude-result: [[path: "prelude.llt"  errors: []]
+  _prelude-result: [[path: "prelude.llt"  diagnostics: []]
     | [if-ok load-bytes %libdir]
     | [if-ok parse-source]
     | [if-ok eval-program
@@ -892,14 +917,14 @@
   _prelude-scope-id: _prelude-result.scope-id
 
   # Fatal boundary: typecheck ERRORS on prelude mean execution is undefined behavior.
-  # Type-checker warnings (tc-warnings) are advisory and non-fatal — valid prelude functions
+  # Type-checker warnings (tc-diagnostics) are advisory and non-fatal — valid prelude functions
   # may produce warnings (e.g. exhaustiveness warnings for intentionally type-restricted
   # variadics like bor-all). Only errors prevent loading.
   # Raise here (outside any builtin-try) so the error propagates to the top level.
-  _prelude: [match [builtin-eq-int [builtin-dict-length _prelude-result.errors] 0]
+  _prelude: [match [builtin-eq-int [count-errors _prelude-result.diagnostics] 0]
     0: [builtin-raise [join "" ["prelude failed — cannot continue\n"
-          [reduce [fn [let acc d] [builtin-string-concat acc [builtin-string-concat d "\n"]]]
-                  "" _prelude-result.errors]]]]
+          [reduce [fn [let acc d] [builtin-string-concat acc [builtin-string-concat [format-diagnostic d] "\n"]]]
+                  "" _prelude-result.diagnostics]]]]
     _: _prelude-result.full-scope-id]
 
   _prelude-ok: [builtin-int-gte [builtin-dict-length [builtin-type-of _prelude]] 0]
@@ -912,7 +937,7 @@
                       [read-file [builtin-file-open %libdir "cli/out/llt.llt" "read"] [builtin-bytes]]
                       "cli/out/llt.llt"]]
     # Emit parse errors as a data dependency (no >> needed).
-    [_pe:           [emit-diagnostics parse-result.errors]]
+    [_pe:           [emit-diagnostics parse-result.diagnostics]]
     [match [builtin-int-gte _pe 0]
       0: parse-result.program
       _: parse-result.program]]]
@@ -936,8 +961,11 @@
     [builtin-try [builtin-program-docs _llt-formatter-expanded]]]
 
   # Discover test files (or use the ones given on the command line).
-  # _prelude-ok is a data dependency.
-  test-programs: [match [builtin-eq-int [builtin-int-add _formatter-ok _prelude-ok] 2]
+  # _formatter-ok is a data dependency (format-result needs the formatter).
+  # _prelude-ok is intentionally NOT a gate here: pragma: ["no-prelude"] tests must
+  # run even when prelude is broken. Laziness ensures _prelude-scope-id is only forced
+  # inside run-test-pipeline when a test actually needs prelude.
+  test-programs: [match [builtin-eq-int _formatter-ok 1]
     0: []
     _: [match [builtin-eq-int [builtin-dict-length %programs] 0]
          0: %programs

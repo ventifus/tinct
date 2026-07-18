@@ -6,7 +6,7 @@
   [parsed:    [builtin-parse src "test.llt"]]
   [desugared: [builtin-desugar parsed.program]]
   [type-ok:   [builtin-eq-string [builtin-type-of desugared] "Program"]]
-  [parse-ok:  [builtin-eq-int [builtin-dict-length parsed.errors] 0]]
+  [parse-ok:  [builtin-eq-int [builtin-dict-length parsed.diagnostics] 0]]
   [builtin-int-add type-ok parse-ok]]]
 === out
 Int(2)
