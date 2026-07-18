@@ -1,4 +1,4 @@
-//! Type quality diagnostics: T010/T011/T012 scanning subsystem.
+//! Type quality diagnostics scanning subsystem.
 //!
 //! This module is completely standalone — it only reads [`TypeMap`] and [`SurfaceProgram`]
 //! and emits [`TypeDiagnostic`]s. It does NOT call back into inference.
@@ -13,36 +13,33 @@ use std::collections::{HashMap, HashSet};
 // All valid TypeDiagnostic codes are declared here as const &'static str.
 // Use these constants when creating TypeDiagnostic instances to prevent typos.
 //
-// Legend:
-//   T0xx = Type quality and annotation diagnostics (Unknown inference, overbroad annotations,
-//          unknown type parameter annotations)
-//   T1xx = Constraint/unification ambiguities
-//   T2xx = Pattern matching issues
-//   W0xx = Warnings (non-error conditions)
+// Codes use descriptive semantic names (e.g. "unknown-type", "match-exhaustiveness")
+// rather than numeric T0xx codes. The Rust const names (T010_INFERRED_UNKNOWN, etc.)
+// are kept as stable internal identifiers; only the string values are semantic.
 
 /// T010: Inferred type is Unknown — consider adding a type annotation (Warn)
-pub const T010_INFERRED_UNKNOWN: &str = "T010";
+pub const T010_INFERRED_UNKNOWN: &str = "unknown-type";
 
 /// T011: Explicit @Unknown annotation — type is not statically known (Info)
-pub const T011_EXPLICIT_UNKNOWN: &str = "T011";
+pub const T011_EXPLICIT_UNKNOWN: &str = "explicit-unknown";
 
 /// T012: Over-broad annotation — inferred type is more specific than declared (Info)
-pub const T012_OVERBROAD_ANNOTATION: &str = "T012";
+pub const T012_OVERBROAD_ANNOTATION: &str = "overbroad-annotation";
 
 /// T013: Ambiguous constraint — multiple instances match, cannot resolve (Warn)
-pub const T013_AMBIGUOUS_CONSTRAINT: &str = "T013";
+pub const T013_AMBIGUOUS_CONSTRAINT: &str = "ambiguous-constraint";
 
 /// T018: Match pattern type mismatch (context-dependent level)
-pub const T018_MATCH_PATTERN_MISMATCH: &str = "T018";
+pub const T018_MATCH_PATTERN_MISMATCH: &str = "match-pattern-mismatch";
 
 /// T019: Match pattern guard failure (context-dependent level)
-pub const T019_MATCH_GUARD_FAILURE: &str = "T019";
+pub const T019_MATCH_GUARD_FAILURE: &str = "match-guard-failure";
 
 /// T020: Match pattern exhaustiveness issue (context-dependent level)
-pub const T020_MATCH_EXHAUSTIVENESS: &str = "T020";
+pub const T020_MATCH_EXHAUSTIVENESS: &str = "match-exhaustiveness";
 
 /// T021: Unknown type parameter annotation — not a variance keyword or registered class (Warn)
-pub const T021_UNKNOWN_TYPE_PARAM_ANNOTATION: &str = "T021";
+pub const T021_UNKNOWN_TYPE_PARAM_ANNOTATION: &str = "unknown-type-param";
 
 /// W042: Duplicate nominal variant tags in type definition (Warn)
 pub const W042_DUPLICATE_NOMINAL_TAG: &str = "W042";
@@ -53,7 +50,7 @@ pub const W043_INSTANCE_OVERLAP: &str = "W043";
 /// T022: Inconsistent TypeVar bounds — lower bound is not a subtype of upper bound (Err)
 /// Fired when compact() returns None with non-empty lower AND upper bounds that are
 /// incompatible: join(lower) ≰ meet(upper) means no type can satisfy both constraints.
-pub const T022_INCONSISTENT_BOUNDS: &str = "T022";
+pub const T022_INCONSISTENT_BOUNDS: &str = "inconsistent-bounds";
 
 // ============================================================================
 

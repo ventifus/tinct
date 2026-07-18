@@ -119,9 +119,13 @@ fn parse_error_to_dict(
 
 /// Build a unified error dict from an `EvalError` for return from `builtin-eval`.
 ///
-/// Schema: `{level, kind, message, span, notes, call-stack, macro-expand, blame}`
+/// Schema: `{level, kind, message, span, notes, call-stack, macro-expand, blame,
+///           materialization-span, secondary-span}`
 /// `level` is always `"error"` (eval errors are always error-level).
 /// `kind` is always `"eval-error"`.
+/// `blame` is `{origin-span, boundary-span, polarity}` when present, `{}` otherwise.
+/// `materialization-span` is the span where the thunk was forced, `{}` when absent.
+/// `secondary-span` is `{span, label}` when present, `{}` otherwise.
 fn eval_error_to_dict(
     err: &crate::error::EvalError,
     ctx: &Arc<crate::eval::EvalContext>,
@@ -186,11 +190,52 @@ fn eval_error_to_dict(
         alloc(macro_expand_dict),
     );
 
-    // Build blame: {} for now (BlameLabel doesn't expose string-accessible fields easily)
-    w.insert(
-        HashableValue::Str("blame".into()),
-        alloc(Value::Dict(IndexMap::new())),
-    );
+    // Build blame: {origin-span, boundary-span, polarity} or {}
+    let blame_dict = if let Some(ref blame) = err.blame {
+        let polarity_str = match blame.polarity {
+            crate::error::BlameParity::Positive => "positive",
+            crate::error::BlameParity::Negative => "negative",
+        };
+        let mut b: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+        b.insert(
+            HashableValue::Str("origin-span".into()),
+            make_span_dict(&blame.origin_span, ctx, call_span),
+        );
+        b.insert(
+            HashableValue::Str("boundary-span".into()),
+            make_span_dict(&blame.boundary_span, ctx, call_span),
+        );
+        b.insert(
+            HashableValue::Str("polarity".into()),
+            alloc(string_val(polarity_str)),
+        );
+        Value::Dict(b)
+    } else {
+        Value::Dict(IndexMap::new())
+    };
+    w.insert(HashableValue::Str("blame".into()), alloc(blame_dict));
+
+    // Build materialization-span: the span where the thunk was forced, or {} if absent
+    let mat_span = if let Some(ref s) = err.materialization_span {
+        make_span_dict(s, ctx, call_span)
+    } else {
+        alloc(Value::Dict(IndexMap::new()))
+    };
+    w.insert(HashableValue::Str("materialization-span".into()), mat_span);
+
+    // Build secondary-span: {span, label} or {}
+    let secondary = if let Some((ref span, ref label)) = err.secondary_span {
+        let mut s: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+        s.insert(
+            HashableValue::Str("span".into()),
+            make_span_dict(span, ctx, call_span),
+        );
+        s.insert(HashableValue::Str("label".into()), alloc(string_val(label)));
+        alloc(Value::Dict(s))
+    } else {
+        alloc(Value::Dict(IndexMap::new()))
+    };
+    w.insert(HashableValue::Str("secondary-span".into()), secondary);
 
     alloc(Value::Dict(w))
 }

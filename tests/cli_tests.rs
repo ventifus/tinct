@@ -3194,8 +3194,8 @@ fn type_warning_explicit_unknown_emitted_on_stderr() {
     // The T011 diagnostic must appear on stderr.
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("T011") || stderr.contains("explicit @Unknown"),
-        "expected T011 or 'explicit @Unknown' on stderr for @Unknown annotation; got: {stderr}"
+        stderr.contains("explicit @Unknown"),
+        "expected 'explicit @Unknown' on stderr for @Unknown annotation; got: {stderr}"
     );
 }
 
@@ -3217,7 +3217,7 @@ fn type_warning_not_emitted_for_clean_code() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        !stderr.contains("T010") && !stderr.contains("T011"),
+        !stderr.contains("unknown-type") && !stderr.contains("explicit-unknown"),
         "expected no type diagnostics for clean code; stderr: {stderr}"
     );
 }

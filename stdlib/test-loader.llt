@@ -211,16 +211,7 @@
       _: "<unknown>:"]]
     [loc: [builtin-string-concat file-part [builtin-string-concat [builtin-int->string s.start-line] [builtin-string-concat ":" [builtin-int->string s.start-col]]]]]
     [stack-empty: [builtin-eq-int [builtin-dict-length d.call-stack] 0]]
-    [label: [match [builtin-eq-string d.kind "resolve-error"]
-              0: [match [builtin-eq-string d.kind "undefined-variable"]
-                   0: [match [builtin-eq-string d.kind "user-error"]
-                        0: d.kind
-                        _: "error"]
-                   _: [match stack-empty
-                        0: "runtime"
-                        _: "resolve"]]
-              _: "resolve"]]
-    [base-line: [builtin-string-concat loc [builtin-string-concat ": " [builtin-string-concat label [builtin-string-concat ": " [builtin-string-concat d.message "\n"]]]]]]
+    [base-line: [builtin-string-concat loc [builtin-string-concat ": " [builtin-string-concat d.level [builtin-string-concat ": " [builtin-string-concat d.kind [builtin-string-concat " — " [builtin-string-concat d.message "\n"]]]]]]]]
     [notes-empty: [builtin-eq-int [builtin-dict-length d.notes] 0]]
     [with-notes: [match notes-empty
       0: [reduce

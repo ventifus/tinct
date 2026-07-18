@@ -341,14 +341,14 @@
   # Each diagnostic is a unified error dict:
   #   {level, kind, message, span: {file, start-line, start-col, end-line, end-col},
   #    notes, call-stack, macro-expand, blame}
-  # Formatted as: "file:start-line:start-col: kind — message\n"
+  # Formatted as: "file:start-line:start-col: level: kind — message\n"
   # Uses only core builtins — safe to call before prelude is loaded.
   format-diagnostic: [fn [let d]
     [s: d.span]
     [file-part: [match [builtin-eq-int [builtin-dict-length s.file] 0]
       0: [builtin-string-concat s.file ":"]
       _: "<unknown>:"]]
-    [join "" [0: file-part  1: [builtin-int->string s.start-line]  2: ":"  3: [builtin-int->string s.start-col]  4: ": "  5: d.kind  6: " — "  7: d.message  8: "\n"]]]
+    [join "" [0: file-part  1: [builtin-int->string s.start-line]  2: ":"  3: [builtin-int->string s.start-col]  4: ": "  5: d.level  6: ": "  7: d.kind  8: " — "  9: d.message  10: "\n"]]]
 
   emit-diagnostics: [fn [let diagnostics]
     # Use builtin-try per diagnostic so a formatting failure doesn't suppress remaining errors.

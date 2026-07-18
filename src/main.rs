@@ -3354,9 +3354,9 @@ Fix:
     the type checker can resolve."
         }
 
-        "T018" => {
+        "match-pattern-mismatch" => {
             "\
-T018: Undefined constructor in structural test (type checker)
+match-pattern-mismatch: Undefined constructor in structural test (type checker)
 
 A [case [let v: ConstructorName] body] arm references a constructor name that
 is not defined in any enclosing scope. The arm will never match at runtime
@@ -3371,9 +3371,9 @@ Fix: check the spelling of the constructor name, ensure the type is imported,
 and verify the scrutinee's type has a constructor with that name."
         }
 
-        "T019" => {
+        "match-guard-failure" => {
             "\
-T019: Nullary constructor used as payload-binding structural test (type checker)
+match-guard-failure: Nullary constructor used as payload-binding structural test (type checker)
 
 A [case [let v: ConstructorName] body] arm attempts to bind v to the payload
 of a nullary constructor (one that carries no value). Since a nullary constructor
@@ -3383,9 +3383,9 @@ Fix: use [let _: ConstructorName] to match the constructor tag without binding,
 or use a constructor that carries a payload if you need to extract a value."
         }
 
-        "T020" => {
+        "match-exhaustiveness" => {
             "\
-T020: Dead match arm — pattern type disjoint from scrutinee type (type checker)
+match-exhaustiveness: Dead match arm — pattern type disjoint from scrutinee type (type checker)
 
 A match arm has a pattern type that is provably disjoint from the scrutinee type,
 meaning the arm can never match at runtime. The type checker has determined that
@@ -3403,9 +3403,9 @@ Fix: remove the dead arm, or if the types are incorrect, update the pattern type
 annotation or the scrutinee expression to align with the intended logic."
         }
 
-        "T021" => {
+        "unknown-type-param" => {
             "\
-T021: Unknown type parameter annotation (type checker)
+unknown-type-param: Unknown type parameter annotation (type checker)
 
 A type alias declaration uses an `@X` annotation on a type parameter where X is
 neither a recognized variance keyword (Covariant, Contravariant, Invariant, Phantom)
@@ -3417,10 +3417,11 @@ Fix: use a valid variance annotation or a registered class name (e.g., @Covarian
         _ => {
             return Err(format!(
                 "unknown error code: {code}\n\
-                 Run 'tinct explain <code>' with a valid code, e.g. E001 through E099 or T000-T021.\n\
+                 Run 'tinct explain <code>' with a valid code, e.g. E001 through E099 or T000-T004.\n\
                  Known codes: E001, E002, E010, E011, E020-E024, E030-E036, \
                  E043-E044, E051-E056, E060, E063, E070, E080, E090, E099, \
-                 T000, T001, T002, T003, T004, T017, T018, T019, T020, T021."
+                 T000, T001, T002, T003, T004, T017, \
+                 match-pattern-mismatch, match-guard-failure, match-exhaustiveness, unknown-type-param."
             ));
         }
     };
