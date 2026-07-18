@@ -84,9 +84,12 @@ pub struct Span {
     pub start: Position,
     pub end: Position,
     pub file: Arc<SourceFile>,
+    /// Optional binding name carried alongside the location for blame tracking and stack traces.
+    /// Not part of span identity — two spans at the same location are equal regardless of name.
+    pub name: Option<Arc<str>>,
 }
 
-// Span identity includes position AND file path.
+// Span identity includes position AND file path — name is excluded (annotation, not identity).
 // Two spans are equal only if they point to the same location in the same file.
 // rust_span!() spans carry Rust file paths; user spans carry source file paths.
 impl PartialEq for Span {
@@ -108,7 +111,12 @@ impl Hash for Span {
 impl Span {
     /// Create a span with a mandatory source file.
     pub fn new(start: Position, end: Position, file: Arc<SourceFile>) -> Self {
-        Self { start, end, file }
+        Self {
+            start,
+            end,
+            file,
+            name: None,
+        }
     }
 
     /// Create a span carrying Rust source location for synthetic nodes.
@@ -129,7 +137,14 @@ impl Span {
                 path: std::sync::Arc::from(file),
                 content: std::sync::Arc::from(""),
             }),
+            name: None,
         }
+    }
+
+    /// Attach a binding name to this span for blame tracking.
+    pub fn with_name(mut self, name: Arc<str>) -> Self {
+        self.name = Some(name);
+        self
     }
 }
 
@@ -1515,6 +1530,7 @@ mod tests {
                 column: 0,
             },
             file: rust_span!().file,
+            name: None,
         };
         let mk_node = |expr: SurfaceExpression| -> Arc<SurfaceNode> {
             Arc::new(SurfaceNode {

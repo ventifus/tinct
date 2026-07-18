@@ -275,29 +275,31 @@ pub(crate) async fn eval_dict_core(
             }
         };
 
+        // Attach the binding name to the entry's span for blame tracking.
+        // When the key is a string (named binding), the name goes on the thunk's span so it
+        // is visible for stack traces, scope-frame reconstruction, and type-stage lookup.
+        let entry_span = if let HashableValue::Str(ref name) = key {
+            entry.node.value.span.clone().with_name(std::sync::Arc::from(name.as_ref()))
+        } else {
+            entry.node.value.span.clone()
+        };
+
         // Fast path for literal values: Materialized thunks directly (Nix maybeThunk pattern).
         // Non-literal values become CoreExpr thunks pointing to dict_env.
         let value_thunk = match &entry.node.value.node {
-            CoreExpr::Int(n) => {
-                Arc::new(Thunk::value(Value::Int(*n), entry.node.value.span.clone()))
-            }
+            CoreExpr::Int(n) => Arc::new(Thunk::value(Value::Int(*n), entry_span)),
             CoreExpr::U64(n) => Arc::new(Thunk::value(
                 Value::BigInt(num_bigint::BigInt::from(*n)),
-                entry.node.value.span.clone(),
+                entry_span,
             )),
-            CoreExpr::Float(f) => Arc::new(Thunk::value(
-                Value::Float(*f),
-                entry.node.value.span.clone(),
-            )),
-            CoreExpr::Str(s) => {
-                Arc::new(Thunk::value(string_val(s), entry.node.value.span.clone()))
-            }
+            CoreExpr::Float(f) => Arc::new(Thunk::value(Value::Float(*f), entry_span)),
+            CoreExpr::Str(s) => Arc::new(Thunk::value(string_val(s), entry_span)),
             // Non-literal: use UnevaluatedState::CoreExpr with the FlatEnv dict scope.
             _ => Arc::new(Thunk::core_expr(
                 Arc::clone(&entry.node.value),
                 env_id.0,
                 Arc::clone(ctx),
-                entry.node.value.span.clone(),
+                entry_span,
             )),
         };
 
@@ -396,8 +398,8 @@ pub(crate) async fn eval_dict_core(
     // This ensures child scope slots exist before any are filled, maintaining letrec semantics.
     if !letrec_slots.is_empty() {
         let mut arena_guard = ctx.scope_arena.borrow_mut();
-        for (idx, _thunk_id, name) in &letrec_slots {
-            let reserved_idx = arena_guard.reserve_slot(env_id, name);
+        for (idx, _thunk_id, _name) in &letrec_slots {
+            let reserved_idx = arena_guard.reserve_slot(env_id);
             debug_assert_eq!(
                 reserved_idx, *idx,
                 "letrec slot index must match reservation order"
@@ -509,13 +511,11 @@ mod tests {
         };
         let mut program = program;
         desugar_surface_program(&mut program);
-        let root_frame: IndexMap<String, u32> = {
-            let arena = ctx.scope_arena.borrow();
-            arena.scopes[0]
-                .iter_named()
-                .map(|(n, slot)| (n.to_string(), slot))
-                .collect()
-        };
+        let root_frame: IndexMap<String, u32> = crate::builtins_core::core_builtins()
+            .iter()
+            .enumerate()
+            .map(|(i, def)| (def.name.to_string(), i as u32))
+            .collect();
         let _ = env;
         let (_table, _frames) = resolve_surface_program(&program, &[root_frame]);
         crate::eval_surface_file(&program, ctx).await

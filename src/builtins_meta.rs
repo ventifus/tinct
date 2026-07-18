@@ -39,13 +39,12 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 
 use indexmap::IndexMap;
 
 use crate::ast::Span;
 use crate::builtins::{builtin, ok_val, reject_named, require_string, synthetic_call_expr};
-use crate::env::Env;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{materialize, TypeContextData};
 use crate::eval_call::{invoke_function, CallContext};
@@ -331,8 +330,7 @@ pub(crate) fn builtin_until(
                 IndexMap::new(),
                 call_span.clone(),
                 caller_env_id,
-                val_thunk.span.clone(),
-                Some(Arc::from("until")),
+                val_thunk.span.clone().with_name(Arc::from("until")),
                 Arc::clone(&ctx),
                 synthetic_call_expr(call_span.clone()),
             ));
@@ -364,8 +362,7 @@ pub(crate) fn builtin_until(
                     IndexMap::new(),
                     call_span.clone(),
                     caller_env_id,
-                    call_span.clone(),
-                    Some(Arc::from("until")),
+                    call_span.clone().with_name(Arc::from("until")),
                     Arc::clone(&ctx),
                     synthetic_call_expr(call_span.clone()),
                 ));
@@ -450,8 +447,7 @@ pub(crate) fn builtin_apply_impl(
                     },
                     default_env_id: closure_env_id,
                     ctx: &ctx,
-                    call_span,
-                    origin: Some(Arc::from("apply")),
+                    call_span: call_span.with_name(Arc::from("apply")),
                 })
                 .await
             }
@@ -534,8 +530,7 @@ pub(crate) fn builtin_apply(
             builtin!("builtin-apply", builtin_apply_impl, [], 2),
             args,
             named_opt,
-            call_span,
-            Some(Arc::from("apply")),
+            call_span.with_name(Arc::from("apply")),
             caller_env_id,
             ctx,
         )))
@@ -1860,14 +1855,9 @@ pub(crate) fn builtin_scope_new(
                     let thunk = ctx.get_thunk(*thunk_id); // immutable borrow, short-lived
                     binding_thunks.push((name.to_string(), Arc::clone(&thunk)));
                 }
-                other => {
-                    return Err(EvalError::type_mismatch_ctx(
-                        "builtin-scope-new bindings key".to_string(),
-                        "String",
-                        &format!("{:?}", other),
-                        call_span,
-                    )
-                    .into());
+                _ => {
+                    // Non-string keys (positional/integer entries) have no string name
+                    // and cannot become named scope bindings — skip silently.
                 }
             }
         }
@@ -1880,97 +1870,13 @@ pub(crate) fn builtin_scope_new(
                 None => arena.alloc_root(binding_thunks.len()),
             };
             for (name, thunk) in binding_thunks {
-                arena.push_slot(new_id, &name, thunk);
+                let _ = name; // name is on the thunk's span
+                arena.push_slot(new_id, thunk);
             }
             new_id
         }; // borrow_mut dropped here
 
         ok_val(Value::Int(new_scope_id.0 as i64), call_span)
-    })
-}
-
-/// `builtin-scope-names`: Return the direct bindings of a scope.
-///
-/// Takes 1 arg: scope-id (Int).
-/// Returns Dict {String(name): Int(slot), ...} — direct bindings only, not inherited.
-pub(crate) fn builtin_scope_names(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-            ..
-        } = ctx_arg;
-        crate::builtins::reject_named("builtin-scope-names", named.as_ref(), call_span.clone())?;
-        if args.len() != 1 {
-            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
-        }
-
-        let scope_id_val = ctx
-            .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
-        let scope_id_n = match scope_id_val {
-            Value::Int(n) => n,
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "builtin-scope-names".to_string(),
-                    "Int",
-                    other.type_name(),
-                    call_span,
-                )
-                .into());
-            }
-        };
-        if scope_id_n < 0 {
-            return Err(EvalError::type_mismatch_ctx(
-                "builtin-scope-names scope-id must be non-negative Int".to_string(),
-                "non-negative Int",
-                &format!("{}", scope_id_n),
-                call_span,
-            )
-            .into());
-        }
-        let scope_id_u32 = scope_id_n as u32;
-        {
-            let arena = ctx.scope_arena.borrow();
-            let scope_len = arena.scopes.len();
-            if scope_id_u32 as usize >= scope_len {
-                return Err(EvalError::user_error(
-                    format!(
-                        "scope-id {} out of range (max {})",
-                        scope_id_u32,
-                        scope_len.saturating_sub(1)
-                    ),
-                    call_span,
-                )
-                .into());
-            }
-        } // borrow dropped
-
-        // Collect (name, slot) while holding borrow, then drop before allocating.
-        // Allocating thunks requires scope_arena.borrow_mut() via alloc_thunk(); holding
-        // the immutable borrow concurrently would panic at runtime.
-        let named_pairs: Vec<(String, u32)> = {
-            let arena = ctx.scope_arena.borrow();
-            let scope = &arena.scopes[scope_id_u32 as usize];
-            scope
-                .iter_named()
-                .map(|(name, slot)| (name.to_string(), slot))
-                .collect()
-        }; // borrow dropped here
-        let mut result: IndexMap<HashableValue, ThunkId> = IndexMap::new();
-        for (name, slot) in named_pairs {
-            let thunk_id = ctx.alloc_thunk(
-                0,
-                Arc::new(Thunk::value(Value::Int(slot as i64), call_span.clone())),
-            );
-            result.insert(HashableValue::Str(name.into()), thunk_id);
-        }
-        ok_val(Value::Dict(result), call_span)
     })
 }
 
@@ -2039,6 +1945,89 @@ pub(crate) fn builtin_scope_parent(
             None => Value::Dict(IndexMap::new()), // null = empty dict
         };
         ok_val(parent_val, call_span)
+    })
+}
+
+/// `builtin-scope-frame`: Return the resolver frame for a single scope level.
+///
+/// Takes 1 arg: scope-id (Int).
+/// Returns Dict {String(name): Int(slot)} for all slots in the scope that carry a name
+/// on their thunk's span. Slots without a span name are omitted.
+/// Used by the loaders to reconstruct resolver frames from scope chains.
+pub(crate) fn builtin_scope_frame(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+            ..
+        } = ctx_arg;
+        crate::builtins::reject_named("builtin-scope-frame", named.as_ref(), call_span.clone())?;
+        if args.len() != 1 {
+            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+        }
+        let scope_id_n = match ctx
+            .get_thunk(args[0])
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness")
+        {
+            Value::Int(n) => n,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-scope-frame".to_string(),
+                    "Int",
+                    other.type_name(),
+                    call_span,
+                )
+                .into())
+            }
+        };
+        if scope_id_n < 0 {
+            return Err(EvalError::user_error(
+                format!("scope-id must be non-negative, got {}", scope_id_n),
+                call_span,
+            )
+            .into());
+        }
+        let scope_id_u32 = scope_id_n as u32;
+        // Build frame: {name: slot-index} for all named slots.
+        // Names come from thunk span.name (set at thunk creation time for blame tracking).
+        let pairs: Vec<(String, u32)> = {
+            let arena = ctx.scope_arena.borrow();
+            let scope_len = arena.scopes.len();
+            if scope_id_u32 as usize >= scope_len {
+                return Err(EvalError::user_error(
+                    format!(
+                        "scope-id {} out of range (max {})",
+                        scope_id_u32,
+                        scope_len.saturating_sub(1)
+                    ),
+                    call_span,
+                )
+                .into());
+            }
+            arena.scopes[scope_id_u32 as usize]
+                .slots
+                .iter()
+                .enumerate()
+                .filter_map(|(slot, thunk_opt)| {
+                    let name = thunk_opt.as_ref()?.span.name.as_deref()?.to_string();
+                    Some((name, slot as u32))
+                })
+                .collect()
+        };
+        let mut result: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+        for (name, slot) in pairs {
+            let thunk_id = ctx.alloc_thunk(
+                0,
+                Arc::new(Thunk::value(Value::Int(slot as i64), call_span.clone())),
+            );
+            result.insert(HashableValue::Str(name.into()), thunk_id);
+        }
+        ok_val(Value::Dict(result), call_span)
     })
 }
 
@@ -2409,11 +2398,42 @@ pub(crate) fn builtin_typecheck_doc(
             let mut state = crate::types::InferState::new();
             state.tycon_env = guard.tycon_env.clone();
             state.env = Arc::clone(&guard.inference_env);
-            // Thread the eval context and type-stage env so the type normalizer can
-            // evaluate TypeStageApp nodes (e.g. Integer → TypeNode.Int → Type::Int).
             state.eval_ctx = Some(Arc::clone(&ctx));
-            state.type_stage_env = Some(Arc::clone(&guard.type_stage_env));
-            state.type_stage_scope_id = guard.type_stage_scope_id;
+
+            // Build type_stage_map from the type-stage scope chain.
+            // Walk all scopes from root to leaf at type_stage_scope_id. For each slot whose
+            // thunk carries a span name (set by eval_dict_core for string-keyed entries),
+            // record its ThunkId. Innermost scope entries override outer ones (dict overrides).
+            // Seed with Unknown → Resolved(Unknown) so @Unknown always resolves.
+            let mut ts_map = std::collections::HashMap::new();
+            ts_map.insert(
+                "Unknown".to_string(),
+                crate::type_infer::TypeStageEntry::Resolved(crate::types::Type::Unknown),
+            );
+            if let Some(scope_id) = guard.type_stage_scope_id {
+                let arena = ctx.scope_arena.borrow();
+                let chain = arena.collect_parent_chain(scope_id);
+                for sid in &chain {
+                    for (slot, thunk_opt) in
+                        arena.scopes[sid.0 as usize].slots.iter().enumerate()
+                    {
+                        if let Some(thunk) = thunk_opt {
+                            if let Some(name) = thunk.span.name.as_deref() {
+                                let thunk_id = crate::arena::ThunkId {
+                                    scope_id: sid.0,
+                                    slot: slot as u32,
+                                };
+                                ts_map.insert(
+                                    name.to_string(),
+                                    crate::type_infer::TypeStageEntry::Function(thunk_id),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            state.type_stage_map = Some(ts_map);
+
             let type_map = crate::ast::TypeAnnotationTable::new();
             let parent_env = Arc::clone(&guard.inference_env);
             (state, type_map, parent_env)
@@ -2559,10 +2579,9 @@ pub(crate) fn builtin_get_type_context(
 
 /// `builtin-make-type-ctx`: Create a fresh TypeContext seeded with core type definitions.
 ///
-/// Creates a `TypeContextData` with an empty `type_stage_env` and installs it on
-/// the current `EvalContext`. Returns a `Value::TypeContext` handle wrapping the same
-/// `Arc<Mutex<TypeContextData>>` stored on `EvalContext` — so both the returned handle
-/// and the EvalContext share the same mutable state.
+/// Creates a `TypeContextData` and installs it on the current `EvalContext`. Returns a
+/// `Value::TypeContext` handle wrapping the same `Arc<Mutex<TypeContextData>>` stored on
+/// `EvalContext` — so both the returned handle and the EvalContext share the same mutable state.
 ///
 /// Signature: `[builtin-make-type-ctx]`
 pub(crate) fn builtin_make_type_ctx(
@@ -2585,7 +2604,6 @@ pub(crate) fn builtin_make_type_ctx(
         // For loader's fundamental-tc, use [builtin-get-type-context] instead —
         // it returns the TypeContext that main.rs pre-populated from builtin_core.llt.
         let tc = TypeContextData {
-            type_stage_env: Arc::new(RwLock::new(Env::new())),
             type_stage_scope_id: None,
             inference_env: crate::imports::get_builtin_core_type_env()
                 .await
@@ -2654,11 +2672,10 @@ pub(crate) fn builtin_fork_type_ctx(
 ///   - arg 0: `Value::TypeContext` — the TypeContext to update
 ///   - arg 1: `Value::Int` — the scope-id produced by evaluating type-stage documents
 ///
-/// Locks the TypeContext mutex, records the scope-id for resolver lookup, and initializes
-/// `type_stage_env` to an empty Env (type-stage functions live in Scope now).
+/// Locks the TypeContext mutex and records the scope-id for type-stage scope-chain lookup.
 /// Returns the **same** `Value::TypeContext` value (the mutation is in-place).
 ///
-/// Used by loader.llt and test-loader.llt to wire the type-stage env into the TypeContext
+/// Used by loader.llt and test-loader.llt to wire the type-stage scope into the TypeContext
 /// before type-checking.
 ///
 /// Signature: `[builtin-tc-with-scope type-ctx ts-scope-id]`
@@ -2714,10 +2731,9 @@ pub(crate) fn builtin_tc_with_scope(
             }
         };
 
-        // Update TypeContext: record scope-id for evaluate_resolver thunk lookup
+        // Update TypeContext: record scope-id for type-stage scope-chain lookup.
         {
             let mut guard = tc_arc.lock().unwrap();
-            guard.type_stage_env = Arc::new(std::sync::RwLock::new(crate::env::Env::new()));
             guard.type_stage_scope_id = Some(scope_id);
         }
 
@@ -3618,9 +3634,13 @@ pub(crate) fn builtin_eval_macro_ast(
                 .iter()
                 .map(|&id| {
                     arena.scopes[id.0 as usize]
-                        .iter_named()
-                        .filter(|(n, _)| !n.is_empty() && !n.starts_with('#'))
-                        .map(|(n, slot)| (n.to_string(), slot))
+                        .slots
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(slot, thunk_opt)| {
+                            let name = thunk_opt.as_ref()?.span.name.as_deref()?.to_string();
+                            Some((name, slot as u32))
+                        })
                         .collect::<indexmap::IndexMap<String, u32>>()
                 })
                 .collect()
@@ -4636,9 +4656,11 @@ pub(crate) fn builtin_cap_env_has(
                 if (env_id as usize) < arena.scopes.len() {
                     let chain = arena.collect_parent_chain(env_id);
                     chain.iter().any(|eid| {
-                        arena.scopes[eid.0 as usize]
-                            .iter_named()
-                            .any(|(n, _)| n == name)
+                        arena.scopes[eid.0 as usize].slots.iter().any(|t| {
+                            t.as_ref()
+                                .and_then(|t| t.span.name.as_deref())
+                                .map_or(false, |n| n == name)
+                        })
                     })
                 } else {
                     false

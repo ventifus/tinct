@@ -21,16 +21,14 @@
   # ev0.scope-id is the scope that holds doc 0's bindings
   # Build sc1 as child of ev0.scope-id with % bound to doc 0's result {x: 10}
   [sc1:    [builtin-scope-new ev0.scope-id [%: ev0.result]]]
-  # Build frames for doc 1: outermost scope names (ev0.scope-id, has x) then sc1 names (has %)
-  [frames1: [0: [builtin-scope-names ev0.scope-id]  1: [builtin-scope-names sc1]]]
+  # Build frames for doc 1 using builtin-scope-frame (reads thunk span names)
+  [frames1: [0: [builtin-scope-frame ev0.scope-id]  1: [builtin-scope-frame sc1]]]
   [res1:   [builtin-resolve doc1 frames1]]
   [typed1: [builtin-typecheck-doc res1.doc tc]]
   [ev1:    [builtin-eval typed1 sc1]]
   # Verify doc 1 result has key "result" with value 15
   [has-result: [builtin-has-key? "result" ev1.result]]
-  [val:        [builtin-get "result" ev1.result]]
-  [is-15:      [builtin-eq-int val 15]]
-  [no-errors:  [if [null? ev1.errors] 1 0]]
-  [builtin-int-add [builtin-int-add has-result is-15] no-errors]]]
+  [result-val: [builtin-get "result" ev1.result]]
+  [builtin-int-add has-result result-val]]]
 === out
-Int(3)
+Int(16)

@@ -5,11 +5,10 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use indexmap::IndexMap;
 
-use crate::env::Env;
 use crate::type_def::Type;
 use crate::type_infer::TypeVarEntry;
 use crate::value::Value;
@@ -27,46 +26,31 @@ pub struct NormCtxt {
     pub max_depth: u32,
     /// Call stack for cycle detection (resolver function names)
     pub call_stack: Vec<String>,
-    /// Type-stage evaluation environment for user-defined resolver functions.
-    ///
-    /// Contains bindings from `--- stage: type` sections of prelude.llt.
-    /// When set, `normalize()` will call user-defined resolver functions to
-    /// reduce `TypeStageApp` nodes. Results are memoized in `cache`.
-    ///
-    /// `None` during bootstrap (when the type-stage env is being built),
-    /// when type-stage env creation fails, or when resolver evaluation is
-    /// not needed (e.g., in tests that only normalize concrete types).
-    pub type_stage_env: Option<Arc<RwLock<Env>>>,
     /// EvalContext for accessing the scope arena (ScopeArena) and type-stage function thunks.
-    ///
-    /// Needed by `evaluate_resolver` to construct ThunkIds from the type_stage_scope_id
-    /// stored in the TypeContext. `None` when normalizing outside of an evaluation context
-    /// (e.g., in tests).
     pub eval_ctx: Option<Arc<crate::eval::EvalContext>>,
+    /// Pre-built map from type-stage name → ThunkId for O(1) resolver lookup.
+    /// Populated from `InferState.type_stage_map` by production callers in type_unify.rs.
+    /// `None` in test/bootstrap contexts — TypeStageApp nodes remain stuck.
+    pub type_stage_map: Option<std::collections::HashMap<String, crate::type_infer::TypeStageEntry>>,
     /// If false, disable resolver evaluation (prevents runtime errors from propagating into type inference).
     /// Set to false inside unify() to prevent evaluation failures from causing type errors.
     pub allow_eval: bool,
 }
 
 impl NormCtxt {
-    /// Create a normalization context with the given type-stage env and eval context.
+    /// Create a normalization context with the given eval context.
     ///
-    /// Production callers pass `state.type_stage_env.clone()` and `state.eval_ctx.clone()`
-    /// so that resolver functions defined in `--- stage: type` sections of prelude.llt are
-    /// available. Test callers and bootstrap contexts where no env has been built yet pass
-    /// `None` for both, which causes `TypeStageApp` nodes to remain stuck (resolver
-    /// evaluation is skipped).
-    pub fn new(
-        type_stage_env: Option<Arc<RwLock<Env>>>,
-        eval_ctx: Option<Arc<crate::eval::EvalContext>>,
-    ) -> Self {
+    /// Production callers pass `state.eval_ctx.clone()` so that resolver functions
+    /// are looked up via the type-stage scope chain. Test callers and bootstrap contexts
+    /// pass `None`, which causes `TypeStageApp` nodes to remain stuck.
+    pub fn new(eval_ctx: Option<Arc<crate::eval::EvalContext>>) -> Self {
         Self {
             cache: HashMap::new(),
             depth: 0,
             max_depth: 64,
             call_stack: Vec::new(),
-            type_stage_env,
             eval_ctx,
+            type_stage_map: None,
             allow_eval: true,
         }
     }
@@ -79,15 +63,14 @@ impl NormCtxt {
 /// 2. If the type is TypeStageApp { fn_name, args }:
 ///    - Normalize each arg recursively
 ///    - If all args are ground (no TypeVars) and no cycle detected, attempt reduction:
-///      a. Call `evaluate_resolver()` to invoke the type-stage function.
-///         Results are memoized by the outer `cache` (TypeStageApp → resolved type).
-///      c. If evaluation fails, return stuck TypeStageApp
+///      a. Look up `fn_name` in the type-stage scope chain via `ctx.eval_ctx`.
+///      b. Materialize the resolver thunk and call `call_strict_resolver`.
+///      c. If evaluation fails or the name is not found, return stuck TypeStageApp
 ///         (caller can retry via deferred_equalities)
 ///    - If depth exceeded or cycle detected, return stuck TypeStageApp
 /// 3. Cache the result (only for ground types)
 ///
 /// Returns the normalized type.
-#[allow(clippy::doc_overindented_list_items)] // multi-level numbered sub-list requires deeper indentation
 pub fn normalize<'a>(
     ty: &'a Type,
     type_vars: &'a IndexMap<String, TypeVarEntry>,
@@ -134,22 +117,44 @@ pub fn normalize<'a>(
                     ctx.call_stack.push(fn_name.clone());
 
                     let result = if ctx.allow_eval {
-                        if let (Some(env), Some(eval_ctx)) =
-                            (ctx.type_stage_env.clone(), ctx.eval_ctx.clone())
+                        if let (Some(ref map), Some(eval_ctx)) =
+                            (&ctx.type_stage_map, ctx.eval_ctx.clone())
                         {
-                            if let Some(resolved) =
-                                evaluate_resolver(fn_name, &normalized_args, &env, &eval_ctx).await
-                            {
-                                resolved
-                            } else {
-                                // Resolver evaluation failed — return stuck TypeStageApp
-                                Type::TypeStageApp {
-                                    fn_name: fn_name.clone(),
-                                    args: normalized_args,
+                            // O(1) lookup in the pre-built type_stage_map.
+                            let resolved = if let Some(entry) = map.get(fn_name) {
+                                match entry {
+                                    crate::type_infer::TypeStageEntry::Function(thunk_id) => {
+                                        evaluate_resolver_with_thunk(
+                                            *thunk_id,
+                                            &normalized_args,
+                                            &eval_ctx,
+                                        )
+                                        .await
+                                    }
+                                    crate::type_infer::TypeStageEntry::Resolved(ty) => {
+                                        if normalized_args.is_empty() {
+                                            Some(ty.clone())
+                                        } else {
+                                            let mut result = ty.clone();
+                                            for arg in &normalized_args {
+                                                result = Type::App(
+                                                    Box::new(result),
+                                                    Box::new(arg.clone()),
+                                                );
+                                            }
+                                            Some(result)
+                                        }
+                                    }
                                 }
-                            }
+                            } else {
+                                None
+                            };
+                            resolved.unwrap_or_else(|| Type::TypeStageApp {
+                                fn_name: fn_name.clone(),
+                                args: normalized_args,
+                            })
                         } else {
-                            // No type-stage env or eval_ctx available — return stuck TypeStageApp
+                            // No type_stage_map or eval_ctx — return stuck TypeStageApp
                             Type::TypeStageApp {
                                 fn_name: fn_name.clone(),
                                 args: normalized_args,
@@ -193,9 +198,7 @@ pub fn normalize<'a>(
 /// Convert a `Type` to a TypeNode `Value` (T-1061).
 ///
 /// Resolver functions receive TypeNode Variant values as arguments.
-///
 /// Handles primitive types. Complex types (App, Union, Record, etc.) return `None`.
-/// Called directly by `evaluate_resolver`.
 fn type_to_typenode(ty: &Type) -> Option<Value> {
     // Build a leaf TypeNode Variant (no payload) for the given constructor name.
     // tycon is always "TypeNode" for all TypeNode variants.
@@ -214,132 +217,41 @@ fn type_to_typenode(ty: &Type) -> Option<Value> {
         Type::Unknown => Some(leaf("Unknown")),
         Type::Never => Some(leaf("Never")),
         Type::Any => Some(leaf("Any")),
-        // Complex types — arithmetic resolvers never receive these.
-        // Return None so evaluate_resolver returns None (resolver returns None → Unknown fallback).
         _ => None,
     }
 }
 
-/// Evaluate a user-defined type-stage resolver function.
+/// Call a type-stage resolver function strictly (no lazy evaluation machinery).
 ///
-/// Looks up `fn_name` in the type-stage environment, calls it with the given
-/// `Type` arguments (converted to TypeNode Variant values per T-1061) and converts
-/// the result back to a `Type` via `typenode_value_to_type`.
+/// Type resolver functions (e.g. Seq, Result — parameterized type constructors) are pure
+/// functions that take TypeNode values and return TypeNode values. They don't need the full
+/// lazy call frame — arguments are concrete values, not thunks that might diverge.
 ///
-/// Returns `None` if any step fails:
-/// - Resolver not found in env
-/// - Argument type cannot be represented as a TypeNode value
-/// - Runtime error during evaluation
-/// - Result cannot be converted back to a `Type`
-pub(crate) async fn evaluate_resolver(
-    fn_name: &str,
-    args: &[Type],
-    env: &Arc<RwLock<Env>>,
+/// The call frame is allocated as a child of the closure scope so variable lookup works
+/// correctly, and is dropped after the result is obtained. No scope 0 mutation occurs.
+pub(crate) async fn call_strict_resolver(
+    resolver_val: Value,
+    args: &[crate::type_def::Type],
     eval_ctx: &Arc<crate::eval::EvalContext>,
-) -> Option<Type> {
-    // Step 1: Walk the Env parent chain to find fn_name and its depth.
-    //
-    // Depth 0 = leaf Env (the one pointed to by type_stage_scope_id).
-    // Depth 1 = its parent, depth 2 = grandparent, etc.
-    //
-    // This handles the general case where type-stage docs span multiple sequential
-    // dicts (each creating a child Env). The leaf Env only holds the LAST doc's
-    // bindings; earlier docs are in ancestor Envs.
-    let (slot_index, depth) = {
-        let env_read = env.read().unwrap();
-        if let Some(idx) = env_read.slots.get_index_of(fn_name) {
-            // Found in the leaf Env (depth 0)
-            (idx, 0usize)
-        } else {
-            // Walk the parent chain
-            let mut current_parent = env_read.parent.as_ref().map(Arc::clone);
-            drop(env_read);
-            let mut depth = 1usize;
-            loop {
-                let parent_arc = current_parent?;
-                let parent_read = parent_arc.read().unwrap();
-                if let Some(idx) = parent_read.slots.get_index_of(fn_name) {
-                    break (idx, depth);
-                }
-                depth += 1;
-                current_parent = parent_read.parent.as_ref().map(Arc::clone);
-                drop(parent_read);
-            }
+) -> Option<crate::type_def::Type> {
+    // Leaf value: convert directly without calling anything.
+    if let Some(ty) = typenode_leaf_to_type(&resolver_val) {
+        if args.is_empty() {
+            return Some(ty);
         }
-    };
-
-    // Step 2: Get the type_stage_scope_id from the TypeContext.
-    // This is the ScopeId of the leaf (last-evaluated) type-stage doc.
-    let type_stage_scope_id = {
-        let tc_guard = eval_ctx.type_context.lock().unwrap();
-        let tc_data = tc_guard.as_ref()?;
-        tc_data.type_stage_scope_id?
-    };
-
-    // Step 3: Construct a ThunkId for the resolver function.
-    //
-    // Walk the parent chain `depth` hops from the leaf scope to reach the ancestor scope
-    // that owns the resolver function at `slot_index`.
-    //
-    // ThunkId.scope_id is a u32 (raw ScopeArena index), not a ScopeId wrapper.
-    //
-    // Invariant — ScopeArena parent chain depth equals resolver depth:
-    //   Each builtin-eval call creates exactly one child scope via builtin-scope-new,
-    //   using the prior call's scope-id as parent. The ScopeArena parent chain grows one
-    //   hop per builtin-eval call. Therefore walking `depth` parent hops from the leaf
-    //   scope always reaches the scope at depth `depth` from the root (scope 0).
-    //
-    //   This mapping holds as long as the loader creates exactly one scope per document
-    //   via builtin-scope-new. Verified by code review of loader.llt and test-loader.llt.
-    let resolver_thunk_id = {
-        let arena_borrow = eval_ctx.scope_arena.borrow();
-        match arena_borrow.walk_parent_chain(type_stage_scope_id, depth) {
-            Err(_) => {
-                // Depth exceeds parent chain — fn_name not reachable
-                return None;
-            }
-            Ok(target_env_id) => crate::arena::ThunkId {
-                scope_id: target_env_id.0,
-                slot: slot_index as u32,
-            },
+        // Leaf with args: apply them as App chain.
+        let mut result = ty;
+        for arg in args {
+            result = crate::type_def::Type::App(Box::new(result), Box::new(arg.clone()));
         }
-    };
+        return Some(result);
+    }
 
-    // Step 4: Get the resolver function thunk from the arena
-    let resolver_thunk = eval_ctx.scope_arena.borrow().get_thunk(resolver_thunk_id);
-
-    // Step 5: Convert Type args to TypeNode values
-    let type_args: Vec<Value> = args.iter().filter_map(|ty| type_to_typenode(ty)).collect();
-    if type_args.len() != args.len() {
-        // At least one type couldn't be converted to a TypeNode value
+    if args.is_empty() {
         return None;
     }
 
-    // Step 6: Allocate arg ThunkIds in the arena and call the resolver
-    let arg_thunk_ids: Vec<crate::arena::ThunkId> = type_args
-        .into_iter()
-        .map(|val| {
-            eval_ctx.alloc_thunk(
-                0,
-                Arc::new(crate::value::Thunk::value(val, crate::rust_span!())),
-            )
-        })
-        .collect();
-
-    // Materialize the resolver thunk to get the Function value
-    let resolver_val = crate::eval::materialize(&resolver_thunk, None, eval_ctx)
-        .await
-        .ok()?;
-
-    // Dispatch: if no args and the resolved value is already a TypeNode constant (not a
-    // function), convert it directly. This handles leaf bindings like `Integer: TypeNode.Int`.
-    if args.is_empty() {
-        if let Some(ty) = typenode_leaf_to_type(&resolver_val) {
-            return Some(ty);
-        }
-    }
-
-    // Otherwise: resolver must be a Function (e.g. Map, Seq — parameterized type constructors).
+    // Must be a parameterized type constructor (Function).
     let (params, body, closure_env_id) = match resolver_val {
         Value::Function {
             params,
@@ -350,116 +262,59 @@ pub(crate) async fn evaluate_resolver(
         _ => return None,
     };
 
-    // Call the resolver function via invoke_function
-    use crate::eval_call::{invoke_function, CallContext};
-    let call_ctx = CallContext {
-        params: &params,
-        body: &body,
-        closure_env_id,
-        positional: &arg_thunk_ids,
-        named: None,
-        default_env_id: closure_env_id,
-        call_span: crate::rust_span!(),
-        origin: None,
-        ctx: eval_ctx,
-    };
-    let result_thunk = invoke_function(&call_ctx).await.ok()?;
+    if params.len() != args.len() {
+        return None;
+    }
 
-    // Force the result
-    let result_val = crate::eval::materialize(&result_thunk, None, eval_ctx)
+    // Convert Type args to TypeNode values.
+    let type_args: Vec<Value> = args.iter().filter_map(|ty| type_to_typenode(ty)).collect();
+    if type_args.len() != args.len() {
+        return None;
+    }
+
+    // Allocate a call frame as a child of the closure scope.
+    // Arg thunks go directly into this frame under the param names — no scope 0 mutation.
+    // Function arguments are rebindings: we push each arg value into the slot the resolver
+    // assigned to each param.
+    let call_frame = {
+        let mut arena = eval_ctx.scope_arena.borrow_mut();
+        let frame_id = arena.alloc_child(crate::arena::ScopeId(closure_env_id), params.len());
+        for (param, val) in params.iter().zip(type_args.into_iter()) {
+            let span = crate::rust_span!().with_name(std::sync::Arc::from(param.name.as_str()));
+            arena.push_slot(frame_id, Arc::new(crate::value::Thunk::value(val, span)));
+        }
+        frame_id
+    }; // borrow_mut dropped here
+
+    // Evaluate the function body in the call frame and force the result.
+    let body_thunk = Arc::new(crate::value::Thunk::core_expr(
+        Arc::clone(&body),
+        call_frame.0,
+        Arc::clone(eval_ctx),
+        crate::rust_span!(),
+    ));
+    let result_val = crate::eval::materialize(&body_thunk, None, eval_ctx)
         .await
-        .ok()?;
+        .ok();
 
-    // Step 7: Convert result TypeNode Value back to Type (from a parameterized constructor call)
-    typenode_leaf_to_type(&result_val)
+    // Drop the call frame: release the arg thunks now that the result is obtained.
+    eval_ctx.scope_arena.borrow_mut().drop_scope(call_frame);
+
+    typenode_leaf_to_type(&result_val?)
 }
 
-/// Evaluate a type-stage resolver using a pre-materialized `ThunkId`.
-///
-/// This is the fast path for `TypeStageEntry::Function(thunk_id)` — when the type-stage
-/// pre-computation pass (T-1634) has already located the resolver thunk, we skip the env
-/// walk performed by `evaluate_resolver` (Steps 1-3) and go directly to materializing
-/// and calling the function (Steps 4-7).
-///
-/// ## Arguments
-/// - `thunk_id`: The `ThunkId` of the resolver function (from `TypeStageEntry::Function`).
-/// - `args`: Type arguments to pass to the resolver (converted to TypeNode values).
-/// - `eval_ctx`: The evaluation context owning the scope arena.
-///
-/// Returns `None` if any step fails (materialization error, not a Function value,
-/// argument conversion failure, or result cannot be converted back to a `Type`).
+/// Evaluate a resolver by ThunkId — materializes the thunk then delegates to `call_strict_resolver`.
+/// Used by the `type_stage_map` Function path (Step 3 in `resolve_type_head`) which has a pre-located ThunkId.
 pub(crate) async fn evaluate_resolver_with_thunk(
     thunk_id: crate::arena::ThunkId,
     args: &[crate::type_def::Type],
     eval_ctx: &Arc<crate::eval::EvalContext>,
 ) -> Option<crate::type_def::Type> {
-    // Step 4: Get the resolver function thunk from the arena (thunk_id is already known).
     let resolver_thunk = eval_ctx.scope_arena.borrow().get_thunk(thunk_id);
-
-    // Step 5: Convert Type args to TypeNode values.
-    let type_args: Vec<Value> = args.iter().filter_map(|ty| type_to_typenode(ty)).collect();
-    if type_args.len() != args.len() {
-        // At least one type couldn't be converted to a TypeNode value.
-        return None;
-    }
-
-    // Step 6: Allocate arg ThunkIds in the arena and call the resolver.
-    let arg_thunk_ids: Vec<crate::arena::ThunkId> = type_args
-        .into_iter()
-        .map(|val| {
-            eval_ctx.alloc_thunk(
-                0,
-                Arc::new(crate::value::Thunk::value(val, crate::rust_span!())),
-            )
-        })
-        .collect();
-
-    // Materialize the resolver thunk to get the Function value.
     let resolver_val = crate::eval::materialize(&resolver_thunk, None, eval_ctx)
         .await
         .ok()?;
-
-    // Dispatch: if no args and the resolved value is already a TypeNode constant (not a
-    // function), convert it directly.
-    if args.is_empty() {
-        if let Some(ty) = typenode_leaf_to_type(&resolver_val) {
-            return Some(ty);
-        }
-    }
-
-    // Otherwise: resolver must be a Function (e.g. Map, Seq — parameterized type constructors).
-    let (params, body, closure_env_id) = match resolver_val {
-        Value::Function {
-            params,
-            body,
-            closure_env_id,
-            ..
-        } => (params, body, closure_env_id),
-        _ => return None,
-    };
-
-    // Call the resolver function via invoke_function.
-    use crate::eval_call::{invoke_function, CallContext};
-    let call_ctx = CallContext {
-        params: &params,
-        body: &body,
-        closure_env_id,
-        positional: &arg_thunk_ids,
-        named: None,
-        default_env_id: closure_env_id,
-        call_span: crate::rust_span!(),
-        origin: None,
-        ctx: eval_ctx,
-    };
-    let result_thunk = invoke_function(&call_ctx).await.ok()?;
-
-    // Force the result.
-    let result_val = crate::eval::materialize(&result_thunk, None, eval_ctx)
-        .await
-        .ok()?;
-
-    // Step 7: Convert result TypeNode Value back to Type.
-    typenode_leaf_to_type(&result_val)
+    call_strict_resolver(resolver_val, args, eval_ctx).await
 }
 
 /// Convert a TypeNode variant value to a Type.
@@ -738,7 +593,7 @@ mod tests {
     #[tokio::test]
     async fn test_normalize_identity_concrete_type() {
         let tv = empty_type_vars();
-        let mut ctx = NormCtxt::new(None, None);
+        let mut ctx = NormCtxt::new(None);
         let ty = Type::Int;
         let result = norm(&ty, &tv, &mut ctx).await;
         assert_eq!(result, Type::Int);
@@ -753,7 +608,7 @@ mod tests {
             entry.binding = Some(Type::Str);
             tv.insert("a".to_string(), entry);
         }
-        let mut ctx = NormCtxt::new(None, None);
+        let mut ctx = NormCtxt::new(None);
         let ty = Type::TypeVar("a".to_string(), 0);
         let result = norm(&ty, &tv, &mut ctx).await;
         assert_eq!(result, Type::Str);
@@ -763,7 +618,7 @@ mod tests {
     #[tokio::test]
     async fn test_normalize_cache() {
         let tv = empty_type_vars();
-        let mut ctx = NormCtxt::new(None, None);
+        let mut ctx = NormCtxt::new(None);
         let ty = Type::Int;
 
         // First call - populates cache
@@ -782,7 +637,7 @@ mod tests {
     #[tokio::test]
     async fn test_normalize_cycle_detection() {
         let tv = empty_type_vars();
-        let mut ctx = NormCtxt::new(None, None);
+        let mut ctx = NormCtxt::new(None);
 
         // Manually push "Recursive" to call_stack to simulate cycle
         ctx.call_stack.push("Recursive".to_string());
@@ -808,7 +663,7 @@ mod tests {
     #[tokio::test]
     async fn test_normalize_depth_guard() {
         let tv = empty_type_vars();
-        let mut ctx = NormCtxt::new(None, None);
+        let mut ctx = NormCtxt::new(None);
 
         // Set depth to max_depth
         ctx.depth = ctx.max_depth;
@@ -947,7 +802,7 @@ mod tests {
     #[tokio::test]
     async fn test_normalize_type_stage_app_non_ground_args() {
         let subst = empty_type_vars();
-        let mut ctx = NormCtxt::new(None, None);
+        let mut ctx = NormCtxt::new(None);
         let ty = Type::TypeStageApp {
             fn_name: "AddResult".to_string(),
             args: vec![Type::TypeVar("a".to_string(), 0), Type::Float],
@@ -966,7 +821,7 @@ mod tests {
     /// Test: NormCtxt::new() initializes with correct defaults
     #[tokio::test]
     async fn test_norm_ctxt_new_defaults() {
-        let ctx = NormCtxt::new(None, None);
+        let ctx = NormCtxt::new(None);
 
         assert!(ctx.cache.is_empty());
         assert_eq!(ctx.depth, 0);
@@ -978,7 +833,7 @@ mod tests {
     #[tokio::test]
     async fn test_normalize_cache_only_ground_types() {
         let subst = empty_type_vars();
-        let mut ctx = NormCtxt::new(None, None);
+        let mut ctx = NormCtxt::new(None);
 
         // Normalize a type with inference variables
         let ty_with_var = Type::App(
@@ -1042,7 +897,7 @@ mod tests {
     #[tokio::test]
     async fn test_unknown_resolver_returns_stuck() {
         let subst = empty_type_vars();
-        let mut ctx = NormCtxt::new(None, None);
+        let mut ctx = NormCtxt::new(None);
         let ty = Type::TypeStageApp {
             fn_name: "UnknownResolver".to_string(),
             args: vec![Type::Int, Type::Float],

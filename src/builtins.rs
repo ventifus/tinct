@@ -763,13 +763,11 @@ mod tests {
         let mut program = parsed.program;
         crate::desugar::desugar_surface_program(&mut program);
         // Seed resolver from FlatEnv so builtin names resolve to de Bruijn coords.
-        let root_frame: indexmap::IndexMap<String, u32> = {
-            let arena = ctx.scope_arena.borrow();
-            arena.scopes[0]
-                .iter_named()
-                .map(|(n, slot)| (n.to_string(), slot))
-                .collect()
-        };
+        let root_frame: indexmap::IndexMap<String, u32> = crate::builtins_core::core_builtins()
+            .iter()
+            .enumerate()
+            .map(|(i, def)| (def.name.to_string(), i as u32))
+            .collect();
         let (_table, _frames) = crate::resolve::resolve_surface_program(&program, &[root_frame]);
         let thunk = crate::eval::eval_surface_file(&program, ctx)
             .await
@@ -2247,7 +2245,6 @@ mod tests {
                 vec![],
                 None,
                 call_span(),
-                None,
                 0,
                 Arc::clone(&ctx),
             )),
@@ -2293,7 +2290,6 @@ mod tests {
                 vec![],
                 None,
                 call_span(),
-                None,
                 0,
                 Arc::clone(&ctx),
             )),
@@ -2347,7 +2343,6 @@ mod tests {
                 vec![],
                 None,
                 call_span(),
-                None,
                 0,
                 Arc::clone(&ctx),
             )),

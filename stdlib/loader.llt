@@ -185,7 +185,7 @@
   # level's names, producing [outermost-names, ..., innermost-names].
   # This matches resolve.rs ordering: initial_frames[0] = outermost (line 599).
   _scope-to-frames-inner: [fn [let scope-id acc]
-    [acc-next: [merge [make-entry 0 [builtin-scope-names scope-id]]
+    [acc-next: [merge [make-entry 0 [builtin-scope-frame scope-id]]
                       [_shift-keys acc [builtin-dict-length acc] 0 [builtin-make-builder]]]]
     [parent: [builtin-scope-parent scope-id]]
     [match [null? parent]

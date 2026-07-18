@@ -232,6 +232,7 @@ fn parse_annotation_direct(
                     start: name_span.start,
                     end: inner_ann.span.end,
                     file: name_span.file.clone(),
+                    name: None,
                 };
                 return Ok((
                     Spanned::new(
@@ -281,6 +282,7 @@ fn parse_annotation_direct(
                                 start: bracket_start_span.start,
                                 end: tokens[i].span.end,
                                 file: bracket_start_span.file.clone(),
+                                name: None,
                             };
                             i += 1; // consume ]
 
@@ -823,6 +825,7 @@ fn recover_from_bracket_error(
                                     start: key.span.start,
                                     end: e.node.value.span.end,
                                     file: key.span.file.clone(),
+                                    name: None,
                                 }
                             } else {
                                 e.node.value.span.clone()
@@ -847,6 +850,7 @@ fn recover_from_bracket_error(
                         start: span_start,
                         end: error_span.end,
                         file: error_span.file.clone(),
+                        name: None,
                     };
                     mk(SurfaceExpression::Dict(partial_entries), dict_span)
                 }
@@ -917,6 +921,7 @@ fn recover_from_bracket_error(
                             start: span_start,
                             end: error_span.end,
                             file: error_span.file.clone(),
+                            name: None,
                         };
                         mk(
                             SurfaceExpression::Call {
@@ -1674,6 +1679,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                     start: span_start,
                     end: span_end,
                     file: span_file.clone(),
+                    name: None,
                 };
 
                 // Helper: recover from a CloseBracket-handler error (frame already popped).
@@ -1727,6 +1733,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                                         start: ann.span.start,
                                         end: entry_value.span.end,
                                         file: entry_value.span.file.clone(),
+                                        name: None,
                                     };
                                     let type_assert_node = Arc::new(SurfaceNode::new(
                                         SurfaceExpression::TypeAssert {
@@ -1792,6 +1799,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                                                     start: key.span.start,
                                                     end: e.node.value.span.end,
                                                     file: key.span.file.clone(),
+                                                    name: None,
                                                 }
                                             } else {
                                                 e.node.value.span.clone()
@@ -1809,6 +1817,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                                                 start: key.span.start,
                                                 end: e.node.value.span.end,
                                                 file: key.span.file.clone(),
+                                                name: None,
                                             }
                                         } else {
                                             e.node.value.span.clone()
@@ -2421,6 +2430,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                                                 start: key.span.start,
                                                 end: e.node.value.span.end,
                                                 file: key.span.file.clone(),
+                                                name: None,
                                             }
                                         } else {
                                             e.node.value.span.clone()
@@ -2505,6 +2515,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                                                         start: key.span.start,
                                                         end: e.node.value.span.end,
                                                         file: key.span.file.clone(),
+                                                        name: None,
                                                     }
                                                 } else {
                                                     e.node.value.span.clone()
@@ -3504,6 +3515,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                         start: items.first().unwrap().span().start,
                         end: items.last().unwrap().span().end,
                         file: items.first().unwrap().span().file.clone(),
+                        name: None,
                     }
                 };
                 documents.push(Spanned::new(
@@ -3604,6 +3616,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                                         start: at_start,
                                         end: ann_end,
                                         file: at_file,
+                                        name: None,
                                     };
                                     let null_node = Arc::new(SurfaceNode::new(
                                         SurfaceExpression::Dict(Vec::new()),
@@ -4056,6 +4069,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                             start: target.as_ref().map_or(span.start, |t| t.span.start),
                             end: token_vec[i].span.end,
                             file: token_vec[i].span.file.clone(),
+                            name: None,
                         };
 
                         let spanned_access = Arc::new(SurfaceNode::new(
@@ -4129,6 +4143,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                             start: target.as_ref().map_or(span.start, |t| t.span.start),
                             end: token_vec[i].span.end,
                             file: token_vec[i].span.file.clone(),
+                            name: None,
                         };
 
                         let spanned_access = Arc::new(SurfaceNode::new(
@@ -4330,11 +4345,12 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                             let n = name.clone();
                             let end_span = token_vec[i].span.clone();
                             (
-                                Some(n),
+                                Some(n.clone()),
                                 Span {
                                     start: ellipsis_span.start,
                                     end: end_span.end,
                                     file: ellipsis_span.file.clone(),
+                                    name: Some(Arc::from(n.as_str())),
                                 },
                             )
                         } else {
@@ -4690,6 +4706,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                 column: innermost_pos.column + 1,
             },
             file: Arc::clone(&eof_file),
+            name: None,
         };
 
         let count = stack.len();
@@ -4758,6 +4775,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                 column: 1,
             },
             file: Arc::clone(&eof_file),
+            name: None,
         };
         documents.push(Spanned::new(Arc::new(doc), doc_span));
     } else if !current_document_items.is_empty() {
@@ -4778,6 +4796,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                 column: 1,
             },
             file: Arc::clone(&eof_file),
+            name: None,
         };
         documents.push(Spanned::new(Arc::new(doc), doc_span));
     }
@@ -6283,6 +6302,7 @@ fn push_expr_to_parent(
                     start: *span_start,
                     end: node.span.end,
                     file: node.span.file.clone(),
+                    name: None,
                 };
                 stack.pop(); // Remove the Pipe frame
 
@@ -6332,6 +6352,7 @@ fn commit_let_pending(
         start: key_node.span.start,
         end: rhs_node.span.end,
         file: key_node.span.file.clone(),
+        name: None,
     };
 
     // Detect if RHS is an uppercase constructor name (bare or qualified).
@@ -6544,6 +6565,7 @@ fn create_annotated_node(
                 start: target.span.start,
                 end: annotation.span.end,
                 file: target.span.file.clone(),
+                name: Some(Arc::from(name.as_str())),
             };
             Arc::new(SurfaceNode::new(
                 SurfaceExpression::VarRef {
@@ -6562,6 +6584,7 @@ fn create_annotated_node(
                 start: target.span.start,
                 end: annotation.span.end,
                 file: target.span.file.clone(),
+                name: None,
             };
             Arc::new(SurfaceNode::new(
                 SurfaceExpression::TypeAssert {
@@ -6624,6 +6647,7 @@ fn drain_annotation_frames(
                 start: span_start,
                 end: ann_expr.span.end,
                 file: ann_expr.span.file.clone(),
+                name: None,
             };
             let spanned_ann = Spanned::new(annotation, ann_span);
 
@@ -6708,6 +6732,7 @@ fn push_value(
                     start: key.span.start,
                     end: node.span.end,
                     file: key.span.file.clone(),
+                    name: key_to_string(&key.expr).map(|s| Arc::from(s.as_str())),
                 };
                 entries.push(Spanned::new(
                     SurfaceEntry {
@@ -6769,6 +6794,7 @@ fn push_value(
                     start: key.span.start,
                     end: node.span.end,
                     file: key.span.file.clone(),
+                    name: None,
                 };
                 methods.push(Spanned::new(
                     SurfaceEntry {
@@ -6803,6 +6829,7 @@ fn push_value(
                     start: key.span.start,
                     end: node.span.end,
                     file: key.span.file.clone(),
+                    name: None,
                 };
                 current_arm_methods.push(Spanned::new(
                     SurfaceEntry {

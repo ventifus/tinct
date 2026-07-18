@@ -2432,6 +2432,7 @@ mod help_suggestion_tests {
                 column: 15,
             },
             file: crate::rust_span!().file,
+            name: None,
         };
         let constraint_with_origin = Constraint::Class {
             class: Arc::clone(&class),
@@ -2456,6 +2457,7 @@ mod help_suggestion_tests {
                 column: 6,
             },
             file: crate::rust_span!().file,
+            name: None,
         };
         let mut emitted: HashSet<(String, Span)> = HashSet::new();
 
@@ -2533,6 +2535,7 @@ mod help_suggestion_tests {
                 column: 6,
             },
             file: crate::rust_span!().file,
+            name: None,
         };
         let mut emitted: HashSet<(String, Span)> = HashSet::new();
 

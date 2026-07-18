@@ -816,6 +816,7 @@ impl Type {
             start: zero,
             end: zero,
             file: crate::rust_span!().file,
+            name: None,
         };
         Type::Error(Arc::new(vec![TypeErrorTyped::Generic(GenericTypeError {
             message: msg.into(),

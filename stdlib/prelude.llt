@@ -732,7 +732,7 @@ scope-to-frames-inner: [fn [let scope-id acc]
   [if [null? scope-id] acc
     [scope-to-frames-inner
       [builtin-scope-parent scope-id]
-      [Seq.Cons head: [builtin-scope-names scope-id]  tail: acc]]]]
+      [Seq.Cons head: [builtin-scope-frame scope-id]  tail: acc]]]]
 
 # scope-to-frames: convert a scope-id to an auto-indexed dict of name-to-slot dicts.
 # Returns {0: outermost-frame, ..., N: innermost-frame} for use as builtin-resolve frames.

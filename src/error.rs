@@ -3478,6 +3478,7 @@ bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.
                 column: 4,
             },
             file: rust_span!().file,
+            name: None,
         };
         let snippet = render_span_snippet(source, span).unwrap();
 
@@ -3521,6 +3522,7 @@ bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.
                 column: 2,
             },
             file: rust_span!().file,
+            name: None,
         };
         let snippet = render_span_snippet(source, span).unwrap();
 
@@ -3760,6 +3762,7 @@ bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.
                 path: Arc::from(path),
                 content: Arc::from(""),
             }),
+            name: None,
         }
     }
 
@@ -3852,6 +3855,7 @@ bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.
                     path: Arc::from("user.llt"),
                     content: Arc::from(""),
                 }),
+                name: None,
             }
         };
 

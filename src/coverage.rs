@@ -1536,6 +1536,7 @@ mod tests {
                 offset: 0,
             },
             file: crate::rust_span!().file,
+            name: None,
         };
         // TypeAssertPending with a known primitive type name (e.g. "Int") resolves
         // to the corresponding Constructor pattern — enabling exhaustiveness checking.
@@ -1572,6 +1573,7 @@ mod tests {
                 offset: 0,
             },
             file: crate::rust_span!().file,
+            name: None,
         };
         let pat = ast::Pattern::Dict {
             fields: vec![(
@@ -1608,6 +1610,7 @@ mod tests {
                 offset: 0,
             },
             file: crate::rust_span!().file,
+            name: None,
         };
         let pat = ast::Pattern::Constructor {
             tag: "Maybe.Some".to_string(),
@@ -1641,6 +1644,7 @@ mod tests {
                 offset: 0,
             },
             file: crate::rust_span!().file,
+            name: None,
         };
         let pat = ast::Pattern::Or(vec![
             Spanned {

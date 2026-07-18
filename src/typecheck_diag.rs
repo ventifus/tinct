@@ -756,6 +756,7 @@ pub(crate) fn scan_type_quality(
                     path: std::sync::Arc::from(file!()),
                     content: std::sync::Arc::from(""),
                 }),
+                name: None,
             });
 
             diagnostics.push(TypeDiagnostic {

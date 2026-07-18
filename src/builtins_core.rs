@@ -59,7 +59,7 @@ use crate::builtins_meta::{
     builtin_builtin_module, builtin_cap_env_has, builtin_check_type, builtin_desugar,
     builtin_doc_expressions, builtin_doc_meta, builtin_eval, builtin_get_type_context,
     builtin_llt_repr, builtin_parse, builtin_program_docs, builtin_raise, builtin_resolve,
-    builtin_scope_names, builtin_scope_new, builtin_scope_parent, builtin_scopes, builtin_tag_of,
+    builtin_scope_frame, builtin_scope_new, builtin_scope_parent, builtin_scopes, builtin_tag_of,
     builtin_tc_with_scope, builtin_try, builtin_type_of, builtin_typecheck_doc,
     builtin_variant_payload,
 };
@@ -561,15 +561,15 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             ["parent", "entries"]
         ),
         builtin!(
-            "builtin-scope-names",
-            builtin_scope_names,
+            "builtin-scope-parent",
+            builtin_scope_parent,
             [Strictness::Seq],
             0,
             ["scope-id"]
         ),
         builtin!(
-            "builtin-scope-parent",
-            builtin_scope_parent,
+            "builtin-scope-frame",
+            builtin_scope_frame,
             [Strictness::Seq],
             0,
             ["scope-id"]

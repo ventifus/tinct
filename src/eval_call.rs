@@ -89,14 +89,19 @@ pub(crate) async fn eval_call_core(
     };
 
     // Return PendingCall thunk — function dispatch deferred to PendingCallDispatch in run().
+    // Attach the function label (if known) to the call span for blame tracking.
+    let thunk_span = if let Some(label) = func_label_core(&func_expr.node) {
+        call_span.clone().with_name(label)
+    } else {
+        call_span.clone()
+    };
     Ok(Arc::new(Thunk::fn_call(
         func_id,
         pos_ids,
         named_ids,
         call_span.clone(),
         caller_env_id,
-        call_span.clone(),
-        func_label_core(&func_expr.node),
+        thunk_span,
         Arc::clone(ctx),
         original_call,
     )))
@@ -116,9 +121,8 @@ pub struct CallContext<'a> {
     pub named: Option<&'a IndexMap<String, ThunkId>>,
     /// FlatEnv env_id for the caller's scope (replaces Arc<RwLock<Env>>).
     pub default_env_id: u32,
+    /// Call site span — `name` field carries the function label for blame tracking.
     pub call_span: Span,
-    /// Label for stack traces (e.g. "call $f"). `None` for anonymous calls.
-    pub origin: Option<Arc<str>>,
     pub ctx: &'a Arc<EvalContext>,
 }
 
@@ -140,18 +144,15 @@ pub async fn invoke_function(ctx: &CallContext<'_>) -> EvalResult<Arc<Thunk>> {
     )
     .await
     .map_err(|mut e| {
-        e.set_arity_callee(ctx.origin.clone());
+        e.set_arity_callee(ctx.call_span.name.clone());
         e
     })?;
-    let mut thunk = Thunk::core_expr(
+    let thunk = Thunk::core_expr(
         Arc::clone(ctx.body),
         call_env_id,
         Arc::clone(ctx.ctx),
         ctx.call_span.clone(),
     );
-    if let Some(ref label) = ctx.origin {
-        thunk = thunk.with_origin(Arc::clone(label));
-    }
     Ok(Arc::new(thunk))
 }
 
@@ -175,7 +176,7 @@ pub(crate) async fn invoke_function_tco(
     )
     .await
     .map_err(|mut e| {
-        e.set_arity_callee(ctx.origin.clone());
+        e.set_arity_callee(ctx.call_span.name.clone());
         e
     })?;
 
@@ -310,8 +311,8 @@ pub(crate) async fn bind_args_thunks(
     // the resolver) before any slots are filled.
     {
         let mut arena = ctx.scope_arena.borrow_mut();
-        for param in params.iter() {
-            arena.reserve_slot(call_env_id, &param.name);
+        for _ in params.iter() {
+            arena.reserve_slot(call_env_id);
         }
     }
 

@@ -192,15 +192,20 @@ pub async fn run_loader_pipeline(
     // coordinates at eval time, so typeclass method dispatch works in the production loader
     // path where typecheck precedes eval.
     let eval_ctx_with_frames: Arc<eval::EvalContext> = {
-        // Build root_frame as name→actual_slot_index (not IndexMap ordinal position).
-        // iter_named() yields (name, slot_idx) pairs with the real slot index,
-        // avoiding the deduplication bug where "" names collapse in IndexMap.
+        // Build root_frame from all named slots in scope 0: builtins, CLI-injected
+        // capabilities, user-defined CLI variables (-d foo=bar), and anything else
+        // the host has placed there. Each named thunk carries its name via span.name.
+        // Reading the actual scope 0 gives the resolver the complete picture so
+        // every injected name resolves to a correct de Bruijn coordinate.
         let root_frame: indexmap::IndexMap<String, u32> = {
             let arena = eval_ctx.scope_arena.borrow();
             arena.scopes[0]
-                .iter_named()
-                .filter(|(n, _)| !n.is_empty() && !n.starts_with('#'))
-                .map(|(n, slot)| (n.to_string(), slot))
+                .slots
+                .iter()
+                .enumerate()
+                .filter_map(|(slot, t)| {
+                    Some((t.as_ref()?.span.name.as_deref()?.to_string(), slot as u32))
+                })
                 .collect()
         };
         let (_table, new_frames) =
@@ -325,7 +330,6 @@ pub async fn run_loader_pipeline(
             &loader_program,
             builtin_env,
             Some(Arc::clone(&eval_ctx_with_frames)),
-            None,
             seed_tycon_env,
             type_stage_map_opt,
         )
@@ -1166,6 +1170,7 @@ mod tests {
                 column: 2,
             },
             file: rust_span!().file,
+            name: None,
         };
 
         let snippet = error::render_span_snippet(source, span)

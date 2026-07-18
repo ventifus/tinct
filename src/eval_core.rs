@@ -668,15 +668,22 @@ pub(crate) fn eval_core_expr<'a>(
                                     // chain[0] is root (outermost), chain[N-1] is innermost.
                                     // level 0 = innermost = chain[N-1], level k = chain[N-1-k].
                                     let scope_level = scope_depth - 1 - chain_idx;
-                                    let preview: Vec<&str> = arena.scopes[env_id.0 as usize]
-                                        .iter_named()
-                                        .filter(|(n, _)| !n.is_empty())
+                                    let preview: Vec<String> = arena.scopes[env_id.0 as usize]
+                                        .slots
+                                        .iter()
+                                        .filter_map(|t| {
+                                            t.as_ref()?.span.name.as_deref().map(str::to_string)
+                                        })
                                         .take(5)
-                                        .map(|(n, _)| n)
                                         .collect();
                                     let total_names = arena.scopes[env_id.0 as usize]
-                                        .iter_named()
-                                        .filter(|(n, _)| !n.is_empty())
+                                        .slots
+                                        .iter()
+                                        .filter(|t| {
+                                            t.as_ref()
+                                                .and_then(|t| t.span.name.as_deref())
+                                                .is_some()
+                                        })
                                         .count();
                                     let ellipsis = if total_names > 5 { ", ..." } else { "" };
                                     format!(
@@ -1032,7 +1039,7 @@ mod tests {
             let mut arena = ctx.scope_arena.borrow_mut();
             let root_id = crate::arena::ScopeId(0);
             let env_id = arena.alloc_child(root_id, 0);
-            let slot_idx = arena.reserve_slot(env_id, "test-binding");
+            let slot_idx = arena.reserve_slot(env_id);
             assert_eq!(slot_idx, 0, "first reserved slot must be 0");
             arena.fill_slot(env_id, 0, source_thunk_id);
             env_id

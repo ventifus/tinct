@@ -39,8 +39,9 @@ pub(crate) async fn invoke_proxy_handler(
                 positional: &[key_arg_id],
                 named: None,
                 default_env_id: closure_env_id,
-                call_span: access_span.clone(),
-                origin: Some(Arc::from("proxy field access")),
+                call_span: access_span
+                    .clone()
+                    .with_name(Arc::from("proxy field access")),
                 ctx,
             })
             .await
@@ -49,8 +50,9 @@ pub(crate) async fn invoke_proxy_handler(
             def,
             vec![key_arg_id],
             None,
-            access_span.clone(),
-            Some(Arc::from("proxy field access")),
+            access_span
+                .clone()
+                .with_name(Arc::from("proxy field access")),
             caller_env_id,
             Arc::clone(ctx),
         ))),
@@ -111,13 +113,11 @@ mod tests {
         desugar_surface_program(&mut program);
         // Seed the resolver from the FlatEnv root scope so $field-get and $slot-get
         // are available for dot-access desugaring (installed by build_core_env).
-        let root_frame: IndexMap<String, u32> = {
-            let arena = ctx.scope_arena.borrow();
-            arena.scopes[0]
-                .iter_named()
-                .map(|(n, slot)| (n.to_string(), slot))
-                .collect()
-        };
+        let root_frame: IndexMap<String, u32> = crate::builtins_core::core_builtins()
+            .iter()
+            .enumerate()
+            .map(|(i, def)| (def.name.to_string(), i as u32))
+            .collect();
         let _ = env; // env is legacy; real bindings live in FlatEnv
         let (_table, _frames) = resolve_surface_program(&program, &[root_frame]);
         crate::eval_surface_file(&program, ctx).await

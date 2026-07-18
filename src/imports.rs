@@ -100,10 +100,8 @@ async fn build_builtin_core_type_env_inner() -> Option<Arc<RwLock<Env>>> {
             &program,
             parent_env,
             false,                            // enable_scheme_map
-            None, // resolver_seed_env: no runtime env available at bootstrap
-            None, // type_stage_env: not available at bootstrap
             std::collections::HashMap::new(), // seed_tycon_env: empty at bootstrap
-            None, // eval_ctx: no EvalContext at bootstrap
+            None,                             // eval_ctx: no EvalContext at bootstrap
         )
         .await;
 

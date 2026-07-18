@@ -188,23 +188,23 @@
   # frames: {frame-index: {var-name: slot-index}, ...}
   builtin-resolve:        [fn@Dict     [let doc@Document frames@[Map Int [Map String Int]]] ...]
   # eval: evaluate a resolved+typed document in a scope; returns {result, scope-id, errors}.
-  builtin-eval:           [fn@Dict     [let typed@Document scope-id@Int] ...]
+  builtin-eval:           [fn@Dict     [let typed@Document scope-id@Integer] ...]
   # typecheck-doc: type-check a single resolved document against a TypeContext.
   # Returns {doc: Document, warnings: {0: {kind, message, span, notes}, ...}}
   builtin-typecheck-doc:  [fn@Dict     [let doc@Document tc@TypeContext] ...]
   # program-docs: return auto-indexed dict of documents in a Program.
   builtin-program-docs:      [fn@Dict     [let prog@Program] ...]
   # doc-meta: evaluate a document's --- header in a scope, returning the result dict.
-  builtin-doc-meta:          [fn@Dict     [let doc@Document scope-id@Int] ...]
+  builtin-doc-meta:          [fn@Dict     [let doc@Document scope-id@Integer] ...]
   # doc-expressions: return auto-indexed dict of Expr-variant values from a document's expression items.
   # Decl items (type declarations, class/instance declarations, etc.) are skipped.
   builtin-doc-expressions:   [fn@Dict     [let doc@Document] ...]
 
   # ── Scope arena primitives ────────────────────────────────────────────────
   builtin-scopes:         [fn@Dict [let] ...]
-  builtin-scope-new:      [fn@Int  [let parent@Any bindings@Dict] ...]
-  builtin-scope-names:    [fn@Dict [let scope-id@Int] ...]
-  builtin-scope-parent:   [fn@Any  [let scope-id@Int] ...]
+  builtin-scope-new:      [fn@Integer  [let parent@Any bindings@Dict] ...]
+  builtin-scope-parent:   [fn@Any  [let scope-id@Integer] ...]
+  builtin-scope-frame:    [fn@Dict [let scope-id@Integer] ...]
 
   # ── Module system ─────────────────────────────────────────────────────────
   builtin-module:         [fn@Dict    [let name@String] ...]
@@ -212,7 +212,7 @@
   # ── TypeContext bootstrap ──────────────────────────────────────────────────
   builtin-get-type-context: [fn@TypeContext [] ...]
   builtin-make-type-ctx:    [fn@TypeContext [] ...]
-  builtin-tc-with-scope:    [fn@TypeContext [let ctx@TypeContext scope-id@Int] ...]
+  builtin-tc-with-scope:    [fn@TypeContext [let ctx@TypeContext scope-id@Integer] ...]
 
   # ── Sequences (core collection ops) ───────────────────────────────────────
   builtin-take:    [fn@Dict [let n@Integer xs@Dict] ...]

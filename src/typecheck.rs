@@ -91,7 +91,6 @@ pub async fn typecheck_surface_program_annotation_table(
         program,
         Arc::new(RwLock::new(Env::new())),
         None,
-        None,
         std::collections::HashMap::new(),
         None,
     )
@@ -108,7 +107,6 @@ pub async fn typecheck_surface_program_annotation_table_with_env(
     program: &SurfaceProgram,
     initial_env: Arc<RwLock<Env>>,
     eval_ctx: Option<std::sync::Arc<crate::eval::EvalContext>>,
-    type_stage_env: Option<Arc<RwLock<Env>>>,
     seed_tycon_env: crate::type_def::TyConEnv,
     type_stage_map: Option<std::collections::HashMap<String, crate::type_infer::TypeStageEntry>>,
 ) -> (
@@ -121,7 +119,6 @@ pub async fn typecheck_surface_program_annotation_table_with_env(
     let mut env: Arc<RwLock<Env>> = initial_env;
     let mut state = InferState::new();
     state.eval_ctx = eval_ctx;
-    state.type_stage_env = type_stage_env;
     state.tycon_env = seed_tycon_env;
     // Always seed type_stage_map with Unknown → Type::Unknown so that `@Unknown`
     // (the gradual-typing escape hatch) resolves through the unified Step 3 path
@@ -191,8 +188,6 @@ pub async fn typecheck_surface_program(
             program,
             parent_env,
             true,
-            None,
-            None,
             std::collections::HashMap::new(),
             None,
         )
@@ -217,19 +212,10 @@ pub async fn typecheck_surface_program(
 ///   program must already be in `parent_env`'s chain (populated by prior type-checking runs
 ///   via `TypeContext`).
 /// - `enable_scheme_map`: When `true`, populates the [`SchemeMap`] for LSP hover.
-/// - `resolver_seed_env`: Optional env used to seed the resolver (name resolution pass).
-///   When `Some`, the resolver is seeded from this env so that instance binding names
-///   (ɪ-prefixed, e.g. `ɪɴꜱᴛᴀɴᴄᴇ⧼Castable∷cast⟨String,Int⟩⧽`) are visible in scope
-///   and `method_to_instance` can resolve class method VarRefs. This should be the full
-///   runtime eval env (from `builtin-typecheck-doc env: <env>`), which contains instance
-///   bindings that the type-only `parent_env` does not. When `None`, falls back to
-///   `parent_env` for resolver seeding (the prior behavior).
-/// - `type_stage_env`: Optional type-stage evaluation environment. When `Some`, stored on
-///   `state.type_stage_env` so that `eval_type_stage_expr` and `call_type_stage_fn` can
-///   evaluate user-defined type-stage functions (e.g. TypeNode constructors, `or`, `all`).
-///   Populated from `TypeContextData.type_stage_env` by `builtin-typecheck-doc`. `None` at all
-///   bootstrap call sites (prelude, stdlib includes, LSP path) where the type-stage env
-///   has not yet been built.
+/// - `seed_tycon_env`: Pre-populated type constructor definitions. Propagates opaque types
+///   (DirCap, File, ClockCap, Handle, etc.) declared in `builtin_core.llt` to subsequent
+///   module type-checks without requiring re-declaration.
+/// - `eval_ctx`: Optional `EvalContext` for type-stage scope-chain lookup.
 ///
 /// # Returns
 ///
@@ -242,8 +228,6 @@ pub async fn typecheck_surface_program_with_env(
     program: &SurfaceProgram,
     parent_env: Arc<RwLock<Env>>,
     enable_scheme_map: bool,
-    _resolver_seed_env: Option<Arc<RwLock<Env>>>,
-    type_stage_env: Option<Arc<RwLock<Env>>>,
     seed_tycon_env: std::collections::HashMap<String, std::sync::Arc<crate::type_def::TyConDef>>,
     eval_ctx: Option<std::sync::Arc<crate::eval::EvalContext>>,
 ) -> (
@@ -263,11 +247,6 @@ pub async fn typecheck_surface_program_with_env(
     let child_env = Arc::new(RwLock::new(Env::with_parent(Arc::clone(&parent_env))));
     let mut env: Arc<RwLock<Env>> = Arc::clone(&child_env);
     let mut state = InferState::with_env(Arc::clone(&child_env));
-    // Wire type_stage_env from the TypeContext so eval_type_stage_expr can evaluate
-    // user-defined type-stage functions (TypeNode constructors, `or`, `all`, etc.).
-    // When None (bootstrap/LSP paths), type_stage_env stays None — primitive types are
-    // resolved directly in resolve_type_name without a type-stage env call.
-    state.type_stage_env = type_stage_env;
     state.eval_ctx = eval_ctx;
     // Seed type_stage_map with Unknown → Type::Unknown so that `@Unknown` resolves
     // through the unified Step 3 path in resolve_type_head. This function is called
@@ -292,25 +271,36 @@ pub async fn typecheck_surface_program_with_env(
     for (name, def) in seed_tycon_env {
         state.tycon_env.entry(name).or_insert(def);
     }
-    // Seed the resolver so that instance binding names (ɪ-prefixed) are visible
-    // in scope and method_to_instance can resolve class method VarRefs (cast, +, -, etc.)
-    // to their letrec slots. T-1576: When an eval_ctx is provided, use its scope_arena
-    // to seed the resolver from FlatEnv. Otherwise use bootstrap mode (empty initial_frames).
-    state.resolution_table = if let Some(ref ctx) = state.eval_ctx {
-        let root_frame: indexmap::IndexMap<String, u32> = {
-            let arena = ctx.scope_arena.borrow();
+    // Seed the resolver from scope 0 when an eval_ctx is available — this includes builtins
+    // and any host-injected names (capabilities, CLI variables, etc.). Fall back to
+    // core_builtins() only in bootstrap contexts where no runtime arena exists.
+    let root_frame: indexmap::IndexMap<String, u32> = if let Some(ref ctx) = state.eval_ctx {
+        let arena = ctx.scope_arena.borrow();
+        if !arena.scopes.is_empty() {
             arena.scopes[0]
-                .iter_named()
-                .filter(|(n, _)| !n.is_empty() && !n.starts_with('#'))
-                .map(|(n, slot)| (n.to_string(), slot))
+                .slots
+                .iter()
+                .enumerate()
+                .filter_map(|(slot, t)| {
+                    Some((t.as_ref()?.span.name.as_deref()?.to_string(), slot as u32))
+                })
                 .collect()
-        };
-        let (table, _frames) = crate::resolve::resolve_surface_program(program, &[root_frame]);
-        Some(Arc::new(table))
+        } else {
+            crate::builtins_core::core_builtins()
+                .iter()
+                .enumerate()
+                .map(|(i, def)| (def.name.to_string(), i as u32))
+                .collect()
+        }
     } else {
-        let (table, _frames) = crate::resolve::resolve_surface_program(program, &[]);
-        Some(Arc::new(table))
+        crate::builtins_core::core_builtins()
+            .iter()
+            .enumerate()
+            .map(|(i, def)| (def.name.to_string(), i as u32))
+            .collect()
     };
+    let (resolve_table, _frames) = crate::resolve::resolve_surface_program(program, &[root_frame]);
+    state.resolution_table = Some(Arc::new(resolve_table));
 
     if enable_scheme_map {
         state.scheme_map = Some(SchemeMap::new());

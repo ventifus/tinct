@@ -188,7 +188,7 @@ pub async fn eval_surface_file_with_input(
         let child_env_id = {
             let mut arena = ctx.scope_arena.borrow_mut();
             let child_id = arena.alloc_child(ScopeId(0), 1);
-            arena.push_slot(child_id, "%", input);
+            arena.push_slot(child_id, input);
             child_id
         };
         // Evaluate all documents with child_env_id as the parent scope so every
@@ -270,11 +270,9 @@ pub(crate) fn format_field_path(field_path: &[String]) -> String {
 
 /// Unified type environment handle carried by EvalContext.
 ///
-/// Encapsulates both the type-stage eval environment (`type_stage_env`, used by
-/// `builtin_eval_types`) and the type-checker state (populated by `builtin-typecheck-doc`
-/// as a side effect). Accessed via `builtin-get-type-context` and mutated by
-/// `builtin-typecheck-doc`. This is the opaque handle that loader.llt threads through
-/// the type-checking pipeline.
+/// Encapsulates the type-checker state (populated by `builtin-typecheck-doc` as a side
+/// effect). Accessed via `builtin-get-type-context` and mutated by `builtin-typecheck-doc`.
+/// This is the opaque handle that loader.llt threads through the type-checking pipeline.
 ///
 /// Wrapped in `Arc<Mutex<Option<...>>>` on `EvalContext` so that:
 /// - `None` = TypeContext not yet initialized (bootstrap phase before builtin-make-type-ctx)
@@ -286,16 +284,11 @@ pub(crate) fn format_field_path(field_path: &[String]) -> String {
 /// builtin-fork-type-ctx). This struct is the stable field layout.
 #[derive(Debug, Clone)]
 pub struct TypeContextData {
-    /// Type-stage environment: contains only type-level builtins, no IO/caps/runtime API.
-    /// Used by `builtin_eval_types` to evaluate type-stage documents in isolation.
-    /// Owned by TypeContext so it can be updated as new type declarations are registered.
-    pub type_stage_env: Arc<RwLock<Env>>,
-    /// Scope ID for type-stage function thunks (resolver evaluation).
+    /// Scope ID for type-stage function thunks.
     ///
-    /// When `builtin-tc-with-scope` populates `type_stage_env` (after evaluating
-    /// prelude type declarations), it also records the scope ID where those type-stage
-    /// function thunks are stored. `evaluate_resolver` uses this ID to construct ThunkIds
-    /// for type-stage function lookup.
+    /// Set by `builtin-tc-with-scope` after evaluating the type-stage documents.
+    /// `normalize()` and `resolve_type_head` use this ID to look up type-stage resolver
+    /// functions by name via scope-chain traversal.
     ///
     /// `None` until populated by the type-stage initialization path (loader.llt Pass 1).
     pub type_stage_scope_id: Option<u32>,
@@ -462,10 +455,13 @@ impl EvalContext {
         // Pre-populate root scope with builtin thunks.
         // Slot order MUST match build_core_env()'s insert_slot_name_only order.
         for def in core_builtins() {
+            let name: Arc<str> = Arc::from(def.name);
             arena.push_slot(
                 root_id,
-                def.name,
-                Arc::new(Thunk::value(Value::Builtin(def), rust_span!())),
+                Arc::new(Thunk::value(
+                    Value::Builtin(def),
+                    rust_span!().with_name(name),
+                )),
             );
         }
 
@@ -703,22 +699,11 @@ impl EvalContext {
         })
     }
 
-    /// Allocate a named binding thunk in the given scope and return its ID.
-    /// The name is stored in Scope.slot_names so the resolver can assign de Bruijn
-    /// coordinates for it. Use this for all named bindings (capabilities, dict entries, etc.).
-    pub fn alloc_named_thunk(&self, env_id: u32, name: &str, thunk: Arc<Thunk>) -> ThunkId {
-        self.scope_arena
-            .borrow_mut()
-            .push_slot(ScopeId(env_id), name, thunk)
-    }
-
-    /// Allocate an anonymous thunk in the given scope and return its ID.
-    /// The slot gets a gensym name — it is NOT accessible by name from the resolver.
-    /// Use only for intermediate computation thunks that are never bound to a name.
+    /// Allocate a thunk in the given scope and return its ID.
     pub fn alloc_thunk(&self, env_id: u32, thunk: Arc<Thunk>) -> ThunkId {
         self.scope_arena
             .borrow_mut()
-            .push_slot(ScopeId(env_id), "#anon", thunk)
+            .push_slot(ScopeId(env_id), thunk)
     }
 
     /// Get a cloned Arc<Thunk> from the arena by ID.
@@ -1543,7 +1528,7 @@ pub fn materialize<'a>(
                             .try_with(|s| s.borrow().clone())
                             .unwrap_or_default();
                         let err = EvalError::circular_dependency(
-                            thunk.origin.as_deref().unwrap_or("thunk"),
+                            thunk.span.name.as_deref().unwrap_or("thunk"),
                             thunk.span.clone(),
                             cycle_path,
                         );
@@ -2211,13 +2196,11 @@ mod tests {
         // Seed resolver from FlatEnv so $name references resolve to de Bruijn coords.
         // Type annotation names (String, Int, etc.) in test expressions are resolved
         // by the type checker, not the runtime resolver — ignore resolve errors here.
-        let root_frame: indexmap::IndexMap<String, u32> = {
-            let arena = ctx.scope_arena.borrow();
-            arena.scopes[0]
-                .iter_named()
-                .map(|(n, slot)| (n.to_string(), slot))
-                .collect()
-        };
+        let root_frame: indexmap::IndexMap<String, u32> = crate::builtins_core::core_builtins()
+            .iter()
+            .enumerate()
+            .map(|(i, def)| (def.name.to_string(), i as u32))
+            .collect();
         let (_table, _frames) = resolve_surface_program(&program, &[root_frame]);
         let _ = span;
         let _ = env;
@@ -2261,7 +2244,6 @@ mod tests {
         func_arc: Arc<Thunk>,
         arg_arcs: Vec<Arc<Thunk>>,
         call_span: Span,
-        origin: Option<Arc<str>>,
     ) -> Arc<Thunk> {
         let func_id = ctx.alloc_thunk(0, func_arc);
         let arg_ids: Vec<crate::arena::ThunkId> = arg_arcs
@@ -2275,7 +2257,6 @@ mod tests {
             call_span.clone(),
             0, // root scope
             call_span,
-            origin,
             Arc::clone(ctx),
             Arc::new(crate::ast::Spanned {
                 node: crate::ast::CoreExpr::Int(0),
@@ -3407,13 +3388,7 @@ mod tests {
         let arg2 = Arc::new(Thunk::value(Value::Int(6), test_span(1, 8, 1, 9)));
         let call_span = test_span(2, 1, 2, 10);
         let ctx_builtin = test_ctx();
-        let pending = make_pending_call(
-            &ctx_builtin,
-            func_thunk,
-            vec![arg1, arg2],
-            call_span,
-            Some(Arc::from("test-pending-call")),
-        );
+        let pending = make_pending_call(&ctx_builtin, func_thunk, vec![arg1, arg2], call_span);
 
         // Materialize should call the builtin directly and return the result
         let result = materialize(&pending, None, &ctx_builtin).await.unwrap();
@@ -3449,13 +3424,7 @@ mod tests {
         let arg = Arc::new(Thunk::value(Value::Int(42), test_span(1, 11, 1, 13)));
         let call_span = test_span(2, 1, 2, 10);
         let ctx_memo = test_ctx();
-        let pending = make_pending_call(
-            &ctx_memo,
-            func_thunk,
-            vec![arg],
-            call_span,
-            Some(Arc::from("test-pending-call")),
-        );
+        let pending = make_pending_call(&ctx_memo, func_thunk, vec![arg], call_span);
 
         // First materialization
         let result1 = materialize(&pending, None, &ctx_memo).await.unwrap();
@@ -3480,13 +3449,7 @@ mod tests {
         let call_span = test_span(2, 1, 2, 10);
 
         let ctx_nonfn = test_ctx();
-        let pending = make_pending_call(
-            &ctx_nonfn,
-            not_a_function,
-            vec![],
-            call_span,
-            Some(Arc::from("test-pending-call")),
-        );
+        let pending = make_pending_call(&ctx_nonfn, not_a_function, vec![], call_span);
 
         let err = materialize(&pending, None, &ctx_nonfn).await.unwrap_err();
         assert!(
@@ -3533,13 +3496,7 @@ mod tests {
         ));
 
         let call_span = test_span(2, 1, 2, 10);
-        let pending = make_pending_call(
-            &ctx_unevarg,
-            func_thunk,
-            vec![arg],
-            call_span,
-            Some(Arc::from("test-pending-call")),
-        );
+        let pending = make_pending_call(&ctx_unevarg, func_thunk, vec![arg], call_span);
 
         // Materialize should evaluate the arg thunk and return the result
         let result = materialize(&pending, None, &ctx_unevarg).await.unwrap();
@@ -5429,7 +5386,6 @@ mod tests {
             vec![arg_id],
             None,
             span,
-            None,
             0, // root scope // caller_env_id
             Arc::clone(&ctx),
         ));
@@ -5494,7 +5450,7 @@ mod tests {
         let func_thunk = Arc::new(Thunk::value(Value::Builtin(keys_def), span.clone()));
 
         // T-1558: Create a PendingCall thunk using ThunkIds.
-        let outer = make_pending_call(&ctx, func_thunk, vec![unevaluated_arg], span, None);
+        let outer = make_pending_call(&ctx, func_thunk, vec![unevaluated_arg], span);
 
         // Materialize via the recursive path. If force_count pre-materialization is
         // missing for the PendingCall→Builtin case, this panics inside `builtin_keys`.

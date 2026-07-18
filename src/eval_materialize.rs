@@ -63,10 +63,9 @@ impl ProfilingSpanGuard {
             // Extract source text snippet (TODO(eval-cleanup): from include cache)
             let source_text = None;
 
-            // Extract builtin name from origin if it looks like a builtin
-            let (builtin_name, origin_builtin) = match &thunk.origin {
-                Some(origin) if origin.starts_with("builtin-") => (Some(origin.to_string()), None),
-                Some(origin) => (None, Some(origin.to_string())),
+            let (builtin_name, origin_builtin) = match &thunk.span.name {
+                Some(name) if name.starts_with("builtin-") => (Some(name.to_string()), None),
+                Some(name) => (None, Some(name.to_string())),
                 None => (None, None),
             };
 
@@ -615,7 +614,6 @@ pub(crate) fn apply_predicate_to_subject(
         pred_span.clone(),
         env_id,
         pred_span.clone(),
-        None,
         Arc::clone(ctx),
         Arc::new(Spanned {
             node: CoreExpr::Int(0),
@@ -661,8 +659,7 @@ pub(crate) async fn force_step(
                     let cycle_path = TASK_EVAL_STACK
                         .try_with(|s| s.borrow().clone())
                         .unwrap_or_default();
-                    let origin = thunk.origin.clone();
-                    let label = origin.as_deref().unwrap_or("thunk");
+                    let label = thunk.span.name.as_deref().unwrap_or("thunk");
                     let mut err =
                         EvalError::circular_dependency(label, thunk.span.clone(), cycle_path);
                     if let Some(ref span) = mat_span {
@@ -708,7 +705,7 @@ async fn dispatch_state(
         )
         .into()));
     }
-    let origin = thunk.origin.clone();
+    let origin = thunk.span.name.clone();
 
     match state {
         UnevaluatedState::BuiltinCall {
@@ -1327,7 +1324,7 @@ pub(crate) async fn run_owned(
     let mut stack: Vec<Cont> = Vec::new();
     stack.push(Cont::Memoize(Box::new(MemoizeData {
         thunk: Arc::clone(thunk),
-        origin: thunk.origin.clone(),
+        origin: thunk.span.name.clone(),
         thunk_span: thunk.span.clone(),
         mat_span: None,
     })));
@@ -1532,7 +1529,6 @@ pub(crate) async fn apply_cont(
                                         named: named.as_ref().expect("named set above").as_deref(),
                                         default_env_id: caller_env_id,
                                         call_span: call_span.clone(),
-                                        origin: origin.clone(),
                                         ctx: &thunk_ctx,
                                     };
                                     invoke_function_tco(&call_ctx).await
@@ -1572,7 +1568,6 @@ pub(crate) async fn apply_cont(
                                         named: named.as_ref().expect("named set above").as_deref(),
                                         default_env_id: caller_env_id,
                                         call_span: call_span.clone(),
-                                        origin: origin.clone(),
                                         ctx: &thunk_ctx,
                                     };
                                     invoke_function(&call_ctx).await
@@ -2902,7 +2897,6 @@ pub(crate) async fn apply_cont(
                                 match_span.clone(),
                                 env_id, // B-515: arm FlatEnv allocation pending
                                 match_span.clone(),
-                                None,
                                 Arc::clone(&ctx),
                                 Arc::new(Spanned {
                                     node: CoreExpr::Int(0),
@@ -3264,8 +3258,8 @@ async fn eval_case_arm_structural_pattern(
     // bind_or_pin_name fills these via fill_slot(arm_env_id, slot, thunk_id).
     {
         let mut arena = ctx.scope_arena.borrow_mut();
-        for (name, expected_slot) in binding_map {
-            let reserved = arena.reserve_slot(arm_env_id, name);
+        for (_, expected_slot) in binding_map {
+            let reserved = arena.reserve_slot(arm_env_id);
             debug_assert_eq!(
                 reserved, *expected_slot,
                 "arm slot reservation order must match binding_map"
@@ -4387,7 +4381,6 @@ mod tests {
             vec![unevaluated_arg_id], // T-1558: use ThunkId
             None,
             span,
-            None,
             0, // root scope
             Arc::clone(&ctx),
         ));
@@ -4496,7 +4489,6 @@ mod tests {
             vec![arg0_id, arg1_id],
             None,
             span,
-            None,
             0, // root scope
             Arc::clone(&ctx),
         ));

@@ -1972,7 +1972,6 @@ async fn run_eval(
         // value_matches_type checks have definition spans for clear error messages.
         // Accumulated further by builtin-typecheck-doc calls during loading.
         ctx.init_type_context(tinct::TypeContextData {
-            type_stage_env: std::sync::Arc::new(std::sync::RwLock::new(tinct::Env::new())),
             type_stage_scope_id: None,
             inference_env: tinct::get_builtin_core_type_env()
                 .await
@@ -1983,12 +1982,19 @@ async fn run_eval(
         ctx
     };
 
-    // T-1577: Inject deferred cap thunks as NAMED bindings into the root FlatEnv.
-    // The resolver (T-1576) seeds from FlatEnv.slot_names, so each capability must be
-    // allocated with its name ("%libdir", "%cwd", etc.) so the resolver assigns de Bruijn
-    // coordinates for it. Ordering MUST match registration order above.
+    // Inject deferred cap thunks into the root scope, carrying the capability name on the span.
+    // The name on the thunk's span is how the resolver frame (built from core_builtins() + these)
+    // assigns de Bruijn coordinates. Ordering MUST match registration order above.
     for (name, thunk) in deferred_cap_thunks {
-        eval_ctx.alloc_named_thunk(0, &name, thunk);
+        let span = thunk
+            .definition_span()
+            .with_name(std::sync::Arc::from(name.as_str()));
+        let named_thunk = if let Some(val) = thunk.try_get_materialized() {
+            std::sync::Arc::new(tinct::Thunk::value(val, span))
+        } else {
+            thunk // non-value thunks keep original span (name missing, but capability is injected)
+        };
+        eval_ctx.alloc_thunk(0, named_thunk);
     }
 
     // Helper: allocate a value as a materialized thunk in the eval_ctx arena and return its ThunkId.
@@ -2112,11 +2118,16 @@ async fn run_eval(
     // Inject %programs and %args into the stdlib environment so loader.llt can see them.
     // T-1557: Register slot names in env (for resolver) and thunks in arena (for evaluator).
     {
-        let programs_thunk =
-            std::sync::Arc::new(tinct::Thunk::value(programs_dict, tinct::rust_span!()));
-        eval_ctx.alloc_named_thunk(0, "%programs", programs_thunk);
-        let args_thunk = std::sync::Arc::new(tinct::Thunk::value(args_dict, tinct::rust_span!()));
-        eval_ctx.alloc_named_thunk(0, "%args", args_thunk);
+        let programs_thunk = std::sync::Arc::new(tinct::Thunk::value(
+            programs_dict,
+            tinct::rust_span!().with_name(std::sync::Arc::from("%programs")),
+        ));
+        eval_ctx.alloc_thunk(0, programs_thunk);
+        let args_thunk = std::sync::Arc::new(tinct::Thunk::value(
+            args_dict,
+            tinct::rust_span!().with_name(std::sync::Arc::from("%args")),
+        ));
+        eval_ctx.alloc_thunk(0, args_thunk);
     }
 
     // Wrap the evaluation section in an async block so profiling cleanup runs unconditionally

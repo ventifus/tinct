@@ -114,17 +114,10 @@ pub fn fmt_fn(
 
     // Step 1: Collect all free (non-stdlib, non-param-bound) variable names.
     // Build a minimal stdlib name set from the FlatEnv root (env_id=0) slot names.
-    let stdlib_name_set: HashSet<String> = {
-        let arena = ctx.scope_arena.borrow();
-        if !arena.scopes.is_empty() {
-            arena.scopes[0]
-                .iter_named()
-                .map(|(n, _)| n.to_string())
-                .collect()
-        } else {
-            HashSet::new()
-        }
-    };
+    let stdlib_name_set: HashSet<String> = crate::builtins_core::core_builtins()
+        .iter()
+        .map(|def| def.name.to_string())
+        .collect();
     // Build a temporary Env with those names so collect_free_vars can check them.
     let stdlib_env_inner = {
         let mut e = crate::env::Env::new();

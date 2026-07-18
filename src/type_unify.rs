@@ -770,16 +770,14 @@ async fn improve_functional_dependency_inner(
             // Check for resolver or fall back to general MPTC instance lookup
             if let Some(ref resolver_name) = class_decl.resolver.clone() {
                 // Resolver-based path: construct a TypeStageApp and normalize it.
-                // Normalization calls evaluate_resolver() which invokes the type-stage function.
+                // Normalization looks up fn_name in the type-stage scope chain and invokes it.
                 let det_arg_types: Vec<Type> = det_types.iter().map(|(_, ty)| ty.clone()).collect();
                 let stage_app = Type::TypeStageApp {
                     fn_name: resolver_name.clone(),
                     args: det_arg_types,
                 };
-                let mut norm_ctx = crate::type_normalize::NormCtxt::new(
-                    state.type_stage_env.clone(),
-                    state.eval_ctx.clone(),
-                );
+                let mut norm_ctx = crate::type_normalize::NormCtxt::new(state.eval_ctx.clone());
+                norm_ctx.type_stage_map = state.type_stage_map.clone();
                 let resolved =
                     crate::type_normalize::normalize(&stage_app, &state.type_vars, &mut norm_ctx)
                         .await;
@@ -2128,8 +2126,8 @@ pub async fn unify(
     // allow_eval is set to false inside unify to prevent runtime errors from propagating
     // into type inference (e.g., a failing resolver should produce a stuck TypeStageApp, not
     // a type error).
-    let mut norm_ctx =
-        crate::type_normalize::NormCtxt::new(state.type_stage_env.clone(), state.eval_ctx.clone());
+    let mut norm_ctx = crate::type_normalize::NormCtxt::new(state.eval_ctx.clone());
+    norm_ctx.type_stage_map = state.type_stage_map.clone();
     norm_ctx.allow_eval = false;
     let a = crate::type_normalize::normalize(&a_substituted, &state.type_vars, &mut norm_ctx).await;
     let b = crate::type_normalize::normalize(&b_substituted, &state.type_vars, &mut norm_ctx).await;
@@ -3240,8 +3238,8 @@ pub async fn constrain(
     let sup_substituted = state.apply_with_visited(sup, &mut visited_types, &mut visited_rows);
 
     // Normalize both types.
-    let mut norm_ctx =
-        crate::type_normalize::NormCtxt::new(state.type_stage_env.clone(), state.eval_ctx.clone());
+    let mut norm_ctx = crate::type_normalize::NormCtxt::new(state.eval_ctx.clone());
+    norm_ctx.type_stage_map = state.type_stage_map.clone();
     norm_ctx.allow_eval = false;
     let sub =
         crate::type_normalize::normalize(&sub_substituted, &state.type_vars, &mut norm_ctx).await;
@@ -3400,10 +3398,8 @@ pub async fn process_deferred_equalities(
         }
         // One NormCtxt per outer iteration: the resolver cache is shared across all
         // equality pairs in this pass, amortizing the HashMap allocation cost.
-        let mut norm_ctx = crate::type_normalize::NormCtxt::new(
-            state.type_stage_env.clone(),
-            state.eval_ctx.clone(),
-        );
+        let mut norm_ctx = crate::type_normalize::NormCtxt::new(state.eval_ctx.clone());
+        norm_ctx.type_stage_map = state.type_stage_map.clone();
         for (a, b) in deferred {
             // Normalize both sides
             let a_norm =

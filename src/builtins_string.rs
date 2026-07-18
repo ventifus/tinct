@@ -947,8 +947,7 @@ pub(crate) fn builtin_str_map_chars(
                         positional: &pos_args,
                         named: None,
                         default_env_id: *closure_env_id,
-                        call_span: call_span.clone(),
-                        origin: Some(Arc::from("str-map-chars")),
+                        call_span: call_span.clone().with_name(Arc::from("str-map-chars")),
                         ctx: &ctx,
                     })
                     .await?

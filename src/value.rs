@@ -1227,7 +1227,6 @@ pub enum ThunkState {
 pub struct Thunk {
     inner: ThunkInner,
     pub(crate) span: Span,
-    pub(crate) origin: Option<Arc<str>>,
     pub(crate) create_parent: Option<u64>,
     pub(crate) create_time_us: u64,
 }
@@ -1278,7 +1277,6 @@ impl Thunk {
                 notify: Arc::new(tokio::sync::Notify::new()),
             },
             span,
-            origin: None,
             create_parent: None,
             create_time_us: 0,
         }
@@ -1302,7 +1300,6 @@ impl Thunk {
                 notify: Arc::new(tokio::sync::Notify::new()),
             },
             span,
-            origin: None,
             create_parent,
             create_time_us,
         }
@@ -1318,7 +1315,6 @@ impl Thunk {
         Self {
             inner,
             span,
-            origin: None,
             create_parent: None,
             create_time_us: 0,
         }
@@ -1350,7 +1346,6 @@ impl Thunk {
                 notify: Arc::new(tokio::sync::Notify::new()),
             },
             span,
-            origin: None,
             create_parent,
             create_time_us,
         }
@@ -1374,7 +1369,6 @@ impl Thunk {
                 notify: Arc::new(tokio::sync::Notify::new()),
             },
             span,
-            origin: None,
             create_parent,
             create_time_us,
         }
@@ -1385,7 +1379,6 @@ impl Thunk {
         args: Vec<ThunkId>,
         named: Option<IndexMap<String, ThunkId>>,
         span: Span,
-        origin: Option<Arc<str>>,
         caller_env_id: u32,
         ctx: Arc<crate::eval::EvalContext>,
     ) -> Self {
@@ -1407,13 +1400,11 @@ impl Thunk {
                 notify: Arc::new(tokio::sync::Notify::new()),
             },
             span,
-            origin,
             create_parent,
             create_time_us,
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn fn_call(
         func: ThunkId,
         args: Vec<ThunkId>,
@@ -1421,7 +1412,6 @@ impl Thunk {
         call_span: Span,
         caller_env_id: u32,
         span: Span,
-        origin: Option<Arc<str>>,
         ctx: Arc<crate::eval::EvalContext>,
         original_call: Arc<Spanned<CoreExpr>>,
     ) -> Self {
@@ -1449,7 +1439,6 @@ impl Thunk {
                 notify: Arc::new(tokio::sync::Notify::new()),
             },
             span,
-            origin,
             create_parent,
             create_time_us,
         }
@@ -1479,17 +1468,10 @@ impl Thunk {
                 result: tokio::sync::OnceCell::new(),
                 notify: Arc::new(tokio::sync::Notify::new()),
             },
-            span: guard_span,
-            origin: Some(Arc::from("type guard")),
+            span: guard_span.with_name(Arc::from("type guard")),
             create_parent: None,
             create_time_us: 0,
         }
-    }
-
-    /// Set the origin label for this thunk (used in stack traces).
-    pub fn with_origin(mut self, label: Arc<str>) -> Self {
-        self.origin = Some(label);
-        self
     }
 
     /// Return the source span where this thunk was created.
@@ -1650,7 +1632,6 @@ impl Thunk {
                 notify: Arc::new(tokio::sync::Notify::new()),
             },
             span: self.span.clone(),
-            origin: self.origin.clone(),
             create_parent: self.create_parent,
             create_time_us: self.create_time_us,
         }))
@@ -1747,8 +1728,8 @@ impl fmt::Debug for Thunk {
         }
 
         s.field("span", &self.span);
-        if let Some(ref label) = self.origin {
-            s.field("origin", label);
+        if let Some(ref name) = self.span.name {
+            s.field("name", name);
         }
         s.finish()
     }
