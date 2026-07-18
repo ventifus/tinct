@@ -2468,6 +2468,21 @@ pub(crate) fn builtin_typecheck_doc(
                 HashableValue::Str("notes".into()),
                 alloc(Value::Dict(notes_dict)),
             );
+            // call-stack, macro-expand, blame: empty dicts per the diagnostic dict protocol.
+            // loader.llt and test-loader.llt always access these keys; missing keys crash with
+            // "key not found: call-stack".
+            w.insert(
+                HashableValue::Str("call-stack".into()),
+                alloc(Value::Dict(IndexMap::new())),
+            );
+            w.insert(
+                HashableValue::Str("macro-expand".into()),
+                alloc(Value::Dict(IndexMap::new())),
+            );
+            w.insert(
+                HashableValue::Str("blame".into()),
+                alloc(Value::Dict(IndexMap::new())),
+            );
             warnings_dict.insert(HashableValue::Int(i as i64), alloc(Value::Dict(w)));
         }
         let mut result: IndexMap<HashableValue, ThunkId> = IndexMap::new();
