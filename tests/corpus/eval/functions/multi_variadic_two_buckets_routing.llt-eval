@@ -1,0 +1,8 @@
+# Multi-variadic: ...ss@String ...ns@Int routes each arg to first matching bucket.
+# "a" → ss, 1 → ns, "b" → ss, 2 → ns (declaration order = match priority).
+# ...rest fallback prevents exhaustiveness warning. head ns = 1 (first int arg).
+[call [fn [let]
+  [f: [fn [let ...ss@String ...ns@Int ...rest] [head ns]]]
+  [f "a" 1 "b" 2]]]
+=== out
+Int(1)

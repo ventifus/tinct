@@ -457,11 +457,18 @@ impl PartialEq for Type {
                     required_count: _,
                 },
             ) => {
+                // Compare by type only (not param/bucket names) for structural equivalence.
+                // Fn[...ss@Str] and Fn[...xs@Str] are structurally equal — different names, same types.
                 p1.len() == p2.len()
                     && p1.iter().zip(p2).all(|((_, t1), (_, t2))| t1 == t2)
                     && r1 == r2
-                    && tv1 == tv2
-                    && rest1 == rest2
+                    && tv1.len() == tv2.len()
+                    && tv1.iter().zip(tv2).all(|((_, t1), (_, t2))| t1 == t2)
+                    && match (rest1, rest2) {
+                        (Some(r1b), Some(r2b)) => r1b.1 == r2b.1,
+                        (None, None) => true,
+                        _ => false,
+                    }
             }
             (Type::Proxy, Type::Proxy) => true,
             (Type::TypeVar(n1, _), Type::TypeVar(n2, _)) => n1 == n2,
@@ -564,11 +571,16 @@ impl std::hash::Hash for Type {
                 ret,
                 required_count: _,
             } => {
+                // Hash by type only (not param/bucket names), consistent with PartialEq.
                 for (_, ty) in params {
                     ty.hash(state);
                 }
-                typed_variadics.hash(state);
-                rest.hash(state);
+                for (_, ty) in typed_variadics {
+                    ty.hash(state);
+                }
+                if let Some(r) = rest {
+                    r.1.hash(state);
+                }
                 ret.hash(state);
             }
             Type::TypeVar(name, _) => name.hash(state), // Ignore level
@@ -1058,10 +1070,23 @@ impl Type {
                 // non-variadic function will fail at runtime, regardless of Unknown positions.
                 let sub_is_variadic = !sub_tv.is_empty() || sub_rest.is_some();
                 let sup_is_variadic_check = !sup_tv.is_empty() || sup_rest.is_some();
+                // typed_variadics and rest are recursed into rather than compared by value.
+                let tv_subtype = sub_tv.len() == sup_tv.len()
+                    && sub_tv
+                        .iter()
+                        .zip(sup_tv.iter())
+                        .all(|((_, sub_t), (_, sup_t))| {
+                            Self::is_consistent_subtype(sup_t, sub_t) // contravariant
+                        });
+                let rest_subtype = match (sub_rest, sup_rest) {
+                    (Some(sr), Some(pr)) => Self::is_consistent_subtype(&pr.1, &sr.1), // contravariant
+                    (None, None) => true,
+                    _ => false,
+                };
                 sub_p.len() == sup_p.len()
                     && sub_is_variadic == sup_is_variadic_check
-                    && sub_tv == sup_tv
-                    && sub_rest == sup_rest
+                    && tv_subtype
+                    && rest_subtype
                     && sub_p.iter().zip(sup_p.iter()).all(
                         |((_sub_name, sub_ty), (_sup_name, sup_ty))| {
                             Self::is_consistent_subtype(sup_ty, sub_ty) // contravariant
@@ -1281,10 +1306,22 @@ impl Type {
                     return true;
                 }
 
-                // Normal structural consistency for concrete function types
+                // Normal structural consistency for concrete function types.
+                // typed_variadics and rest are recursed into rather than compared by value
+                // (value equality would reject valid consistent pairs like (T, Unknown)).
+                let tv_consistent = tv1.len() == tv2.len()
+                    && tv1
+                        .iter()
+                        .zip(tv2.iter())
+                        .all(|((_, t1), (_, t2))| Type::is_consistent(t1, t2));
+                let rest_consistent = match (rest1, rest2) {
+                    (Some(r1), Some(r2)) => Type::is_consistent(&r1.1, &r2.1),
+                    (None, None) => true,
+                    _ => false,
+                };
                 a_is_variadic == b_is_variadic
-                    && tv1 == tv2
-                    && rest1 == rest2
+                    && tv_consistent
+                    && rest_consistent
                     && p1.len() == p2.len()
                     && p1
                         .iter()
@@ -1506,12 +1543,18 @@ impl Type {
             Type::Function {
                 params,
                 ret,
-                typed_variadics: _,
-                rest: _,
+                typed_variadics,
+                rest,
                 required_count: _,
             } => {
                 for (_name, p_ty) in params {
                     p_ty.collect_type_vars(vars);
+                }
+                for (_, tv_ty) in typed_variadics {
+                    tv_ty.collect_type_vars(vars);
+                }
+                if let Some(r) = rest {
+                    r.1.collect_type_vars(vars);
                 }
                 ret.collect_type_vars(vars);
             }
@@ -1565,11 +1608,15 @@ impl Type {
             Type::Function {
                 params,
                 ret,
-                typed_variadics: _,
-                rest: _,
+                typed_variadics,
+                rest,
                 required_count: _,
             } => {
                 params.iter().any(|(_name, p_ty)| p_ty.has_inference_vars())
+                    || typed_variadics
+                        .iter()
+                        .any(|(_, tv_ty)| tv_ty.has_inference_vars())
+                    || rest.as_ref().is_some_and(|r| r.1.has_inference_vars())
                     || ret.has_inference_vars()
             }
             Type::Union(members) => members.iter().any(|m| m.has_inference_vars()),
@@ -1612,11 +1659,15 @@ impl Type {
             Type::Function {
                 params,
                 ret,
-                typed_variadics: _,
-                rest: _,
+                typed_variadics,
+                rest,
                 required_count: _,
             } => {
                 params.iter().any(|(_name, p_ty)| p_ty.has_type_stage_app())
+                    || typed_variadics
+                        .iter()
+                        .any(|(_, tv_ty)| tv_ty.has_type_stage_app())
+                    || rest.as_ref().is_some_and(|r| r.1.has_type_stage_app())
                     || ret.has_type_stage_app()
             }
             Type::Union(members) => members.iter().any(|m| m.has_type_stage_app()),
@@ -1656,12 +1707,18 @@ impl Type {
             Type::Function {
                 params,
                 ret,
-                typed_variadics: _,
-                rest: _,
+                typed_variadics,
+                rest,
                 required_count: _,
             } => {
                 for (_name, p_ty) in params {
                     p_ty.collect_all_vars(type_vars);
+                }
+                for (_, tv_ty) in typed_variadics {
+                    tv_ty.collect_all_vars(type_vars);
+                }
+                if let Some(r) = rest {
+                    r.1.collect_all_vars(type_vars);
                 }
                 ret.collect_all_vars(type_vars);
             }
@@ -1741,13 +1798,19 @@ impl Type {
             Type::Function {
                 params,
                 ret,
-                typed_variadics: _,
-                rest: _,
+                typed_variadics,
+                rest,
                 required_count: _,
             } => {
                 let mut found = false;
                 for (_name, p_ty) in params {
                     found |= p_ty.collect_all_vars_check_occurs(occurs_name, type_vars);
+                }
+                for (_, tv_ty) in typed_variadics {
+                    found |= tv_ty.collect_all_vars_check_occurs(occurs_name, type_vars);
+                }
+                if let Some(r) = rest {
+                    found |= r.1.collect_all_vars_check_occurs(occurs_name, type_vars);
                 }
                 found |= ret.collect_all_vars_check_occurs(occurs_name, type_vars);
                 found
@@ -1831,12 +1894,18 @@ impl Type {
             Type::Function {
                 params,
                 ret,
-                typed_variadics: _,
-                rest: _,
+                typed_variadics,
+                rest,
                 required_count: _,
             } => {
                 for (_name, p_ty) in params {
                     p_ty.collect_all_vars_vec(type_vars);
+                }
+                for (_, tv_ty) in typed_variadics {
+                    tv_ty.collect_all_vars_vec(type_vars);
+                }
+                if let Some(r) = rest {
+                    r.1.collect_all_vars_vec(type_vars);
                 }
                 ret.collect_all_vars_vec(type_vars);
             }
@@ -1932,12 +2001,18 @@ impl Type {
             Type::Function {
                 params,
                 ret,
-                typed_variadics: _,
-                rest: _,
+                typed_variadics,
+                rest,
                 required_count: _,
             } => {
                 for (_name, p_ty) in params {
                     p_ty.collect_operator_names(operator_names);
+                }
+                for (_, tv_ty) in typed_variadics {
+                    tv_ty.collect_operator_names(operator_names);
+                }
+                if let Some(r) = rest {
+                    r.1.collect_operator_names(operator_names);
                 }
                 ret.collect_operator_names(operator_names);
             }
@@ -2582,9 +2657,21 @@ pub fn check_kind_wellformed(
             }
             Ok(())
         }
-        Type::Function { params, ret, .. } => {
+        Type::Function {
+            params,
+            ret,
+            typed_variadics,
+            rest,
+            ..
+        } => {
             for (_name, param_ty) in params {
                 check_kind_wellformed(param_ty, kind_env, span.clone())?;
+            }
+            for (_, tv_ty) in typed_variadics {
+                check_kind_wellformed(tv_ty, kind_env, span.clone())?;
+            }
+            if let Some(r) = rest {
+                check_kind_wellformed(&r.1, kind_env, span.clone())?;
             }
             check_kind_wellformed(ret, kind_env, span)
         }

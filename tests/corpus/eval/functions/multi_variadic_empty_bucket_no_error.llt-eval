@@ -1,0 +1,8 @@
+# Typed variadic bucket is empty when no args match its type.
+# All args are Int → route to ...ns@Int bucket; ...ss@String gets no args (empty Seq = Dict({})).
+# Returns head of ns (the Int bucket, which is non-empty). No error from empty ss bucket.
+[call [fn [let]
+  [f: [fn [let ...ss@String ...ns@Int ...rest] [head ns]]]
+  [f 10 20 30]]]
+=== out
+Int(10)

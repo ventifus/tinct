@@ -1,0 +1,8 @@
+# Named args are never type-discriminated into typed buckets — they always go to rest.
+# The ...ns@Int bucket gets positional Int args; the rest bucket gets the named arg.
+# This verifies the caller-intent invariant: named args are not routed by type.
+[call [fn [let]
+  [f: [fn [let ...ns@Int ...rest] [builtin-dict-length rest]]]
+  [f 1 2 3 extra: "hello"]]]
+=== out
+Int(1)

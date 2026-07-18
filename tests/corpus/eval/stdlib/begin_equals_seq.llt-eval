@@ -1,0 +1,7 @@
+# begin and >> produce identical results (begin is an alias for >>).
+[call [fn [let]
+  [r1: [>> 1 2 3]]
+  [r2: [begin 1 2 3]]
+  [= r1 r2]]]
+=== out
+Int(1)

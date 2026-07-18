@@ -2,9 +2,10 @@
 
 use std::sync::Arc;
 
-use crate::ast::{CoreExpr, CoreNamedArg, Param, Span, Spanned, SurfaceNode};
+use crate::ast::{Annotation, CoreExpr, CoreNamedArg, Param, Span, Spanned, SurfaceNode};
 use crate::error::{ArityBound, EvalError, EvalResult};
-use crate::value::{Thunk, ThunkId};
+use crate::type_def::Type;
+use crate::value::{HashableValue, Thunk, ThunkId, Value};
 use indexmap::IndexMap;
 
 // Import eval function and context from eval module
@@ -12,7 +13,7 @@ use indexmap::IndexMap;
 // eval.rs imports invoke_function/CallContext from this module, while
 // this module imports eval/EvalContext from eval.rs. Neither module's
 // initialization depends on the other.
-use crate::eval::EvalContext;
+use crate::eval::{materialize, value_matches_type, EvalContext};
 use crate::eval_core::eval_core_expr;
 
 const DEFAULT_ANNOTATION_KEY: &str = "default";
@@ -196,9 +197,10 @@ pub(crate) async fn bind_args_thunks(
     ctx: &Arc<EvalContext>,
     call_span: &Span,
 ) -> EvalResult<u32> {
-    // BIND-SPLIT: Separate the variadic param (if any) from regular params
-    let (regular_params, variadic_param) = split_variadic(params);
+    // BIND-SPLIT: Partition params into fixed, typed-variadic buckets, and untyped rest.
+    let (regular_params, typed_variadic_params, rest_param) = split_params(params);
     let max_positional = regular_params.len();
+    let has_any_variadic = !typed_variadic_params.is_empty() || rest_param.is_some();
 
     // BIND-ARITY: Per-parameter coverage check (Kotlin model)
     // Each required parameter must be reachable via positional index OR named argument
@@ -219,8 +221,8 @@ pub(crate) async fn bind_args_thunks(
         }
     }
 
-    // Without variadic: positional args must not exceed max_positional
-    if variadic_param.is_none() && positional.len() > max_positional {
+    // Without any variadic: positional args must not exceed max_positional
+    if !has_any_variadic && positional.len() > max_positional {
         // Use Range when there are optional params, Exact when all params are required
         let expected = if required_count < max_positional {
             ArityBound::Range(required_count, max_positional)
@@ -260,8 +262,8 @@ pub(crate) async fn bind_args_thunks(
                     // Valid: named arg targets an existing param that wasn't positionally bound.
                 }
                 None => {
-                    if variadic_param.is_some() {
-                        // Unmatched named arg goes into variadic.
+                    if has_any_variadic {
+                        // Unmatched named arg goes into the rest bucket (see BIND-VARIADIC below).
                     } else {
                         // No variadic param: raise E022
                         let valid_params: Vec<String> =
@@ -350,54 +352,240 @@ pub(crate) async fn bind_args_thunks(
         // else: required param with no arg — already caught by arity check.
     }
 
-    // BIND-VARIADIC: Build the variadic dict from remaining positionals and unmatched named.
-    // The variadic param receives a Dict with integer keys for extra positionals and
-    // string keys for named args that didn't match any regular param.
-    if let Some(_variadic) = variadic_param {
-        let mut variadic_dict: IndexMap<crate::value::HashableValue, ThunkId> = IndexMap::new();
-
-        // Remaining positional args beyond regular_params.len()
+    // BIND-VARIADIC: Route excess positional args and unmatched named args into buckets.
+    //
+    // When there are typed variadic params (`...xs@String ...ns@Int ...rest`):
+    //   - Each excess positional arg is materialized to inspect its runtime type.
+    //   - It is placed in the first typed bucket whose type it matches (declaration order).
+    //   - If no typed bucket matches, it falls into the untyped rest bucket.
+    //   - If there is no rest bucket and no typed bucket matches, raise an arity error.
+    //   Materializing here is a necessary strictness point: the type of the value determines
+    //   which bucket it routes into. Analogous to TypeAssert, which also forces evaluation
+    //   at the annotation site.
+    //
+    // When there are no typed buckets (unannotated `...args` only), no materialization
+    // occurs: all excess positionals and unmatched named args flow into rest Dict as-is.
+    // Materialization is only necessary to inspect the value's runtime type for bucket dispatch.
+    //
+    // Named args always go into the rest bucket (keyed by their string name). They are not
+    // type-discriminated into typed buckets because their names carry caller intent.
+    //
+    // Typed buckets are bound as lazy Seq cons-lists (Value::Seq { head, tail }).
+    // The rest bucket is bound as Dict{int: positional, string: named}.
+    if has_any_variadic {
         let extra_positionals = &positional[max_positional.min(positional.len())..];
-        for (j, &tid) in extra_positionals.iter().enumerate() {
-            variadic_dict.insert(crate::value::HashableValue::Int(j as i64), tid);
+
+        // Resolve typed bucket annotations to runtime Types for dispatch.
+        // Empty when there are no typed variadics (single unannotated rest case).
+        let bucket_types: Vec<Type> = typed_variadic_params
+            .iter()
+            .map(|p| {
+                annotation_to_runtime_type(
+                    &p.annotation
+                        .as_ref()
+                        .expect("typed_variadic_params always have annotations")
+                        .node,
+                )
+            })
+            .collect();
+
+        // Accumulate ThunkIds for each typed bucket (in declaration order).
+        let mut typed_buckets: Vec<Vec<ThunkId>> = vec![Vec::new(); typed_variadic_params.len()];
+        // Accumulate rest bucket: integer-keyed positionals + string-keyed named.
+        let mut rest_dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+        let mut rest_int_key: i64 = 0;
+
+        // BIND-VARIADIC: Route each excess positional arg to its bucket.
+        //
+        // Materialization is only needed when there are typed buckets to route into.
+        // When bucket_types is empty (unannotated rest-only case), args flow directly
+        // into rest_dict without forcing — preserving lazy evaluation.
+        for &tid in extra_positionals.iter() {
+            let mut routed = false;
+
+            if !bucket_types.is_empty() {
+                // Materialize to inspect the runtime type for bucket dispatch.
+                let arg_thunk = ctx.get_thunk(tid);
+                let value = materialize(&arg_thunk, Some(call_span), ctx).await?;
+
+                // Try each typed bucket in declaration order — first match wins.
+                for (bucket_idx, bucket_ty) in bucket_types.iter().enumerate() {
+                    if value_matches_type(&value, bucket_ty, ctx) {
+                        typed_buckets[bucket_idx].push(tid);
+                        routed = true;
+                        break;
+                    }
+                }
+            }
+
+            if !routed {
+                if rest_param.is_some() {
+                    rest_dict.insert(HashableValue::Int(rest_int_key), tid);
+                    rest_int_key += 1;
+                } else {
+                    // No rest bucket and no typed bucket matched: arg cannot be accepted.
+                    let expected = ArityBound::Exact(max_positional);
+                    return Err(EvalError::arity_mismatch_bound(
+                        expected,
+                        positional.len(),
+                        call_span.clone(),
+                    )
+                    .into());
+                }
+            }
         }
 
-        // Unmatched named args (excluding system-injected '∷' names)
+        // Route unmatched named args into the rest bucket (not type-discriminated).
         if let Some(named_args) = named {
             for (name, &tid) in named_args {
                 if name.contains('∷') {
                     continue;
                 }
                 if regular_params.iter().any(|p| &p.name == name) {
-                    continue; // already bound as a regular param
+                    continue;
                 }
-                variadic_dict.insert(
-                    crate::value::HashableValue::Str(std::rc::Rc::from(name.as_str())),
-                    tid,
-                );
+                rest_dict.insert(HashableValue::Str(std::rc::Rc::from(name.as_str())), tid);
             }
         }
 
-        let variadic_slot = regular_params.len() as u32;
-        let variadic_thunk = Arc::new(Thunk::value(
-            crate::value::Value::Dict(variadic_dict),
-            call_span.clone(),
-        ));
-        let variadic_id = ctx.alloc_thunk(call_env_id.0, variadic_thunk);
-        ctx.scope_arena
-            .borrow_mut()
-            .fill_slot(call_env_id, variadic_slot, variadic_id);
+        // BIND-RESULT: Bind each typed variadic bucket as a lazy Seq cons-list.
+        //
+        // Value::Seq { head: ThunkId, tail: ThunkId } is the LLT cons-cell format.
+        // An empty bucket binds to the Seq nil sentinel: Value::Dict({}) — the same
+        // empty dict that terminates all Seq tails.
+        //
+        // Typed variadic param slots follow fixed params in declaration order:
+        //   slot = regular_params.len() + bucket_index
+        for (bucket_idx, bucket_args) in typed_buckets.into_iter().enumerate() {
+            let slot = (regular_params.len() + bucket_idx) as u32;
+            let seq_thunk = build_seq(bucket_args.as_slice(), ctx, call_span, call_env_id.0);
+            let seq_id = ctx.alloc_thunk(call_env_id.0, seq_thunk);
+            ctx.scope_arena
+                .borrow_mut()
+                .fill_slot(call_env_id, slot, seq_id);
+        }
+
+        // BIND-RESULT: Bind the untyped rest bucket as a Dict (if present).
+        // rest param slot follows all typed variadic slots:
+        //   slot = regular_params.len() + typed_variadic_params.len()
+        if rest_param.is_some() {
+            let rest_slot = (regular_params.len() + typed_variadic_params.len()) as u32;
+            let rest_thunk = Arc::new(Thunk::value(Value::Dict(rest_dict), call_span.clone()));
+            let rest_id = ctx.alloc_thunk(call_env_id.0, rest_thunk);
+            ctx.scope_arena
+                .borrow_mut()
+                .fill_slot(call_env_id, rest_slot, rest_id);
+        }
     }
 
     Ok(call_env_id.0)
 }
 
-/// Split params into (regular, optional variadic).
-pub(crate) fn split_variadic(params: &[Param]) -> (&[Param], Option<&Param>) {
-    match params.last() {
-        Some(p) if p.variadic => (&params[..params.len() - 1], Some(p)),
-        _ => (params, None),
+/// Split params into (fixed_params, typed_variadic_params, untyped_rest_param).
+///
+/// - `fixed_params`: params where `!variadic`, all of which must appear before any variadic
+/// - `typed_variadic_params`: params where `variadic && annotation.is_some()` (in declaration order)
+/// - `untyped_rest_param`: the single param where `variadic && annotation.is_none()`
+///
+/// Invariant: fixed params must be declared before any variadic params. The calling convention
+/// does not support interleaved fixed/variadic params. Using the FIRST variadic as the boundary
+/// (not the last non-variadic) ensures a non-variadic param declared after any variadic does
+/// not silently misclassify the variadic as fixed — instead the debug_assert fires.
+pub(crate) fn split_params(params: &[Param]) -> (&[Param], Vec<&Param>, Option<&Param>) {
+    // Find the boundary: index of the FIRST variadic param.
+    // All params before this index are fixed; all after are variadic.
+    let fixed_end = params
+        .iter()
+        .position(|p| p.variadic)
+        .unwrap_or(params.len());
+    let fixed_params = &params[..fixed_end];
+
+    let mut typed_variadics: Vec<&Param> = Vec::new();
+    let mut rest: Option<&Param> = None;
+    for p in &params[fixed_end..] {
+        debug_assert!(
+            p.variadic,
+            "non-variadic param declared after a variadic param"
+        );
+        if p.annotation.is_some() {
+            debug_assert!(
+                rest.is_none(),
+                "typed variadic `{}` declared after untyped rest `{}` — ordering violation",
+                p.name,
+                rest.map_or("?", |r| r.name.as_str())
+            );
+            typed_variadics.push(p);
+        } else {
+            rest = Some(p);
+        }
     }
+
+    (fixed_params, typed_variadics, rest)
+}
+
+/// Convert an `Annotation` to a `Type` for runtime type discrimination.
+///
+/// This is the evaluator-local equivalent of `annotation_name_to_type` in lower.rs.
+/// Only `Simple` annotations produce concrete types; complex annotations (PropertyDict,
+/// Annotated) fall back to `Type::Unknown` (accept-all at runtime).
+///
+/// Must stay in sync with the primitive name mapping in `eval.rs` (TypeAssert nominal
+/// fallback path, lines ~1683) and `annotation_name_to_type` in `lower.rs`.
+fn annotation_to_runtime_type(ann: &Annotation) -> Type {
+    match ann {
+        Annotation::Simple(name) => match name.as_str() {
+            "Int" | "Integer" => Type::Int,
+            "Float" => Type::Float,
+            "String" | "Str" => Type::Str,
+            "Bytes" => Type::Bytes,
+            // Non-primitive named types (TyCon) cannot be reliably resolved at the evaluator
+            // level without the full tycon_env (which may be None during bootstrapping or in
+            // --no-typecheck paths). Fall back to Unknown (accept-all) so that macro functions
+            // like `>>` and `do` which annotate args with @Expr (a nominal TyCon) don't fail
+            // to route args at runtime when Expr is not yet registered in the tycon_env.
+            // T-1691 tracks resolving compound annotations fully.
+            _ => Type::Unknown,
+        },
+        // PropertyDict (@[type: T  default: ...]) and Annotated (@[Seq Int]) are not
+        // resolved at the evaluator level without a full type-checker pass. Fall back to
+        // Unknown so all values match (gradual typing escape hatch).
+        Annotation::PropertyDict(_) | Annotation::Annotated(_, _) => Type::Unknown,
+    }
+}
+
+/// Build a lazy Seq cons-list from a slice of ThunkIds.
+///
+/// `Value::Seq { head: ThunkId, tail: ThunkId }` is the LLT cons-cell format.
+/// The tail of the last element is the Seq nil sentinel: `Value::Dict({})` — the same
+/// empty dict that all Seq tails terminate with, consistent with `builtin_seq_prim.rs`
+/// (head/tail raise on empty dict) and `empty?` in prelude (which checks `[seq? xs]`).
+///
+/// Elements are built right-to-left (fold from the tail). The resulting thunk is
+/// already materialized (wraps a concrete Value::Seq or Value::Dict), so no additional
+/// forcing is needed when the caller fills the param slot.
+///
+/// The `scope_env_id` parameter is used for allocating anonymous thunk slots in the
+/// scope arena for the head and tail of each cons cell.
+fn build_seq(
+    args: &[ThunkId],
+    ctx: &Arc<EvalContext>,
+    span: &Span,
+    scope_env_id: u32,
+) -> Arc<Thunk> {
+    // The nil sentinel is an empty Dict — the universal Seq terminator.
+    let nil = Arc::new(Thunk::value(Value::Dict(IndexMap::new()), span.clone()));
+
+    // Fold right-to-left to build: cons(args[0], cons(args[1], ... cons(args[n-1], nil)))
+    args.iter().rev().fold(nil, |tail_thunk, &head_tid| {
+        let tail_id = ctx.alloc_thunk(scope_env_id, tail_thunk);
+        Arc::new(Thunk::value(
+            Value::Seq {
+                head: head_tid,
+                tail: tail_id,
+            },
+            span.clone(),
+        ))
+    })
 }
 
 /// Extract the default value node from a param's annotation, if present.
@@ -462,5 +650,172 @@ mod tests {
         };
         let label = func_label_core(&expr);
         assert_eq!(label, None);
+    }
+
+    // Helpers for building test Param values.
+    fn fixed_param(name: &str) -> Param {
+        Param {
+            name: name.to_string(),
+            annotation: None,
+            variadic: false,
+        }
+    }
+
+    fn typed_variadic_param(name: &str, type_name: &str) -> Param {
+        Param {
+            name: name.to_string(),
+            annotation: Some(sp(Annotation::Simple(type_name.to_string()))),
+            variadic: true,
+        }
+    }
+
+    fn rest_param(name: &str) -> Param {
+        Param {
+            name: name.to_string(),
+            annotation: None,
+            variadic: true,
+        }
+    }
+
+    // --- split_params tests ---
+
+    #[test]
+    fn test_split_params_empty() {
+        let params: &[Param] = &[];
+        let (fixed, typed, rest) = split_params(params);
+        assert!(fixed.is_empty());
+        assert!(typed.is_empty());
+        assert!(rest.is_none());
+    }
+
+    #[test]
+    fn test_split_params_only_fixed() {
+        let params = vec![fixed_param("x"), fixed_param("y")];
+        let (fixed, typed, rest) = split_params(&params);
+        assert_eq!(fixed.len(), 2);
+        assert!(typed.is_empty());
+        assert!(rest.is_none());
+    }
+
+    #[test]
+    fn test_split_params_single_unannotated_variadic() {
+        // Common case: `[fn [let x ...args] ...]`
+        let params = vec![fixed_param("x"), rest_param("args")];
+        let (fixed, typed, rest) = split_params(&params);
+        assert_eq!(fixed.len(), 1);
+        assert!(typed.is_empty());
+        assert!(rest.is_some());
+        assert_eq!(rest.unwrap().name, "args");
+    }
+
+    #[test]
+    fn test_split_params_typed_and_rest() {
+        // `[fn [let x ...strings@String ...nums@Int ...rest] ...]`
+        let params = vec![
+            fixed_param("x"),
+            typed_variadic_param("strings", "String"),
+            typed_variadic_param("nums", "Int"),
+            rest_param("rest"),
+        ];
+        let (fixed, typed, rest) = split_params(&params);
+        assert_eq!(fixed.len(), 1);
+        assert_eq!(fixed[0].name, "x");
+        assert_eq!(typed.len(), 2);
+        assert_eq!(typed[0].name, "strings");
+        assert_eq!(typed[1].name, "nums");
+        assert!(rest.is_some());
+        assert_eq!(rest.unwrap().name, "rest");
+    }
+
+    #[test]
+    fn test_split_params_only_typed_variadics_no_rest() {
+        // `[fn [let ...strings@String ...nums@Int] ...]`
+        let params = vec![
+            typed_variadic_param("strings", "String"),
+            typed_variadic_param("nums", "Int"),
+        ];
+        let (fixed, typed, rest) = split_params(&params);
+        assert!(fixed.is_empty());
+        assert_eq!(typed.len(), 2);
+        assert!(rest.is_none());
+    }
+
+    #[test]
+    fn test_split_params_all_fixed_then_rest() {
+        // `[fn [let a b c ...rest] ...]`
+        let params = vec![
+            fixed_param("a"),
+            fixed_param("b"),
+            fixed_param("c"),
+            rest_param("rest"),
+        ];
+        let (fixed, typed, rest) = split_params(&params);
+        assert_eq!(fixed.len(), 3);
+        assert!(typed.is_empty());
+        assert_eq!(rest.unwrap().name, "rest");
+    }
+
+    // --- annotation_to_runtime_type tests ---
+
+    #[test]
+    fn test_annotation_to_runtime_type_primitives() {
+        use crate::type_def::Type;
+        assert_eq!(
+            annotation_to_runtime_type(&Annotation::Simple("Int".to_string())),
+            Type::Int
+        );
+        assert_eq!(
+            annotation_to_runtime_type(&Annotation::Simple("Integer".to_string())),
+            Type::Int
+        );
+        assert_eq!(
+            annotation_to_runtime_type(&Annotation::Simple("Float".to_string())),
+            Type::Float
+        );
+        assert_eq!(
+            annotation_to_runtime_type(&Annotation::Simple("Str".to_string())),
+            Type::Str
+        );
+        assert_eq!(
+            annotation_to_runtime_type(&Annotation::Simple("String".to_string())),
+            Type::Str
+        );
+        assert_eq!(
+            annotation_to_runtime_type(&Annotation::Simple("Bytes".to_string())),
+            Type::Bytes
+        );
+    }
+
+    #[test]
+    fn test_annotation_to_runtime_type_named() {
+        use crate::type_def::Type;
+        // Non-primitive named types fall back to Unknown (accept-all) at the evaluator level.
+        // The tycon_env may not be available during bootstrapping, so TyCon lookup is deferred.
+        // T-1691 tracks full resolution of compound/named annotations.
+        assert_eq!(
+            annotation_to_runtime_type(&Annotation::Simple("Bool".to_string())),
+            Type::Unknown
+        );
+        assert_eq!(
+            annotation_to_runtime_type(&Annotation::Simple("MyType".to_string())),
+            Type::Unknown
+        );
+    }
+
+    #[test]
+    fn test_annotation_to_runtime_type_complex_falls_back_to_unknown() {
+        use crate::type_def::Type;
+        // PropertyDict and Annotated fall back to Unknown (accept-all at runtime).
+        assert_eq!(
+            annotation_to_runtime_type(&Annotation::PropertyDict(vec![])),
+            Type::Unknown
+        );
+        assert_eq!(
+            annotation_to_runtime_type(&Annotation::Annotated(
+                "Seq".to_string(),
+                Box::new(Annotation::Simple("Int".to_string()))
+            )),
+            Type::Unknown
+        );
     }
 }

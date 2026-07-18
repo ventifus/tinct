@@ -1,0 +1,13 @@
+# Call-site exhaustiveness: passing an arg that matches no typed bucket (and no rest exists)
+# produces a type warning at the call site. The type checker warns; try catches the runtime error.
+[call [fn [let]
+  [f: [fn [let ...ss@String ...ns@Int] ss]]
+  [r: [try [fn [] [f 3.14]]]]
+  [match r
+    [Result.Error p]: 1
+    [Result.Ok p]:    0]]]
+=== out
+Int(1)
+
+=== warn
+argument type Float does not match any variadic bucket

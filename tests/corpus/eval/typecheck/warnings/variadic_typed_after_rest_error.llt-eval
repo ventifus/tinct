@@ -1,0 +1,8 @@
+# Type warning: typed variadic declared after untyped rest (slot-ordering violation).
+# ...rest must be last; typed variadics must appear before the untyped fallback.
+[f: [fn [let ...rest ...ns@Foo] rest]]
+=== out
+Dict({"f": Function(rest, ns)})
+
+=== warn
+typed variadic `...ns` declared after untyped rest parameter — typed variadics must precede the untyped fallback `...rest`

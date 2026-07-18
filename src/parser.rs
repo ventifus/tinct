@@ -8391,7 +8391,10 @@ mod tests {
             "[fn [let ...args x] $x]",
             test_file("[fn [let ...args x] $x]"),
         );
-        assert!(result.is_ok(), "parser should accept variadic in non-last position");
+        assert!(
+            result.is_ok(),
+            "parser should accept variadic in non-last position"
+        );
     }
 
     #[test]

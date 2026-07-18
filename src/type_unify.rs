@@ -1697,13 +1697,19 @@ fn lower_levels_check_occurs(
         Type::Function {
             params,
             ret,
-            typed_variadics: _,
-            rest: _,
+            typed_variadics,
+            rest,
             required_count: _,
         } => {
             let mut found = false;
             for (_name, p_ty) in params {
                 found |= lower_levels_check_occurs(p_ty, occurs_name, cap_level, state);
+            }
+            for (_, tv_ty) in typed_variadics {
+                found |= lower_levels_check_occurs(tv_ty, occurs_name, cap_level, state);
+            }
+            if let Some(r) = rest {
+                found |= lower_levels_check_occurs(&r.1, occurs_name, cap_level, state);
             }
             found |= lower_levels_check_occurs(ret, occurs_name, cap_level, state);
             found
@@ -2438,7 +2444,12 @@ pub async fn unify(
                     call_stack: vec![],
                 })));
             }
-            if is_variadic_1 != is_variadic_2 || tv1 != tv2 || rest1 != rest2 {
+            // Structural variadic check: both must be variadic or both non-variadic,
+            // and both must have the same number of typed variadic buckets.
+            // The types within rest/typed_variadics are UNIFIED below, not compared by value —
+            // equality comparison would reject valid letrec SCC unifications where the pre-bound
+            // TypeVar (TypeVar_a) differs from the inferred TypeVar (TypeVar_c).
+            if is_variadic_1 != is_variadic_2 {
                 return Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                     message: format!(
                         "variadic mismatch: {} vs {}",
@@ -2458,6 +2469,18 @@ pub async fn unify(
                     call_stack: vec![],
                 })));
             }
+            if tv1.len() != tv2.len() {
+                return Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
+                    message: format!(
+                        "variadic bucket count mismatch: {} typed bucket(s) vs {} typed bucket(s)",
+                        tv1.len(),
+                        tv2.len()
+                    ),
+                    span,
+                    notes: vec![],
+                    call_stack: vec![],
+                })));
+            }
             // Robinson invariant: sub-terms are passed without explicit apply() because
             // every recursive unify() call re-applies the accumulated substitution at its
             // own entry (via apply_with_visited at the top of this function). Bindings
@@ -2465,6 +2488,27 @@ pub async fn unify(
             // the shared `subst` -- this is correct Robinson (1965) unification.
             for ((_name_a, ty_a), (_name_b, ty_b)) in p1.iter().zip(p2.iter()) {
                 Box::pin(unify(ty_a, ty_b, state, constraints, span.clone())).await?;
+            }
+            // Unify typed variadic bucket types in declaration order.
+            for ((_, ty_a), (_, ty_b)) in tv1.iter().zip(tv2.iter()) {
+                Box::pin(unify(ty_a, ty_b, state, constraints, span.clone())).await?;
+            }
+            // Unify rest types. Structural mismatch (one has rest, other doesn't) is an error —
+            // but this can only happen when is_variadic_1 == is_variadic_2 == true and
+            // tv1.len() == tv2.len() != 0 while one side has rest and the other doesn't.
+            match (rest1, rest2) {
+                (Some(r1b), Some(r2b)) => {
+                    Box::pin(unify(&r1b.1, &r2b.1, state, constraints, span.clone())).await?;
+                }
+                (None, None) => {}
+                _ => {
+                    return Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
+                        message: "variadic rest mismatch: one function has an untyped rest parameter, the other does not".to_string(),
+                        span,
+                        notes: vec![],
+                        call_stack: vec![],
+                    })));
+                }
             }
             Box::pin(unify(r1, r2, state, constraints, span)).await
         }

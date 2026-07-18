@@ -205,7 +205,7 @@ Intermediate dicts are letrec-scoped among themselves but do not appear in the f
 ]
 ```
 
-`begin` (and its alias `>>`) evaluates each expression eagerly in order and returns the last. Unlike intermediate dict bodies (which are lazy), `begin` is an explicit escape from laziness — use it only when side effects must occur regardless of whether the result is consumed. `>>` mirrors Haskell's monadic sequence operator: "evaluate for effect, discard, continue." `begin` is named after the Scheme `begin` special form.
+`>>` (and its alias `begin`) evaluates each expression eagerly in order and returns the last. Unlike intermediate dict bodies (which are lazy), `>>` is an explicit escape from laziness — use it only when side effects must occur regardless of whether the result is consumed. `>>` mirrors Haskell's monadic sequence operator: "evaluate for effect, discard, continue." `begin` is a Scheme-inspired alias for `>>`.
 
 **`_` shorthand** — desugars to a single-argument lambda:
 

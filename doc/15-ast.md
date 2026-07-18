@@ -368,21 +368,20 @@ Duplicate detection applies to explicit keys only. Auto-indexed entries cannot d
 
 ### `fn` Parameter List Structure
 
-The parameter list in `fn` is a `[let ...]` binding declaration containing zero or more binding entries, optionally ending with one variadic parameter (`...name`). Parameters are bare identifiers or annotated bindings:
+The parameter list in `fn` is a `[let ...]` binding declaration containing zero or more binding entries followed by zero or more typed variadic buckets (`...name@Type`) and an optional untyped rest parameter (`...rest`). Parameters are bare identifiers or annotated bindings:
 
 ```tinct
-[fn [let x y] body]                   # valid: two parameters
-[fn [let x@Number y] body]            # valid: x has type annotation
-[fn [let x ...rest] body]             # valid: variadic parameter
-[fn [let ...a ...b] body]             # ERROR: multiple variadics
-[fn [let ...rest x] body]             # ERROR: parameter after variadic
-=== error
-error: multiple variadic parameters
- --> block 4:4:15
-  |
-  4 | [fn [let ...a ...b] body]             # ERROR: multiple variadics
-    |               ^^^
+[fn [let x y] body]                         # valid: two fixed parameters
+[fn [let x@Number y] body]                  # valid: x has type annotation
+[fn [let x ...rest] body]                   # valid: fixed + unannotated rest
+[fn [let ...ns@Int ...ss@String ...rest] body]  # valid: typed buckets + fallback
+[fn [let ...ns@Int ...ss@String] body]      # valid: typed-only (exhaustiveness warning)
 ```
+
+The parser is maximally permissive on variadic ordering — the type checker enforces constraints:
+- **Typed variadics after untyped rest** (`...rest ...ns@Int`) → type error (slot inversion)
+- **Fixed params after variadics** (`...rest x`) → type error (slot inversion)
+- **Typed-only, no fallback** (`...ns@Int ...ss@String` with no `...rest`) → exhaustiveness warning
 
 The formatter always emits `[fn [let x y] body]`.
 

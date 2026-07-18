@@ -94,8 +94,10 @@ param_name = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHA NUMERIC | "_" | "-")* ~ "?"? 
 
 param_annotation = ${ "@" ~ annotation_value }
 
-variadic_param = @{ "..." ~ param_name }
+variadic_param = @{ "..." ~ param_name ~ param_annotation? }
 ```
+
+Typed variadics (`...name@Type`) route each positional arg to the first bucket whose type matches (declaration order = match priority). An optional untyped fallback (`...rest`) catches any unmatched args and must appear last.
 
 **Note:** The `value+` notation indicates that multiple body expressions are allowed. When multiple expressions are provided, they are wrapped in `Expr::Sequential` by the parser — intermediate expressions extend the function's environment, and the final expression is the return value. See `doc/08-evaluation.md` §Laziness Design for `Sequential` semantics.
 
@@ -106,6 +108,7 @@ Examples:
 [fn@Number [x@Number y@Number] [+ x y]]
 [fn@[return: Number  doc: "Sum"] [x@Number  y@[type: Number  default: 0]] [+ x y]]
 [fn [f ...args] [map f args]]
+[fn [f ...ns@Int ...rest] [head ns]]   # typed bucket + unannotated fallback
 ```
 
 ## Function Arguments

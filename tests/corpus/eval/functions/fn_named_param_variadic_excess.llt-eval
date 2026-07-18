@@ -1,7 +1,9 @@
-# C-VARIADIC: excess positional args collected into variadic Seq cons-list
+# C-VARIADIC: excess positional args collected into variadic Dict (integer-keyed).
+# Unannotated ...rest collects excess positionals as Dict{0: T0, 1: T1, ...}.
+# Typed buckets (...x@T) collect into Seq; the unannotated rest collects into Dict.
 [
   f: [fn [let a b ...rest] rest]
   result: [f 1 2 3 4 5]
 ]
 === out
-Dict({"f": Function(a, b, rest), "result": Seq(Int(3), ...)})
+Dict({"f": Function(a, b, rest), "result": Dict({Int(0): Int(3), Int(1): Int(4), Int(2): Int(5)})})

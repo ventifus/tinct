@@ -511,9 +511,28 @@ pub fn is_atom_subtype(
                 return false;
             }
 
+            // typed_variadics and rest are subtyped element-wise (contravariant),
+            // consistent with how fixed params are handled. Value equality would
+            // reject valid subtype pairs like Fn[...xs@Seq[Number]] >: Fn[...xs@Seq[Int]].
+            let tv_subtype = sub_tv.len() == sup_tv.len()
+                && sub_tv
+                    .iter()
+                    .zip(sup_tv.iter())
+                    .all(|((_, sub_t), (_, sup_t))| {
+                        // Contravariant: sup_tv_param <: sub_tv_param
+                        Type::is_subtype_bas(sup_t, sub_t, tycon_env, sigma)
+                    });
+            let rest_subtype = match (sub_rest, sup_rest) {
+                (Some(sr), Some(pr)) => {
+                    // Contravariant: sup_rest_param <: sub_rest_param
+                    Type::is_subtype_bas(&pr.1, &sr.1, tycon_env, sigma)
+                }
+                (None, None) => true,
+                _ => false,
+            };
             sub_is_variadic == sup_is_variadic
-                && sub_tv == sup_tv
-                && sub_rest == sup_rest
+                && tv_subtype
+                && rest_subtype
                 && sub_p.len() == sup_p.len()
                 && sub_p
                     .iter()

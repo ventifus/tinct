@@ -451,8 +451,12 @@
           _: [ts: acc.ts  rt: [merge acc.rt [make-entry [builtin-dict-length acc.rt] doc]]]]]
       [ts: []  rt: []]
       state.parsed.documents]]
+    # Capture the tc parameter under a different name so the inner accumulator dict
+    # [tc: _tc0  ...] can reference it without letrec self-reference (tc: tc would be
+    # circular because the inner dict's own "tc" key shadows the outer "tc" parameter).
+    [_tc0: tc]
     # Pass 1: evaluate type-stage documents
-    [ts-acc: [reduce eval-doc [scope-id: ts-seed  tc: tc  last-result: []] split.ts]]
+    [ts-acc: [reduce eval-doc [scope-id: ts-seed  tc: _tc0  last-result: []] split.ts]]
     # Wire ts scope-id into the TypeContext
     [_tc: [builtin-tc-with-scope ts-acc.tc ts-acc.scope-id]]
     # Pass 2: evaluate runtime documents
@@ -854,11 +858,12 @@
   # _prelude-scope-id: pre-export scope-id used as display-chain seed for test programs.
   _prelude-scope-id: _prelude-result.scope-id
 
-  # Fatal boundary: typecheck warnings on prelude mean execution is undefined behavior.
+  # Fatal boundary: typecheck ERRORS on prelude mean execution is undefined behavior.
+  # Type-checker warnings (tc-warnings) are advisory and non-fatal — valid prelude functions
+  # may produce warnings (e.g. exhaustiveness warnings for intentionally type-restricted
+  # variadics like bor-all). Only errors prevent loading.
   # Raise here (outside any builtin-try) so the error propagates to the top level.
-  _prelude: [match [builtin-eq-int [builtin-int-add
-                                      [builtin-dict-length _prelude-result.errors]
-                                      [builtin-dict-length _prelude-result.tc-warnings]] 0]
+  _prelude: [match [builtin-eq-int [builtin-dict-length _prelude-result.errors] 0]
     0: [builtin-raise [join "" ["prelude failed — cannot continue\n"
           [reduce [fn [let acc d] [builtin-string-concat acc [builtin-string-concat d "\n"]]]
                   "" _prelude-result.errors]]]]

@@ -1,0 +1,8 @@
+# Single typed variadic ...ns@Int collects all Int args into a Seq.
+# ...rest fallback prevents exhaustiveness warning (required when using typed buckets).
+# head ns = first element = 1.
+[call [fn [let]
+  [f: [fn [let ...ns@Int ...rest] [head ns]]]
+  [f 1 2 3]]]
+=== out
+Int(1)

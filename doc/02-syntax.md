@@ -486,7 +486,16 @@ fn@[return: String  doc: "..."]   # Return type with properties
 [fn [let f ...args] [map f args]]
 ```
 
-At most one variadic parameter is allowed; it must appear last.
+**Type-discriminated variadics** — `...name@Type` declares a typed variadic bucket. Multiple typed buckets route each positional arg to the first bucket whose type matches (declaration order = match priority, same semantics as `match` arms):
+
+```tinct
+[fn [let ...ns@Int ...rest] [head ns]]       # Int args → ns bucket; others → rest
+[fn [let ...ss@String ...ns@Int ...rest] ss]  # String → ss, Int → ns, other → rest
+```
+
+An optional untyped fallback `...rest` (no annotation) must appear last and catches any args not matched by a typed bucket. Functions without a fallback emit a type-checker exhaustiveness warning and produce a runtime error if an unmatched arg is passed.
+
+`variadic_param = "..." name ("@" param_annotation)?`
 
 ### Local Bindings / Sequential
 
@@ -1122,7 +1131,7 @@ param_name = (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* ~ "?"?
 
 param_annotation = "@" ~ annotation_value
 
-variadic_param = "..." ~ param_name
+variadic_param = "..." ~ param_name ~ param_annotation?
 
 // Annotation value allows whitespace inside property dicts like [type: Number default: 30]
 annotation_value = bracket_expr | annotation_word

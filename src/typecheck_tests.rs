@@ -340,7 +340,7 @@ async fn test_dict_multiple_errors() {
     };
     let mut local_errors: Vec<TypeError> = Vec::new();
     let mut local_stack = Vec::new();
-    let _ty = Box::pin(typecheck_cek::run_typecheck(
+    let _ = Box::pin(typecheck_cek::run_typecheck(
         node,
         &env,
         &mut state,
@@ -642,7 +642,7 @@ async fn test_check_call_with_scheme_non_function_scheme() {
     };
     let mut local_errors: Vec<TypeError> = Vec::new();
     let mut local_stack = Vec::new();
-    let _ty = Box::pin(typecheck_cek::run_typecheck(
+    let _ = Box::pin(typecheck_cek::run_typecheck(
         node,
         &parent_env,
         &mut state,
@@ -1245,7 +1245,11 @@ async fn test_variadic_param_type_is_typevar() {
     let ty = result_field("[f: [fn [let ...rest] $rest]]", "f").await;
     match ty {
         Type::Function { params, rest, .. } => {
-            assert_eq!(params.len(), 0, "variadic-only function should have 0 fixed params");
+            assert_eq!(
+                params.len(),
+                0,
+                "variadic-only function should have 0 fixed params"
+            );
             assert!(
                 rest.is_some(),
                 "unannotated variadic should populate the rest field"
@@ -2143,7 +2147,7 @@ async fn test_recursive_function_base_case_return_type() {
 #[tokio::test]
 async fn test_variadic_recursive_fn_without_annotation() {
     // B-520: variadic recursive function should type-check without return annotation.
-    // The variadic param gets Dict(Uniform { TypeVar }) as pre-bound type.
+    // The unannotated variadic param is pre-bound as a bare TypeVar (rest bucket).
     let result = check("[f: [fn [let ...xs] [f 1 2 3]]]").await;
     assert!(
         result.is_ok(),
@@ -2163,6 +2167,70 @@ async fn test_recursive_fn_body_error_is_reported() {
     let result = check("[f: [fn [let n] [f n]]]").await;
     // Should complete (ok or err), but must not panic
     let _ = result;
+}
+
+// -- Multi-variadic typed bucket routing tests (S-938) --
+
+#[tokio::test]
+async fn test_multi_variadic_unannotated_rest_typecheck() {
+    // Function with fixed param + unannotated rest should type-check without error.
+    // Named type annotations (String, Int) require the full prelude type env;
+    // use unannotated params since check() uses a minimal env.
+    let result = check("[f: [fn [let x ...rest] rest]]").await;
+    assert!(
+        result.is_ok(),
+        "fixed + unannotated rest should type-check: {:?}",
+        result.err()
+    );
+}
+
+#[tokio::test]
+async fn test_multi_variadic_call_unannotated_typecheck() {
+    // Calling a function with unannotated rest should type-check.
+    let result = check("[f: [fn [let x ...rest] rest]  r: [f 1 2 3]]").await;
+    assert!(
+        result.is_ok(),
+        "call with unannotated rest should type-check: {:?}",
+        result.err()
+    );
+}
+
+#[tokio::test]
+async fn test_variadic_typed_after_rest_is_error() {
+    // Typed variadic declared after untyped rest → ordering violation → type error.
+    // Uses @Foo (unknown type) to isolate the ordering error from prelude type lookup.
+    let result = check("[f: [fn [let ...rest ...ns@Foo] ns]]").await;
+    assert!(
+        result.is_err(),
+        "typed variadic after rest should produce a type error"
+    );
+    let errs = result.err().unwrap();
+    assert!(
+        errs.iter()
+            .any(|e| e.message().contains("typed variadic") && e.message().contains("untyped rest")),
+        "error should mention ordering violation, got: {:?}",
+        errs.iter().map(|e| e.message().to_string()).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn test_variadic_fixed_after_variadic_is_error() {
+    // Fixed param declared after variadic → ordering violation → type error.
+    let result = check("[f: [fn [let ...rest x] x]]").await;
+    assert!(
+        result.is_err(),
+        "fixed param after variadic should produce a type error"
+    );
+    let errs = result.err().unwrap();
+    assert!(
+        errs.iter()
+            .any(|e| e.message().contains("fixed parameter")
+                && e.message().contains("after variadic")),
+        "error should mention ordering violation, got: {:?}",
+        errs.iter()
+            .map(|e| e.message().to_string())
+            .collect::<Vec<_>>()
+    );
 }
 
 // -- SCC-based binding group analysis tests --

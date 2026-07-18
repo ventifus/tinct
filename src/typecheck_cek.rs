@@ -107,7 +107,10 @@ pub(crate) enum TypeCheckCont {
         /// Param types from the instantiated function type.
         param_types: Vec<(Option<String>, Type)>,
         fn_ret: Type,
-        fn_variadic: bool,
+        /// Typed variadic buckets in declaration order: (name, Seq[T]).
+        typed_variadics: Vec<(String, Type)>,
+        /// Untyped variadic fallback: (name, TypeVar_whole_dict).
+        rest: Option<Box<(String, Type)>>,
         fn_required: usize,
         env: Arc<RwLock<Env>>,
         named_args: Vec<Spanned<SurfaceNamedArg>>,
@@ -795,6 +798,31 @@ async fn apply_cont(
                 rest,
                 required_count,
             };
+            // Exhaustiveness check for typed variadic params.
+            // A function with typed variadic buckets (...x@T) but no untyped fallback (...else)
+            // cannot handle args of types not covered by any bucket — same as a non-exhaustive
+            // match with no wildcard arm. This is a definition-time advisory warning; it does not
+            // prevent the function from being called with matching-typed args.
+            if let Type::Function {
+                ref typed_variadics,
+                ref rest,
+                ..
+            } = fn_type
+            {
+                if !typed_variadics.is_empty() && rest.is_none() {
+                    let covered = Type::normalize_union(
+                        typed_variadics.iter().map(|(_, t)| t.clone()).collect(),
+                    );
+                    errors.push(TypeError::new(
+                        format!(
+                            "non-exhaustive variadic type dispatch: typed buckets cover {} but no fallback (...rest) handles other types — add ...rest for a wildcard bucket",
+                            covered
+                        ),
+                        node_span.clone(),
+                    ));
+                }
+            }
+
             // Record the function type with the Fn node's span so that scan_type_quality
             // can detect Unknown types in function signatures (e.g. unannotated params
             // produce Unknown, explicit @Unknown return annotations are detected as T011).
@@ -830,7 +858,8 @@ async fn apply_cont(
             arg_nodes,
             param_types,
             fn_ret,
-            fn_variadic,
+            typed_variadics,
+            rest,
             fn_required,
             env,
             named_args,
@@ -850,7 +879,8 @@ async fn apply_cont(
                     arg_nodes,
                     param_types,
                     fn_ret,
-                    fn_variadic,
+                    typed_variadics,
+                    rest,
                     fn_required,
                     env: Arc::clone(&env),
                     named_args,
@@ -866,7 +896,8 @@ async fn apply_cont(
                 arg_nodes,
                 param_types,
                 fn_ret,
-                fn_variadic,
+                typed_variadics,
+                rest,
                 fn_required,
                 named_args,
                 env,
@@ -1720,10 +1751,11 @@ async fn apply_cont_call_func(
             required_count,
         } => {
             // Instantiate if needed
-            let (inst_params, inst_ret, inst_variadic, inst_required): (
+            let (inst_params, inst_ret, inst_typed_variadics, inst_rest, inst_required): (
                 Vec<(Option<String>, Type)>,
                 Type,
-                bool,
+                Vec<(String, Type)>,
+                Option<Box<(String, Type)>>,
                 usize,
             ) = if func_ty.has_inference_vars() {
                 // CALL-POLY: instantiate at current level
@@ -1735,12 +1767,7 @@ async fn apply_cont_call_func(
                         typed_variadics,
                         rest,
                         required_count,
-                    } => (
-                        params,
-                        *ret,
-                        !typed_variadics.is_empty() || rest.is_some(),
-                        required_count,
-                    ),
+                    } => (params, *ret, typed_variadics, rest, required_count),
                     _ => unreachable!("instantiate_at_level preserves Function variant"),
                 }
             } else {
@@ -1748,17 +1775,22 @@ async fn apply_cont_call_func(
                 (
                     params.clone(),
                     (**ret).clone(),
-                    !typed_variadics.is_empty() || rest.is_some(),
+                    typed_variadics.clone(),
+                    rest.clone(),
                     *required_count,
                 )
             };
+
+            // Derive inst_variadic for arity checks.
+            let inst_variadic = !inst_typed_variadics.is_empty() || inst_rest.is_some();
 
             if args.is_empty() {
                 // No positional args — arity is checked inside finalize_call_no_positional_args.
                 let result = finalize_call_no_positional_args(
                     inst_params,
                     inst_ret,
-                    inst_variadic,
+                    inst_typed_variadics,
+                    inst_rest,
                     inst_required,
                     named_args,
                     &env,
@@ -1778,11 +1810,9 @@ async fn apply_cont_call_func(
                 let n_positional = args.len();
                 let n_named = named_args.len();
                 let n_total = n_positional + n_named;
-                let min_req = if inst_variadic && !inst_params.is_empty() {
-                    inst_required.saturating_sub(1)
-                } else {
-                    inst_required
-                };
+                // required_count is fixed-params-only (variadics are not included), so
+                // no saturating_sub is needed — inst_required already excludes variadic params.
+                let min_req = inst_required;
                 if n_total < min_req || (!inst_variadic && n_positional > inst_params.len()) {
                     eval_args_for_errors(&args, &named_args, &env, state, errors, type_map).await;
                     let typed_err = crate::type_errors::TypeErrorTyped::new(
@@ -1808,7 +1838,8 @@ async fn apply_cont_call_func(
                 arg_nodes,
                 param_types: inst_params,
                 fn_ret: inst_ret,
-                fn_variadic: inst_variadic,
+                typed_variadics: inst_typed_variadics,
+                rest: inst_rest,
                 fn_required: inst_required,
                 env: Arc::clone(&env),
                 named_args,
@@ -2126,7 +2157,8 @@ async fn apply_cont_call_func(
 async fn finalize_call_no_positional_args(
     params: Vec<(Option<String>, Type)>,
     ret: Type,
-    variadic: bool,
+    typed_variadics: Vec<(String, Type)>,
+    rest: Option<Box<(String, Type)>>,
     required_count: usize,
     named_args: Vec<Spanned<SurfaceNamedArg>>,
     env: &Arc<RwLock<Env>>,
@@ -2135,11 +2167,9 @@ async fn finalize_call_no_positional_args(
     errors: &mut Vec<TypeError>,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Type {
-    let min_required = if variadic && !params.is_empty() {
-        required_count.saturating_sub(1)
-    } else {
-        required_count
-    };
+    let variadic = !typed_variadics.is_empty() || rest.is_some();
+    // required_count is fixed-params-only (variadics not included) — no saturating_sub needed.
+    let min_required = required_count;
 
     if named_args.is_empty() && min_required > 0 {
         let typed_err = crate::type_errors::TypeErrorTyped::new(
@@ -2221,7 +2251,8 @@ async fn apply_call_args_poly(
     arg_nodes: Vec<Arc<SurfaceNode>>,
     param_types: Vec<(Option<String>, Type)>,
     fn_ret: Type,
-    fn_variadic: bool,
+    typed_variadics: Vec<(String, Type)>,
+    rest: Option<Box<(String, Type)>>,
     fn_required: usize,
     named_args: Vec<Spanned<SurfaceNamedArg>>,
     env: Arc<RwLock<Env>>,
@@ -2230,16 +2261,12 @@ async fn apply_call_args_poly(
     errors: &mut Vec<TypeError>,
     type_map: &mut Option<&mut TypeMap>,
 ) -> TypeCheckAction {
-    let non_variadic_param_count = if fn_variadic && !param_types.is_empty() {
-        param_types.len() - 1
-    } else {
-        param_types.len()
-    };
-    let min_required = if fn_variadic && !param_types.is_empty() {
-        fn_required.saturating_sub(1)
-    } else {
-        fn_required
-    };
+    // param_types contains only fixed (non-variadic) params.
+    let non_variadic_param_count = param_types.len();
+    let fn_variadic = !typed_variadics.is_empty() || rest.is_some();
+    // required_count is fixed-params-only (variadics are not included), so no
+    // saturating_sub is needed — fn_required already excludes variadic params.
+    let min_required = fn_required;
     let total_supplied = arg_types.len() + named_args.len();
 
     // Arity check — this is a post-collection check (all args already evaluated).
@@ -2257,7 +2284,7 @@ async fn apply_call_args_poly(
         return TypeCheckAction::Done(Type::error_with(vec![typed_err]));
     }
 
-    // Unify positional args against params (Robinson unification via unify())
+    // Unify positional args against fixed params (Robinson unification via unify())
     let mut consumed_params: std::collections::HashSet<usize> = std::collections::HashSet::new();
     for (idx, ((_, param_ty), arg_ty)) in param_types
         .iter()
@@ -2300,84 +2327,118 @@ async fn apply_call_args_poly(
         state.constraints = constraints;
     }
 
-    // Handle variadic args
+    // Handle variadic args with match-semantics routing.
+    //
+    // Each positional arg beyond non_variadic_param_count is routed to the first typed_variadic
+    // bucket whose element type is consistently a supertype of the arg type (declaration order =
+    // match priority, first match wins). Args that match no typed bucket fall into `rest`.
+    //
+    // Typed buckets: collect matched arg types; unify each against the bucket element type.
+    //   Bucket types are expected to be App(Seq, elem_ty); the element type is extracted via
+    //   extract_seq_elem_type() and used as the unification target.
+    //
+    // Rest bucket (untyped): build a specific positional dict {0: T0, 1: T1, ...} from all
+    //   unmatched positional args and unify the whole dict against the rest TypeVar.
+    //   Unmatched named args are handled separately below and also go into rest.
     if fn_variadic && arg_types.len() > non_variadic_param_count {
-        if let Some((_, variadic_param_ty)) = param_types.last() {
-            let elem_ty: Option<Type> = if let Type::Dict(row) = variadic_param_ty {
-                match &row.tail {
-                    RowTail::Uniform { value, .. } => Some(*value.clone()),
-                    _ => None,
-                }
-            } else if let Type::App(f, arg) = variadic_param_ty {
-                if matches!(f.as_ref(), Type::TyCon(n) if n == "Seq") {
-                    Some(*arg.clone())
-                } else {
-                    None
-                }
-            } else if matches!(variadic_param_ty, Type::TypeVar(_, _)) {
-                // Unannotated variadic: heterogeneous dict. Build a specific positional dict
-                // from the actual variadic args and unify the whole dict against the TypeVar.
-                // This correctly types args as {0: T0, 1: T1, ...} without any homogeneity constraint.
-                let variadic_positional = &arg_types[non_variadic_param_count..];
-                if !variadic_positional.is_empty() {
-                    let mut fields = indexmap::IndexMap::new();
-                    for (i, ty) in variadic_positional.iter().enumerate() {
-                        let widened = match ty {
-                            Type::IntLiteral(_) => Type::Int,
-                            Type::StringLiteral(_) => Type::Str,
-                            other => other.clone(),
-                        };
-                        fields.insert(i.to_string(), widened);
-                    }
-                    let variadic_dict = Type::Dict(Row {
-                        fields,
-                        tail: RowTail::Empty,
-                    });
-                    let mut constraints = std::mem::take(&mut state.constraints);
-                    if let Err(e) = Box::pin(unify(
-                        variadic_param_ty,
-                        &variadic_dict,
-                        state,
-                        &mut constraints,
-                        span.clone(),
-                    ))
-                    .await
-                    {
-                        errors.push(e);
-                    }
-                    state.constraints = constraints;
-                }
-                None // no per-element loop
-            } else {
-                None
+        let variadic_args = &arg_types[non_variadic_param_count..];
+
+        // Per-bucket accumulator: indexed parallel to typed_variadics.
+        let mut bucket_args: Vec<Vec<Type>> = vec![Vec::new(); typed_variadics.len()];
+        // Rest accumulator: widened types for args that matched no typed bucket.
+        let mut rest_positional_args: Vec<Type> = Vec::new();
+
+        for arg_ty in variadic_args {
+            let widened = match arg_ty {
+                Type::IntLiteral(_) => Type::Int,
+                Type::StringLiteral(_) => Type::Str,
+                other => other.clone(),
             };
-            if let Some(elem_ty) = elem_ty {
-                for arg_ty in arg_types.iter().skip(non_variadic_param_count) {
-                    let widened = match arg_ty {
-                        Type::IntLiteral(_) => Type::Int,
-                        Type::StringLiteral(_) => Type::Str,
-                        other => other.clone(),
-                    };
-                    let mut constraints = std::mem::take(&mut state.constraints);
-                    if let Err(e) = Box::pin(unify(
-                        &elem_ty,
-                        &widened,
-                        state,
-                        &mut constraints,
+
+            // Match semantics: try each typed bucket in declaration order; first match wins.
+            let mut routed = false;
+            for (bucket_idx, (_, bucket_ty)) in typed_variadics.iter().enumerate() {
+                let elem_ty = extract_seq_elem_type(bucket_ty);
+                if Type::is_consistent_subtype(&widened, &elem_ty) {
+                    bucket_args[bucket_idx].push(widened.clone());
+                    routed = true;
+                    break;
+                }
+            }
+
+            if !routed {
+                if rest.is_some() {
+                    rest_positional_args.push(widened);
+                } else {
+                    // No rest bucket and no matching typed bucket: exhaustiveness error.
+                    // Continue processing remaining args to collect further errors.
+                    let typed_err = crate::type_errors::TypeErrorTyped::new(
+                        format!(
+                            "argument type {} does not match any variadic bucket",
+                            widened
+                        ),
                         span.clone(),
-                    ))
-                    .await
-                    {
-                        errors.push(e);
-                    }
-                    state.constraints = constraints;
+                    );
+                    errors.push(TypeError::from(typed_err));
                 }
             }
         }
+
+        // Unify each typed bucket's matched args against its element type.
+        for (bucket_idx, (_, bucket_ty)) in typed_variadics.iter().enumerate() {
+            let elem_ty = extract_seq_elem_type(bucket_ty);
+            for matched_arg in &bucket_args[bucket_idx] {
+                let mut constraints = std::mem::take(&mut state.constraints);
+                if let Err(e) = Box::pin(unify(
+                    &elem_ty,
+                    matched_arg,
+                    state,
+                    &mut constraints,
+                    span.clone(),
+                ))
+                .await
+                {
+                    errors.push(e);
+                }
+                state.constraints = constraints;
+            }
+        }
+
+        // Unify rest positional args against the rest TypeVar as a specific positional dict.
+        if let Some(rest_param) = &rest {
+            let (_, rest_ty) = rest_param.as_ref();
+            if !rest_positional_args.is_empty() {
+                let mut fields = indexmap::IndexMap::new();
+                for (i, ty) in rest_positional_args.iter().enumerate() {
+                    fields.insert(i.to_string(), ty.clone());
+                }
+                let rest_dict = Type::Dict(Row {
+                    fields,
+                    tail: RowTail::Empty,
+                });
+                let mut constraints = std::mem::take(&mut state.constraints);
+                if let Err(e) = Box::pin(unify(
+                    rest_ty,
+                    &rest_dict,
+                    state,
+                    &mut constraints,
+                    span.clone(),
+                ))
+                .await
+                {
+                    errors.push(e);
+                }
+                state.constraints = constraints;
+            }
+            // If no rest positional args, the rest TypeVar stays free (empty variadic dict).
+        }
     }
 
-    // Handle named args (CALL-POLY path)
+    // Handle named args (CALL-POLY path).
+    // Named args that don't match any fixed param are accumulated for the rest bucket.
+    // If there is no rest bucket and no variadic at all, they produce an error.
     let mut seen_named_arg_names: std::collections::HashSet<String> = Default::default();
+    let mut unmatched_named_arg_types: Vec<(String, Type)> = Vec::new();
     for na in &named_args {
         if !seen_named_arg_names.insert(na.node.name.clone()) {
             errors.push(TypeError::new(
@@ -2442,7 +2503,22 @@ async fn apply_call_args_poly(
                 state.constraints = constraints;
             }
             None => {
-                if !fn_variadic {
+                if fn_variadic {
+                    // Infer the named arg value for error collection; accumulate for rest bucket.
+                    let arg_ty = {
+                        let mut local_stack = Vec::new();
+                        Box::pin(run_typecheck(
+                            &na.node.value,
+                            &env,
+                            state,
+                            errors,
+                            type_map,
+                            &mut local_stack,
+                        ))
+                        .await
+                    };
+                    unmatched_named_arg_types.push((na.node.name.clone(), arg_ty));
+                } else {
                     errors.push(TypeError::new(
                         format!(
                             "unknown named argument: function has no parameter named '{}'",
@@ -2450,23 +2526,73 @@ async fn apply_call_args_poly(
                         ),
                         na.span.clone(),
                     ));
-                } else {
-                    let mut local_stack = Vec::new();
-                    let _ = Box::pin(run_typecheck(
-                        &na.node.value,
-                        &env,
-                        state,
-                        errors,
-                        type_map,
-                        &mut local_stack,
-                    ))
-                    .await;
                 }
             }
         }
     }
 
+    // Unify unmatched named args into the rest bucket as string-keyed entries.
+    if !unmatched_named_arg_types.is_empty() {
+        if let Some(rest_param) = &rest {
+            let (_, rest_ty) = rest_param.as_ref();
+            let mut fields = indexmap::IndexMap::new();
+            for (name, ty) in &unmatched_named_arg_types {
+                let widened = match ty {
+                    Type::IntLiteral(_) => Type::Int,
+                    Type::StringLiteral(_) => Type::Str,
+                    other => other.clone(),
+                };
+                fields.insert(name.clone(), widened);
+            }
+            let named_dict = Type::Dict(Row {
+                fields,
+                tail: RowTail::Empty,
+            });
+            let mut constraints = std::mem::take(&mut state.constraints);
+            if let Err(e) = Box::pin(unify(
+                rest_ty,
+                &named_dict,
+                state,
+                &mut constraints,
+                span.clone(),
+            ))
+            .await
+            {
+                errors.push(e);
+            }
+            state.constraints = constraints;
+        }
+        // Named args arrived for a function with typed buckets but no untyped rest.
+        // Typed buckets only accept positional args (matched by type); named args have
+        // no bucket to go into. Emit an error for each unmatched named arg.
+        if rest.is_none() {
+            for (name, _) in &unmatched_named_arg_types {
+                errors.push(TypeError::new(
+                    format!(
+                        "named argument '{}' cannot be routed: function has no untyped rest parameter (...rest) to accept unmatched named args",
+                        name
+                    ),
+                    span.clone(),
+                ));
+            }
+        }
+    }
+
     TypeCheckAction::Done(state.apply(&fn_ret))
+}
+
+/// Extract the element type from a typed variadic bucket type.
+///
+/// Bucket types are expected to be `App(TyCon("Seq"), elem_ty)` for annotated variadics.
+/// If the type does not match that form, return the type itself as the element constraint
+/// (a fresh TypeVar or other concrete type used directly as the constraint).
+fn extract_seq_elem_type(bucket_ty: &Type) -> Type {
+    if let Type::App(f, elem) = bucket_ty {
+        if matches!(f.as_ref(), Type::TyCon(n) if n == "Seq") {
+            return *elem.clone();
+        }
+    }
+    bucket_ty.clone()
 }
 
 // ===== Inline helper: Fn inference via AfterFnBody continuation =====
@@ -2609,11 +2735,37 @@ async fn infer_fn_push_cont(
         if p.node.variadic {
             // Variadic param: goes into typed_variadics or rest, not fixed params.
             if p.node.annotation.is_some() {
+                // Typed variadic bucket declared after an untyped rest is a slot-ordering
+                // error: the lowerer assigns slots in declaration order, but bind_args_thunks
+                // assigns typed buckets before rest. Declaring them in the wrong order
+                // causes silent slot inversion (data corruption at runtime).
+                if rest.is_some() {
+                    let typed_err = crate::type_errors::TypeErrorTyped::new(
+                        format!(
+                            "typed variadic `...{}` declared after untyped rest parameter — typed variadics must precede the untyped fallback `...rest`",
+                            p.node.name
+                        ),
+                        p.span.clone(),
+                    );
+                    errors.push(TypeError::from(typed_err));
+                }
                 typed_variadics.push((p.node.name.clone(), param_ty));
             } else {
                 rest = Some(Box::new((p.node.name.clone(), param_ty)));
             }
         } else {
+            // Fixed param: check it was not declared after a variadic (would invert slots).
+            let seen_any_variadic = !typed_variadics.is_empty() || rest.is_some();
+            if seen_any_variadic {
+                let typed_err = crate::type_errors::TypeErrorTyped::new(
+                    format!(
+                        "fixed parameter `{}` declared after variadic parameter — fixed params must precede all variadic params",
+                        p.node.name
+                    ),
+                    p.span.clone(),
+                );
+                errors.push(TypeError::from(typed_err));
+            }
             param_types.push((Some(p.node.name.clone()), param_ty));
         }
     }
@@ -3216,8 +3368,20 @@ pub(crate) fn type_contains_typevar(ty: &Type, name: &str) -> bool {
             members.iter().any(|m| type_contains_typevar(m, name))
         }
         Type::Negation(inner) => type_contains_typevar(inner, name),
-        Type::Function { params, ret, .. } => {
+        Type::Function {
+            params,
+            ret,
+            typed_variadics,
+            rest,
+            ..
+        } => {
             params.iter().any(|(_, t)| type_contains_typevar(t, name))
+                || typed_variadics
+                    .iter()
+                    .any(|(_, t)| type_contains_typevar(t, name))
+                || rest
+                    .as_ref()
+                    .is_some_and(|r| type_contains_typevar(&r.1, name))
                 || type_contains_typevar(ret, name)
         }
         Type::App(f, arg) => type_contains_typevar(f, name) || type_contains_typevar(arg, name),
@@ -3392,40 +3556,33 @@ pub(crate) async fn run_typecheck_dict(
                 if let SurfaceExpression::Fn { params, .. } = &entry.node.value.expr {
                     // B-520: fn entries get Type::Function skeleton so recursive calls see a
                     // function-shaped callee type without requiring a return annotation.
-                    let fn_params: Vec<(Option<String>, Type)> = params
-                        .iter()
-                        .map(|p| {
-                            let ty = if p.node.variadic {
-                                let elem_ty = state.fresh_type_var(&p.span);
-                                Type::Dict(Row {
-                                    fields: indexmap::IndexMap::new(),
-                                    tail: RowTail::Uniform {
-                                        key: None,
-                                        value: Box::new(elem_ty),
-                                    },
-                                })
+                    // Variadic params go into typed_variadics/rest, NOT into params — matching the
+                    // structure that infer_fn_push_cont produces. Putting variadics in params with
+                    // Dict(Uniform(TypeVar)) caused apply_call_args_poly to unify Int args against
+                    // the Dict param type → "cannot unify Dict Any ? with Integer".
+                    let mut fn_params: Vec<(Option<String>, Type)> = Vec::new();
+                    let mut pre_typed_variadics: Vec<(String, Type)> = Vec::new();
+                    let mut pre_rest: Option<Box<(String, Type)>> = None;
+                    for p in params {
+                        if p.node.variadic {
+                            let param_ty = state.fresh_type_var(&p.span);
+                            if p.node.annotation.is_some() {
+                                pre_typed_variadics.push((p.node.name.clone(), param_ty));
                             } else {
-                                state.fresh_type_var(&p.span)
-                            };
-                            (Some(p.node.name.clone()), ty)
-                        })
-                        .collect();
-                    let is_variadic = params.iter().any(|p| p.node.variadic);
+                                pre_rest = Some(Box::new((p.node.name.clone(), param_ty)));
+                            }
+                        } else {
+                            let ty = state.fresh_type_var(&p.span);
+                            fn_params.push((Some(p.node.name.clone()), ty));
+                        }
+                    }
                     let ret_var = state.fresh_type_var(&entry.span);
-                    let required_count = if is_variadic {
-                        fn_params.len().saturating_sub(1)
-                    } else {
-                        fn_params.len()
-                    };
+                    let required_count = fn_params.len();
                     let fn_type = Type::Function {
                         params: fn_params,
-                        ret: Box::new(ret_var.clone()),
-                        typed_variadics: vec![],
-                        rest: if is_variadic {
-                            Some(Box::new(("rest".to_string(), Type::Unknown)))
-                        } else {
-                            None
-                        },
+                        ret: Box::new(ret_var),
+                        typed_variadics: pre_typed_variadics,
+                        rest: pre_rest,
                         required_count,
                     };
                     if !is_alias {

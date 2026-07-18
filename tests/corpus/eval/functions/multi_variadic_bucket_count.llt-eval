@@ -1,0 +1,8 @@
+# Verify that ALL args route to the correct typed bucket (not just the head).
+# ...ss@String collects "a","b" (2 strings); ...ns@Int collects 1,2,3 (3 ints).
+# Using length to count bucket contents verifies full routing, not just head().
+[call [fn [let]
+  [f: [fn [let ...ss@String ...ns@Int ...rest] [length ns]]]
+  [f "a" 1 "b" 2 3]]]
+=== out
+Int(3)

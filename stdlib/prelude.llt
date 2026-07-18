@@ -70,8 +70,7 @@
   # Normalize a TypeNode value using its constructor's as-type annotation
   as-typenode: [fn [let t] [TypeNode.as-type t]]
 
-# Boolean type — needed by child-field? and other type-stage predicates.
-  Boolean: [type True False]
+# Boolean is declared in loader.llt Dict 2 before prelude loads — do not redeclare here.
 
 
   # ============================================================================
@@ -3480,6 +3479,8 @@ shl@[doc: "Left shift: value shl bits"]: builtin-shl
 shr@[doc: "Logical right shift (zero-fill): value shr bits"]: builtin-shr
 
 # N-ary bitwise operators — eliminate nested [bor a [bor b [bor c d]]] patterns.
+# These use a typed variadic (...args@Integer) with no untyped fallback.
+# Non-Integer arguments produce a runtime exhaustiveness error (no bucket accepts them).
 bor-all@[doc: "Bitwise OR of any number of Ints (identity: 0)"]:  [fn@Integer [let ...args@Integer] [reduce bor  0  args]]
 band-all@[doc: "Bitwise AND of any number of Ints (identity: -1)"]: [fn@Integer [let ...args@Integer] [reduce band -1 args]]
 bxor-all@[doc: "Bitwise XOR of any number of Ints (identity: 0)"]: [fn@Integer [let ...args@Integer] [reduce bxor 0  args]]
@@ -5311,6 +5312,7 @@ tmpl: [fn [let template@Expr]
 # The macro operates entirely at the AST level: it never accesses the runtime
 # monad dict. The dot-access (m.bind, m.pure) is generated as an AST node and
 # resolved at evaluation time. This avoids any arena-crossing ThunkId issues.
+# Uses typed variadics (first@Expr, ...rest@Expr) — all args must be Expr values.
 do: [fn [let first@Expr ...rest@Expr]
   [ast: [if [do-is-inferred-form first]
     [do-desugar-inferred [cons first [collect rest]]]
@@ -5327,13 +5329,22 @@ do: [fn [let first@Expr ...rest@Expr]
 # (intermediate dicts create bindings visible to subsequent expressions).
 # Note: [[fn ...]] is a dict in tinct (bracket-in-head-position → dict entry);
 # [call [fn ...]] is the explicit IIFE form.
+# Uses a typed variadic (...body@Expr) with no fallback — all args must be Expr values
+# (produced by the macro system when called as [>> e1 e2 e3]).
 >>: [fn [let ...body@Expr]
   [eval-macro-ast
     [quote [call [fn [let] [unquote-splice body]]]]]]
 
+# begin is the canonical name for >>; >> is the operator alias.
+# Both evaluate expressions left-to-right for side effects and return the last value.
+# Inherits the Expr-typed variadic constraint from >>; non-Expr arguments produce a
+# runtime exhaustiveness error, not a type coercion.
+begin: >>
+
 # task macro transformer: multi-body task support.
 # [task e1 e2 e3] desugars to [builtin-task [>> e1 e2 e3]].
 # Single-arg [task e] passes through to builtin-task directly.
+# Uses typed variadics (...first@Expr, ...rest@Expr) — all args must be Expr values.
 task: [fn [let first@Expr ...rest@Expr]
   [ast: [match [builtin-eq-string [builtin-tag-of rest] "Seq.End"]
     0: [quote [builtin-task [>> [unquote first] [unquote-splice rest]]]]

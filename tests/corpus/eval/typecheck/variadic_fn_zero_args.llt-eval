@@ -1,6 +1,6 @@
-# Variadic function called with zero extra args: xs collects into an empty Seq (nil sentinel Dict({})).
+# Variadic function called with zero extra args: xs collects into an empty Dict({}).
 # This is the zero-variadic-args case: no positional args are supplied.
-# The nil sentinel is Value::Dict({}) — the standard end-of-Seq marker.
+# Unannotated rest collects into a Dict (integer-keyed). Empty = Dict({}).
 [f: [fn [let ...xs] xs]
  result: [f]]
 === out

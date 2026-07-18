@@ -1,4 +1,4 @@
-# >> is an alias for begin — Haskell's monadic sequence operator
+# >> evaluates args as @Expr in sequence, returns last (Haskell monadic sequence operator)
 [>> 1 2 3]
 === out
 Int(3)

@@ -1,0 +1,18 @@
+# bor-all: bitwise OR of any number of Ints (identity: 0).
+# band-all: bitwise AND (identity: -1, note non-zero identity).
+# bxor-all: bitwise XOR (identity: 0).
+# All use typed variadic ...args@Integer — only Integer args accepted.
+[call [fn [let]
+  [r-bor-zero: [bor-all]]
+  [r-bor-one:  [bor-all 5]]
+  [r-bor-many: [bor-all 1 2 4]]
+  [r-band-zero: [band-all]]
+  [r-band-one:  [band-all 7]]
+  [r-band-many: [band-all 15 6]]
+  [r-bxor-zero: [bxor-all]]
+  [r-bxor-many: [bxor-all 3 5]]
+  [and [= r-bor-zero 0] [and [= r-bor-one 5] [and [= r-bor-many 7]
+  [and [= r-band-zero -1] [and [= r-band-one 7] [and [= r-band-many 6]
+  [and [= r-bxor-zero 0] [= r-bxor-many 6]]]]]]]]]]]
+=== out
+Int(1)

@@ -571,7 +571,11 @@ mod tests {
         let y_val = mat_id(y_id, &ctx).await.unwrap();
 
         assert_eq!(x_val, Value::Int(42), "x must be 42");
-        assert_eq!(y_val, Value::Int(42), "y must equal x (letrec sibling scope)");
+        assert_eq!(
+            y_val,
+            Value::Int(42),
+            "y must equal x (letrec sibling scope)"
+        );
     }
 
     /// Dict key names do not leak into sibling value scope as bare names.

@@ -1,0 +1,9 @@
+# Typed-only variadics (no ...rest fallback) produce an exhaustiveness warning.
+# The type checker warns that non-String/Int args would fail at runtime.
+# Functions with only typed buckets intentionally restrict arg types.
+[f: [fn [let ...strings@String ...nums@Int] [head strings]]]
+=== out
+Dict({"f": Function(strings, nums)})
+
+=== warn
+non-exhaustive variadic type dispatch: typed buckets cover [or Integer String] but no fallback (...rest) handles other types — add ...rest for a wildcard bucket
