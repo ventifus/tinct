@@ -266,18 +266,51 @@
   # seed-scope-id: the parent scope to use for declaration file scopes.
   # Caller builds it explicitly — no implicit global fallback. This is the same
   # pattern as the init program controlling what environments downstream sees.
+  # uses-scope: load and typecheck builtin_NAME.llt declaration modules.
+  # Two-pass: evaluate type-stage docs first to enrich the TypeContext, then
+  # typecheck all docs with the enriched TypeContext so that annotations like
+  # @Integer/@String/@Never resolve correctly from the type-stage values.
   uses-scope: [fn [let module-names seed-tc seed-scope-id]
     [reduce
       [fn [let acc name]
-        [decl-path:   [builtin-string-concat "builtin_" [builtin-string-concat name ".llt"]]
-         tc-result:   [builtin-try [call [fn []
-             [decl-handle:    [builtin-file-open %libdir decl-path "read"]]
-             [decl-bytes:     [read-file decl-handle [builtin-bytes]]]
-             [parse-result:   [builtin-parse decl-bytes decl-path]]
-             [desugared:      [builtin-desugar parse-result.program]]
-             [decl-docs:      [builtin-program-docs desugared]]
-             # Seed scope with field-get/slot-get builtins for dot-access
-             [decl-scope-id:  [builtin-scope-new seed-scope-id [field-get: .field-get  slot-get: .slot-get]]]
+        [decl-path:     [builtin-string-concat "builtin_" [builtin-string-concat name ".llt"]]
+         tc-result:     [builtin-try [call [fn []
+             [decl-handle:   [builtin-file-open %libdir decl-path "read"]]
+             [decl-bytes:    [read-file decl-handle [builtin-bytes]]]
+             [parse-result:  [builtin-parse decl-bytes decl-path]]
+             [desugared:     [builtin-desugar parse-result.program]]
+             [decl-docs:     [builtin-program-docs desugared]]
+             # Base scope for this module
+             [decl-scope-id: [builtin-scope-new seed-scope-id [field-get: .field-get  slot-get: .slot-get]]]
+             # Split docs by stage so type-stage docs are processed first
+             [split: [reduce
+               [fn [let acc doc]
+                 [meta:  [builtin-doc-meta doc decl-scope-id]]
+                 [stage: [get-or "runtime" "stage" meta]]
+                 [match [builtin-eq-string stage "type"]
+                   0: [ts: [merge acc.ts [make-entry [builtin-dict-length acc.ts] doc]]  rt: acc.rt]
+                   _: [ts: acc.ts  rt: [merge acc.rt [make-entry [builtin-dict-length acc.rt] doc]]]]]
+               [ts: []  rt: []]
+               decl-docs]]
+             # Pass 1: evaluate type-stage docs to get a scope with TypeNode values.
+             # This mirrors what eval-program does for user programs: the type-stage
+             # scope is threaded into the TypeContext so that @Integer/@String etc.
+             # resolve to concrete types (not "undefined type") in the runtime section.
+             [ts-scope-id: [reduce
+               [fn [let scope-id doc]
+                 [frames: [scope-to-frames scope-id]]
+                 [r:      [builtin-resolve doc frames]]
+                 [typed:  [builtin-typecheck-doc r.doc seed-tc].doc]
+                 [ev:     [builtin-eval typed scope-id]]
+                 ev.scope-id]
+               decl-scope-id
+               split.ts]]
+             # Wire the type-stage scope into the TypeContext — same as
+             # `[_tc: [builtin-tc-with-scope ts-acc.tc ts-acc.scope-id]]` in eval-program.
+             [ts-tc: [builtin-tc-with-scope seed-tc ts-scope-id]]
+             # Pass 2: typecheck all docs with the enriched TypeContext.
+             # VarRef resolution still uses decl-scope-id (annotation types come
+             # from the TypeContext, not from VarRef resolution frames).
              [resolve-errors: [reduce
                [fn [let acc doc]
                  [frames: [scope-to-frames decl-scope-id]]
@@ -285,11 +318,11 @@
                  [builtin-int-add acc [builtin-dict-length r.errors]]]
                0
                decl-docs]]
-             [typed-docs:  [reduce
+             [typed-docs: [reduce
                [fn [let acc doc]
                  [frames: [scope-to-frames decl-scope-id]]
                  [r: [builtin-resolve doc frames]]
-                 [tc-result: [builtin-typecheck-doc r.doc seed-tc]]
+                 [tc-result: [builtin-typecheck-doc r.doc ts-tc]]
                  [merge acc [make-entry [builtin-dict-length acc] tc-result]]]
                []
                decl-docs]]
