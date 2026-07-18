@@ -795,6 +795,8 @@ pub(crate) fn eval_core_expr<'a>(
                         name: p.node.name.clone(),
                         annotation: p.node.annotation.clone(),
                         variadic: p.node.variadic,
+                        slot: p.node.slot,
+                        resolved_type: p.node.resolved_type.clone(),
                     })
                     .collect();
 

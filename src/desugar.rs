@@ -481,6 +481,7 @@ fn wrap_surface_in_lambda(node: &mut Arc<SurfaceNode>) {
                     name: "_".to_string(),
                     annotation: None,
                     variadic: false,
+                    resolved_annotation_type: crate::ast::TypeAnnotation::new(),
                 },
                 span.clone(),
             )],

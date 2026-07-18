@@ -1231,6 +1231,8 @@ mod tests {
                 name: "x".to_string(),
                 annotation: None,
                 variadic: false,
+                slot: 0,
+                resolved_type: None,
             }]),
             body: body_expr,
             closure_env_id: src_env_id.0,

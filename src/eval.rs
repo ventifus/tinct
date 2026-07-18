@@ -918,21 +918,44 @@ pub fn ground_type_of(v: &Value) -> Type {
             fields: indexmap::IndexMap::new(),
             tail: crate::type_def::RowTail::Empty,
         }),
-        // Param/return types erased — consistent subtyping accepts Function([Unknown..], Unknown)
-        // against any function annotation with matching arity.
+        // Populate fixed params, typed variadics, and rest from CoreParam.resolved_type.
+        // Classification mirrors bind_args_thunks BIND-SPLIT:
+        //   - variadic + concrete resolved_type (not None/Unknown) → typed_variadics bucket
+        //   - variadic + None/Unknown → rest
+        //   - !variadic → fixed params
+        // This allows is_consistent_subtype to correctly validate function types at runtime.
         Value::Function { params, .. } => {
-            let n = params.len();
-            let is_variadic = params.last().map_or(false, |p| p.variadic);
-            Type::Function {
-                params: params.iter().map(|_| (None, Type::Unknown)).collect(),
-                ret: Box::new(Type::Unknown),
-                typed_variadics: vec![],
-                rest: if is_variadic {
-                    Some(Box::new(("rest".to_string(), Type::Unknown)))
+            let mut fixed: Vec<(Option<String>, Type)> = Vec::new();
+            let mut typed_variadics: Vec<(String, Type)> = Vec::new();
+            let mut rest: Option<Box<(String, Type)>> = None;
+            for p in params.iter() {
+                let resolved = p.resolved_type.clone().unwrap_or(Type::Unknown);
+                if p.variadic {
+                    if matches!(resolved, Type::Unknown) {
+                        rest = Some(Box::new((p.name.clone(), resolved)));
+                    } else {
+                        typed_variadics.push((p.name.clone(), resolved));
+                    }
                 } else {
-                    None
-                },
-                required_count: n,
+                    fixed.push((Some(p.name.clone()), resolved));
+                }
+            }
+            let required_count = params
+                .iter()
+                .filter(|p| {
+                    !p.variadic
+                        && p.annotation
+                            .as_ref()
+                            .and_then(|ann| ann.node.get_property("default"))
+                            .is_none()
+                })
+                .count();
+            Type::Function {
+                params: fixed,
+                typed_variadics,
+                rest,
+                ret: Box::new(Type::Unknown),
+                required_count,
             }
         }
         // Capability types: Unknown → is_consistent_subtype accepts against any annotation.
@@ -3409,6 +3432,8 @@ mod tests {
                 name: "x".into(),
                 annotation: None,
                 variadic: false,
+                slot: 0,
+                resolved_type: None,
             }]),
             body: Arc::new(sp(CoreExpr::Var {
                 name: "x".to_string(),
@@ -3482,6 +3507,8 @@ mod tests {
                 name: "x".into(),
                 annotation: None,
                 variadic: false,
+                slot: 0,
+                resolved_type: None,
             }]),
             body: Arc::new(sp(CoreExpr::Var {
                 name: "x".to_string(),
@@ -5744,11 +5771,15 @@ mod tests {
                     name: "x".into(),
                     annotation: None,
                     variadic: false,
+                    slot: 0,
+                    resolved_type: None,
                 },
                 Param {
                     name: "y".into(),
                     annotation: None,
                     variadic: false,
+                    slot: 1,
+                    resolved_type: None,
                 },
             ]),
             body: Arc::new(sp(CoreExpr::Dict(vec![]))),
@@ -5779,11 +5810,15 @@ mod tests {
                     name: "x".into(),
                     annotation: None,
                     variadic: false,
+                    slot: 0,
+                    resolved_type: None,
                 },
                 Param {
                     name: "rest".into(),
                     annotation: None,
                     variadic: true,
+                    slot: 1,
+                    resolved_type: None,
                 },
             ]),
             body: Arc::new(sp(CoreExpr::Dict(vec![]))),
@@ -5802,8 +5837,8 @@ mod tests {
                     "variadic function must have rest in ground_type_of"
                 );
                 assert_eq!(
-                    required_count, 2,
-                    "required_count must include variadic param in param count"
+                    required_count, 1,
+                    "required_count counts only non-variadic params without defaults; variadic rest is excluded"
                 );
             }
             other => panic!(
@@ -5818,6 +5853,8 @@ mod tests {
                 name: "xs".into(),
                 annotation: None,
                 variadic: true,
+                slot: 0,
+                resolved_type: None,
             }]),
             body: Arc::new(sp(CoreExpr::Dict(vec![]))),
             closure_env_id: 0,

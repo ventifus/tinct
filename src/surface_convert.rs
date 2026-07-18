@@ -1830,6 +1830,7 @@ pub(crate) fn get_param_list_field_with_aliases(
                 name,
                 annotation,
                 variadic,
+                resolved_annotation_type: crate::ast::TypeAnnotation::new(),
             },
             rust_span!(),
         ));

@@ -857,12 +857,21 @@ fn lower_expr(
             return_ann: return_ann.clone(),
             params: params
                 .iter()
-                .map(|p| {
+                .enumerate()
+                .map(|(i, p)| {
                     Spanned::new(
                         CoreParam {
                             name: p.node.name.clone(),
                             annotation: p.node.annotation.clone(),
                             variadic: p.node.variadic,
+                            slot: i as u32,
+                            resolved_type: p.node.resolved_annotation_type.get().and_then(|t| {
+                                // Type::Error (failed inference) → None (accept-all).
+                                match t {
+                                    crate::type_def::Type::Error(_) => None,
+                                    _ => Some(t.clone()),
+                                }
+                            }),
                         },
                         p.span.clone(),
                     )
@@ -1122,6 +1131,7 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
                             name: p.node.name.clone(),
                             annotation: p.node.annotation.clone(),
                             variadic: p.node.variadic,
+                            resolved_annotation_type: crate::ast::TypeAnnotation::new(),
                         },
                         p.span.clone(),
                     )
@@ -1438,12 +1448,15 @@ fn lower_type_alias_to_constructor_dict(
             // Build one CoreParam per field.
             let fn_params: Vec<Spanned<crate::ast::CoreParam>> = fields
                 .iter()
-                .map(|field_name| {
+                .enumerate()
+                .map(|(i, field_name)| {
                     Spanned::new(
                         crate::ast::CoreParam {
                             name: field_name.clone(),
                             annotation: None,
                             variadic: false,
+                            slot: i as u32,
+                            resolved_type: None,
                         },
                         syn_span.clone(),
                     )

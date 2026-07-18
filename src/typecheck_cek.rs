@@ -2731,6 +2731,16 @@ async fn infer_fn_push_cont(
         } else {
             Type::Unknown
         };
+        // Store the resolved type back onto the SurfaceParam so the lowerer can carry it
+        // into CoreParam::resolved_type without re-parsing the annotation.
+        // Annotated params get Some(resolved_type); unannotated params get None (accept-all).
+        p.node
+            .resolved_annotation_type
+            .set(if p.node.annotation.is_some() {
+                Some(param_ty.clone())
+            } else {
+                None
+            });
         fn_env_inner.insert(p.node.name.clone(), param_ty.clone());
         if p.node.variadic {
             // Variadic param: goes into typed_variadics or rest, not fixed params.
@@ -4427,6 +4437,7 @@ mod tests {
                     name: name.to_string(),
                     annotation: None,
                     variadic: false,
+                    resolved_annotation_type: TypeAnnotation::new(),
                 })
             })
             .collect();

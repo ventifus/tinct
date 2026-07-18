@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::ast::{Annotation, CoreExpr, CoreNamedArg, Param, Span, Spanned, SurfaceNode};
+use crate::ast::{CoreExpr, CoreNamedArg, Param, Span, Spanned, SurfaceNode};
 use crate::error::{ArityBound, EvalError, EvalResult};
 use crate::type_def::Type;
 use crate::value::{HashableValue, Thunk, ThunkId, Value};
@@ -197,8 +197,25 @@ pub(crate) async fn bind_args_thunks(
     ctx: &Arc<EvalContext>,
     call_span: &Span,
 ) -> EvalResult<u32> {
-    // BIND-SPLIT: Partition params into fixed, typed-variadic buckets, and untyped rest.
-    let (regular_params, typed_variadic_params, rest_param) = split_params(params);
+    // BIND-SPLIT: Classify params using resolved_type and variadic flag.
+    // Typed variadics have variadic=true and a concrete resolved_type (not Unknown/None).
+    // Untyped rest has variadic=true and resolved_type=None (or Unknown).
+    // Fixed params have variadic=false.
+    let mut regular_params: Vec<&Param> = Vec::new();
+    let mut typed_variadic_params: Vec<&Param> = Vec::new();
+    let mut rest_param: Option<&Param> = None;
+    for p in params.iter() {
+        if p.variadic {
+            match &p.resolved_type {
+                Some(ty) if !matches!(ty, Type::Unknown) => {
+                    typed_variadic_params.push(p);
+                }
+                _ => rest_param = Some(p),
+            }
+        } else {
+            regular_params.push(p);
+        }
+    }
     let max_positional = regular_params.len();
     let has_any_variadic = !typed_variadic_params.is_empty() || rest_param.is_some();
 
@@ -299,23 +316,25 @@ pub(crate) async fn bind_args_thunks(
     }
 
     // BIND-POSITIONAL + BIND-NAMED: Fill each regular param slot.
-    // Slot index matches the param position (de Bruijn slot assigned by the resolver).
+    // Use p.slot (the resolver-assigned de Bruijn slot) rather than the loop index,
+    // so that slots are filled at the exact position the resolver reserved for each param.
     //
     // For positional and named args that are already ThunkIds, use fill_slot directly
     // to copy the Arc<Thunk> reference without allocating a redundant intermediate slot.
     // For defaults (SurfaceNode), allocate a new Thunk::surface and then fill.
     for (i, param) in regular_params.iter().enumerate() {
+        let slot = param.slot;
         if i < positional.len() {
             // Positional arg: copy the ThunkId's Arc<Thunk> directly into the call frame slot.
             ctx.scope_arena
                 .borrow_mut()
-                .fill_slot(call_env_id, i as u32, positional[i]);
+                .fill_slot(call_env_id, slot, positional[i]);
         } else if let Some(named_args) = named {
             if let Some(&named_id) = named_args.get(&param.name) {
                 // Named arg: copy directly.
                 ctx.scope_arena
                     .borrow_mut()
-                    .fill_slot(call_env_id, i as u32, named_id);
+                    .fill_slot(call_env_id, slot, named_id);
             } else if let Some(default_node) = get_default(param) {
                 // Default param: evaluate lazily in the default_env scope.
                 // Use empty res/types tables — defaults are surface nodes whose variable
@@ -331,7 +350,7 @@ pub(crate) async fn bind_args_thunks(
                 let default_id = ctx.alloc_thunk(call_env_id.0, default_thunk);
                 ctx.scope_arena
                     .borrow_mut()
-                    .fill_slot(call_env_id, i as u32, default_id);
+                    .fill_slot(call_env_id, slot, default_id);
             }
             // else: required param with no coverage — already caught by arity check.
         } else if let Some(default_node) = get_default(param) {
@@ -347,7 +366,7 @@ pub(crate) async fn bind_args_thunks(
             let default_id = ctx.alloc_thunk(call_env_id.0, default_thunk);
             ctx.scope_arena
                 .borrow_mut()
-                .fill_slot(call_env_id, i as u32, default_id);
+                .fill_slot(call_env_id, slot, default_id);
         }
         // else: required param with no arg — already caught by arity check.
     }
@@ -375,18 +394,12 @@ pub(crate) async fn bind_args_thunks(
     if has_any_variadic {
         let extra_positionals = &positional[max_positional.min(positional.len())..];
 
-        // Resolve typed bucket annotations to runtime Types for dispatch.
+        // Collect typed bucket Types for dispatch.
+        // Use p.resolved_type (set by the type checker) rather than re-parsing the annotation.
         // Empty when there are no typed variadics (single unannotated rest case).
         let bucket_types: Vec<Type> = typed_variadic_params
             .iter()
-            .map(|p| {
-                annotation_to_runtime_type(
-                    &p.annotation
-                        .as_ref()
-                        .expect("typed_variadic_params always have annotations")
-                        .node,
-                )
-            })
+            .map(|p| p.resolved_type.clone().unwrap_or(Type::Unknown))
             .collect();
 
         // Accumulate ThunkIds for each typed bucket (in declaration order).
@@ -454,10 +467,9 @@ pub(crate) async fn bind_args_thunks(
         // An empty bucket binds to the Seq nil sentinel: Value::Dict({}) — the same
         // empty dict that terminates all Seq tails.
         //
-        // Typed variadic param slots follow fixed params in declaration order:
-        //   slot = regular_params.len() + bucket_index
-        for (bucket_idx, bucket_args) in typed_buckets.into_iter().enumerate() {
-            let slot = (regular_params.len() + bucket_idx) as u32;
+        // Use p.slot (resolver-assigned) for each typed variadic param.
+        for (bucket_args, p) in typed_buckets.into_iter().zip(typed_variadic_params.iter()) {
+            let slot = p.slot;
             let seq_thunk = build_seq(bucket_args.as_slice(), ctx, call_span, call_env_id.0);
             let seq_id = ctx.alloc_thunk(call_env_id.0, seq_thunk);
             ctx.scope_arena
@@ -466,10 +478,9 @@ pub(crate) async fn bind_args_thunks(
         }
 
         // BIND-RESULT: Bind the untyped rest bucket as a Dict (if present).
-        // rest param slot follows all typed variadic slots:
-        //   slot = regular_params.len() + typed_variadic_params.len()
-        if rest_param.is_some() {
-            let rest_slot = (regular_params.len() + typed_variadic_params.len()) as u32;
+        // Use rest_param.slot (resolver-assigned) directly.
+        if let Some(rp) = rest_param {
+            let rest_slot = rp.slot;
             let rest_thunk = Arc::new(Thunk::value(Value::Dict(rest_dict), call_span.clone()));
             let rest_id = ctx.alloc_thunk(call_env_id.0, rest_thunk);
             ctx.scope_arena
@@ -479,78 +490,6 @@ pub(crate) async fn bind_args_thunks(
     }
 
     Ok(call_env_id.0)
-}
-
-/// Split params into (fixed_params, typed_variadic_params, untyped_rest_param).
-///
-/// - `fixed_params`: params where `!variadic`, all of which must appear before any variadic
-/// - `typed_variadic_params`: params where `variadic && annotation.is_some()` (in declaration order)
-/// - `untyped_rest_param`: the single param where `variadic && annotation.is_none()`
-///
-/// Invariant: fixed params must be declared before any variadic params. The calling convention
-/// does not support interleaved fixed/variadic params. Using the FIRST variadic as the boundary
-/// (not the last non-variadic) ensures a non-variadic param declared after any variadic does
-/// not silently misclassify the variadic as fixed — instead the debug_assert fires.
-pub(crate) fn split_params(params: &[Param]) -> (&[Param], Vec<&Param>, Option<&Param>) {
-    // Find the boundary: index of the FIRST variadic param.
-    // All params before this index are fixed; all after are variadic.
-    let fixed_end = params
-        .iter()
-        .position(|p| p.variadic)
-        .unwrap_or(params.len());
-    let fixed_params = &params[..fixed_end];
-
-    let mut typed_variadics: Vec<&Param> = Vec::new();
-    let mut rest: Option<&Param> = None;
-    for p in &params[fixed_end..] {
-        debug_assert!(
-            p.variadic,
-            "non-variadic param declared after a variadic param"
-        );
-        if p.annotation.is_some() {
-            debug_assert!(
-                rest.is_none(),
-                "typed variadic `{}` declared after untyped rest `{}` — ordering violation",
-                p.name,
-                rest.map_or("?", |r| r.name.as_str())
-            );
-            typed_variadics.push(p);
-        } else {
-            rest = Some(p);
-        }
-    }
-
-    (fixed_params, typed_variadics, rest)
-}
-
-/// Convert an `Annotation` to a `Type` for runtime type discrimination.
-///
-/// This is the evaluator-local equivalent of `annotation_name_to_type` in lower.rs.
-/// Only `Simple` annotations produce concrete types; complex annotations (PropertyDict,
-/// Annotated) fall back to `Type::Unknown` (accept-all at runtime).
-///
-/// Must stay in sync with the primitive name mapping in `eval.rs` (TypeAssert nominal
-/// fallback path, lines ~1683) and `annotation_name_to_type` in `lower.rs`.
-fn annotation_to_runtime_type(ann: &Annotation) -> Type {
-    match ann {
-        Annotation::Simple(name) => match name.as_str() {
-            "Int" | "Integer" => Type::Int,
-            "Float" => Type::Float,
-            "String" | "Str" => Type::Str,
-            "Bytes" => Type::Bytes,
-            // Non-primitive named types (TyCon) cannot be reliably resolved at the evaluator
-            // level without the full tycon_env (which may be None during bootstrapping or in
-            // --no-typecheck paths). Fall back to Unknown (accept-all) so that macro functions
-            // like `>>` and `do` which annotate args with @Expr (a nominal TyCon) don't fail
-            // to route args at runtime when Expr is not yet registered in the tycon_env.
-            // T-1691 tracks resolving compound annotations fully.
-            _ => Type::Unknown,
-        },
-        // PropertyDict (@[type: T  default: ...]) and Annotated (@[Seq Int]) are not
-        // resolved at the evaluator level without a full type-checker pass. Fall back to
-        // Unknown so all values match (gradual typing escape hatch).
-        Annotation::PropertyDict(_) | Annotation::Annotated(_, _) => Type::Unknown,
-    }
 }
 
 /// Build a lazy Seq cons-list from a slice of ThunkIds.
@@ -607,7 +546,7 @@ pub(crate) fn get_default(param: &Param) -> Option<Arc<SurfaceNode>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::CoreExpr;
+    use crate::ast::{Annotation, CoreExpr};
     use crate::test_util::sp;
 
     #[test]
@@ -653,169 +592,206 @@ mod tests {
     }
 
     // Helpers for building test Param values.
-    fn fixed_param(name: &str) -> Param {
+    // These helpers assign sequential slots — callers building multi-param lists use
+    // `fixed_param_with_slot` / `typed_variadic_param_with_slot` to assign correct indices.
+    fn fixed_param_with_slot(name: &str, slot: u32) -> Param {
         Param {
             name: name.to_string(),
             annotation: None,
             variadic: false,
+            slot,
+            resolved_type: None,
         }
     }
 
-    fn typed_variadic_param(name: &str, type_name: &str) -> Param {
+    fn typed_variadic_param(name: &str, type_name: &str, slot: u32) -> Param {
+        use crate::type_def::Type;
+        let resolved_type = match type_name {
+            "Int" | "Integer" => Some(Type::Int),
+            "Float" => Some(Type::Float),
+            "String" | "Str" => Some(Type::Str),
+            "Bytes" => Some(Type::Bytes),
+            _ => None,
+        };
         Param {
             name: name.to_string(),
             annotation: Some(sp(Annotation::Simple(type_name.to_string()))),
             variadic: true,
+            slot,
+            resolved_type,
         }
     }
 
-    fn rest_param(name: &str) -> Param {
+    fn rest_param(name: &str, slot: u32) -> Param {
         Param {
             name: name.to_string(),
             annotation: None,
             variadic: true,
+            slot,
+            resolved_type: None,
         }
     }
 
-    // --- split_params tests ---
+    // --- param classification tests (replaces split_params tests) ---
+    //
+    // These tests verify the direct classification logic used in bind_args_thunks:
+    // variadic + concrete resolved_type → typed bucket; variadic + None/Unknown → rest;
+    // !variadic → fixed. Classification now uses resolved_type (set by the type checker)
+    // rather than re-parsing the annotation string.
+
+    fn classify(params: &[Param]) -> (Vec<&Param>, Vec<&Param>, Option<&Param>) {
+        let mut regular_params: Vec<&Param> = Vec::new();
+        let mut typed_variadic_params: Vec<&Param> = Vec::new();
+        let mut rest_param: Option<&Param> = None;
+        for p in params.iter() {
+            if p.variadic {
+                match &p.resolved_type {
+                    Some(ty) if !matches!(ty, Type::Unknown) => {
+                        typed_variadic_params.push(p);
+                    }
+                    _ => rest_param = Some(p),
+                }
+            } else {
+                regular_params.push(p);
+            }
+        }
+        (regular_params, typed_variadic_params, rest_param)
+    }
 
     #[test]
-    fn test_split_params_empty() {
+    fn test_classify_params_empty() {
         let params: &[Param] = &[];
-        let (fixed, typed, rest) = split_params(params);
+        let (fixed, typed, rest) = classify(params);
         assert!(fixed.is_empty());
         assert!(typed.is_empty());
         assert!(rest.is_none());
     }
 
     #[test]
-    fn test_split_params_only_fixed() {
-        let params = vec![fixed_param("x"), fixed_param("y")];
-        let (fixed, typed, rest) = split_params(&params);
+    fn test_classify_params_only_fixed() {
+        let params = vec![fixed_param_with_slot("x", 0), fixed_param_with_slot("y", 1)];
+        let (fixed, typed, rest) = classify(&params);
         assert_eq!(fixed.len(), 2);
         assert!(typed.is_empty());
         assert!(rest.is_none());
     }
 
     #[test]
-    fn test_split_params_single_unannotated_variadic() {
+    fn test_classify_params_single_unannotated_variadic() {
         // Common case: `[fn [let x ...args] ...]`
-        let params = vec![fixed_param("x"), rest_param("args")];
-        let (fixed, typed, rest) = split_params(&params);
+        let params = vec![fixed_param_with_slot("x", 0), rest_param("args", 1)];
+        let (fixed, typed, rest) = classify(&params);
         assert_eq!(fixed.len(), 1);
         assert!(typed.is_empty());
         assert!(rest.is_some());
         assert_eq!(rest.unwrap().name, "args");
+        assert_eq!(rest.unwrap().slot, 1);
     }
 
     #[test]
-    fn test_split_params_typed_and_rest() {
+    fn test_classify_params_typed_and_rest() {
         // `[fn [let x ...strings@String ...nums@Int ...rest] ...]`
         let params = vec![
-            fixed_param("x"),
-            typed_variadic_param("strings", "String"),
-            typed_variadic_param("nums", "Int"),
-            rest_param("rest"),
+            fixed_param_with_slot("x", 0),
+            typed_variadic_param("strings", "String", 1),
+            typed_variadic_param("nums", "Int", 2),
+            rest_param("rest", 3),
         ];
-        let (fixed, typed, rest) = split_params(&params);
+        let (fixed, typed, rest) = classify(&params);
         assert_eq!(fixed.len(), 1);
         assert_eq!(fixed[0].name, "x");
+        assert_eq!(fixed[0].slot, 0);
         assert_eq!(typed.len(), 2);
         assert_eq!(typed[0].name, "strings");
+        assert_eq!(typed[0].slot, 1);
         assert_eq!(typed[1].name, "nums");
+        assert_eq!(typed[1].slot, 2);
         assert!(rest.is_some());
         assert_eq!(rest.unwrap().name, "rest");
+        assert_eq!(rest.unwrap().slot, 3);
     }
 
     #[test]
-    fn test_split_params_only_typed_variadics_no_rest() {
+    fn test_classify_params_only_typed_variadics_no_rest() {
         // `[fn [let ...strings@String ...nums@Int] ...]`
         let params = vec![
-            typed_variadic_param("strings", "String"),
-            typed_variadic_param("nums", "Int"),
+            typed_variadic_param("strings", "String", 0),
+            typed_variadic_param("nums", "Int", 1),
         ];
-        let (fixed, typed, rest) = split_params(&params);
+        let (fixed, typed, rest) = classify(&params);
         assert!(fixed.is_empty());
         assert_eq!(typed.len(), 2);
         assert!(rest.is_none());
     }
 
     #[test]
-    fn test_split_params_all_fixed_then_rest() {
+    fn test_classify_params_all_fixed_then_rest() {
         // `[fn [let a b c ...rest] ...]`
         let params = vec![
-            fixed_param("a"),
-            fixed_param("b"),
-            fixed_param("c"),
-            rest_param("rest"),
+            fixed_param_with_slot("a", 0),
+            fixed_param_with_slot("b", 1),
+            fixed_param_with_slot("c", 2),
+            rest_param("rest", 3),
         ];
-        let (fixed, typed, rest) = split_params(&params);
+        let (fixed, typed, rest) = classify(&params);
         assert_eq!(fixed.len(), 3);
         assert!(typed.is_empty());
         assert_eq!(rest.unwrap().name, "rest");
-    }
-
-    // --- annotation_to_runtime_type tests ---
-
-    #[test]
-    fn test_annotation_to_runtime_type_primitives() {
-        use crate::type_def::Type;
-        assert_eq!(
-            annotation_to_runtime_type(&Annotation::Simple("Int".to_string())),
-            Type::Int
-        );
-        assert_eq!(
-            annotation_to_runtime_type(&Annotation::Simple("Integer".to_string())),
-            Type::Int
-        );
-        assert_eq!(
-            annotation_to_runtime_type(&Annotation::Simple("Float".to_string())),
-            Type::Float
-        );
-        assert_eq!(
-            annotation_to_runtime_type(&Annotation::Simple("Str".to_string())),
-            Type::Str
-        );
-        assert_eq!(
-            annotation_to_runtime_type(&Annotation::Simple("String".to_string())),
-            Type::Str
-        );
-        assert_eq!(
-            annotation_to_runtime_type(&Annotation::Simple("Bytes".to_string())),
-            Type::Bytes
-        );
+        assert_eq!(rest.unwrap().slot, 3);
     }
 
     #[test]
-    fn test_annotation_to_runtime_type_named() {
-        use crate::type_def::Type;
-        // Non-primitive named types fall back to Unknown (accept-all) at the evaluator level.
-        // The tycon_env may not be available during bootstrapping, so TyCon lookup is deferred.
-        // T-1691 tracks full resolution of compound/named annotations.
-        assert_eq!(
-            annotation_to_runtime_type(&Annotation::Simple("Bool".to_string())),
-            Type::Unknown
-        );
-        assert_eq!(
-            annotation_to_runtime_type(&Annotation::Simple("MyType".to_string())),
-            Type::Unknown
-        );
+    fn test_classify_params_slots_match_declaration_order() {
+        // Verify that slots are the resolver-assigned indices, not loop indices.
+        let params = vec![
+            fixed_param_with_slot("a", 0),
+            fixed_param_with_slot("b", 1),
+            typed_variadic_param("xs", "Int", 2),
+            rest_param("rest", 3),
+        ];
+        let (fixed, typed, rest) = classify(&params);
+        assert_eq!(fixed[0].slot, 0);
+        assert_eq!(fixed[1].slot, 1);
+        assert_eq!(typed[0].slot, 2);
+        assert_eq!(rest.unwrap().slot, 3);
     }
 
     #[test]
-    fn test_annotation_to_runtime_type_complex_falls_back_to_unknown() {
+    fn test_classify_params_resolved_type_determines_bucket() {
         use crate::type_def::Type;
-        // PropertyDict and Annotated fall back to Unknown (accept-all at runtime).
-        assert_eq!(
-            annotation_to_runtime_type(&Annotation::PropertyDict(vec![])),
-            Type::Unknown
-        );
-        assert_eq!(
-            annotation_to_runtime_type(&Annotation::Annotated(
-                "Seq".to_string(),
-                Box::new(Annotation::Simple("Int".to_string()))
-            )),
-            Type::Unknown
-        );
+        // Typed variadic uses resolved_type (not the annotation string) for classification.
+        // A param with resolved_type=Some(Type::Int) is a typed bucket.
+        // A param with resolved_type=None is the rest bucket.
+        // A param with resolved_type=Some(Type::Unknown) is the rest bucket (accept-all = no bucket).
+        let int_bucket = Param {
+            name: "ns".to_string(),
+            annotation: Some(sp(Annotation::Simple("Int".to_string()))),
+            variadic: true,
+            slot: 0,
+            resolved_type: Some(Type::Int),
+        };
+        let unknown_bucket = Param {
+            name: "rest".to_string(),
+            annotation: Some(sp(Annotation::Simple("Unknown".to_string()))),
+            variadic: true,
+            slot: 1,
+            resolved_type: Some(Type::Unknown),
+        };
+        let none_bucket = Param {
+            name: "extra".to_string(),
+            annotation: None,
+            variadic: true,
+            slot: 2,
+            resolved_type: None,
+        };
+        let params = vec![int_bucket, unknown_bucket.clone(), none_bucket.clone()];
+        let (fixed, typed, rest) = classify(&params);
+        assert!(fixed.is_empty());
+        assert_eq!(typed.len(), 1);
+        assert_eq!(typed[0].name, "ns");
+        // The last variadic with None/Unknown resolved_type wins as rest.
+        assert!(rest.is_some());
+        // With two None/Unknown variadics, the last one becomes rest (same as old split_params).
+        assert_eq!(rest.unwrap().name, "extra");
     }
 }

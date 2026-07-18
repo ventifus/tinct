@@ -4778,6 +4778,7 @@ fn test_cek_compute_sccs_fn_body_sibling_reference_creates_dependency() {
         name: "x".to_string(),
         annotation: None,
         variadic: false,
+        resolved_annotation_type: crate::ast::TypeAnnotation::new(),
     };
     let fn_body = varref_node("sibling");
     let fn_node = sn(SurfaceExpression::Fn {

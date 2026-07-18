@@ -152,6 +152,12 @@ pub struct Param {
     pub name: String,
     pub annotation: Option<Spanned<Annotation>>,
     pub variadic: bool,
+    /// Declaration-order slot index assigned by the lowerer.
+    /// Matches the de Bruijn slot coordinate used by the resolver and scope arena.
+    pub slot: u32,
+    /// Type resolved by the type checker from the parameter annotation.
+    /// `None` means unknown/unannotated — accept all values at runtime (gradual typing).
+    pub resolved_type: Option<crate::type_def::Type>,
 }
 
 impl std::fmt::Display for Param {
@@ -947,6 +953,10 @@ pub struct SurfaceParam {
     pub name: String,
     pub annotation: Option<Spanned<Annotation>>,
     pub variadic: bool,
+    /// Type resolved by the type checker from the parameter annotation.
+    /// Set during `infer_fn_push_cont`; read by the lowerer to populate `CoreParam::resolved_type`.
+    /// Clone resets to empty (cloned nodes in new scopes must be re-annotated).
+    pub resolved_annotation_type: TypeAnnotation,
 }
 
 /// Flatten a dot-access chain into a qualified tag string, or return `None` if the
@@ -1454,6 +1464,12 @@ pub struct CoreParam {
     pub name: String,
     pub annotation: Option<Spanned<Annotation>>,
     pub variadic: bool,
+    /// Declaration-order slot index assigned by the lowerer.
+    /// Matches the de Bruijn slot coordinate used by the resolver and scope arena.
+    pub slot: u32,
+    /// Type resolved by the type checker from the parameter annotation.
+    /// `None` means unknown/unannotated — accept all values at runtime (gradual typing).
+    pub resolved_type: Option<crate::type_def::Type>,
 }
 
 /// A match arm in a CoreExpr::Match.

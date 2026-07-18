@@ -5625,6 +5625,8 @@ fn push_expr_to_parent(
                                             name: name.clone(),
                                             annotation: Some(annotation.clone()),
                                             variadic: false,
+                                            resolved_annotation_type:
+                                                crate::ast::TypeAnnotation::new(),
                                         },
                                         binding.span.clone(),
                                     ));
@@ -5640,6 +5642,8 @@ fn push_expr_to_parent(
                                             name: name.clone(),
                                             annotation: None,
                                             variadic: false,
+                                            resolved_annotation_type:
+                                                crate::ast::TypeAnnotation::new(),
                                         },
                                         binding.span.clone(),
                                     ));
@@ -5651,6 +5655,8 @@ fn push_expr_to_parent(
                                             name: name.clone(),
                                             annotation: rest_ann.clone(),
                                             variadic: true,
+                                            resolved_annotation_type:
+                                                crate::ast::TypeAnnotation::new(),
                                         },
                                         binding.span.clone(),
                                     ));
