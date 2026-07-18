@@ -164,6 +164,26 @@ impl ScopeArena {
         self.scopes[env_id.0 as usize].clear();
     }
 
+    /// Look up a name by walking the scope chain from `scope_id` toward the root.
+    ///
+    /// The scope arena IS the authoritative type-stage environment — this function
+    /// is the bridge that lets the type checker read type-stage values directly from
+    /// the scope chain wired via `builtin-tc-with-scope`, without any translation layer.
+    ///
+    /// Returns the first thunk whose slot name matches `name`, or `None` if not found
+    /// anywhere in the chain.
+    pub fn lookup_name_in_scope_chain(&self, scope_id: u32, name: &str) -> Option<Arc<crate::value::Thunk>> {
+        let scope = self.scopes.get(scope_id as usize)?;
+        if let Some(i) = scope.slot_names.iter().position(|n| n == name) {
+            return scope.slots.get(i)?.as_ref().map(Arc::clone);
+        }
+        if let Some(parent) = scope.parent {
+            self.lookup_name_in_scope_chain(parent.0, name)
+        } else {
+            None
+        }
+    }
+
     /// Get a reference to the environment at the given handle.
     #[cfg(test)]
     fn get(&self, id: ScopeId) -> &Scope {

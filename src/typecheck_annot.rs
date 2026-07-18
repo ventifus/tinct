@@ -2285,6 +2285,53 @@ async fn resolve_type_head(
         }
     }
 
+    // Step 4b: scope-chain lookup via type_stage_scope_id.
+    //
+    // The scope arena IS the authoritative type-stage environment — the scope wired by
+    // `builtin-tc-with-scope` contains the evaluated TypeNode values (Integer: TypeNode.Int,
+    // etc.). Walk the chain directly, materialize the value, and convert it to a Type.
+    // No translation layer, no separate HashMap, no Env copy. Values are read on demand.
+    //
+    // This is the general mechanism for any tinct code that evaluates a type-stage section
+    // and wires the resulting scope into the TypeContext.
+    if let (Some(scope_id), Some(eval_ctx)) = (state.type_stage_scope_id, &state.eval_ctx) {
+        if let Some(thunk) = eval_ctx
+            .scope_arena
+            .borrow()
+            .lookup_name_in_scope_chain(scope_id, name)
+        {
+            if let Ok(val) =
+                crate::eval::materialize(&thunk, None, eval_ctx).await
+            {
+                if let Some(ty) = crate::type_normalize::typenode_leaf_to_type(&val) {
+                    // Leaf TypeNode (TypeNode.Int → Type::Int, etc.)
+                    if args.is_empty() {
+                        return Ok(ty);
+                    }
+                    let mut result = ty;
+                    for arg in args {
+                        result = Type::App(Box::new(result), Box::new(arg.clone()));
+                    }
+                    return Ok(result);
+                }
+                // Parameterized type constructor (function) — allocate a ThunkId and
+                // use evaluate_resolver_with_thunk for lazy application with args.
+                if matches!(val, crate::value::Value::Function { .. } | crate::value::Value::Builtin(_)) {
+                    let thunk_id = eval_ctx.alloc_thunk(
+                        0,
+                        std::sync::Arc::new(crate::value::Thunk::value(val, span.clone())),
+                    );
+                    if let Some(ty) =
+                        crate::type_normalize::evaluate_resolver_with_thunk(thunk_id, args, eval_ctx)
+                            .await
+                    {
+                        return Ok(ty);
+                    }
+                }
+            }
+        }
+    }
+
     // Step 5: tycon_env — bootstrap fallback for types declared in builtin_core.llt that
     // were not found in the type-stage (e.g., DirCap, NetCap, TypeContext, and primitive
     // types when prelude is not yet loaded).

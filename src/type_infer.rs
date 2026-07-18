@@ -322,6 +322,14 @@ pub struct InferState {
     /// Populated in lib.rs by forcing all type-stage thunks before type-checking begins.
     /// Replaces the old lazy type_stage_thunks with fully materialized entries.
     pub type_stage_map: Option<std::collections::HashMap<String, TypeStageEntry>>,
+    /// Scope-id of the evaluated type-stage env (from `builtin-tc-with-scope`).
+    ///
+    /// When set, `resolve_type_head` looks up annotation names directly in the scope
+    /// chain via `ScopeArena::lookup_name_in_scope_chain`. The scope arena IS the
+    /// authoritative type-stage environment — no translation layer.
+    ///
+    /// Populated by `builtin-typecheck-doc` from `TypeContextData.type_stage_scope_id`.
+    pub type_stage_scope_id: Option<u32>,
     /// Pending param narrowings from the most recently inferred function (compatibility field).
     pub pending_param_narrowings: Vec<Option<Type>>,
     /// Unified TypeVar table (from HEAD~1 design).
@@ -377,6 +385,7 @@ impl InferState {
             main_env: None,
             eval_ctx: None,
             type_stage_map: None,
+            type_stage_scope_id: None,
             pending_param_narrowings: Vec::new(),
             type_vars: indexmap::IndexMap::new(),
             bounds: std::collections::HashMap::new(),

@@ -2413,6 +2413,7 @@ pub(crate) fn builtin_typecheck_doc(
             // evaluate TypeStageApp nodes (e.g. Integer → TypeNode.Int → Type::Int).
             state.eval_ctx = Some(Arc::clone(&ctx));
             state.type_stage_env = Some(Arc::clone(&guard.type_stage_env));
+            state.type_stage_scope_id = guard.type_stage_scope_id;
             let type_map = crate::ast::TypeAnnotationTable::new();
             let parent_env = Arc::clone(&guard.inference_env);
             (state, type_map, parent_env)
