@@ -1,0 +1,37 @@
+## Review: grammar-architect (S-926 thin-meta-api, second pass)
+
+### Findings
+
+- FINDING: G2 still broken — Token::At and Token::ImmediateAt absent from inline header value parser (parser.rs:3790 `_ =>` fallback). Every `--- expects: @Dict`, `--- caps: [%nc: @NetCap]`, `--- expects: @[type: Dict]` hits "unsupported token in header value: At". Root: the parallel mini-parser at lines 3628-3800 handles only OpenBracket, CloseBracket, QuotedString, Identifier, Colon, Int. Token::At/ImmediateAt and Token::Float are absent. Fix: add At/ImmediateAt arms that call parse_annotation(). | SCOPE: fix-now | FILE: src/parser.rs:3790
+
+- FINDING: %config@Type annotation on section header broken — after storing the section name from `Identifier("%config")`, the parser continues and immediately encounters `ImmediateAt` in the outer header loop which falls through to the `_ =>` branch ("unexpected token in section header: ImmediateAt"). The %name handler at lines 3554-3572 does not consume or handle a trailing ImmediateAt+Type annotation. Fix: after storing the section name, check for ImmediateAt and parse the annotation (storing under "type" or "annotation" key in the header). | SCOPE: fix-now | FILE: src/parser.rs:3554-3572
+
+- FINDING: %@Dict and %@[...] syntax broken — `--- %@Dict` lexes as Identifier("%") + ImmediateAt + Identifier("Dict"). The %name handler extracts key="%", trim_start_matches('%')="" → empty string → error "bare '%' in section header". This syntax appears in two corpus tests (input_validation_percent_at.llt-eval, errors/input_validation_mismatch.llt-eval) and means "input % is expected to be of this type". The parser has no code path for this. Fix: in the %name handler, detect the empty-name + ImmediateAt case and store an "expects" (or "input-type") header entry from the following annotation. | SCOPE: fix-now | FILE: src/parser.rs:3558-3563
+
+- FINDING: Duplicate section name detection not implemented — doc/09-documents.md line 353 says "Duplicate section names within a file are a parse error", but no seen_sections set exists anywhere in parser.rs. The corpus test tests/corpus/invalid/pipeline/duplicate_section_name.llt-eval expects `3:5: duplicate section name '%foo' in file` but will not produce this error. Fix: add a `seen_section_names: HashSet<String>` in the parser state, check before inserting "name" into the header, emit a ParseError on collision. | SCOPE: fix-now | FILE: src/parser.rs:3558 (needs new HashSet at ~line 1214)
+
+- FINDING: Token::Float absent from inline header value parser — `--- timeout: 3.14` would produce "unsupported token in header value: Float". No corpus test exercises this, but the gap is real and violates the principle that headers accept arbitrary values. Fix: add Token::Float arm analogous to Token::Int. | SCOPE: fix-now | FILE: src/parser.rs:3789
+
+- FINDING: G3 (doc grammar) formal grammar still incomplete — doc/09-documents.md line 554 defines `value = bracket_expr | string_literal | integer_literal | identifier` with no mention of `@Type` annotations, `%@Type` input-contract form, or float literals. The grammar has diverged from the newly added corpus tests. Fix: extend the grammar rule to include the annotation forms. | SCOPE: fix-now | FILE: doc/09-documents.md:550-555
+
+- FINDING: G8 (stale line reference) — doc/09-documents.md line 425 cites `value.rs:445-460` for `Environment::get()`. That range now contains `DictBuilder::get` and `DictBuilder::get_or` (a different struct). Fix: remove or correct the line reference. | SCOPE: fix-now | FILE: doc/09-documents.md:425
+
+### Axiomatic checks
+
+- Prelude speaks the Rust protocol: PASS. builtin-doc-meta evaluates header values correctly; loader.llt consumes the result without special-casing.
+- No fast paths, no fallbacks: CONCERN. The inline mini-parser (3628-3800) is itself a fallback — a parallel reduced implementation that will always be incomplete. The correct fix is for At/ImmediateAt arms to delegate to parse_annotation(), not add more ad-hoc token handling.
+- Correctness, not performance: FAIL on G2/duplicate-name/Float — the parser silently errors or silently accepts wrong input instead of producing correct behavior.
+- Loader/prelude agnosticism: PASS. update-named is correct and agnostic.
+- General case, not specific: CONCERN on %@Type — the %name handler handles the named-section case but not the annotated-input case; fixing the specific known patterns instead of making the header grammar compositional would be a violation.
+
+### What was fixed correctly (confirmed)
+
+- G1 (named sections %name): parser.rs:3554-3572 correctly handles `--- %name`, stores header["name"]. Confirmed working for named_sections.llt-eval, named_section_reference.llt-eval, empty_trailing_named_section.llt-eval.
+- G4 (loader update-named): builtin-doc-meta (builtins_meta.rs:3143-3156) evaluates header values; update-named (loader.llt:293-297) logic is correct.
+- G5 (parallel parser — structural concern): acknowledged but the mini-parser is now present and was required for the other fixes. The remaining token-handling gaps are the actionable items.
+
+### Verdict
+
+REQUEST_CHANGES
+
+Four fix-now findings prevent the sprint from shipping: G2 (@Type in header values), annotated section names (%config@Type), %@Type syntax, and missing duplicate-section-name detection. All are parser.rs changes plus one doc update. None depend on each other and all can be done in one pass through the header parsing code.

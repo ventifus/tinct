@@ -1,0 +1,37 @@
+## Review: type-theorist
+
+### Findings
+
+- FINDING: `bas.rs:515-516` — `typed_variadics` and `rest` compared via structural equality (`sub_tv == sup_tv` / `sub_rest == sup_rest`) in the BAS atom-subtype Function-Function arm, instead of the proper contravariant subtype recursion used for fixed params (line 523: `Type::is_subtype_bas(pp_ty, sp_ty, ...)`). This means `is_subtype(Fn[...xs@[Seq Number]], Fn[...xs@[Seq Int]])` returns `false` even when it should return `true` (contravariance: `Seq[Int] <: Seq[Number]` so the Number-bucket function is a subtype of the Int-bucket function). The S-938 sprint introduced `typed_variadics`/`rest` into `Atom::Function` but did not apply the same contravariant-subtype treatment to them. Fix: replace `&& sub_tv == sup_tv && sub_rest == sup_rest` with: `&& sub_tv.len() == sup_tv.len() && sub_tv.iter().zip(sup_tv.iter()).all(|((_, st), (_, pt))| Type::is_subtype_bas(pt, st, tycon_env, sigma)) && match (sub_rest, sup_rest) { (Some(sr), Some(pr)) => Type::is_subtype_bas(&pr.1, &sr.1, tycon_env, sigma), (None, None) => true, _ => false }` | SCOPE: fix-now | FILE: src/bas.rs:514-516
+
+- FINDING: `typecheck_cek.rs:2171-2174` — `finalize_call_no_positional_args` still uses `required_count.saturating_sub(1)` for `min_required` when `variadic && !params.is_empty()`. This is inconsistent with `apply_call_args_poly` (line 2272) which correctly sets `min_required = fn_required` directly, with an explicit comment: "required_count is fixed-params-only (variadics are not included), so no saturating_sub is needed." Since `required_count` is now correctly set to `param_types.len()` (fixed params only, never counting variadics — see `infer_fn_push_cont` line 2779), the `saturating_sub(1)` is wrong: it under-counts the minimum required fixed params for variadic functions with named-arg-only call sites. Fix: replace lines 2171-2174 with `let min_required = required_count;` and update the adjacent comment to match `apply_call_args_poly`. | SCOPE: fix-now | FILE: src/typecheck_cek.rs:2171-2174
+
+- FINDING: `type_unify.rs:2454-2465` — Variadic mismatch error message when `is_variadic_1 != is_variadic_2 || tv1.len() != tv2.len()` emits "variadic mismatch: variadic vs variadic" when both are variadic but have different bucket counts, which does not tell the user why the mismatch occurred. Fix: expand the format string to also report bucket counts: e.g. `"variadic mismatch: {} ({} typed buckets) vs {} ({} typed buckets)"`. | SCOPE: fix-now | FILE: src/type_unify.rs:2452-2470
+
+---
+
+### Axiom Checks
+
+- **Prelude speaks the Rust protocol**: PASS. No Rust code embeds prelude-specific behavior. `is_consistent_subtype`, `extract_seq_elem_type`, `infer_fn_push_cont`, and `apply_call_args_poly` are all general functions.
+
+- **No fast paths, no fallbacks, no backwards compatibility**: PASS. No fast paths introduced. The unannotated-rest path (no typed buckets → skip materialization) is the correct behavior, not a shortcut.
+
+- **Correctness, not performance**: FAIL (partially). The BAS `typed_variadics` comparison at `bas.rs:515-516` is structurally incorrect (uses `==` instead of subtype recursion). The `finalize_call_no_positional_args` `saturating_sub(1)` is incorrect (contradicts the invariant established elsewhere in this sprint). Both are correctness bugs, not performance shortcuts. The rest of the implementation is correct.
+
+- **Loader/prelude agnosticism**: PASS. All routing logic is general; no prelude assumptions.
+
+- **General case, not specific**: PASS. The N-bucket match-semantics routing is fully general. `extract_seq_elem_type` handles the general `App(TyCon("Seq"), T)` form.
+
+---
+
+### Verdict
+
+REQUEST_CHANGES
+
+Two fix-now correctness bugs must be addressed before merge:
+
+1. **bas.rs:515-516** — `typed_variadics`/`rest` use structural equality instead of contravariant subtype recursion in BAS atom-subtype Function-Function arm. This directly violates the standard function subtyping rule (contravariant params, covariant return) for the new fields. It means subtype relationships involving typed-variadic functions produce incorrect results from `is_subtype`, which propagates to narrowing, TypeAssert validation, and constraint solving.
+
+2. **typecheck_cek.rs:2171-2174** — `finalize_call_no_positional_args` still uses `saturating_sub(1)` for `min_required`, inconsistent with `apply_call_args_poly` which was correctly fixed in this sprint. With `required_count` now correctly counting only fixed params, the subtraction produces wrong arity bounds for variadic functions at named-arg-only call sites.
+
+Finding 3 (error message nit) is also fix-now per review protocol: nits do not accumulate.

@@ -1,5 +1,5 @@
 ---
-description: Self-looping development cycle — review, groom, sprint, commit, repeat until backlog is clear.
+description: Self-looping development cycle — review, groom, sprint, repeat until backlog is clear.
 allowed-tools: Agent, Bash(just:*), Bash(git:*), Bash(gh:*), Read, Write, Edit, Glob, Grep, Skill, mcp__mempalace-tinct__*, mcp__tracker__*
 model: opus
 ---
@@ -13,9 +13,8 @@ while true:
   0. Determine cycle number N
   1. Review — only if N % 5 == 1 (cycles 1, 6, 11, ...)
   2. Groom backlog
-  3. Sprint next sprint
-  4. Commit
-  5. Check completion → if done, exit
+  3. Sprint next sprint (commits on completion)
+  4. Check completion → if done, exit
 ```
 
 ### Phase 0: Determine Cycle Number
@@ -48,19 +47,10 @@ After `/groom` completes, the backlog is ready for Phase 3.
 4. Check the sprint's response for the `NEEDS_DESIGN` signal. If the sprint reports `NEEDS_DESIGN: [slug] — [items]`:
    - Log to mempalace: `"Cycle #N | Sprint: [slug] | HALTED: unresolved design work"`
    - Stop the cycle and report: `"Cycle halted: sprint [slug] has unresolved design work. Run /rnd [slug] first, then resume /cycle."`
-   - Do NOT proceed to Phase 4 or loop back to Phase 1
+   - Do NOT proceed to Phase 4 (Completion Check) or loop back to Phase 1
 5. Otherwise the sprint implements all tasks, gates through the sprint-reviewer (inner loop), then runs the specialist panel review with a fix loop until all agents approve
 
-### Phase 4: Commit
-
-1. Check if there are any changes to commit (`git status --short`). If no changes, skip the commit.
-2. Run `just build` then `just test-lib` to confirm everything compiles and unit tests pass. If either fails, fix every failure before committing — including pre-existing ones. Investigate root causes; never work around failures by skipping tests, suppressing warnings, or using `--no-verify`. Pre-existing failures are not a pass. If a pre-existing failure is too large to fix inline, create a tracker sprint/item for it and fix it before committing.
-3. Stage all changes: `git add -u` for tracked files, then `git add -A --ignore-errors` to pick up any new files (gitignore already excludes .tmp/, .training/, etc.)
-4. Create a single commit. The sprint reports its slug and description — use them for the message:
-   - Analysis + sprint: `"[slug]: [description]"`
-   - Analysis only (sprint skipped): `"review: codebase health check, findings added to tracker"`
-
-### Phase 5: Completion Check
+### Phase 4: Completion Check
 
 After every cycle, check if we're done:
 
@@ -91,7 +81,7 @@ Fields:
 
 - **Phase 1 cadence**: run `/analyze` only on cycles where `N % 5 == 1`. Never run it on other cycles; never skip it on analysis cycles.
 - **One sprint per cycle**: do not run multiple sprints in a single cycle. Each sprint gets its own health check sandwich.
-- **One commit per cycle**: `/sprint` never commits. All changes accumulate as uncommitted edits until Phase 4 creates the single commit.
+- **One commit per cycle**: `/sprint` commits at the end of Step 5. Cycle does not commit.
 - **Context management**: dispatch all heavy work to agents. Your context stays focused on coordination: backlog grooming, sprint file status, commit logistics, and cycle logging.
 - **No ralph-loop**: this skill loops internally. Do not use ralph-loop — its stop hook conflicts with background agent polling.
 - **Never pause or ask the user**: the cycle is fully autonomous. Do not stop to ask whether to continue, whether the session is too long, or whether context pressure is a concern. Keep looping until the tracker backlog is empty. If you feel the urge to ask the user a question mid-cycle, don't — just keep going.

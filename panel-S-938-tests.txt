@@ -1,0 +1,263 @@
+## Review: test-crafter
+## Sprint: S-938 multi-variadic-params
+
+---
+
+## Axiom Checks
+
+**Prelude speaks the Rust protocol**: PASS.
+`annotation_to_runtime_type`, `split_params`, `value_matches_type`, and `build_seq` are
+general Rust functions with no prelude-specific assumptions. The test-loader's `_prelude`
+fatal check counting only `errors` (not `tc-warnings`) is policy set in tinct code, not
+hardwired into Rust. The exhaustiveness warning in AfterFnBody fires for ALL typed-only
+variadic functions regardless of whether they are in prelude or user code.
+
+**No fast paths, no fallbacks, no backwards compatibility**: PASS.
+The unannotated-rest optimization (skip materialization when `bucket_types.is_empty()`)
+is not a fast path — it is correct behavior for the case where no type discrimination
+is needed. Materializing with no typed buckets would force thunks unnecessarily and break
+the laziness guarantee. The deleted parser constraints (`multiple_variadics.llt-eval`,
+`param_after_variadic.llt-eval`) are correctly replaced by type-system enforcement, not
+preserved alongside it.
+
+**Correctness, not performance**: PASS.
+Materialization of excess positional args is a necessary strictness point for typed
+bucket dispatch, analogous to TypeAssert. `build_seq` constructs cons-cells
+right-to-left (correct). `extract_seq_elem_type` correctly unwraps `App(Seq, T)`.
+
+**Loader/prelude agnosticism**: PASS.
+All routing functions are general. The feature works correctly with an empty prelude.
+
+**General case, not specific**: PASS.
+N typed buckets + 1 optional untyped fallback, declaration order = match priority.
+Not special-cased for any specific number of buckets or specific types.
+
+---
+
+## Findings
+
+### FINDING: Three new corpus tests in `type_errors/` use `=== warn` sections — path enforcement violation | SCOPE: fix-now | FILE: tests/corpus/eval/type_errors/variadic_typed_after_rest_error.llt-eval, variadic_fixed_after_variadic_error.llt-eval, variadic_exhaustiveness_call_site.llt-eval
+
+The test-loader enforces path-based section rules (stdlib/test-loader.llt:681-700):
+
+  `=== warn` sections are ONLY allowed in tests under a `warnings/` path component.
+
+The enforcement logic (lines 686-688) computes `warn-ok = in-warnings` when the test
+HAS a non-empty `=== warn` section. `in-warnings` is `path-has-component path "warnings"`.
+The path `tests/corpus/eval/type_errors/` does NOT contain the component `"warnings"`,
+so `in-warnings = False`, `warn-ok = False`, and the runner will fail all three tests with:
+
+  "=== warn section not allowed outside warnings/ directory: <path>"
+
+The prior art is clear: existing `type_errors/` tests (e.g.
+`match_non_exhaustive.llt-eval`, `wrong_return_type.llt-eval`) use `=== out` with
+`[TypeError]` / `[UnificationFailure]` prefixed output — not `=== warn`. These three
+new tests must follow the same convention OR be moved to `tests/corpus/eval/typecheck/warnings/`.
+
+Two options to fix:
+  A. Move all three to `tests/corpus/eval/typecheck/warnings/` (preferred — they are
+     type-checker warnings, not eval errors).
+  B. Change them to use `=== out` with `[TypeError]` prefixed output matching the
+     repr that the formatter emits for type errors (harder — requires knowing exact
+     formatter output for each error).
+
+Option A is correct per the taxonomy: type-checker ordering violations and call-site
+bucket exhaustiveness errors are type warnings produced by the CEK machine, not eval
+errors. The `warnings/` directory is the correct home.
+
+Additionally, `variadic_exhaustiveness_call_site.llt-eval` defines
+`[fn [let ...ss@String ...ns@Int] ss]` (no rest), which fires BOTH:
+  1. The definition-time AfterFnBody "non-exhaustive variadic type dispatch" warning
+  2. The call-site "argument type Float does not match any variadic bucket" warning
+
+The `=== warn` section only mentions the call-site warning substring. After fixing the
+path issue (moving to `warnings/`), the `=== warn` check uses substring matching on
+joined warning text, so both warnings present + the call-site substring present = PASS.
+The definition-time warning firing is acceptable — it appears in the joined text and the
+substring check still passes. However, the test comment should acknowledge both warnings
+to avoid confusion.
+
+### FINDING: `multi_variadic_exhaustive_no_rest.llt-eval` will fail — asserts zero warnings but definition triggers AfterFnBody exhaustiveness warning | SCOPE: fix-now | FILE: tests/corpus/eval/functions/multi_variadic_exhaustive_no_rest.llt-eval
+
+The test defines `[fn [let ...strings@String ...nums@Int] [head strings]]` — two typed
+variadic buckets, no `...rest` fallback. This is exactly the pattern that triggers the
+AfterFnBody check at typecheck_cek.rs:812:
+
+  `if !typed_variadics.is_empty() && rest.is_none()`
+
+The warning text emitted: "non-exhaustive variadic type dispatch: typed buckets cover
+String | Int but no fallback (...rest) handles other types — add ...rest for a wildcard
+bucket"
+
+The test is in `tests/corpus/eval/functions/` with no `=== warn` section, which asserts
+zero type-checker warnings. The `check-warn` function will return:
+  "expected no warnings, got:\nnon-exhaustive variadic type dispatch: ..."
+and the test will fail.
+
+This test must be moved to `tests/corpus/eval/typecheck/warnings/` AND given a `=== warn`
+section capturing the exhaustiveness warning substring. The test intent is correct — it
+proves that typed-only variadics with matching args work correctly at runtime. It just
+needs to acknowledge the warning produced at definition time.
+
+Note: `multi_variadic_typed_single_bucket.llt-eval`, `multi_variadic_two_buckets_routing.llt-eval`,
+`multi_variadic_rest_fallback.llt-eval`, and `multi_variadic_bucket_count.llt-eval` all
+include `...rest` and are correctly placed in `functions/` with no `=== warn` — no issue
+there.
+
+### FINDING: No corpus test for named args routing to rest bucket (not to typed buckets) | SCOPE: fix-now | FILE: tests/corpus/eval/functions/ (new test needed)
+
+The spec and implementation (eval_call.rs:439-448) explicitly states: named args always
+go into the rest bucket, NOT into typed buckets. They are never type-discriminated.
+This is a distinct behavioral claim ("named args routed to rest only") with no corpus
+test verifying it.
+
+Mutation target: if someone changed the named-arg routing to also check typed buckets,
+no existing test would catch it.
+
+Required test:
+  A function `[fn [let ...ss@String ...rest] ss]` called as `[f name: "alice" 1 2]`.
+  The named arg `name: "alice"` (a String) should go to `rest`, NOT to `ss`.
+  The typed bucket `ss` should contain only the positional String args.
+  If named args were wrongly type-dispatched into `ss`, the bucket length would be wrong.
+
+### FINDING: No corpus test verifying empty typed bucket binds to `[]` (Seq nil) | SCOPE: fix-later | FILE: tests/corpus/eval/functions/ (new test needed)
+
+`build_seq` (eval_call.rs:569-589) documents that an empty bucket binds to
+`Value::Dict({})` — the Seq nil sentinel (empty dict, which `null?` returns true for).
+No corpus test verifies that when no args match a typed bucket, the bucket variable
+actually holds `[]`.
+
+`multi_variadic_empty_bucket_no_error.llt-eval` is named to address this but does
+NOT actually verify the empty bucket. It defines `[fn [let ...ns@Int ...rest] [head ns]]`
+and calls `[f 10 20 30]` — ALL args match `...ns@Int`, so `ns` is non-empty. The test
+does NOT have an empty bucket at all. The comment "Typed variadic bucket is empty when
+no args match its type" is in the test description but the actual test never has an empty
+`ss@String` bucket.
+
+A correct test for empty bucket:
+  `[fn [let ...ss@String ...ns@Int ...rest] [null? ss]]` called with `[f 1 2 3]`
+  → `Bool(true)` (all args are Int, no args match String, so `ss = []`)
+
+### FINDING: `multi_variadic_empty_bucket_no_error.llt-eval` — misleading test title and comment | SCOPE: fix-now | FILE: tests/corpus/eval/functions/multi_variadic_empty_bucket_no_error.llt-eval:1-8
+
+The test name says "empty_bucket_no_error" and the comment says "Typed variadic bucket
+is empty when no args match its type. ...ss@String gets no args (all args are Int)".
+But the actual test defines `[fn [let ...ns@Int ...rest] [head ns]]` with NO `...ss@String`
+bucket at all. There is no `ss` bucket — the comment describes a scenario the test does
+not implement.
+
+The test actually tests: "function with single typed Int bucket routes all Int args
+correctly" — which is already covered by `multi_variadic_typed_single_bucket.llt-eval`
+with different args. These two tests are nearly redundant.
+
+Fix: either rewrite the test to actually have an empty `ss@String` bucket (distinct from
+the bucket-count test), or rename it to `multi_variadic_single_int_bucket.llt-eval` with
+an accurate comment.
+
+### FINDING: No laziness proof test for typed bucket routing — materialization strictness not demonstrated | SCOPE: fix-later | FILE: tests/corpus/eval/laziness/ (new test needed)
+
+The implementation (eval_call.rs:406-418) materializes each excess positional arg when
+typed buckets exist. This is a necessary strictness point. No test demonstrates this
+laziness-breaking behavior — a user needs to know that `[f (error "boom")]` WILL error
+even if the bucket containing it is never accessed.
+
+Contrast: there are laziness proofs for `merge`, `dict_merge_overlay_lazy`, etc. that
+prove non-evaluation of unaccessed branches. The multi-variadic case is the INVERSE:
+prove that evaluation IS forced for routing purposes.
+
+Required test (in `tests/corpus/eval/laziness/`):
+  `[f: [fn [let ...ns@Int ...rest] 42]]`
+  `[try [fn [] [f [raise "forced"]]]]` → `Result.Error` (the raise fires because
+  materialization is required for type discrimination, even though the bucket is never
+  used by the body).
+
+This test validates the "necessary strictness point" claim in the comments.
+
+### FINDING: `test_multi_variadic_unannotated_rest_typecheck` and `test_multi_variadic_call_unannotated_typecheck` name the wrong concept | SCOPE: fix-later | FILE: src/typecheck_tests.rs:2174-2195
+
+These tests are named `test_multi_variadic_*` but they test the plain single-unannotated-
+rest case (`[fn [let x ...rest] rest]`), which is not a multi-variadic scenario at all.
+"Multi-variadic" specifically means multiple typed variadic buckets. The unannotated rest
+case is the pre-existing single-variadic feature.
+
+The tests are correct and useful — they verify the unannotated rest continues to work
+after the `Type::Function` restructure. But the naming creates false expectations. These
+tests should be named `test_unannotated_rest_typecheck` and `test_unannotated_rest_call_typecheck`
+to clearly distinguish them from the actual multi-variadic tests.
+
+### FINDING: `test_variadic_typed_after_rest_is_error` — overly broad assertion | SCOPE: fix-later | FILE: src/typecheck_tests.rs:2199-2214
+
+The test asserts `errs.iter().any(|e| e.message().contains("typed variadic") && e.message().contains("untyped rest"))`.
+The actual error message is: "typed variadic `...ns` declared after untyped rest parameter
+— typed variadics must precede the untyped fallback `...rest`"
+
+"untyped rest" does NOT appear verbatim in this message — the message says "untyped rest
+parameter". The current assertion checks for "untyped rest" as a substring, which does
+appear in "untyped rest parameter". So the test passes. But it's fragile — if the message
+changes to "fallback parameter" without "rest", the test would miss it.
+
+Additionally, using `@Foo` (unknown type) means the test also produces an "undefined type
+Foo" error. The assertion `errs.iter().any(...)` means it passes as long as ONE error
+has both substrings — the ordering violation error. This is fine, but using `@Int` or
+`@String` (known types) would make the test stricter by eliminating confounding errors.
+
+---
+
+## Summary of Tests Reviewed
+
+**New corpus tests — eval/functions/ (6 files):**
+- `multi_variadic_typed_single_bucket.llt-eval` — PASS (correct format, no warn expected, has rest)
+- `multi_variadic_two_buckets_routing.llt-eval` — PASS (correct, has rest)
+- `multi_variadic_rest_fallback.llt-eval` — PASS (correct, has rest)
+- `multi_variadic_bucket_count.llt-eval` — PASS (correct, has rest, good mutation coverage)
+- `multi_variadic_empty_bucket_no_error.llt-eval` — FAIL (misleading comment/title; tests wrong scenario)
+- `multi_variadic_exhaustive_no_rest.llt-eval` — FAIL (will produce unacknowledged warn)
+
+**New corpus tests — eval/type_errors/ (3 files):**
+- `variadic_typed_after_rest_error.llt-eval` — FAIL (=== warn in non-warnings/ path)
+- `variadic_fixed_after_variadic_error.llt-eval` — FAIL (=== warn in non-warnings/ path)
+- `variadic_exhaustiveness_call_site.llt-eval` — FAIL (=== warn in non-warnings/ path)
+
+**Updated corpus tests (stale Seq→Dict fixes):**
+- `fn_named_param_variadic_excess.llt-eval` — PASS (Dict output correct for unannotated rest)
+- `variadic_fn_callable.llt-eval` — PASS
+- `variadic_fn_zero_args.llt-eval` — PASS
+- `variadic_param_collects_dict.llt-eval` — PASS
+- `right_shift_alias.llt-eval` — PASS
+- `begin_basic.llt-eval` — PASS (restored, correct format)
+
+**Deleted tests:**
+- `multiple_variadics.llt-eval` — correctly deleted (constraint moved to type system)
+- `param_after_variadic.llt-eval` — correctly deleted (constraint moved to type system)
+
+**New unit tests — typecheck_tests.rs:**
+- `test_multi_variadic_unannotated_rest_typecheck` — PASS (correct, misleading name)
+- `test_multi_variadic_call_unannotated_typecheck` — PASS (correct, misleading name)
+- `test_variadic_typed_after_rest_is_error` — PASS (correct, minor assertion fragility)
+- `test_variadic_fixed_after_variadic_is_error` — PASS (correct)
+
+**New unit tests — eval_call.rs:**
+- `test_split_params_empty` — PASS
+- `test_split_params_only_fixed` — PASS
+- `test_split_params_single_unannotated_variadic` — PASS
+- `test_split_params_typed_and_rest` — PASS (covers the main routing case)
+- `test_split_params_only_typed_variadics_no_rest` — PASS
+- `test_split_params_all_fixed_then_rest` — PASS
+- `test_annotation_to_runtime_type_primitives` — PASS (all 6 primitive mappings verified)
+- `test_annotation_to_runtime_type_named` — PASS (Unknown fallback documented)
+- `test_annotation_to_runtime_type_complex_falls_back_to_unknown` — PASS
+
+---
+
+## Verdict
+
+REQUEST_CHANGES
+
+Four fix-now issues require remediation:
+1. Three `type_errors/` corpus tests use `=== warn` sections — path enforcement violation.
+2. `multi_variadic_exhaustive_no_rest.llt-eval` emits an unacknowledged warning.
+3. Named-arg-to-rest routing has no corpus test.
+4. `multi_variadic_empty_bucket_no_error.llt-eval` tests the wrong scenario.
+
+Items 1 and 2 will cause test failures in the corpus runner. Items 3 and 4 are correctness
+gaps and misleading documentation respectively.

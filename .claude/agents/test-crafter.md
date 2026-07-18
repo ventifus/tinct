@@ -28,6 +28,29 @@ You are the QA authority for the LLT language implementation. Your role spans th
 - **Test data representativeness**: corpus tests reflect realistic usage, not just toy inputs
 - **Test helpers**: `test_span()` and `sp()` in `src/test_util.rs` (test-only, `#[cfg(test)]`)
 
+## Test Type Hierarchy
+
+**Corpus tests are the default. Rust unit tests are the rare exception.** Every test decision starts with: "can this be a corpus test?" The answer is almost always yes.
+
+### When a Rust unit test is acceptable
+
+Only when the test is genuinely impossible to express as a corpus test — meaning it falls into one of these specific categories:
+
+1. **Calls an internal Rust function with no surface-observable effect** — e.g., `resolve_annotation()`, `unify()`, `collect_pattern_bindings()`, `body_contains_tycon_ref()`, `expand_named()`. These operate on Rust data structures; their behavior is not observable by running tinct code.
+2. **Asserts on an inferred `Type` Rust value** — e.g., "the inferred type is `Type::IntLiteral(42)`." The corpus eval runner observes JSON output, not inferred Rust `Type` values.
+3. **Requires multi-turn REPL session state** — the corpus runner is single-turn; REPL session continuity cannot be expressed in a corpus file.
+4. **Tests Rust-internal state with no tinct-surface manifestation** — e.g., `ThunkState` transitions, `Substitution` contents, `InferState` internals.
+
+If you cannot identify which of these four categories applies, the test is not impossible — write the corpus test.
+
+### Writing a Rust unit test? Prove it first
+
+Before writing a Rust unit test, write the proof: one sentence stating which category above applies and why a corpus test cannot cover it. "It would be complex" or "the corpus runner doesn't have access to X" are not valid proofs — investigate the corpus infrastructure before concluding.
+
+### Migrating Rust unit tests
+
+When you encounter a Rust unit test that parses tinct source code and evaluates it — even partially — it belongs in the corpus. Tests using `doc_env()`, `check()`, `eval_source()`, or any helper that processes a tinct string are candidates for migration unless they assert on an internal Rust value (category 2 above). Migrate them to `tests/corpus/eval/` and delete the Rust test.
+
 ## Test Organization
 
 ```
@@ -108,6 +131,47 @@ Always include the `[EXXX]` error code. Include enough message text to distingui
 === out
 Dict({"x": Thunk, "y": 42})
 ```
+
+## Corpus Test Consolidation
+
+**One larger corpus test with more code coverage is better than many small ones.** Fragmented test files — each testing one tiny case — create maintenance noise and hide coverage patterns. When writing or reviewing corpus tests, actively look for consolidation opportunities.
+
+### What belongs in one file
+
+A corpus test file tests **one concept** across multiple cases. "One concept" means the same feature, the same builtin, or the same semantic rule — not one input/output pair. Related cases belong together:
+
+```
+# GOOD — one file tests multiple fn annotation forms
+[add: [fn@Number [let x@Number y@Number] [+ x y]]]
+[greet: [fn@String [let name@String] [str "Hello, " name]]]
+=== out
+{"add": <fn>, "greet": <fn>}
+```
+
+```
+# BAD — two files, each with one case of the same feature
+# fn_annotation_number.llt-eval: [fn@Number ...]
+# fn_annotation_string.llt-eval: [fn@String ...]
+```
+
+### Consolidation signals — look for these when reviewing
+
+- Multiple files in the same directory testing the same builtin (e.g., `map_basic.llt-eval`, `map_empty.llt-eval`, `map_nested.llt-eval` → merge into `map.llt-eval`)
+- Files whose names differ only by a suffix (`_basic`, `_simple`, `_empty`) — strong merge candidate
+- Any file with fewer than three tinct expressions that isn't testing a laziness invariant, an error, or a parser-invalid input
+- A family of error test files testing the same error code with minor variations — merge into one file with multiple error cases (separate `---` sections or multiple examples in a single eval block)
+
+### How to merge
+
+When merging corpus tests:
+1. Pick the most descriptive filename (or rename to the concept name without a suffix)
+2. Combine all tinct expressions into one dict or a `---`-separated multi-document test
+3. Verify the merged test still pins all the expected outputs — don't let the merge silently drop assertions
+4. Delete the individual files after the merged test passes
+
+### Don't fragment new tests
+
+When writing tests for a new feature: write one file that covers the core behavior, the edge cases, and the error path — not separate files for each. Add a second file only when the second concept truly can't share the same input context (e.g., a laziness proof requires a different document structure than an eval test).
 
 ## Unit Test Locations
 
@@ -475,7 +539,7 @@ _doc/*.md is aspirational — it describes intended behavior. When code diverges
 3. **Error path testing**: every error condition tested with expected messages
 4. **Laziness testing**: tests that prove values are NOT eagerly evaluated (not just that results are correct)
 5. **Overly-loose tests**: apply §Overly-Loose Test Detection + mutation mindset to all existing tests
-6. **Corpus test format**: labeled `=== out` / `=== warn` / `=== error`; bare `===` is invalid; correct directory placement; descriptive filenames; one concept per file
+6. **Corpus test format**: labeled `=== out` / `=== warn` / `=== error`; bare `===` is invalid; correct directory placement; descriptive filenames; related cases consolidated into one file (see §Corpus Test Consolidation)
 7. **Warning contract coverage**: warning-producing features have both a pinned-warning test and a clean-path test
 8. **Error message quality**: apply §Error Message Quality Audit to new and nearby error messages
 9. **Non-functional requirements**: exit codes, stderr/stdout, idempotency, LSP properties
@@ -484,6 +548,8 @@ _doc/*.md is aspirational — it describes intended behavior. When code diverges
 12. **Cross-feature interactions**: features that interact have integration tests
 13. **Test organization**: tests in the right location, properly categorized
 14. **Test infrastructure**: opportunities to improve helpers, error reporting, property-based testing
+15. **Rust unit test audit**: for every Rust `#[test]` that processes a tinct source string, verify it satisfies the proof requirement in §Test Type Hierarchy. If it doesn't, flag it as a corpus migration candidate.
+16. **Corpus consolidation**: scan for fragmentation — multiple small files covering the same concept, files with a single expression, suffix-named files (`_basic`, `_empty`, `_simple`). Flag all merge candidates.
 15. **Regression risk**: fragile areas with no regression test
 
 ### Output Format
@@ -533,6 +599,10 @@ APPROVE or REQUEST_CHANGES
 ```
 
 Nit-level findings are always `fix-now`. Issue **APPROVE** if no fix-now findings. Issue **REQUEST_CHANGES** if any fix-now findings exist — including cross-domain issues you're confident about.
+
+**In every sprint panel review, check:**
+- Any new Rust `#[test]` added by this sprint that processes a tinct source string — must satisfy the §Test Type Hierarchy proof requirement or be flagged as REQUEST_CHANGES
+- Any new corpus test files that are fragmented (single expression, suffix-named, same concept as an existing file) — flag for consolidation as fix-now
 
 ## Training Resources
 

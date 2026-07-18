@@ -1,0 +1,42 @@
+## Review: test-crafter (final re-review)
+## Sprint: S-938 multi-variadic-params
+## Pass: round 2 fix verification
+
+---
+
+## Round 2 Finding — Verification Status
+
+### Finding: `variadic_exhaustive_no_rest.llt-eval` — `=== warn` union order wrong → VERIFIED FIXED
+
+File: `tests/corpus/eval/typecheck/warnings/variadic_exhaustive_no_rest.llt-eval`
+
+The round 2 finding was that line 9 read `[or String Integer]` but
+`Type::normalize_union` sorts by `type_order` (Int=0, Str=3), so the actual
+warning text would contain `[or Integer String]`. The substring match would fail.
+
+The fix has been applied. Line 9 now reads:
+
+  non-exhaustive variadic type dispatch: typed buckets cover [or Integer String] but no fallback (...rest) handles other types — add ...rest for a wildcard bucket
+
+This matches the canonical sort order produced by `Type::normalize_union`. The
+`check-warn` substring match will find `[or Integer String]` in the actual warning
+text. The fix is correct.
+
+---
+
+## All Prior Findings — Final Status
+
+| Finding | Description | Status |
+|---------|-------------|--------|
+| 1 | Three `type_errors/` tests with `=== warn` → moved to `warnings/` | FIXED (verified round 1) |
+| 2 | `multi_variadic_exhaustive_no_rest` move + `=== warn` order | FIXED (verified round 2) |
+| 3 | Named args to rest bucket — no corpus test | FIXED (verified round 1) |
+| 4 | `multi_variadic_empty_bucket_no_error` wrong scenario | FIXED (verified round 1) |
+
+No outstanding fix-now findings.
+
+---
+
+## Verdict
+
+APPROVE

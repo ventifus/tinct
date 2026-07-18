@@ -1,0 +1,77 @@
+## Review: integration-verifier
+## Sprint: S-926 thin-meta-api (THIRD PASS — FINAL)
+
+### Prior Round Findings — Verification Status
+
+I1 (builtin-eval-repr wrong strictness registration — args[1] PANIC):
+  FIXED. src/builtins_meta.rs registration now has
+  [Strictness::Seq, Strictness::Seq], 2, ["doc", "scope-id"] at line 5194.
+  args[1] accessed via try_get_materialized() at line 3500. No panic path.
+
+I2 (builtin-eval errors schema String→Dict):
+  FIXED in Rust. Error path at builtins_meta.rs:3373-3389 now produces
+  Value::Dict({0: String(message)}) matching builtin-parse/builtin-resolve schema.
+
+I3 (debug-prelude.llt stale dev file in stdlib/):
+  FIXED. File deleted (glob confirmed absent).
+
+I4 / m1 (docstring wrong on builtin-eval error-path scope-id):
+  FIXED. builtins_meta.rs:3244 documents "On the error path, scope-id returns
+  the unchanged input parent scope-id." Docstring also updated to show
+  Value::Dict({0: String(message)}) on failure at line 3242.
+
+n1 (test-loader.llt fragile builtin-eq-string/builtin-type-of termination):
+  FIXED. test-loader.llt:102 now uses [null? parent] matching loader.llt.
+
+Second-pass finding ([builtin-raise ev.errors] in 5 locations):
+  FIXED in all 5 flagged locations:
+  - stdlib/loader.llt:362    [builtin-raise [builtin-get 0 ev.errors]]
+  - stdlib/loader.llt:458    [builtin-raise [builtin-get 0 eval-result.errors]]
+  - stdlib/loader.llt:459    [builtin-raise [builtin-get 0 eval-result.errors]]
+  - stdlib/test-loader.llt:373  [builtin-raise [builtin-get 0 ev.errors]]
+  - stdlib/test-loader.llt:520  [builtin-raise [builtin-get 0 ev.errors]]
+
+### Findings
+
+FINDING: prelude.llt:3383 uses [raise ev.errors] — same bug as the 5 fixed
+locations, missed in the second-pass fix. The eval-program function in prelude
+calls [raise ev.errors] where ev.errors is now a Dict {0: String(message)}.
+The prelude raise function is defined as:
+  raise: [fn@Never [let msg@String] [builtin-raise msg]]
+The @String runtime type assertion on msg causes TypeAssertFailed
+("expected String, got Dict") instead of raising the original eval error
+message. The original builtin-eval failure is silently replaced by a confusing
+secondary type-mismatch error.
+
+Fix: Change [raise ev.errors] to [raise [get 0 ev.errors]] or equivalently
+[builtin-raise [builtin-get 0 ev.errors]] to match the other 5 fixed sites.
+| SCOPE: fix-now
+| FILE: stdlib/prelude.llt:3383
+
+### Cross-Layer Integrity: All Other Checks PASS
+
+- Value::Program, Value::Document, Value::TypeContext all have visit_value
+  handlers (value_not_serializable) in lib.rs:499-541.
+- scope-to-frames ordering is consistent: both prelude.llt (Seq prepend
+  recursion) and loader.llt/test-loader.llt (dict prepend + shift) produce
+  {0: outermost-frame, N: innermost-frame} as required by resolve.rs:599.
+- builtin-eval corpus test (builtin_eval_error_field.llt-eval) validates the
+  new Dict schema via [if [null? result.errors] 0 1] → Int(1) on error.
+- scope-to-frames-inner in prelude.llt:736-740 correctly terminates at
+  [null? scope-id] (same as loader.llt).
+- All Value variants in value.rs have serializer coverage in lib.rs visit_value.
+- builtin-eval-repr at builtins_meta.rs:3453-3567 correctly uses both
+  args[0] and args[1] via try_get_materialized() with the now-correct
+  [Strictness::Seq, Strictness::Seq] registration.
+
+### Verdict
+
+REQUEST_CHANGES
+
+The second-pass fix correctly updated 5 of 6 [raise ev.errors] sites.
+The sixth site at stdlib/prelude.llt:3383 was missed — it uses the prelude-level
+[raise ev.errors] instead of [builtin-raise], but has the same broken behavior:
+passes the errors Dict to a function expecting String, causing TypeAssertFailed
+to replace the original eval error. Any program that invokes eval-program and
+has a builtin-eval failure will receive a confusing secondary type error rather
+than the original failure message. Fix is a one-line change.

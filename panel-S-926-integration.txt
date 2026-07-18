@@ -1,0 +1,51 @@
+## Review: integration-verifier
+## Sprint: S-926 thin-meta-api (SECOND PASS)
+
+### Prior Round Findings — Verification Status
+
+I1 (builtin-eval-repr wrong strictness registration):
+  FIXED. src/builtins_meta.rs registration now has
+  [Strictness::Seq, Strictness::Seq], 2, ["doc", "scope-id"].
+  args[1] now correctly accessed via try_get_materialized() at line 3469.
+
+I3 (debug-prelude.llt stale dev file in stdlib/):
+  FIXED. File no longer exists (glob confirmed absent).
+
+I4 (docstring wrong on builtin-eval error-path scope-id):
+  FIXED. builtins_meta.rs:3224 now documents
+  `Value::Dict({0: String(message)})` on failure.
+  builtins_meta.rs:3226 adds: "On the error path, scope-id returns the
+  unchanged input parent scope-id." Adequate.
+
+### Findings
+
+FINDING: I2 fix (errors schema) complete in Rust, but callers in loader.llt
+and test-loader.llt were not fully updated. `[builtin-raise ev.errors]` passes
+the new `{0: String(message)}` Dict to builtin_raise, which calls
+require_string and will type-error ("raise: expected String, got Dict") instead
+of raising the original eval error. This breaks the error path of EVERY
+builtin-eval call in both loaders. Five call sites affected:
+  - stdlib/loader.llt:362   [builtin-raise ev.errors]
+  - stdlib/loader.llt:458   [builtin-raise eval-result.errors]
+  - stdlib/loader.llt:459   [builtin-raise eval-result.errors]
+  - stdlib/test-loader.llt:373  [builtin-raise ev.errors]
+  - stdlib/test-loader.llt:520  [builtin-raise ev.errors]
+Fix: Replace each with [builtin-raise [builtin-get 0 ev.errors]] (or
+equivalent extraction of the message string from the errors dict).
+| SCOPE: fix-now | FILE: stdlib/loader.llt:362,458,459 and stdlib/test-loader.llt:373,520
+
+FINDING: I5 (fragile null check) was partially addressed — `null?` is now used
+correctly for detection (correct since errors is always a Dict). But the
+downstream `[builtin-raise ev.errors]` calls expose the schema change as a
+runtime crash (see finding above). I5 is not fully fixed.
+| SCOPE: fix-now | FILE: stdlib/loader.llt:362 and stdlib/test-loader.llt:373
+
+### Verdict
+REQUEST_CHANGES
+
+The I2+I5 fix pair is incomplete. The Rust side (builtins_meta.rs) correctly
+produces {0: String} on error, but the tinct callers in loader.llt and
+test-loader.llt still pass ev.errors (now a Dict) directly to builtin-raise
+(which requires a String). Any document that fails during eval will produce a
+confusing secondary type-mismatch error instead of the original error message.
+This is a critical regression on the error path of the core loading pipeline.

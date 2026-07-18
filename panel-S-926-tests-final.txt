@@ -1,0 +1,39 @@
+## Review: test-crafter (S-926 thin-meta-api, THIRD PASS)
+
+### Findings
+
+- FINDING: scope_new_nonstring_key_error.llt-eval === error section correctly reads `builtin-scope-new bindings key: expected String, got Int` — no [E010] prefix. Second-pass fix confirmed applied. | SCOPE: fix-now (verification) → CONFIRMED CORRECT | FILE: tests/corpus/eval/meta/scope_new_nonstring_key_error.llt-eval:4-5
+
+- FINDING: SKIPPED_TESTS.md builder_frozen_error reference fixed. Now reads "A hypothetical tests/corpus/eval/builtins/builder_frozen_error.llt-eval" with "such a test does not currently exist in this repository." Second-pass fix confirmed applied. | SCOPE: fix-now (verification) → CONFIRMED CORRECT | FILE: tests/corpus/eval/errors/SKIPPED_TESTS.md:102-104
+
+- FINDING: Two deleted type_errors tests (exhaustiveness_inaccessible_arm.llt-eval, exhaustiveness_missing_variant.llt-eval) are NOT documented in SKIPPED_TESTS.md. They were deleted and replaced by match_inaccessible_arm.llt-eval and match_non_exhaustive.llt-eval (same semantics, updated @[or Int String] syntax replacing old @[Integer String] syntax). Replacements have equivalent coverage. Deletion without SKIPPED_TESTS.md entry is acceptable here because these are not skipped — they are replaced, not abandoned. The new tests cover the same error conditions. | SCOPE: fix-later | FILE: tests/corpus/eval/type_errors/ (missing deletion record)
+
+- FINDING: 11 new meta/ corpus tests all use the Int accumulation pattern (sum of N binary conditions → Int(N)). Mutation-resistant. No [EXXX] codes in === error section (correct — runtime produces no [EXXX]). All === out and === error assertions are tight and specific. | SCOPE: fix-later (no issues) → CONFIRMED CORRECT | FILE: tests/corpus/eval/meta/*.llt-eval
+
+- FINDING: desugar_underscore.llt-eval only verifies that builtin-desugar returns a Program type and no parse errors occur. It does NOT verify that _ was actually substituted with a lambda in the desugared AST. This is a loose test — a desugar that is a no-op would still pass. However, _ desugaring semantic correctness is covered by the existing underscore/ corpus tests; this meta test is appropriately scoped to the API surface only. | SCOPE: fix-later | FILE: tests/corpus/eval/meta/desugar_underscore.llt-eval
+
+- FINDING: Three new invalid/pipeline/ tests (duplicate_section_name, bare_percent_section_name, malformed_section_header) follow the established invalid/ test pattern: === out with bare ParseError::fmt message (no ERROR: prefix). `just test` (CI) only runs tests/corpus/eval/ — these invalid/ tests are never exercised in CI. `just test-corpus` (all-tests mode) would also fail to match them because the test runner prefixes parse errors with "ERROR: path:line:col: parse-error: message". This is a pre-existing architectural issue with invalid/ tests (all existing invalid/syntax_errors/ tests have the same problem). New tests are consistent with existing invalid/ conventions. | SCOPE: fix-later (pre-existing, not introduced by this sprint) | FILE: tests/corpus/invalid/pipeline/*.llt-eval
+
+- FINDING: README.md "All error tests MUST include the error code [EXXX]" claim (lines 27, 137) is demonstrably false — zero eval/errors/ tests include [EXXX] in their === error sections. This is a pre-existing README inaccuracy not introduced by this sprint (confirmed by git show HEAD). Sprint correctly added meta/ to the coverage section only. | SCOPE: fix-later (pre-existing) | FILE: tests/corpus/README.md:27,137
+
+- FINDING: eval_types_multiple_exprs.llt-eval and expand_basic.llt-eval === error sections confirmed correct (no [EXXX] prefix, plain message substrings). Prior TC1/TC2 findings from first pass remain withdrawn as confirmed wrong. | SCOPE: fix-later (no issues) → CONFIRMED CORRECT | FILE: tests/corpus/eval/errors/builtins/
+
+- FINDING: docgen_regression.llt-eval updated to use new API: builtin-doc-expressions, builtin-program-docs, builtin-doc-meta, builtin-parse/builtin-desugar pipeline. Stage comparison changed from [tag-of doc.stage] == "Type" to [get-or "runtime" "stage" meta] == "type". This matches the second-pass-documented new API pattern. | SCOPE: fix-later (no issues) → CONFIRMED CORRECT | FILE: tests/corpus/eval/programs/docgen_regression.llt-eval
+
+- FINDING: display_chain_stdlib_varref.llt-eval updated for new API (builtin-scope-new, builtin-resolve doc frames, builtin-eval doc scope-id). OOM note (T-1586) pre-existing. | SCOPE: fix-later (no issues) → CONFIRMED CORRECT | FILE: tests/corpus/eval/arena/display_chain_stdlib_varref.llt-eval
+
+- FINDING: builtin_eval_error_field.llt-eval skips builtin-typecheck-doc before builtin-eval (correct — testing error capture path, not full pipeline). Correctly asserts has-error = Int(1) when doc raises. | SCOPE: fix-later (no issues) → CONFIRMED CORRECT | FILE: tests/corpus/eval/builtins/builtin_eval_error_field.llt-eval
+
+- FINDING: multi_doc_scope_threading.llt-eval is the strongest test of the sprint — exercises the full pipeline (parse→desugar→program-docs→resolve→typecheck→eval) across two documents with scope threading. Verifies actual value (15 = 10+5) not just type. Well-constructed. | SCOPE: fix-later (no issues) → CONFIRMED CORRECT | FILE: tests/corpus/eval/meta/multi_doc_scope_threading.llt-eval
+
+- FINDING: SKIPPED_TESTS.md does not document deleted exhaustiveness_inaccessible_arm.llt-eval and exhaustiveness_missing_variant.llt-eval. As these are replaced (not skipped), SKIPPED_TESTS.md does not need an entry per the document's purpose. However, the replacements use different syntax (@[or Int String] vs @[Integer String]) and different file naming (match_* vs exhaustiveness_*) without any comment linking them. Engineers reading type_errors/ may wonder why the old files are gone. | SCOPE: fix-later | FILE: tests/corpus/eval/type_errors/ (documentation gap)
+
+### Verdict
+
+APPROVE
+
+Rationale: All fix-now findings from the second pass have been correctly applied:
+1. scope_new_nonstring_key_error.llt-eval: [E010] prefix removed — CONFIRMED
+2. SKIPPED_TESTS.md builder_frozen_error reference: "existing" → "hypothetical ... does not currently exist" — CONFIRMED
+
+All 11 new meta/ corpus tests are correctly structured: no [EXXX] codes in === error sections, tight Int(N) accumulation assertions, correct API usage matching the new thin-meta API. The fix-later items are either pre-existing issues (README [EXXX] claim, invalid/ test runner architecture) or minor documentation gaps (deleted exhaustiveness tests not linked to replacements) — none block the sprint.

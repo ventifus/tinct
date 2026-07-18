@@ -1,0 +1,88 @@
+## Review: eval-engine (S-926 thin-meta-api, SECOND PASS)
+
+Files read: src/builtins_meta.rs (targeted sections via Grep/Read), src/eval.rs (eval_document_exprs_with_env, TypeContextData, EvalContext), src/arena.rs (push_slot, alloc_root, alloc_child, collect_parent_chain), src/desugar.rs (desugar_surface_program, desugar_instance_decls_surface_program), src/resolve.rs (resolve_surface_program, resolve_surface_document_inplace).
+
+---
+
+### E1-E3 (RefCell panics) — FIXED
+
+The borrow-split pattern is applied correctly in all three scope builtins:
+- `builtin_scopes` (lines 1765-1779): collects under immutable borrow, drops, then allocates thunks
+- `builtin_scope_new` (lines 1834-1915): validates parent_id under immutable borrow (dropped at 1848), collects thunks under another immutable borrow in loop (1886-1902), then takes borrow_mut at 1906 only for arena mutation
+- `builtin_scope_names` (lines 1967-1993): bounds check under immutable borrow (dropped at 1981), second immutable borrow for data collection (dropped at 1993), thunk allocation runs without any arena borrow held
+
+`get_thunk()` is correctly called outside all `borrow_mut` blocks. `push_slot` takes `&mut self` directly (arena.rs:69-80) and does not re-enter the RefCell. No double-borrow possible.
+
+### E4/I2 (builtin-eval error schema) — NOT FIXED
+
+`builtin_eval` error path (builtins_meta.rs:3325-3359) returns:
+  `errors: {0: String(message)}`
+
+`builtin_resolve` error path (builtins_meta.rs:2373-2402) returns:
+  `errors: {0: {kind: "resolve-error", message: String, span: Dict, notes: [], call-stack: [], ...}}`
+
+The comment at line 3341 claims these match ("matching builtin-parse/builtin-resolve schema") but they do not. The schemas are structurally incompatible. Tinct code that uniformly handles the `errors` field from any pipeline stage will fail when encountering `builtin_eval` errors — either crashing when it tries to access `err.kind` on a String, or type-checking incorrectly.
+
+Fix required: introduce an `eval_error_to_dict` helper (parallel to `parse_error_to_dict`) that converts `EvalError` to the unified schema `{kind: "eval-error", message: String, span: Dict, notes: [], call-stack: [], ...}`. Use it in `builtin_eval`'s error path.
+
+### E5/T1 (typecheck errors discarded) — PARTIALLY ADDRESSED
+
+Errors are now stored: `guard.type_errors.extend(errors)` at builtins_meta.rs:2528. Previously they were discarded entirely. The `TypeContextData.type_errors` field (eval.rs:365) accumulates them.
+
+However, no builtin exposes them. Tinct code cannot observe type errors produced by `builtin-typecheck-doc`. The comment at eval.rs:363-364 explicitly defers exposure: "Callers can retrieve type errors via future builtins (e.g., `builtin-tc-errors`). Currently stored for observability; not surfaced to tinct code in this sprint."
+
+If the sprint's promise was to make typecheck errors observable to tinct code (matching the pattern of `builtin_parse` and `builtin_resolve` which return errors-as-data), this is incomplete. If storing was the only commitment, the fix is sufficient. Verdict below assumes storing satisfies the sprint scope based on the deferred comment.
+
+### E6 (non-int frame keys) — FIXED
+
+`builtin_resolve` (builtins_meta.rs:2283-2300) now iterates outer frame keys and returns `EvalError::user_error` for any non-integer key with a descriptive message. Previously, non-integer keys were silently ignored or caused undefined behavior.
+
+### E7 (desugar ordering hazard) — NOT FIXED
+
+The panic at `desugar.rs:40`: `Arc::get_mut(&mut doc_spanned.node).expect("desugar runs before any Arc sharing")` is unchanged. If tinct code calls `builtin-program-docs` before `builtin-desugar`, the `Arc::get_mut()` returns `None` (because program-docs creates additional Arc clones of the SurfaceDocument) and `.expect()` panics.
+
+The fix introduced is a comment at builtins_meta.rs:2907-2916 documenting the required ordering. This is documentation, not enforcement. The panic remains:
+- It is a Rust `panic!` in async context, not an `EvalError`
+- Tinct code receives no error value — the runtime crashes
+- The panic message "desugar runs before any Arc sharing" provides no actionable guidance to a tinct caller
+
+Fix required: `Arc::get_mut(...).expect(...)` must be replaced with `Arc::get_mut(...).ok_or_else(|| EvalError::user_error("builtin-desugar must be called before builtin-program-docs — program-docs shares document Arcs which prevents in-place mutation", span))`. This converts the panic into a recoverable EvalError that tinct code can catch via `$try`.
+
+### E8 (scope-id bounds) — PARTIALLY FIXED
+
+Fixed in three scope-inspection builtins:
+- `builtin_scope_new`: validates parent scope_id at line 1837
+- `builtin_scope_names`: validates scope_id at line 1970
+- `builtin_scope_parent`: validates scope_id at line 2054
+
+NOT fixed in the eval builtins that also accept scope_id:
+- `builtin_eval` (line 3272): `n as u32` with no negative check and no bounds check. Negative scope_id wraps to u32::MAX. Out-of-range scope_id causes arena OOB panic inside `eval_document_exprs_with_env`.
+- `builtin_eval_repr` (line 3472): same pattern, same missing validation.
+
+Both builtins pass the unvalidated scope_id to `eval_document_exprs_with_env` -> `ctx.with_eval_scope(pid)` -> eventually into arena indexing, which panics rather than returning an EvalError.
+
+Fix required: add the same validation pattern used in the scope-inspection builtins:
+  if n < 0 { return Err(EvalError::user_error(...)) }
+  let scope_id = n as u32;
+  { let arena = ctx.scope_arena.borrow(); if scope_id as usize >= arena.scopes.len() { return Err(...) } }
+Apply this to both `builtin_eval` and `builtin_eval_repr` before passing to `eval_document_exprs_with_env`.
+
+---
+
+### Findings
+
+- FINDING: builtin_eval error dict schema is {0: String} but comment claims it matches builtin-resolve/builtin-parse {0: {kind, message, span, ...}} schema — schemas are incompatible, tinct code handling errors uniformly will fail | SCOPE: fix-now | FILE: src/builtins_meta.rs:3341-3358
+
+- FINDING: desugar ordering panic not fixed — Arc::get_mut().expect() at desugar.rs:40,65 still panics if builtin-program-docs is called before builtin-desugar; fix is only a comment, not a recoverable EvalError | SCOPE: fix-now | FILE: src/desugar.rs:40,65 and src/builtins_meta.rs:2917-2919
+
+- FINDING: builtin_eval does unchecked `n as u32` on scope_id (no negative check, no bounds check) — out-of-range scope_id causes arena OOB panic rather than EvalError | SCOPE: fix-now | FILE: src/builtins_meta.rs:3272,3299
+
+- FINDING: builtin_eval_repr does same unchecked `n as u32` on scope_id | SCOPE: fix-now | FILE: src/builtins_meta.rs:3472,3485
+
+---
+
+### Verdict
+
+REQUEST_CHANGES
+
+E4/I2 (error schema mismatch), E7 (desugar panic not converted to EvalError), and E8 partial miss (builtin_eval and builtin_eval_repr scope_id bounds) are all fix-now findings. The axiom "Rust never prints errors — tinct code receives errors as data" (stated in the builtin_eval doc comment at line 3229) is violated by both the panic in desugar.rs and the arena OOB panics from unvalidated scope_ids in builtin_eval and builtin_eval_repr. The comment-only fix for E7 is a workaround where the correct fix is to make the ordering violation produce a recoverable error — "we'll document the requirement" is not a substitute for enforcement.

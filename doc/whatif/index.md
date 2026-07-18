@@ -41,6 +41,8 @@ Proposals formally accepted into the project. Implementation sprints exist in th
 | [Parameterized Type Annotations](completed/parameterized-dict.md) | **Accepted 2026-05-09.** Bracket application form `@[Seq T]`, `@[Map [K: V]]`, `@Map` bare; type alias composition (`T2: [type [Map T1]]`); Record/Map split; see `doc/feature/parameterized-types.md` |
 | [Type Annotations v2](completed/type-annotations-v2.md) | **Accepted 2026-05-14.** Bracket application `@[Type Arg]` replaces chained `@`; `or`/`each` type-stage combinators for union/intersection; `bind:`/`return:`/`constraint:`/`kinds:` annotation keys; TypeVar scoping via `bind:`; `@Record@[...]` and all chained-@ forms retired |
 
+| [Matchable — Open, User-Defined Patterns](matchable-patterns.md) | `Matchable` typeclass makes patterns first-class values; `try-match` returns `Dict \| Absent`; all built-in patterns (dict, constructor, literal, wildcard, type guard) become tinct instances in prelude; pattern combinators (`or-pattern`, `guard-pattern`, `as-pattern`) as library functions; function parameters ARE Matchables; multi-clause functions via `[fn-clauses ...]`; only `builtin-try-match` + match loop + fn call dispatcher remain in Rust |
+
 ## Language Architecture
 
 | Proposal | Summary |

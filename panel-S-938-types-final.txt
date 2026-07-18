@@ -1,0 +1,85 @@
+## Review: type-theorist (final, post-panel-fixes)
+
+### Sprint: S-938 multi-variadic-params
+
+### Prior Findings Verification
+
+All four findings from the initial panel review (`panel-S-938-types.txt`) have been
+correctly addressed:
+
+**Finding 1 — bas.rs:514-516 (contravariant subtype for typed_variadics/rest): FIXED**
+
+`is_subtype_bas` Function-Function arm now correctly uses element-wise contravariant
+recursion for `typed_variadics` and `rest` instead of structural equality (`==`).
+Implementation at lines 517-532:
+
+- `tv_subtype`: `sub_tv.len() == sup_tv.len() && zip.all(|(_, sub_t), (_, sup_t)| is_subtype_bas(sup_t, sub_t, ...))` — contravariant, correct.
+- `rest_subtype`: `match (sub_rest, sup_rest) { (Some(sr), Some(pr)) => is_subtype_bas(&pr.1, &sr.1, ...), (None,None) => true, _ => false }` — contravariant, correct.
+
+The any-function early returns (lines 504-512) still correctly precede the general case.
+The `sub_is_variadic == sup_is_variadic` guard at line 533 is correct: once both
+any-function cases are dispatched, the general path requires structural agreement
+on variadic status before element-wise comparison. No logic error introduced.
+
+**Finding 2 — typecheck_cek.rs:2171-2174 (saturating_sub): FIXED**
+
+`finalize_call_no_positional_args` now sets `let min_required = required_count;`
+at line 2172, with a comment matching the one at `apply_call_args_poly` line 2268.
+The two sites are now consistent: both treat `required_count` as fixed-params-only
+and do no subtraction.
+
+**Finding 3 — type_unify.rs:2452-2470 (error message nit): FIXED**
+
+The single combined branch is now two separate branches:
+- Line 2452: `is_variadic_1 != is_variadic_2` → "variadic mismatch: variadic vs non-variadic"
+- Line 2472: `tv1.len() != tv2.len()` → "variadic bucket count mismatch: N typed bucket(s) vs M typed bucket(s)"
+
+Both messages are clear and distinct. The bucket-count message includes the counts,
+satisfying the original nit requirement.
+
+**Finding 4 — type_def.rs PartialEq/Hash inconsistency for typed_variadics names: FIXED**
+
+`PartialEq` (lines 460-471): compares by type only, not names:
+  `tv1.iter().zip(tv2).all(|((_, t1), (_, t2))| t1 == t2)`
+
+`Hash` (lines 574-583): hashes types only, not names:
+  `for (_, ty) in typed_variadics { ty.hash(state); }`
+
+Both implementations are consistent with each other and with the analogous treatment
+of fixed `params` (which also compares/hashes by type only, ignoring `Option<String>`
+names). The `rest` field likewise compares `r1b.1 == r2b.1` (type only) and hashes
+`r.1` (type only). The PartialEq/Hash contract is satisfied.
+
+### New-Issue Scan
+
+No regressions or new issues were introduced by the panel fixes. The surrounding
+logic in each patched site is sound:
+
+- `bas.rs` Function-Function arm: any-fn special cases still short-circuit before
+  the general case; the new `tv_subtype`/`rest_subtype` locals are computed before
+  the final `&&`-chain, giving the same logical structure as the fixed-params path.
+- `typecheck_cek.rs finalize_call_no_positional_args`: the removal of the conditional
+  `saturating_sub(1)` leaves the rest of the function body unchanged; the
+  `min_required > 0` guard at line 2174 is unaffected.
+- `type_unify.rs`: the split into two `if` blocks is not an early return for the
+  first branch (both are `return Err`), so the control flow is identical to the
+  original combined branch. The bucket-unification loop at line 2489 is unchanged.
+
+### Axiom Checks
+
+- **Prelude speaks the Rust protocol**: PASS. No changes touch the prelude boundary.
+- **No fast paths, no fallbacks, no backwards compatibility**: PASS. All fixes replace
+  incorrect behavior with correct behavior; no shims or compatibility branches added.
+- **Correctness, not performance**: PASS. All three code changes fix correctness
+  defects. The PartialEq/Hash fix ensures the type equality/hash contract is
+  satisfied, which is a correctness requirement for HashMap keying.
+- **Loader/prelude agnosticism**: PASS. No loader or prelude assumptions introduced.
+- **General case, not specific**: PASS. The contravariant subtype recursion in bas.rs
+  applies to all typed-variadic bucket counts N, not just a specific case.
+
+### Verdict
+
+APPROVE
+
+All fix-now findings from the initial panel review have been correctly resolved.
+No new issues were introduced. The sprint is ready to merge.

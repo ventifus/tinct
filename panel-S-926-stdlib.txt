@@ -1,0 +1,53 @@
+## Review: stdlib-author (S-926 thin-meta-api, SECOND PASS)
+
+### Findings
+
+- FINDING: S1 fix was INCORRECT; re-fixed in this review pass | SCOPE: fix-now (FIXED) | FILE: stdlib/prelude.llt:3755
+
+  The coordinator's S1 fix changed line 3755 from `]]]` to `]]` — the wrong direction.
+  The `reverse` function uses a single-body fn where the body is an intermediate dict
+  (identical pattern to `dict-append` at lines 645-654). The intermediate dict contains
+  `[fill 0 [builtin-make-builder]]` as a trailing positional entry. Closing that entry
+  requires 4 `]`:
+    1. closes `[builtin-make-builder]`
+    2. closes `[fill ...]`
+    3. closes the intermediate dict `[n: fill:]`
+    4. closes the fn `[fn@[...] [let xs@Dict] ...]`
+
+  The original (before coordinator fix) had `]]]` — one short (2 unclosed opens).
+  After coordinator fix `]]` — two short (2 unclosed opens).
+  Both left the intermediate dict and fn unclosed, causing all subsequent definitions
+  (sort, gensym, etc.) to be parsed inside reverse's intermediate dict scope.
+
+  Evidence: count_brackets output on unfixed file was 347,625 chars; after fix 347,531
+  chars (reduction of 94 chars corresponds to removal of 2 unclosed-bracket stderr lines).
+
+  APPLIED FIX: stdlib/prelude.llt:3755
+    OLD: `  [fill 0 [builtin-make-builder]]`
+    NEW: `  [fill 0 [builtin-make-builder]]]]`
+
+- FINDING: S2 (loader.llt) confirmed fixed — brackets balanced | SCOPE: fix-now (verified clean) | FILE: stdlib/loader.llt
+  count_brackets returns exit_code=0, stderr="" for loader.llt.
+
+- FINDING: S3 (make-entry 3-arg) confirmed fixed | SCOPE: fix-now (verified clean) | FILE: stdlib/prelude.llt:561,1370
+  Both private dict (line 561) and public dict (line 1370) show `[fn@Dict [let k v] [$k: v]]` — 2-arg form.
+
+- FINDING: S4 (eval-doc match arm) confirmed fixed | SCOPE: fix-now (verified clean) | FILE: stdlib/loader.llt:361-362
+  Match arm now correctly uses `[builtin-get 0 ev.errors]` to extract the first error
+  message rather than raising the whole ev.errors dict.
+
+- FINDING: S5 (bytes-empty? wrong builtin) confirmed fixed | SCOPE: fix-now (verified clean) | FILE: stdlib/loader.llt:88, stdlib/test-loader.llt:76
+  Both sites now use `[builtin-eq-int [builtin-bytes-length b] 0]` — correct.
+
+### Verdict
+REQUEST_CHANGES
+
+S1 was not correctly fixed by the coordinator and has been re-fixed in this review pass.
+The fix changes line 3755 from `  [fill 0 [builtin-make-builder]]` to
+`  [fill 0 [builtin-make-builder]]]]`.
+
+S2, S3, S4, S5 are all correctly fixed.
+
+The re-fix has been applied directly to stdlib/prelude.llt. If the sprint workflow
+re-applies the coordinator's wrong fix, reject it — the correct form is `]]]]` (4 `]`),
+not `]]` (2) or `]]]` (3).

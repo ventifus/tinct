@@ -1,0 +1,39 @@
+## Review: stdlib-author
+
+### Findings
+
+- FINDING: `>>` now uses `...body@Expr` (single typed variadic, no untyped rest). By the new exhaustiveness rule implemented in T-1690, this triggers a "non-exhaustive variadic type dispatch" warning at definition time. This is intentional — `>>` is a macro transformer that only accepts `Expr` arguments. The test-loader relaxation correctly makes this advisory, not fatal. However, the comment on `>>` (lines 5323-5328) and on `begin` (line 5333) does not document that calling `>>` or `begin` with non-`Expr` arguments will produce a runtime exhaustiveness error. This is important user-facing behavior given that `begin` is documented in `doc/quickstart.md` as a general side-effect sequencer. | SCOPE: fix-now | FILE: stdlib/prelude.llt:5323-5335
+
+- FINDING: `bor-all`, `band-all`, `bxor-all` each use `...args@Integer` (single typed variadic, no rest). These correctly produce the exhaustiveness warning at definition time. The test-loader `tc-warnings` relaxation is the direct enabler. The comment at line 3481 says "N-ary bitwise operators" but does not note that non-Integer arguments will produce a runtime error (not just a warning). A caller passing a Float would get a runtime exhaustiveness failure, not a type coercion. This is correct semantics but warrants a comment. | SCOPE: fix-now | FILE: stdlib/prelude.llt:3481-3484
+
+- FINDING: `begin: >>` is a correct alias — the entry captures the exact same function value as `>>`. However, `begin` in `doc/quickstart.md` is documented as evaluating expressions "eagerly in order" for side effects, describing it as the standard forced-sequencing form. The underlying `>>` implementation uses `[fn [let ...body@Expr] [eval-macro-ast ...]]` — this is a MACRO transformer, not a regular function call with eager evaluation of arguments. The `begin` alias therefore has a restricted calling convention (args must be `Expr` at the runtime type level). This means `begin` does NOT work with values computed at runtime — it only works in macro-expansion context where arguments are AST nodes. Callers who write `[begin [emit "x"] result]` are fine because the args are already quoted as `Expr` by the macro system. But this restriction must be clear. The current comment says "Both evaluate expressions left-to-right for side effects and return the last value" — this is correct at the user level, but the mechanism (typed-variadic Expr constraint) deserves a note. | SCOPE: fix-now | FILE: stdlib/prelude.llt:5333-5335
+
+- FINDING: `task` macro (`stdlib/prelude.llt:5340`) uses `[fn [let first@Expr ...rest@Expr] ...]`. The `...rest@Expr` is a typed variadic with no untyped fallback. This also triggers the exhaustiveness warning. The test-loader relaxation correctly handles this. No bug, but the comment at line 5337-5339 should note that non-`Expr` args to `task` will produce a runtime error (same pattern as `>>` and `bor-all`). | SCOPE: fix-now | FILE: stdlib/prelude.llt:5337-5344
+
+- FINDING: `do` macro (`stdlib/prelude.llt:5313`) uses `[fn [let first@Expr ...rest@Expr] ...]` — same pattern, same exhaustiveness concern. No note in the comment. | SCOPE: fix-now | FILE: stdlib/prelude.llt:5299-5321
+
+- FINDING: `_tc0` binding in `test-loader.llt` at line 457 is correct — it breaks the letrec self-reference cycle where `[tc: _tc0 ...]` in the accumulator dict would otherwise shadow the outer `tc` parameter and be circular. The comment at lines 454-456 correctly explains the rationale. This is the right implementation of the pattern. | SCOPE: fix-now (praise, no action needed) | FILE: stdlib/test-loader.llt:454-459
+
+- FINDING: The `_prelude` fatal check at `test-loader.llt:866` now uses `[builtin-dict-length _prelude-result.errors]` (counting only `errors`), not `tc-warnings`. The comment at lines 861-864 explicitly documents that `tc-warnings` are advisory. This is correct policy — valid prelude functions with typed variadics intentionally produce exhaustiveness warnings. The fix is precisely targeted and the comment is accurate. | SCOPE: fix-now (praise, no action needed) | FILE: stdlib/test-loader.llt:861-870
+
+- FINDING: Missing corpus tests for `bor-all`, `band-all`, `bxor-all`. The sprint added these three functions using the new typed-variadic mechanism. No tests exist in `tests/corpus/eval/stdlib/` verifying their behavior: zero args (identity value), single arg (passthrough), multiple args (correct folding), and the runtime exhaustiveness error on Float input. These are the first prelude functions that exercise typed variadics for domain enforcement at runtime — they deserve their own corpus tests. | SCOPE: fix-now | FILE: tests/corpus/eval/stdlib/ (missing files)
+
+- FINDING: Missing corpus test for `begin` alias. `tests/corpus/eval/macros/begin_basic.llt-eval` tests `[begin 1 2 3]` → `Int(3)` and `macro_roundtrip_begin.llt-eval` tests `[begin [+ 1 2] [* 3 4]]` → `Int(12)`. Neither test exercises `begin` as explicitly distinct from `>>` (i.e., that `begin` and `>>` produce identical results, or that `begin` with side-effect emit works). Minor gap. | SCOPE: fix-now | FILE: tests/corpus/eval/macros/begin_basic.llt-eval
+
+### Axiom Checks
+
+**Prelude speaks the Rust protocol — PASS.** The `>>` and `begin` macros are self-hosted in tinct using `eval-macro-ast` and `quote`/`unquote-splice`. Rust defines `eval-macro-ast`, `quote`, `unquote-splice` as protocol primitives; prelude composes them. `bor-all`/`band-all`/`bxor-all` use `reduce`/`bor`/`band`/`bxor` — all prelude-exported or protocol-level names. The `_prelude` fatal check counts `errors` only — this is tinct policy in `test-loader.llt`, not hardwired in Rust.
+
+**No fast paths, no fallbacks, no backwards compatibility — PASS.** The `begin: >>` alias is a direct value binding, not a wrapper or compatibility shim. The old `begin` behavior (if any existed) is replaced by the typed-variadic `>>`. No fallback branch.
+
+**Correctness, not performance — PASS.** `bor-all`/`band-all`/`bxor-all` correctly use `reduce` with the proper identity values (0 for bor/bxor, -1 for band in two's complement). The `>>` macro correctly uses `[call [fn [let] ...body]]` (zero-arg IIFE) not `[[fn ...]]` (which would be a dict). `begin: >>` correctly aliases the function value, not a copy.
+
+**Loader/prelude agnosticism — PASS.** The typed-variadic exhaustiveness warning is emitted by the type checker regardless of what the prelude contains. The test-loader's decision to treat `tc-warnings` as non-fatal is a tinct-level policy choice, not a Rust accommodation. Any user could replace the loader with a stricter one.
+
+**General case, not specific — PASS.** The `>>` macro handles N expressions generically via `unquote-splice`. `bor-all`/`band-all`/`bxor-all` use `reduce` generically rather than special-casing specific argument counts. No special-casing observed.
+
+### Verdict
+
+REQUEST_CHANGES
+
+The five comment fix-nows (prelude.llt:5323-5335, 3481-3484, 5337-5344, 5313-5321) are minimal text additions that must be made to document the runtime exhaustiveness behavior of typed-variadic-only functions when called with non-matching types. The missing corpus tests for `bor-all`/`band-all`/`bxor-all` must be added before this sprint is complete — these are the first prelude functions with typed-variadic domain enforcement at runtime and require verification. All other changes (the alias correctness, the `_tc0` binding, the test-loader fatal-check relaxation) are correct and well-implemented.

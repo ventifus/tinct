@@ -1,0 +1,82 @@
+## Review: test-crafter (SECOND PASS)
+
+### Retraction of First-Pass Findings TC1 and TC2
+
+TC1 (eval_types_multiple_exprs missing [E035]) and TC2 (expand_basic missing [E080]) are
+WITHDRAWN. The fix-reviewer's objection was correct for the wrong reason, but the conclusion
+is right.
+
+Ground truth:
+- EvalError::fmt does NOT include [EXXX] codes in its output (src/error.rs:1668-1776)
+- The corpus runner is stdlib/test-loader.llt, not a Rust corpus_tests.rs
+- test-loader.llt:687-691 does substring match of expected-error against
+  "ERROR: " + error_message — and error_message has no [EXXX] prefix
+- Zero existing error tests (across the entire tests/corpus/ tree) include [EXXX]
+  in their === error sections, confirming the convention
+- The has_error_code_prefix guard from my first pass existed only in worktree
+  agent-a1a9ec8f (a prior sprint); it is absent from this project entirely
+- TC1 and TC2 are correctly formatted: plain message substrings, no error codes
+
+TC3 (README missing meta/) is confirmed FIXED. meta/ is now in the README at both
+the directory tree and the Current Test Coverage sections.
+
+### Findings
+
+FINDING: scope_new_nonstring_key_error.llt-eval has [E010] in === error section that
+will not match actual runtime output | SCOPE: fix-now |
+FILE: tests/corpus/eval/meta/scope_new_nonstring_key_error.llt-eval:4
+
+Current content:
+    === error
+    [E010] builtin-scope-new bindings key
+
+The actual runtime error from EvalError::fmt for TypeMismatch with context
+"builtin-scope-new bindings key" is:
+    "builtin-scope-new bindings key: expected String, got Int (defined at 1:1-1:35)"
+
+The actual string seen by the runner is:
+    "ERROR: builtin-scope-new bindings key: expected String, got Int (defined at 1:1-1:35)"
+
+The substring "[E010] builtin-scope-new bindings key" is NOT found in this string
+because the runtime produces no [E010] prefix. The test fails the substring match.
+
+This [E010] was incorrectly applied: it was an artifact of my erroneous first-pass
+TC1/TC2 findings being misapplied to this test file during panel fixes.
+
+Fix: change the === error section to a substring that actually appears in the runtime output.
+The correct expected text is:
+    builtin-scope-new bindings key: expected String, got Int
+
+This matches the TypeMismatch context-with-expected-got format from error.rs:672.
+
+FINDING: SKIPPED_TESTS.md refers to "The existing
+tests/corpus/eval/builtins/builder_frozen_error.llt-eval" but this file does not exist |
+SCOPE: fix-now |
+FILE: tests/corpus/eval/errors/SKIPPED_TESTS.md:102
+
+The word "existing" is wrong — the file is absent from the repository. This is a
+documentation inaccuracy in a file that is referenced by engineers investigating why
+E082 is not covered. The stale reference misleads anyone following up.
+
+Fix: change "The existing tests/corpus/eval/builtins/builder_frozen_error.llt-eval
+demonstrates this behavior" to "A corpus test in tests/corpus/eval/builtins/ could
+demonstrate this behavior" (or simply remove the parenthetical reference to the
+nonexistent file).
+
+### Verdict
+
+REQUEST_CHANGES
+
+Two fix-now findings remain:
+1. scope_new_nonstring_key_error.llt-eval will fail the corpus runner (broken substring match)
+2. SKIPPED_TESTS.md has a stale reference to a nonexistent file
+
+All other sprint test changes are sound:
+- eval_types_multiple_exprs.llt-eval: correct (no [E035] needed, plain message substring)
+- expand_basic.llt-eval: correct (no [E080] needed, plain message substring)
+- 10 other meta/ tests: correct format, mutation-resistant Int(N) sum pattern, prelude-agnostic
+- docgen_regression.llt-eval: updated correctly for new API
+- display_chain_stdlib_varref.llt-eval: updated correctly for new API
+- README.md: meta/ now documented in both sections
+- SKIPPED_TESTS.md: E055 deletion documented correctly (aside from stale builder_frozen_error ref)
+- deleted tests (include_forbidden, include_path_not_allowed): correctly removed with rationale

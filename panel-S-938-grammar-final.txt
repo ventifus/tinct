@@ -1,0 +1,19 @@
+## Review: grammar-architect
+
+### Findings
+
+- FINDING: doc/02-syntax.md:498 — inline grammar rule now reads `variadic_param = "..." name ("@" param_annotation)?`. `param_annotation` is the correct rule name, matching the formal grammar pseudocode at line 1134 and the param_annotation rule at line 1132. VERIFIED FIXED. | SCOPE: fix-now | FILE: doc/02-syntax.md:498
+
+- FINDING: doc/04-functions.md:97 — formal grammar rule now reads `variadic_param = @{ "..." ~ param_name ~ param_annotation? }`. Annotation form is present. Line 111 adds `[fn [f ...ns@Int ...rest] [head ns]]` as a typed variadic example alongside the existing untyped form. VERIFIED FIXED. | SCOPE: fix-now | FILE: doc/04-functions.md:97
+
+### Verification
+
+`type_annotation` searched across all doc/*.md files — zero occurrences in any grammar rule context. The only hit is `type_annotation_table` in doc/whatif/user-type-constructors.md (an internal type-checker field name, not a grammar rule). No residual `type_annotation` terminology in grammar-facing documentation.
+
+All `variadic_param` occurrences in doc/: doc/02-syntax.md:498, doc/02-syntax.md:1126, doc/02-syntax.md:1134, doc/04-functions.md:89, doc/04-functions.md:97. All five are consistent and include `param_annotation?`. No copies were missed.
+
+### Verdict
+
+APPROVE
+
+Both round-2 fix-now findings are confirmed fixed with no regressions introduced.

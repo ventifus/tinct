@@ -1,0 +1,22 @@
+## Review: eval-engine (S-926 thin-meta-api, THIRD PASS)
+
+### Findings
+
+- FINDING: `prelude.llt:3383` — `[raise ev.errors]` passes `{0: String}` Dict to `raise`, which requires String. When `builtin-eval` returns an error, `ev.errors` is `{0: "message string"}`. `raise` calls `require_string()` (builtins_meta.rs:200), which will fail with a type mismatch error rather than surfacing the actual eval error. The sprint correctly fixed loader.llt:362 (`[builtin-raise [builtin-get 0 ev.errors]]`) and test-loader.llt:373,520 to use `[builtin-get 0 ev.errors]`, but missed the identical pattern in `prelude.llt`'s `eval-program` function. The fix is identical: `[raise [builtin-get 0 ev.errors]]`. | SCOPE: fix-now | FILE: stdlib/prelude.llt:3383
+
+### Previously verified as fixed
+
+- E1/E2/E3 (RefCell panics): `builtin_scopes` collects pairs to Vec before releasing borrow (builtins_meta.rs:1765-1779); `builtin_scope_new` pre-fetches all thunks before `borrow_mut()` (builtins_meta.rs:1881-1902); immutable borrow dropped before `borrow_mut` at line 1848. All confirmed correct.
+- E6 (non-int keys in builtin-resolve): Non-integer outer keys in frames dict now return `EvalError::user_error` (builtins_meta.rs:2291-2299). Confirmed fixed.
+- E7 (desugar ordering returns EvalError): `builtin_desugar` returns `EvalError::user_error` when called after `builtin-program-docs` (builtins_meta.rs:2927). Not a panic. Confirmed fixed.
+- E8 (scope-id bounds): All four builtins now validate scope-id range before indexing: `builtin-eval` (3292-3301), `builtin-eval-repr` (3506-3515), `builtin-scope-new` (1837-1848), `builtin-scope-names` (1970-1977), `builtin-scope-parent` (2054-2063). Confirmed fixed.
+- loader.llt `builtin-raise [builtin-get 0 ev.errors]`: Lines 362, 458, 459 all use `[builtin-get 0 ...]`. Confirmed fixed.
+- test-loader.llt `builtin-raise [builtin-get 0 ev.errors]`: Lines 373 and 520 both use `[builtin-get 0 ev.errors]`. Confirmed fixed.
+- E4/I2 schema mismatch (`builtin-eval` returns `{0: String}` while `builtin-resolve` returns `{0: {kind, message, span, ...}}`): Documented as deferred, not claimed as fixed this sprint. Acknowledged.
+- E5/T1 (typecheck errors in `tc-warnings`): `builtin-typecheck-doc` returns `Value::Document` directly; `tdoc.warnings` access in `typecheck-program` would fail. Documented as deferred, not claimed as fixed this sprint. Acknowledged.
+
+### Verdict
+
+REQUEST_CHANGES
+
+The `[raise ev.errors]` in `stdlib/prelude.llt:3383` is a correctness bug. When `builtin-eval` fails, the error propagation produces a secondary type mismatch error ("expected String, got Dict") instead of the actual eval error. The identical fix applied to loader.llt and test-loader.llt must also be applied here: `[raise [builtin-get 0 ev.errors]]`.

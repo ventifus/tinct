@@ -1,0 +1,63 @@
+## Review: stdlib-author (S-926 thin-meta-api — THIRD PASS)
+
+### Findings
+
+- FINDING: S1 fix verified — prelude.llt reverse: line 3755 has exactly 4 closing brackets
+  `[fill 0 [builtin-make-builder]]]]`. count_brackets on prelude.llt exits 0 (fully balanced).
+  | SCOPE: fix-now (N/A — already correct)
+
+- FINDING: S2 fix verified — loader.llt eval-document-runtime bracket count is correct.
+  count_brackets on loader.llt exits 0. Bracket trace confirms `[fn ...]` for eval-document-runtime
+  opens at 408:26 depth=2 and closes at 487:37 depth=1. The 5 brackets on line 487 are all
+  accounted for: [match _caps-forced], [fn body], [fn let], [call], [match null? ev.errors].
+  | SCOPE: fix-now (N/A — already correct)
+
+- FINDING: S3/S4 fix verified — _root-scope-entries make-entry call is 2-arg in both
+  loader.llt (line 280) and test-loader.llt (line 287). Both use
+  `[make-entry [builtin-dict-length acc] [0: k  1: [builtin-get k _all-scopes]]]`
+  (2-arg form, dict literal as value). Bug 3 from pass 1 is fixed in both files.
+  | SCOPE: fix-now (N/A — already correct)
+
+- FINDING: S5 fix verified — eval-doc `[call [fn [let] ...]]` wrapper is present in
+  both loader.llt (lines 363-369: the `_:` arm of `[match [null? ev.errors]]`) and
+  test-loader.llt (lines 369-380: same pattern with additional `tc` and `last-result`
+  fields). Bug 4 from pass 1 is fixed in both files. The multi-body intermediate dicts
+  `[doc-name: ...]`, `[next-scope: ...]` and final merge are all correctly wrapped.
+  | SCOPE: fix-now (N/A — already correct)
+
+- FINDING: T-1615 NOT IMPLEMENTED — blake3 hash verification in include is absent.
+  No `blake3`, `integrity`, or `integrity-hash` reference exists anywhere in stdlib
+  (loader.llt, test-loader.llt, prelude.llt, or any other .llt file). T-1615 state is
+  `in_progress` and `completed_at: null`. The task is explicitly in-sprint and describes
+  the fix as: add `[blake3 source]` call in loader.llt include when `integrity-hash` arg
+  is provided, compare to provided hash, raise on mismatch. This is a correctness gap
+  in the include pipeline — files with expected integrity hashes are accepted without
+  verification. | FILE: stdlib/loader.llt:331 (include function)
+  | SCOPE: fix-now
+
+### Verdict
+
+REQUEST_CHANGES
+
+T-1615 (blake3 hash verification in include) is in-sprint, not implemented, and must be
+completed before approval. All four structural bugs fixed in passes S1-S5 are verified
+correct. No new stdlib issues found in this pass.
+
+### T-1615 Implementation Sketch
+
+In loader.llt include (line 331), after reading `bytes` (line 333) and before or after
+the parse step, add:
+
+    [_hash-check: [match [has? "integrity" extras]
+      0: []
+      _: [expected: [get "integrity" extras]]
+            [actual:   [builtin-blake3 bytes]]
+            [match [builtin-eq-string expected actual]
+              0: []
+              _: [builtin-raise [builtin-string-concat
+                    "integrity hash mismatch for " [builtin-string-concat path
+                      [builtin-string-concat ": expected " [builtin-string-concat expected
+                        [builtin-string-concat " got " actual]]]]]]]]]]
+
+(Note: `builtin-blake3` must exist as a Rust primitive — verify in src/builtins.rs or
+builtin_meta.llt before wiring. The T-1615 description says it "already exists".)

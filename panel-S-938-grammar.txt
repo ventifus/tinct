@@ -1,0 +1,45 @@
+## Review: grammar-architect
+
+### Findings
+
+- FINDING: `doc/15-ast.md:371-385` describes "optionally ending with one variadic parameter" and shows `[fn [let ...a ...b] body]` as `# ERROR: multiple variadics` with an associated error code block. S-938 deliberately removed this parser constraint — multiple typed variadics are now valid syntax. The spec block now documents behavior that no longer exists. Any reader of the spec will expect a parse error; any user will be confused when `[fn [let ...a ...b] body]` silently parses. This is spec drift introduced by this sprint. | SCOPE: fix-now | FILE: doc/15-ast.md:371-385
+
+- FINDING: `doc/02-syntax.md:489` reads "At most one variadic parameter is allowed; it must appear last." This is the old single-variadic constraint, removed by T-1688. The sentence must be replaced with a description of the new multi-variadic match-semantics model: typed variadics (`...name@Type`) form type-discriminated buckets; an optional untyped fallback (`...rest`) must be last; multiple typed variadics are allowed and routed in declaration order. | SCOPE: fix-now | FILE: doc/02-syntax.md:489
+
+- FINDING: `doc/02-syntax.md:1125` shows `variadic_param = "..." ~ param_name` in the grammar pseudocode — no `param_annotation?`. The actual parser (parser.rs:4350-4369) handles `ImmediateAt` immediately after the variadic name to parse `...name@Type`. This annotation syntax has existed in the parser and is now the primary mechanism for multi-variadic typed bucket dispatch, but it is absent from the grammar pseudocode. The grammar pseudocode rule should be updated to `variadic_param = "..." ~ param_name ~ param_annotation?`. | SCOPE: fix-now | FILE: doc/02-syntax.md:1125
+
+- FINDING: `doc/02-syntax.md:483-489` (Variadic Parameters subsection) has a single example `[fn [let f ...args] [map f args]]` showing only the untyped form. No example of `...name@Type` typed variadic exists anywhere in `doc/02-syntax.md`. Given that S-938 makes typed variadics the key user-facing syntax change, this subsection needs a typed example: `[fn [let ...ns@Int ...rest] [head ns]]`. Without a typed example, the doc does not demonstrate the new feature at all. | SCOPE: fix-now | FILE: doc/02-syntax.md:481-490
+
+- FINDING: `doc/quickstart.md:197-208` says "`begin` (and its alias `>>`)". The prelude comment at `stdlib/prelude.llt:5333-5335` says the opposite: "`begin` is the canonical name for `>>`; `>>` is the operator alias." The definition order in prelude is `>>:` first, then `begin: >>`. The quickstart.md text inverts the alias direction. This is a pre-existing inconsistency, not introduced by S-938. The sprint brief asks about `begin` doc consistency — this is the inconsistency. | SCOPE: fix-now | FILE: doc/quickstart.md:208
+
+- FINDING: `parser.rs:4362` silently discards `parse_annotation_direct` errors for variadic annotations: `Err(_) => (None, 0)`. All other callsites of `parse_annotation_direct` propagate the error with `?`. If `...name@[malformed` contains a malformed annotation, the parser silently drops the annotation and proceeds, producing a confusing downstream error rather than a clear parse-time message. Pre-existing, not introduced by S-938, but the sprint adds typed variadics as the main use case for this code path, making the silent discard more likely to be encountered. | SCOPE: fix-later | FILE: src/parser.rs:4362
+
+### Axiom Checks
+
+- **Prelude speaks the Rust protocol**: PASS. The multi-variadic dispatch (`split_params`, `value_matches_type`, `annotation_to_runtime_type`, `build_seq`) is fully general Rust code. No Rust function inspects prelude names or special-cases prelude-defined functions. The `>>` and `begin` definitions in prelude are pure tinct code working through the standard evaluation protocol.
+
+- **No fast paths, no fallbacks, no backwards compatibility**: PASS. The unannotated-rest optimization (skip materialization when no typed buckets exist) is correct behavior for the untyped case, not a fast path — it preserves lazy evaluation semantics. The old single-variadic parser constraint was not preserved as a fallback; it was cleanly removed. No legacy behavior shims exist.
+
+- **Correctness, not performance**: PASS. Values are materialized when typed bucket dispatch requires it (necessary strictness point). The `build_seq` right-to-left fold is correct. The `annotation_to_runtime_type` fallback to `Type::Unknown` for compound types is a tracked limitation (T-1691), not a correctness shortcut in the path exercised today. The parser removal of the single-variadic constraint is correct: ordering rules belong to the type system, which enforces them via typed errors, matching how match arm ordering is handled.
+
+- **Loader/prelude agnosticism**: PASS. Multi-variadic routing works with any prelude or no prelude. The exhaustiveness warning fires from the type checker regardless of prelude content. The `_prelude` fatal check in test-loader counts only `errors`, not `tc-warnings`, via tinct code (not Rust), so prelude functions using typed variadics can emit exhaustiveness warnings without killing the loader. The feature is agnostic to loader content.
+
+- **General case, not specific**: PASS. The typed bucket dispatch implements the general N-bucket case: N typed buckets in declaration order, optional untyped fallback, first match wins, exhaustiveness error when unmatched and no fallback exists. No code special-cases any specific number of buckets or specific types.
+
+### Parser-Specific Assessment
+
+The parser change is technically correct. The removal of `saw_variadic` tracking and the "must be last / only one allowed" checks is the right architectural decision: the parser is the wrong layer for match-semantics ordering constraints, just as it is the wrong layer to enforce match arm ordering. The type system correctly handles the ordering rules (typed-after-rest emits a typed error; fixed-after-variadic emits a typed error), and these are covered by corpus tests.
+
+The `...name@T` annotation handling is correct: `ImmediateAt` is the right token (preserves whitespace-sensitivity — `...name @Type` with a space drops the annotation, consistent with how `x @Type` works for regular params). The annotation is correctly forwarded through `SurfaceExpression::Rest(name, rest_annotation)` to `SurfaceParam { annotation: rest_ann, variadic: true }`.
+
+The `all_valid_params` validation at parser.rs:5592-5599 correctly accepts `SurfaceExpression::Rest(Some(_), _)` — the wildcard on the annotation field correctly accepts both annotated and unannotated variadics.
+
+The doc fixes are the only blocker. Three spec locations describe behavior that no longer exists.
+
+### Verdict
+
+REQUEST_CHANGES
+
+Three fix-now findings: `doc/15-ast.md:371-385` and `doc/02-syntax.md:489` describe the removed single-variadic constraint as current behavior (including an error example that now parses successfully); `doc/02-syntax.md:1125` omits `param_annotation?` from the `variadic_param` grammar rule; `doc/02-syntax.md:481-490` has no typed variadic example. One additional fix-now: `doc/quickstart.md:208` inverts the `begin`/`>>` alias direction.
+
+All four are documentation fixes, no code changes required. Once the docs are updated to match the new parser behavior, issue APPROVE.

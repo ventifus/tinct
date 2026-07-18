@@ -1,0 +1,104 @@
+## Review: grammar-architect (S-926 thin-meta-api — THIRD PASS / FINAL)
+
+### Findings
+
+---
+
+**VERIFIED FIXED — items from second-pass findings**
+
+1. `@Type` in inline header value position (`--- expects: @Dict`, `--- caps: [%cwd: @DirCap]`)
+   — FIXED. `Token::At | Token::ImmediateAt` branch added at parser.rs:3891-3940. Calls
+   `parse_annotation()` and wraps result in a `TypeAssert` node with null placeholder. This
+   handles both standalone `--- expects: @Dict` and nested `--- caps: [%cwd: @DirCap]`
+   (the At branch fires inside the inline bracket value sub-parser too).
+
+2. `%name@Type` → `header["output-annotation"]`
+   — FIXED. Parser at src/parser.rs:3603-3642 checks for `ImmediateAt` after section name,
+   calls `parse_annotation()`, stores `TypeAssert` node as `header["output-annotation"]`.
+   Corpus tests `section_annotation.llt-eval` (`--- %config@[host: String port: Number]`)
+   and `type_annotated_output.llt-eval` (`--- %config@Dict`) use valid syntax and should pass.
+
+3. Duplicate section name detection
+   — FIXED. `seen_section_names: HashSet<String>` at parser.rs:1218-1219. Checked at
+   parser.rs:3586 before inserting. `duplicate_section_name.llt-eval` tests `--- %foo`
+   twice and expects "duplicate section name '%foo' in file". Code produces this message.
+
+4. Float literals in header values (`--- timeout: 3.14`)
+   — FIXED. `Token::Float(f)` branch at parser.rs:3864-3890 creates `SurfaceExpression::Float`.
+   No corpus test covers this case but the code path is present and correct.
+
+5. doc/09-documents.md formal grammar
+   — FIXED. Grammar at doc/09-documents.md:545-564 now shows:
+     value = bracket_expr | string_literal | integer_literal | float_literal | identifier | type_assert
+   and `type_assert = "@" ~ (identifier | bracket_expr)`. All rules match parser behavior.
+
+6. prelude.llt `reverse:` bracket count at line 3755
+   — FIXED AND CORRECT. Manual bracket depth trace: depth starts at 1 (inside fn) at
+   line 3749, rises to 9 inside line 3753, returns to 2 by end of line 3754, then line
+   3755 `[fill 0 [builtin-make-builder]]]]` applies 4 closes:
+   (1) close `[builtin-make-builder]`, (2) close `[fill 0 ...]`, (3) close intermediate
+   body dict `[n: ... fill: ...]`, (4) close `[fn@[...] ...]`. Depth reaches 0. Correct.
+
+---
+
+**GENUINE REMAINING ISSUE — fix-now**
+
+FINDING: Three corpus tests use `--- %@Type` which is a parse error per spec and code,
+but expect successful (or wrong-error) evaluation. | SCOPE: fix-now |
+FILE: tests/corpus/eval/pipeline/input_validation_percent_at.llt-eval:5
+      tests/corpus/eval/pipeline/input_validation_record_type.llt-eval:5
+      tests/corpus/eval/errors/input_validation_mismatch.llt-eval:5
+
+The form `--- %@Dict` lexes as `Identifier("%") ImmediateAt Identifier("Dict")` because
+`@` is not a bare-word char (src/lexer.rs:1076). The parser (src/parser.rs:3561-3581) sees
+key `"%"`, trims `%` to get empty `section_name`, sees `ImmediateAt` next, and returns a
+ParseError: "bare '%' in section header: expected a name after '%' (e.g. '--- %name' or
+'--- %name@Type')".
+
+The doc grammar at doc/09-documents.md:551 is unambiguous:
+  `section_name = "%" ~ ident_char+`
+At least one ident char is required after `%`. `%@Dict` has zero. This is intentionally
+invalid — the parser and spec agree.
+
+Affected tests and their incorrect expectations:
+- `input_validation_percent_at.llt-eval`: uses `--- %@Dict`, expects `Dict({"merged": ...})`
+  (successful eval) — will fail with parse error instead.
+- `input_validation_record_type.llt-eval`: uses `--- %@[host: String port: Int]`, expects
+  `Dict({"url": String(...)})` (successful eval) — will fail with parse error instead.
+- `input_validation_mismatch.llt-eval`: uses `--- %@Dict`, expects a runtime dot-access
+  error — will fail with parse error before reaching eval.
+
+Fix: Replace `--- %@Type` with `--- expects: @Type` in all three tests. This is the
+supported syntax for pipeline input type annotation (`expects:` key-value header entry).
+No parser code change needed; `%@Type` is correctly a parse error.
+
+Concretely:
+- input_validation_percent_at.llt-eval:5  — `--- %@Dict` → `--- expects: @Dict`
+- input_validation_record_type.llt-eval:5 — `--- %@[host: String  port: Int]`
+                                             → `--- expects: @[host: String  port: Int]`
+- input_validation_mismatch.llt-eval:5    — `--- %@Dict` → `--- expects: @Dict`
+
+---
+
+**NOT AN ISSUE — confirmed correct**
+
+- `seen_section_names` stores bare names ("foo"), error displays full name ("%foo"). Consistent.
+- The inline header value sub-parser's `_ =>` fallback produces a clear error for unsupported
+  tokens. The sub-parser correctly delegates to `parse_annotation()` for At/ImmediateAt —
+  no parallel implementation drift for the annotation case.
+- `--- expects: @[type: Dict]`: At branch calls `parse_annotation()` which handles `@[...]`
+  via its OpenBracket arm. Correct.
+
+---
+
+### Verdict
+
+REQUEST_CHANGES
+
+One fix-now finding: three corpus tests claim `%@Type` is valid syntax when it is
+intentionally a parse error per spec (doc/09-documents.md:551) and code (parser.rs:3566-3581).
+The tests will fail. Fix: replace `--- %@Type` with `--- expects: @Type` in the three
+affected test files. No code changes needed.
+
+All other items from the first and second pass rounds are correctly and completely fixed.
+Once the three test files are corrected, this sprint is approvable.
