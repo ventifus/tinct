@@ -1786,7 +1786,7 @@ impl DiagnosticLevel {
 pub struct TypeDiagnostic {
     pub message: String,
     pub span: crate::ast::Span,
-    pub code: &'static str,
+    pub kind: &'static str,
     pub level: DiagnosticLevel,
 }
 
@@ -3722,13 +3722,13 @@ bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.
         let diag = TypeDiagnostic {
             message: "inferred Unknown type".to_string(),
             span: span.clone(),
-            code: "T999", // test-only sentinel — not a real production diagnostic code
+            kind: "T999", // test-only sentinel — not a real production diagnostic code
             level: DiagnosticLevel::Warn,
         };
 
         assert_eq!(diag.message, "inferred Unknown type");
         assert_eq!(diag.span, span);
-        assert_eq!(diag.code, "T999");
+        assert_eq!(diag.kind, "T999");
         assert_eq!(diag.level, DiagnosticLevel::Warn);
     }
 

@@ -346,7 +346,7 @@
                []
                typed-docs]]
              [all-diagnostics: [append-diags resolve-diagnostics tc-diagnostics]]
-             all-diagnostics]]]]
+             all-diagnostics]]]
          diagnostics:    [match [builtin-has-key? "ok" tc-result]
              0: []
              _: [builtin-get "ok" tc-result]]

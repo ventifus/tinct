@@ -2334,7 +2334,7 @@ async fn run_fmt(
                         level: bumped_level,
                         message: d.message.clone(),
                         span: d.span.clone(),
-                        code: d.code,
+                        kind: d.kind,
                     };
                     if bumped_level == DiagnosticLevel::Err {
                         has_fatal_diag = true;
@@ -2466,7 +2466,7 @@ async fn run_lint(
                 level: bumped_level,
                 message: d.message.clone(),
                 span: d.span.clone(),
-                code: d.code,
+                kind: d.kind,
             }
         } else {
             d.clone()
@@ -2504,7 +2504,7 @@ fn format_type_diagnostic(diag: &tinct::TypeDiagnostic, source: &str, file_name:
         DiagnosticLevel::Err => "error",
     };
 
-    let code = diag.code;
+    let code = diag.kind;
     let line = diag.span.start.line;
     let col = diag.span.start.column;
 
@@ -2675,7 +2675,7 @@ async fn run_literate_lint(tangled: &str, config: &LiterateConfig<'_>) -> Result
                 level: bumped_level,
                 message: d.message.clone(),
                 span: d.span.clone(),
-                code: d.code,
+                kind: d.kind,
             }
         } else {
             d.clone()

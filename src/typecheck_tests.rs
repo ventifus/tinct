@@ -2567,9 +2567,7 @@ async fn test_scan_type_quality_detects_unknown() {
 
     // Should have diagnostics for Unknown
     assert!(!diagnostics.is_empty(), "Expected diagnostics for Unknown");
-    assert!(diagnostics
-        .iter()
-        .all(|d| d.code == super::typecheck_diag::T010_INFERRED_UNKNOWN));
+    assert!(diagnostics.iter().all(|d| d.kind == "unknown-type"));
     assert!(diagnostics
         .iter()
         .all(|d| d.level == crate::error::DiagnosticLevel::Warn));
@@ -2605,10 +2603,8 @@ async fn test_scan_type_quality_explicit_unknown_annotation() {
         "Expected diagnostics for explicit Unknown"
     );
     assert!(
-        diagnostics
-            .iter()
-            .any(|d| d.code == super::typecheck_diag::T011_EXPLICIT_UNKNOWN),
-        "Expected T011 diagnostic for explicit Unknown, got: {:?}",
+        diagnostics.iter().any(|d| d.kind == "explicit-unknown"),
+        "Expected explicit-unknown diagnostic for explicit Unknown, got: {:?}",
         diagnostics
     );
     assert!(

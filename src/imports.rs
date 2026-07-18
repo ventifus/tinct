@@ -94,12 +94,12 @@ async fn build_builtin_core_type_env_inner() -> Option<Arc<RwLock<Env>>> {
     let (_table, _frames) = crate::resolve::resolve_surface_program(&program, &[]);
 
     // Typecheck with builtins env as parent.
-    // enable_scheme_map=false (no LSP hover needed for bootstrap).
+    // enable_hover_map=false (no LSP hover needed for bootstrap).
     let (_errors, _type_map, _doc_map, _scheme_map, _diagnostics, mut state, final_env, _annot) =
         typecheck_surface_program_with_env(
             &program,
             parent_env,
-            false,                            // enable_scheme_map
+            false,                            // enable_hover_map
             std::collections::HashMap::new(), // seed_tycon_env: empty at bootstrap
             None,                             // eval_ctx: no EvalContext at bootstrap
         )

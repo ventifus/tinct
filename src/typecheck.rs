@@ -25,9 +25,6 @@ mod typecheck_dict;
 // Path-sensitive narrowing, pattern binding extraction, overlap checking
 #[path = "typecheck_narrow.rs"]
 pub(crate) mod typecheck_narrow;
-// T010/T011/T012 type quality diagnostics
-#[path = "typecheck_diag.rs"]
-pub(crate) mod typecheck_diag;
 // Case arm and function literal type inference
 #[path = "typecheck_match.rs"]
 pub(crate) mod typecheck_match;
@@ -38,7 +35,6 @@ pub(crate) mod typecheck_call;
 #[path = "typecheck_cek.rs"]
 pub(crate) mod typecheck_cek;
 
-use typecheck_diag::{scan_explicit_unknown_t011, scan_type_quality};
 use typecheck_narrow::{
     extract_param_indices, extract_pattern_types, patterns_overlap, types_can_unify,
 };
@@ -192,7 +188,7 @@ pub async fn typecheck_surface_program(
             None,
         )
         .await;
-    // type_map is now populated during inference (enable_scheme_map=true path).
+    // type_map is now populated during inference (enable_hover_map=true path).
     (errors, type_map, doc_map, scheme_map, diagnostics)
 }
 
@@ -211,7 +207,7 @@ pub async fn typecheck_surface_program(
 /// - `parent_env`: Initial type environment. All classes and instances visible to this
 ///   program must already be in `parent_env`'s chain (populated by prior type-checking runs
 ///   via `TypeContext`).
-/// - `enable_scheme_map`: When `true`, populates the [`SchemeMap`] for LSP hover.
+/// - `enable_hover_map`: When `true`, populates the [`SchemeMap`] for LSP hover.
 /// - `seed_tycon_env`: Pre-populated type constructor definitions. Propagates opaque types
 ///   (DirCap, File, ClockCap, Handle, etc.) declared in `builtin_core.llt` to subsequent
 ///   module type-checks without requiring re-declaration.
@@ -227,7 +223,7 @@ pub async fn typecheck_surface_program(
 pub async fn typecheck_surface_program_with_env(
     program: &SurfaceProgram,
     parent_env: Arc<RwLock<Env>>,
-    enable_scheme_map: bool,
+    enable_hover_map: bool,
     seed_tycon_env: std::collections::HashMap<String, std::sync::Arc<crate::type_def::TyConDef>>,
     eval_ctx: Option<std::sync::Arc<crate::eval::EvalContext>>,
 ) -> (
@@ -302,18 +298,18 @@ pub async fn typecheck_surface_program_with_env(
     let (resolve_table, _frames) = crate::resolve::resolve_surface_program(program, &[root_frame]);
     state.resolution_table = Some(Arc::new(resolve_table));
 
-    if enable_scheme_map {
+    if enable_hover_map {
         state.scheme_map = Some(SchemeMap::new());
     }
 
     let mut annotation_table = TypeAnnotationTable::new();
     // type_map_inner accumulates span→type for all sub-expressions (for LSP hover).
-    // Populated when enable_scheme_map is true (i.e., LSP path), empty otherwise.
+    // Populated when enable_hover_map is true (i.e., LSP path), empty otherwise.
     let mut type_map_inner = TypeMap::new();
     for doc_spanned in &program.documents {
         let doc = &doc_spanned.node;
 
-        let mut type_map_ref: Option<&mut TypeMap> = if enable_scheme_map {
+        let mut type_map_ref: Option<&mut TypeMap> = if enable_hover_map {
             Some(&mut type_map_inner)
         } else {
             None
@@ -338,24 +334,9 @@ pub async fn typecheck_surface_program_with_env(
     // Collect diagnostics from state (e.g., T013 ambiguous constraints).
     diagnostics.append(&mut state.diagnostics);
 
-    // Scan for type quality issues (Unknown types, over-broad annotations).
-    // Uses type_map_inner — only populated when enable_scheme_map is true (LSP + typecheck_surface_program path).
-    // When enable_scheme_map is false (annotation-table-only path), type_map_inner is empty so
-    // T010/T011/T012 diagnostics from type_map are suppressed.
-    scan_type_quality(&type_map_inner, program, &mut diagnostics);
-
-    // Always emit T011 for explicit @Unknown annotations even when enable_scheme_map=false.
-    // These are unconditional: the programmer wrote @Unknown explicitly, so the warning
-    // fires regardless of inferred type, and does not require a populated type_map.
-    // When enable_scheme_map=true, scan_type_quality already handles T011 via the type_map;
-    // we skip this scan to avoid duplicates.
-    if !enable_scheme_map {
-        scan_explicit_unknown_t011(program, &mut diagnostics);
-    }
-
     // Extract doc strings from the Surface AST (equivalent to extract_doc_strings on File AST).
-    // Only needed when enable_scheme_map is true (i.e., LSP path — doc_map is for hover).
-    let doc_map = if enable_scheme_map {
+    // Only needed when enable_hover_map is true (i.e., LSP path — doc_map is for hover).
+    let doc_map = if enable_hover_map {
         let mut doc_map = DocMap::new();
         extract_doc_strings_surface(program, &mut doc_map);
         doc_map

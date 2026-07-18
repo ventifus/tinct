@@ -2577,9 +2577,7 @@ pub(crate) fn builtin_typecheck_doc(
             (state, type_map, parent_env)
         };
 
-        // Enable type_map population so scan_type_quality can work
-        let mut type_map_inner = crate::typecheck::TypeMap::new();
-        let mut type_map_ref: Option<&mut crate::typecheck::TypeMap> = Some(&mut type_map_inner);
+        let mut type_map_ref: Option<&mut crate::typecheck::TypeMap> = None;
 
         // process_document processes all items in source order, extends env with schemes from
         // the last dict body, and returns (doc_env, result_type, errors).
@@ -2592,22 +2590,9 @@ pub(crate) fn builtin_typecheck_doc(
         )
         .await;
 
-        // Collect TypeDiagnostics from state.diagnostics (T013 ambiguous constraints)
-        let mut type_diagnostics: Vec<crate::error::TypeDiagnostic> =
+        // Collect TypeDiagnostics from state.diagnostics — now includes inline CEK emissions
+        let type_diagnostics: Vec<crate::error::TypeDiagnostic> =
             std::mem::take(&mut state.diagnostics);
-
-        // Build a temporary SurfaceProgram wrapping just this document for scan_type_quality
-        let program = crate::ast::SurfaceProgram {
-            documents: vec![crate::ast::Spanned {
-                node: std::sync::Arc::clone(&doc_arc),
-                span: call_span.clone(),
-            }],
-        };
-        crate::typecheck::typecheck_diag::scan_type_quality(
-            &type_map_inner,
-            &program,
-            &mut type_diagnostics,
-        );
 
         // Write results back to TypeContext:
         // - tycon_env: new type constructor definitions from this document
@@ -2680,7 +2665,7 @@ pub(crate) fn builtin_typecheck_doc(
             );
             w.insert(
                 HashableValue::Str("kind".into()),
-                alloc(string_val(diag.code)),
+                alloc(string_val(diag.kind)),
             );
             w.insert(
                 HashableValue::Str("message".into()),

@@ -633,7 +633,7 @@ fn emit_ambiguous_constraint_diagnostics(
                             diagnostics.push(crate::error::TypeDiagnostic {
                                 message,
                                 span: diag_span,
-                                code: "ambiguous-constraint",
+                                kind: "ambiguous-constraint",
                                 level: crate::error::DiagnosticLevel::Warn,
                             });
                         }
@@ -654,7 +654,7 @@ fn emit_ambiguous_constraint_diagnostics(
                                 format_var_name(dict_var)
                             ),
                             span: span.clone(),
-                            code: "ambiguous-constraint",
+                            kind: "ambiguous-constraint",
                             level: crate::error::DiagnosticLevel::Warn,
                         });
                     }
@@ -673,7 +673,7 @@ fn emit_ambiguous_constraint_diagnostics(
                                     format_var_name(label_var)
                                 ),
                                 span: span.clone(),
-                                code: "ambiguous-constraint",
+                                kind: "ambiguous-constraint",
                                 level: crate::error::DiagnosticLevel::Warn,
                             });
                         }
@@ -688,7 +688,7 @@ fn emit_ambiguous_constraint_diagnostics(
                                 format_var_name(field_var)
                             ),
                             span: span.clone(),
-                            code: "ambiguous-constraint",
+                            kind: "ambiguous-constraint",
                             level: crate::error::DiagnosticLevel::Warn,
                         });
                     }
@@ -927,7 +927,7 @@ pub fn generalize_with_doc(
                                                 class.name
                                             ),
                                             span: span.clone(),
-                                            code: "ambiguous-constraint",
+                                            kind: "ambiguous-constraint",
                                             level: crate::error::DiagnosticLevel::Warn,
                                         });
                                     }
@@ -960,7 +960,7 @@ pub fn generalize_with_doc(
                                                 format_var_name(&resolved)
                                             ),
                                             span: span.clone(),
-                                            code: "ambiguous-constraint",
+                                            kind: "ambiguous-constraint",
                                             level: crate::error::DiagnosticLevel::Warn,
                                         });
                                     }
@@ -1001,7 +1001,7 @@ pub fn generalize_with_doc(
                                                 format_var_name(&effective_field)
                                             ),
                                             span: span.clone(),
-                                            code: "ambiguous-constraint",
+                                            kind: "ambiguous-constraint",
                                             level: crate::error::DiagnosticLevel::Warn,
                                         });
                                     }
@@ -1018,7 +1018,7 @@ pub fn generalize_with_doc(
                                             format_var_name(&effective_dict)
                                         ),
                                         span: span.clone(),
-                                        code: "ambiguous-constraint",
+                                        kind: "ambiguous-constraint",
                                         level: crate::error::DiagnosticLevel::Warn,
                                     });
                                 }
@@ -1034,7 +1034,7 @@ pub fn generalize_with_doc(
                                             format_var_name(&effective_field)
                                         ),
                                         span: span.clone(),
-                                        code: "ambiguous-constraint",
+                                        kind: "ambiguous-constraint",
                                         level: crate::error::DiagnosticLevel::Warn,
                                     });
                                 }
@@ -2472,7 +2472,7 @@ mod help_suggestion_tests {
 
         assert_eq!(diagnostics.len(), 1, "expected exactly one T013 diagnostic");
         let diag = &diagnostics[0];
-        assert_eq!(diag.code, "ambiguous-constraint");
+        assert_eq!(diag.kind, "ambiguous-constraint");
         assert_eq!(diag.level, DiagnosticLevel::Warn);
         // Message must cite the origin function, not the internal TypeVar name
         assert!(
@@ -2550,7 +2550,7 @@ mod help_suggestion_tests {
 
         assert_eq!(diagnostics.len(), 1, "expected exactly one T013 diagnostic");
         let diag = &diagnostics[0];
-        assert_eq!(diag.code, "ambiguous-constraint");
+        assert_eq!(diag.kind, "ambiguous-constraint");
         assert_eq!(diag.level, DiagnosticLevel::Warn);
         // Fallback: must still contain "ambiguous type variable" and the constraint class
         assert!(

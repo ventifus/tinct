@@ -25,6 +25,7 @@ use crate::ast::{
 };
 use crate::coverage;
 use crate::env::Env;
+use crate::error::{DiagnosticLevel, TypeDiagnostic};
 use crate::type_def::{Row, RowTail, TyConDef};
 use crate::type_infer::Substitution;
 use crate::types::{
@@ -783,6 +784,49 @@ async fn apply_cont(
                             }
                         }
                     }
+
+                    // T-1709: Emit diagnostic for explicit @Unknown return annotation
+                    if matches!(&declared_ret, Type::Unknown) {
+                        state.diagnostics.push(TypeDiagnostic {
+                            level: DiagnosticLevel::Info,
+                            kind: "explicit-unknown",
+                            message:
+                                "explicit @Unknown return annotation — type is not statically known"
+                                    .to_string(),
+                            span: node_span.clone(),
+                        });
+                    }
+
+                    // T-1710: Emit diagnostic for overbroad return annotation
+                    {
+                        let body_resolved = state.subst.apply(&child_ty);
+                        if !matches!(body_resolved, Type::Unknown | Type::Any | Type::TypeVar(..))
+                            && !matches!(declared_ret, Type::Unknown | Type::Any)
+                        {
+                            let is_sub = Type::is_subtype(
+                                &body_resolved,
+                                &declared_ret,
+                                Some(&state.tycon_env),
+                            );
+                            let is_super = Type::is_subtype(
+                                &declared_ret,
+                                &body_resolved,
+                                Some(&state.tycon_env),
+                            );
+                            if is_sub && !is_super {
+                                state.diagnostics.push(TypeDiagnostic {
+                                    level: DiagnosticLevel::Info,
+                                    kind: "overbroad-annotation",
+                                    message: format!(
+                                        "declared return type {} is broader than inferred {} — consider narrowing the annotation",
+                                        declared_ret, body_resolved
+                                    ),
+                                    span: node_span.clone(),
+                                });
+                            }
+                        }
+                    }
+
                     match &declared_ret {
                         Type::Unknown => child_ty,
                         _ => declared_ret,
@@ -1196,6 +1240,17 @@ async fn apply_cont(
             let expected_resolved = state.subst.apply(&expected);
             let actual_resolved = state.subst.apply(&actual);
 
+            // T-1708: Emit diagnostic for explicit @Unknown annotation
+            if expected_resolved == Type::Unknown {
+                state.diagnostics.push(TypeDiagnostic {
+                    level: DiagnosticLevel::Info,
+                    kind: "explicit-unknown",
+                    message: "explicit @Unknown annotation — type is not statically known"
+                        .to_string(),
+                    span: span.clone(),
+                });
+            }
+
             let mismatch_err = compute_type_assert_mismatch(
                 &actual_resolved,
                 &expected_resolved,
@@ -1251,6 +1306,20 @@ async fn apply_cont(
         TypeCheckCont::AfterFieldBase { field, span } => {
             let resolved_base = state.subst.apply(&child_ty);
             let ty = field_type_from_base(&resolved_base, &field, &span, errors);
+
+            // T-1711: Emit diagnostic for Unknown field access
+            if ty == Type::Unknown {
+                state.diagnostics.push(TypeDiagnostic {
+                    level: DiagnosticLevel::Warn,
+                    kind: "unknown-type",
+                    message: format!(
+                        "inferred type is Unknown for field access '.{}' — consider adding a type annotation",
+                        field
+                    ),
+                    span: span.clone(),
+                });
+            }
+
             // Record the field access result with the Field node's span so that
             // scan_type_quality can detect Unknown field accesses (e.g. accessing a field
             // that is not present in the record's known fields produces Unknown here).

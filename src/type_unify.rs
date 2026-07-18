@@ -3422,7 +3422,7 @@ pub async fn process_deferred_equalities(
                                 a_norm, b_norm, err.message
                             ),
                             span: span.clone(),
-                            code: crate::typecheck::typecheck_diag::T013_AMBIGUOUS_CONSTRAINT,
+                            kind: "ambiguous-constraint",
                             level: crate::error::DiagnosticLevel::Warn,
                         });
                     }

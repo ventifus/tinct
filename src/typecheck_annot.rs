@@ -1217,7 +1217,7 @@ pub(crate) async fn resolve_fn_metadata(
                             VALID_FN_ANNOTATION_KEYS.join(", ")
                         ),
                         span: key_expr.span.clone(),
-                        code: super::typecheck_diag::T021_UNKNOWN_TYPE_PARAM_ANNOTATION,
+                        kind: "unknown-type-param",
                         level: crate::error::DiagnosticLevel::Warn,
                     });
                 }
