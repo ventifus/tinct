@@ -674,7 +674,7 @@ pub(crate) fn extract_pattern_types(
 /// - `SurfaceExpression::Call { func, args, .. }` — implied call `[Type]` or `[Type arg1 arg2]`; infers the call type
 /// - `SurfaceExpression::Annotated { annotation, .. }` — `a@Type` form
 /// - `SurfaceExpression::VarRef { .. }` — bare identifier → `Type::Unknown`
-/// - `SurfaceExpression::Placeholder` — wildcard `_` → `Type::Unknown`
+/// - `SurfaceExpression::Placeholder(..)` — wildcard `_` → `Type::Unknown`
 pub(crate) fn extract_binding_types(
     binding: &Arc<SurfaceNode>,
     env: &Arc<RwLock<Env>>,
@@ -738,7 +738,7 @@ pub(crate) fn extract_binding_types(
             types.push(state.fresh_type_var(&binding.span));
         }
         // Gradual: wildcard placeholder
-        SurfaceExpression::Placeholder => {
+        SurfaceExpression::Placeholder(..) => {
             types.push(Type::Unknown);
         }
         _ => {

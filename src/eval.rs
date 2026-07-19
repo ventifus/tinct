@@ -2628,18 +2628,17 @@ mod tests {
     // in scope, so the tests were broken stubs. Equivalent coverage is provided by corpus tests.
 
     #[tokio::test]
-    async fn test_rest_marker_anonymous_errors() {
-        // eval_core_expr returns Err immediately for Rest (not deferred to materialize)
+    async fn test_placeholder_anonymous_errors() {
+        // Anonymous Placeholder (bare ...) lowers to CoreExpr::Placeholder → Err at eval
         let err = eval_for_test(
-            surf(SurfaceExpression::Rest(None, None)),
+            surf(SurfaceExpression::Placeholder(None, None)),
             empty_env(),
             &test_ctx(),
         )
         .await
         .unwrap_err();
         assert!(
-            err.to_string()
-                .contains("rest marker (...) is only valid inside type expressions"),
+            err.to_string().contains("placeholder"),
             "got: {}",
             err
         );
@@ -2649,7 +2648,7 @@ mod tests {
     async fn test_rest_marker_named_errors() {
         // eval_core_expr returns Err immediately for Rest (not deferred to materialize)
         let err = eval_for_test(
-            surf(SurfaceExpression::Rest(Some("x".into()), None)),
+            surf(SurfaceExpression::Placeholder(Some("x".into()), None)),
             empty_env(),
             &test_ctx(),
         )

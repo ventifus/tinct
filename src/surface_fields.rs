@@ -143,9 +143,9 @@ pub fn surface_node_get_field(
             "annotation",
         ) => annotation_to_value(annotation, ctx),
 
-        // --- Rest ---
-        (SurfaceExpression::Rest(Some(n), _), "name") => string_val(n),
-        (SurfaceExpression::Rest(None, _), "name") => null(),
+        // --- Placeholder ---
+        (SurfaceExpression::Placeholder(Some(n), _), "name") => string_val(n),
+        (SurfaceExpression::Placeholder(None, _), "name") => null(),
 
         // --- Match ---
         (SurfaceExpression::Match { scrutinee, .. }, "scrutinee") => expr_variant(scrutinee),
@@ -870,7 +870,7 @@ pub fn surface_expr_tag(expr: &SurfaceExpression) -> &'static str {
         SurfaceExpression::Call { .. } => "[f ...]",
         SurfaceExpression::Fn { .. } => "[fn ...]",
         SurfaceExpression::TypeAssert { .. } => "@Type",
-        SurfaceExpression::Rest(..) => "...name",
+        SurfaceExpression::Placeholder(..) => "...",
         SurfaceExpression::Match { .. } => "[match ...]",
         SurfaceExpression::Quote(_) => "[quote ...]",
         SurfaceExpression::Unquote(_) => "[unquote ...]",
@@ -878,7 +878,6 @@ pub fn surface_expr_tag(expr: &SurfaceExpression) -> &'static str {
         SurfaceExpression::PatternDecl { .. } => "[pattern ...]",
         SurfaceExpression::LetDecl { .. } => "[let ...]",
         SurfaceExpression::CaseArm { .. } => "[case ...]",
-        SurfaceExpression::Placeholder => "...",
         SurfaceExpression::Error(_) => "<parse error>",
         SurfaceExpression::Decl(_) => "declaration",
     }

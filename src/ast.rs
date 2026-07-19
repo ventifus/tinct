@@ -366,10 +366,11 @@ impl fmt::Display for SurfaceExpression {
                 annotation: Some(ann),
                 ..
             } => write!(f, "{name}@{}", ann.node),
-            SurfaceExpression::Placeholder => write!(f, "..."),
-            SurfaceExpression::Rest(None, _) => write!(f, "..."),
-            SurfaceExpression::Rest(Some(name), Some(ann)) => write!(f, "...{name}@{}", ann.node),
-            SurfaceExpression::Rest(Some(name), None) => write!(f, "...{name}"),
+            SurfaceExpression::Placeholder(None, _) => write!(f, "..."),
+            SurfaceExpression::Placeholder(Some(name), Some(ann)) => {
+                write!(f, "...{name}@{}", ann.node)
+            }
+            SurfaceExpression::Placeholder(Some(name), None) => write!(f, "...{name}"),
             SurfaceExpression::Error(span) => write!(f, "<error at {span}>"),
             // (Annotated variant removed — handled by VarRef above)
             SurfaceExpression::Dict(entries) => {
@@ -698,7 +699,7 @@ pub fn is_expr_annotation(ann: &Annotation) -> bool {
 /// inner VarRef must construct `Annotated` directly with the correct inner node.
 pub fn annotated_inner_default() -> Arc<SurfaceNode> {
     Arc::new(SurfaceNode::new(
-        SurfaceExpression::Placeholder,
+        SurfaceExpression::Placeholder(None, None),
         crate::rust_span!(),
     ))
 }
@@ -721,7 +722,7 @@ impl SurfaceNode {
     #[doc(hidden)]
     pub fn default_annotations() -> Self {
         Self {
-            expr: SurfaceExpression::Placeholder,
+            expr: SurfaceExpression::Placeholder(None, None),
             span: crate::rust_span!(),
             type_guard: TypeAnnotation::new(),
             provenance: Provenance::new(),
@@ -873,14 +874,6 @@ pub enum SurfaceExpression {
 
     // (Annotated variant removed — annotation is now carried on VarRef.annotation directly)
 
-    // Row variable / open record marker — None = unnamed (...), Some("name") = ...name.
-    // The optional Annotation carries the type annotation from `...name@Type` syntax.
-    #[expr(tag = "Rest")]
-    Rest(
-        #[expr(key = "name", string_opt)] Option<String>,
-        #[expr(skip)] Option<Spanned<Annotation>>,
-    ),
-
     // Pattern matching
     #[expr(tag = "Match")]
     Match {
@@ -923,9 +916,13 @@ pub enum SurfaceExpression {
         body: Arc<SurfaceNode>,
     },
 
-    // Placeholder `...` — evaluates to error when forced
-    #[expr(tag = "Placeholder", unit)]
-    Placeholder,
+    // Placeholder `...` — typed hole; infers as a fresh TypeVar. Can carry an optional name
+    // and type annotation from `...name@Type` syntax (used in open record contexts).
+    #[expr(tag = "Placeholder")]
+    Placeholder(
+        #[expr(key = "name", string_opt)] Option<String>,
+        #[expr(skip)] Option<Spanned<Annotation>>,
+    ),
 
     // Parse error node — span covers the unparseable region
     #[expr(tag = "AstError")]

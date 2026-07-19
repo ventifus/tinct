@@ -4384,7 +4384,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                         (None, 0)
                     };
                     let rest_expr = mk(
-                        SurfaceExpression::Rest(rest_name, rest_annotation),
+                        SurfaceExpression::Placeholder(rest_name, rest_annotation),
                         rest_end.clone(),
                     );
                     if let Err(push_err) =
@@ -4426,8 +4426,10 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                     return Err(err);
                 } else {
                     // Outside Dict, no identifier: Expr::Placeholder
-                    let placeholder_expr =
-                        mk(SurfaceExpression::Placeholder, ellipsis_span.clone());
+                    let placeholder_expr = mk(
+                        SurfaceExpression::Placeholder(None, None),
+                        ellipsis_span.clone(),
+                    );
                     if let Err(push_err) =
                         push_value(&mut stack, &mut current_document_items, placeholder_expr)
                     {
@@ -5377,7 +5379,7 @@ fn surface_node_to_pattern_with_guard(
             let mut has_rest = true; // Default to open matching
 
             for entry in entries {
-                if let SurfaceExpression::Rest(..) = &entry.node.value.expr {
+                if let SurfaceExpression::Placeholder(..) = &entry.node.value.expr {
                     // This is a `...` rest marker (explicit open matching — redundant but allowed)
                     has_rest = true;
                     continue;
@@ -5612,8 +5614,7 @@ fn push_expr_to_parent(
                             matches!(
                                 &binding.expr,
                                 SurfaceExpression::VarRef { .. }
-                                    | SurfaceExpression::Placeholder
-                                    | SurfaceExpression::Rest(Some(_), _)
+                                    | SurfaceExpression::Placeholder(..)
                             )
                         });
 
@@ -5667,7 +5668,7 @@ fn push_expr_to_parent(
                                         binding.span.clone(),
                                     ));
                                 }
-                                SurfaceExpression::Rest(Some(name), rest_ann) => {
+                                SurfaceExpression::Placeholder(Some(name), rest_ann) => {
                                     // Variadic parameter (...name) or ...name@Type
                                     params.push(Spanned::new(
                                         SurfaceParam {
@@ -5680,7 +5681,7 @@ fn push_expr_to_parent(
                                         binding.span.clone(),
                                     ));
                                 }
-                                SurfaceExpression::Placeholder => {
+                                SurfaceExpression::Placeholder(None, _) => {
                                     // Wildcard parameter — skip (valid but unusual)
                                     // Don't add to params, as Param requires a name
                                 }

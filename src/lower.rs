@@ -526,7 +526,8 @@ fn lower_expr(
             // Check for spread entries (...expr) — desugar to merge calls.
             // [a: 1  b: 2  ...rest  c: 3] → merge(merge([a: 1  b: 2], rest), [c: 3])
             let has_rest = entries.iter().any(|e| {
-                e.node.key.is_none() && matches!(&e.node.value.expr, SurfaceExpression::Rest(..))
+                e.node.key.is_none()
+                    && matches!(&e.node.value.expr, SurfaceExpression::Placeholder(..))
             });
             if has_rest {
                 // Collect entry indices between rest markers.
@@ -535,7 +536,7 @@ fn lower_expr(
                 let mut rest_indices: Vec<usize> = vec![];
                 for (idx, se) in entries.iter().enumerate() {
                     if se.node.key.is_none() {
-                        if let SurfaceExpression::Rest(..) = &se.node.value.expr {
+                        if let SurfaceExpression::Placeholder(..) = &se.node.value.expr {
                             rest_indices.push(idx);
                             segments.push(vec![]);
                             continue;
@@ -901,7 +902,8 @@ fn lower_expr(
             }
         }
 
-        SurfaceExpression::Rest(name, _) => CoreExpr::Rest(name.clone()),
+        SurfaceExpression::Placeholder(Some(name), _) => CoreExpr::Rest(Some(name.clone())),
+        SurfaceExpression::Placeholder(None, _) => CoreExpr::Placeholder,
 
         SurfaceExpression::Match { scrutinee, arms } => CoreExpr::Match {
             scrutinee: Arc::new(lower_inner(scrutinee, diagnostics, scope_frames)),
@@ -984,8 +986,6 @@ fn lower_expr(
             pattern: Arc::new(lower_inner(pattern, diagnostics, scope_frames)),
             body: Arc::new(lower_inner(body, diagnostics, scope_frames)),
         },
-
-        SurfaceExpression::Placeholder => CoreExpr::Placeholder,
 
         SurfaceExpression::Decl(decl) => match decl.as_ref() {
             crate::ast::SurfaceDeclaration::InstanceDecl { class_name, arms } => {
@@ -1147,7 +1147,7 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
             expr: core_expr_to_surface_node(expr),
             resolved_type: crate::ast::TypeAnnotation::new(),
         },
-        CoreExpr::Rest(name) => SurfaceExpression::Rest(name.clone(), None),
+        CoreExpr::Rest(name) => SurfaceExpression::Placeholder(name.clone(), None),
         CoreExpr::Match { scrutinee, arms } => SurfaceExpression::Match {
             scrutinee: core_expr_to_surface_node(scrutinee),
             arms: arms
@@ -1194,7 +1194,7 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
             pattern: core_expr_to_surface_node(pattern),
             body: core_expr_to_surface_node(body),
         },
-        CoreExpr::Placeholder => SurfaceExpression::Placeholder,
+        CoreExpr::Placeholder => SurfaceExpression::Placeholder(None, None),
         // Variant: emitted by lower.rs for type declarations; not user-writable in quotes.
         // Represent as a VarRef to the tag so quote round-trips see a name.
         CoreExpr::Variant { tag, .. } => SurfaceExpression::VarRef {
@@ -1236,9 +1236,9 @@ fn lower_let_decl_binding(
         // Declaration name forms: lower as string literal (name extraction path)
         // Annotated VarRef (name@Type) is also lowered to Str — the annotation is stripped.
         SurfaceExpression::VarRef { name, .. } => CoreExpr::Str(name.clone()),
-        SurfaceExpression::Rest(Some(name), _) => CoreExpr::Str(name.clone()),
+        SurfaceExpression::Placeholder(Some(name), _) => CoreExpr::Str(name.clone()),
         // Wildcard / unnamed rest: use empty string (skipped by LetDecl eval arm)
-        SurfaceExpression::Rest(None, _) => CoreExpr::Str(String::new()),
+        SurfaceExpression::Placeholder(None, _) => CoreExpr::Str(String::new()),
         // All other forms: lower normally (will produce Error if unresolvable).
         // No scope_frames needed here: LetDecl binding names are not call sites and
         // cannot contain call_dispatch annotations.

@@ -505,8 +505,7 @@ fn recurse_children_surface(node: &mut Arc<SurfaceNode>, depth: usize) {
         | SurfaceExpression::U64(_)
         | SurfaceExpression::Float(_)
         | SurfaceExpression::VarRef { annotation: None, .. }
-        | SurfaceExpression::Rest(..)
-        | SurfaceExpression::Placeholder
+        | SurfaceExpression::Placeholder(..)
         | SurfaceExpression::Decl(_) // type-level declaration, no evaluable children
         | SurfaceExpression::Error(_) => {}
 

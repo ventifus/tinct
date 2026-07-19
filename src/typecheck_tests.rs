@@ -2701,9 +2701,9 @@ async fn test_let_decl_in_expression_position_is_error() {
 }
 
 #[tokio::test]
-async fn test_placeholder_has_type_never() {
-    // Expr::Placeholder (the `...` expression) has type Never (Bottom).
-    // Never <: T for all T, so ... satisfies any type constraint via subtyping, not gradual typing.
+async fn test_placeholder_has_type_var() {
+    // Expr::Placeholder (the `...` expression) is now a typed hole: infers as a fresh TypeVar.
+    // The TypeVar unifies with whatever the context demands (e.g., expected type, usage site).
     // Verify via direct infer call. Since `...` is a Placeholder token, we parse it.
     let mut program = crate::parse("...", test_file("...")).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
@@ -2728,10 +2728,9 @@ async fn test_placeholder_has_type_never() {
         local_errors.is_empty(),
         "Placeholder should not produce type errors; got: {local_errors:?}"
     );
-    assert_eq!(
-        ty,
-        Type::Never,
-        "Placeholder (...) must have type Never; got {ty}"
+    assert!(
+        matches!(ty, Type::TypeVar(..)),
+        "Placeholder (...) should infer a fresh TypeVar; got {ty}"
     );
 }
 

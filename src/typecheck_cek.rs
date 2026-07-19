@@ -335,15 +335,11 @@ async fn infer_step(
             TypeCheckAction::Done(Type::StringLiteral(content.clone()))
         }
         SurfaceExpression::U64(_) => TypeCheckAction::Done(Type::Int),
-        SurfaceExpression::Placeholder => TypeCheckAction::Done(Type::Never),
 
-        SurfaceExpression::Rest(..) => TypeCheckAction::Done(Type::Dict(Row {
-            fields: indexmap::IndexMap::new(),
-            tail: RowTail::Uniform {
-                key: None,
-                value: Box::new(Type::Any),
-            },
-        })),
+        // Placeholder: typed hole — infer as a fresh TypeVar (unifies with context)
+        SurfaceExpression::Placeholder(..) => {
+            TypeCheckAction::Done(state.fresh_type_var(&node.span))
+        }
 
         SurfaceExpression::Quote(_inner) => TypeCheckAction::Done(Type::Dict(Row {
             fields: indexmap::IndexMap::new(),
@@ -1086,7 +1082,7 @@ async fn apply_cont(
                 let skip = next_is_alias
                     || matches!(
                         &entries[next_idx].node.value.expr,
-                        SurfaceExpression::Rest(..)
+                        SurfaceExpression::Placeholder(..)
                     )
                     || matches!(
                         &entries[next_idx].node.value.expr,
@@ -3378,7 +3374,7 @@ fn collect_dependencies(
             SurfaceExpression::TypeAssert { expr, .. } => {
                 worklist.push((expr, Arc::clone(&locals)));
             }
-            SurfaceExpression::Rest(..) => {}
+            SurfaceExpression::Placeholder(..) => {}
             SurfaceExpression::Quote(e)
             | SurfaceExpression::Unquote(e)
             | SurfaceExpression::UnquoteSplice(e) => {
@@ -3428,7 +3424,7 @@ fn collect_dependencies(
                 };
                 worklist.push((body, body_locals));
             }
-            SurfaceExpression::Placeholder | SurfaceExpression::Error(_) => {}
+            SurfaceExpression::Error(_) => {}
         }
     }
 
@@ -4051,7 +4047,7 @@ pub(crate) async fn run_typecheck_dict(
             let (ref key_name, is_alias, _is_static) = key_entries[idx];
 
             let skip = is_alias
-                || matches!(&entry.node.value.expr, SurfaceExpression::Rest(..))
+                || matches!(&entry.node.value.expr, SurfaceExpression::Placeholder(..))
                 || matches!(
                     &entry.node.value.expr,
                     SurfaceExpression::Decl(d)
@@ -4447,9 +4443,9 @@ pub(crate) async fn run_typecheck_dict(
         })
         .collect();
 
-    let has_spread = entries
-        .iter()
-        .any(|e| e.node.key.is_none() && matches!(&e.node.value.expr, SurfaceExpression::Rest(..)));
+    let has_spread = entries.iter().any(|e| {
+        e.node.key.is_none() && matches!(&e.node.value.expr, SurfaceExpression::Placeholder(..))
+    });
     let tail = if has_spread {
         RowTail::Uniform {
             key: None,

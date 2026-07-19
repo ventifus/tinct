@@ -1756,7 +1756,7 @@ fn entries_look_like_type_dict(entries: &[Spanned<SurfaceEntry>]) -> bool {
     // Record type pattern: every entry has a string key and a type-shaped value.
     entries.iter().all(|entry| {
         // Rest entries (`...` / `...name`) are valid in type dicts
-        if matches!(&entry.node.value.expr, SurfaceExpression::Rest(..)) {
+        if matches!(&entry.node.value.expr, SurfaceExpression::Placeholder(..)) {
             return true;
         }
         // Every entry must have a string key
@@ -2721,7 +2721,7 @@ async fn resolve_type_dict_with_guard(
         // resolution through resolve_type_expr_with_guard.
         let mut fields: indexmap::IndexMap<String, Type> = indexmap::IndexMap::new();
         for entry in entries {
-            if let SurfaceExpression::Rest(..) = &entry.node.value.expr {
+            if let SurfaceExpression::Placeholder(..) = &entry.node.value.expr {
                 // `...` rest notation: accepted for openness annotation, produces no field.
                 continue;
             }
@@ -3917,7 +3917,7 @@ pub(crate) async fn resolve_type_dict(
     let mut uniform_tail: Option<crate::type_def::RowTail> = None;
 
     for entry in entries {
-        if let SurfaceExpression::Rest(_name, _) = &entry.node.value.expr {
+        if let SurfaceExpression::Placeholder(_name, _) = &entry.node.value.expr {
             // BAS: `...` annotations express user intent for openness; under BAS width
             // subtyping all records are closed — is_subtype handles extra fields.
             has_rest = true;

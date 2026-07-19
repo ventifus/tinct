@@ -383,8 +383,7 @@ impl SurfaceResolver {
             | SurfaceExpression::U64(_)
             | SurfaceExpression::Float(_)
             | SurfaceExpression::StringLiteral { .. }
-            | SurfaceExpression::Rest(..)
-            | SurfaceExpression::Placeholder
+            | SurfaceExpression::Placeholder(..)
             | SurfaceExpression::Error(_) => {}
         }
     }
