@@ -654,7 +654,8 @@ enum StackFrame {
     /// Holds the LHS and waits for the RHS to be parsed
     Pipe {
         lhs: Arc<SurfaceNode>,
-        span_start: Position,
+        /// Span of the `|` token itself.
+        pipe_span: Span,
     },
     /// Annotation collection frame — collects one expression which becomes an annotation.
     ///
@@ -1089,7 +1090,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
             StackFrame::PatternDecl { span_start, .. } => ("pattern", *span_start),
             StackFrame::LetDecl { span_start, .. } => ("let", *span_start),
             StackFrame::CaseDecl { span_start, .. } => ("case", *span_start),
-            StackFrame::Pipe { span_start, .. } => ("pipe", *span_start),
+            StackFrame::Pipe { pipe_span, .. } => ("pipe", pipe_span.start),
             StackFrame::AnnotationCollect { span_start, .. } => ("annotation", *span_start),
         }
     }
@@ -4261,7 +4262,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                 // Push a Pipe frame to wait for the RHS expression
                 stack.push(StackFrame::Pipe {
                     lhs,
-                    span_start: span.start,
+                    pipe_span: span.clone(),
                 });
 
                 i += 1; // Consume the Pipe token
@@ -5223,7 +5224,7 @@ fn surface_node_to_pattern_with_guard(
     let span = node.span.clone();
     let (pattern, guard) = match &node.expr {
         // Handle Pipe as or-pattern separator
-        SurfaceExpression::Pipe { lhs, rhs } => {
+        SurfaceExpression::Pipe { lhs, rhs, .. } => {
             let (left_pat, left_guard) = surface_node_to_pattern_with_guard(Arc::clone(lhs))?;
             let (right_pat, right_guard) = surface_node_to_pattern_with_guard(Arc::clone(rhs))?;
 
@@ -6296,11 +6297,15 @@ fn push_expr_to_parent(
                     Ok(())
                 }
             }
-            Some(StackFrame::Pipe { lhs, span_start }) => {
+            Some(StackFrame::Pipe {
+                lhs,
+                pipe_span: op_span,
+            }) => {
                 // We have the RHS expression; pop the frame and create the Pipe node
                 let lhs_expr = lhs.clone();
-                let pipe_span = Span {
-                    start: *span_start,
+                let op_span = op_span.clone();
+                let node_span = Span {
+                    start: op_span.start,
                     end: node.span.end,
                     file: node.span.file.clone(),
                     name: None,
@@ -6311,8 +6316,9 @@ fn push_expr_to_parent(
                     SurfaceExpression::Pipe {
                         lhs: lhs_expr,
                         rhs: node,
+                        pipe_span: Some(op_span),
                     },
-                    pipe_span,
+                    node_span,
                 );
 
                 // Push to parent context
@@ -9273,7 +9279,7 @@ mod tests {
     fn test_pipe_basic() {
         let expr = parse_surf_node("a | b");
         match &expr.expr {
-            SurfaceExpression::Pipe { lhs, rhs } => {
+            SurfaceExpression::Pipe { lhs, rhs, .. } => {
                 assert!(
                     matches!(&lhs.expr, SurfaceExpression::VarRef { name, .. } if name == "a"),
                     "expected lhs = VarRef(a), got {:?}",
@@ -9294,7 +9300,7 @@ mod tests {
     fn test_pipe_left_assoc() {
         let expr = parse_surf_node("a | b | c");
         match &expr.expr {
-            SurfaceExpression::Pipe { lhs, rhs } => {
+            SurfaceExpression::Pipe { lhs, rhs, .. } => {
                 // rhs must be VarRef("c")
                 assert!(
                     matches!(&rhs.expr, SurfaceExpression::VarRef { name, .. } if name == "c"),
@@ -9306,6 +9312,7 @@ mod tests {
                     SurfaceExpression::Pipe {
                         lhs: inner_lhs,
                         rhs: inner_rhs,
+                        ..
                     } => {
                         assert!(
                             matches!(&inner_lhs.expr, SurfaceExpression::VarRef { name, .. } if name == "a"),
@@ -9334,7 +9341,7 @@ mod tests {
         // $x | [f $y] — top-level pipe, RHS is an explicit Call
         let expr = parse_surf_node("$x | [f $y]");
         match &expr.expr {
-            SurfaceExpression::Pipe { lhs, rhs } => {
+            SurfaceExpression::Pipe { lhs, rhs, .. } => {
                 assert!(
                     matches!(&lhs.expr, SurfaceExpression::VarRef { name, .. } if name == "x"),
                     "expected lhs = VarRef(x), got {:?}",
@@ -9355,7 +9362,7 @@ mod tests {
     fn test_pipe_dot_then_pipe() {
         let expr = parse_surf_node("$data.name | upper");
         match &expr.expr {
-            SurfaceExpression::Pipe { lhs, rhs } => {
+            SurfaceExpression::Pipe { lhs, rhs, .. } => {
                 assert!(
                     matches!(&lhs.expr, SurfaceExpression::Field { .. }),
                     "expected lhs = Field, got {:?}",

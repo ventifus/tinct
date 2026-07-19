@@ -266,7 +266,7 @@ impl SurfaceResolver {
             }
 
             // Pipe: walk both sides (the lowering pass will rewrite pipe to call)
-            SurfaceExpression::Pipe { lhs, rhs } => {
+            SurfaceExpression::Pipe { lhs, rhs, .. } => {
                 self.walk_surface_node(lhs);
                 self.walk_surface_node(rhs);
             }
@@ -913,7 +913,7 @@ mod tests {
                 collect_varrefs_in_node(expr, name, out);
                 // (Field with expr: None is a leading-dot form — no sub-expression to recurse into)
             }
-            SurfaceExpression::Pipe { lhs, rhs } => {
+            SurfaceExpression::Pipe { lhs, rhs, .. } => {
                 collect_varrefs_in_node(lhs, name, out);
                 collect_varrefs_in_node(rhs, name, out);
             }

@@ -410,12 +410,17 @@ fn eval_quote_preprocess<'a>(
                 field_slot: crate::ast::SlotAnnotation::new(),
             })),
 
-            SurfaceExpression::Pipe { lhs, rhs } => {
+            SurfaceExpression::Pipe {
+                lhs,
+                rhs,
+                pipe_span,
+            } => {
                 let processed_lhs = eval_quote_preprocess(Arc::clone(lhs), env_id, ctx).await?;
                 let processed_rhs = eval_quote_preprocess(Arc::clone(rhs), env_id, ctx).await?;
                 Ok(make_node(SurfaceExpression::Pipe {
                     lhs: processed_lhs,
                     rhs: processed_rhs,
+                    pipe_span: pipe_span.clone(),
                 }))
             }
 

@@ -435,7 +435,7 @@ impl fmt::Display for SurfaceExpression {
                 (None, DotKey::Ident(s)) => write!(f, ".{s}"),
                 (None, DotKey::Int(n)) => write!(f, ".{n}"),
             },
-            SurfaceExpression::Pipe { lhs, rhs } => write!(f, "{} | {}", lhs, rhs),
+            SurfaceExpression::Pipe { lhs, rhs, .. } => write!(f, "{} | {}", lhs, rhs),
             SurfaceExpression::Sequential(exprs) => {
                 write!(f, "(seq")?;
                 for expr in exprs {
@@ -824,6 +824,9 @@ pub enum SurfaceExpression {
         lhs: Arc<SurfaceNode>,
         #[expr(key = "rhs", child)]
         rhs: Arc<SurfaceNode>,
+        /// Span of the `|` token itself, used by desugar to locate the desugared call node.
+        #[expr(skip)]
+        pipe_span: Option<Span>,
     },
 
     // Sequential let* scoping (multi-expr fn bodies, match arm bodies)

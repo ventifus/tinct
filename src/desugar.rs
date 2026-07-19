@@ -711,28 +711,33 @@ fn desugar_surface_annotation(ann: &mut Annotation, depth: usize) {
 /// then left-folds them into nested `Call` nodes using `apply_pipe_step`.
 ///
 /// For `a | b | c | d` (parsed as `Pipe(a, Pipe(b, Pipe(c, d)))`):
-/// - Stages: `[a, b, c, d]`
-/// - After fold: `apply_pipe_step(apply_pipe_step(apply_pipe_step(a, b), c), d)`
+/// - Stages: `[(a, None), (b, Some(pipe1)), (c, Some(pipe2)), (d, Some(pipe3))]`
+/// - After fold: `apply_pipe_step(apply_pipe_step(apply_pipe_step(a, b, pipe1), c, pipe2), d, pipe3)`
 /// - Result: `[d [c [b a]]]` (correct left-associative nesting)
+///
+/// Each stage carries `Some(pipe_span)` where `pipe_span` is the span of the `|` token
+/// that connects the preceding accumulator to this stage. The first stage carries `None`
+/// because there is no preceding `|`.
 fn desugar_pipe_chain(node: &mut Arc<SurfaceNode>, depth: usize) {
-    // Collect all pipe stages by walking the right-associative chain.
-    // The span of the outermost Pipe node is used for the final result node.
-    let span = node.span.clone();
-    let mut stages: Vec<Arc<SurfaceNode>> = Vec::new();
+    // Collect all pipe stages with their preceding pipe-operator spans.
+    let mut stages: Vec<(Arc<SurfaceNode>, Option<Span>)> = Vec::new();
     collect_pipe_stages(node, &mut stages);
 
     // Desugar each stage independently (not as part of a pipe chain).
-    for stage in &mut stages {
+    for (stage, _) in &mut stages {
         desugar_surface(stage, depth);
     }
 
     // Left-fold the stages: acc = stages[0], then for each subsequent stage,
-    // acc = apply_pipe_step(acc, stage).
+    // acc = apply_pipe_step(acc, stage, pipe_span).
     debug_assert!(stages.len() >= 2, "Pipe node must have at least two stages");
     let mut stages_iter = stages.into_iter();
-    let mut acc: Arc<SurfaceNode> = stages_iter.next().expect("at least one stage");
-    for step in stages_iter {
-        acc = apply_pipe_step(acc, step, span.clone());
+    let mut acc: Arc<SurfaceNode> = stages_iter.next().expect("at least one stage").0;
+    for (step, pipe_span) in stages_iter {
+        // pipe_span is always Some for stages after the first; fall back to the
+        // step's own span only as a defensive measure (should never occur).
+        let call_span = pipe_span.unwrap_or_else(|| step.span.clone());
+        acc = apply_pipe_step(acc, step, call_span);
     }
 
     // Replace node's expression with the folded result.
@@ -741,18 +746,39 @@ fn desugar_pipe_chain(node: &mut Arc<SurfaceNode>, depth: usize) {
 
 /// Collect all stages of a right-associative pipe chain into a flat `Vec`.
 ///
-/// `Pipe(a, Pipe(b, Pipe(c, d)))` → `[a, b, c, d]`.
+/// Each entry is `(stage_node, preceding_pipe_span)`:
+/// - First stage: `(node, None)` — no `|` precedes the initial value.
+/// - Subsequent stages: `(node, Some(pipe_span))` where `pipe_span` is the span of the `|`
+///   token in the `Pipe` node that connects the previous accumulator to this stage.
+///
+/// `Pipe(a, Pipe(b, Pipe(c, d)))` with pipe1/pipe2/pipe3 →
+/// `[(a, None), (b, Some(pipe1)), (c, Some(pipe2)), (d, Some(pipe3))]`.
 ///
 /// Only `Pipe` nodes are unwrapped; any non-`Pipe` node becomes a leaf stage.
-fn collect_pipe_stages(node: &Arc<SurfaceNode>, stages: &mut Vec<Arc<SurfaceNode>>) {
-    match &node.expr {
-        SurfaceExpression::Pipe { lhs, rhs } => {
-            stages.push(Arc::clone(lhs));
-            collect_pipe_stages(rhs, stages);
+fn collect_pipe_stages(
+    node: &Arc<SurfaceNode>,
+    stages: &mut Vec<(Arc<SurfaceNode>, Option<Span>)>,
+) {
+    if let SurfaceExpression::Pipe {
+        lhs,
+        rhs,
+        pipe_span,
+    } = &node.expr
+    {
+        // Recurse into lhs first (may itself be a Pipe chain).
+        collect_pipe_stages(lhs, stages);
+        // rhs is connected to the preceding accumulator by this pipe_span.
+        // Tag the first entry rhs contributes with Some(pipe_span); if rhs is itself
+        // a Pipe node, collect_pipe_stages will add lhs of that node next — we need
+        // to attach pipe_span to the first stage that rhs contributes.
+        let prev_len = stages.len();
+        collect_pipe_stages(rhs, stages);
+        // The first new entry from rhs gets tagged with this pipe_span.
+        if stages.len() > prev_len {
+            stages[prev_len].1 = pipe_span.clone();
         }
-        _ => {
-            stages.push(Arc::clone(node));
-        }
+    } else {
+        stages.push((Arc::clone(node), None));
     }
 }
 

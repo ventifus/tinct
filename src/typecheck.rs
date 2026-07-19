@@ -692,7 +692,7 @@ fn extract_doc_from_surface_node(
                 extract_doc_from_surface_node(target, doc_map, None);
             }
         }
-        SurfaceExpression::Pipe { lhs, rhs } => {
+        SurfaceExpression::Pipe { lhs, rhs, .. } => {
             extract_doc_from_surface_node(lhs, doc_map, None);
             extract_doc_from_surface_node(rhs, doc_map, None);
         }

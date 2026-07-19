@@ -508,7 +508,7 @@ fn lower_expr(
 
         // Pipe is syntactic sugar — rewrite to Call(rhs, [lhs]) so the evaluator
         // sees only Call nodes. Equivalent to: f |> g  ==  g(f).
-        SurfaceExpression::Pipe { lhs, rhs } => CoreExpr::Call {
+        SurfaceExpression::Pipe { lhs, rhs, .. } => CoreExpr::Call {
             func: Arc::new(lower_inner(rhs, diagnostics, scope_frames)),
             args: vec![Arc::new(lower_inner(lhs, diagnostics, scope_frames))],
             named_args: vec![],

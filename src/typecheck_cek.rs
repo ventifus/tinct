@@ -3396,7 +3396,7 @@ fn collect_dependencies(
                     worklist.push((target, Arc::clone(&locals)));
                 }
             }
-            SurfaceExpression::Pipe { lhs, rhs } => {
+            SurfaceExpression::Pipe { lhs, rhs, .. } => {
                 worklist.push((lhs, Arc::clone(&locals)));
                 worklist.push((rhs, Arc::clone(&locals)));
             }
