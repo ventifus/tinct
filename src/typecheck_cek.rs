@@ -790,7 +790,8 @@ async fn apply_cont(
                             message:
                                 "explicit @Unknown return annotation — type is not statically known"
                                     .to_string(),
-                            span: node_span.clone(),
+                            spans: vec![(node_span.clone(), String::new())],
+                            notes: vec![],
                         });
                     }
 
@@ -818,7 +819,8 @@ async fn apply_cont(
                                         "declared return type {} is broader than inferred {} — consider narrowing the annotation",
                                         declared_ret, body_resolved
                                     ),
-                                    span: node_span.clone(),
+                                    spans: vec![(node_span.clone(), String::new())],
+                                    notes: vec![],
                                 });
                             }
                         }
@@ -1242,7 +1244,8 @@ async fn apply_cont(
                     kind: "explicit-unknown",
                     message: "explicit @Unknown annotation — type is not statically known"
                         .to_string(),
-                    span: span.clone(),
+                    spans: vec![(span.clone(), String::new())],
+                    notes: vec![],
                 });
             }
 
@@ -1311,7 +1314,8 @@ async fn apply_cont(
                         "inferred type is Unknown for field access '.{}' — consider adding a type annotation",
                         field
                     ),
-                    span: span.clone(),
+                    spans: vec![(span.clone(), String::new())],
+                    notes: vec![],
                 });
             }
 
@@ -1470,9 +1474,8 @@ async fn infer_var_ref(
                 ty
             }
         } else {
-            let typed_err = crate::type_errors::TypeErrorTyped::from(err);
-            errors.push(TypeError::from(typed_err.clone()));
-            Type::error_with(vec![typed_err])
+            errors.push(err.clone());
+            Type::error_with(vec![err])
         }
     }
 }
@@ -1877,15 +1880,15 @@ async fn apply_cont_call_func(
                 let min_req = inst_required;
                 if n_total < min_req || (!inst_variadic && n_positional > inst_params.len()) {
                     eval_args_for_errors(&args, &named_args, &env, state, errors, type_map).await;
-                    let typed_err = crate::type_errors::TypeErrorTyped::new(
+                    let err = TypeError::new(
                         format!(
                             "arity mismatch: expected {} argument(s), got {}",
                             min_req, n_total
                         ),
                         span.clone(),
                     );
-                    errors.push(TypeError::from(typed_err.clone()));
-                    return TypeCheckAction::Done(Type::error_with(vec![typed_err]));
+                    errors.push(err.clone());
+                    return TypeCheckAction::Done(Type::error_with(vec![err]));
                 }
             }
 
@@ -1972,7 +1975,8 @@ async fn apply_cont_call_func(
                 level: crate::error::DiagnosticLevel::Warn,
                 kind: "unknown-call",
                 message: "calling expression of Unknown type — may not be a function".to_string(),
-                span: call_node.span.clone(),
+                spans: vec![(call_node.span.clone(), String::new())],
+                notes: vec![],
             });
             TypeCheckAction::Done(Type::Unknown)
         }
@@ -2013,24 +2017,24 @@ async fn apply_cont_call_func(
             // Unit variant constructor: wraps a single arg
             if args.len() != 1 {
                 eval_args_for_errors(&args, &named_args, &env, state, errors, type_map).await;
-                let typed_err = crate::type_errors::TypeErrorTyped::new(
+                let err = TypeError::new(
                     format!(
                         "unit variant constructor takes exactly 1 argument, got {}",
                         args.len()
                     ),
                     span,
                 );
-                errors.push(TypeError::from(typed_err.clone()));
-                return TypeCheckAction::Done(Type::error_with(vec![typed_err]));
+                errors.push(err.clone());
+                return TypeCheckAction::Done(Type::error_with(vec![err]));
             }
             if !named_args.is_empty() {
                 eval_args_for_errors(&args, &named_args, &env, state, errors, type_map).await;
-                let typed_err = crate::type_errors::TypeErrorTyped::new(
+                let err = TypeError::new(
                     "unit variant constructor does not accept named arguments",
                     span,
                 );
-                errors.push(TypeError::from(typed_err.clone()));
-                return TypeCheckAction::Done(Type::error_with(vec![typed_err]));
+                errors.push(err.clone());
+                return TypeCheckAction::Done(Type::error_with(vec![err]));
             }
             let tycon = tycon.clone();
             let ctor = ctor.clone();
@@ -2069,15 +2073,15 @@ async fn apply_cont_call_func(
                 .collect();
 
             if fn_members.is_empty() {
-                let typed_err = crate::type_errors::TypeErrorTyped::new(
+                let err = TypeError::new(
                     format!(
                         "expected function type, got intersection of non-function types: {}",
                         func_ty
                     ),
                     call_node.span.clone(),
                 );
-                errors.push(TypeError::from(typed_err.clone()));
-                return TypeCheckAction::Done(Type::error_with(vec![typed_err]));
+                errors.push(err.clone());
+                return TypeCheckAction::Done(Type::error_with(vec![err]));
             }
 
             let n_positional = args.len();
@@ -2104,15 +2108,15 @@ async fn apply_cont_call_func(
                 .collect();
 
             if matching.is_empty() {
-                let typed_err = crate::type_errors::TypeErrorTyped::new(
+                let err = TypeError::new(
                     format!(
                         "no overload of intersection type accepts {} argument(s)",
                         n_total
                     ),
                     call_node.span.clone(),
                 );
-                errors.push(TypeError::from(typed_err.clone()));
-                return TypeCheckAction::Done(Type::error_with(vec![typed_err]));
+                errors.push(err.clone());
+                return TypeCheckAction::Done(Type::error_with(vec![err]));
             }
 
             // Pick the most specific overload: smallest params.len() that fits,
@@ -2159,15 +2163,15 @@ async fn apply_cont_call_func(
                 .collect();
 
             if fn_members.is_empty() {
-                let typed_err = crate::type_errors::TypeErrorTyped::new(
+                let err = TypeError::new(
                     format!(
                         "expected function type, got union of non-function types: {}",
                         func_ty
                     ),
                     call_node.span.clone(),
                 );
-                errors.push(TypeError::from(typed_err.clone()));
-                return TypeCheckAction::Done(Type::error_with(vec![typed_err]));
+                errors.push(err.clone());
+                return TypeCheckAction::Done(Type::error_with(vec![err]));
             }
 
             let n_positional = args.len();
@@ -2194,12 +2198,12 @@ async fn apply_cont_call_func(
                 .collect();
 
             if matching.is_empty() {
-                let typed_err = crate::type_errors::TypeErrorTyped::new(
+                let err = TypeError::new(
                     format!("no overload of union type accepts {} argument(s)", n_total),
                     call_node.span.clone(),
                 );
-                errors.push(TypeError::from(typed_err.clone()));
-                return TypeCheckAction::Done(Type::error_with(vec![typed_err]));
+                errors.push(err.clone());
+                return TypeCheckAction::Done(Type::error_with(vec![err]));
             }
 
             // Pick the most specific overload: smallest params.len() that fits,
@@ -2238,12 +2242,12 @@ async fn apply_cont_call_func(
 
         _ => {
             eval_args_for_errors(&args, &named_args, &env, state, errors, type_map).await;
-            let typed_err = crate::type_errors::TypeErrorTyped::new(
+            let err = TypeError::new(
                 format!("expected function type, got {}", func_ty),
                 call_node.span.clone(),
             );
-            errors.push(TypeError::from(typed_err.clone()));
-            TypeCheckAction::Done(Type::error_with(vec![typed_err]))
+            errors.push(err.clone());
+            TypeCheckAction::Done(Type::error_with(vec![err]))
         }
     }
 }
@@ -2268,12 +2272,12 @@ async fn finalize_call_no_positional_args(
     let min_required = required_count;
 
     if named_args.is_empty() && min_required > 0 {
-        let typed_err = crate::type_errors::TypeErrorTyped::new(
+        let err = TypeError::new(
             format!("arity mismatch: expected {} arguments, got 0", min_required),
             span.clone(),
         );
-        errors.push(TypeError::from(typed_err.clone()));
-        return Type::error_with(vec![typed_err]);
+        errors.push(err.clone());
+        return Type::error_with(vec![err]);
     }
 
     let mut consumed: std::collections::HashSet<usize> = std::collections::HashSet::new();
@@ -2369,15 +2373,15 @@ async fn apply_call_args_poly(
     // Return Type::Error rather than the return type to ensure definite failures
     // do not flow silently through downstream consistency checks.
     if total_supplied < min_required || (!fn_variadic && arg_types.len() > param_types.len()) {
-        let typed_err = crate::type_errors::TypeErrorTyped::new(
+        let err = TypeError::new(
             format!(
                 "arity mismatch: expected {} arguments, got {}",
                 min_required, total_supplied
             ),
             span.clone(),
         );
-        errors.push(TypeError::from(typed_err.clone()));
-        return TypeCheckAction::Done(Type::error_with(vec![typed_err]));
+        errors.push(err.clone());
+        return TypeCheckAction::Done(Type::error_with(vec![err]));
     }
 
     // Unify positional args against fixed params (Robinson unification via unify())
@@ -2468,14 +2472,14 @@ async fn apply_call_args_poly(
                 } else {
                     // No rest bucket and no matching typed bucket: exhaustiveness error.
                     // Continue processing remaining args to collect further errors.
-                    let typed_err = crate::type_errors::TypeErrorTyped::new(
+                    let err = TypeError::new(
                         format!(
                             "argument type {} does not match any variadic bucket",
                             widened
                         ),
                         span.clone(),
                     );
-                    errors.push(TypeError::from(typed_err));
+                    errors.push(err);
                 }
             }
         }
@@ -2846,14 +2850,14 @@ async fn infer_fn_push_cont(
                 // assigns typed buckets before rest. Declaring them in the wrong order
                 // causes silent slot inversion (data corruption at runtime).
                 if rest.is_some() {
-                    let typed_err = crate::type_errors::TypeErrorTyped::new(
+                    let err = TypeError::new(
                         format!(
                             "typed variadic `...{}` declared after untyped rest parameter — typed variadics must precede the untyped fallback `...rest`",
                             p.node.name
                         ),
                         p.span.clone(),
                     );
-                    errors.push(TypeError::from(typed_err));
+                    errors.push(err);
                 }
                 typed_variadics.push((p.node.name.clone(), param_ty));
             } else {
@@ -2863,14 +2867,14 @@ async fn infer_fn_push_cont(
             // Fixed param: check it was not declared after a variadic (would invert slots).
             let seen_any_variadic = !typed_variadics.is_empty() || rest.is_some();
             if seen_any_variadic {
-                let typed_err = crate::type_errors::TypeErrorTyped::new(
+                let err = TypeError::new(
                     format!(
                         "fixed parameter `{}` declared after variadic parameter — fixed params must precede all variadic params",
                         p.node.name
                     ),
                     p.span.clone(),
                 );
-                errors.push(TypeError::from(typed_err));
+                errors.push(err);
             }
             param_types.push((Some(p.node.name.clone()), param_ty));
         }
@@ -3209,12 +3213,12 @@ fn field_type_from_base(
         Type::TyCon(_) | Type::App(_, _) => Type::Unknown,
         Type::Error(payload) => Type::Error(payload.clone()),
         other => {
-            let typed_err = crate::type_errors::TypeErrorTyped::new(
+            let err = TypeError::new(
                 format!("expected record type for field access, but got {}", other),
                 span.clone(),
             );
-            errors.push(TypeError::from(typed_err.clone()));
-            Type::error_with(vec![typed_err])
+            errors.push(err.clone());
+            Type::error_with(vec![err])
         }
     }
 }
@@ -4018,16 +4022,7 @@ pub(crate) async fn run_typecheck_dict(
                     }
                     Err(mut errs) => {
                         if let Some(name) = key_name {
-                            let typed: Vec<crate::type_errors::TypeErrorTyped> = errs
-                                .iter()
-                                .map(|e| {
-                                    crate::type_errors::TypeErrorTyped::new(
-                                        e.message.clone(),
-                                        e.span.clone(),
-                                    )
-                                })
-                                .collect();
-                            field_types.insert(name.clone(), Type::error_with(typed));
+                            field_types.insert(name.clone(), Type::error_with(errs.clone()));
                             state
                                 .failed_bindings
                                 .insert(name.clone(), entry.span.clone());
@@ -4246,16 +4241,7 @@ pub(crate) async fn run_typecheck_dict(
                         }
                     }
                     Err(mut errs) => {
-                        let typed: Vec<crate::type_errors::TypeErrorTyped> = errs
-                            .iter()
-                            .map(|e| {
-                                crate::type_errors::TypeErrorTyped::new(
-                                    e.message.clone(),
-                                    e.span.clone(),
-                                )
-                            })
-                            .collect();
-                        let error_ty = Type::error_with(typed);
+                        let error_ty = Type::error_with(errs.clone());
                         errors.append(&mut errs);
                         let fallback_ty = type_assert_ty.unwrap_or(error_ty);
                         field_types.insert(name.clone(), fallback_ty.clone());

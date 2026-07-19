@@ -1647,11 +1647,40 @@ impl DiagnosticLevel {
 /// Info/Warn level for non-fatal notifications (e.g., inferred `Unknown` types).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeDiagnostic {
-    pub message: String,
-    pub span: crate::ast::Span,
-    pub kind: &'static str,
     pub level: DiagnosticLevel,
+    pub kind: &'static str,
+    pub message: String,
+    pub spans: Vec<(crate::ast::Span, String)>,
+    pub notes: Vec<String>,
 }
+
+impl TypeDiagnostic {
+    pub fn error(kind: &'static str, message: impl Into<String>, span: crate::ast::Span) -> Self {
+        Self {
+            level: DiagnosticLevel::Err,
+            kind,
+            message: message.into(),
+            spans: vec![(span, String::new())],
+            notes: vec![],
+        }
+    }
+
+    pub fn with_span(mut self, span: crate::ast::Span, label: impl Into<String>) -> Self {
+        self.spans.push((span, label.into()));
+        self
+    }
+
+    pub fn with_note(mut self, note: impl Into<String>) -> Self {
+        self.notes.push(note.into());
+        self
+    }
+
+    pub fn primary_span(&self) -> &crate::ast::Span {
+        &self.spans[0].0
+    }
+}
+
+// has_type_errors is added in T-1724 when errors.is_empty() call sites are migrated
 
 /// Render a source snippet with caret annotations for the given span.
 ///
@@ -3584,14 +3613,15 @@ bad value (defined at src/test_util.rs:3:5-3:10)
 
         let span = test_span(5, 10, 5, 20);
         let diag = TypeDiagnostic {
-            message: "inferred Unknown type".to_string(),
-            span: span.clone(),
-            kind: "T999", // test-only sentinel — not a real production diagnostic code
             level: DiagnosticLevel::Warn,
+            kind: "T999", // test-only sentinel — not a real production diagnostic code
+            message: "inferred Unknown type".to_string(),
+            spans: vec![(span.clone(), String::new())],
+            notes: vec![],
         };
 
         assert_eq!(diag.message, "inferred Unknown type");
-        assert_eq!(diag.span, span);
+        assert_eq!(diag.primary_span(), &span);
         assert_eq!(diag.kind, "T999");
         assert_eq!(diag.level, DiagnosticLevel::Warn);
     }

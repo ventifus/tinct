@@ -2332,9 +2332,10 @@ async fn run_fmt(
                     let bumped_level = d.level.bump();
                     let bumped = tinct::TypeDiagnostic {
                         level: bumped_level,
-                        message: d.message.clone(),
-                        span: d.span.clone(),
                         kind: d.kind,
+                        message: d.message.clone(),
+                        spans: d.spans.clone(),
+                        notes: d.notes.clone(),
                     };
                     if bumped_level == DiagnosticLevel::Err {
                         has_fatal_diag = true;
@@ -2464,9 +2465,10 @@ async fn run_lint(
             }
             tinct::TypeDiagnostic {
                 level: bumped_level,
-                message: d.message.clone(),
-                span: d.span.clone(),
                 kind: d.kind,
+                message: d.message.clone(),
+                spans: d.spans.clone(),
+                notes: d.notes.clone(),
             }
         } else {
             d.clone()
@@ -2505,8 +2507,9 @@ fn format_type_diagnostic(diag: &tinct::TypeDiagnostic, source: &str, file_name:
     };
 
     let code = diag.kind;
-    let line = diag.span.start.line;
-    let col = diag.span.start.column;
+    let primary_span = diag.primary_span();
+    let line = primary_span.start.line;
+    let col = primary_span.start.column;
 
     // Header: level[Txxx]: message
     let mut out = format!("{level_str}[{code}]: {}\n", diag.message);
@@ -2515,7 +2518,7 @@ fn format_type_diagnostic(diag: &tinct::TypeDiagnostic, source: &str, file_name:
     out.push_str(&format!(" --> {file_name}:{line}:{col}\n"));
 
     // Snippet: source context with caret
-    if let Some(snippet) = tinct::render_span_snippet(source, diag.span.clone()) {
+    if let Some(snippet) = tinct::render_span_snippet(source, primary_span.clone()) {
         out.push_str("  |\n");
         out.push_str(&snippet);
     }
@@ -2673,9 +2676,10 @@ async fn run_literate_lint(tangled: &str, config: &LiterateConfig<'_>) -> Result
             }
             tinct::TypeDiagnostic {
                 level: bumped_level,
-                message: d.message.clone(),
-                span: d.span.clone(),
                 kind: d.kind,
+                message: d.message.clone(),
+                spans: d.spans.clone(),
+                notes: d.notes.clone(),
             }
         } else {
             d.clone()

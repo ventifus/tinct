@@ -2671,7 +2671,7 @@ pub(crate) fn builtin_typecheck_doc(
 
         // Add TypeDiagnostics with level mapped from DiagnosticLevel
         for diag in type_diagnostics.iter() {
-            let span_id = make_span_dict(&diag.span, &ctx, &call_span);
+            let span_id = make_span_dict(diag.primary_span(), &ctx, &call_span);
             let mut w: IndexMap<HashableValue, ThunkId> = IndexMap::new();
             w.insert(
                 HashableValue::Str("level".into()),

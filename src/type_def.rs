@@ -15,7 +15,6 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 
 use crate::ast::Span;
-use crate::type_errors::{GenericTypeError, TypeErrorTyped};
 use crate::types::TypeError;
 
 /// Tail of a row type — either closed (no additional fields) or uniform (additional fields
@@ -327,7 +326,7 @@ pub enum Type {
     /// The payload carries the errors that caused this `Error` node. An empty `Vec` is
     /// FORBIDDEN — always use `Type::error_note(msg)` or `Type::error_with(errs)`.
     /// Every Error must carry causal context; empty payloads make blame impossible.
-    Error(Arc<Vec<TypeErrorTyped>>),
+    Error(Arc<Vec<TypeError>>),
     /// Directory capability — wraps cap_std::fs::Dir. Injected via CLI --cap-fs or
     /// runtime env (cwd, libdir). Represents authority to access a specific directory tree.
     DirCap,
@@ -798,7 +797,7 @@ impl Type {
     // ── Error constructors and accessors ────────────────────────────────────────
 
     /// Construct an Error node carrying the errors that caused it.
-    pub fn error_with(errs: Vec<TypeErrorTyped>) -> Self {
+    pub fn error_with(errs: Vec<TypeError>) -> Self {
         Type::Error(Arc::new(errs))
     }
 
@@ -818,12 +817,7 @@ impl Type {
             file: crate::rust_span!().file,
             name: None,
         };
-        Type::Error(Arc::new(vec![TypeErrorTyped::Generic(GenericTypeError {
-            message: msg.into(),
-            span,
-            notes: vec![],
-            call_stack: vec![],
-        })]))
+        Type::Error(Arc::new(vec![TypeError::new(msg, span)]))
     }
 
     /// Returns `true` if this type is an `Error` node (with or without payload).
@@ -833,7 +827,7 @@ impl Type {
 
     /// Extract the causal errors from an Error node.
     /// Returns an empty slice for cascade sentinels or for non-Error types.
-    pub fn error_payload(&self) -> &[TypeErrorTyped] {
+    pub fn error_payload(&self) -> &[TypeError] {
         if let Type::Error(errs) = self {
             errs.as_slice()
         } else {
@@ -2126,7 +2120,7 @@ impl Type {
         // Error is absorbing: any intersection containing Error becomes Error.
         // Propagate all error payloads from Error members to preserve context.
         if members.iter().any(|m| matches!(m, Type::Error(_))) {
-            let payloads: Vec<TypeErrorTyped> = members
+            let payloads: Vec<TypeError> = members
                 .iter()
                 .flat_map(|m| m.error_payload().to_vec())
                 .collect();
@@ -2646,15 +2640,12 @@ pub fn check_kind_wellformed(
     match ty {
         Type::TypeVar(name, _) => {
             if let Some(Kind::Label) = kind_env.get(name.as_str()) {
-                return Err(TypeErrorTyped::Generic(GenericTypeError {
-                    message: format!(
+                return Err(TypeError::new(
+                    format!(
                         "kind mismatch: type variable `{name}` has kind Label but expected kind *"
                     ),
                     span,
-                    notes: vec![],
-                    call_stack: vec![],
-                })
-                .into());
+                ));
             }
             Ok(())
         }
@@ -2704,20 +2695,18 @@ pub fn check_kind_wellformed(
             // Bare Operator in a type position (kind *) is kind-incorrect.
             // Operator variables have kind (* → *) and must be applied via Type::App.
             if let Some(Kind::Operator) = kind_env.get(name.as_str()) {
-                return Err(TypeErrorTyped::Generic(GenericTypeError {
-                    message: format!("kind mismatch: operator `{name}` has kind (* → *) but expected kind *; did you forget to apply it?"),
+                return Err(TypeError::new(
+                    format!("kind mismatch: operator `{name}` has kind (* → *) but expected kind *; did you forget to apply it?"),
                     span,
-                    notes: vec![], call_stack: vec![],
-                }).into());
+                ));
             }
             // Bare Kind::Arrow in a type position is also kind-incorrect.
             // Arrow kinds are for higher-order type constructors that must be fully applied.
             if matches!(kind_env.get(name.as_str()), Some(Kind::Arrow(_, _))) {
-                return Err(TypeErrorTyped::Generic(GenericTypeError {
-                    message: format!("kind mismatch: `{name}` is a higher-kinded type constructor but was used in a type position"),
+                return Err(TypeError::new(
+                    format!("kind mismatch: `{name}` is a higher-kinded type constructor but was used in a type position"),
                     span,
-                    notes: vec![], call_stack: vec![],
-                }).into());
+                ));
             }
             // If the name is not in kind_env, let it pass (freshly introduced Operator
             // that hasn't been kind-registered yet, or will be registered later)

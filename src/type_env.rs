@@ -631,10 +631,11 @@ fn emit_ambiguous_constraint_diagnostics(
                                 )
                             };
                             diagnostics.push(crate::error::TypeDiagnostic {
-                                message,
-                                span: diag_span,
-                                kind: "ambiguous-constraint",
                                 level: crate::error::DiagnosticLevel::Warn,
+                                kind: "ambiguous-constraint",
+                                message,
+                                spans: vec![(diag_span, String::new())],
+                                notes: vec![],
                             });
                         }
                     }
@@ -649,13 +650,14 @@ fn emit_ambiguous_constraint_diagnostics(
                     // Deduplicate: only emit if this (var, span) pair hasn't been seen
                     if emitted.insert((dict_var.clone(), span.clone())) {
                         diagnostics.push(crate::error::TypeDiagnostic {
+                            level: crate::error::DiagnosticLevel::Warn,
+                            kind: "ambiguous-constraint",
                             message: format!(
                                 "ambiguous type variable {} (dict) in HasField constraint: appears in constraint but not in the type — constraint will be silently dropped",
                                 format_var_name(dict_var)
                             ),
-                            span: span.clone(),
-                            kind: "ambiguous-constraint",
-                            level: crate::error::DiagnosticLevel::Warn,
+                            spans: vec![(span.clone(), String::new())],
+                            notes: vec![],
                         });
                     }
                 }
@@ -668,13 +670,14 @@ fn emit_ambiguous_constraint_diagnostics(
                         // Deduplicate: only emit if this (var, span) pair hasn't been seen
                         if emitted.insert((label_var.clone(), span.clone())) {
                             diagnostics.push(crate::error::TypeDiagnostic {
+                                level: crate::error::DiagnosticLevel::Warn,
+                                kind: "ambiguous-constraint",
                                 message: format!(
                                     "ambiguous label variable {} in HasField constraint: appears in constraint but not in the type — constraint will be silently dropped",
                                     format_var_name(label_var)
                                 ),
-                                span: span.clone(),
-                                kind: "ambiguous-constraint",
-                                level: crate::error::DiagnosticLevel::Warn,
+                                spans: vec![(span.clone(), String::new())],
+                                notes: vec![],
                             });
                         }
                     }
@@ -683,13 +686,14 @@ fn emit_ambiguous_constraint_diagnostics(
                     // Deduplicate: only emit if this (var, span) pair hasn't been seen
                     if emitted.insert((field_var.clone(), span.clone())) {
                         diagnostics.push(crate::error::TypeDiagnostic {
+                            level: crate::error::DiagnosticLevel::Warn,
+                            kind: "ambiguous-constraint",
                             message: format!(
                                 "ambiguous type variable {} (field) in HasField constraint: appears in constraint but not in the type — constraint will be silently dropped",
                                 format_var_name(field_var)
                             ),
-                            span: span.clone(),
-                            kind: "ambiguous-constraint",
-                            level: crate::error::DiagnosticLevel::Warn,
+                            spans: vec![(span.clone(), String::new())],
+                            notes: vec![],
                         });
                     }
                 }
@@ -921,14 +925,15 @@ pub fn generalize_with_doc(
                                     // Deduplicate: only emit if this (var, span) pair hasn't been seen
                                     if state.t013_emitted.insert((var.clone(), span.clone())) {
                                         state.diagnostics.push(crate::error::TypeDiagnostic {
+                                            level: crate::error::DiagnosticLevel::Warn,
+                                            kind: "ambiguous-constraint",
                                             message: format!(
                                                 "ambiguous type variable {} in constraint {}: appears in constraint but not in the type — constraint will be silently dropped",
                                                 format_var_name(var),
                                                 class.name
                                             ),
-                                            span: span.clone(),
-                                            kind: "ambiguous-constraint",
-                                            level: crate::error::DiagnosticLevel::Warn,
+                                            spans: vec![(span.clone(), String::new())],
+                                            notes: vec![],
                                         });
                                     }
                                 }
@@ -955,13 +960,14 @@ pub fn generalize_with_doc(
                                     // Deduplicate: only emit if this (var, span) pair hasn't been seen
                                     if state.t013_emitted.insert((resolved.clone(), span.clone())) {
                                         state.diagnostics.push(crate::error::TypeDiagnostic {
+                                            level: crate::error::DiagnosticLevel::Warn,
+                                            kind: "ambiguous-constraint",
                                             message: format!(
                                                 "ambiguous type variable {} in constraint HasField: appears in constraint but not in the type — constraint will be silently dropped",
                                                 format_var_name(&resolved)
                                             ),
-                                            span: span.clone(),
-                                            kind: "ambiguous-constraint",
-                                            level: crate::error::DiagnosticLevel::Warn,
+                                            spans: vec![(span.clone(), String::new())],
+                                            notes: vec![],
                                         });
                                     }
                                 }
@@ -995,14 +1001,15 @@ pub fn generalize_with_doc(
                                         .insert((effective_dict.clone(), span.clone()))
                                     {
                                         state.diagnostics.push(crate::error::TypeDiagnostic {
+                                            level: crate::error::DiagnosticLevel::Warn,
+                                            kind: "ambiguous-constraint",
                                             message: format!(
                                                 "ambiguous type variables {}, {} in constraint HasField: appear in constraint but not in the type — constraint will be silently dropped",
                                                 format_var_name(&effective_dict),
                                                 format_var_name(&effective_field)
                                             ),
-                                            span: span.clone(),
-                                            kind: "ambiguous-constraint",
-                                            level: crate::error::DiagnosticLevel::Warn,
+                                            spans: vec![(span.clone(), String::new())],
+                                            notes: vec![],
                                         });
                                     }
                                 }
@@ -1013,13 +1020,14 @@ pub fn generalize_with_doc(
                                     .insert((effective_dict.clone(), span.clone()))
                                 {
                                     state.diagnostics.push(crate::error::TypeDiagnostic {
+                                        level: crate::error::DiagnosticLevel::Warn,
+                                        kind: "ambiguous-constraint",
                                         message: format!(
                                             "ambiguous type variable {} in constraint HasField: appears in constraint but not in the type — constraint will be silently dropped",
                                             format_var_name(&effective_dict)
                                         ),
-                                        span: span.clone(),
-                                        kind: "ambiguous-constraint",
-                                        level: crate::error::DiagnosticLevel::Warn,
+                                        spans: vec![(span.clone(), String::new())],
+                                        notes: vec![],
                                     });
                                 }
                             } else if field_ambiguous && !is_discharged(&effective_field) {
@@ -1029,13 +1037,14 @@ pub fn generalize_with_doc(
                                     .insert((effective_field.clone(), span.clone()))
                                 {
                                     state.diagnostics.push(crate::error::TypeDiagnostic {
+                                        level: crate::error::DiagnosticLevel::Warn,
+                                        kind: "ambiguous-constraint",
                                         message: format!(
                                             "ambiguous type variable {} in constraint HasField: appears in constraint but not in the type — constraint will be silently dropped",
                                             format_var_name(&effective_field)
                                         ),
-                                        span: span.clone(),
-                                        kind: "ambiguous-constraint",
-                                        level: crate::error::DiagnosticLevel::Warn,
+                                        spans: vec![(span.clone(), String::new())],
+                                        notes: vec![],
                                     });
                                 }
                             }
@@ -1716,7 +1725,7 @@ impl TypeError {
         let mut err = Self::new(format!("expected function type, got {ty}"), span);
         if let crate::types::Type::Error(payload) = ty {
             for root_cause in payload.iter() {
-                let rc_span = root_cause.span();
+                let rc_span = &root_cause.span;
                 let sf = &rc_span.file;
                 let location = format!(
                     "{}:{}:{}",
@@ -1746,7 +1755,6 @@ impl TypeError {
             span,
         )
     }
-
 }
 
 impl fmt::Display for TypeError {
@@ -1901,75 +1909,6 @@ fn type_error_note(err: &TypeError) -> Option<String> {
         }
     } else {
         None
-    }
-}
-
-/// Convert a `TypeError` to `TypeErrorTyped::Generic` so that `?` works in functions
-/// that return `TypeErrorTyped` but call helpers returning `TypeError`.
-impl From<TypeError> for crate::type_errors::TypeErrorTyped {
-    fn from(e: TypeError) -> Self {
-        crate::type_errors::TypeErrorTyped::Generic(crate::type_errors::GenericTypeError {
-            message: e.message,
-            span: e.span,
-            notes: *e.notes,
-            call_stack: vec![],
-        })
-    }
-}
-
-/// Convert a `TypeErrorTyped` to a `TypeError` for call sites that return `Vec<TypeError>`.
-/// This is a lossy conversion — typed details (e.g. call_stack) are not preserved in `TypeError`.
-/// Used as a bridge while `typecheck_annot.rs` is migrated from `TypeErrorTyped` to `TypeError`.
-impl From<crate::type_errors::TypeErrorTyped> for TypeError {
-    fn from(e: crate::type_errors::TypeErrorTyped) -> Self {
-        use crate::type_errors::TypeErrorTyped as E;
-        let (message, span) = match e {
-            E::Generic(g) => (g.message, g.span),
-            E::ArityMismatch(a) => {
-                let msg = format!(
-                    "arity mismatch: expected {} argument(s), got {}",
-                    a.expected, a.got
-                );
-                (msg, a.span)
-            }
-            E::UndefinedVariable(u) => (format!("undefined variable: {}", u.name), u.span),
-            E::UndefinedType(u) => (format!("undefined type: {}", u.name), u.span),
-            E::UnificationFailure(u) => (
-                format!("cannot unify {} with {}", u.expected, u.got),
-                u.span,
-            ),
-            E::FieldNotFound(f) => (
-                format!("field '{}' not found in {}", f.field, f.record_type),
-                f.span,
-            ),
-            E::NotARecord(e) => (format!("expected record type, got {}", e.actual), e.span),
-            E::NotAFunction(e) => (format!("expected function type, got {}", e.actual), e.span),
-            E::TypeAssertFailed(e) => (
-                format!(
-                    "type assertion failed: expected {}, got {}",
-                    e.asserted, e.actual
-                ),
-                e.span,
-            ),
-            E::NonExhaustiveMatch(e) => (
-                format!(
-                    "non-exhaustive match: missing patterns: {}",
-                    e.missing.join(", ")
-                ),
-                e.span,
-            ),
-            E::OverlappingInstancePatterns(e) => {
-                ("overlapping instance patterns".to_string(), e.span)
-            }
-            E::ConsistencyViolation(e) => ("consistency violation".to_string(), e.span),
-            E::CoverageViolation(e) => ("coverage violation".to_string(), e.span),
-            E::InstanceContainsUnknown(e) => (e.message, e.span),
-            E::KindMismatch(e) => (
-                format!("kind mismatch: expected {:?}, got {}", e.expected, e.actual),
-                e.span,
-            ),
-        };
-        TypeError::new(message, span)
     }
 }
 
@@ -2435,7 +2374,8 @@ mod help_suggestion_tests {
         );
         // When origin_span is provided, the diagnostic span should be the argument span
         assert_eq!(
-            diag.span, arg_span,
+            diag.primary_span(),
+            &arg_span,
             "expected diagnostic span to use origin_span (argument location)"
         );
     }
@@ -2508,7 +2448,8 @@ mod help_suggestion_tests {
         );
         // Fallback: span should be the call_span, not any argument span
         assert_eq!(
-            diag.span, call_span,
+            diag.primary_span(),
+            &call_span,
             "expected fallback span to be call_span"
         );
     }
