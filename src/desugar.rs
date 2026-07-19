@@ -70,6 +70,16 @@ pub fn desugar_instance_decls_surface_program(program: &mut SurfaceProgram) {
     }
 }
 
+/// Full desugar pipeline for production code paths.
+///
+/// Always call this instead of calling the two passes separately. Correct order:
+/// 1. `desugar_instance_decls_surface_program` — expand single-arm InstanceDecl to method dicts
+/// 2. `desugar_surface_program` — `$_` lambda wrapping and Pipe → Call lowering
+pub fn desugar_program_full(program: &mut SurfaceProgram) {
+    desugar_instance_decls_surface_program(program);
+    desugar_surface_program(program);
+}
+
 fn desugar_instance_decls_document(doc: &mut SurfaceDocument) {
     for item in &mut doc.items {
         if let SurfaceItem::Expr(node_arc) = item {

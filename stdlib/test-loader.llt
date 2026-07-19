@@ -716,7 +716,7 @@
                        %stdout: capture
                        %stderr: %stderr
                        %args:   %args]]]
-    [parsed-state
+    [$parsed-state
      | [if-ok eval-docs base-scope-id]
      | [if-ok typecheck-docs fundamental-tc base-scope-id]
      | [if-ok format-output]]]
@@ -904,8 +904,8 @@
     | [if-ok export]
     | [if-ok typecheck-program]]
 
-  # _prelude-scope-id: pre-export scope-id used as display-chain seed for test programs.
-  _prelude-scope-id: _prelude-result.scope-id
+  # _prelude-scope-id: full-export scope-id so test programs have prelude functions in scope.
+  _prelude-scope-id: _prelude-result.full-scope-id
 
   # Fatal boundary: typecheck ERRORS on prelude mean execution is undefined behavior.
   # Type-checker warnings (tc-diagnostics) are advisory and non-fatal — valid prelude functions

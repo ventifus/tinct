@@ -761,7 +761,7 @@ mod tests {
         let parsed = crate::parser::parse(llt_src, test_file(llt_src))
             .unwrap_or_else(|e| panic!("parse_eval: parse failed for {:?}: {}", llt_src, e));
         let mut program = parsed.program;
-        crate::desugar::desugar_surface_program(&mut program);
+        crate::desugar::desugar_program_full(&mut program);
         // Seed resolver from FlatEnv so builtin names resolve to de Bruijn coords.
         let root_frame: indexmap::IndexMap<String, u32> = crate::builtins_core::core_builtins()
             .iter()

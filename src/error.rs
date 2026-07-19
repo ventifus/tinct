@@ -1548,6 +1548,7 @@ impl fmt::Display for EvalError {
         // Covers both materialization spans ("evaluated here") and secondary spans.
         for (ref span, ref label) in self.spans.iter().skip(1) {
             write!(f, "\n  note: {label} at {}", span)?;
+            write_frame_snippet(f, span)?;
         }
 
         // Display all visible stack frames

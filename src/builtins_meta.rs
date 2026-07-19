@@ -1275,8 +1275,8 @@ pub(crate) fn builtin_llt_repr(
             &ctx,
             call_span.clone(),
         )?;
-        // value_to_display_string materializes nested values on demand via visit_value
-        let display_str = crate::value_to_display_string(&val, &ctx, call_span.clone())
+        // value_to_tinct_repr_string produces tinct bracket format: ["key": value  ...]
+        let display_str = crate::value_to_tinct_repr_string(&val, &ctx, call_span.clone())
             .await
             .map_err(|e| EvalError::internal(format!("llt-repr: {}", e.kind), call_span.clone()))?;
         ok_val(string_val(&display_str), call_span)
@@ -2994,7 +2994,7 @@ pub(crate) fn builtin_program(
 
 /// `builtin-desugar`: Desugar a `Value::Program` in-place.
 ///
-/// Thin wrapper around `desugar_surface_program`. Takes 1 arg: Value::Program
+/// Thin wrapper around `desugar_program_full`. Takes 1 arg: Value::Program
 /// Returns Value::Program with desugaring applied.
 pub(crate) fn builtin_desugar(
     ctx_arg: BuiltinArgs,
@@ -3063,8 +3063,7 @@ pub(crate) fn builtin_desugar(
             .into());
         }
         ctx.with_program_mut(program_id, |program| {
-            crate::desugar::desugar_instance_decls_surface_program(program);
-            crate::desugar::desugar_surface_program(program);
+            crate::desugar::desugar_program_full(program);
         });
 
         ok_val(
@@ -3773,7 +3772,7 @@ pub(crate) fn builtin_eval_macro_ast(
         };
 
         // ── Step 4: Desugar + resolve in the call-site environment ────────────
-        crate::desugar::desugar_surface_program(&mut program);
+        crate::desugar::desugar_program_full(&mut program);
         // Seed resolver from the full parent chain of call_site_env_id so that all names
         // visible at the macro call site (builtins, prelude, user-defined) resolve to
         // de Bruijn coordinates rather than falling back to name-based lookup via MAX/MAX.

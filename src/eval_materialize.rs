@@ -60,8 +60,29 @@ impl ProfilingSpanGuard {
                 (None, None)
             };
 
-            // Extract source text snippet (TODO(eval-cleanup): from include cache)
-            let source_text = None;
+            // Extract source text snippet from the embedded SourceFile content.
+            let source_text: Option<String> = {
+                let sf = &thunk.span.file;
+                if !sf.path.starts_with('<') && !sf.content.is_empty() {
+                    let content = sf.content.as_ref();
+                    let start_byte = thunk.span.start.offset;
+                    let end_byte = thunk.span.end.offset.min(content.len());
+                    if start_byte < end_byte {
+                        let snippet = &content[start_byte..end_byte];
+                        // Keep first 60 chars; replace internal newlines with spaces
+                        let truncated: String = snippet
+                            .chars()
+                            .take(60)
+                            .map(|c| if c == '\n' { ' ' } else { c })
+                            .collect();
+                        Some(truncated)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            };
 
             let (builtin_name, origin_builtin) = match &thunk.span.name {
                 Some(name) if name.starts_with("builtin-") => (Some(name.to_string()), None),
@@ -196,6 +217,9 @@ pub(crate) struct PendingCallDispatchData {
     pub(crate) mat_span: Option<Span>,
     pub(crate) original_call: Arc<Spanned<CoreExpr>>,
     pub(crate) tail_hint: bool,
+    /// Span of the function thunk — where the callee value was defined.
+    /// Used as the primary span in not-a-function errors ("defined at").
+    pub(crate) func_span: Span,
 }
 
 /// Payload for Cont::GuardedValidate. Boxed to keep the Cont enum ≤96 bytes.
@@ -879,6 +903,7 @@ async fn dispatch_state(
         } => {
             // Resolve func ThunkId to Arc<Thunk> for immediate materialization.
             let func_thunk = thunk_ctx.get_thunk(func);
+            let func_span = func_thunk.span.clone();
 
             // TCO eligibility check: If Arc::strong_count == 1, nobody else holds this thunk.
             // Memoization is unnecessary, so we can skip the Memoize continuation push.
@@ -910,6 +935,7 @@ async fn dispatch_state(
                     mat_span: None,
                     original_call,
                     tail_hint,
+                    func_span,
                 },
             )));
             eval_stack_guard.disarm();
@@ -1388,6 +1414,7 @@ pub(crate) async fn apply_cont(
                 mat_span,
                 original_call,
                 tail_hint,
+                func_span,
             } = *data;
             // Inherited guard: PendingCallDispatch inherits the eval_stack entry
             // pushed by force_step(PendingCall). Auto-pops on all exit paths;
@@ -1781,8 +1808,8 @@ pub(crate) async fn apply_cont(
                             } else {
                                 format!("expected Function or Builtin, got {}", got_detail)
                             };
-                            let err = EvalError::user_error(message, call_span.clone())
-                                .with_secondary_span(original_call.span.clone(), "called here");
+                            let err = EvalError::user_error(message, func_span.clone())
+                                .with_secondary_span(call_span.clone(), "called here");
                             let decorated = decorate(Box::new(err));
                             // eval_stack_guard pops on drop (armed)
                             thunk.settle(Err(Arc::new((*decorated).clone())));

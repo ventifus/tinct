@@ -2306,7 +2306,7 @@ async fn run_fmt(
 
         // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
         let mut program = output.program;
-        tinct::desugar::desugar_surface_program(&mut program);
+        tinct::desugar::desugar_program_full(&mut program);
         let env_arc = tinct::get_builtin_core_type_env()
             .await
             .expect("builtin core type env unavailable");
@@ -2445,7 +2445,7 @@ async fn run_lint(
 
     // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
     let mut program = output.program;
-    tinct::desugar::desugar_surface_program(&mut program);
+    tinct::desugar::desugar_program_full(&mut program);
     let env_arc = tinct::get_builtin_core_type_env()
         .await
         .expect("builtin core type env unavailable");
@@ -2657,9 +2657,7 @@ async fn run_literate_lint(tangled: &str, config: &LiterateConfig<'_>) -> Result
 
     // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
     let mut program = output.program;
-    tinct::desugar::desugar_surface_program(&mut program);
-    // Transform instance decls to method dicts (T-1142).
-    tinct::desugar::desugar_instance_decls_surface_program(&mut program);
+    tinct::desugar::desugar_program_full(&mut program);
     let env_arc = tinct::get_builtin_core_type_env()
         .await
         .expect("builtin core type env unavailable");
@@ -2752,7 +2750,7 @@ async fn run_describe(file_path: &str) -> Result<(), String> {
 
     // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
     let mut program = output.program;
-    tinct::desugar::desugar_surface_program(&mut program);
+    tinct::desugar::desugar_program_full(&mut program);
     // Type check to get DocMap (for doc strings).
     let env_arc = tinct::get_builtin_core_type_env()
         .await

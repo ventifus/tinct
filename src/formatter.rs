@@ -67,7 +67,7 @@ pub async fn format_source_tinct_with_dir(
 
     // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
     let mut formatter_program = formatter_parsed.program;
-    desugar::desugar_surface_program(&mut formatter_program);
+    desugar::desugar_program_full(&mut formatter_program);
 
     // Build a fresh core env BEFORE resolving so the resolver can be seeded from it.
     // This ensures builtin names (builtin-str, etc.) in the formatter script

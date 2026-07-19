@@ -177,7 +177,7 @@ pub async fn run_loader_pipeline(
         .map_err(|e| format!("{init_path} parse error: {e}"))?;
     let mut loader_program = loader_parsed.program;
 
-    desugar::desugar_surface_program(&mut loader_program);
+    desugar::desugar_program_full(&mut loader_program);
 
     // Resolve the loader program. Seeded from FlatEnv so that builtin names
     // (builtin-parse, etc.) resolve to de Bruijn coordinates instead of
@@ -392,7 +392,7 @@ pub async fn typecheck_source(input: &str) -> Result<(), String> {
     let parsed = parse(input, file).map_err(|e| format!("{e}"))?;
     // PIPELINE INVARIANT: parse -> desugar -> typecheck.
     let mut program = parsed.program;
-    desugar::desugar_surface_program(&mut program);
+    desugar::desugar_program_full(&mut program);
     let env_arc = imports::get_builtin_core_type_env()
         .await
         .expect("builtin core type env not available — bootstrap error");
@@ -423,7 +423,7 @@ pub async fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
     let parsed = parse(input, file).map_err(|e| format!("{e}"))?;
     // PIPELINE INVARIANT: parse -> desugar -> typecheck.
     let mut program = parsed.program;
-    desugar::desugar_surface_program(&mut program);
+    desugar::desugar_program_full(&mut program);
     // Type check the surface program.
     let env_arc2 = imports::get_builtin_core_type_env()
         .await
@@ -794,6 +794,143 @@ pub fn json_pretty_print(s: &str) -> String {
 /// Depth 5 handles typical variant-wrapped values and nested payload dicts.
 const MAX_DISPLAY_DEPTH: usize = 5;
 
+/// Visitor that produces tinct source-format repr: `["key": "value"  42  ...]`.
+/// This is the format used by `builtin-llt-repr` for test output comparison.
+struct TinctReprVisitor;
+
+impl ValueVisitor for TinctReprVisitor {
+    type Output = String;
+
+    fn visit_int(&self, v: i64) -> String {
+        v.to_string()
+    }
+    fn visit_float(&self, v: f64, _span: ast::Span) -> Result<String, Box<error::EvalError>> {
+        if v.fract() == 0.0 && v.is_finite() {
+            Ok(format!("{v:.1}"))
+        } else {
+            Ok(v.to_string())
+        }
+    }
+    fn visit_str(&self, v: &str) -> String {
+        // Produce a quoted string: escape internal quotes and backslashes.
+        let mut result = String::from('"');
+        for c in v.chars() {
+            match c {
+                '"' => result.push_str("\\\""),
+                '\\' => result.push_str("\\\\"),
+                '\n' => result.push_str("\\n"),
+                '\t' => result.push_str("\\t"),
+                '\r' => result.push_str("\\r"),
+                c => result.push(c),
+            }
+        }
+        result.push('"');
+        result
+    }
+    fn visit_bytes(&self, v: &[u8]) -> String {
+        format!("<{} bytes>", v.len())
+    }
+    fn visit_null(&self) -> String {
+        "[]".to_string()
+    }
+    fn visit_dict(&self, entries: Vec<(value::HashableValue, String)>) -> String {
+        if entries.is_empty() {
+            return "[]".to_string();
+        }
+        let mut parts = Vec::with_capacity(entries.len());
+        for (key, val_str) in entries {
+            match key {
+                value::HashableValue::Int(_) => {
+                    // Positional (auto-indexed) entry — show just the value
+                    parts.push(val_str);
+                }
+                value::HashableValue::Str(s) => {
+                    // String-keyed entry — show "key": value
+                    let mut entry = String::new();
+                    entry.push('"');
+                    for c in s.chars() {
+                        match c {
+                            '"' => entry.push_str("\\\""),
+                            '\\' => entry.push_str("\\\\"),
+                            c => entry.push(c),
+                        }
+                    }
+                    entry.push('"');
+                    entry.push_str(": ");
+                    entry.push_str(&val_str);
+                    parts.push(entry);
+                }
+            }
+        }
+        format!("[{}]", parts.join("  "))
+    }
+    fn visit_seq_head(
+        &self,
+        head: String,
+        _span: ast::Span,
+    ) -> Result<String, Box<error::EvalError>> {
+        Ok(format!("[{head}  ...]"))
+    }
+    fn visit_function(
+        &self,
+        params: &[ast::Param],
+        _span: ast::Span,
+    ) -> Result<String, Box<error::EvalError>> {
+        let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
+        Ok(format!("[fn [let {}] ...]", names.join(" ")))
+    }
+    fn visit_builtin(&self, name: &str, _span: ast::Span) -> Result<String, Box<error::EvalError>> {
+        Ok(format!("<builtin:{name}>"))
+    }
+    fn visit_proxy(&self, _span: ast::Span) -> Result<String, Box<error::EvalError>> {
+        Ok("<proxy>".to_string())
+    }
+    fn visit_variant(&self, tag: String, payload: String) -> String {
+        if payload == "[]" {
+            // Unit variant
+            tag
+        } else {
+            format!("[{tag} {payload}]")
+        }
+    }
+    fn visit_decimal(&self, v: rust_decimal::Decimal) -> String {
+        v.to_string()
+    }
+    fn visit_bigint(&self, v: &num_bigint::BigInt) -> String {
+        v.to_string()
+    }
+    fn visit_timestamp(
+        &self,
+        nanos: i64,
+        _span: ast::Span,
+    ) -> Result<String, Box<error::EvalError>> {
+        match jiff::Timestamp::from_nanosecond(nanos as i128) {
+            Ok(ts) => Ok(format!("{ts}")),
+            Err(_) => Ok(format!("<timestamp:{nanos}ns>")),
+        }
+    }
+    fn visit_duration(&self, nanos: i64) -> String {
+        format!("<duration:{nanos}ns>")
+    }
+    fn visit_clock_cap(&self, _span: ast::Span) -> Result<String, Box<error::EvalError>> {
+        Ok("<clock>".to_string())
+    }
+    fn visit_timezone(&self, _span: ast::Span) -> Result<String, Box<error::EvalError>> {
+        Ok("<timezone>".to_string())
+    }
+    fn depth_limit_output(
+        &self,
+        depth: usize,
+        _span: ast::Span,
+    ) -> Option<Result<String, Box<error::EvalError>>> {
+        if depth >= MAX_DISPLAY_DEPTH {
+            Some(Ok("...".to_string()))
+        } else {
+            None
+        }
+    }
+}
+
 struct DisplayVisitor;
 
 impl ValueVisitor for DisplayVisitor {
@@ -909,6 +1046,17 @@ impl ValueVisitor for DisplayVisitor {
 ///
 /// `depth` tracks recursion depth to prevent stack overflow from deeply nested
 /// dict-of-dicts structures. Uses `MAX_DISPLAY_DEPTH` (5 levels); truncates deeper nesting with `...`.
+/// Convert a Value into tinct source-format repr (e.g. `["hello": "world"]`).
+///
+/// Used by `builtin-llt-repr` to format test output for corpus test comparison.
+pub async fn value_to_tinct_repr_string(
+    val: &value::Value,
+    ctx: &Arc<eval::EvalContext>,
+    span: ast::Span,
+) -> Result<String, Box<error::EvalError>> {
+    visit_value(val, ctx, 0, &TinctReprVisitor, span).await
+}
+
 pub async fn value_to_display_string(
     val: &value::Value,
     ctx: &Arc<eval::EvalContext>,
@@ -1086,7 +1234,7 @@ mod tests {
         let mut program = parse(source, test_file(source))
             .expect("parse should succeed")
             .program;
-        desugar::desugar_surface_program(&mut program);
+        desugar::desugar_program_full(&mut program);
         // T-1576: test path uses bootstrap mode (no arena yet).
         let (_table, _frames) = resolve::resolve_surface_program(&program, &[]);
         let (_type_errors, _inferred, _tycon_env) =

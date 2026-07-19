@@ -502,7 +502,6 @@ mod tests {
         ctx: &Arc<EvalContext>,
     ) -> EvalResult<Arc<Thunk>> {
         use crate::ast::Spanned;
-        use crate::desugar::desugar_surface_program;
         use crate::resolve::resolve_surface_program;
         let node = crate::parser::parse_surface_expression(src)
             .unwrap_or_else(|e| panic!("parse_surface_expression({src:?}) failed: {e:?}"));
@@ -515,7 +514,7 @@ mod tests {
             documents: vec![Spanned::new(Arc::new(doc), span)],
         };
         let mut program = program;
-        desugar_surface_program(&mut program);
+        crate::desugar::desugar_program_full(&mut program);
         let root_frame: IndexMap<String, u32> = crate::builtins_core::core_builtins()
             .iter()
             .enumerate()

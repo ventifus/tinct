@@ -84,7 +84,7 @@ async fn build_builtin_core_type_env_inner() -> Option<Arc<RwLock<Env>>> {
     let mut program = crate::parser::parse(source, sf).ok()?.program;
 
     // Desugar
-    crate::desugar::desugar_surface_program(&mut program);
+    crate::desugar::desugar_program_full(&mut program);
 
     // Empty parent — builtin_core.llt is the source of truth. Primitives are hardcoded
     // in resolve_type_name; types declared within the file resolve via state.tycon_env.

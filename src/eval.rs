@@ -151,7 +151,7 @@ pub(crate) async fn eval_document_exprs_with_env(
 ///
 /// # Precondition
 ///
-/// **Pipeline invariant:** `desugar_surface_program` →
+/// **Pipeline invariant:** `desugar_program_full` →
 /// `resolve_surface_program` must be called before passing the program here —
 /// it writes de Bruijn coordinates inline to the AST nodes.
 /// If type checking was skipped, `TypeAssert` nodes will use Type::Unknown (accepts all values).
@@ -2182,7 +2182,6 @@ mod tests {
         env: Arc<RwLock<crate::env::Env>>,
         ctx: &Arc<EvalContext>,
     ) -> EvalResult<Arc<Thunk>> {
-        use crate::desugar::desugar_surface_program;
         use crate::resolve::resolve_surface_program;
         let span = node.span.clone();
         let doc = SurfaceDocument {
@@ -2193,7 +2192,7 @@ mod tests {
             documents: vec![Spanned::new(Arc::new(doc), span.clone())],
         };
         let mut program = program;
-        desugar_surface_program(&mut program);
+        crate::desugar::desugar_program_full(&mut program);
         // Seed resolver from FlatEnv so $name references resolve to de Bruijn coords.
         // Type annotation names (String, Int, etc.) in test expressions are resolved
         // by the type checker, not the runtime resolver — ignore resolve errors here.
@@ -5192,7 +5191,7 @@ mod tests {
         };
         let parsed = crate::parse(source, test_file()).expect("parse should succeed");
         let mut surface_program = parsed.program;
-        crate::desugar::desugar_surface_program(&mut surface_program);
+        crate::desugar::desugar_program_full(&mut surface_program);
         // Resolve without env: dict siblings ($a, $b, $c) are resolved by scope tracking.
         let (_table, _frames) = crate::resolve::resolve_surface_program(&surface_program, &[]);
         let _ = env;
