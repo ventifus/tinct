@@ -1681,9 +1681,6 @@ pub struct TypeError {
     pub span: Span,
     /// Extra `= note:` lines attached at the error-generation site (e.g. "caused by" context).
     pub notes: Box<Vec<String>>,
-    /// Explicit stable error code, e.g. `"T014"`. When `Some`, overrides the message-pattern
-    /// dispatch in `code()`. Use `with_code()` to attach a code at the construction site.
-    pub code: Option<String>,
 }
 
 impl TypeError {
@@ -1692,7 +1689,6 @@ impl TypeError {
             message: message.into(),
             span,
             notes: Box::new(Vec::new()),
-            code: None,
         }
     }
 
@@ -1702,14 +1698,6 @@ impl TypeError {
     /// regardless of whether `message` is stored as a field or a computed value.
     pub fn message(&self) -> &str {
         &self.message
-    }
-
-    /// Builder method: attach an explicit error code and return `self`.
-    ///
-    /// The explicit code takes priority over the message-pattern dispatch in `code()`.
-    pub fn with_code(mut self, code: impl Into<String>) -> Self {
-        self.code = Some(code.into());
-        self
     }
 
     pub fn type_mismatch(expected: &Type, got: &Type, span: Span) -> Self {
@@ -1759,50 +1747,6 @@ impl TypeError {
         )
     }
 
-    /// Returns the stable type error code for this error.
-    ///
-    /// If an explicit code was attached via `with_code()`, it is returned directly.
-    /// Otherwise the code is derived from the error message:
-    ///
-    /// - T001: arity mismatch (wrong number of arguments at call site)
-    /// - T002: undefined variable or undefined type
-    /// - T003: cannot unify / type mismatch / field not found / not a function / not a record
-    /// - T004: type assert failure (annotation-site mismatch)
-    /// - T014: overlapping CHR instance patterns (disjointness violation)
-    /// - T015: CHR instance consistency violation (FD disagreement between arms)
-    /// - T016: CHR instance coverage violation (determined var absent from determining positions)
-    /// - T091: kind mismatch (expected `* → *`, got concrete type, etc.)
-    /// - T000: other type errors not covered above
-    pub fn code(&self) -> &str {
-        if let Some(ref explicit) = self.code {
-            return explicit.as_str();
-        }
-        let msg = &self.message;
-        if msg.starts_with("arity mismatch") {
-            "T001"
-        } else if msg.starts_with("undefined variable") || msg.starts_with("undefined type") {
-            "T002"
-        } else if msg.starts_with("cannot unify")
-            || msg.starts_with("field '")
-            || msg.starts_with("expected record type")
-            || msg.starts_with("expected function type")
-            || msg.starts_with("type mismatch")
-        {
-            "T003"
-        } else if msg.contains("type assert") || msg.starts_with("non-exhaustive match") {
-            "T004"
-        } else if msg.starts_with("overlapping instance patterns") {
-            "T014"
-        } else if msg.starts_with("consistency violation") {
-            "T015"
-        } else if msg.starts_with("coverage violation") {
-            "T016"
-        } else if msg.starts_with("kind mismatch") {
-            "T091"
-        } else {
-            "T000"
-        }
-    }
 }
 
 impl fmt::Display for TypeError {
@@ -1817,7 +1761,7 @@ impl std::error::Error for TypeError {}
 ///
 /// Produces output like:
 /// ```text
-/// error[T003]: cannot unify Int with String
+/// error: cannot unify Int with String
 ///  --> 1:5
 ///   |
 ///  1 | [call $+ 1 "hello"]
@@ -1831,12 +1775,11 @@ impl std::error::Error for TypeError {}
 pub fn format_type_error(err: &TypeError, source: &str, file_name: &str) -> String {
     use crate::error::render_span_snippet;
 
-    let code = err.code();
     let line = err.span.start.line;
     let col = err.span.start.column;
 
-    // Header: error[Txxx]: message
-    let mut out = format!("error[{code}]: {}\n", err.message);
+    // Header: error: message
+    let mut out = format!("error: {}\n", err.message);
 
     // Location: --> file:line:col
     out.push_str(&format!(" --> {file_name}:{line}:{col}\n"));
@@ -1854,7 +1797,7 @@ pub fn format_type_error(err: &TypeError, source: &str, file_name: &str) -> Stri
         out.push_str(&n);
     }
 
-    // Attached notes added at error-generation time (e.g. "caused by" for cascade T002s)
+    // Attached notes added at error-generation time (e.g. "caused by" context for cascading errors)
     for note in err.notes.iter() {
         out.push('\n');
         out.push_str(note);

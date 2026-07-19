@@ -955,8 +955,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
                     class_name
                 ),
                 pattern_node.span.clone(),
-            )
-            .with_code("T017")]);
+            )]);
         }
 
         arm_data.push((pattern_types, pattern_node.span.clone(), methods));
@@ -976,8 +975,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
                         span_j.start.line
                     ),
                     span_j.clone(),
-                )
-                .with_code("T014");
+                );
                 return Err(vec![error]);
             }
         }
@@ -1044,8 +1042,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
                                     span_j.start.line
                                 ),
                                 span_j.clone(),
-                            )
-                            .with_code("T015");
+                            );
                             return Err(vec![error]);
                         }
                     }

@@ -4572,7 +4572,7 @@ fn lint_type_error_exits_one() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("non-exhaustive") || stderr.contains("error[T"),
+        stderr.contains("non-exhaustive"),
         "expected type error message in stderr, got: {stderr}"
     );
 }

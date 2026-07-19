@@ -238,16 +238,6 @@ impl TypeErrorTyped {
         })
     }
 
-    /// Builder method: attach an explicit error code and return `self`.
-    ///
-    /// Legacy bridge — codes are intrinsic to the variant after T-1107.
-    /// This is a no-op on typed variants (code is determined by the variant itself).
-    pub fn with_code(self, _code: impl Into<String>) -> Self {
-        // After T-1107, error codes are intrinsic to the variant.
-        // During the transition, just ignore the code.
-        self
-    }
-
     pub fn type_mismatch(expected: &Type, got: &Type, span: Span) -> Self {
         Self::new(format!("cannot unify {expected} with {got}"), span)
     }
@@ -379,55 +369,6 @@ impl TypeErrorTyped {
         }
     }
 
-    /// Returns the stable type error code for this error (legacy bridge).
-    ///
-    /// Maps typed variants to their legacy T-codes for `format_type_error` compatibility.
-    pub fn code(&self) -> &str {
-        match self {
-            Self::ArityMismatch(_) => "T001",
-            Self::UndefinedVariable(_) | Self::UndefinedType(_) => "T002",
-            Self::UnificationFailure(_)
-            | Self::FieldNotFound(_)
-            | Self::NotARecord(_)
-            | Self::NotAFunction(_) => "T003",
-            Self::TypeAssertFailed(_) | Self::NonExhaustiveMatch(_) => "T004",
-            Self::OverlappingInstancePatterns(_) => "T014",
-            Self::ConsistencyViolation(_) => "T015",
-            Self::CoverageViolation(_) => "T016",
-            Self::InstanceContainsUnknown(_) => "T017",
-            Self::KindMismatch(_) => "T091",
-            Self::Generic(e) => {
-                // Replicate the legacy message-pattern dispatch for Generic variants.
-                let msg = &e.message;
-                if msg.starts_with("arity mismatch") {
-                    "T001"
-                } else if msg.starts_with("undefined variable") || msg.starts_with("undefined type")
-                {
-                    "T002"
-                } else if msg.starts_with("cannot unify")
-                    || msg.starts_with("field '")
-                    || msg.starts_with("expected record type")
-                    || msg.starts_with("expected function type")
-                    || msg.starts_with("type mismatch")
-                {
-                    "T003"
-                } else if msg.contains("type assert") || msg.starts_with("non-exhaustive match") {
-                    "T004"
-                } else if msg.starts_with("overlapping instance patterns") {
-                    "T014"
-                } else if msg.starts_with("consistency violation") {
-                    "T015"
-                } else if msg.starts_with("coverage violation") {
-                    "T016"
-                } else if msg.starts_with("kind mismatch") {
-                    "T091"
-                } else {
-                    "T000"
-                }
-            }
-        }
-    }
-
     // ── Accessors ───────────────────────────────────────────────────────────
 
     pub fn span(&self) -> &Span {
@@ -494,8 +435,7 @@ impl TypeErrorTyped {
 
     /// Returns a stable kebab-case kind name for this error (used in unified error dicts).
     ///
-    /// Unlike `code()` (which returns legacy T-codes), `kind_name()` returns a
-    /// human-readable kebab-case identifier suitable for programmatic use in tinct code.
+    /// Returns a human-readable kebab-case identifier suitable for programmatic use in tinct code.
     pub fn kind_name(&self) -> &'static str {
         match self {
             Self::ArityMismatch(_) => "arity-mismatch",
