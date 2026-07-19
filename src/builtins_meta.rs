@@ -124,8 +124,8 @@ fn parse_error_to_dict(
 /// `level` is always `"error"` (eval errors are always error-level).
 /// `kind` is always `"eval-error"`.
 /// `blame` is `{origin-span, boundary-span, polarity}` when present, `{}` otherwise.
-/// `materialization-span` is the span where the thunk was forced, `{}` when absent.
-/// `secondary-span` is `{span, label}` when present, `{}` otherwise.
+/// `materialization-span` is `spans[1]` when its label is `"evaluated here"`, `{}` when absent.
+/// `secondary-spans` are the note spans that are not the materialization span.
 fn eval_error_to_dict(
     err: &crate::error::EvalError,
     ctx: &Arc<crate::eval::EvalContext>,
@@ -133,7 +133,9 @@ fn eval_error_to_dict(
 ) -> ThunkId {
     let alloc = |v: Value| ctx.alloc_thunk(0, Arc::new(Thunk::value(v, call_span.clone())));
 
-    let span_id = make_span_dict(&err.definition_span, ctx, call_span);
+    // spans[0] is the primary (definition-site) span.
+    let primary_span = err.spans.first().map(|(s, _)| s).unwrap_or(call_span);
+    let span_id = make_span_dict(primary_span, ctx, call_span);
 
     let mut w: IndexMap<HashableValue, ThunkId> = IndexMap::new();
     w.insert(
@@ -215,27 +217,39 @@ fn eval_error_to_dict(
     };
     w.insert(HashableValue::Str("blame".into()), alloc(blame_dict));
 
-    // Build materialization-span: the span where the thunk was forced, or {} if absent
-    let mat_span = if let Some(ref s) = err.materialization_span {
+    // Build materialization-span: spans[1] when its label is "evaluated here", {} when absent.
+    let mat_span_entry = err
+        .spans
+        .get(1)
+        .filter(|(_, label)| label == "evaluated here");
+    let mat_span = if let Some((ref s, _)) = mat_span_entry {
         make_span_dict(s, ctx, call_span)
     } else {
         alloc(Value::Dict(IndexMap::new()))
     };
     w.insert(HashableValue::Str("materialization-span".into()), mat_span);
 
-    // Build secondary-span: {span, label} or {}
-    let secondary = if let Some((ref span, ref label)) = err.secondary_span {
+    // Build secondary-spans: note spans that are not the materialization span.
+    // These are spans in spans[1..] with a label other than "evaluated here".
+    let mut secondary_dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+    let secondary_iter = err
+        .spans
+        .iter()
+        .skip(1)
+        .filter(|(_, label)| label != "evaluated here");
+    for (i, (ref span, ref label)) in secondary_iter.enumerate() {
         let mut s: IndexMap<HashableValue, ThunkId> = IndexMap::new();
         s.insert(
             HashableValue::Str("span".into()),
             make_span_dict(span, ctx, call_span),
         );
         s.insert(HashableValue::Str("label".into()), alloc(string_val(label)));
-        alloc(Value::Dict(s))
-    } else {
-        alloc(Value::Dict(IndexMap::new()))
-    };
-    w.insert(HashableValue::Str("secondary-span".into()), secondary);
+        secondary_dict.insert(HashableValue::Int(i as i64), alloc(Value::Dict(s)));
+    }
+    w.insert(
+        HashableValue::Str("secondary-spans".into()),
+        alloc(Value::Dict(secondary_dict)),
+    );
 
     alloc(Value::Dict(w))
 }

@@ -1105,15 +1105,15 @@ mod tests {
         );
         let err = eval_result.unwrap_err();
 
-        // Verify the error has a non-synthetic definition_span.
+        // Verify the error has a non-synthetic primary span (spans[0]).
         assert_ne!(
-            err.definition_span,
+            err.spans[0].0,
             rust_span!(),
             "error should have a real source span, not rust_span!()"
         );
 
         // render_span_snippet should produce a snippet for this error.
-        let snippet = error::render_span_snippet(source, err.definition_span);
+        let snippet = error::render_span_snippet(source, err.spans[0].0.clone());
         assert!(
             snippet.is_some(),
             "render_span_snippet should return Some for a real source span"

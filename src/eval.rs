@@ -1507,9 +1507,10 @@ pub fn materialize<'a>(
                 ThunkState::Failed(e) => {
                     let mut cloned = (*e).clone();
                     if let Some(span) = mat_span {
-                        if cloned.materialization_span.is_none() {
-                            cloned.materialization_span = Some(span.clone());
-                        } else if cloned.materialization_span != Some(span.clone())
+                        let first_note = cloned.spans.get(1).map(|(s, _)| s);
+                        if first_note.is_none() {
+                            cloned = cloned.with_materialization_span(span.clone());
+                        } else if first_note != Some(span)
                             && !cloned.stack.iter().any(|f| f.definition_span == *span)
                         {
                             cloned.push_frame("materialized".to_string(), span.clone());
@@ -2637,11 +2638,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(
-            err.to_string().contains("placeholder"),
-            "got: {}",
-            err
-        );
+        assert!(err.to_string().contains("placeholder"), "got: {}", err);
     }
 
     #[tokio::test]
@@ -3123,9 +3120,10 @@ mod tests {
             .unwrap_err();
         // The specific error message is unimportant; what matters is the span attachment.
         assert!(!err.to_string().is_empty(), "got empty error: {}", err);
+        // spans[1] should be the materialization span with label "evaluated here"
         assert_eq!(
-            err.materialization_span,
-            Some(mat_span),
+            err.spans.get(1).map(|(s, _)| s),
+            Some(&mat_span),
             "materialization span should be the access site"
         );
     }
@@ -3146,7 +3144,7 @@ mod tests {
                     .await
                     .unwrap_err();
                 assert!(err.to_string().contains("circular dependency"));
-                assert_eq!(err.materialization_span, Some(mat_span));
+                assert_eq!(err.spans.get(1).map(|(s, _)| s), Some(&mat_span));
             }
             other => panic!("expected Dict, got {other:?}"),
         }
@@ -3341,8 +3339,8 @@ mod tests {
         let display = format!("{err}");
         assert!(display.contains("something broke"));
         assert!(display.contains("defined at src/test_util.rs:1:5-1:12"));
-        // infer_materialization_verb returns "called at" when first visible frame starts with '['
-        assert!(display.contains("called at src/test_util.rs:10:1-10:5"));
+        // mat span is now a note on its own line with label "evaluated here"
+        assert!(display.contains("note: evaluated here at src/test_util.rs:10:1-10:5"));
         assert!(display.contains("in [inner ...] at src/test_util.rs:5:1-5:20"));
         assert!(display.contains("in [outer ...] at src/test_util.rs:8:1-8:25"));
     }
@@ -4745,12 +4743,12 @@ mod tests {
         assert!(result.is_err(), "Expected error for missing field");
         let err = result.unwrap_err();
         let msg = err.to_string();
-        // definition_span should be data_span (where the invalid dict was constructed/bound),
+        // spans[0] should be data_span (where the invalid dict was constructed/bound),
         // not guard_span (the annotation site). validate_and_wrap_record uses data_span as the
         // definition site so errors point at the value, not at the type annotation.
         assert_eq!(
-            err.definition_span, data_span,
-            "definition_span should be data_span (value site), not guard_span (annotation site)"
+            err.spans[0].0, data_span,
+            "spans[0] should be data_span (value site), not guard_span (annotation site)"
         );
 
         // Verify the error message contains the field path prefix
@@ -4857,12 +4855,12 @@ mod tests {
         assert!(result.is_err(), "Expected error for missing field");
         let err = result.unwrap_err();
         let msg = err.to_string();
-        // definition_span should be data_span (where the invalid dict was constructed/bound),
+        // spans[0] should be data_span (where the invalid dict was constructed/bound),
         // not guard_span (the annotation site). validate_and_wrap_record uses data_span as the
         // definition site so errors point at the value, not at the type annotation.
         assert_eq!(
-            err.definition_span, data_span,
-            "definition_span should be data_span (value site), not guard_span (annotation site)"
+            err.spans[0].0, data_span,
+            "spans[0] should be data_span (value site), not guard_span (annotation site)"
         );
 
         // Should NOT contain the empty-path prefix `field "": ` that would be inserted

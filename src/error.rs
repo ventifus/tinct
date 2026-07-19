@@ -583,9 +583,9 @@ impl ErrorKind {
         !matches!(self, Self::ResourceLimitExceeded { .. })
     }
 
-    /// Returns the label for the definition_span field in error Display output.
+    /// Returns the label for the primary span (`spans[0]`) in error Display output.
     ///
-    /// For `TypeAssertFailed`, the definition_span holds the thunk_span — the source location
+    /// For `TypeAssertFailed`, the primary span holds the thunk_span — the source location
     /// where the value was produced. "value from" is more accurate than the generic "defined at"
     /// because the span describes a value, not a definition site.
     ///
@@ -595,20 +595,6 @@ impl ErrorKind {
         match self {
             Self::TypeAssertFailed { .. } => "value from",
             _ => "defined at",
-        }
-    }
-
-    /// Returns the label for the materialization_span field in error Display output.
-    ///
-    /// For `TypeAssertFailed`, the materialization_span holds the expr_span — the source location
-    /// of the `[@Type ...]` annotation. "asserted at" names the annotation site precisely.
-    ///
-    /// All other errors fall back to `infer_materialization_verb`, which inspects the
-    /// stack frames to choose between "called at", "accessed at", and "materialized at".
-    pub fn materialization_span_label(&self, stack: &[StackFrame]) -> &'static str {
-        match self {
-            Self::TypeAssertFailed { .. } => "asserted at",
-            _ => infer_materialization_verb(stack),
         }
     }
 }
@@ -876,16 +862,22 @@ pub struct StackFrame {
 ///
 /// Source file information is embedded in each span's `file: Option<Arc<SourceFile>>` field
 /// (populated by the parser for source-backed spans). There is no separate `source_file`
-/// field — use `self.definition_span.file` to obtain the file path and content for rendering.
+/// field — use `self.spans[0].0.file` to obtain the file path and content for rendering.
+///
+/// `spans` is an ordered list of labeled source locations:
+/// - `spans[0]` is the primary span (the main error location, shown in the header).
+///   Its label is typically `""` (empty); the `kind.definition_span_label()` method
+///   supplies the human-readable header label ("defined at", "value from", etc.).
+/// - `spans[1..]` are additional notes displayed as `  note: {label} at {span}`.
+///   Populated by `with_materialization_span` (label `"evaluated here"`) and
+///   `with_secondary_span` (caller-supplied label).
 #[derive(Debug, Clone, PartialEq)]
 pub struct EvalError {
     pub kind: ErrorKind,
-    pub definition_span: Span,
-    pub materialization_span: Option<Span>,
+    /// All labeled spans in priority order.
+    /// `spans[0]` = primary (header) location; `spans[1..]` = note spans.
+    pub spans: Vec<(Span, String)>,
     pub stack: SmallVec<[StackFrame; 8]>,
-    /// Optional secondary span with a label, e.g. "evaluated to Bool" pointing at a value site.
-    /// Displayed after the primary error line when present.
-    pub secondary_span: Option<(Span, String)>,
     /// Optional macro expansion provenance: (macro_name, call_site_span).
     /// When set, the error Display shows "in expansion of `<name>` at line:col".
     /// Populated by the error propagation path when errors occur in macro-expanded code.
@@ -902,13 +894,11 @@ pub struct EvalError {
 impl EvalError {
     /// Create an error with the Internal escape hatch kind.
     /// Use typed ErrorKind variants instead when possible.
-    pub fn internal(message: String, definition_span: Span) -> Self {
+    pub fn internal(message: String, span: Span) -> Self {
         Self {
             kind: ErrorKind::Internal { message },
-            definition_span,
-            materialization_span: None,
+            spans: vec![(span, String::new())],
             stack: SmallVec::new(),
-            secondary_span: None,
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
@@ -917,21 +907,21 @@ impl EvalError {
 
     /// Create a BuilderFinished error for a specific operation.
     /// Used when a builder operation is attempted after builder-finish.
-    pub fn builder_already_finished(op: impl Into<String>, definition_span: Span) -> Self {
+    pub fn builder_already_finished(op: impl Into<String>, span: Span) -> Self {
         Self {
             kind: ErrorKind::BuilderFinished { op: op.into() },
-            definition_span,
-            materialization_span: None,
+            spans: vec![(span, String::new())],
             stack: SmallVec::new(),
-            secondary_span: None,
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
         }
     }
 
+    /// Attach a materialization span (where this thunk was forced).
+    /// Appended as `spans[1]` with label `"evaluated here"`.
     pub fn with_materialization_span(mut self, span: Span) -> Self {
-        self.materialization_span = Some(span);
+        self.spans.push((span, "evaluated here".to_string()));
         self
     }
 
@@ -969,11 +959,11 @@ impl EvalError {
         });
     }
 
-    /// Builder for attaching a secondary span label, e.g. `"evaluated to Bool"`.
-    /// The secondary span is displayed on a separate line after the primary error,
-    /// pointing at a related source location (e.g. where a value was defined).
+    /// Attach a secondary span with a label, e.g. `"value produced here"`.
+    /// Displayed on a separate line as `  note: {label} at {span}`.
+    /// Multiple calls append; all secondary spans are displayed in order.
     pub fn with_secondary_span(mut self, span: Span, label: impl Into<String>) -> Self {
-        self.secondary_span = Some((span, label.into()));
+        self.spans.push((span, label.into()));
         self
     }
 
@@ -1004,40 +994,36 @@ impl EvalError {
         self
     }
 
-    pub fn key_not_found(key: &str, available_keys: Vec<String>, definition_span: Span) -> Self {
+    pub fn key_not_found(key: &str, available_keys: Vec<String>, span: Span) -> Self {
         Self {
             kind: ErrorKind::KeyNotFound {
                 key: key.to_string(),
                 available_keys,
             },
-            definition_span,
-            materialization_span: None,
+            spans: vec![(span, String::new())],
             stack: SmallVec::new(),
-            secondary_span: None,
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
         }
     }
 
-    pub fn type_mismatch(expected: &str, got: &str, definition_span: Span) -> Self {
+    pub fn type_mismatch(expected: &str, got: &str, span: Span) -> Self {
         Self {
             kind: ErrorKind::TypeMismatch {
                 context: None,
                 expected: expected.to_string(),
                 got: got.to_string(),
             },
-            definition_span,
-            materialization_span: None,
+            spans: vec![(span, String::new())],
             stack: SmallVec::new(),
-            secondary_span: None,
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
         }
     }
 
-    pub fn arity_mismatch(expected: usize, got: usize, definition_span: Span) -> Self {
+    pub fn arity_mismatch(expected: usize, got: usize, span: Span) -> Self {
         Self {
             kind: ErrorKind::ArityMismatch {
                 expected: ArityBound::Exact(expected),
@@ -1045,17 +1031,15 @@ impl EvalError {
                 callee: None,
                 params: vec![],
             },
-            definition_span,
-            materialization_span: None,
+            spans: vec![(span, String::new())],
             stack: SmallVec::new(),
-            secondary_span: None,
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
         }
     }
 
-    pub fn arity_mismatch_bound(expected: ArityBound, got: usize, definition_span: Span) -> Self {
+    pub fn arity_mismatch_bound(expected: ArityBound, got: usize, span: Span) -> Self {
         Self {
             kind: ErrorKind::ArityMismatch {
                 expected,
@@ -1063,10 +1047,8 @@ impl EvalError {
                 callee: None,
                 params: vec![],
             },
-            definition_span,
-            materialization_span: None,
+            spans: vec![(span, String::new())],
             stack: SmallVec::new(),
-            secondary_span: None,
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
@@ -1110,400 +1092,328 @@ impl EvalError {
         }
     }
 
-    pub fn circular_dependency(
-        name: &str,
-        definition_span: Span,
-        cycle_path: Vec<(Arc<str>, Span)>,
-    ) -> Self {
+    pub fn circular_dependency(name: &str, span: Span, cycle_path: Vec<(Arc<str>, Span)>) -> Self {
         Self {
             kind: ErrorKind::CircularDependency {
                 name: name.to_string(),
                 cycle_path,
             },
-            definition_span,
-            materialization_span: None,
+            spans: vec![(span, String::new())],
             stack: SmallVec::new(),
-            secondary_span: None,
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
         }
     }
 
-    pub fn match_exhaustion(scrutinee_type: &str, definition_span: Span) -> Self {
+    pub fn match_exhaustion(scrutinee_type: &str, span: Span) -> Self {
         Self {
             kind: ErrorKind::MatchExhaustion {
                 scrutinee_type: scrutinee_type.to_string(),
             },
-            definition_span,
-            materialization_span: None,
+            spans: vec![(span, String::new())],
             stack: SmallVec::new(),
-            secondary_span: None,
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
         }
     }
 
-    pub fn duplicate_variable_in_pattern(name: &str, definition_span: Span) -> Self {
+    pub fn duplicate_variable_in_pattern(name: &str, span: Span) -> Self {
         Self {
             kind: ErrorKind::DuplicateVariable {
                 name: name.to_string(),
             },
-            definition_span,
-            materialization_span: None,
+            spans: vec![(span, String::new())],
             stack: SmallVec::new(),
-            secondary_span: None,
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
         }
     }
 
-    pub fn capability_required(message: String, definition_span: Span) -> Self {
+    pub fn capability_required(message: String, span: Span) -> Self {
         Self {
             kind: ErrorKind::CapabilityRequired { message },
-            definition_span,
-            materialization_span: None,
+            spans: vec![(span, String::new())],
             stack: SmallVec::new(),
-            secondary_span: None,
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
         }
     }
 
-    pub fn user_error(message: String, definition_span: Span) -> Self {
+    pub fn user_error(message: String, span: Span) -> Self {
         Self {
             kind: ErrorKind::UserError { message },
-            definition_span,
-            materialization_span: None,
+            spans: vec![(span, String::new())],
             stack: SmallVec::new(),
-            secondary_span: None,
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
         }
     }
 
-    pub fn macro_error(message: String, definition_span: Span) -> Self {
+    pub fn macro_error(message: String, span: Span) -> Self {
         Self {
             kind: ErrorKind::MacroError { message },
-            definition_span,
-            materialization_span: None,
+            spans: vec![(span, String::new())],
             stack: SmallVec::new(),
-            secondary_span: None,
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
         }
     }
 
-    pub fn unimplemented(message: String, definition_span: Span) -> Self {
+    pub fn unimplemented(message: String, span: Span) -> Self {
         Self {
             kind: ErrorKind::Unimplemented { message },
-            definition_span,
-            materialization_span: None,
+            spans: vec![(span, String::new())],
             stack: SmallVec::new(),
-            secondary_span: None,
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
         }
     }
 
-    pub fn schema_violation(violations: Vec<(String, String)>, definition_span: Span) -> Self {
+    pub fn schema_violation(violations: Vec<(String, String)>, span: Span) -> Self {
         Self {
             kind: ErrorKind::SchemaViolation { violations },
-            definition_span,
-            materialization_span: None,
+            spans: vec![(span, String::new())],
             stack: SmallVec::new(),
-            secondary_span: None,
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
         }
     }
 
-    pub fn kind_mismatch(expected: &str, got: &str, definition_span: Span) -> Self {
+    pub fn kind_mismatch(expected: &str, got: &str, span: Span) -> Self {
         Self {
             kind: ErrorKind::KindMismatch {
                 expected: expected.to_string(),
                 got: got.to_string(),
             },
-            definition_span,
-            materialization_span: None,
+            spans: vec![(span, String::new())],
             stack: SmallVec::new(),
-            secondary_span: None,
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
         }
     }
 
-    pub fn named_arg_rejected(builtin: String, definition_span: Span) -> Self {
+    pub fn named_arg_rejected(builtin: String, span: Span) -> Self {
         Self {
             kind: ErrorKind::NamedArgRejected { builtin },
-            definition_span,
-            materialization_span: None,
+            spans: vec![(span, String::new())],
             stack: SmallVec::new(),
-            secondary_span: None,
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
         }
     }
 
-    pub fn integer_overflow(op: String, definition_span: Span) -> Self {
+    pub fn integer_overflow(op: String, span: Span) -> Self {
         Self {
             kind: ErrorKind::IntegerOverflow { op },
-            definition_span,
-            materialization_span: None,
+            spans: vec![(span, String::new())],
             stack: SmallVec::new(),
-            secondary_span: None,
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
         }
     }
 
-    pub fn type_mismatch_ctx(
-        context: String,
-        expected: &str,
-        got: &str,
-        definition_span: Span,
-    ) -> Self {
+    pub fn type_mismatch_ctx(context: String, expected: &str, got: &str, span: Span) -> Self {
         Self {
             kind: ErrorKind::TypeMismatch {
                 context: Some(context),
                 expected: expected.to_string(),
                 got: got.to_string(),
             },
-            definition_span,
-            materialization_span: None,
+            spans: vec![(span, String::new())],
             stack: SmallVec::new(),
-            secondary_span: None,
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
         }
     }
 
-    pub fn division_by_zero(op: String, definition_span: Span) -> Self {
+    pub fn division_by_zero(op: String, span: Span) -> Self {
         Self {
             kind: ErrorKind::DivisionByZero { op },
-            definition_span,
-            materialization_span: None,
+            spans: vec![(span, String::new())],
             stack: SmallVec::new(),
-            secondary_span: None,
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
         }
     }
 
-    pub fn float_not_finite(builtin: String, value: f64, definition_span: Span) -> Self {
+    pub fn float_not_finite(builtin: String, value: f64, span: Span) -> Self {
         Self {
             kind: ErrorKind::FloatNotFinite { builtin, value },
-            definition_span,
-            materialization_span: None,
+            spans: vec![(span, String::new())],
             stack: SmallVec::new(),
-            secondary_span: None,
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
         }
     }
 
-    pub fn empty_collection(op: String, definition_span: Span) -> Self {
+    pub fn empty_collection(op: String, span: Span) -> Self {
         Self {
             kind: ErrorKind::EmptyCollection { op },
-            definition_span,
-            materialization_span: None,
+            spans: vec![(span, String::new())],
             stack: SmallVec::new(),
-            secondary_span: None,
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
         }
     }
 
-    pub fn value_not_serializable(value_type: String, definition_span: Span) -> Self {
+    pub fn value_not_serializable(value_type: String, span: Span) -> Self {
         Self {
             kind: ErrorKind::ValueNotSerializable { value_type },
-            definition_span,
-            materialization_span: None,
+            spans: vec![(span, String::new())],
             stack: SmallVec::new(),
-            secondary_span: None,
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
         }
     }
 
-    pub fn float_out_of_range(builtin: String, value: f64, definition_span: Span) -> Self {
+    pub fn float_out_of_range(builtin: String, value: f64, span: Span) -> Self {
         Self {
             kind: ErrorKind::FloatOutOfRange { builtin, value },
-            definition_span,
-            materialization_span: None,
+            spans: vec![(span, String::new())],
             stack: SmallVec::new(),
-            secondary_span: None,
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
         }
     }
 
-    pub fn undefined_variable(name: String, definition_span: Span) -> Self {
+    pub fn undefined_variable(name: String, span: Span) -> Self {
         Self {
             kind: ErrorKind::UndefinedVariable { name },
-            definition_span,
-            materialization_span: None,
+            spans: vec![(span, String::new())],
             stack: SmallVec::new(),
-            secondary_span: None,
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
         }
     }
 
-    pub fn type_assert_failed(expected: &str, got: &str, definition_span: Span) -> Self {
+    pub fn type_assert_failed(expected: &str, got: &str, span: Span) -> Self {
         Self {
             kind: ErrorKind::TypeAssertFailed {
                 expected: expected.to_string(),
                 got: got.to_string(),
             },
-            definition_span,
-            materialization_span: None,
+            spans: vec![(span, String::new())],
             stack: SmallVec::new(),
-            secondary_span: None,
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
         }
     }
 
-    pub fn no_instance(class_name: &str, type_tags: Vec<String>, definition_span: Span) -> Self {
+    pub fn no_instance(class_name: &str, type_tags: Vec<String>, span: Span) -> Self {
         Self {
             kind: ErrorKind::NoInstance {
                 class_name: class_name.to_string(),
                 type_tags,
             },
-            definition_span,
-            materialization_span: None,
+            spans: vec![(span, String::new())],
             stack: SmallVec::new(),
-            secondary_span: None,
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
         }
     }
 
-    pub fn named_arg_conflict(param: String, definition_span: Span) -> Self {
+    pub fn named_arg_conflict(param: String, span: Span) -> Self {
         Self {
             kind: ErrorKind::NamedArgConflict {
                 param,
                 callee: None,
             },
-            definition_span,
-            materialization_span: None,
+            spans: vec![(span, String::new())],
             stack: SmallVec::new(),
-            secondary_span: None,
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
         }
     }
 
-    pub fn unknown_named_arg(
-        name: String,
-        valid_params: Vec<String>,
-        definition_span: Span,
-    ) -> Self {
+    pub fn unknown_named_arg(name: String, valid_params: Vec<String>, span: Span) -> Self {
         Self {
             kind: ErrorKind::UnknownNamedArg {
                 name,
                 valid_params,
                 callee: None,
             },
-            definition_span,
-            materialization_span: None,
+            spans: vec![(span, String::new())],
             stack: SmallVec::new(),
-            secondary_span: None,
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
         }
     }
 
-    pub fn duplicate_key(key: &str, definition_span: Span) -> Self {
+    pub fn duplicate_key(key: &str, span: Span) -> Self {
         Self {
             kind: ErrorKind::DuplicateKey {
                 key: key.to_string(),
             },
-            definition_span,
-            materialization_span: None,
+            spans: vec![(span, String::new())],
             stack: SmallVec::new(),
-            secondary_span: None,
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
         }
     }
 
-    pub fn resource_limit_exceeded(message: impl Into<String>, definition_span: Span) -> Self {
+    pub fn resource_limit_exceeded(message: impl Into<String>, span: Span) -> Self {
         Self {
             kind: ErrorKind::ResourceLimitExceeded {
                 message: message.into(),
             },
-            definition_span,
-            materialization_span: None,
+            spans: vec![(span, String::new())],
             stack: SmallVec::new(),
-            secondary_span: None,
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
         }
     }
 
-    pub fn include_io_error(path: String, detail: String, definition_span: Span) -> Self {
+    pub fn include_io_error(path: String, detail: String, span: Span) -> Self {
         Self {
             kind: ErrorKind::IncludeIoError { path, detail },
-            definition_span,
-            materialization_span: None,
+            spans: vec![(span, String::new())],
             stack: SmallVec::new(),
-            secondary_span: None,
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
         }
     }
 
-    pub fn include_cycle(path: String, definition_span: Span) -> Self {
+    pub fn include_cycle(path: String, span: Span) -> Self {
         Self {
             kind: ErrorKind::IncludeCycle { path },
-            definition_span,
-            materialization_span: None,
+            spans: vec![(span, String::new())],
             stack: SmallVec::new(),
-            secondary_span: None,
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
         }
     }
 
-    pub fn include_file_too_large(
-        path: String,
-        size: u64,
-        limit: u64,
-        definition_span: Span,
-    ) -> Self {
+    pub fn include_file_too_large(path: String, size: u64, limit: u64, span: Span) -> Self {
         Self {
             kind: ErrorKind::IncludeFileTooLarge { path, size, limit },
-            definition_span,
-            materialization_span: None,
+            spans: vec![(span, String::new())],
             stack: SmallVec::new(),
-            secondary_span: None,
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
@@ -1514,7 +1424,7 @@ impl EvalError {
         path: String,
         expected: String,
         actual: String,
-        definition_span: Span,
+        span: Span,
     ) -> Self {
         Self {
             kind: ErrorKind::IncludeHashMismatch {
@@ -1522,58 +1432,45 @@ impl EvalError {
                 expected,
                 actual,
             },
-            definition_span,
-            materialization_span: None,
+            spans: vec![(span, String::new())],
             stack: SmallVec::new(),
-            secondary_span: None,
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
         }
     }
 
-    pub fn include_hash_required(path: String, definition_span: Span) -> Self {
+    pub fn include_hash_required(path: String, span: Span) -> Self {
         Self {
             kind: ErrorKind::IncludeHashRequired { path },
-            definition_span,
-            materialization_span: None,
+            spans: vec![(span, String::new())],
             stack: SmallVec::new(),
-            secondary_span: None,
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
         }
     }
 
-    pub fn parse_conversion(
-        builtin: String,
-        input: String,
-        target: &str,
-        definition_span: Span,
-    ) -> Self {
+    pub fn parse_conversion(builtin: String, input: String, target: &str, span: Span) -> Self {
         Self {
             kind: ErrorKind::ParseConversion {
                 builtin,
                 input,
                 target: target.to_string(),
             },
-            definition_span,
-            materialization_span: None,
+            spans: vec![(span, String::new())],
             stack: SmallVec::new(),
-            secondary_span: None,
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
         }
     }
 
-    pub fn uri_parse_error(detail: String, definition_span: Span) -> Self {
+    pub fn uri_parse_error(detail: String, span: Span) -> Self {
         Self {
             kind: ErrorKind::UriParseError { detail },
-            definition_span,
-            materialization_span: None,
+            spans: vec![(span, String::new())],
             stack: SmallVec::new(),
-            secondary_span: None,
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
@@ -1586,10 +1483,8 @@ impl EvalError {
                 param: param.into(),
                 callee: None,
             },
-            definition_span: span,
-            materialization_span: None,
+            spans: vec![(span, String::new())],
             stack: SmallVec::new(),
-            secondary_span: None,
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
@@ -1603,31 +1498,6 @@ impl EvalError {
 #[inline(always)]
 fn should_display_frame(_frame: &StackFrame) -> bool {
     true
-}
-
-/// Infer a context-appropriate verb for the materialization span label.
-/// Checks the first visible stack frame label to determine whether the thunk
-/// was forced by a function call or a field access.
-///
-/// Phase 2 frame formats:
-/// - `"[name ...]"` → function call → "called at"
-/// - `"accessing .field"` / `"accessing [..]"` / `"accessing [..:..]"` → "accessed at"
-fn infer_materialization_verb(stack: &[StackFrame]) -> &'static str {
-    for frame in stack {
-        if !should_display_frame(frame) {
-            continue;
-        }
-        let label = &frame.label;
-        // Phase 2: implied-call frames are "[name ...]" — always a call
-        if label.starts_with('[') {
-            return "called at";
-        }
-        // Access frames: "accessing .field", "accessing [..]", "accessing [..:..]"
-        if label.contains("access") || label.contains('.') || label.contains("bracket") {
-            return "accessed at";
-        }
-    }
-    "materialized at"
 }
 
 /// Write a source snippet for a stack frame's span, if the span carries file content.
@@ -1646,33 +1516,25 @@ fn write_frame_snippet(f: &mut fmt::Formatter<'_>, span: &Span) -> fmt::Result {
 
 impl fmt::Display for EvalError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Primary error line: "kind-message (label file:line:col)"
-        // File path comes from the embedded SourceFile in definition_span, not a separate field.
-        // The label ("defined at", "value from", etc.) is determined by the error kind.
-        let def_label = self.kind.definition_span_label();
-        write!(f, "{} ({def_label} {})", self.kind, self.definition_span,)?;
+        // Primary span: spans[0] holds the main error location (definition site).
+        // Its label ("defined at", "value from", etc.) is determined by the error kind.
+        let primary_span = self.spans.first().map(|(s, _)| s);
 
-        // Only show materialization span if it differs from definition span (doc/10-errors.md:820)
-        // Written here (inline on the first line) before the snippet block.
-        // The verb ("materialized at", "called at", "asserted at", etc.) is determined by the
-        // error kind; for most errors it is further refined by inspecting the stack frames.
-        if let Some(ref mat_span) = self.materialization_span {
-            if mat_span != &self.definition_span {
-                let verb = self.kind.materialization_span_label(&self.stack);
-                write!(f, " ({verb} {})", mat_span)?;
-            }
+        if let Some(ref def_span) = primary_span {
+            let def_label = self.kind.definition_span_label();
+            write!(f, "{} ({def_label} {})", self.kind, def_span)?;
+        } else {
+            write!(f, "{}", self.kind)?;
         }
 
         // Source snippet: rustc-style caret underlining, shown when the span carries source content.
-        // Only rendered when definition_span has an embedded SourceFile (parser-backed spans).
+        // Only rendered when the primary span has an embedded SourceFile (parser-backed spans).
         // Positioned after the first line so the snippet does not disrupt span location inline text.
-        {
-            let sf = &self.definition_span.file;
+        if let Some(ref def_span) = primary_span {
+            let sf = &def_span.file;
             if !sf.path.starts_with('<') {
-                if let Some(snippet) =
-                    render_span_snippet(&sf.content, self.definition_span.clone())
-                {
-                    write!(f, "\n  --> {}", self.definition_span)?;
+                if let Some(snippet) = render_span_snippet(&sf.content, (*def_span).clone()) {
+                    write!(f, "\n  --> {}", def_span)?;
                     write!(f, "\n   |")?;
                     // render_span_snippet returns lines like "  N | line" and "  N | ^^^"
                     for line in snippet.lines() {
@@ -1682,9 +1544,10 @@ impl fmt::Display for EvalError {
             }
         }
 
-        // Secondary span: "evaluated to X" label pointing at a related source location.
-        if let Some((ref sec_span, ref sec_label)) = self.secondary_span {
-            write!(f, "\n  note: {sec_label} at {}", sec_span)?;
+        // Note spans: spans[1..] — each displayed as "  note: {label} at {span}".
+        // Covers both materialization spans ("evaluated here") and secondary spans.
+        for (ref span, ref label) in self.spans.iter().skip(1) {
+            write!(f, "\n  note: {label} at {}", span)?;
         }
 
         // Display all visible stack frames
@@ -1917,8 +1780,9 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         let err = EvalError::internal("something broke".to_string(), span.clone());
         assert_eq!(err.kind.to_string(), "something broke");
-        assert_eq!(err.definition_span, span);
-        assert_eq!(err.materialization_span, None);
+        assert_eq!(err.spans[0].0, span);
+        assert_eq!(err.spans[0].1, "");
+        assert_eq!(err.spans.len(), 1);
         assert!(err.stack.is_empty());
     }
 
@@ -1928,7 +1792,9 @@ mod tests {
         let mat_span = test_span(10, 3, 10, 8);
         let err = EvalError::internal("lazy fail".to_string(), def_span)
             .with_materialization_span(mat_span.clone());
-        assert_eq!(err.materialization_span, Some(mat_span));
+        assert_eq!(err.spans.len(), 2);
+        assert_eq!(err.spans[1].0, mat_span);
+        assert_eq!(err.spans[1].1, "evaluated here");
     }
 
     #[test]
@@ -1940,6 +1806,8 @@ mod tests {
         assert_eq!(err.stack.len(), 1);
         assert_eq!(err.stack[0].label, "my_function");
         assert_eq!(err.stack[0].definition_span, frame_span);
+        // spans still just has the primary
+        assert_eq!(err.spans.len(), 1);
     }
 
     #[test]
@@ -2020,8 +1888,10 @@ mod tests {
             .with_frame("inner".to_string(), frame2_span);
         let display = format!("{err}");
         // test_span embeds src/test_util.rs; no error code prefix in Display.
+        // mat span is now a note on its own line, not inline on the first line.
         let expected = "\
-bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.rs:20:1-20:5)
+bad value (defined at src/test_util.rs:3:5-3:10)
+  note: evaluated here at src/test_util.rs:20:1-20:5
   in outer at src/test_util.rs:10:2-10:8
   in inner at src/test_util.rs:15:1-15:12";
         assert_eq!(display, expected);
@@ -2818,8 +2688,9 @@ bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.
             .with_frame("dict entry 'outer'".to_string(), frame2_span.clone())
             .with_frame("materialized".to_string(), frame3_span.clone());
 
-        assert_eq!(err.definition_span, def_span);
-        assert_eq!(err.materialization_span, Some(mat_span));
+        assert_eq!(err.spans[0].0, def_span);
+        assert_eq!(err.spans[1].0, mat_span);
+        assert_eq!(err.spans[1].1, "evaluated here");
         assert_eq!(err.stack.len(), 3);
         assert_eq!(err.stack[0].label, "dict entry 'inner'");
         assert_eq!(err.stack[0].definition_span, frame1_span);
@@ -2846,9 +2717,10 @@ bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.
 
         // No error code prefix in Display.
         // test_span embeds src/test_util.rs as the source file.
+        // mat span now appears as a note, not inline on the first line.
         assert!(display.contains("key not found: missing_key"));
         assert!(display.contains("defined at src/test_util.rs:1:1-1:10"));
-        assert!(display.contains("materialized at src/test_util.rs:5:1-5:10"));
+        assert!(display.contains("note: evaluated here at src/test_util.rs:5:1-5:10"));
         assert!(display.contains("in dict entry 'a' at src/test_util.rs:10:1-10:15"));
         assert!(display.contains("in dict entry 'b' at src/test_util.rs:15:1-15:20"));
     }
@@ -2856,7 +2728,7 @@ bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.
     #[test]
     fn test_stack_frame_preserves_original_materialization_span() {
         // Test that when multiple access sites trigger the same error,
-        // the original materialization span is preserved
+        // the original materialization span (spans[1]) is preserved
         let def_span = test_span(1, 1, 1, 10);
         let first_mat_span = test_span(5, 1, 5, 10);
         let second_access_span = test_span(8, 1, 8, 10);
@@ -2864,11 +2736,12 @@ bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.
         let mut err = EvalError::key_not_found("key", vec![], def_span)
             .with_materialization_span(first_mat_span.clone());
 
-        // Simulate a second access from a different location
-        // Should preserve original mat_span and add second access as stack frame
-        assert_eq!(err.materialization_span, Some(first_mat_span.clone()));
+        // spans[1] is the first mat span with label "evaluated here"
+        assert_eq!(err.spans[1].0, first_mat_span);
+        assert_eq!(err.spans[1].1, "evaluated here");
 
-        // Manually simulate what attach_materialization_context does
+        // Manually simulate what attach_materialization_context does —
+        // second access is added as a stack frame, not a second mat span.
         if !err
             .stack
             .iter()
@@ -2877,7 +2750,8 @@ bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.
             err.push_frame("materialized".to_string(), second_access_span.clone());
         }
 
-        assert_eq!(err.materialization_span, Some(first_mat_span));
+        // spans[1] is unchanged (first mat span preserved)
+        assert_eq!(err.spans[1].0, first_mat_span);
         assert_eq!(err.stack.len(), 1);
         assert_eq!(err.stack[0].definition_span, second_access_span);
     }
@@ -2892,6 +2766,8 @@ bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.
 
         err.push_frame("first".to_string(), frame_span.clone());
         assert_eq!(err.stack.len(), 1);
+        // spans only has the primary
+        assert_eq!(err.spans.len(), 1);
 
         // Manually check for duplicate before adding (this is what attach_materialization_context does)
         if !err.stack.iter().any(|f| f.definition_span == frame_span) {
@@ -2937,7 +2813,7 @@ bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.
         let real_frame_span = test_span(10, 2, 10, 8);
 
         let mut err = EvalError::internal("bad value".to_string(), def_span)
-            .with_materialization_span(mat_span);
+            .with_materialization_span(mat_span.clone());
 
         err.push_frame("user_function".to_string(), real_frame_span);
         err.push_frame("stdlib_internal".to_string(), rust_span!());
@@ -3163,26 +3039,14 @@ bad value (defined at src/test_util.rs:3:5-3:10) (materialized at src/test_util.
     }
 
     #[test]
-    fn test_infer_materialization_verb_uses_first_frame() {
-        // infer_materialization_verb inspects the first frame's label to pick the verb.
-        // All frames are visible — the first with a "[...]" label drives "called at".
-        let frames = vec![
-            StackFrame {
-                label: "[user-fn ...]".to_string(),
-                definition_span: rust_span!(),
-                materialization_span: rust_span!(),
-            },
-            StackFrame {
-                label: "[user-fn2 ...]".to_string(),
-                definition_span: test_span(7, 1, 7, 20),
-                materialization_span: test_span(7, 1, 7, 20),
-            },
-        ];
-        assert_eq!(
-            infer_materialization_verb(&frames),
-            "called at",
-            "first frame's '[...]' label must drive the verb"
-        );
+    fn test_with_materialization_span_label() {
+        // with_materialization_span always uses "evaluated here" as the label.
+        let span = test_span(1, 1, 1, 5);
+        let mat_span = test_span(10, 1, 10, 5);
+        let err = EvalError::internal("err".to_string(), span)
+            .with_materialization_span(mat_span.clone());
+        assert_eq!(err.spans[1].0, mat_span);
+        assert_eq!(err.spans[1].1, "evaluated here");
     }
 
     // -----------------------------------------------------------------------

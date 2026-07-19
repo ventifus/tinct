@@ -175,11 +175,11 @@ This section formalizes how errors are represented, propagated, decorated, memoi
 An evaluation error `ε` is a record with five fields:
 
 ```text
-ε = ⟨kind, def_span, mat_span?, secondary_span?, macro_expansion?, blame?, pipeline_stage?, stack⟩  where
+ε = ⟨kind, def_span, mat_span?, secondary_spans, macro_expansion?, blame?, pipeline_stage?, stack⟩  where
   kind             : ErrorKind                 — structured error variant with domain-specific data
   def_span         : Span                      — where the problematic value was defined
   mat_span         : Option<Span>              — where the value was first materialized (if different)
-  secondary_span   : Option<(Span, String)>    — secondary "value origin" span with label (see below)
+  secondary_spans  : [(Span, String)]          — secondary "value origin" spans with labels (see below)
   macro_expansion  : Option<(String, Span)>    — macro expansion provenance (macro name, call site)
   blame            : Option<BlameLabel>        — gradual typing boundary label
   pipeline_stage   : Option<PipelineBlame>     — pipeline stage provenance
@@ -192,16 +192,16 @@ The **definition site** and **materialization site** form a dual-span model: "th
 
 Example: given `[x: [/ 1 0]  y: x]`, accessing `y` produces an error with definition site at `[/ 1 0]` (where the division was written) and materialization site at `x` (where the thunk was first materialized).
 
-**Secondary span — value origin (Nickel dual-position pattern):** For lazy evaluation errors where the **value that caused the failure** was produced far from the error site, `secondary_span` carries a labeled pointer to the value's creation span. This is the Nickel `EvaluationError` dual-position pattern: "error triggered here, but the offending value came from there." The `Thunk.span` field (set at thunk creation time) provides this origin span without requiring any additional storage.
+**Secondary spans — value origin (Nickel dual-position pattern):** For lazy evaluation errors where the **value that caused the failure** was produced far from the error site, `secondary_spans` carries labeled pointers to value creation spans. This is the Nickel `EvaluationError` dual-position pattern: "error triggered here, but the offending value came from there." The `Thunk.span` field (set at thunk creation time) provides this origin span without requiring any additional storage.
 
-`secondary_span` is populated at two specific eval sites:
+`secondary_spans` is populated at two specific eval sites:
 
-| Site | `def_span` (error site) | `secondary_span` (value origin) | Label |
-|------|------------------------|--------------------------|-------|
+| Site | `def_span` (error site) | secondary span (value origin) | Label |
+|------|------------------------|-------------------------------|-------|
 | `ThunkState::Guarded` validation failure | TypeAssert annotation span (`guard_span`) | `inner.span` (the annotated expression's creation span) | `"value produced here"` |
 | `if` condition type mismatch (non-Bool condition) | Condition expression span | condition thunk's `span` | `"condition evaluated to {type} here"` |
 
-`secondary_span` is always optional and never overwrites `def_span`/`mat_span`. When the secondary span equals `def_span`, it is suppressed (no duplicate location notes). Display format: `"\n  note: {label} at {span}"`.
+`secondary_spans` is a `Vec` — most errors have zero entries, common cases have one, and future multi-span errors may have more. Entries never duplicate `def_span`/`mat_span`. When a secondary span would equal `def_span`, it is suppressed (no duplicate location notes). Each entry displays as `"\n  note: {label} at {span}"`.
 
 **Stack frames:** Each frame is `⟨label, span⟩` where `label` identifies the context (e.g., the thunk's origin name, `"materialized"` for re-access) and `span` is the source location. Frames are added by `attach_materialization_context` during propagation and by the Failed state handler during re-access.
 

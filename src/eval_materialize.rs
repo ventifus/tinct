@@ -147,10 +147,12 @@ pub(crate) fn attach_materialization_context(
     thunk_span: Span,
 ) -> Box<EvalError> {
     if let Some(span) = mat_span {
-        if err.materialization_span.is_none() {
-            err.materialization_span = Some(span.clone());
-        } else if err.materialization_span != Some(span.clone())
-            && !err.stack.iter().any(|f| f.definition_span == *span)
+        // spans[0] is always the primary span. spans[1] is the first note span (typically
+        // the materialization site). If no note span has been added yet, push this mat span.
+        let first_note = err.spans.get(1).map(|(s, _)| s);
+        if first_note.is_none() {
+            err = Box::new(err.with_materialization_span(span.clone()));
+        } else if first_note != Some(span) && !err.stack.iter().any(|f| f.definition_span == *span)
         {
             // Only push a frame if the span differs from the existing
             // materialization span and isn't already in the stack (avoids
@@ -639,9 +641,10 @@ pub(crate) async fn force_step(
             ThunkState::Failed(e) => {
                 let mut cloned = Box::new((*e).clone());
                 if let Some(ref span) = mat_span {
-                    if cloned.materialization_span.is_none() {
-                        cloned.materialization_span = Some(span.clone());
-                    } else if cloned.materialization_span != Some(span.clone())
+                    let first_note = cloned.spans.get(1).map(|(s, _)| s);
+                    if first_note.is_none() {
+                        cloned = Box::new(cloned.with_materialization_span(span.clone()));
+                    } else if first_note != Some(span)
                         && !cloned.stack.iter().any(|f| f.definition_span == *span)
                     {
                         cloned.push_frame("materialized".to_string(), span.clone());
@@ -1778,7 +1781,8 @@ pub(crate) async fn apply_cont(
                             } else {
                                 format!("expected Function or Builtin, got {}", got_detail)
                             };
-                            let err = EvalError::user_error(message, call_span.clone());
+                            let err = EvalError::user_error(message, call_span.clone())
+                                .with_secondary_span(original_call.span.clone(), "called here");
                             let decorated = decorate(Box::new(err));
                             // eval_stack_guard pops on drop (armed)
                             thunk.settle(Err(Arc::new((*decorated).clone())));
@@ -3909,8 +3913,10 @@ mod tests {
             thunk_span.clone(),
         );
 
-        // Verify materialization_span is set
-        assert_eq!(decorated.materialization_span, Some(mat_span));
+        // Verify materialization span is set as spans[1] with label "evaluated here"
+        assert_eq!(decorated.spans.len(), 2);
+        assert_eq!(decorated.spans[1].0, mat_span);
+        assert_eq!(decorated.spans[1].1, "evaluated here");
 
         // Verify origin frame is added
         assert!(
@@ -3927,8 +3933,8 @@ mod tests {
     #[tokio::test]
     async fn test_guarded_type_assertion_failure_has_secondary_span() {
         // Test that when a Guarded type assertion fails, the error includes
-        // a secondary_span pointing to where the value was produced (if different
-        // from the assertion site).
+        // a note span in spans[2..] pointing to where the value was produced
+        // (if different from the assertion site).
         // materialize is the local sync shadow defined at the top of this test module
         use crate::types::Type;
 
@@ -3961,26 +3967,26 @@ mod tests {
         assert!(result.is_err(), "Expected type assertion to fail");
         let err = result.unwrap_err();
 
-        // Check that secondary_span is present and points to the value production site
+        // spans[0] is the primary (definition site), spans[1..] are notes.
+        // One of the note spans should point to the value production site.
+        let note_spans: Vec<_> = err.spans.iter().skip(1).collect();
         assert!(
-            err.secondary_span.is_some(),
-            "Expected secondary_span to be set"
+            !note_spans.is_empty(),
+            "Expected at least one note span in spans[1..]"
         );
-        let (sec_span, sec_label) = err.secondary_span.unwrap();
-        assert_eq!(
-            sec_span, value_span,
-            "Secondary span should point to where the value was produced"
-        );
-        assert_eq!(
-            sec_label, "value produced here",
-            "Secondary span label should be 'value produced here'"
+        let value_produced_note = note_spans
+            .iter()
+            .find(|(s, l)| s == &value_span && l == "value produced here");
+        assert!(
+            value_produced_note.is_some(),
+            "Expected a note span pointing to value production site with label 'value produced here'"
         );
     }
 
     #[tokio::test]
     async fn test_guarded_secondary_span_suppressed_when_same_as_definition() {
         // Test that when the value production site is the same as the assertion site,
-        // secondary_span is NOT set (would be redundant).
+        // no "value produced here" note is added (would be redundant).
         // materialize is the local sync shadow defined at the top of this test module
         use crate::types::Type;
 
@@ -4011,10 +4017,12 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
 
-        // Secondary span should NOT be set because it would be the same as definition_span
+        // No "value produced here" note span should be present because it would be
+        // the same as the definition span (redundant).
+        let value_produced_note = err.spans.iter().find(|(_, l)| l == "value produced here");
         assert!(
-            err.secondary_span.is_none(),
-            "Secondary span should be suppressed when same as definition span"
+            value_produced_note.is_none(),
+            "No 'value produced here' note should be added when spans are equal"
         );
     }
 
@@ -4559,14 +4567,14 @@ mod deep_tests {
         //
         // This is already tested by test_attach_materialization_context_adds_frame,
         // but we add a variant that tests the preservation of existing spans
-        // (the "if err.materialization_span.is_none()" branch).
+        // (the "if first_note.is_none()" branch).
 
         let thunk_span = test_span(1, 1, 1, 10);
         let err = EvalError::undefined_variable("x".to_string(), thunk_span.clone());
         let mat_span = test_span(10, 5, 10, 6);
         let origin = "test_origin";
 
-        // First attachment — should set materialization_span
+        // First attachment — should set spans[1] with label "evaluated here"
         let decorated = attach_materialization_context(
             Box::new(err),
             Some(&mat_span),
@@ -4575,9 +4583,14 @@ mod deep_tests {
         );
 
         assert_eq!(
-            decorated.materialization_span,
-            Some(mat_span.clone()),
-            "materialization_span should be set"
+            decorated.spans.get(1).map(|(s, _)| s),
+            Some(&mat_span),
+            "spans[1] should be the first materialization span"
+        );
+        assert_eq!(
+            decorated.spans.get(1).map(|(_, l)| l.as_str()),
+            Some("evaluated here"),
+            "spans[1] label should be 'evaluated here'"
         );
 
         // Second attachment with a different mat_span — should preserve the first
@@ -4589,10 +4602,11 @@ mod deep_tests {
             thunk_span,
         );
 
+        // spans[1] should still be the original mat_span (preserved, not overwritten)
         assert_eq!(
-            decorated2.materialization_span,
-            Some(mat_span),
-            "materialization_span should preserve the first value, not overwrite"
+            decorated2.spans.get(1).map(|(s, _)| s),
+            Some(&mat_span),
+            "spans[1] should preserve the first materialization span, not overwrite"
         );
     }
 }
