@@ -318,6 +318,7 @@ fn eval_quote_preprocess<'a>(
                 args,
                 named_args,
                 implied,
+                ..
             } => {
                 let processed_func = eval_quote_preprocess(Arc::clone(func), env_id, ctx).await?;
                 let mut processed_args: Vec<Arc<SurfaceNode>> = Vec::new();
@@ -367,6 +368,7 @@ fn eval_quote_preprocess<'a>(
                     args: processed_args,
                     named_args: processed_named_args,
                     implied: *implied,
+                    pipe_span: None,
                 }))
             }
 

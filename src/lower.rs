@@ -165,7 +165,17 @@ pub(crate) fn lower_inner(
     diagnostics: &mut Vec<LowerDiagnostic>,
     scope_frames: Option<&[indexmap::IndexMap<String, u32>]>,
 ) -> Spanned<CoreExpr> {
-    let span = arc.span.clone();
+    // Use the pipe_span from a pipe-desugared Call if present — it points at the specific
+    // `|` operator rather than the outer bracket. Falls back to the node's own span.
+    let span = if let SurfaceExpression::Call {
+        pipe_span: Some(ref ps),
+        ..
+    } = arc.expr
+    {
+        ps.clone()
+    } else {
+        arc.span.clone()
+    };
     let core_expr = lower_expr(arc, &arc.expr, diagnostics, scope_frames);
 
     // Apply type guard if the type checker set one on this node.
@@ -785,6 +795,7 @@ fn lower_expr(
             args,
             named_args,
             implied,
+            ..
         } => {
             // Compile-time instance dispatch rewriting: if the VarRef node for the function
             // has a call_dispatch annotation set by the type checker, rewrite the function
@@ -1115,6 +1126,7 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
                 })
                 .collect(),
             implied: *implied,
+            pipe_span: None,
         },
         CoreExpr::Fn {
             return_ann,

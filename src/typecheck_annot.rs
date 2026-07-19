@@ -4119,6 +4119,7 @@ fn synthesize_type_stage_node(entries: &[Spanned<SurfaceEntry>], span: Span) -> 
                 args,
                 named_args: vec![],
                 implied: true,
+                pipe_span: None,
             },
             span,
         ))

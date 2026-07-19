@@ -212,6 +212,7 @@ fn desugar_instance_decls_expr(expr: &SurfaceExpression, _span: Span) -> Surface
             args,
             named_args,
             implied,
+            ..
         } => {
             let new_func = desugar_instance_decls_node(Arc::clone(func));
             let new_args: Vec<Arc<SurfaceNode>> = args
@@ -247,6 +248,7 @@ fn desugar_instance_decls_expr(expr: &SurfaceExpression, _span: Span) -> Surface
                     args: new_args,
                     named_args: new_named,
                     implied: *implied,
+                    pipe_span: None,
                 }
             } else {
                 expr.clone()
@@ -740,12 +742,10 @@ fn desugar_pipe_chain(node: &mut Arc<SurfaceNode>, depth: usize) {
         acc = apply_pipe_step(acc, step, call_span);
     }
 
-    // Replace node's expression and span with the folded result.
-    // Using acc's span (the last pipe step's span) gives the specific `|` location
-    // in error messages rather than the entire outer bracket span.
-    let acc_span = acc.span.clone();
+    // Replace node's expression with the folded result.
+    // The pipe_span on each generated Call carries the specific `|` operator's span;
+    // lower_inner reads it to produce precise per-step error locations.
     Arc::make_mut(node).expr = acc.expr.clone();
-    Arc::make_mut(node).span = acc_span;
 }
 
 /// Collect all stages of a right-associative pipe chain into a flat `Vec`.
@@ -806,6 +806,7 @@ fn apply_pipe_step(
             args,
             named_args,
             implied,
+            ..
         } => {
             // rhs_stage is an explicit call in the source (e.g., `[f x y]`).
             // Append lhs as the final positional argument.
@@ -816,6 +817,7 @@ fn apply_pipe_step(
                 args: new_args,
                 named_args: named_args.clone(),
                 implied: *implied,
+                pipe_span: Some(span.clone()),
             }
         }
         SurfaceExpression::VarRef { name, escaped, .. } => {
@@ -834,6 +836,7 @@ fn apply_pipe_step(
                 args: vec![lhs],
                 named_args: vec![],
                 implied: true,
+                pipe_span: Some(span.clone()),
             }
         }
         _ => {
@@ -843,6 +846,7 @@ fn apply_pipe_step(
                 args: vec![lhs],
                 named_args: vec![],
                 implied: true,
+                pipe_span: Some(span.clone()),
             }
         }
     };
@@ -940,6 +944,7 @@ fn build_interpolated_string_node(
             args,
             named_args: vec![],
             implied: true,
+            pipe_span: None,
         },
         span.clone(),
     ))
@@ -962,6 +967,7 @@ fn wrap_in_unindent_node(inner: Arc<SurfaceNode>, span: &crate::ast::Span) -> Ar
             args: vec![inner],
             named_args: vec![],
             implied: true,
+            pipe_span: None,
         },
         span.clone(),
     ))

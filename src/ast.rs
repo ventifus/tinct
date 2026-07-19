@@ -392,6 +392,7 @@ impl fmt::Display for SurfaceExpression {
                 args,
                 named_args,
                 implied,
+                ..
             } => {
                 if *implied {
                     write!(f, "[{}", func)?;
@@ -848,6 +849,11 @@ pub enum SurfaceExpression {
         named_args: Vec<Spanned<SurfaceNamedArg>>,
         #[expr(key = "implied")]
         implied: bool,
+        /// Span of the `|` operator when this Call was produced by pipe desugaring.
+        /// When set, `lower_inner` uses this span instead of the outer SurfaceNode's span,
+        /// giving precise per-step location in error messages.
+        #[expr(skip)]
+        pipe_span: Option<Span>,
     },
 
     // Function definition — desugared: true = synthesised by $_ desugaring

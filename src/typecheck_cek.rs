@@ -493,6 +493,7 @@ async fn infer_step(
             args,
             named_args,
             implied: _,
+            ..
         } => {
             // Special-case: do-infer sentinel
             if let SurfaceExpression::Field {

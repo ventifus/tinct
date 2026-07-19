@@ -930,6 +930,7 @@ fn recover_from_bracket_error(
                                 args: positional_args,
                                 named_args,
                                 implied,
+                                pipe_span: None,
                             },
                             call_span,
                         )
@@ -1973,6 +1974,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                                             args: positional_args,
                                             named_args,
                                             implied,
+                                            pipe_span: None,
                                         },
                                         dict_span(span_start),
                                     );
@@ -5777,6 +5779,7 @@ fn push_expr_to_parent(
                             args,
                             named_args,
                             implied: true,
+                            ..
                         } = &node.expr
                         {
                             // func must be a lowercase VarRef
@@ -5838,6 +5841,7 @@ fn push_expr_to_parent(
                         args,
                         named_args,
                         implied: true,
+                        ..
                     } => match &func.expr {
                         SurfaceExpression::VarRef {
                             name, annotation, ..
