@@ -2310,13 +2310,28 @@ async fn run_fmt(
         let env_arc = tinct::get_builtin_core_type_env()
             .await
             .expect("builtin core type env unavailable");
-        let (type_errors, _type_map, _doc_map, _scheme_map, fmt_diagnostics) =
+        let (diagnostics, _type_map, _doc_map, _scheme_map) =
             tinct::typecheck::typecheck_surface_program(&program, env_arc).await;
 
+        // Filter error-level diagnostics
+        let type_errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| matches!(d.level, tinct::DiagnosticLevel::Err))
+            .collect();
+
         if !type_errors.is_empty() {
+            // T-1725 will replace this with proper TypeDiagnostic formatting
             let error_msgs: Vec<String> = type_errors
                 .iter()
-                .map(|e| tinct::format_type_error(e, &source, file_path))
+                .map(|e| {
+                    format!(
+                        "{}: {} at {}:{}",
+                        e.level,
+                        e.message,
+                        e.primary_span().start.line,
+                        e.primary_span().start.column
+                    )
+                })
                 .collect();
             return Err(error_msgs.join("\n"));
         }
@@ -2327,7 +2342,7 @@ async fn run_fmt(
         {
             use tinct::DiagnosticLevel;
             let mut has_fatal_diag = false;
-            for d in &fmt_diagnostics {
+            for d in &diagnostics {
                 let effective = if strict {
                     let bumped_level = d.level.bump();
                     let bumped = tinct::TypeDiagnostic {
@@ -2443,14 +2458,23 @@ async fn run_lint(
     let env_arc = tinct::get_builtin_core_type_env()
         .await
         .expect("builtin core type env unavailable");
-    let (type_errors, _type_map, _doc_map, _scheme_map, diagnostics) =
+    let (diagnostics, _type_map, _doc_map, _scheme_map) =
         tinct::typecheck::typecheck_surface_program(&program, env_arc).await;
 
     // Collect all errors and warnings
     let mut all_messages = Vec::new();
 
-    for e in &type_errors {
-        all_messages.push(tinct::format_type_error(e, &source, file_path));
+    // T-1725 will replace this with proper TypeDiagnostic formatting
+    for e in &diagnostics {
+        if matches!(e.level, tinct::DiagnosticLevel::Err) {
+            all_messages.push(format!(
+                "{}: {} at {}:{}",
+                e.level,
+                e.message,
+                e.primary_span().start.line,
+                e.primary_span().start.column
+            ));
+        }
     }
 
     // In --strict mode, bump each diagnostic's level before display (Info→Warn, Warn→Err),
@@ -2477,10 +2501,14 @@ async fn run_lint(
     }
 
     // Type errors always fatal; diagnostics (warnings) fatal only with --strict (at Err level)
+    let error_count = diagnostics
+        .iter()
+        .filter(|d| d.level == tinct::DiagnosticLevel::Err)
+        .count();
     let fatal_count = if strict {
-        type_errors.len() + if has_fatal_diag { 1 } else { 0 }
+        error_count + if has_fatal_diag { 1 } else { 0 }
     } else {
-        type_errors.len()
+        error_count
     };
 
     if !all_messages.is_empty() {
@@ -2655,14 +2683,23 @@ async fn run_literate_lint(tangled: &str, config: &LiterateConfig<'_>) -> Result
     let env_arc = tinct::get_builtin_core_type_env()
         .await
         .expect("builtin core type env unavailable");
-    let (type_errors, _type_map, _doc_map, _scheme_map, diagnostics) =
+    let (diagnostics, _type_map, _doc_map, _scheme_map) =
         tinct::typecheck::typecheck_surface_program(&program, env_arc).await;
 
     // Collect all errors and warnings
     let mut all_messages = Vec::new();
 
-    for e in &type_errors {
-        all_messages.push(tinct::format_type_error(e, tangled, markdown_path));
+    // T-1725 will replace this with proper TypeDiagnostic formatting
+    for e in &diagnostics {
+        if matches!(e.level, tinct::DiagnosticLevel::Err) {
+            all_messages.push(format!(
+                "{}: {} at {}:{}",
+                e.level,
+                e.message,
+                e.primary_span().start.line,
+                e.primary_span().start.column
+            ));
+        }
     }
 
     // In --strict mode, bump each diagnostic's level before display (Info→Warn, Warn→Err),
@@ -2688,10 +2725,14 @@ async fn run_literate_lint(tangled: &str, config: &LiterateConfig<'_>) -> Result
     }
 
     // Type errors always fatal; diagnostics (warnings) fatal only with --strict (at Err level)
+    let error_count = diagnostics
+        .iter()
+        .filter(|d| d.level == tinct::DiagnosticLevel::Err)
+        .count();
     let fatal_count = if strict {
-        type_errors.len() + if has_fatal_diag { 1 } else { 0 }
+        error_count + if has_fatal_diag { 1 } else { 0 }
     } else {
-        type_errors.len()
+        error_count
     };
 
     if !all_messages.is_empty() {
@@ -2749,7 +2790,7 @@ async fn run_describe(file_path: &str) -> Result<(), String> {
     let env_arc = tinct::get_builtin_core_type_env()
         .await
         .expect("builtin core type env unavailable");
-    let (_type_errors, _type_map, doc_map, _scheme_map, _diagnostics) =
+    let (_diagnostics, _type_map, doc_map, _scheme_map) =
         tinct::typecheck::typecheck_surface_program(&program, env_arc).await;
 
     // Collect contract information from each document section.

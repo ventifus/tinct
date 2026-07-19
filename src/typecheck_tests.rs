@@ -43,7 +43,7 @@ fn surf_ann_entry_tc(
     )
 }
 
-async fn check(input: &str) -> Result<(), Vec<TypeError>> {
+async fn check(input: &str) -> Result<(), Vec<TypeDiagnostic>> {
     let mut program = crate::parse(input, test_file(input)).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
     let (errors, _table, _tycon_env) = typecheck_surface_program_annotation_table(&program).await;
@@ -54,7 +54,7 @@ async fn check(input: &str) -> Result<(), Vec<TypeError>> {
     }
 }
 
-async fn check_err(input: &str) -> Vec<TypeError> {
+async fn check_err(input: &str) -> Vec<TypeDiagnostic> {
     check(input).await.unwrap_err()
 }
 
@@ -75,7 +75,7 @@ async fn infer(input: &str) -> Type {
         crate::ast::SurfaceItem::Expr(n) => n,
         _ => panic!("expected expression item"),
     };
-    let mut local_errors: Vec<TypeError> = Vec::new();
+    let mut local_errors: Vec<TypeDiagnostic> = Vec::new();
     let mut local_stack = Vec::new();
     let ty = Box::pin(typecheck_cek::run_typecheck(
         node,
@@ -252,7 +252,7 @@ async fn test_varref_in_scope_chain() {
 async fn test_varref_undefined() {
     let errors = check_err("$x").await;
     assert_eq!(errors.len(), 1);
-    assert!(errors[0].message().contains("undefined variable: x"));
+    assert!(errors[0].message.contains("undefined variable: x"));
 }
 
 // -- Record construction --
@@ -314,14 +314,14 @@ async fn test_dict_multiple_errors() {
     let errors = check_err("[a: $undefined1  b: 42  c: $undefined2]").await;
     assert_eq!(errors.len(), 2, "should return all errors, got: {errors:?}");
     assert!(
-        errors[0].message().contains("undefined1"),
+        errors[0].message.contains("undefined1"),
         "first error should be about undefined1, got: {}",
-        errors[0].message()
+        errors[0].message
     );
     assert!(
-        errors[1].message().contains("undefined2"),
+        errors[1].message.contains("undefined2"),
         "second error should be about undefined2, got: {}",
-        errors[1].message()
+        errors[1].message
     );
 
     // Also verify via direct infer_expr call
@@ -338,7 +338,7 @@ async fn test_dict_multiple_errors() {
         crate::ast::SurfaceItem::Expr(n) => n,
         _ => panic!("expected expression item"),
     };
-    let mut local_errors: Vec<TypeError> = Vec::new();
+    let mut local_errors: Vec<TypeDiagnostic> = Vec::new();
     let mut local_stack = Vec::new();
     let _ = Box::pin(typecheck_cek::run_typecheck(
         node,
@@ -351,8 +351,8 @@ async fn test_dict_multiple_errors() {
     .await;
     let errs = local_errors;
     assert_eq!(errs.len(), 2, "infer_expr should return all dict errors");
-    assert!(errs[0].message().contains("undefined1"));
-    assert!(errs[1].message().contains("undefined2"));
+    assert!(errs[0].message.contains("undefined1"));
+    assert!(errs[1].message.contains("undefined2"));
 }
 
 // -- Dot access --
@@ -393,7 +393,7 @@ async fn test_dot_access_non_record() {
     let errors = check_err("[x: 42]\n[result: $x.field]").await;
     assert!(errors
         .iter()
-        .any(|e| e.message().contains("expected record type")));
+        .any(|e| e.message.contains("expected record type")));
 }
 
 // -- Dot access on Intersection and Negation types --
@@ -597,7 +597,7 @@ async fn test_call_non_function() {
     let errors = check_err("[x: 42]\n[result: [call $x]]").await;
     assert!(errors
         .iter()
-        .any(|e| e.message().contains("expected function type")));
+        .any(|e| e.message.contains("expected function type")));
 }
 
 #[tokio::test]
@@ -640,7 +640,7 @@ async fn test_check_call_with_scheme_non_function_scheme() {
         crate::ast::SurfaceItem::Expr(n) => n,
         _ => panic!("expected expression item"),
     };
-    let mut local_errors: Vec<TypeError> = Vec::new();
+    let mut local_errors: Vec<TypeDiagnostic> = Vec::new();
     let mut local_stack = Vec::new();
     let _ = Box::pin(typecheck_cek::run_typecheck(
         node,
@@ -661,7 +661,7 @@ async fn test_check_call_with_scheme_non_function_scheme() {
     assert!(
         errors
             .iter()
-            .any(|e| e.message().contains("expected function type")),
+            .any(|e| e.message.contains("expected function type")),
         "error should mention 'expected function type', got: {errors:?}"
     );
 }
@@ -683,7 +683,7 @@ async fn test_scope_chain() {
 async fn test_intermediate_non_dict_error() {
     let errors = check_err("42\n[x: 1]").await;
     assert!(!errors.is_empty());
-    assert!(errors[0].message().contains("expected record type"));
+    assert!(errors[0].message.contains("expected record type"));
 }
 
 // -- % pipeline --
@@ -698,7 +698,7 @@ async fn test_annotation_type_var() {
     let env = Arc::new(TypeEnv::new());
     let span = crate::test_util::test_span(1, 1, 1, 5);
     // With explicit bind: required, lowercase names outside a function scope (ann_mapping=None)
-    // now produce a TypeError — implicit TypeVar creation was removed.
+    // now produce a TypeDiagnostic — implicit TypeVar creation was removed.
     let mut state = InferState::new();
     let mut c = Vec::new();
     let result = resolve_annotation(
@@ -721,7 +721,7 @@ async fn test_annotation_type_var() {
 #[tokio::test]
 async fn test_resolve_type_name_outside_function_scope_monotonicity() {
     // With explicit bind: required, resolve_type_name for a lowercase name without a prior
-    // bind: declaration now produces a TypeError at any scope level.
+    // bind: declaration now produces a TypeDiagnostic at any scope level.
     let env = Arc::new(TypeEnv::new());
     let span = crate::test_util::test_span(1, 1, 1, 5);
     let mut state = InferState::new();
@@ -831,7 +831,7 @@ async fn test_property_dict_unresolvable_type_propagates_error() {
     )
     .await;
     // With explicit bind: required, lowercase names in annotation position without a prior
-    // bind: declaration produce a TypeError. "noSuchType" starts lowercase → error.
+    // bind: declaration produce a TypeDiagnostic. "noSuchType" starts lowercase → error.
     assert!(
         result.is_err(),
         "lowercase annotation name not in scope should produce undefined type error; got: {result:?}"
@@ -897,7 +897,7 @@ async fn test_property_dict_fn_type_error_propagates() {
     )
     .await;
     assert!(result.is_err());
-    assert!(result.unwrap_err().message().contains("function type"));
+    assert!(result.unwrap_err().message.contains("function type"));
 }
 
 // -- Type alias in scope --
@@ -923,7 +923,7 @@ async fn test_annotation_type_value_invalid_expr() {
     let errors = check_err("[fn [let x@[type: 42]] $x]").await;
     assert!(errors
         .iter()
-        .any(|e| e.message().contains("invalid type expression")));
+        .any(|e| e.message.contains("invalid type expression")));
 }
 
 // -- Fn@Return [Params] type expression --
@@ -1183,7 +1183,7 @@ async fn test_call_any_callee_populates_type_map_for_positional_args() {
         crate::ast::SurfaceItem::Expr(n) => n,
         _ => panic!("expected expression item"),
     };
-    let mut local_errors: Vec<TypeError> = Vec::new();
+    let mut local_errors: Vec<TypeDiagnostic> = Vec::new();
     let mut local_stack = Vec::new();
     let result_ty = Box::pin(typecheck_cek::run_typecheck(
         node,
@@ -1346,7 +1346,7 @@ async fn test_level_restored_after_non_dict_record_error() {
     .await;
     assert!(!errors.is_empty(), "second document should fail");
     assert!(
-        errors[0].message().contains("undefined variable"),
+        errors[0].message.contains("undefined variable"),
         "error should be about undefined variable"
     );
 
@@ -1388,9 +1388,9 @@ async fn test_annotation_malformed_nested_record_int_literal() {
     // IntLiteral (42) is not a valid type expression.
     let errors = check_err("[fn [let p@[type: [outer: [inner: 42]]]] $p]").await;
     assert!(
-        errors.iter().any(|e| e
-            .message()
-            .contains("invalid type expression in annotation")),
+        errors
+            .iter()
+            .any(|e| e.message.contains("invalid type expression in annotation")),
         "expected error about invalid type expression in annotation, got: {errors:?}"
     );
 }
@@ -1586,9 +1586,7 @@ async fn test_check_expr_lambda_arity_mismatch() {
     );
     let errors = result.unwrap_err();
     assert!(
-        errors
-            .iter()
-            .any(|e| e.message().contains("arity mismatch")),
+        errors.iter().any(|e| e.message.contains("arity mismatch")),
         "Expected arity mismatch error, got: {:?}",
         errors
     );
@@ -1610,13 +1608,14 @@ async fn test_double_typecheck_no_panic() {
     crate::desugar::desugar_surface_program(&mut program);
 
     // First typecheck: should succeed
-    let (errors1, type_map1, _doc_map1, _scheme_map1, _diagnostics1) = typecheck_surface_program(
+    let (diagnostics1, type_map1, _doc_map1, _scheme_map1) = typecheck_surface_program(
         &program,
         Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
     )
     .await;
+    let errors1 = &diagnostics1;
     assert!(
-        errors1.is_empty() || errors1.iter().all(|e| !e.message().contains("panic")),
+        errors1.is_empty() || errors1.iter().all(|e| !e.message.contains("panic")),
         "First typecheck should not panic"
     );
     assert!(
@@ -1625,13 +1624,14 @@ async fn test_double_typecheck_no_panic() {
     );
 
     // Second typecheck on the same AST: should not panic — no shared mutable state in AST
-    let (errors2, type_map2, _doc_map2, _scheme_map2, _diagnostics2) = typecheck_surface_program(
+    let (diagnostics2, type_map2, _doc_map2, _scheme_map2) = typecheck_surface_program(
         &program,
         Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
     )
     .await;
+    let errors2 = &diagnostics2;
     assert!(
-        errors2.is_empty() || errors2.iter().all(|e| !e.message().contains("panic")),
+        errors2.is_empty() || errors2.iter().all(|e| !e.message.contains("panic")),
         "Second typecheck should not panic"
     );
     assert!(
@@ -1640,13 +1640,14 @@ async fn test_double_typecheck_no_panic() {
     );
 
     // Third typecheck to be extra sure
-    let (errors3, _type_map3, _doc_map3, _scheme_map3, _diagnostics3) = typecheck_surface_program(
+    let (diagnostics3, _type_map3, _doc_map3, _scheme_map3) = typecheck_surface_program(
         &program,
         Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
     )
     .await;
+    let errors3 = &diagnostics3;
     assert!(
-        errors3.is_empty() || errors3.iter().all(|e| !e.message().contains("panic")),
+        errors3.is_empty() || errors3.iter().all(|e| !e.message.contains("panic")),
         "Third typecheck should not panic"
     );
 }
@@ -1663,11 +1664,12 @@ async fn test_error_recorded_in_type_map_on_failure() {
     let input = "$undefined";
     let mut program = crate::parse(input, test_file(input)).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
-    let (errors, type_map, _doc_map, _scheme_map, _diagnostics) = typecheck_surface_program(
+    let (diagnostics, type_map, _doc_map, _scheme_map) = typecheck_surface_program(
         &program,
         Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
     )
     .await;
+    let errors = &diagnostics;
 
     // Must have an error (undefined variable)
     assert!(!errors.is_empty(), "expected type error for $undefined");
@@ -1730,16 +1732,17 @@ async fn test_calling_error_function_does_not_produce_t003() {
         "#;
     let mut program = crate::parse(input, test_file(input)).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
-    let (errors, _type_map, _doc_map, _scheme_map, _diagnostics) = typecheck_surface_program(
+    let (diagnostics, _type_map, _doc_map, _scheme_map) = typecheck_surface_program(
         &program,
         Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
     )
     .await;
+    let errors = &diagnostics;
 
     // Should have an error about undefined variable inside `broken`
     let has_undefined = errors
         .iter()
-        .any(|e| e.message().contains("undefined variable"));
+        .any(|e| e.message.contains("undefined variable"));
     assert!(
         has_undefined,
         "expected undefined variable error inside broken function, got: {:?}",
@@ -1749,7 +1752,7 @@ async fn test_calling_error_function_does_not_produce_t003() {
     // Should NOT have a T003 "expected function type, got <error>" when calling broken
     let has_t003 = errors
         .iter()
-        .any(|e| e.message().contains("expected function type"));
+        .any(|e| e.message.contains("expected function type"));
     assert!(
         !has_t003,
         "calling a Type::Error function should suppress T003, got: {:?}",
@@ -1768,7 +1771,7 @@ async fn test_check_call_with_scheme_non_function_error() {
     assert!(
         errors
             .iter()
-            .any(|e| e.message().contains("expected function type")),
+            .any(|e| e.message.contains("expected function type")),
         "expected 'expected function type' error when calling Int scheme, got: {:?}",
         errors
     );
@@ -1798,10 +1801,10 @@ async fn test_typecheck_with_types_returns_diagnostics() {
     crate::desugar::desugar_surface_program(&mut program);
 
     let env = Arc::new(std::sync::RwLock::new(crate::env::Env::new()));
-    let (errors, _type_map, _doc_map, _scheme_map, diagnostics) =
+    let (diagnostics, _type_map, _doc_map, _scheme_map) =
         typecheck_surface_program(&program, env).await;
     assert!(
-        errors.is_empty(),
+        diagnostics.is_empty(),
         "simple dict should typecheck without errors"
     );
     assert!(
@@ -1965,7 +1968,7 @@ async fn test_doc_extraction_from_param_annotation() {
     let input = "[f: [fn [let x@[doc: \"The input value\"]] x]]";
     let mut program = crate::parse(input, test_file(input)).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
-    let (_errors, _type_map, doc_map, _scheme_map, _diagnostics) = typecheck_surface_program(
+    let (_diagnostics, _type_map, doc_map, _scheme_map) = typecheck_surface_program(
         &program,
         Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
     )
@@ -1980,7 +1983,7 @@ async fn test_doc_extraction_from_dict_entry_key() {
     let input = "[myFunc@[doc: \"My function\"]: [fn [let] 42]]";
     let mut program = crate::parse(input, test_file(input)).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
-    let (_errors, _type_map, doc_map, _scheme_map, _diagnostics) = typecheck_surface_program(
+    let (_diagnostics, _type_map, doc_map, _scheme_map) = typecheck_surface_program(
         &program,
         Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
     )
@@ -1995,7 +1998,7 @@ async fn test_doc_extraction_from_fn_return_annotation() {
     let input = "[count@[]: [fn@[type: Integer  doc: \"Returns the count\"] [] 42]]";
     let mut program = crate::parse(input, test_file(input)).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
-    let (_errors, _type_map, doc_map, _scheme_map, _diagnostics) = typecheck_surface_program(
+    let (_diagnostics, _type_map, doc_map, _scheme_map) = typecheck_surface_program(
         &program,
         Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
     )
@@ -2012,7 +2015,7 @@ async fn test_doc_extraction_combined() {
         "#;
     let mut program = crate::parse(input, test_file(input)).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
-    let (_errors, _type_map, doc_map, _scheme_map, _diagnostics) = typecheck_surface_program(
+    let (_diagnostics, _type_map, doc_map, _scheme_map) = typecheck_surface_program(
         &program,
         Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
     )
@@ -2207,9 +2210,11 @@ async fn test_variadic_typed_after_rest_is_error() {
     let errs = result.err().unwrap();
     assert!(
         errs.iter()
-            .any(|e| e.message().contains("typed variadic") && e.message().contains("untyped rest")),
+            .any(|e| e.message.contains("typed variadic") && e.message.contains("untyped rest")),
         "error should mention ordering violation, got: {:?}",
-        errs.iter().map(|e| e.message().to_string()).collect::<Vec<_>>()
+        errs.iter()
+            .map(|e| e.message.to_string())
+            .collect::<Vec<_>>()
     );
 }
 
@@ -2224,11 +2229,10 @@ async fn test_variadic_fixed_after_variadic_is_error() {
     let errs = result.err().unwrap();
     assert!(
         errs.iter()
-            .any(|e| e.message().contains("fixed parameter")
-                && e.message().contains("after variadic")),
+            .any(|e| e.message.contains("fixed parameter") && e.message.contains("after variadic")),
         "error should mention ordering violation, got: {:?}",
         errs.iter()
-            .map(|e| e.message().to_string())
+            .map(|e| e.message.to_string())
             .collect::<Vec<_>>()
     );
 }
@@ -2552,20 +2556,20 @@ async fn test_cek_detects_unknown_field_access() {
     .unwrap()
     .program;
     crate::desugar::desugar_surface_program(&mut program);
-    let (errors, _type_map, _doc_map, _scheme_map, diagnostics) = typecheck_surface_program(
+    let (diagnostics, _type_map, _doc_map, _scheme_map) = typecheck_surface_program(
         &program,
         Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
     )
     .await;
 
-    // Should have no type errors
+    // Should have no type ERRORS (Err-level)
     assert!(
-        errors.is_empty(),
+        !crate::error::has_type_errors(&diagnostics),
         "Expected no type errors, got: {:?}",
-        errors
+        diagnostics
     );
 
-    // Should have diagnostics for Unknown
+    // Should have diagnostics for Unknown (Warn-level)
     assert!(!diagnostics.is_empty(), "Expected diagnostics for Unknown");
     assert!(diagnostics.iter().all(|d| d.kind == "unknown-type"));
     assert!(diagnostics
@@ -2584,17 +2588,17 @@ async fn test_cek_explicit_unknown_annotation() {
     .unwrap()
     .program;
     crate::desugar::desugar_surface_program(&mut program);
-    let (errors, _type_map, _doc_map, _scheme_map, diagnostics) = typecheck_surface_program(
+    let (diagnostics, _type_map, _doc_map, _scheme_map) = typecheck_surface_program(
         &program,
         Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
     )
     .await;
 
-    // Should have no type errors
+    // Should have no type ERRORS (Err-level)
     assert!(
-        errors.is_empty(),
+        !crate::error::has_type_errors(&diagnostics),
         "Expected no type errors, got: {:?}",
-        errors
+        diagnostics
     );
 
     // Should have Info diagnostic for explicit Unknown
@@ -2629,7 +2633,7 @@ async fn test_label_annotation_named_form_requires_lowercase() {
     let errs = result.unwrap_err();
     assert!(
         errs.iter()
-            .any(|e| e.message().contains("lowercase type variable")),
+            .any(|e| e.message.contains("lowercase type variable")),
         "should report that label: value must be lowercase, got: {:?}",
         errs
     );
@@ -2645,7 +2649,7 @@ async fn test_label_annotation_named_form_requires_bare_name() {
     );
     let errs = result.unwrap_err();
     assert!(
-        errs.iter().any(|e| e.message().contains("bare name")),
+        errs.iter().any(|e| e.message.contains("bare name")),
         "should report that label: value must be a bare name, got: {:?}",
         errs
     );
@@ -2689,14 +2693,14 @@ async fn test_let_decl_in_expression_position_is_error() {
         "LetDecl in expression position should produce a type error"
     );
     let has_binding_error = errors.iter().any(|e| {
-        e.message().contains("binding declaration")
-            || e.message().contains("[let")
-            || e.message().contains("not valid in expression position")
+        e.message.contains("binding declaration")
+            || e.message.contains("[let")
+            || e.message.contains("not valid in expression position")
     });
     assert!(
         has_binding_error,
         "Error should mention binding declaration / expression position; got: {:?}",
-        errors.iter().map(|e| e.message()).collect::<Vec<_>>()
+        errors.iter().map(|e| e.message.clone()).collect::<Vec<_>>()
     );
 }
 
@@ -2713,7 +2717,7 @@ async fn test_placeholder_has_type_var() {
         crate::ast::SurfaceItem::Expr(n) => n,
         _ => panic!("expected expression item"),
     };
-    let mut local_errors: Vec<TypeError> = Vec::new();
+    let mut local_errors: Vec<TypeDiagnostic> = Vec::new();
     let mut local_stack = Vec::new();
     let ty = Box::pin(typecheck_cek::run_typecheck(
         node,
@@ -3843,7 +3847,7 @@ async fn test_class_name_in_param_annotation_user_defined_class() {
             // All errors must be constraint-related, never "undefined type: MyClass"
             for err in errors {
                 assert!(
-                    !err.message().contains("undefined type"),
+                    !err.message.contains("undefined type"),
                     "Expected constraint error (not undefined_type) for @MyClass; got: {:?}",
                     err
                 );
@@ -3922,7 +3926,7 @@ async fn test_recursive_fn_no_stack_overflow() {
 
     let env = Arc::new(RwLock::new(crate::env::Env::new()));
     let mut state = InferState::new();
-    let mut errors: Vec<TypeError> = Vec::new();
+    let mut errors: Vec<TypeDiagnostic> = Vec::new();
     let mut stack = Vec::new();
 
     // Invoke run_typecheck directly — exercises the CEK iterative path.
@@ -3960,7 +3964,7 @@ async fn test_deeply_nested_fn_no_stack_overflow() {
 
     let env = Arc::new(RwLock::new(crate::env::Env::new()));
     let mut state = InferState::new();
-    let mut errors: Vec<TypeError> = Vec::new();
+    let mut errors: Vec<TypeDiagnostic> = Vec::new();
     let mut stack = Vec::new();
 
     // Invoke run_typecheck directly — exercises the AfterFnBody continuation chain.
@@ -4009,7 +4013,7 @@ async fn test_type_stage_resolver_via_cek() {
     let mut state = InferState::new();
     state.type_stage_map = Some(type_stage_map);
 
-    let mut errors: Vec<TypeError> = Vec::new();
+    let mut errors: Vec<TypeDiagnostic> = Vec::new();
     let mut stack = Vec::new();
 
     // Invoke run_typecheck directly on the TypeAssert node.
@@ -4021,7 +4025,7 @@ async fn test_type_stage_resolver_via_cek() {
     assert!(
         errors.is_empty(),
         "[@Int 42] with type_stage_map seeded for Int should produce no type errors via CEK; got: {:?}",
-        errors.iter().map(|e| e.message()).collect::<Vec<_>>()
+        errors.iter().map(|e| e.message.clone()).collect::<Vec<_>>()
     );
     // The resolved type should be Int (the annotation overrides the inner 42's IntLiteral type).
     assert!(
@@ -4124,14 +4128,14 @@ async fn test_annotation_error_reported_at_source() {
     assert!(
         annotation_error.is_some(),
         "expected annotation resolution error mentioning 'UndefinedType', got: {:?}",
-        errors.iter().map(|e| e.message()).collect::<Vec<_>>()
+        errors.iter().map(|e| e.message.clone()).collect::<Vec<_>>()
     );
     // The error should point at or after the '@' (offset 7), not at offset 0.
     if let Some(e) = annotation_error {
         assert!(
-            e.span.start.offset >= 7,
+            e.primary_span().start.offset >= 7,
             "error should point to annotation site (offset 7+), got offset {}",
-            e.span.start.offset
+            e.primary_span().start.offset
         );
     }
 }
@@ -4151,7 +4155,7 @@ async fn test_unknown_annotation_no_error() {
         result
             .unwrap_err()
             .iter()
-            .map(|e| e.message())
+            .map(|e| e.message.clone())
             .collect::<Vec<_>>()
     );
 }
@@ -4183,10 +4187,9 @@ async fn test_fn_param_shadow_does_not_create_scc_dep_edge() {
         "B-524: [g \"hello\"] must typecheck (g: Unknown\u{2192}Unknown when param shadows \
          sibling); false SCC dep edge g\u{2192}a would constrain g to Int\u{2192}Int and \
          reject Str arg. Got errors: {:?}",
-        result.err().map(|es| es
-            .iter()
-            .map(|e| e.message().to_string())
-            .collect::<Vec<_>>())
+        result
+            .err()
+            .map(|es| es.iter().map(|e| e.message.to_string()).collect::<Vec<_>>())
     );
 }
 
@@ -4213,7 +4216,7 @@ async fn test_cek_int_literal_infers_int_literal() {
     };
     let env = Arc::new(RwLock::new(crate::env::Env::new()));
     let mut state = InferState::new();
-    let mut errors: Vec<TypeError> = Vec::new();
+    let mut errors: Vec<TypeDiagnostic> = Vec::new();
     let mut stack = Vec::new();
 
     let ty =
@@ -4250,7 +4253,7 @@ async fn test_cek_string_literal_infers_string_literal() {
     };
     let env = Arc::new(RwLock::new(crate::env::Env::new()));
     let mut state = InferState::new();
-    let mut errors: Vec<TypeError> = Vec::new();
+    let mut errors: Vec<TypeDiagnostic> = Vec::new();
     let mut stack = Vec::new();
 
     let ty =
@@ -4286,7 +4289,7 @@ async fn test_cek_float_literal_infers_float() {
     };
     let env = Arc::new(RwLock::new(crate::env::Env::new()));
     let mut state = InferState::new();
-    let mut errors: Vec<TypeError> = Vec::new();
+    let mut errors: Vec<TypeDiagnostic> = Vec::new();
     let mut stack = Vec::new();
 
     let ty =
@@ -4327,7 +4330,7 @@ async fn test_cek_fn_expression_infers_function_type() {
     };
     let env = Arc::new(RwLock::new(crate::env::Env::new()));
     let mut state = InferState::new();
-    let mut errors: Vec<TypeError> = Vec::new();
+    let mut errors: Vec<TypeDiagnostic> = Vec::new();
     let mut stack = Vec::new();
 
     let ty =
@@ -4373,7 +4376,7 @@ async fn test_cek_after_fn_body_return_annotation_overrides_body_type() {
     type_stage_map.insert("Int".to_string(), TypeStageEntry::Resolved(Type::Int));
     state.type_stage_map = Some(type_stage_map);
 
-    let mut errors: Vec<TypeError> = Vec::new();
+    let mut errors: Vec<TypeDiagnostic> = Vec::new();
     let mut stack = Vec::new();
 
     let ty =
@@ -4423,7 +4426,7 @@ async fn test_cek_type_assert_matching_annotation_no_error() {
     type_stage_map.insert("Int".to_string(), TypeStageEntry::Resolved(Type::Int));
     state.type_stage_map = Some(type_stage_map);
 
-    let mut errors: Vec<TypeError> = Vec::new();
+    let mut errors: Vec<TypeDiagnostic> = Vec::new();
     let mut stack = Vec::new();
 
     let ty =
@@ -4433,7 +4436,7 @@ async fn test_cek_type_assert_matching_annotation_no_error() {
     assert!(
         errors.is_empty(),
         "[@Int 42]: IntLiteral(42) is subtype of Int — AfterTypeAssertInner must produce no error; got: {:?}",
-        errors.iter().map(|e| e.message()).collect::<Vec<_>>()
+        errors.iter().map(|e| e.message.clone()).collect::<Vec<_>>()
     );
     assert!(
         matches!(&ty, Type::Int),
@@ -4446,7 +4449,7 @@ async fn test_cek_type_assert_matching_annotation_no_error() {
 ///
 /// `[@Int "hello"]` with `Int` seeded in `type_stage_map`: the inner expression infers
 /// `StringLiteral("hello")`, which is NOT a subtype of `Int`. `AfterTypeAssertInner`
-/// detects the mismatch and pushes a `TypeError`.
+/// detects the mismatch and pushes a `TypeDiagnostic`.
 ///
 /// This directly tests the mismatch branch of `AfterTypeAssertInner` (the path where
 /// `compute_type_assert_mismatch` returns `Some(errs)` and `has_default` is false).
@@ -4472,7 +4475,7 @@ async fn test_cek_type_assert_mismatched_annotation_emits_error() {
     type_stage_map.insert("Int".to_string(), TypeStageEntry::Resolved(Type::Int));
     state.type_stage_map = Some(type_stage_map);
 
-    let mut errors: Vec<TypeError> = Vec::new();
+    let mut errors: Vec<TypeDiagnostic> = Vec::new();
     let mut stack = Vec::new();
 
     let ty =
@@ -4516,7 +4519,7 @@ async fn test_cek_sequential_expr_returns_last_type() {
     };
     let env = Arc::new(RwLock::new(crate::env::Env::new()));
     let mut state = InferState::new();
-    let mut errors: Vec<TypeError> = Vec::new();
+    let mut errors: Vec<TypeDiagnostic> = Vec::new();
     let mut stack = Vec::new();
 
     let ty =
@@ -4560,7 +4563,7 @@ async fn test_cek_sequential_env_extends_to_last_body() {
     };
     let env = Arc::new(RwLock::new(crate::env::Env::new()));
     let mut state = InferState::new();
-    let mut errors: Vec<TypeError> = Vec::new();
+    let mut errors: Vec<TypeDiagnostic> = Vec::new();
     let mut stack = Vec::new();
 
     let ty =

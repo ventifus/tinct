@@ -12,7 +12,7 @@ async fn unify_sync<'a>(
     state: &'a mut crate::types::InferState,
     constraints: &'a mut Vec<crate::types::Constraint>,
     span: crate::ast::Span,
-) -> Result<(), crate::TypeError> {
+) -> Result<(), crate::error::TypeDiagnostic> {
     unify(a, b, state, constraints, span).await
 }
 use crate::rust_span;
@@ -65,7 +65,7 @@ async fn test_resolve_has_field_depth_overflow_errors() {
     assert!(result.is_err());
     assert!(result
         .unwrap_err()
-        .message()
+        .message
         .contains("HasField recursion depth exceeded"));
 }
 
@@ -271,9 +271,9 @@ async fn test_unify_type_var_occurs_in_type_stage_app() {
     );
     let err = result.unwrap_err();
     assert!(
-        err.message().contains("infinite type"),
+        err.message.contains("infinite type"),
         "Expected 'infinite type' in error message, got: {}",
-        err.message()
+        err.message
     );
 }
 
@@ -1711,7 +1711,7 @@ async fn test_unify_uniform_inconsistent_named_field_type_errors() {
         "Uniform-tailed record with non-conforming named field should fail unification"
     );
     let err = result.unwrap_err();
-    let err_msg = err.message();
+    let err_msg = err.message;
     assert!(
         err_msg.contains("does not conform to Uniform constraint"),
         "Expected Uniform constraint violation, got: {err_msg}"
@@ -1800,7 +1800,7 @@ async fn test_unify_empty_uniform_concrete_subtype_fail() {
         "Empty+Uniform with non-conforming concrete type should fail"
     );
     let err = result.unwrap_err();
-    let err_msg = err.message();
+    let err_msg = err.message;
     assert!(
         err_msg.contains("does not conform to Uniform constraint")
             || err_msg.contains("cannot unify"),

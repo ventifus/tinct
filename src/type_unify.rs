@@ -11,6 +11,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::ast::Span;
+use crate::error::TypeDiagnostic;
 use crate::type_def::substitute_recvar;
 use crate::type_infer::TypeVarEntry;
 
@@ -230,7 +231,7 @@ async fn check_constraints_on_var(
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     span: Span,
-) -> Result<(), TypeError> {
+) -> Result<(), TypeDiagnostic> {
     // Collect only the constraints that apply to var_name (immutable scan first).
     // This avoids cloning the entire Vec<Constraint> — we clone only the constraints
     // that match, which is typically 0–2 per variable binding even in constraint-heavy
@@ -343,7 +344,7 @@ async fn check_constraints_on_var(
                                 ..
                             }) => {
                                 // Open dict — constraint violated.
-                                return Err(TypeError::new(
+                                return Err(TypeDiagnostic::error("type-error",
                                     format!(
                                         "open dict (Dict) does not satisfy Record — Record requires a closed dict with known fields; use @Dict to accept any dict"
                                     ),
@@ -377,7 +378,7 @@ async fn check_constraints_on_var(
                     // The recursion cycle is: check_constraints_on_var → resolve_instance →
                     // unify → check_constraints_on_var. This matches GHC's -freduction-depth
                     // semantics (Sulzmann et al. 2007 §3.2).
-                    return Err(TypeError::new(
+                    return Err(TypeDiagnostic::error("type-error",
                         format!(
                             "instance resolution depth limit exceeded (max {}) — possible recursive instance definitions for constraint {}",
                             MAX_INSTANCE_RESOLUTION_DEPTH,
@@ -420,14 +421,15 @@ async fn check_constraints_on_var(
                             }
                         }
                         // No instance found even after widening - constraint violated
-                        return Err(TypeError::new(
+                        return Err(TypeDiagnostic::error(
+                            "type-error",
                             format!("type {} does not satisfy constraint {}", concrete_ty, class),
                             span.clone(),
                         ));
                     }
                     Err(ambig_msg) => {
                         // Ambiguous instances — equally specific matches, coherence violation
-                        return Err(TypeError::new(ambig_msg, span.clone()));
+                        return Err(TypeDiagnostic::error("type-error", ambig_msg, span.clone()));
                     }
                 }
             }
@@ -493,11 +495,11 @@ async fn improve_functional_dependency(
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     span: Span,
-) -> Result<(), TypeError> {
+) -> Result<(), TypeDiagnostic> {
     // Depth guard: prevent infinite recursion through the FD improvement cycle.
     if state.fd_depth >= MAX_FD_DEPTH {
         // F7 FIX: Return error instead of silently succeeding when depth limit is reached
-        return Err(TypeError::new(
+        return Err(TypeDiagnostic::error("type-error",
             format!(
                 "functional dependency improvement depth limit exceeded (max {}) — possible recursive FD chain for class {}",
                 MAX_FD_DEPTH, class
@@ -533,7 +535,7 @@ async fn improve_functional_dependency_inner(
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     span: Span,
-) -> Result<(), TypeError> {
+) -> Result<(), TypeDiagnostic> {
     // For each functional dependency (determining → determined)
     for (det_positions, ded_positions) in fundeps {
         // Compute the positions of bound_var in the constraint arg list.
@@ -821,7 +823,7 @@ async fn improve_functional_dependency_inner(
                                         .get(&pos.to_string())
                                         .cloned()
                                         .ok_or_else(|| {
-                                            TypeError::new(
+                                            TypeDiagnostic::error("type-error",
                                                 format!(
                                                     "no instance for {} (determined field {} missing)",
                                                     class, pos
@@ -830,7 +832,7 @@ async fn improve_functional_dependency_inner(
                                             )
                                         })?,
                                     None => {
-                                        return Err(TypeError::new(
+                                        return Err(TypeDiagnostic::error("type-error",
                                             format!(
                                                 "no instance for {} (no determined position found)",
                                                 class
@@ -841,7 +843,8 @@ async fn improve_functional_dependency_inner(
                                 }
                             }
                             _ => {
-                                return Err(TypeError::new(
+                                return Err(TypeDiagnostic::error(
+                                    "type-error",
                                     format!(
                                         "no instance for {} (unexpected instance_type shape)",
                                         class
@@ -870,7 +873,8 @@ async fn improve_functional_dependency_inner(
                         if should_defer {
                             continue;
                         }
-                        return Err(TypeError::new(
+                        return Err(TypeDiagnostic::error(
+                            "type-error",
                             format!("no instance for {}", class),
                             span.clone(),
                         ));
@@ -879,7 +883,8 @@ async fn improve_functional_dependency_inner(
             }
         } else {
             // Class not found in class_env — should not happen
-            return Err(TypeError::new(
+            return Err(TypeDiagnostic::error(
+                "type-error",
                 format!("unknown class {}", class),
                 span.clone(),
             ));
@@ -1030,10 +1035,11 @@ pub fn resolve_has_field(
     state: &mut InferState,
     span: Span,
     depth: usize,
-) -> Result<Type, TypeError> {
+) -> Result<Type, TypeDiagnostic> {
     // Check recursion depth to prevent infinite loops on cyclic types
     if depth > MAX_RESOLVE_HAS_FIELD_DEPTH {
-        return Err(TypeError::new(
+        return Err(TypeDiagnostic::error(
+            "type-error",
             "HasField recursion depth exceeded".to_string(),
             span,
         ));
@@ -1047,7 +1053,8 @@ pub fn resolve_has_field(
             match state.lookup_binding(var_name) {
                 Some(Type::StringLiteral(s)) => s,
                 _ => {
-                    return Err(TypeError::new(
+                    return Err(TypeDiagnostic::error(
+                        "type-error",
                         format!("label variable {} not bound to a string literal", var_name),
                         span,
                     ))
@@ -1077,7 +1084,7 @@ pub fn resolve_has_field(
                     }
                     crate::type_def::RowTail::Empty => {
                         // Closed record (Record) with no matching field — type error.
-                        Err(TypeError::new(
+                        Err(TypeDiagnostic::error("type-error",
                             format!("record has no field '{}'", label_str),
                             span,
                         ))
@@ -1116,13 +1123,13 @@ pub fn resolve_has_field(
         Type::Never => Ok(Type::Never),
 
         // TypeVar: defer constraint (handled by caller)
-        Type::TypeVar(_, _) => Err(TypeError::new(
+        Type::TypeVar(_, _) => Err(TypeDiagnostic::error("type-error",
             "cannot resolve HasField constraint on unbound type variable (expected caller to defer)".to_string(),
             span,
         )),
 
         // All other types don't support field access
-        _ => Err(TypeError::new(
+        _ => Err(TypeDiagnostic::error("type-error",
             format!("type {} does not support field access", dict_type),
             span,
         )),
@@ -1408,7 +1415,7 @@ async fn unify_rows(
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     span: Span,
-) -> Result<(), TypeError> {
+) -> Result<(), TypeDiagnostic> {
     // Fast-path: identical field sets — unify all named fields, then fall through to tail.
     // Previously had an early return here, which silently swallowed tail mismatches when both
     // rows had identical named fields but different tails (e.g., Empty vs Uniform).
@@ -1473,7 +1480,8 @@ async fn unify_rows(
                 }
             } else {
                 // Both rows have concrete field types and no shared fields: structurally incompatible.
-                return Err(TypeError::new(
+                return Err(TypeDiagnostic::error(
+                    "type-error",
                     format!(
                         "cannot unify {} with {}",
                         Type::Dict(row1.clone()),
@@ -1539,7 +1547,7 @@ async fn unify_rows(
                     for field_ty in &all_fields {
                         let field_fixed = state.apply(field_ty);
                         if !Type::is_subtype(&field_fixed, &v_fixed, None) {
-                            return Err(TypeError::new(
+                            return Err(TypeDiagnostic::error("type-error",
                                 format!(
                                     "field type {field_fixed} does not conform to Uniform constraint {v_fixed}"
                                 ),
@@ -1601,7 +1609,7 @@ async fn unify_rows(
                 for field_ty in &field_types {
                     let field_fixed = state.apply(field_ty);
                     if !Type::is_subtype(&field_fixed, &v_fixed, Some(&state.tycon_env)) {
-                        return Err(TypeError::new(
+                        return Err(TypeDiagnostic::error("type-error",
                             format!(
                                 "field type {field_fixed} does not conform to Uniform constraint {v_fixed}"
                             ),
@@ -1846,7 +1854,7 @@ async fn bas_cvar1_rewrite(
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     span: Span,
-) -> Result<(), TypeError> {
+) -> Result<(), TypeDiagnostic> {
     // Partition into TypeVars and concrete (non-TypeVar) members
     let type_vars: Vec<&Type> = compound_members
         .iter()
@@ -1867,7 +1875,8 @@ async fn bas_cvar1_rewrite(
         ) {
             return Ok(());
         }
-        return Err(TypeError::new(
+        return Err(TypeDiagnostic::error(
+            "type-error",
             format!(
                 "cannot unify {} with {}",
                 concrete,
@@ -1936,7 +1945,8 @@ async fn bas_cvar1_rewrite(
 
         let alpha_level = state.get_level(var_name).unwrap_or(0);
         if lower_levels_check_occurs(&bound_type, var_name, alpha_level, state) {
-            return Err(TypeError::new(
+            return Err(TypeDiagnostic::error(
+                "type-error",
                 format!("infinite type: {var_name} occurs in {bound_type}"),
                 span,
             ));
@@ -1980,7 +1990,7 @@ async fn bas_cvar2_rewrite(
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     span: Span,
-) -> Result<(), TypeError> {
+) -> Result<(), TypeDiagnostic> {
     // Partition into TypeVars and concrete (non-TypeVar) members
     let type_vars: Vec<&Type> = compound_members
         .iter()
@@ -1999,7 +2009,8 @@ async fn bas_cvar2_rewrite(
         ) {
             return Ok(());
         }
-        return Err(TypeError::new(
+        return Err(TypeDiagnostic::error(
+            "type-error",
             format!(
                 "cannot unify {} with {}",
                 concrete,
@@ -2031,7 +2042,8 @@ async fn bas_cvar2_rewrite(
 
         let alpha_level = state.get_level(var_name).unwrap_or(0);
         if lower_levels_check_occurs(&bound_type, var_name, alpha_level, state) {
-            return Err(TypeError::new(
+            return Err(TypeDiagnostic::error(
+                "type-error",
                 format!("infinite type: {var_name} occurs in {bound_type}"),
                 span,
             ));
@@ -2067,7 +2079,7 @@ pub async fn unify(
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     span: Span,
-) -> Result<(), TypeError> {
+) -> Result<(), TypeDiagnostic> {
     // Apply current substitution to both sides (Robinson step: chase bound vars).
     // Shared visited set avoids redundant allocation across both apply() calls.
     let mut visited_types = HashSet::new();
@@ -2181,7 +2193,8 @@ pub async fn unify(
             // (infinite-type guard), and simultaneously lowers all var levels to cap_level.
             let alpha_level = state.get_level(name).unwrap_or(0);
             if lower_levels_check_occurs(&b, name, alpha_level, state) {
-                return Err(TypeError::new(
+                return Err(TypeDiagnostic::error(
+                    "type-error",
                     format!("infinite type: {name} occurs in {b}"),
                     span,
                 ));
@@ -2217,7 +2230,8 @@ pub async fn unify(
             // Fused occurs check + level lowering: one tree walk, zero HashSet allocations.
             let alpha_level = state.get_level(name).unwrap_or(0);
             if lower_levels_check_occurs(&a, name, alpha_level, state) {
-                return Err(TypeError::new(
+                return Err(TypeDiagnostic::error(
+                    "type-error",
                     format!("infinite type: {name} occurs in {a}"),
                     span,
                 ));
@@ -2381,7 +2395,8 @@ pub async fn unify(
             }
 
             if p1.len() != p2.len() {
-                return Err(TypeError::new(
+                return Err(TypeDiagnostic::error(
+                    "type-error",
                     format!(
                         "arity mismatch: expected {} arguments, got {}",
                         p1.len(),
@@ -2396,7 +2411,8 @@ pub async fn unify(
             // equality comparison would reject valid letrec SCC unifications where the pre-bound
             // TypeVar (TypeVar_a) differs from the inferred TypeVar (TypeVar_c).
             if is_variadic_1 != is_variadic_2 {
-                return Err(TypeError::new(
+                return Err(TypeDiagnostic::error(
+                    "type-error",
                     format!(
                         "variadic mismatch: {} vs {}",
                         if is_variadic_1 {
@@ -2414,7 +2430,8 @@ pub async fn unify(
                 ));
             }
             if tv1.len() != tv2.len() {
-                return Err(TypeError::new(
+                return Err(TypeDiagnostic::error(
+                    "type-error",
                     format!(
                         "variadic bucket count mismatch: {} typed bucket(s) vs {} typed bucket(s)",
                         tv1.len(),
@@ -2444,7 +2461,7 @@ pub async fn unify(
                 }
                 (None, None) => {}
                 _ => {
-                    return Err(TypeError::new(
+                    return Err(TypeDiagnostic::error("type-error",
                         "variadic rest mismatch: one function has an untyped rest parameter, the other does not".to_string(),
                         span,
                     ));
@@ -2485,7 +2502,7 @@ pub async fn unify(
             if !matches!(concrete, Type::TypeVar(..) | Type::Unknown) =>
         {
             if Type::is_subtype(concrete, inner, Some(&state.tycon_env)) {
-                Err(TypeError::new(
+                Err(TypeDiagnostic::error("type-error",
                     format!(
                         "cannot unify {} with ~{}: intersection is Never (T <: A implies T & ~A = \u{2205})",
                         concrete, inner
@@ -2500,7 +2517,7 @@ pub async fn unify(
             if !matches!(concrete, Type::TypeVar(..) | Type::Unknown) =>
         {
             if Type::is_subtype(concrete, inner, Some(&state.tycon_env)) {
-                Err(TypeError::new(
+                Err(TypeDiagnostic::error("type-error",
                     format!(
                         "cannot unify ~{} with {}: intersection is Never (T <: A implies T & ~A = \u{2205})",
                         inner, concrete
@@ -2536,7 +2553,8 @@ pub async fn unify(
         // directly (e.g., `Type::TyCon(Arc<TyConDef>)`), eliminating name-based lookup ambiguity.
         (Type::TyCon(n1), Type::TyCon(n2)) => {
             if n1 != n2 {
-                return Err(TypeError::new(
+                return Err(TypeDiagnostic::error(
+                    "type-error",
                     format!("cannot unify {} with {}", a.clone(), b.clone()),
                     span,
                 ));
@@ -2566,7 +2584,8 @@ pub async fn unify(
                             )
                         })
                         .unwrap_or_default();
-                    Err(TypeError::new(
+                    Err(TypeDiagnostic::error(
+                        "type-error",
                         format!(
                             "type constructor '{n1}' refers to two distinct definitions: \
                              {n1}{loc1} vs {n1}{loc2}"
@@ -2607,7 +2626,7 @@ pub async fn unify(
                 if Type::is_subtype(&b, &body, tycon_env) {
                     Ok(())
                 } else {
-                    Err(TypeError::new(
+                    Err(TypeDiagnostic::error("type-error",
                         format!(
                             "cannot unify nominal variant with type '{}': variant is not a member of '{}'",
                             n, n
@@ -2616,7 +2635,8 @@ pub async fn unify(
                     ))
                 }
             } else {
-                Err(TypeError::new(
+                Err(TypeDiagnostic::error(
+                    "type-error",
                     format!("cannot unify {} with {}", a.clone(), b.clone()),
                     span,
                 ))
@@ -2629,7 +2649,7 @@ pub async fn unify(
                 if Type::is_subtype(&a, &body, tycon_env) {
                     Ok(())
                 } else {
-                    Err(TypeError::new(
+                    Err(TypeDiagnostic::error("type-error",
                         format!(
                             "cannot unify nominal variant with type '{}': variant is not a member of '{}'",
                             n, n
@@ -2638,7 +2658,8 @@ pub async fn unify(
                     ))
                 }
             } else {
-                Err(TypeError::new(
+                Err(TypeDiagnostic::error(
+                    "type-error",
                     format!("cannot unify {} with {}", a.clone(), b.clone()),
                     span,
                 ))
@@ -2666,13 +2687,15 @@ pub async fn unify(
                 {
                     Ok(())
                 } else {
-                    Err(TypeError::new(
+                    Err(TypeDiagnostic::error(
+                        "type-error",
                         format!("cannot unify {} with {}", a, b),
                         span,
                     ))
                 }
             } else {
-                Err(TypeError::new(
+                Err(TypeDiagnostic::error(
+                    "type-error",
                     format!("cannot unify {} with {}", a, b),
                     span,
                 ))
@@ -2690,13 +2713,15 @@ pub async fn unify(
                 {
                     Ok(())
                 } else {
-                    Err(TypeError::new(
+                    Err(TypeDiagnostic::error(
+                        "type-error",
                         format!("cannot unify {} with {}", a, b),
                         span,
                     ))
                 }
             } else {
-                Err(TypeError::new(
+                Err(TypeDiagnostic::error(
+                    "type-error",
                     format!("cannot unify {} with {}", a, b),
                     span,
                 ))
@@ -2731,7 +2756,8 @@ pub async fn unify(
             // Fused occurs check + level lowering (Kiselyov L3 invariant for Operator variables)
             let alpha_level = state.get_level(m).unwrap_or(0);
             if lower_levels_check_occurs(&b, m, alpha_level, state) {
-                return Err(TypeError::new(
+                return Err(TypeDiagnostic::error(
+                    "type-error",
                     format!("infinite type: operator variable {} occurs in {}", m, b),
                     span,
                 ));
@@ -2755,7 +2781,8 @@ pub async fn unify(
             // Fused occurs check + level lowering (Kiselyov L3 invariant for Operator variables)
             let alpha_level = state.get_level(m).unwrap_or(0);
             if lower_levels_check_occurs(&a, m, alpha_level, state) {
-                return Err(TypeError::new(
+                return Err(TypeDiagnostic::error(
+                    "type-error",
                     format!("infinite type: operator variable {} occurs in {}", m, a),
                     span,
                 ));
@@ -2814,11 +2841,12 @@ pub async fn unify(
                                         Box::pin(unify(&ra, &rb, state, constraints, span.clone()))
                                             .await?;
                                     } else if ra != rb {
-                                        let mut err = TypeError::new(
+                                        let mut err = TypeDiagnostic::error(
+                                            "type-error",
                                             format!("cannot unify {} with {}", ra, rb),
                                             span.clone(),
                                         );
-                                        err.notes.push(format!(
+                                        err.add_note(format!(
                                             "type argument {} of {} must match exactly \
                                              (invariant position)",
                                             i + 1,
@@ -2857,7 +2885,8 @@ pub async fn unify(
             },
         ) => {
             if tycon1 != tycon2 || ctor1 != ctor2 {
-                return Err(TypeError::new(
+                return Err(TypeDiagnostic::error(
+                    "type-error",
                     format!(
                         "cannot unify nominal variants with different tags: {}.{} and {}.{}",
                         tycon1, ctor1, tycon2, ctor2
@@ -2868,14 +2897,16 @@ pub async fn unify(
             unify_rows(fields1, fields2, state, constraints, span).await
         }
 
-        (Type::NominalVariant { tycon, ctor, .. }, Type::Dict(_)) => Err(TypeError::new(
+        (Type::NominalVariant { tycon, ctor, .. }, Type::Dict(_)) => Err(TypeDiagnostic::error(
+            "type-error",
             format!(
                 "cannot unify nominal variant {}.{} with structural record",
                 tycon, ctor
             ),
             span,
         )),
-        (Type::Dict(_), Type::NominalVariant { tycon, ctor, .. }) => Err(TypeError::new(
+        (Type::Dict(_), Type::NominalVariant { tycon, ctor, .. }) => Err(TypeDiagnostic::error(
+            "type-error",
             format!(
                 "cannot unify structural record with nominal variant {}.{}",
                 tycon, ctor
@@ -3000,7 +3031,8 @@ pub async fn unify(
             },
         ) if f1 == f2 => {
             if a1.len() != a2.len() {
-                return Err(TypeError::new(
+                return Err(TypeDiagnostic::error(
+                    "type-error",
                     format!(
                         "TypeStageApp arity mismatch: {} expects {} args, got {}",
                         f1,
@@ -3017,7 +3049,8 @@ pub async fn unify(
         }
         // Case 2: different function names -> error
         (Type::TypeStageApp { fn_name: f1, .. }, Type::TypeStageApp { fn_name: f2, .. }) => {
-            Err(TypeError::new(
+            Err(TypeDiagnostic::error(
+                "type-error",
                 format!(
                     "cannot unify TypeStageApp with different resolvers: {} vs {}",
                     f1, f2
@@ -3044,14 +3077,16 @@ pub async fn unify(
             if Type::is_subtype(&a, &b, Some(&state.tycon_env)) {
                 Ok(())
             } else {
-                Err(TypeError::new(
+                Err(TypeDiagnostic::error(
+                    "type-error",
                     format!("cannot unify {} with {}", b, a),
                     span,
                 ))
             }
         }
 
-        _ => Err(TypeError::new(
+        _ => Err(TypeDiagnostic::error(
+            "type-error",
             format!("cannot unify {} with {}", a, b),
             span,
         )),
@@ -3095,7 +3130,7 @@ pub async fn constrain(
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     span: Span,
-) -> Result<(), TypeError> {
+) -> Result<(), TypeDiagnostic> {
     // Apply current substitution to both sides.
     let mut visited_types = HashSet::new();
     let mut visited_rows = HashSet::new();
@@ -3174,7 +3209,8 @@ pub async fn constrain(
         (_, Type::TypeVar(var_name, _)) if !sub.has_inference_vars() => {
             let alpha_level = state.get_level(var_name).unwrap_or(0);
             if lower_levels_check_occurs(&sub, var_name, alpha_level, state) {
-                return Err(TypeError::new(
+                return Err(TypeDiagnostic::error(
+                    "type-error",
                     format!("infinite type: {var_name} occurs in {sub}"),
                     span,
                 ));
@@ -3198,7 +3234,8 @@ pub async fn constrain(
         (Type::TypeVar(var_name, _), _) if !sup.has_inference_vars() => {
             let alpha_level = state.get_level(var_name).unwrap_or(0);
             if lower_levels_check_occurs(&sup, var_name, alpha_level, state) {
-                return Err(TypeError::new(
+                return Err(TypeDiagnostic::error(
+                    "type-error",
                     format!("infinite type: {var_name} occurs in {sup}"),
                     span,
                 ));

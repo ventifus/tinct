@@ -665,7 +665,7 @@ impl InferState {
     pub fn check_type_vars_size(
         &self,
         _span: crate::ast::Span,
-    ) -> Result<(), crate::types::TypeError> {
+    ) -> Result<(), crate::error::TypeDiagnostic> {
         // Current InferState doesn't have a unified type_vars table with explicit size tracking.
         // Return Ok — callers that need this check should track via the substitution.
         Ok(())

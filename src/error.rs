@@ -1629,6 +1629,16 @@ pub enum DiagnosticLevel {
     Err,
 }
 
+impl std::fmt::Display for DiagnosticLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DiagnosticLevel::Info => write!(f, "info"),
+            DiagnosticLevel::Warn => write!(f, "warning"),
+            DiagnosticLevel::Err => write!(f, "error"),
+        }
+    }
+}
+
 impl DiagnosticLevel {
     /// Bump severity one level: Info→Warn, Warn→Err, Err→Err.
     /// Used when `--strict` mode is enabled.
@@ -1643,7 +1653,7 @@ impl DiagnosticLevel {
 
 /// A type checking diagnostic (info/warn/err) with span and error code.
 ///
-/// Unlike `TypeError` (which is always fatal), `TypeDiagnostic` can have
+/// `TypeDiagnostic` can have
 /// Info/Warn level for non-fatal notifications (e.g., inferred `Unknown` types).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeDiagnostic {
@@ -1675,12 +1685,18 @@ impl TypeDiagnostic {
         self
     }
 
+    pub fn add_note(&mut self, note: impl Into<String>) {
+        self.notes.push(note.into());
+    }
+
     pub fn primary_span(&self) -> &crate::ast::Span {
         &self.spans[0].0
     }
 }
 
-// has_type_errors is added in T-1724 when errors.is_empty() call sites are migrated
+pub fn has_type_errors(diags: &[TypeDiagnostic]) -> bool {
+    diags.iter().any(|d| d.level == DiagnosticLevel::Err)
+}
 
 /// Render a source snippet with caret annotations for the given span.
 ///

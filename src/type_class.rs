@@ -442,7 +442,7 @@ impl InstanceEnv {
     /// do not accidentally unify across distinct instances.
     ///
     /// Returns `Ok(())` if no overlap is detected, or `Err(message)` identifying the overlapping
-    /// pair. The caller is responsible for converting the message into a `TypeError`.
+    /// pair. The caller is responsible for converting the message into a `TypeDiagnostic`.
     ///
     /// This method takes `&self` (read-only) and `&mut InferState` (for freshening and probing).
     /// Callers that do not have a live `InferState` (built-in registration, prelude seeding)

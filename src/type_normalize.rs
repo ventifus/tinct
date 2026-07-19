@@ -452,7 +452,7 @@ impl fmt::Display for Type {
             Type::Any => write!(f, "Any"),
             Type::Error(errs) => {
                 if let Some(first) = errs.first() {
-                    write!(f, "<error: {}>", first.message())
+                    write!(f, "<error: {}>", first.message)
                 } else {
                     write!(f, "<error>")
                 }

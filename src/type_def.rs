@@ -15,7 +15,7 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 
 use crate::ast::Span;
-use crate::types::TypeError;
+use crate::error::TypeDiagnostic;
 
 /// Tail of a row type — either closed (no additional fields) or uniform (additional fields
 /// all have the same value type, optionally also constrained to a specific key type).
@@ -326,7 +326,7 @@ pub enum Type {
     /// The payload carries the errors that caused this `Error` node. An empty `Vec` is
     /// FORBIDDEN — always use `Type::error_note(msg)` or `Type::error_with(errs)`.
     /// Every Error must carry causal context; empty payloads make blame impossible.
-    Error(Arc<Vec<TypeError>>),
+    Error(Arc<Vec<TypeDiagnostic>>),
     /// Directory capability — wraps cap_std::fs::Dir. Injected via CLI --cap-fs or
     /// runtime env (cwd, libdir). Represents authority to access a specific directory tree.
     DirCap,
@@ -797,7 +797,7 @@ impl Type {
     // ── Error constructors and accessors ────────────────────────────────────────
 
     /// Construct an Error node carrying the errors that caused it.
-    pub fn error_with(errs: Vec<TypeError>) -> Self {
+    pub fn error_with(errs: Vec<TypeDiagnostic>) -> Self {
         Type::Error(Arc::new(errs))
     }
 
@@ -817,7 +817,11 @@ impl Type {
             file: crate::rust_span!().file,
             name: None,
         };
-        Type::Error(Arc::new(vec![TypeError::new(msg, span)]))
+        Type::Error(Arc::new(vec![TypeDiagnostic::error(
+            "type-error",
+            msg,
+            span,
+        )]))
     }
 
     /// Returns `true` if this type is an `Error` node (with or without payload).
@@ -827,7 +831,7 @@ impl Type {
 
     /// Extract the causal errors from an Error node.
     /// Returns an empty slice for cascade sentinels or for non-Error types.
-    pub fn error_payload(&self) -> &[TypeError] {
+    pub fn error_payload(&self) -> &[TypeDiagnostic] {
         if let Type::Error(errs) = self {
             errs.as_slice()
         } else {
@@ -2120,7 +2124,7 @@ impl Type {
         // Error is absorbing: any intersection containing Error becomes Error.
         // Propagate all error payloads from Error members to preserve context.
         if members.iter().any(|m| matches!(m, Type::Error(_))) {
-            let payloads: Vec<TypeError> = members
+            let payloads: Vec<TypeDiagnostic> = members
                 .iter()
                 .flat_map(|m| m.error_payload().to_vec())
                 .collect();
@@ -2636,11 +2640,12 @@ pub fn check_kind_wellformed(
     ty: &Type,
     kind_env: &HashMap<String, Kind>,
     span: Span,
-) -> Result<(), TypeError> {
+) -> Result<(), TypeDiagnostic> {
     match ty {
         Type::TypeVar(name, _) => {
             if let Some(Kind::Label) = kind_env.get(name.as_str()) {
-                return Err(TypeError::new(
+                return Err(TypeDiagnostic::error(
+                    "kind-error",
                     format!(
                         "kind mismatch: type variable `{name}` has kind Label but expected kind *"
                     ),
@@ -2695,7 +2700,8 @@ pub fn check_kind_wellformed(
             // Bare Operator in a type position (kind *) is kind-incorrect.
             // Operator variables have kind (* → *) and must be applied via Type::App.
             if let Some(Kind::Operator) = kind_env.get(name.as_str()) {
-                return Err(TypeError::new(
+                return Err(TypeDiagnostic::error(
+                    "kind-error",
                     format!("kind mismatch: operator `{name}` has kind (* → *) but expected kind *; did you forget to apply it?"),
                     span,
                 ));
@@ -2703,7 +2709,8 @@ pub fn check_kind_wellformed(
             // Bare Kind::Arrow in a type position is also kind-incorrect.
             // Arrow kinds are for higher-order type constructors that must be fully applied.
             if matches!(kind_env.get(name.as_str()), Some(Kind::Arrow(_, _))) {
-                return Err(TypeError::new(
+                return Err(TypeDiagnostic::error(
+                    "kind-error",
                     format!("kind mismatch: `{name}` is a higher-kinded type constructor but was used in a type position"),
                     span,
                 ));

@@ -2630,7 +2630,7 @@ pub(crate) fn builtin_typecheck_doc(
 
         // Add TypeErrors as level="error", kind="type-error"
         for err in errors.iter() {
-            let span_id = make_span_dict(&err.span, &ctx, &call_span);
+            let span_id = make_span_dict(err.primary_span(), &ctx, &call_span);
             let mut w: IndexMap<HashableValue, ThunkId> = IndexMap::new();
             w.insert(
                 HashableValue::Str("level".into()),

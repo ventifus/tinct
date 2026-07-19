@@ -95,7 +95,7 @@ async fn build_builtin_core_type_env_inner() -> Option<Arc<RwLock<Env>>> {
 
     // Typecheck with builtins env as parent.
     // enable_hover_map=false (no LSP hover needed for bootstrap).
-    let (_errors, _type_map, _doc_map, _scheme_map, _diagnostics, mut state, final_env, _annot) =
+    let (_diagnostics, _type_map, _doc_map, _scheme_map, mut state, final_env, _annot) =
         typecheck_surface_program_with_env(
             &program,
             parent_env,

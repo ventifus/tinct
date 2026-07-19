@@ -7,7 +7,7 @@
 //! - `type_class`: Type class declarations (ClassDecl, Constraint, ClassEnv, InstanceEnv)
 //! - `type_infer`: Inference machinery (InferState, TypeVarEntry, generalization)
 //! - `type_normalize`: Normalization and Display implementations
-//! - `type_env`: Type environments and TypeError alias (submodule via #[path])
+//! - `type_env`: Type environments (submodule via #[path])
 //! - `type_unify`: Unification and substitution (submodule via #[path])
 
 // Focused submodules (top-level for circular dependency avoidance)

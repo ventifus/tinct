@@ -7,11 +7,12 @@ use std::sync::{Arc, RwLock};
 use super::{check_surface_expr, contains_unknown_or_top, TypeMap};
 use crate::ast::{Annotation, Span, Spanned, SurfaceEntry, SurfaceExpression, SurfaceNode};
 use crate::env::Env;
+use crate::error::TypeDiagnostic;
 use crate::rust_span;
 use crate::type_class::ConstraintArg;
 use crate::type_def::TyConDef;
 use crate::type_def::Variance;
-use crate::types::{Constraint, InferState, Kind, Row, Type, TypeEnv, TypeError};
+use crate::types::{Constraint, InferState, Kind, Row, Type, TypeEnv};
 use crate::value::{HashableValue, Thunk, Value};
 
 /// Convert a variance annotation name to a `Variance` value (T-953).
@@ -245,7 +246,7 @@ pub(crate) async fn resolve_type_assert(
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     type_map: &mut Option<&mut TypeMap>,
-) -> Result<Type, Vec<TypeError>> {
+) -> Result<Type, Vec<TypeDiagnostic>> {
     // Create per-annotation-scope mappings for type and row variables.
     // Named row variables (e.g., ...r) in TypeAssert annotations are tracked correctly
     // instead of creating fresh anonymous row vars.
@@ -280,7 +281,7 @@ pub(crate) async fn resolve_type_assert(
 
     // Validate the default value type — hard error if the default cannot satisfy the asserted type.
     if let Some(default_node) = annotation.node.get_property("default") {
-        let mut local_errors: Vec<TypeError> = Vec::new();
+        let mut local_errors: Vec<TypeDiagnostic> = Vec::new();
         let mut local_stack = Vec::new();
         let default_ty_result = {
             let default_ty = Box::pin(super::typecheck_cek::run_typecheck(
@@ -314,7 +315,8 @@ pub(crate) async fn resolve_type_assert(
                         || contains_unknown_or_top(&expected_resolved))
                         && Type::is_consistent(&default_ty, &expected_resolved));
                 if !passes {
-                    return Err(vec![TypeError::new(
+                    return Err(vec![TypeDiagnostic::error(
+                        "type-error",
                         format!(
                             "default value type mismatch: default has type {default_ty}, \
                              but assertion expects {expected_resolved}"
@@ -341,7 +343,8 @@ pub(crate) async fn resolve_type_assert(
         {
             const VALID_REPRS: &[&str] = &["u8", "i8", "u16", "i16", "u32", "i32", "u64", "i64"];
             if !VALID_REPRS.contains(&repr_val.as_str()) {
-                return Err(vec![TypeError::new(
+                return Err(vec![TypeDiagnostic::error(
+                    "type-error",
                     format!(
                         "invalid repr: \"{repr_val}\" — must be one of: {}",
                         VALID_REPRS.join(", ")
@@ -352,7 +355,8 @@ pub(crate) async fn resolve_type_assert(
             // Check consistency: repr requires a numeric type (Int or Float)
             let is_numeric = matches!(&expected, Type::Int | Type::Float);
             if !is_numeric {
-                return Err(vec![TypeError::new(
+                return Err(vec![TypeDiagnostic::error(
+                    "type-error",
                     format!(
                         "repr: \"{repr_val}\" requires a numeric type, but annotation declares {}",
                         expected
@@ -394,7 +398,7 @@ pub(crate) async fn resolve_annotated(
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
     type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
-) -> Result<Type, TypeError> {
+) -> Result<Type, TypeDiagnostic> {
     let stub_type_env = TypeEnv::new();
     if name == "Fn" {
         resolve_fn_type(
@@ -466,7 +470,7 @@ pub(crate) async fn resolve_fn_metadata(
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
     type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
-) -> Result<(Type, Option<String>), TypeError> {
+) -> Result<(Type, Option<String>), TypeDiagnostic> {
     let mut return_type: Option<Type> = None;
     let mut doc_string: Option<String> = None;
 
@@ -491,7 +495,7 @@ pub(crate) async fn resolve_fn_metadata(
                         SurfaceExpression::Dict(bind_entries) => {
                             for bind_entry in bind_entries {
                                 if bind_entry.node.key.is_some() {
-                                    return Err(TypeError::new(
+                                    return Err(TypeDiagnostic::error("type-error",
                                         "bind: list must contain only positional entries (bare names)".to_string(),
                                         bind_entry.span.clone(),
                                     ));
@@ -500,7 +504,7 @@ pub(crate) async fn resolve_fn_metadata(
                                     SurfaceExpression::VarRef { name, .. } => {
                                         // Check lowercase convention for TypeVar names
                                         if !name.starts_with(|c: char| c.is_lowercase()) {
-                                            return Err(TypeError::new(
+                                            return Err(TypeDiagnostic::error("type-error",
                                                 format!(
                                                     "bind: TypeVar name '{}' must start with lowercase letter",
                                                     name
@@ -525,7 +529,8 @@ pub(crate) async fn resolve_fn_metadata(
                                         if let Some(ref mut mapping) = ann_mapping {
                                             mapping.insert(name.clone(), fresh);
                                         } else {
-                                            return Err(TypeError::new(
+                                            return Err(TypeDiagnostic::error(
+                                                "type-error",
                                                 "bind: requires an annotation mapping context"
                                                     .to_string(),
                                                 span,
@@ -533,7 +538,8 @@ pub(crate) async fn resolve_fn_metadata(
                                         }
                                     }
                                     _ => {
-                                        return Err(TypeError::new(
+                                        return Err(TypeDiagnostic::error(
+                                            "type-error",
                                             "bind: entries must be bare names (TypeVar names)"
                                                 .to_string(),
                                             bind_entry.node.value.span.clone(),
@@ -553,7 +559,8 @@ pub(crate) async fn resolve_fn_metadata(
                             ..
                         } => {
                             if !named_args.is_empty() {
-                                return Err(TypeError::new(
+                                return Err(TypeDiagnostic::error(
+                                    "type-error",
                                     "bind: list must contain only bare names, not named arguments"
                                         .to_string(),
                                     entry.node.value.span.clone(),
@@ -568,7 +575,8 @@ pub(crate) async fn resolve_fn_metadata(
                                             v.push((name.as_str(), func.span.clone()))
                                         }
                                         _ => {
-                                            return Err(TypeError::new(
+                                            return Err(TypeDiagnostic::error(
+                                                "type-error",
                                                 "bind: entries must be bare names (TypeVar names)",
                                                 func.span.clone(),
                                             ))
@@ -579,7 +587,8 @@ pub(crate) async fn resolve_fn_metadata(
                                             SurfaceExpression::VarRef { name, .. } => {
                                                 v.push((name.as_str(), arg.span.clone()))
                                             }
-                                            _ => return Err(TypeError::new(
+                                            _ => return Err(TypeDiagnostic::error(
+                                                "type-error",
                                                 "bind: entries must be bare names (TypeVar names)"
                                                     .to_string(),
                                                 arg.span.clone(),
@@ -590,7 +599,7 @@ pub(crate) async fn resolve_fn_metadata(
                                 };
                             for (name, name_span) in all_names {
                                 if !name.starts_with(|c: char| c.is_lowercase()) {
-                                    return Err(TypeError::new(
+                                    return Err(TypeDiagnostic::error("type-error",
                                         format!(
                                             "bind: TypeVar name '{}' must start with lowercase letter",
                                             name
@@ -614,7 +623,8 @@ pub(crate) async fn resolve_fn_metadata(
                                 if let Some(ref mut mapping) = ann_mapping {
                                     mapping.insert(name.to_string(), fresh);
                                 } else {
-                                    return Err(TypeError::new(
+                                    return Err(TypeDiagnostic::error(
+                                        "type-error",
                                         "bind: requires an annotation mapping context",
                                         span,
                                     ));
@@ -622,7 +632,8 @@ pub(crate) async fn resolve_fn_metadata(
                             }
                         }
                         _ => {
-                            return Err(TypeError::new(
+                            return Err(TypeDiagnostic::error(
+                                "type-error",
                                 "bind: value must be a list [a b c]".to_string(),
                                 entry.node.value.span.clone(),
                             ))
@@ -651,14 +662,16 @@ pub(crate) async fn resolve_fn_metadata(
                                             SurfaceExpression::StringLiteral {
                                                 content: s, ..
                                             } => s.clone(),
-                                            _ => return Err(TypeError::new(
+                                            _ => return Err(TypeDiagnostic::error(
+                                                "type-error",
                                                 "kinds: keys must be bare words (TypeVar names)",
                                                 kind_entry.span.clone(),
                                             )),
                                         }
                                     }
                                     None => {
-                                        return Err(TypeError::new(
+                                        return Err(TypeDiagnostic::error(
+                                            "type-error",
                                             "kinds: entries must be keyed [name: kind]".to_string(),
                                             kind_entry.span.clone(),
                                         ))
@@ -670,7 +683,8 @@ pub(crate) async fn resolve_fn_metadata(
                                     match mapping.get(&typevar_name) {
                                         Some(var) => var.clone(),
                                         None => {
-                                            return Err(TypeError::new(
+                                            return Err(TypeDiagnostic::error(
+                                                "type-error",
                                                 format!(
                                                     "kinds: TypeVar '{}' not found in bind: list",
                                                     typevar_name
@@ -680,7 +694,8 @@ pub(crate) async fn resolve_fn_metadata(
                                         }
                                     }
                                 } else {
-                                    return Err(TypeError::new(
+                                    return Err(TypeDiagnostic::error(
+                                        "type-error",
                                         "kinds: requires an annotation mapping context",
                                         span,
                                     ));
@@ -694,18 +709,22 @@ pub(crate) async fn resolve_fn_metadata(
                                         let kind = match kind_name.as_str() {
                                             "Operator" => Kind::Operator,
                                             "Label" => Kind::Label,
-                                            _ => return Err(TypeError::new(
-                                                format!(
+                                            _ => {
+                                                return Err(TypeDiagnostic::error(
+                                                    "type-error",
+                                                    format!(
                                                     "unknown kind '{}' (valid: Operator, Label)",
                                                     kind_name
                                                 ),
-                                                kind_entry.node.value.span.clone(),
-                                            )),
+                                                    kind_entry.node.value.span.clone(),
+                                                ))
+                                            }
                                         };
                                         state.set_kind(type_var, kind);
                                     }
                                     _ => {
-                                        return Err(TypeError::new(
+                                        return Err(TypeDiagnostic::error(
+                                            "type-error",
                                             "kinds: value must be a kind name (Operator or Label)"
                                                 .to_string(),
                                             kind_entry.node.value.span.clone(),
@@ -715,7 +734,8 @@ pub(crate) async fn resolve_fn_metadata(
                             }
                         }
                         _ => {
-                            return Err(TypeError::new(
+                            return Err(TypeDiagnostic::error(
+                                "type-error",
                                 "kinds: value must be a dict [name: kind ...]".to_string(),
                                 entry.node.value.span.clone(),
                             ))
@@ -750,7 +770,8 @@ pub(crate) async fn resolve_fn_metadata(
                                         }
                                         SurfaceExpression::VarRef { name, .. } => name.clone(),
                                         _ => {
-                                            return Err(TypeError::new(
+                                            return Err(TypeDiagnostic::error(
+                                                "type-error",
                                                 "constraint key must be a bare word (TypeVar name)",
                                                 c_entry.span.clone(),
                                             ));
@@ -781,7 +802,7 @@ pub(crate) async fn resolve_fn_metadata(
                                         fresh
                                     }
                                 } else {
-                                    return Err(TypeError::new( "constraint annotations require an annotation mapping context".to_string(),
+                                    return Err(TypeDiagnostic::error("type-error", "constraint annotations require an annotation mapping context".to_string(),
                                         span,
                                     ));
                                 };
@@ -815,19 +836,20 @@ pub(crate) async fn resolve_fn_metadata(
                                                     &class_list[1..]
                                                 } else {
                                                     // [a: [Comparable Printable]] — no 'each', error
-                                                    return Err(TypeError::new(
+                                                    return Err(TypeDiagnostic::error("type-error",
                                                         "constraint class list must start with 'each' keyword: use [each ClassName ...]".to_string(),
                                                         class_list[0].span.clone(),
                                                     ));
                                                 }
                                             } else {
-                                                return Err(TypeError::new(
+                                                return Err(TypeDiagnostic::error("type-error",
                                                     "constraint class list must start with 'each' keyword: use [each ClassName ...]".to_string(),
                                                     class_list[0].span.clone(),
                                                 ));
                                             }
                                         } else {
-                                            return Err(TypeError::new(
+                                            return Err(TypeDiagnostic::error(
+                                                "type-error",
                                                 "constraint class list cannot be empty".to_string(),
                                                 c_entry.node.value.span.clone(),
                                             ));
@@ -836,7 +858,7 @@ pub(crate) async fn resolve_fn_metadata(
                                         // Multiple classes: iterate and add each
                                         for class_entry in class_entries {
                                             if class_entry.node.key.is_some() {
-                                                return Err(TypeError::new(
+                                                return Err(TypeDiagnostic::error("type-error",
                                                     "constraint class list must contain only positional entries".to_string(),
                                                     class_entry.span.clone(),
                                                 ));
@@ -851,7 +873,7 @@ pub(crate) async fn resolve_fn_metadata(
                                                     );
                                                 }
                                                 _ => {
-                                                    return Err(TypeError::new(
+                                                    return Err(TypeDiagnostic::error("type-error",
                                                         "constraint class must be a class name (e.g., Comparable)".to_string(),
                                                         class_entry.node.value.span.clone(),
                                                     ));
@@ -871,7 +893,7 @@ pub(crate) async fn resolve_fn_metadata(
                                         ..
                                     } => {
                                         if !named_args.is_empty() {
-                                            return Err(TypeError::new(
+                                            return Err(TypeDiagnostic::error("type-error",
                                                 "constraint class list must not contain named arguments".to_string(),
                                                 c_entry.node.value.span.clone(),
                                             ));
@@ -890,7 +912,7 @@ pub(crate) async fn resolve_fn_metadata(
                                                                 names.push((name.as_str(), arg.span.clone()))
                                                             }
                                                             _ => {
-                                                                return Err(TypeError::new(
+                                                                return Err(TypeDiagnostic::error("type-error",
                                                                     "constraint class must be a class name (e.g., Comparable)".to_string(),
                                                                     arg.span.clone(),
                                                                 ))
@@ -906,7 +928,7 @@ pub(crate) async fn resolve_fn_metadata(
                                                     vec![(name.as_str(), func.span.clone())]
                                                 }
                                                 _ => {
-                                                    return Err(TypeError::new(
+                                                    return Err(TypeDiagnostic::error("type-error",
                                                         "constraint value must be a class name or [each Class1 Class2 ...]".to_string(),
                                                         c_entry.node.value.span.clone(),
                                                     ))
@@ -922,7 +944,7 @@ pub(crate) async fn resolve_fn_metadata(
                                         }
                                     }
                                     _ => {
-                                        return Err(TypeError::new(
+                                        return Err(TypeDiagnostic::error("type-error",
                                             "constraint value must be a class name or list of class names".to_string(),
                                             c_entry.node.value.span.clone(),
                                         ));
@@ -931,7 +953,8 @@ pub(crate) async fn resolve_fn_metadata(
                             }
                         }
                         _ => {
-                            return Err(TypeError::new(
+                            return Err(TypeDiagnostic::error(
+                                "type-error",
                                 "constraint: value must be a dict [a: Comparable]".to_string(),
                                 entry.node.value.span.clone(),
                             ));
@@ -972,7 +995,8 @@ pub(crate) async fn resolve_fn_metadata(
                                         let class_decl = {
                                             let env_guard = state.env.read().unwrap();
                                             env_guard.get_class(class_name).ok_or_else(|| {
-                                                TypeError::new(
+                                                TypeDiagnostic::error(
+                                                    "type-error",
                                                     format!(
                                                         "unknown class '{}' in MPTC constraint",
                                                         class_name
@@ -1000,7 +1024,7 @@ pub(crate) async fn resolve_fn_metadata(
                                                     // Validate that this TypeVar is declared in bind:
                                                     if let Some(ref mapping) = ann_mapping {
                                                         if !mapping.contains_key(var_name) {
-                                                            return Err(TypeError::new(
+                                                            return Err(TypeDiagnostic::error("type-error",
                                                                 format!(
                                                                     "TypeVar '{}' not declared in bind: — add bind: [{}] before constraint:",
                                                                     var_name, var_name
@@ -1013,7 +1037,7 @@ pub(crate) async fn resolve_fn_metadata(
                                                             mapping.get(var_name).unwrap().clone();
                                                         typevar_names.push(actual_var);
                                                     } else {
-                                                        return Err(TypeError::new(
+                                                        return Err(TypeDiagnostic::error("type-error",
                                                             "constraint annotations require an annotation mapping context".to_string(),
                                                             span,
                                                         ));
@@ -1026,7 +1050,7 @@ pub(crate) async fn resolve_fn_metadata(
                                                     break;
                                                 }
                                                 _ => {
-                                                    return Err(TypeError::new(
+                                                    return Err(TypeDiagnostic::error("type-error",
                                                         "MPTC constraint entries after class name must be TypeVar names".to_string(),
                                                         subsequent.node.value.span.clone(),
                                                     ));
@@ -1053,7 +1077,7 @@ pub(crate) async fn resolve_fn_metadata(
                                         // Non-escaped positional entry that's not part of an MPTC
                                         // This is probably an error — bare positional TypeVar names
                                         // without a class
-                                        return Err(TypeError::new(
+                                        return Err(TypeDiagnostic::error("type-error",
                                             "positional constraint entries must start with escaped class name (e.g., $Add)".to_string(),
                                             c_entry.node.value.span.clone(),
                                         ));
@@ -1129,7 +1153,8 @@ pub(crate) async fn resolve_fn_metadata(
                     match extracted {
                         Some(s) => doc_string = Some(s),
                         None => {
-                            return Err(TypeError::new(
+                            return Err(TypeDiagnostic::error(
+                                "type-error",
                                 "doc: value must be a string literal".to_string(),
                                 entry.node.value.span.clone(),
                             ));
@@ -1189,7 +1214,7 @@ async fn resolve_fn_type(
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
     type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
-) -> Result<Type, TypeError> {
+) -> Result<Type, TypeDiagnostic> {
     match ann {
         Annotation::PropertyDict(surface_entries) => {
             // Dispatch: if any entry has a named key matching function metadata keys
@@ -1214,7 +1239,7 @@ async fn resolve_fn_type(
                 // B-355: fn@[only-custom-keys: val] was previously misinterpreted as a
                 // return type because has_fn_key was false; now all_keyed triggers this path.
                 if !all_keyed {
-                    return Err(TypeError::new(
+                    return Err(TypeDiagnostic::error("type-error",
                         "fn annotation must use either named keys (return:, constraint:, doc:, bind:, kinds:) or positional entries (union return type), not both",
                         span,
                     ));
@@ -1295,7 +1320,7 @@ async fn resolve_annotation_as_type(
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
     type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
-) -> Result<Type, TypeError> {
+) -> Result<Type, TypeDiagnostic> {
     match ann {
         Annotation::Simple(name) => {
             let row_ref: Option<&HashMap<String, String>> = row_ann_mapping.as_ref().map(|m| &**m);
@@ -1401,7 +1426,7 @@ pub(crate) async fn resolve_annotation(
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
     type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
-) -> Result<Type, TypeError> {
+) -> Result<Type, TypeDiagnostic> {
     match ann {
         Annotation::Simple(name) => {
             let row_ref: Option<&HashMap<String, String>> = row_ann_mapping.as_ref().map(|m| &**m);
@@ -1535,13 +1560,14 @@ pub(crate) async fn resolve_annotation(
                 // 2. The identifier must start with a lowercase letter (label TypeVars are
                 //    lowercase by convention, mirroring type-kind TypeVars).
                 match &label_value_node.expr {
-                    SurfaceExpression::StringLiteral { .. } => Err(TypeError::new(
+                    SurfaceExpression::StringLiteral { .. } => Err(TypeDiagnostic::error(
+                        "type-error",
                         "label: value must be a bare name (e.g. `label: l`), not a string literal",
                         span,
                     )),
                     SurfaceExpression::VarRef { name, .. } => {
                         if name.starts_with(|c: char| c.is_uppercase()) {
-                            Err(TypeError::new(
+                            Err(TypeDiagnostic::error("type-error",
                                 format!(
                                     "label: value must be a lowercase type variable name (e.g. `label: l`), got '{}'",
                                     name
@@ -1586,7 +1612,8 @@ pub(crate) async fn resolve_annotation(
                             Ok(Type::TypeVar(fresh, current_level))
                         }
                     }
-                    _ => Err(TypeError::new(
+                    _ => Err(TypeDiagnostic::error(
+                        "type-error",
                         "label: value must be a bare name (e.g. `label: l`)",
                         span,
                     )),
@@ -1619,7 +1646,7 @@ async fn resolve_property_dict_as_record(
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
     type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
-) -> Result<Type, TypeError> {
+) -> Result<Type, TypeDiagnostic> {
     let dict_result = resolve_type_dict(
         entries,
         env,
@@ -1725,7 +1752,7 @@ async fn instantiate_tycon_def(
     alias: &TyConDef,
     type_args: &[Type],
     state: &mut InferState,
-) -> Result<Type, TypeError> {
+) -> Result<Type, TypeDiagnostic> {
     // Build substitution from parameter names to provided types
     let mut type_subst: HashMap<String, Type> = HashMap::new();
     for (param, arg) in alias.params.iter().zip(type_args.iter()) {
@@ -1761,7 +1788,8 @@ async fn instantiate_tycon_def(
                         }
                         Ok(None) => {
                             let constraint_label = origin_name.as_deref().unwrap_or(&class.name);
-                            return Err(TypeError::new(
+                            return Err(TypeDiagnostic::error(
+                                "type-error",
                                 format!(
                                     "type argument `{arg_type}` does not satisfy constraint \
                                      `{constraint_label}` — no instance found for class `{}`",
@@ -1771,7 +1799,8 @@ async fn instantiate_tycon_def(
                             ));
                         }
                         Err(ambiguity_msg) => {
-                            return Err(TypeError::new(
+                            return Err(TypeDiagnostic::error(
+                                "type-error",
                                 format!(
                                     "ambiguous instances for constraint `{}` with type \
                                      argument `{arg_type}`: {ambiguity_msg}",
@@ -1948,7 +1977,7 @@ pub(crate) async fn resolve_type_name_with_guard(
     _current_alias: &str,
     depth: usize,
     type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
-) -> Result<Type, TypeError> {
+) -> Result<Type, TypeDiagnostic> {
     // Route lowercase names and all primitive/structural type names through resolve_type_name,
     // which now uses the type-stage env as the canonical source.
     if !name.starts_with(|c: char| c.is_uppercase()) {
@@ -1982,7 +2011,8 @@ pub(crate) async fn resolve_type_name_with_guard(
 
         // Check arity
         if !alias.params.is_empty() {
-            return Err(TypeError::new(
+            return Err(TypeDiagnostic::error(
+                "type-error",
                 format!(
                     "type alias '{}' expects {} type parameter(s), got 0",
                     name,
@@ -2030,7 +2060,11 @@ pub(crate) async fn resolve_type_name_with_guard(
         });
         Ok(fresh_ty)
     } else {
-        Err(TypeError::new(format!("undefined type: {}", name), span))
+        Err(TypeDiagnostic::error(
+            "type-error",
+            format!("undefined type: {}", name),
+            span,
+        ))
     }
 }
 
@@ -2044,7 +2078,7 @@ pub(crate) async fn resolve_type_name_with_guard(
 ///   2. class_env (BEFORE tycon_env) — `[Iterable a]` creates constrained TypeVar
 ///   3. tycon_env → `expand_named` or `instantiate_tycon_def` for structural aliases
 ///   4. tycon_env → expand_named or instantiate_tycon_def (bootstrap fallback)
-///   5. Undefined → TypeError
+///   5. Undefined → TypeDiagnostic
 ///
 /// The lowercase path (ann_mapping, type_params_scope, cross-kind collision) is handled
 /// by `resolve_type_name` before calling this function — `resolve_type_head` only handles
@@ -2057,12 +2091,12 @@ async fn resolve_type_head(
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     span: Span,
-) -> Result<Type, TypeError> {
+) -> Result<Type, TypeDiagnostic> {
     // Step 1: Kind constraints — Operator and Label are kinds, not types.
     // When args are present in application position, Operator-kinded names produce App chains.
     match name {
         "Operator" if args.is_empty() => {
-            return Err(TypeError::new(
+            return Err(TypeDiagnostic::error("type-error",
                 "Operator is a kind, not a type — annotate a class type parameter as `f@Operator`, not a value expression",
                 span,
             ));
@@ -2085,7 +2119,8 @@ async fn resolve_type_head(
         if let Some(kind) = state.get_kind(name) {
             if kind.arity() > 0 {
                 if args.len() != 1 {
-                    return Err(TypeError::new(
+                    return Err(TypeDiagnostic::error(
+                        "type-error",
                         format!(
                             "type constructor `{name}` requires 1 type argument, got {}",
                             args.len()
@@ -2095,7 +2130,8 @@ async fn resolve_type_head(
                 }
                 let a_type = args[0].clone();
                 if let Type::Operator(op_name) = &a_type {
-                    return Err(TypeError::new(
+                    return Err(TypeDiagnostic::error(
+                        "type-error",
                         format!(
                             "kind mismatch: type constructor `{name}` cannot be \
                              applied to another type constructor `{op_name}`; \
@@ -2193,7 +2229,8 @@ async fn resolve_type_head(
         // use instantiate_tycon_def for constraint checking.
         if !def.params.is_empty() && !args.is_empty() {
             if args.len() != def.params.len() {
-                return Err(TypeError::new(
+                return Err(TypeDiagnostic::error(
+                    "type-error",
                     format!(
                         "type alias '{}' expects {} type parameter(s), got {}",
                         name,
@@ -2220,7 +2257,11 @@ async fn resolve_type_head(
     }
 
     // Step 6: Undefined type name.
-    Err(TypeError::new(format!("undefined type: {}", name), span))
+    Err(TypeDiagnostic::error(
+        "type-error",
+        format!("undefined type: {}", name),
+        span,
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2233,10 +2274,10 @@ pub(crate) async fn resolve_type_name(
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &Option<&HashMap<String, String>>,
     type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
-) -> Result<Type, TypeError> {
+) -> Result<Type, TypeDiagnostic> {
     match name {
         // Kind constraints — not types, require special handling before the type-stage path.
-        "Operator" => return Err(TypeError::new(
+        "Operator" => return Err(TypeDiagnostic::error("type-error",
             "Operator is a kind, not a type — annotate a class type parameter as `f@Operator`, not a value expression",
             span,
         )),
@@ -2269,12 +2310,12 @@ pub(crate) async fn resolve_type_name(
                     // Strict mode (TypeAlias bodies): validate that undeclared lowercase
                     // names are either scope references or error. Non-strict (class methods):
                     // allow names to fall through to the ann_mapping lookup below, which will
-                    // either find a bind:-declared TypeVar or produce a TypeError.
+                    // either find a bind:-declared TypeVar or produce a TypeDiagnostic.
                     let in_params = ann_mapping.as_ref().is_some_and(|m| m.contains_key(name));
                     if strict && !in_params && !params.contains_key(name) {
                         // Name not declared as a type parameter — check if it's a scope reference.
                         if env.lookup_tycon_def(name).is_none() {
-                            return Err(TypeError::new(
+                            return Err(TypeDiagnostic::error("type-error",
                                 format!(
                                     "undefined name '{name}' in type alias body — \
                                      lowercase names must be declared as type parameters \
@@ -2300,7 +2341,7 @@ pub(crate) async fn resolve_type_name(
                     .is_some_and(|m| m.contains_key(name));
                 let in_ann = ann_mapping.as_ref().is_some_and(|m| m.contains_key(name));
                 if in_row && !in_ann {
-                    return Err(TypeError::new(
+                    return Err(TypeDiagnostic::error("type-error",
                         format!(
                             "annotation name '{name}' is already used as a row variable in this function; \
                              it cannot also be used as a type variable"
@@ -2324,10 +2365,10 @@ pub(crate) async fn resolve_type_name(
                             .expect("invariant: annotation var registered in mapping must be in state.type_vars");
                         Ok(Type::TypeVar(existing_var.clone(), current_level))
                     } else {
-                        Err(TypeError::new(format!("undefined type: {name}"), span))
+                        Err(TypeDiagnostic::error("type-error",format!("undefined type: {name}"), span))
                     }
                 } else {
-                    Err(TypeError::new(format!("undefined type: {name}"), span))
+                    Err(TypeDiagnostic::error("type-error",format!("undefined type: {name}"), span))
                 }
             } else {
                 // Uppercase type name — route through the unified resolve_type_head.
@@ -2354,11 +2395,12 @@ fn expand_alias_body_guarded(
     current_alias: &str,
     depth: usize,
     span: Span,
-) -> Result<Type, TypeError> {
+) -> Result<Type, TypeDiagnostic> {
     // Depth guard (Amadio & Cardelli 1993)
     const MAX_ALIAS_DEPTH: usize = 256;
     if depth >= MAX_ALIAS_DEPTH {
-        return Err(TypeError::new(
+        return Err(TypeDiagnostic::error(
+            "type-error",
             format!(
                 "recursive type alias '{}' exceeds maximum unfolding depth ({})",
                 current_alias, MAX_ALIAS_DEPTH
@@ -2405,7 +2447,7 @@ fn expand_alias_body_guarded(
             let new_params = params
                 .iter()
                 .map(|(name, p_ty)| {
-                    Ok::<_, TypeError>((
+                    Ok::<_, TypeDiagnostic>((
                         name.clone(),
                         expand_alias_body_guarded(
                             p_ty,
@@ -2424,7 +2466,7 @@ fn expand_alias_body_guarded(
             let new_typed_variadics = typed_variadics
                 .iter()
                 .map(|(name, ty)| {
-                    Ok::<_, TypeError>((
+                    Ok::<_, TypeDiagnostic>((
                         name.clone(),
                         expand_alias_body_guarded(
                             ty,
@@ -2443,7 +2485,7 @@ fn expand_alias_body_guarded(
             let new_rest = rest
                 .as_ref()
                 .map(|boxed| {
-                    Ok::<_, TypeError>(Box::new((
+                    Ok::<_, TypeDiagnostic>(Box::new((
                         boxed.0.clone(),
                         expand_alias_body_guarded(
                             &boxed.1,
@@ -2565,10 +2607,11 @@ pub(crate) async fn resolve_type_expr_with_guard(
     current_alias: &str,
     depth: usize,
     type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
-) -> Result<Type, TypeError> {
+) -> Result<Type, TypeDiagnostic> {
     const MAX_ALIAS_DEPTH: usize = 256;
     if depth >= MAX_ALIAS_DEPTH {
-        return Err(TypeError::new(
+        return Err(TypeDiagnostic::error(
+            "type-error",
             format!(
                 "recursive type alias '{}' exceeds maximum unfolding depth ({})",
                 current_alias, MAX_ALIAS_DEPTH
@@ -2644,7 +2687,7 @@ async fn resolve_type_dict_with_guard(
     current_alias: &str,
     depth: usize,
     type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
-) -> Result<Type, TypeError> {
+) -> Result<Type, TypeDiagnostic> {
     let all_positional = entries.iter().all(|e| e.node.key.is_none());
 
     // Keyed record dict: `[value: Int  next: Node]` — the most common recursive alias body.
@@ -2673,7 +2716,8 @@ async fn resolve_type_dict_with_guard(
                     // Annotation is now on VarRef directly; use the name field.
                     SurfaceExpression::VarRef { name, .. } => name.clone(),
                     _ => {
-                        return Err(TypeError::new(
+                        return Err(TypeDiagnostic::error(
+                            "type-error",
                             "type record keys must be bare words",
                             k.span.clone(),
                         ))
@@ -2777,7 +2821,7 @@ pub(crate) async fn resolve_type_expr(
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
     type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
-) -> Result<Type, TypeError> {
+) -> Result<Type, TypeDiagnostic> {
     match &node.expr {
         // String literals in type position → Type::StringLiteral (tag-only enum variants).
         // VarRef still goes to resolve_type_name for type alias lookup.
@@ -3000,7 +3044,7 @@ pub(crate) async fn resolve_type_expr(
                         }
                     }
                     if args.len() > 1 {
-                        return Err(TypeError::new(
+                        return Err(TypeDiagnostic::error("type-error",
                             format!(
                                 "function type [Fn@Return [Params]] requires exactly 2 entries, got {}",
                                 1 + args.len()
@@ -3069,7 +3113,8 @@ pub(crate) async fn resolve_type_expr(
 
                     // Check arity
                     if type_args.len() != alias.params.len() {
-                        return Err(TypeError::new(
+                        return Err(TypeDiagnostic::error(
+                            "type-error",
                             format!(
                                 "type alias '{}' expects {} type parameter(s), got {}",
                                 name,
@@ -3240,7 +3285,8 @@ pub(crate) async fn resolve_type_expr(
                     if kw == "or" || kw == "all" || kw == "without" {
                         if kw == "without" {
                             if args.len() != 1 {
-                                return Err(TypeError::new(
+                                return Err(TypeDiagnostic::error(
+                                    "type-error",
                                     format!(
                                         "`without` requires exactly 1 type argument, got {}",
                                         args.len()
@@ -3283,19 +3329,22 @@ pub(crate) async fn resolve_type_expr(
                     }
 
                     // Type-stage lookup or call failed — this is a genuine resolution error.
-                    return Err(TypeError::new(
+                    return Err(TypeDiagnostic::error(
+                        "type-error",
                         format!("undefined type-stage function: {func_name}"),
                         func.span.clone(),
                     ));
                 }
             }
 
-            Err(TypeError::new(
+            Err(TypeDiagnostic::error(
+                "type-error",
                 format!("invalid type expression in annotation: {:?}", node.expr),
                 node.span.clone(),
             ))
         }
-        _ => Err(TypeError::new(
+        _ => Err(TypeDiagnostic::error(
+            "type-error",
             format!("invalid type expression in annotation: {:?}", node.expr),
             node.span.clone(),
         )),
@@ -3312,7 +3361,7 @@ pub(crate) async fn resolve_type_dict(
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
     type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
-) -> Result<Type, TypeError> {
+) -> Result<Type, TypeDiagnostic> {
     if let Some(fn_type) = Box::pin(try_resolve_fn_type_expr(
         entries,
         env,
@@ -3350,7 +3399,8 @@ pub(crate) async fn resolve_type_dict(
                         if kw == "without" {
                             // `[without T]` — single-argument negation.
                             if rest.len() != 1 {
-                                return Err(TypeError::new(
+                                return Err(TypeDiagnostic::error(
+                                    "type-error",
                                     format!(
                                         "`without` requires exactly 1 type argument, got {}",
                                         rest.len()
@@ -3500,14 +3550,15 @@ pub(crate) async fn resolve_type_dict(
                         let ctor_name = match &key_node.expr {
                             SurfaceExpression::VarRef { name, .. } => name.clone(),
                             _ => {
-                                return Err(TypeError::new(
+                                return Err(TypeDiagnostic::error(
+                                    "type-error",
                                     "named constructor key must be a bare uppercase word",
                                     key_node.span.clone(),
                                 ))
                             }
                         };
                         if !crate::eval::is_constructor_name(&ctor_name) {
-                            return Err(TypeError::new(
+                            return Err(TypeDiagnostic::error("type-error",
                                 format!(
                                     "constructor name must start with an uppercase letter, got `{ctor_name}`"
                                 ),
@@ -3533,14 +3584,14 @@ pub(crate) async fn resolve_type_dict(
                                                     name.clone()
                                                 }
                                                 _ => {
-                                                    return Err(TypeError::new(
+                                                    return Err(TypeDiagnostic::error("type-error",
                                                         "payload field names must be bare words",
                                                         k.span.clone(),
                                                     ))
                                                 }
                                             },
                                             None => {
-                                                return Err(TypeError::new(
+                                                return Err(TypeDiagnostic::error("type-error",
                                                     "payload constructor fields must be named (e.g. `path: String`)",
                                                     fe.span.clone(),
                                                 ))
@@ -3602,7 +3653,7 @@ pub(crate) async fn resolve_type_dict(
                                 });
                             }
                             _ => {
-                                return Err(TypeError::new(
+                                return Err(TypeDiagnostic::error("type-error",
                                     "in a mixed constructor body, positional entries must be bare uppercase unit constructor names (e.g. `Noop`)",
                                     entry.span.clone(),
                                 ));
@@ -3757,7 +3808,8 @@ pub(crate) async fn resolve_type_dict(
                                             } => s.clone(),
                                             // Both plain and annotated VarRef use the name field.
                                             SurfaceExpression::VarRef { name, .. } => name.clone(),
-                                            _ => return Err(TypeError::new(
+                                            _ => return Err(TypeDiagnostic::error(
+                                                "type-error",
                                                 "nominal variant field names must be bare words",
                                                 k.span.clone(),
                                             )),
@@ -3775,7 +3827,7 @@ pub(crate) async fn resolve_type_dict(
                                         variant_fields.insert(field_name, field_ty);
                                     }
                                     None => {
-                                        return Err(TypeError::new(
+                                        return Err(TypeDiagnostic::error("type-error",
                                             "nominal variant constructor with named fields requires all fields after the constructor tag to be keyed (field: Type)",
                                             field_entry.span.clone(),
                                         ));
@@ -3876,7 +3928,7 @@ pub(crate) async fn resolve_type_dict(
 
         if is_wildcard_key {
             if uniform_tail.is_some() {
-                return Err(TypeError::new(
+                return Err(TypeDiagnostic::error("type-error",
                     "duplicate uniform-field sentinel `_` in row type annotation — at most one `_` allowed per row",
                     entry.span.clone(),
                 ));
@@ -3928,14 +3980,16 @@ pub(crate) async fn resolve_type_dict(
                 // Annotated field key: `field@Child: Type` (T-1052) — annotation is on VarRef.
                 SurfaceExpression::VarRef { name, .. } => name.clone(),
                 _ => {
-                    return Err(TypeError::new(
+                    return Err(TypeDiagnostic::error(
+                        "type-error",
                         "type record keys must be bare words",
                         k.span.clone(),
                     ))
                 }
             },
             None => {
-                return Err(TypeError::new(
+                return Err(TypeDiagnostic::error(
+                    "type-error",
                     "auto-indexed entries not supported in type expressions",
                     entry.span.clone(),
                 ))
@@ -4635,7 +4689,7 @@ fn type_to_typenode_value<'a>(
 /// 3. Materializes the result thunk.
 /// 4. Converts the result via `typenode_value_to_type`.
 ///
-/// Returns `Err(TypeError)` if:
+/// Returns `Err(TypeDiagnostic)` if:
 /// - `fn_val` is not a function value.
 /// - `state.eval_ctx` is `None` (EvalContext unavailable).
 /// - Function invocation or materialization fails.
@@ -4649,14 +4703,15 @@ pub(crate) async fn eval_type_stage_value(
     fn_val: &Value,
     args: &[Value],
     state: &mut InferState,
-) -> Result<Type, TypeError> {
+) -> Result<Type, TypeDiagnostic> {
     let origin_span = rust_span!();
 
     // Use the EvalContext from tinct's evaluation pipeline — capabilities flow in from tinct.
     let ctx = match state.eval_ctx.clone() {
         Some(ctx) => ctx,
         None => {
-            return Err(TypeError::new(
+            return Err(TypeDiagnostic::error(
+                "type-error",
                 "type-stage evaluation requires an EvalContext from the tinct pipeline",
                 origin_span.clone(),
             ))
@@ -4695,7 +4750,8 @@ pub(crate) async fn eval_type_stage_value(
             crate::eval_call::invoke_function(&call_ctx)
                 .await
                 .map_err(|e| {
-                    TypeError::new(
+                    TypeDiagnostic::error(
+                        "type-error",
                         format!("type-stage function call failed: {e}"),
                         origin_span.clone(),
                     )
@@ -4703,7 +4759,8 @@ pub(crate) async fn eval_type_stage_value(
         }
         // Not a function — as-type dispatch requires a callable value.
         _ => {
-            return Err(TypeError::new(
+            return Err(TypeDiagnostic::error(
+                "type-error",
                 "eval_type_stage_value: argument is not a function value",
                 origin_span,
             ))
@@ -4714,7 +4771,8 @@ pub(crate) async fn eval_type_stage_value(
     let result_val = crate::eval::materialize(&result_thunk, None, &ctx)
         .await
         .map_err(|e| {
-            TypeError::new(
+            TypeDiagnostic::error(
+                "type-error",
                 format!("type-stage materialization failed: {e}"),
                 origin_span.clone(),
             )
@@ -4724,7 +4782,8 @@ pub(crate) async fn eval_type_stage_value(
     typenode_value_to_type(&result_val, &ctx)
         .await
         .ok_or_else(|| {
-            TypeError::new(
+            TypeDiagnostic::error(
+                "type-error",
                 format!("type-stage result cannot be converted to Type: {result_val}"),
                 origin_span,
             )
@@ -4751,7 +4810,7 @@ pub(crate) async fn eval_type_stage_value(
 ///
 /// ## Error Behaviour
 ///
-/// Returns `Err(TypeError)` if:
+/// Returns `Err(TypeDiagnostic)` if:
 /// - Evaluation of the expression fails (runtime error in type-stage code).
 /// - The evaluated value cannot be converted to a Type (unrecognized TypeNode tag).
 ///
@@ -4761,7 +4820,7 @@ pub(crate) async fn eval_type_stage_value(
 pub(crate) async fn eval_type_stage_expr(
     node: &Arc<SurfaceNode>,
     state: &mut InferState,
-) -> Result<Type, TypeError> {
+) -> Result<Type, TypeDiagnostic> {
     let node_span = node.span.clone();
 
     // Build a minimal EvalContext for evaluating the annotation node.
@@ -4769,7 +4828,8 @@ pub(crate) async fn eval_type_stage_expr(
     #[allow(clippy::disallowed_methods)]
     let base_dir =
         cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority()).map_err(|e| {
-            TypeError::new(
+            TypeDiagnostic::error(
+                "type-error",
                 format!("type-stage eval: cannot open ambient dir: {e}"),
                 node_span.clone(),
             )
@@ -4797,7 +4857,8 @@ pub(crate) async fn eval_type_stage_expr(
     let typenode_val = crate::eval::materialize(&surface_thunk, Some(&node_span), &ctx)
         .await
         .map_err(|e| {
-            TypeError::new(
+            TypeDiagnostic::error(
+                "type-error",
                 format!("type-stage expression evaluation failed: {e}"),
                 node_span.clone(),
             )
@@ -4807,7 +4868,8 @@ pub(crate) async fn eval_type_stage_expr(
     typenode_value_to_type(&typenode_val, &ctx)
         .await
         .ok_or_else(|| {
-            TypeError::new(
+            TypeDiagnostic::error(
+                "type-error",
                 format!("type-stage expression produced an unrecognized value: {typenode_val}"),
                 node_span,
             )
@@ -5376,7 +5438,7 @@ async fn try_resolve_fn_type_expr(
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
     type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
-) -> Result<Option<Type>, TypeError> {
+) -> Result<Option<Type>, TypeDiagnostic> {
     let first = match entries.first() {
         Some(e) if e.node.key.is_none() => e,
         _ => return Ok(None),
@@ -5393,7 +5455,8 @@ async fn try_resolve_fn_type_expr(
     };
 
     if entries.len() != 2 {
-        return Err(TypeError::new(
+        return Err(TypeDiagnostic::error(
+            "type-error",
             format!(
                 "function type [Fn@Return [Params]] requires exactly 2 entries, got {}",
                 entries.len()
@@ -5404,7 +5467,8 @@ async fn try_resolve_fn_type_expr(
 
     let second = &entries[1];
     if second.node.key.is_some() {
-        return Err(TypeError::new(
+        return Err(TypeDiagnostic::error(
+            "type-error",
             "function type parameter list must be auto-indexed",
             second.span.clone(),
         ));
@@ -5488,7 +5552,8 @@ async fn try_resolve_fn_type_expr(
             }
         }
         _ => {
-            return Err(TypeError::new(
+            return Err(TypeDiagnostic::error(
+                "type-error",
                 "function type parameter list must be a bracket expression",
                 second.node.value.span.clone(),
             ))

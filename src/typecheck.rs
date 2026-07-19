@@ -12,9 +12,10 @@ use crate::ast::{
     SurfaceNode, SurfaceProgram, TypeAnnotationTable,
 };
 use crate::env::Env;
+use crate::error::TypeDiagnostic;
 #[cfg(test)]
 use crate::types::TypeEnv;
-use crate::types::{generalize, InferState, Row, Type, TypeAlias, TypeError};
+use crate::types::{generalize, InferState, Row, Type, TypeAlias};
 
 // Split modules — annotation resolution and dict inference
 #[path = "typecheck_annot.rs"]
@@ -79,7 +80,7 @@ pub use crate::types::SchemeMap;
 pub async fn typecheck_surface_program_annotation_table(
     program: &SurfaceProgram,
 ) -> (
-    Vec<TypeError>,
+    Vec<TypeDiagnostic>,
     TypeAnnotationTable,
     crate::type_def::TyConEnv,
 ) {
@@ -106,7 +107,7 @@ pub async fn typecheck_surface_program_annotation_table_with_env(
     seed_tycon_env: crate::type_def::TyConEnv,
     type_stage_map: Option<std::collections::HashMap<String, crate::type_infer::TypeStageEntry>>,
 ) -> (
-    Vec<TypeError>,
+    Vec<TypeDiagnostic>,
     TypeAnnotationTable,
     crate::type_def::TyConEnv,
 ) {
@@ -163,7 +164,7 @@ pub async fn typecheck_surface_program_annotation_table_with_env(
 ///
 /// # Returns
 ///
-/// `(errors, type_map, doc_map, scheme_map, diagnostics)`
+/// `(diagnostics, type_map, doc_map, scheme_map)`
 ///
 /// The returned [`TypeMap`] is span-keyed and built from the `TypeAnnotationTable` produced
 /// during inference (populated per-node by `process_document`). Only top-level
@@ -172,14 +173,8 @@ pub async fn typecheck_surface_program_annotation_table_with_env(
 pub async fn typecheck_surface_program(
     program: &SurfaceProgram,
     parent_env: Arc<RwLock<Env>>,
-) -> (
-    Vec<TypeError>,
-    TypeMap,
-    DocMap,
-    SchemeMap,
-    Vec<crate::error::TypeDiagnostic>,
-) {
-    let (errors, type_map, doc_map, scheme_map, diagnostics, _state, _env, _annotation_table) =
+) -> (Vec<TypeDiagnostic>, TypeMap, DocMap, SchemeMap) {
+    let (diagnostics, type_map, doc_map, scheme_map, _state, _env, _annotation_table) =
         typecheck_surface_program_with_env(
             program,
             parent_env,
@@ -189,7 +184,7 @@ pub async fn typecheck_surface_program(
         )
         .await;
     // type_map is now populated during inference (enable_hover_map=true path).
-    (errors, type_map, doc_map, scheme_map, diagnostics)
+    (diagnostics, type_map, doc_map, scheme_map)
 }
 
 /// Type-check a `SurfaceProgram` with full control over scheme-map generation,
@@ -227,11 +222,10 @@ pub async fn typecheck_surface_program_with_env(
     seed_tycon_env: std::collections::HashMap<String, std::sync::Arc<crate::type_def::TyConDef>>,
     eval_ctx: Option<std::sync::Arc<crate::eval::EvalContext>>,
 ) -> (
-    Vec<TypeError>,
+    Vec<TypeDiagnostic>,
     TypeMap,
     DocMap,
     SchemeMap,
-    Vec<crate::error::TypeDiagnostic>,
     InferState,
     Arc<RwLock<Env>>,
     TypeAnnotationTable,
@@ -331,7 +325,9 @@ pub async fn typecheck_surface_program_with_env(
     // Extract scheme_map from state (populated during VarRef inference).
     let scheme_map = state.scheme_map.take().unwrap_or_default();
 
-    // Collect diagnostics from state (e.g., T013 ambiguous constraints).
+    // Merge errors and diagnostics from state (e.g., T013 ambiguous constraints).
+    // All type errors are now TypeDiagnostic (T-1724).
+    diagnostics.append(&mut errors);
     diagnostics.append(&mut state.diagnostics);
 
     // Extract doc strings from the Surface AST (equivalent to extract_doc_strings on File AST).
@@ -350,11 +346,10 @@ pub async fn typecheck_surface_program_with_env(
     merge_env_schemes_into_env(&env, &child_env);
 
     (
-        errors,
+        diagnostics,
         type_map_inner,
         doc_map,
         scheme_map,
-        diagnostics,
         state,
         child_env,
         annotation_table,
@@ -433,7 +428,7 @@ pub(crate) async fn process_document(
     state: &mut InferState,
     table: &mut TypeAnnotationTable,
     type_map: &mut Option<&mut TypeMap>,
-) -> (Arc<RwLock<Env>>, Type, Vec<TypeError>) {
+) -> (Arc<RwLock<Env>>, Type, Vec<TypeDiagnostic>) {
     let empty_dict_ty = Type::Dict(Row {
         fields: indexmap::IndexMap::new(),
         tail: crate::type_def::RowTail::Empty,
@@ -519,7 +514,11 @@ pub(crate) async fn process_document(
                     current_env = Arc::new(RwLock::new(new_env_inner));
                 }
                 Type::Unknown | Type::Any => {}
-                _ => errors.push(TypeError::not_a_record(&ty, intermediate.span.clone())),
+                _ => errors.push(TypeDiagnostic::error(
+                    "type-error",
+                    format!("expected record type, got {}", ty),
+                    intermediate.span.clone(),
+                )),
             }
         }
     }
@@ -714,7 +713,7 @@ pub(crate) fn register_type_aliases_env(
     node: &Arc<SurfaceNode>,
     target_env: &mut Env,
     _state: &mut InferState,
-    _errors: &mut Vec<TypeError>,
+    _errors: &mut Vec<TypeDiagnostic>,
 ) {
     if let SurfaceExpression::Dict(entries) = &node.expr {
         let mut alias_entries: Vec<(String, Vec<String>)> = Vec::new();
@@ -788,11 +787,12 @@ pub(crate) fn infer_class_decl_from_surface(
     _env: &Arc<RwLock<Env>>,
     state: &mut InferState,
     _type_map: &mut Option<&mut TypeMap>,
-) -> Result<Type, Vec<TypeError>> {
+) -> Result<Type, Vec<TypeDiagnostic>> {
     use crate::types::{ClassDecl, Kind};
 
     if name.is_empty() {
-        return Err(vec![TypeError::new(
+        return Err(vec![TypeDiagnostic::error(
+            "type-error",
             "class declaration must have a name declared with [class [ClassName ...] ...]",
             span,
         )]);
@@ -824,7 +824,7 @@ pub(crate) fn infer_class_decl_from_surface(
                 fd_indices.push((determining_indices, determined_indices));
             }
             _ => {
-                return Err(vec![TypeError::new(
+                return Err(vec![TypeDiagnostic::error("type-error",
                     "functional dependency must be a 2-element list [[determining-vars] determined-var(s)]",
                     fd_node.span.clone(),
                 )]);
@@ -837,7 +837,8 @@ pub(crate) fn infer_class_decl_from_surface(
             SurfaceExpression::VarRef { name: n, .. } => Some(n.clone()),
             SurfaceExpression::StringLiteral { content, .. } => Some(content.clone()),
             _ => {
-                return Err(vec![TypeError::new(
+                return Err(vec![TypeDiagnostic::error(
+                    "type-error",
                     "resolver must be an identifier or string",
                     resolver_node.span.clone(),
                 )]);
@@ -897,7 +898,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
     env: &Arc<RwLock<Env>>,
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
-) -> Result<Type, Vec<TypeError>> {
+) -> Result<Type, Vec<TypeDiagnostic>> {
     use crate::types::InstanceDecl;
 
     if arms.is_empty() {
@@ -914,7 +915,8 @@ pub(crate) async fn infer_instance_decl_from_surface(
             .unwrap()
             .get_class(class_name)
             .ok_or_else(|| {
-                vec![TypeError::new(
+                vec![TypeDiagnostic::error(
+                    "type-error",
                     format!("unknown class '{}'", class_name),
                     span.clone(),
                 )]
@@ -937,7 +939,8 @@ pub(crate) async fn infer_instance_decl_from_surface(
         let pattern_types = extract_pattern_types(pattern_node, env, state)?;
 
         if pattern_types.len() != param_count {
-            return Err(vec![TypeError::new(
+            return Err(vec![TypeDiagnostic::error(
+                "type-error",
                 format!(
                     "instance pattern has {} type parameters but class '{}' expects {}",
                     pattern_types.len(),
@@ -949,7 +952,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
         }
 
         if pattern_types.iter().any(|ty| matches!(ty, Type::Unknown)) {
-            return Err(vec![TypeError::new(
+            return Err(vec![TypeDiagnostic::error("type-error",
                 format!(
                     "instance pattern for class '{}' contains Unknown types — all pattern positions must have concrete type annotations (use a@Type syntax)",
                     class_name
@@ -967,7 +970,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
             let (types_j, span_j, _) = &arm_data[j];
 
             if patterns_overlap(types_i, types_j, state)? {
-                let error = TypeError::new(
+                let error = TypeDiagnostic::error("type-error",
                     format!(
                         "overlapping instance patterns for class '{}': arm at line {} and arm at line {} could both match the same types",
                         class_name,
@@ -1034,7 +1037,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
                             .collect();
 
                         if !types_can_unify(&determined_i, &determined_j, state)? {
-                            let error = TypeError::new(
+                            let error = TypeDiagnostic::error("type-error",
                                 format!(
                                     "consistency violation for class '{}': arm at line {} and arm at line {} have overlapping determining positions but incompatible determined types",
                                     class_name,
@@ -1081,21 +1084,23 @@ pub(crate) async fn infer_instance_decl_from_surface(
                     SurfaceExpression::StringLiteral { content, .. } => content.clone(),
                     SurfaceExpression::VarRef { name: n, .. } => n.clone(),
                     _ => {
-                        return Err(vec![TypeError::new(
+                        return Err(vec![TypeDiagnostic::error(
+                            "type-error",
                             "instance method name must be a string or identifier",
                             key_node.span.clone(),
                         )]);
                     }
                 },
                 None => {
-                    return Err(vec![TypeError::new(
+                    return Err(vec![TypeDiagnostic::error(
+                        "type-error",
                         "instance method must have a name",
                         method.span.clone(),
                     )]);
                 }
             };
 
-            let mut method_errors: Vec<TypeError> = Vec::new();
+            let mut method_errors: Vec<TypeDiagnostic> = Vec::new();
             let mut method_stack = Vec::new();
             let method_impl_type = Box::pin(typecheck_cek::run_typecheck(
                 &method.node.value,
@@ -1210,7 +1215,7 @@ pub(crate) async fn check_surface_expr(
     env: &Arc<RwLock<Env>>,
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
-) -> Result<(), Vec<TypeError>> {
+) -> Result<(), Vec<TypeDiagnostic>> {
     // Lambda checking mode (CHECK-FN) — arity check.
     // When the node is a Fn expression and expected is a concrete Function type, check
     // that the lambda's param count matches the expected param count. This is a necessary
@@ -1237,7 +1242,8 @@ pub(crate) async fn check_surface_expr(
                 expected_count
             };
             if actual_count < min_required || actual_count > max_allowed {
-                return Err(vec![TypeError::new(
+                return Err(vec![TypeDiagnostic::error(
+                    "type-error",
                     format!(
                         "arity mismatch: expected {} arguments, got {}",
                         if exp_variadic {
@@ -1258,7 +1264,7 @@ pub(crate) async fn check_surface_expr(
     // requires async annotation resolution (resolve_annotation). Lambda inference is handled
     // correctly by the CEK machine's AfterFnBody continuation.
     // Fall through to synthesize+subsume.
-    let mut local_errors: Vec<TypeError> = Vec::new();
+    let mut local_errors: Vec<TypeDiagnostic> = Vec::new();
     let mut local_stack = Vec::new();
     let actual = Box::pin(typecheck_cek::run_typecheck(
         node,
@@ -1293,9 +1299,9 @@ pub(crate) async fn check_surface_expr(
         // this sync function. is_consistent_subtype handles TypeVar positions as gradual (?),
         // which is the correct behavior for the check context (unknown ≡ accept anything).
         if !Type::is_consistent_subtype(&actual, &expected_resolved) {
-            return Err(vec![TypeError::type_mismatch(
-                &expected_resolved,
-                &actual,
+            return Err(vec![TypeDiagnostic::error(
+                "unification-failure",
+                format!("cannot unify {} with {}", &expected_resolved, &actual),
                 node.span.clone(),
             )]);
         }
@@ -1328,9 +1334,9 @@ pub(crate) async fn check_surface_expr(
                 || contains_unknown_or_top(&expected_final))
                 && Type::is_consistent(&actual_resolved, &expected_final));
         if !passes {
-            Err(vec![TypeError::type_mismatch(
-                &expected_final,
-                &actual_resolved,
+            Err(vec![TypeDiagnostic::error(
+                "unification-failure",
+                format!("cannot unify {} with {}", &expected_final, &actual_resolved),
                 node.span.clone(),
             )])
         } else {

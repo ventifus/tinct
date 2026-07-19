@@ -11,7 +11,8 @@ use std::sync::{Arc, RwLock};
 
 use crate::ast::{Annotation, Pattern, Span, SurfaceExpression, SurfaceNode};
 use crate::env::Env;
-use crate::types::{InferState, Row, Type, TypeError, TypeScheme};
+use crate::error::TypeDiagnostic;
+use crate::types::{InferState, Row, Type, TypeScheme};
 
 /// Narrowing constraints extracted from conditional expressions.
 /// Each constraint refines the type of a variable in the true branch of an `if`.
@@ -651,7 +652,7 @@ pub(crate) fn extract_pattern_types(
     pattern_node: &Arc<SurfaceNode>,
     env: &Arc<RwLock<Env>>,
     state: &mut InferState,
-) -> Result<Vec<Type>, Vec<TypeError>> {
+) -> Result<Vec<Type>, Vec<TypeDiagnostic>> {
     match &pattern_node.expr {
         SurfaceExpression::PatternDecl { bindings } | SurfaceExpression::LetDecl { bindings } => {
             let mut types = Vec::new();
@@ -660,7 +661,8 @@ pub(crate) fn extract_pattern_types(
             }
             Ok(types)
         }
-        _ => Err(vec![TypeError::new(
+        _ => Err(vec![TypeDiagnostic::error(
+            "type-error",
             "instance arm pattern must be a [pattern [...]] or [let ...] declaration",
             pattern_node.span.clone(),
         )]),
@@ -680,7 +682,7 @@ pub(crate) fn extract_binding_types(
     env: &Arc<RwLock<Env>>,
     state: &mut InferState,
     types: &mut Vec<Type>,
-) -> Result<(), Vec<TypeError>> {
+) -> Result<(), Vec<TypeDiagnostic>> {
     match &binding.expr {
         // Binding bracket [a@Int b@Float] parsed as auto-indexed Dict (old syntax for multi-param).
         // Named-key dicts like [key: k  value: v] represent a SINGLE structural type (a record),
@@ -742,7 +744,8 @@ pub(crate) fn extract_binding_types(
             types.push(Type::Unknown);
         }
         _ => {
-            return Err(vec![TypeError::new(
+            return Err(vec![TypeDiagnostic::error(
+                "type-error",
                 "pattern binding must be in form 'a@Type', bare identifier, or [let ...]",
                 binding.span.clone(),
             )]);
@@ -760,7 +763,7 @@ pub(crate) fn patterns_overlap(
     types_a: &[Type],
     types_b: &[Type],
     state: &mut InferState,
-) -> Result<bool, Vec<TypeError>> {
+) -> Result<bool, Vec<TypeDiagnostic>> {
     if types_a.len() != types_b.len() {
         return Ok(false);
     }
@@ -803,7 +806,7 @@ pub(crate) fn types_can_unify(
     types_a: &[Type],
     types_b: &[Type],
     state: &mut InferState,
-) -> Result<bool, Vec<TypeError>> {
+) -> Result<bool, Vec<TypeDiagnostic>> {
     if types_a.len() != types_b.len() {
         return Ok(false);
     }
@@ -857,7 +860,7 @@ pub(crate) fn extract_param_indices(
     node: &Arc<SurfaceNode>,
     params: &[String],
     span: Span,
-) -> Result<Vec<usize>, Vec<TypeError>> {
+) -> Result<Vec<usize>, Vec<TypeDiagnostic>> {
     let mut indices = Vec::new();
 
     match &node.expr {
@@ -867,7 +870,8 @@ pub(crate) fn extract_param_indices(
             if let Some(idx) = params.iter().position(|p| p == name) {
                 indices.push(idx);
             } else {
-                return Err(vec![TypeError::new(
+                return Err(vec![TypeDiagnostic::error(
+                    "type-error",
                     format!("functional dependency references unknown param '{}'", name),
                     span,
                 )]);
@@ -881,7 +885,8 @@ pub(crate) fn extract_param_indices(
                     SurfaceExpression::VarRef { name, .. } => name,
                     SurfaceExpression::StringLiteral { content: s, .. } => s,
                     _ => {
-                        return Err(vec![TypeError::new(
+                        return Err(vec![TypeDiagnostic::error(
+                            "type-error",
                             "functional dependency param must be an identifier or string",
                             entry.span.clone(),
                         )]);
@@ -891,7 +896,8 @@ pub(crate) fn extract_param_indices(
                 if let Some(idx) = params.iter().position(|p| p == param_name) {
                     indices.push(idx);
                 } else {
-                    return Err(vec![TypeError::new(
+                    return Err(vec![TypeDiagnostic::error(
+                        "type-error",
                         format!(
                             "functional dependency references unknown param '{}'",
                             param_name
@@ -914,7 +920,8 @@ pub(crate) fn extract_param_indices(
                 SurfaceExpression::VarRef { name, .. } => name,
                 SurfaceExpression::StringLiteral { content: s, .. } => s,
                 _ => {
-                    return Err(vec![TypeError::new(
+                    return Err(vec![TypeDiagnostic::error(
+                        "type-error",
                         "functional dependency param must be an identifier or string",
                         func.span.clone(),
                     )])
@@ -923,7 +930,8 @@ pub(crate) fn extract_param_indices(
             if let Some(idx) = params.iter().position(|p| p == head_name) {
                 indices.push(idx);
             } else {
-                return Err(vec![TypeError::new(
+                return Err(vec![TypeDiagnostic::error(
+                    "type-error",
                     format!(
                         "functional dependency references unknown param '{}'",
                         head_name
@@ -937,7 +945,8 @@ pub(crate) fn extract_param_indices(
                     SurfaceExpression::VarRef { name, .. } => name,
                     SurfaceExpression::StringLiteral { content: s, .. } => s,
                     _ => {
-                        return Err(vec![TypeError::new(
+                        return Err(vec![TypeDiagnostic::error(
+                            "type-error",
                             "functional dependency param must be an identifier or string",
                             arg.span.clone(),
                         )])
@@ -946,7 +955,8 @@ pub(crate) fn extract_param_indices(
                 if let Some(idx) = params.iter().position(|p| p == arg_name) {
                     indices.push(idx);
                 } else {
-                    return Err(vec![TypeError::new(
+                    return Err(vec![TypeDiagnostic::error(
+                        "type-error",
                         format!(
                             "functional dependency references unknown param '{}'",
                             arg_name
@@ -957,7 +967,8 @@ pub(crate) fn extract_param_indices(
             }
         }
         _ => {
-            return Err(vec![TypeError::new(
+            return Err(vec![TypeDiagnostic::error(
+                "type-error",
                 "functional dependency variables must be an identifier or list",
                 span,
             )]);

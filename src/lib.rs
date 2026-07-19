@@ -18,7 +18,7 @@
 // constraint is intentional and correct; Rc-based sharing is cheaper and simpler than
 // Arc<Mutex<...>> for data that never leaves the local thread.
 #![allow(clippy::arc_with_non_send_sync)]
-// TypeError is a large struct used pervasively as the Err type across the type checker.
+// TypeDiagnostic is a large struct used pervasively as the Err type across the type checker.
 // Boxing it at every return site would be invasive and would hurt readability for marginal
 // runtime benefit (errors are cold paths).
 #![allow(clippy::result_large_err)]
@@ -124,7 +124,7 @@ pub use error::{
 };
 
 /// Type error diagnostic formatting.
-pub use types::{format_type_error, Type, TypeError, TypeScheme};
+pub use types::{Type, TypeScheme};
 
 /// Formatter: canonical source reformatter.
 pub use formatter::{format_source_tinct, format_source_tinct_with_dir};
@@ -341,7 +341,10 @@ pub async fn run_loader_pipeline(
             .map(|e| {
                 format!(
                     "{}:{}:{}: {}",
-                    init_path, e.span.start.line, e.span.start.column, e.message
+                    init_path,
+                    e.primary_span().start.line,
+                    e.primary_span().start.column,
+                    e.message
                 )
             })
             .collect::<Vec<_>>()
@@ -393,18 +396,12 @@ pub async fn typecheck_source(input: &str) -> Result<(), String> {
     let env_arc = imports::get_builtin_core_type_env()
         .await
         .expect("builtin core type env not available — bootstrap error");
-    let (type_errors, _type_map, _doc_map, _scheme_map, diagnostics) =
+    let (diagnostics, _type_map, _doc_map, _scheme_map) =
         typecheck::typecheck_surface_program(&program, env_arc).await;
-    if type_errors.is_empty() && diagnostics.is_empty() {
+    if diagnostics.is_empty() {
         Ok(())
     } else {
-        let mut msgs = Vec::new();
-        for e in &type_errors {
-            msgs.push(format!("{}", e));
-        }
-        for d in &diagnostics {
-            msgs.push(d.message.clone());
-        }
+        let mut msgs: Vec<String> = diagnostics.iter().map(|d| d.message.clone()).collect();
         msgs.sort();
         Err(msgs.join("\n"))
     }
@@ -431,15 +428,16 @@ pub async fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
     let env_arc2 = imports::get_builtin_core_type_env()
         .await
         .expect("builtin core type env not available — bootstrap error");
-    let (type_errors, _type_map, _doc_map, _scheme_map, _diagnostics) =
+    let (diagnostics, _type_map, _doc_map, _scheme_map) =
         typecheck::typecheck_surface_program(&program, env_arc2).await;
-    if type_errors.is_empty() {
+    if !crate::error::has_type_errors(&diagnostics) {
         Ok(())
     } else {
-        let mut msgs = Vec::new();
-        for e in &type_errors {
-            msgs.push(format!("{}", e));
-        }
+        let msgs: Vec<String> = diagnostics
+            .iter()
+            .filter(|d| d.level == crate::error::DiagnosticLevel::Err)
+            .map(|e| e.message.clone())
+            .collect();
         Err(msgs.join("\n"))
     }
 }

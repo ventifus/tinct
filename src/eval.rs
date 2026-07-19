@@ -310,7 +310,7 @@ pub struct TypeContextData {
     /// Each call to `builtin-typecheck-doc` appends the errors from that document to this vec.
     /// Callers can retrieve type errors via future builtins (e.g., `builtin-tc-errors`).
     /// Currently stored for observability; not surfaced to tinct code in this sprint.
-    pub type_errors: Vec<crate::types::TypeError>,
+    pub type_errors: Vec<crate::error::TypeDiagnostic>,
 }
 
 /// Immutable session configuration shared across evaluation.
