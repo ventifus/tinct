@@ -740,8 +740,12 @@ fn desugar_pipe_chain(node: &mut Arc<SurfaceNode>, depth: usize) {
         acc = apply_pipe_step(acc, step, call_span);
     }
 
-    // Replace node's expression with the folded result.
+    // Replace node's expression and span with the folded result.
+    // Using acc's span (the last pipe step's span) gives the specific `|` location
+    // in error messages rather than the entire outer bracket span.
+    let acc_span = acc.span.clone();
     Arc::make_mut(node).expr = acc.expr.clone();
+    Arc::make_mut(node).span = acc_span;
 }
 
 /// Collect all stages of a right-associative pipe chain into a flat `Vec`.
