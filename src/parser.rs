@@ -6969,7 +6969,7 @@ pub fn parse_with_recovery(input: &str) -> ParseOutput {
 
 /// Format a parse error with Rust-style rich diagnostics (snippet + caret).
 ///
-/// Produces output matching the format of `format_type_error`:
+/// Produces output matching the format of `format_type_diagnostic`:
 /// ```text
 /// error: parse error message
 ///  --> file.llt:10:5

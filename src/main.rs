@@ -1977,7 +1977,7 @@ async fn run_eval(
                 .await
                 .expect("builtin_core type env unavailable at startup"),
             tycon_env: tinct::get_builtin_core_tycon_env().unwrap_or_default(),
-            type_errors: Vec::new(),
+            type_diagnostics: Vec::new(),
         });
         ctx
     };
@@ -2320,18 +2320,9 @@ async fn run_fmt(
             .collect();
 
         if !type_errors.is_empty() {
-            // T-1725 will replace this with proper TypeDiagnostic formatting
             let error_msgs: Vec<String> = type_errors
                 .iter()
-                .map(|e| {
-                    format!(
-                        "{}: {} at {}:{}",
-                        e.level,
-                        e.message,
-                        e.primary_span().start.line,
-                        e.primary_span().start.column
-                    )
-                })
+                .map(|e| format_type_diagnostic(e, &source, file_path))
                 .collect();
             return Err(error_msgs.join("\n"));
         }
@@ -2464,19 +2455,6 @@ async fn run_lint(
     // Collect all errors and warnings
     let mut all_messages = Vec::new();
 
-    // T-1725 will replace this with proper TypeDiagnostic formatting
-    for e in &diagnostics {
-        if matches!(e.level, tinct::DiagnosticLevel::Err) {
-            all_messages.push(format!(
-                "{}: {} at {}:{}",
-                e.level,
-                e.message,
-                e.primary_span().start.line,
-                e.primary_span().start.column
-            ));
-        }
-    }
-
     // In --strict mode, bump each diagnostic's level before display (Info→Warn, Warn→Err),
     // then treat Err-level diagnostics as fatal. Mirrors run_eval and run_fmt behavior.
     let mut has_fatal_diag = false;
@@ -2524,7 +2502,9 @@ async fn run_lint(
 }
 
 /// Format a TypeDiagnostic with source context for display.
-/// Similar to format_type_error but handles the diagnostic level (info/warn/err).
+///
+/// Produces output with diagnostic level prefix (error/warning/info), kind, message,
+/// source location, snippet with caret, and notes if present.
 fn format_type_diagnostic(diag: &tinct::TypeDiagnostic, source: &str, file_name: &str) -> String {
     use tinct::DiagnosticLevel;
 
@@ -2688,19 +2668,6 @@ async fn run_literate_lint(tangled: &str, config: &LiterateConfig<'_>) -> Result
 
     // Collect all errors and warnings
     let mut all_messages = Vec::new();
-
-    // T-1725 will replace this with proper TypeDiagnostic formatting
-    for e in &diagnostics {
-        if matches!(e.level, tinct::DiagnosticLevel::Err) {
-            all_messages.push(format!(
-                "{}: {} at {}:{}",
-                e.level,
-                e.message,
-                e.primary_span().start.line,
-                e.primary_span().start.column
-            ));
-        }
-    }
 
     // In --strict mode, bump each diagnostic's level before display (Info→Warn, Warn→Err),
     // then treat Err-level diagnostics as fatal. Mirrors run_eval and run_fmt behavior.

@@ -308,9 +308,9 @@ pub struct TypeContextData {
     pub tycon_env: std::collections::HashMap<String, std::sync::Arc<crate::type_def::TyConDef>>,
     /// Accumulated type errors from all `builtin-typecheck-doc` calls.
     /// Each call to `builtin-typecheck-doc` appends the errors from that document to this vec.
-    /// Callers can retrieve type errors via future builtins (e.g., `builtin-tc-errors`).
-    /// Currently stored for observability; not surfaced to tinct code in this sprint.
-    pub type_errors: Vec<crate::error::TypeDiagnostic>,
+    /// Type diagnostics (errors + warnings + info) from the most recent typecheck pass.
+    /// Currently stored for observability; not surfaced to tinct code yet.
+    pub type_diagnostics: Vec<crate::error::TypeDiagnostic>,
 }
 
 /// Immutable session configuration shared across evaluation.

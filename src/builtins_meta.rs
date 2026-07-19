@@ -55,15 +55,6 @@ use crate::value::{string_val, BuiltinArgs, HashableValue, Strictness, Thunk, Va
 
 // ── Unified error dict helpers ────────────────────────────────────────────────
 
-/// Helper to map DiagnosticLevel to string for TypeDiagnostic level field.
-fn diagnostic_level_str(level: crate::error::DiagnosticLevel) -> &'static str {
-    match level {
-        crate::error::DiagnosticLevel::Info => "info",
-        crate::error::DiagnosticLevel::Warn => "warning",
-        crate::error::DiagnosticLevel::Err => "error",
-    }
-}
-
 /// Build a unified error dict from a `ParseError` for return from `builtin-parse`.
 ///
 /// Schema: `{level, kind, message, span, notes, call-stack, macro-expand, blame}`
@@ -2605,7 +2596,7 @@ pub(crate) fn builtin_typecheck_doc(
         .await;
 
         // Collect TypeDiagnostics from state.diagnostics — now includes inline CEK emissions
-        let type_diagnostics: Vec<crate::error::TypeDiagnostic> =
+        let mut type_diagnostics: Vec<crate::error::TypeDiagnostic> =
             std::mem::take(&mut state.diagnostics);
 
         // Write results back to TypeContext:
@@ -2623,59 +2614,21 @@ pub(crate) fn builtin_typecheck_doc(
             guard.inference_env = doc_env;
         }
 
-        // Build unified diagnostics dict: TypeErrors (level="error") + TypeDiagnostics (level mapped)
+        // Build unified diagnostics dict from all type diagnostics (errors + warnings + info)
         let alloc = |v: Value| ctx.alloc_thunk(0, Arc::new(Thunk::value(v, call_span.clone())));
         let mut diagnostics_dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
-        let mut diag_index = 0i64;
 
-        // Add TypeErrors as level="error", kind="type-error"
-        for err in errors.iter() {
-            let span_id = make_span_dict(err.primary_span(), &ctx, &call_span);
-            let mut w: IndexMap<HashableValue, ThunkId> = IndexMap::new();
-            w.insert(
-                HashableValue::Str("level".into()),
-                alloc(string_val("error")),
-            );
-            w.insert(
-                HashableValue::Str("kind".into()),
-                alloc(string_val("type-error")),
-            );
-            w.insert(
-                HashableValue::Str("message".into()),
-                alloc(string_val(&err.message)),
-            );
-            w.insert(HashableValue::Str("span".into()), span_id);
-            let mut notes_dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
-            for (j, note) in err.notes.iter().enumerate() {
-                notes_dict.insert(HashableValue::Int(j as i64), alloc(string_val(note)));
-            }
-            w.insert(
-                HashableValue::Str("notes".into()),
-                alloc(Value::Dict(notes_dict)),
-            );
-            w.insert(
-                HashableValue::Str("call-stack".into()),
-                alloc(Value::Dict(IndexMap::new())),
-            );
-            w.insert(
-                HashableValue::Str("macro-expand".into()),
-                alloc(Value::Dict(IndexMap::new())),
-            );
-            w.insert(
-                HashableValue::Str("blame".into()),
-                alloc(Value::Dict(IndexMap::new())),
-            );
-            diagnostics_dict.insert(HashableValue::Int(diag_index), alloc(Value::Dict(w)));
-            diag_index += 1;
-        }
+        // Merge errors and type_diagnostics into one vec
+        let mut all_diagnostics = errors;
+        all_diagnostics.append(&mut type_diagnostics);
 
-        // Add TypeDiagnostics with level mapped from DiagnosticLevel
-        for diag in type_diagnostics.iter() {
+        // Build dict entries from all type diagnostics
+        for (i, diag) in all_diagnostics.iter().enumerate() {
             let span_id = make_span_dict(diag.primary_span(), &ctx, &call_span);
             let mut w: IndexMap<HashableValue, ThunkId> = IndexMap::new();
             w.insert(
                 HashableValue::Str("level".into()),
-                alloc(string_val(diagnostic_level_str(diag.level))),
+                alloc(string_val(&diag.level.to_string())),
             );
             w.insert(
                 HashableValue::Str("kind".into()),
@@ -2686,10 +2639,16 @@ pub(crate) fn builtin_typecheck_doc(
                 alloc(string_val(&diag.message)),
             );
             w.insert(HashableValue::Str("span".into()), span_id);
+            // notes dict
+            let mut notes_dict = IndexMap::new();
+            for (j, note) in diag.notes.iter().enumerate() {
+                notes_dict.insert(HashableValue::Int(j as i64), alloc(string_val(note)));
+            }
             w.insert(
                 HashableValue::Str("notes".into()),
-                alloc(Value::Dict(IndexMap::new())),
+                alloc(Value::Dict(notes_dict)),
             );
+            // empty dicts for protocol compliance
             w.insert(
                 HashableValue::Str("call-stack".into()),
                 alloc(Value::Dict(IndexMap::new())),
@@ -2702,8 +2661,7 @@ pub(crate) fn builtin_typecheck_doc(
                 HashableValue::Str("blame".into()),
                 alloc(Value::Dict(IndexMap::new())),
             );
-            diagnostics_dict.insert(HashableValue::Int(diag_index), alloc(Value::Dict(w)));
-            diag_index += 1;
+            diagnostics_dict.insert(HashableValue::Int(i as i64), alloc(Value::Dict(w)));
         }
 
         let mut result: IndexMap<HashableValue, ThunkId> = IndexMap::new();
@@ -2809,7 +2767,7 @@ pub(crate) fn builtin_make_type_ctx(
                 .await
                 .expect("builtin_core type env unavailable"),
             tycon_env: std::collections::HashMap::new(),
-            type_errors: Vec::new(),
+            type_diagnostics: Vec::new(),
         };
         // Install it on EvalContext (no-op if already initialized).
         ctx.init_type_context(tc.clone());
