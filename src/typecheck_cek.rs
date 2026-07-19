@@ -1942,7 +1942,41 @@ async fn apply_cont_call_func(
             TypeCheckAction::Done(ret_var)
         }
 
-        Type::Unknown | Type::Any => {
+        Type::Unknown => {
+            for arg in &args {
+                let mut local_stack = Vec::new();
+                let _ = Box::pin(run_typecheck(
+                    arg,
+                    &env,
+                    state,
+                    errors,
+                    type_map,
+                    &mut local_stack,
+                ))
+                .await;
+            }
+            for na in &named_args {
+                let mut local_stack = Vec::new();
+                let _ = Box::pin(run_typecheck(
+                    &na.node.value,
+                    &env,
+                    state,
+                    errors,
+                    type_map,
+                    &mut local_stack,
+                ))
+                .await;
+            }
+            state.diagnostics.push(crate::error::TypeDiagnostic {
+                level: crate::error::DiagnosticLevel::Warn,
+                kind: "unknown-call",
+                message: "calling expression of Unknown type — may not be a function".to_string(),
+                span: call_node.span.clone(),
+            });
+            TypeCheckAction::Done(Type::Unknown)
+        }
+
+        Type::Any => {
             for arg in &args {
                 let mut local_stack = Vec::new();
                 let _ = Box::pin(run_typecheck(
