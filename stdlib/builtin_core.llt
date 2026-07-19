@@ -92,138 +92,138 @@
   Url: [type Url]
 
   # ── Control flow ──────────────────────────────────────────────────────────
-  builtin-raise: [fn@Never  [let msg@String] ...]
-  builtin-try:   [fn@[bind: [a]  return: [or [ok: a] [error: String]]] [let expr@a] ...]
+  builtin-raise: [fn@Never  [let msg@String] [@Never ...]]
+  builtin-try:   [fn@[bind: [a]  return: [or [ok: a] [error: String]]] [let expr@a] [@[or [ok: a] [error: String]] ...]]
 
   # ── Arithmetic — monomorphic typed variants ───────────────────────────────
   # Each variant handles exactly one type combination. Cross-type arithmetic
   # (Integer+Float) is handled in tinct by explicit conversion + float variant.
-  builtin-int-add:      [fn@Integer [let a@Integer b@Integer] ...]
-  builtin-float-add:    [fn@Float   [let a@Float   b@Float  ] ...]
-  builtin-int-sub:      [fn@Integer [let a@Integer b@Integer] ...]
-  builtin-float-sub:    [fn@Float   [let a@Float   b@Float  ] ...]
-  builtin-int-mul:      [fn@Integer [let a@Integer b@Integer] ...]
-  builtin-float-mul:    [fn@Float   [let a@Float   b@Float  ] ...]
-  builtin-int-to-float: [fn@Float   [let n@Integer] ...]
+  builtin-int-add:      [fn@Integer [let a@Integer b@Integer] [@Integer ...]]
+  builtin-float-add:    [fn@Float   [let a@Float   b@Float  ] [@Float ...]]
+  builtin-int-sub:      [fn@Integer [let a@Integer b@Integer] [@Integer ...]]
+  builtin-float-sub:    [fn@Float   [let a@Float   b@Float  ] [@Float ...]]
+  builtin-int-mul:      [fn@Integer [let a@Integer b@Integer] [@Integer ...]]
+  builtin-float-mul:    [fn@Float   [let a@Float   b@Float  ] [@Float ...]]
+  builtin-int-to-float: [fn@Float   [let n@Integer] [@Float ...]]
 
   # ── Comparison — monomorphic typed variants ───────────────────────────────
   # Rust returns 1 (true) or 0 (false) as Integer.
-  builtin-lt:        [fn@Integer [let a@Integer b@Integer] ...]
-  builtin-int-gt:    [fn@Integer [let a@Integer b@Integer] ...]
-  builtin-float-gt:  [fn@Integer [let a@Float   b@Float  ] ...]
-  builtin-str-gt:    [fn@Integer [let a@String  b@String ] ...]
-  builtin-int-gte:   [fn@Integer [let a@Integer b@Integer] ...]
-  builtin-float-gte: [fn@Integer [let a@Float   b@Float  ] ...]
-  builtin-str-gte:   [fn@Integer [let a@String  b@String ] ...]
-  builtin-eq-int:    [fn@Integer [let a@Integer b@Integer] ...]
-  builtin-eq-string: [fn@Integer [let a@String  b@String]  ...]
+  builtin-lt:        [fn@Integer [let a@Integer b@Integer] [@Integer ...]]
+  builtin-int-gt:    [fn@Integer [let a@Integer b@Integer] [@Integer ...]]
+  builtin-float-gt:  [fn@Integer [let a@Float   b@Float  ] [@Integer ...]]
+  builtin-str-gt:    [fn@Integer [let a@String  b@String ] [@Integer ...]]
+  builtin-int-gte:   [fn@Integer [let a@Integer b@Integer] [@Integer ...]]
+  builtin-float-gte: [fn@Integer [let a@Float   b@Float  ] [@Integer ...]]
+  builtin-str-gte:   [fn@Integer [let a@String  b@String ] [@Integer ...]]
+  builtin-eq-int:    [fn@Integer [let a@Integer b@Integer] [@Integer ...]]
+  builtin-eq-string: [fn@Integer [let a@String  b@String]  [@Integer ...]]
 
   # ── Dict primitives ───────────────────────────────────────────────────────
-  builtin-keys:              [fn@Dict    [let xs@Dict] ...]
-  builtin-dict-length:       [fn@Integer [let xs@Dict] ...]
-  builtin-str-length:        [fn@Integer [let s@String] ...]
-  builtin-bytes-length:      [fn@Integer [let b@Bytes] ...]
+  builtin-keys:              [fn@Dict    [let xs@Dict] [@Dict ...]]
+  builtin-dict-length:       [fn@Integer [let xs@Dict] [@Integer ...]]
+  builtin-str-length:        [fn@Integer [let s@String] [@Integer ...]]
+  builtin-bytes-length:      [fn@Integer [let b@Bytes] [@Integer ...]]
   # builtin-merge: implemented in tinct prelude and loader/test-loader (using builder API).
   # builtin-append: implemented in tinct prelude (derived from builtin-merge).
-  builtin-get:               [fn@Any     [let k@Any xs@Dict] ...]
-  builtin-has-key?:          [fn@Integer [let k@Any xs@Dict] ...]
-  builtin-get-by-field:      [fn@Any     [let field@String k@Any xs@Dict] ...]
-  builtin-dict-has-nth?:     [fn@Integer [let d@Dict n@Integer] ...]
-  builtin-dict-nth:          [fn@Any     [let d@Dict n@Integer] ...]
-  builtin-dict-has-key-nth?: [fn@Integer [let d@Dict n@Integer] ...]
-  builtin-dict-key-nth:      [fn@Any     [let d@Dict n@Integer] ...]
-  builtin-dict-has-kv-nth?:  [fn@Integer [let d@Dict n@Integer] ...]
-  builtin-dict-kv-nth:       [fn@Any     [let d@Dict n@Integer] ...]
-  builtin-build-dict:        [fn@Dict    [let entries@Dict] ...]
+  builtin-get:               [fn@Any     [let k@Any xs@Dict] [@Any ...]]
+  builtin-has-key?:          [fn@Integer [let k@Any xs@Dict] [@Integer ...]]
+  builtin-get-by-field:      [fn@Any     [let field@String k@Any xs@Dict] [@Any ...]]
+  builtin-dict-has-nth?:     [fn@Integer [let d@Dict n@Integer] [@Integer ...]]
+  builtin-dict-nth:          [fn@Any     [let d@Dict n@Integer] [@Any ...]]
+  builtin-dict-has-key-nth?: [fn@Integer [let d@Dict n@Integer] [@Integer ...]]
+  builtin-dict-key-nth:      [fn@Any     [let d@Dict n@Integer] [@Any ...]]
+  builtin-dict-has-kv-nth?:  [fn@Integer [let d@Dict n@Integer] [@Integer ...]]
+  builtin-dict-kv-nth:       [fn@Any     [let d@Dict n@Integer] [@Any ...]]
+  builtin-build-dict:        [fn@Dict    [let entries@Dict] [@Dict ...]]
 
   # ── Builder ops ───────────────────────────────────────────────────────────
-  builtin-make-builder:      [fn@BuilderHandle [] ...]
-  builtin-builder-set:       [fn@BuilderHandle [let key@Any value@Any builder@BuilderHandle] ...]
-  builtin-builder-delete:    [fn@BuilderHandle [let builder@BuilderHandle key@Any] ...]
-  builtin-builder-finish:    [fn@Dict    [let builder@BuilderHandle] ...]
-  builtin-builder-snapshot:  [fn@Dict    [let builder@BuilderHandle] ...]
-  builtin-builder-has?:      [fn@Integer [let builder@BuilderHandle key@Any] ...]
-  builtin-builder-get:       [fn@Any     [let builder@BuilderHandle key@Any] ...]
-  builtin-builder-get-or:    [fn@Any     [let builder@BuilderHandle default@Any key@Any] ...]
+  builtin-make-builder:      [fn@BuilderHandle [] [@BuilderHandle ...]]
+  builtin-builder-set:       [fn@BuilderHandle [let key@Any value@Any builder@BuilderHandle] [@BuilderHandle ...]]
+  builtin-builder-delete:    [fn@BuilderHandle [let builder@BuilderHandle key@Any] [@BuilderHandle ...]]
+  builtin-builder-finish:    [fn@Dict    [let builder@BuilderHandle] [@Dict ...]]
+  builtin-builder-snapshot:  [fn@Dict    [let builder@BuilderHandle] [@Dict ...]]
+  builtin-builder-has?:      [fn@Integer [let builder@BuilderHandle key@Any] [@Integer ...]]
+  builtin-builder-get:       [fn@Any     [let builder@BuilderHandle key@Any] [@Any ...]]
+  builtin-builder-get-or:    [fn@Any     [let builder@BuilderHandle default@Any key@Any] [@Any ...]]
 
   # ── String primitives ─────────────────────────────────────────────────────
-  builtin-str-bytes:     [fn@Bytes   [let s@String] ...]
-  builtin-str-hash:      [fn@Integer [let s@String] ...]
-  builtin-int->string:   [fn@String  [let n@Integer] ...]
-  builtin-str-slice:     [fn@String  [let s@String start@Integer end@Integer] ...]
-  builtin-bytes-str:     [fn@String  [let b@Bytes] ...]
-  builtin-str-index-of:  [fn@Integer [let needle@String s@String] ...]
-  builtin-string-concat: [fn@String  [let a@String b@String] ...]
+  builtin-str-bytes:     [fn@Bytes   [let s@String] [@Bytes ...]]
+  builtin-str-hash:      [fn@Integer [let s@String] [@Integer ...]]
+  builtin-int->string:   [fn@String  [let n@Integer] [@String ...]]
+  builtin-str-slice:     [fn@String  [let s@String start@Integer end@Integer] [@String ...]]
+  builtin-bytes-str:     [fn@String  [let b@Bytes] [@String ...]]
+  builtin-str-index-of:  [fn@Integer [let needle@String s@String] [@Integer ...]]
+  builtin-string-concat: [fn@String  [let a@String b@String] [@String ...]]
 
   # ── Bytes ─────────────────────────────────────────────────────────────────
-  builtin-bytes:        [fn@Bytes [] ...]
-  builtin-bytes-concat: [fn@Bytes [let a@Bytes b@Bytes] ...]
+  builtin-bytes:        [fn@Bytes [] [@Bytes ...]]
+  builtin-bytes-concat: [fn@Bytes [let a@Bytes b@Bytes] [@Bytes ...]]
 
   # ── Type introspection ─────────────────────────────────────────────────────
   # These accept any value — the Any is genuine (type dispatch happens in Rust).
-  builtin-type-of:         [fn@String  [let x@Any] ...]
-  builtin-check-type:      [fn@Any     [let type-name@String x@Any] ...]
-  builtin-variant-payload: [fn@Any     [let variant@Any] ...]
-  builtin-tag-of:          [fn@String  [let x@Any] ...]
-  builtin-llt-repr:        [fn@String  [let x@Any] ...]
+  builtin-type-of:         [fn@String  [let x@Any] [@String ...]]
+  builtin-check-type:      [fn@Any     [let type-name@String x@Any] [@Any ...]]
+  builtin-variant-payload: [fn@Any     [let variant@Any] [@Any ...]]
+  builtin-tag-of:          [fn@String  [let x@Any] [@String ...]]
+  builtin-llt-repr:        [fn@String  [let x@Any] [@String ...]]
 
   # ── Capability ─────────────────────────────────────────────────────────────
-  builtin-cap-env-has?:  [fn@Integer [let name@String env@Any] ...]
+  builtin-cap-env-has?:  [fn@Integer [let name@String env@Any] [@Integer ...]]
 
   # ── I/O ───────────────────────────────────────────────────────────────────
-  builtin-narrow:        [fn@DirCap  [let cap@DirCap path@String] ...]
-  builtin-list-dir:      [fn@Dict    [let cap@DirCap path@String] ...]
-  builtin-path-dir:      [fn@DirCap  [let path@String] ...]
-  builtin-file-open:     [fn@File    [let cap@DirCap path@String mode@String] ...]
-  builtin-file-read:     [fn@Bytes   [let file@File n@Integer] ...]
-  builtin-write-stdout:  [fn@[bind: [h] return: h] [let s@String h] ...]
-  builtin-write-stderr:  [fn@[bind: [h] return: h] [let s@String h] ...]
+  builtin-narrow:        [fn@DirCap  [let cap@DirCap path@String] [@DirCap ...]]
+  builtin-list-dir:      [fn@Dict    [let cap@DirCap path@String] [@Dict ...]]
+  builtin-path-dir:      [fn@DirCap  [let path@String] [@DirCap ...]]
+  builtin-file-open:     [fn@File    [let cap@DirCap path@String mode@String] [@File ...]]
+  builtin-file-read:     [fn@Bytes   [let file@File n@Integer] [@Bytes ...]]
+  builtin-write-stdout:  [fn@[bind: [h] return: h] [let s@String h] [@h ...]]
+  builtin-write-stderr:  [fn@[bind: [h] return: h] [let s@String h] [@h ...]]
 
   # ── Pipeline primitives ────────────────────────────────────────────────────
   # parse: parse source bytes at path, return {program, diagnostics}.
-  builtin-parse:          [fn@Dict     [let src@Bytes path@String] ...]
+  builtin-parse:          [fn@Dict     [let src@Bytes path@String] [@Dict ...]]
   # desugar: desugar a Program (apply $_ transformation, pipe lowering, etc.).
-  builtin-desugar:        [fn@Program  [let prog@Program] ...]
+  builtin-desugar:        [fn@Program  [let prog@Program] [@Program ...]]
   # resolve: resolve VarRef de Bruijn coords in a document against scope frames.
   # frames: {frame-index: {var-name: slot-index}, ...}
   # Returns {doc, diagnostics}.
-  builtin-resolve:        [fn@Dict     [let doc@Document frames@[Map Int [Map String Int]]] ...]
+  builtin-resolve:        [fn@Dict     [let doc@Document frames@[Map Int [Map String Int]]] [@Dict ...]]
   # eval: evaluate a resolved+typed document in a scope; returns {result, scope-id, diagnostics}.
-  builtin-eval:           [fn@Dict     [let typed@Document scope-id@Integer] ...]
+  builtin-eval:           [fn@Dict     [let typed@Document scope-id@Integer] [@Dict ...]]
   # typecheck-doc: type-check a single resolved document against a TypeContext.
   # Returns {doc, diagnostics}.
-  builtin-typecheck-doc:  [fn@Dict     [let doc@Document tc@TypeContext] ...]
+  builtin-typecheck-doc:  [fn@Dict     [let doc@Document tc@TypeContext] [@Dict ...]]
   # program-docs: return auto-indexed dict of documents in a Program.
-  builtin-program-docs:      [fn@Dict     [let prog@Program] ...]
+  builtin-program-docs:      [fn@Dict     [let prog@Program] [@Dict ...]]
   # doc-meta: evaluate a document's --- header in a scope, returning the result dict.
-  builtin-doc-meta:          [fn@Dict     [let doc@Document scope-id@Integer] ...]
+  builtin-doc-meta:          [fn@Dict     [let doc@Document scope-id@Integer] [@Dict ...]]
   # doc-expressions: return auto-indexed dict of Expr-variant values from a document's expression items.
   # Decl items (type declarations, class/instance declarations, etc.) are skipped.
-  builtin-doc-expressions:   [fn@Dict     [let doc@Document] ...]
+  builtin-doc-expressions:   [fn@Dict     [let doc@Document] [@Dict ...]]
 
   # ── Scope arena primitives ────────────────────────────────────────────────
-  builtin-scopes:         [fn@Dict [let] ...]
-  builtin-scope-new:      [fn@Integer  [let parent@Any bindings@Dict] ...]
-  builtin-scope-parent:   [fn@Any  [let scope-id@Integer] ...]
-  builtin-scope-frame:    [fn@Dict [let scope-id@Integer] ...]
+  builtin-scopes:         [fn@Dict [let] [@Dict ...]]
+  builtin-scope-new:      [fn@Integer  [let parent@Any bindings@Dict] [@Integer ...]]
+  builtin-scope-parent:   [fn@Any  [let scope-id@Integer] [@Any ...]]
+  builtin-scope-frame:    [fn@Dict [let scope-id@Integer] [@Dict ...]]
 
   # ── Module system ─────────────────────────────────────────────────────────
-  builtin-module:         [fn@Dict    [let name@String] ...]
+  builtin-module:         [fn@Dict    [let name@String] [@Dict ...]]
 
   # ── TypeContext bootstrap ──────────────────────────────────────────────────
-  builtin-get-type-context: [fn@TypeContext [] ...]
-  builtin-make-type-ctx:    [fn@TypeContext [] ...]
-  builtin-tc-with-scope:    [fn@TypeContext [let ctx@TypeContext scope-id@Integer] ...]
+  builtin-get-type-context: [fn@TypeContext [] [@TypeContext ...]]
+  builtin-make-type-ctx:    [fn@TypeContext [] [@TypeContext ...]]
+  builtin-tc-with-scope:    [fn@TypeContext [let ctx@TypeContext scope-id@Integer] [@TypeContext ...]]
 
   # ── Sequences (core collection ops) ───────────────────────────────────────
-  builtin-take:    [fn@Dict [let n@Integer xs@Dict] ...]
-  builtin-drop:    [fn@Dict [let n@Integer xs@Dict] ...]
-  builtin-concat:  [fn@Any  [let a@Any b@Any] ...]
+  builtin-take:    [fn@Dict [let n@Integer xs@Dict] [@Dict ...]]
+  builtin-drop:    [fn@Dict [let n@Integer xs@Dict] [@Dict ...]]
+  builtin-concat:  [fn@Any  [let a@Any b@Any] [@Any ...]]
   # builtin-dict-first, builtin-dict-last, builtin-str-first, builtin-str-last:
   # Implemented in tinct prelude (derived from builtin-dict-nth, builtin-str-slice).
   # builtin-reverse, builtin-sort: implemented in tinct prelude. rest is a tinct alias for tail.
 
   # ── Async ─────────────────────────────────────────────────────────────────
-  builtin-channel: [fn@[Channel Any] [] ...]
-  builtin-send:    [fn@Any [let ch@[Channel Any] val@Any] ...]
+  builtin-channel: [fn@[Channel Any] [] [@[Channel Any] ...]]
+  builtin-send:    [fn@Any [let ch@[Channel Any] val@Any] [@Any ...]]
 ]
