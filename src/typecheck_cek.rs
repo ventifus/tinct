@@ -335,7 +335,9 @@ async fn infer_step(
             TypeCheckAction::Done(Type::StringLiteral(content.clone()))
         }
         SurfaceExpression::U64(_) => TypeCheckAction::Done(Type::Int),
-        SurfaceExpression::Placeholder => TypeCheckAction::Done(Type::Never),
+        SurfaceExpression::Placeholder => TypeCheckAction::Done(
+            state.expected_return.clone().unwrap_or(Type::Unknown),
+        ),
 
         SurfaceExpression::Rest(..) => TypeCheckAction::Done(Type::Dict(Row {
             fields: indexmap::IndexMap::new(),

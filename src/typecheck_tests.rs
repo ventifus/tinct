@@ -2701,10 +2701,10 @@ async fn test_let_decl_in_expression_position_is_error() {
 }
 
 #[tokio::test]
-async fn test_placeholder_has_type_never() {
-    // Expr::Placeholder (the `...` expression) has type Never (Bottom).
-    // Never <: T for all T, so ... satisfies any type constraint via subtyping, not gradual typing.
-    // Verify via direct infer call. Since `...` is a Placeholder token, we parse it.
+async fn test_placeholder_has_type_unknown_without_context() {
+    // Expr::Placeholder (`...`) without an enclosing function return annotation has type Unknown.
+    // With an enclosing fn@T annotation, Placeholder infers T (typed hole semantics).
+    // Standalone `...` falls back to Unknown since state.expected_return is None.
     let mut program = crate::parse("...", test_file("...")).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
     let env: Arc<RwLock<crate::env::Env>> = Arc::new(RwLock::new(crate::env::Env::new()));
@@ -2730,8 +2730,8 @@ async fn test_placeholder_has_type_never() {
     );
     assert_eq!(
         ty,
-        Type::Never,
-        "Placeholder (...) must have type Never; got {ty}"
+        Type::Unknown,
+        "Placeholder (...) without enclosing fn annotation must have type Unknown; got {ty}"
     );
 }
 
