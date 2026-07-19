@@ -372,7 +372,7 @@ pub async fn run_loader_pipeline(
 /// Parse and type-check LLT source code.
 ///
 /// Returns `Ok(())` if type checking succeeds with no type errors AND no quality
-/// diagnostics (from `scan_type_quality`), or `Err(messages)` with a formatted
+/// diagnostics (emitted inline by the CEK type checker), or `Err(messages)` with a formatted
 /// error string combining both error and diagnostic messages.
 ///
 /// The type environment is pre-populated with builtin type signatures AND prelude
@@ -415,7 +415,7 @@ pub async fn typecheck_source(input: &str) -> Result<(), String> {
 /// Parse and type-check LLT source code (errors only, no quality diagnostics).
 ///
 /// Like [`typecheck_source`] but only fails on actual type errors, ignoring advisory
-/// quality diagnostics from `scan_type_quality` (e.g., "inferred type is Unknown").
+/// quality diagnostics emitted inline by the CEK type checker.
 ///
 /// Used by the typecheck corpus (`tests/corpus/eval/typecheck/`) which validates that
 /// programs type-check without errors but may legitimately contain polymorphic or

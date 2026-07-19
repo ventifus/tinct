@@ -2540,8 +2540,8 @@ async fn test_builtin_get_string_key_returns_field_type() {
 // HasField constraint tests (hkt-field-access sprint)
 
 #[tokio::test]
-async fn test_scan_type_quality_detects_unknown() {
-    // Test that scan_type_quality emits a diagnostic for inferred Unknown.
+async fn test_cek_detects_unknown_field_access() {
+    // Test that CEK AfterFieldBase emits a diagnostic for Unknown field access.
     // This example produces 2 diagnostics:
     // 1. The field access r.y has type Unknown
     // 2. The function's return type contains Unknown
@@ -2575,8 +2575,8 @@ async fn test_scan_type_quality_detects_unknown() {
 }
 
 #[tokio::test]
-async fn test_scan_type_quality_explicit_unknown_annotation() {
-    // Test that explicit @Unknown produces Info diagnostic (T011), not Warn (T010)
+async fn test_cek_explicit_unknown_annotation() {
+    // Test that CEK AfterFnBody/AfterTypeAssertInner emits Info diagnostic for explicit @Unknown (T011), not Warn (T010)
     let mut program = crate::parse(
         "[f: [fn@Unknown [let x] $x]]",
         test_file("[f: [fn@Unknown [let x] $x]]"),
@@ -2701,9 +2701,9 @@ async fn test_let_decl_in_expression_position_is_error() {
 }
 
 #[tokio::test]
-async fn test_placeholder_has_type_unknown() {
-    // Task 4: Expr::Placeholder (the `...` expression) has type Unknown.
-    // This is the gradual typing escape hatch — ... satisfies any type constraint.
+async fn test_placeholder_has_type_never() {
+    // Expr::Placeholder (the `...` expression) has type Never (Bottom).
+    // Never <: T for all T, so ... satisfies any type constraint via subtyping, not gradual typing.
     // Verify via direct infer call. Since `...` is a Placeholder token, we parse it.
     let mut program = crate::parse("...", test_file("...")).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
@@ -2730,8 +2730,8 @@ async fn test_placeholder_has_type_unknown() {
     );
     assert_eq!(
         ty,
-        Type::Unknown,
-        "Placeholder (...) must have type Unknown; got {ty}"
+        Type::Never,
+        "Placeholder (...) must have type Never; got {ty}"
     );
 }
 

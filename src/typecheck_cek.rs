@@ -335,7 +335,7 @@ async fn infer_step(
             TypeCheckAction::Done(Type::StringLiteral(content.clone()))
         }
         SurfaceExpression::U64(_) => TypeCheckAction::Done(Type::Int),
-        SurfaceExpression::Placeholder => TypeCheckAction::Done(Type::Unknown),
+        SurfaceExpression::Placeholder => TypeCheckAction::Done(Type::Never),
 
         SurfaceExpression::Rest(..) => TypeCheckAction::Done(Type::Dict(Row {
             fields: indexmap::IndexMap::new(),
@@ -867,9 +867,7 @@ async fn apply_cont(
                 }
             }
 
-            // Record the function type with the Fn node's span so that scan_type_quality
-            // can detect Unknown types in function signatures (e.g. unannotated params
-            // produce Unknown, explicit @Unknown return annotations are detected as T011).
+            // Record the function type with the Fn node's span for LSP hover.
             record_type_map(type_map, &node_span, &fn_type);
             TypeCheckAction::Done(fn_type)
         }
@@ -1320,9 +1318,7 @@ async fn apply_cont(
                 });
             }
 
-            // Record the field access result with the Field node's span so that
-            // scan_type_quality can detect Unknown field accesses (e.g. accessing a field
-            // that is not present in the record's known fields produces Unknown here).
+            // Record the field access result with the Field node's span for LSP hover.
             record_type_map(type_map, &span, &ty);
             TypeCheckAction::Done(ty)
         }

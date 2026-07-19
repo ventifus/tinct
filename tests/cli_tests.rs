@@ -3177,7 +3177,7 @@ fn literate_weave_verify_fail_when_expected_does_not_match_actual() {
 #[test]
 fn type_warning_explicit_unknown_emitted_on_stderr() {
     // [f: [fn@Unknown [let x] $x]] produces a T011 "explicit @Unknown annotation"
-    // diagnostic from scan_type_quality.
+    // diagnostic emitted inline by the CEK type checker (AfterFnBody).
     let (path, _dir) = write_temp_llt("type_warn_explicit_unknown", "[f: [fn@Unknown [let x] $x]]");
     let output = Command::new(tinct_bin())
         .args(["run", "--no-fs", path.to_str().unwrap()])
