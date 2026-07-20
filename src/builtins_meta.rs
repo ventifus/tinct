@@ -3333,10 +3333,14 @@ pub(crate) fn builtin_builtin_module(
                 // Convert Vec<BuiltinDef> to a Dict
                 let mut dict_map = IndexMap::new();
                 for def in defs {
-                    let builtin_thunk =
-                        Arc::new(Thunk::value(Value::Builtin(def), call_span.clone()));
+                    let name_rc: Rc<str> = Rc::from(def.name);
+                    let name_arc: Arc<str> = Arc::from(def.name);
+                    let builtin_thunk = Arc::new(Thunk::value(
+                        Value::Builtin(def),
+                        call_span.clone().with_name(name_arc),
+                    ));
                     let thunk_id = ctx.alloc_thunk(0, builtin_thunk);
-                    dict_map.insert(HashableValue::Str(def.name.into()), thunk_id);
+                    dict_map.insert(HashableValue::Str(name_rc), thunk_id);
                 }
                 ok_val(Value::Dict(dict_map), call_span)
             }

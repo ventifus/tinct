@@ -723,21 +723,40 @@ try-or-impl: [fn@[bind: [a]  return: a] [let try-result default@a]
 # Document scope helpers
 # ============================================================================
 
-# scope-to-frames-inner: recursively walk the parent chain and build a Seq.
-# Accumulator builds outermost-first: each step prepends the current (inner) scope
-# before the already-accumulated (outer) scopes, so starting from innermost and
-# recursing outward produces [outermost-names, ..., innermost-names] when collected.
-# This ordering is required by the resolver: initial_frames[0] must be the OUTERMOST scope.
-scope-to-frames-inner: [fn [let scope-id acc]
-  [if [null? scope-id] acc
-    [scope-to-frames-inner
-      [builtin-scope-parent scope-id]
-      [Seq.Cons head: [builtin-scope-frame scope-id]  tail: acc]]]]
+# _scope-null?: true if x is the empty dict [] (null scope parent = root reached).
+# Defined here so scope-to-frames-inner can check termination without referencing Dict 2.
+_scope-null?: [fn [let x]
+  [match [builtin-eq-string [builtin-type-of x] "Dict"]
+    0: 0
+    _: [builtin-eq-int [builtin-dict-length x] 0]]]
 
-# scope-to-frames: convert a scope-id to an auto-indexed dict of name-to-slot dicts.
-# Returns {0: outermost-frame, ..., N: innermost-frame} for use as builtin-resolve frames.
+# _scope-shift-keys: shift all integer keys in dict d by +1.
+# {0: v} → {1: v}, {0: a, 1: b} → {1: a, 2: b}.
+# Used by scope-to-frames-inner to make room for new outermost frame at key 0.
+_scope-shift-keys: [fn [let d n i b]
+  [match [builtin-eq-int i n]
+    0: [_scope-shift-keys d n [builtin-int-add i 1]
+          [builtin-builder-set [builtin-int-add [builtin-dict-key-nth d i] 1]
+                               [builtin-dict-nth d i]
+                               b]]
+    _: [builtin-builder-finish b]]]
+
+# scope-to-frames-inner: recursively walk the parent chain building a Dict accumulator.
+# Each step prepends the current scope's frame at key 0 and shifts existing entries up.
+# Result is {0: outermost-frame, ..., N: innermost-frame} as required by builtin-resolve.
+# Uses only Dict 1 siblings and builtin-* names — no Dict 2 dependencies.
+scope-to-frames-inner: [fn [let scope-id acc]
+  [acc-next: [dict-merge
+               [make-entry 0 [builtin-scope-frame scope-id]]
+               [_scope-shift-keys acc [builtin-dict-length acc] 0 [builtin-make-builder]]]]
+  [parent: [builtin-scope-parent scope-id]]
+  [match [_scope-null? parent]
+    0: [scope-to-frames-inner parent acc-next]
+    _: acc-next]]
+
+# scope-to-frames: convert a scope-id to {0: outermost-frame, ..., N: innermost-frame}.
 scope-to-frames: [fn [let scope-id]
-  [collect [scope-to-frames-inner scope-id Seq.End]]]
+  [scope-to-frames-inner scope-id []]]
 
 # ============================================================================
 # Async private helpers (T-733: moved from stdlib/async.llt)

@@ -230,24 +230,23 @@
             d.call-stack]
       _: with-notes]]
 
-  # _emit-loop: index-based recursion that writes each diagnostic and returns the
-  # count of items written. The count is USED by callers (in n-total) so it is on
-  # the materialization path — this is what forces all the writes.
-  # Each iteration: write d_i, use the write result's length (always >= 0) as proof
-  # the write happened, add 1 to the running count.
-  _emit-loop: [fn@Integer [let diags@Dict i@Integer len@Integer acc@Integer]
+  # _emit-loop: writes each diagnostic to handle h, returns count written.
+  # h is the caller's current stderr handle; each write depends on it, cascading writes.
+  # Count is used by callers in [builtin-int-add n _e] = 0 checks — on the materialisation path.
+  _emit-loop: [fn@Integer [let diags@Dict i@Integer len@Integer acc@Integer h]
     [match [builtin-int-gte i len]
       0: [_emit-loop diags [builtin-int-add i 1] len
             [builtin-int-add acc
               [builtin-int-gte
-                [builtin-dict-length [%stderr.write [format-diagnostic [builtin-get i diags]] %stderr]]
-                0]]]
+                [builtin-dict-length [%stderr.write [format-diagnostic [builtin-get i diags]] h]]
+                0]]
+            h]
       _: acc]]
 
-  # emit-diagnostics: write all diagnostics to stderr, return the count written.
-  # Returns 0 for empty (n + _e = 0 iff both are zero — no errors and no writes).
-  emit-diagnostics: [fn [let diagnostics]
-    [_emit-loop diagnostics 0 [builtin-dict-length diagnostics] 0]]
+  # emit-diagnostics: write all diagnostics to h, return count written.
+  # n + emit-diagnostics = 0 iff n = 0 (no errors) AND count = 0 (nothing written).
+  emit-diagnostics: [fn [let diagnostics h]
+    [_emit-loop diagnostics 0 [builtin-dict-length diagnostics] 0 h]]
 
   # _count-errors-inner: count diagnostics with level "error"
   _count-errors-inner: [fn [let diags n i acc]
@@ -350,7 +349,7 @@
          diagnostics:    [match [builtin-has-key? "ok" tc-result]
              0: []
              _: [builtin-get "ok" tc-result]]
-         n-w:         [emit-diagnostics diagnostics]
+         n-w:         [emit-diagnostics diagnostics %stderr]
          module-impl: [builtin-module name]]
         # n-w (count of warnings written) is the condition — forces all writes before merge.
         [match [builtin-int-gte n-w 0]
@@ -425,13 +424,13 @@
            _: [builtin-raise "if-ok: only 0, 1, or 2 pre-args supported"]]]]
 
   # ── Stage: load-bytes ─────────────────────────────────────────────────────────
-  # Opens state.path under cap and reads all bytes. Logs path to stderr.
+  # Opens state.path under cap and reads all bytes. Logs path via state.stderr.
+  # Returns state with updated stderr handle — next stage accesses state.stderr,
+  # forcing this write through the natural data-flow cascade.
   load-bytes: [fn [let cap state]
-    [_log: [%stderr.write [builtin-string-concat "loading: " [builtin-string-concat state.path "\n"]] %stderr]]
-    [handle: [match [builtin-int-gte [builtin-dict-length _log] 0]
-      0: [builtin-file-open cap state.path "read"]
-      _: [builtin-file-open cap state.path "read"]]]
-    [merge state [bytes: [read-file handle [builtin-bytes]]]]]
+    [new-stderr: [%stderr.write [builtin-string-concat "loading: " [builtin-string-concat state.path "\n"]] state.stderr]]
+    [merge state [bytes: [read-file [builtin-file-open cap state.path "read"] [builtin-bytes]]
+                  stderr: new-stderr]]]
 
   # ── Stage: load-from-string ───────────────────────────────────────────────────
   # Converts a source string to bytes in state (for test programs, not files).
@@ -440,11 +439,11 @@
 
   # ── Stage: parse-source ───────────────────────────────────────────────────────
   # Parses state.bytes into state.parsed and desugars the program.
-  # On parse errors: emits diagnostics and sets state.diagnostics.
+  # On parse errors: emits diagnostics via state.stderr and sets state.diagnostics.
   parse-source: [fn [let state]
     [r:  [builtin-parse state.bytes state.path]]
     [n:  [builtin-dict-length r.diagnostics]]
-    [_e: [emit-diagnostics r.diagnostics]]
+    [_e: [emit-diagnostics r.diagnostics state.stderr]]
     [match [builtin-eq-int [builtin-int-add n _e] 0]
       0: [merge state [diagnostics: r.diagnostics]]
       _: [call [fn [let]
@@ -469,7 +468,7 @@
       [frames:  [scope-to-frames scope]]
       [res:     [builtin-resolve doc frames]]
       [n-re:    [builtin-dict-length res.diagnostics]]
-      [_re:     [emit-diagnostics res.diagnostics]]
+      [_re:     [emit-diagnostics res.diagnostics acc.stderr]]
       [match [builtin-eq-int [builtin-int-add n-re _re] 0]
         0: [builtin-raise [reduce [fn [let acc d] [builtin-string-concat acc [format-diagnostic d]]]
                                   "" res.diagnostics]]
@@ -500,12 +499,12 @@
     # [tc: _tc0  ...] can reference it without letrec self-reference (tc: tc would be
     # circular because the inner dict's own "tc" key shadows the outer "tc" parameter).
     [_tc0: tc]
-    # Pass 1: evaluate type-stage documents
-    [ts-acc: [reduce eval-doc [scope-id: ts-seed  tc: _tc0  last-result: []] split.ts]]
+    # Pass 1: evaluate type-stage documents. stderr threads through the accumulator.
+    [ts-acc: [reduce eval-doc [scope-id: ts-seed  tc: _tc0  last-result: []  stderr: state.stderr] split.ts]]
     # Wire ts scope-id into the TypeContext
     [_tc: [builtin-tc-with-scope ts-acc.tc ts-acc.scope-id]]
     # Pass 2: evaluate runtime documents
-    [final-acc: [reduce eval-doc [scope-id: ts-acc.scope-id  tc: _tc  last-result: []] split.rt]]
+    [final-acc: [reduce eval-doc [scope-id: ts-acc.scope-id  tc: _tc  last-result: []  stderr: ts-acc.stderr] split.rt]]
     # final-acc tracks last-result from the most recent eval-doc call
     [merge state
       [scope-id:    final-acc.scope-id
@@ -542,7 +541,7 @@
           tdoc.diagnostics]]
       []
       typed-docs]]
-    [_e: [emit-diagnostics all-diagnostics]]
+    [_e: [emit-diagnostics all-diagnostics state.stderr]]
     [match [builtin-int-gte _e 0]
       0: [merge state [tc-diagnostics: all-diagnostics]]
       _: [merge state [tc-diagnostics: all-diagnostics]]]]
@@ -623,7 +622,7 @@
           [frames: [scope-to-frames scope]]
           [r:     [builtin-resolve doc frames]]
           [n-re:  [builtin-dict-length r.diagnostics]]
-          [_re:   [emit-diagnostics r.diagnostics]]
+          [_re:   [emit-diagnostics r.diagnostics st.stderr]]
           [match [builtin-eq-int [builtin-int-add n-re _re] 0]
             0: [builtin-raise [reduce [fn [let acc d] [builtin-string-concat acc [format-diagnostic d]]]
                                       "" r.diagnostics]]
@@ -647,18 +646,21 @@
                           0: [builtin-int-gte [builtin-dict-length [builtin-type-of [builtin-check-type expects ev.result]]] _caps-ok]
                           _: _caps-ok]]
                         [match [builtin-int-gte _expects-forced 0]
-                          0: [scope-id: ev.scope-id  last-result: ev.result  tc: st.tc]
-                          _: [scope-id: ev.scope-id  last-result: ev.result  tc: st.tc]]]]]]]]]
-        [scope-id: base-scope  last-result: []  tc: fundamental-tc]
+                          0: [scope-id: ev.scope-id  last-result: ev.result  tc: st.tc  stderr: st.stderr]
+                          _: [scope-id: ev.scope-id  last-result: ev.result  tc: st.tc  stderr: st.stderr]]]]]]]]]
+        [scope-id: base-scope  last-result: []  tc: fundamental-tc  stderr: state.stderr]
         state.parsed.documents]]
       [scope-id:   test-state.scope-id
        last-result: test-state.last-result
        tc:         test-state.tc
        documents:  state.parsed.documents]]]]]
     [match [builtin-has-key? "ok" try-result]
+      # Error path: write the caught error to state.stderr, return error state.
+      # The error is on the data-flow path — the next consumer of state.stderr forces this write.
       0: [merge state [diagnostics: [make-entry 0
-            [level: "error"  kind: "eval-error"  message: [builtin-get "error" try-result]
-             span: []  notes: []  call-stack: []  macro-expand: []  blame: []]]]]
+               [level: "error"  kind: "eval-error"  message: [builtin-get "error" try-result]
+                span: []  notes: []  call-stack: []  macro-expand: []  blame: []]]
+                       stderr: [%stderr.write [builtin-get "error" try-result] state.stderr]]]
       _: [merge state
            [scope-id:   [builtin-get "ok" try-result].scope-id
             last-result: [builtin-get "ok" try-result].last-result
@@ -686,7 +688,7 @@
           tdoc.diagnostics]]
       []
       typed-docs]]
-    [_e: [emit-diagnostics all-diagnostics]]
+    [_e: [emit-diagnostics all-diagnostics state.stderr]]
     [match [builtin-int-gte _e 0]
       0: [merge state [tc-diagnostics: all-diagnostics]]
       _: [merge state [tc-diagnostics: all-diagnostics]]]]
@@ -696,14 +698,14 @@
     [merge state [output: [builtin-string-concat [builtin-llt-repr state.last-result] "\n"]]]]
 
   # run-test-pipeline: evaluate a test source string through the full pipeline.
-  # Returns a state dict with output and tc-diagnostics on success, or diagnostics on failure.
-  # No builtin-try at this level — eval-docs captures errors as data internally.
-  run-test-pipeline: [fn [let source path prelude-scope-id]
+  # Returns a state dict with output, tc-diagnostics, and stderr: final-handle.
+  # stderr-h threads through — next consumer forces the write chain.
+  run-test-pipeline: [fn [let source path prelude-scope-id stderr-h]
     [capture: [make-string-handle]]
     # Parse first so pragma headers are available before the scope is constructed.
     # .path references the function parameter from the parent scope, not the letrec
     # binding 'path' that this dict creates — avoiding a trivial self-reference.
-    [parsed-state: [[path: .path  diagnostics: []]
+    [parsed-state: [[path: .path  diagnostics: []  stderr: stderr-h]
                     | [if-ok load-from-string source]
                     | [if-ok parse-source]]]
     # pragma: ["no-prelude"] → use root-scope-id (no prelude); default → prelude.
@@ -766,7 +768,9 @@
            _: ""]]]
 
   # run-test-file: execute a single file ProgramItem as a corpus test.
-  run-test-file: [fn [let p prelude-scope-id]
+  # run-test-file: execute a single file ProgramItem. Takes stderr-h from run-test.
+  # Returns result dict including stderr: pipe-result.stderr so the cascade continues.
+  run-test-file: [fn [let p prelude-scope-id stderr-h]
     [bytes:          [read-file p.handle [builtin-bytes]]]
     [content:        [builtin-bytes-str bytes]]
     [source:         [extract-source content]]
@@ -775,7 +779,7 @@
     [expected-error: [extract-section content "error"]]
 
     # Run test through the pipeline. Errors are returned as state.diagnostics (no builtin-try needed).
-    [pipe-result: [run-test-pipeline source p.path prelude-scope-id]]
+    [pipe-result: [run-test-pipeline source p.path prelude-scope-id stderr-h]]
 
     [try-ok: [builtin-eq-int [count-errors pipe-result.diagnostics] 0]]
 
@@ -837,21 +841,21 @@
                         [match warn-passed
                           0: [join "" ["warn: " expected-warn "\n"]]
                           _: ""]]]]]
-    [path: r-path  passed: r-passed  actual: r-actual  expected: r-expected]]
+    [path: r-path  passed: r-passed  actual: r-actual  expected: r-expected
+     stderr: pipe-result.stderr]]
 
   # run-test: run one ProgramItem as a corpus test.
-  run-test: [fn [let item prelude-scope-id]
-    [p:    [match [builtin-eq-string [builtin-tag-of item] "ProgramItem.File"]
-             0: item.path
-             _: "<expr>"]]
-    [_log: [%stderr.write [builtin-string-concat "test:    " [builtin-string-concat p "\n"]] %stderr]]
-    [match [builtin-int-gte [builtin-dict-length _log] 0]
-      0: [match item
-           [ProgramItem.File _]: [run-test-file item prelude-scope-id]
-           [ProgramItem.Expr _]: [path: "<expr>"  passed: Boolean.True  actual: ""  expected: ""]]
-      _: [match item
-           [ProgramItem.File _]: [run-test-file item prelude-scope-id]
-           [ProgramItem.Expr _]: [path: "<expr>"  passed: Boolean.True  actual: ""  expected: ""]]]]
+  # Takes stderr-h so the "test: path" log write threads into the data-flow cascade.
+  # Returns result dict including stderr: updated-handle so the outer reduce can chain it.
+  run-test: [fn [let item prelude-scope-id stderr-h]
+    [p:         [match [builtin-eq-string [builtin-tag-of item] "ProgramItem.File"]
+                  0: item.path
+                  _: "<expr>"]]
+    [new-stderr: [%stderr.write [builtin-string-concat "test:    " [builtin-string-concat p "\n"]] stderr-h]]
+    [base-result: [match item
+      [ProgramItem.File _]: [run-test-file item prelude-scope-id new-stderr]
+      [ProgramItem.Expr _]: [path: "<expr>"  passed: Boolean.True  actual: ""  expected: ""  stderr: new-stderr]]]
+    base-result]
 
   # format-result: render test outcome line.
   format-result: [fn [let r]
@@ -895,7 +899,7 @@
   # Prelude loading pipeline. Each stage short-circuits via if-ok when diagnostics has errors.
   # %prelude is a lazy forward reference to _prelude — safe because prelude captures it in
   # closures but never forces it during its own loading (only at user call-time).
-  _prelude-result: [[path: "prelude.llt"  diagnostics: []]
+  _prelude-result: [[path: "prelude.llt"  diagnostics: []  stderr: %stderr]
     | [if-ok load-bytes %libdir]
     | [if-ok parse-source]
     | [if-ok eval-program
@@ -928,7 +932,7 @@
                       [read-file [builtin-file-open %libdir "cli/out/llt.llt" "read"] [builtin-bytes]]
                       "cli/out/llt.llt"]]
     # Emit parse errors as a data dependency (no >> needed).
-    [_pe:           [emit-diagnostics parse-result.diagnostics]]
+    [_pe:           [emit-diagnostics parse-result.diagnostics %stderr]]
     [match [builtin-int-gte _pe 0]
       0: parse-result.program
       _: parse-result.program]]]
@@ -967,27 +971,27 @@
 
   final-state: [reduce
     [fn [let state item]
-      [result: [run-test item _prelude-scope-id]]
-      # Force the write as a data dependency (no >> needed).
-      # %stdout.write returns the handle (%stdout protocol dict).
-      # Force it by reading the handle's key count (always >= 0).
-      [wrote: [%stdout.write [format-result result] %stdout]]
-      [match [builtin-int-gte [builtin-dict-length wrote] 0]
-        0: [idx:    [builtin-int-add state.idx 1]
-             total:  [builtin-int-add state.total 1]
-             passed: state.passed
-             first-fail: state.first-fail]
-        _: [idx:    [builtin-int-add state.idx 1]
-             total:  [builtin-int-add state.total 1]
-             passed: [match [bool->int result.passed]
-                        0: state.passed
-                        _: [builtin-int-add state.passed 1]]
-             first-fail: [match [builtin-eq-string state.first-fail ""]
-                            0: state.first-fail
-                            _: [match [bool->int result.passed]
-                                 0: [builtin-string-concat result.path [builtin-string-concat "\n  expected: " [builtin-string-concat result.expected [builtin-string-concat "\n  actual:   " result.actual]]]]
-                                 _: ""]]]]]
-    [idx: 0  total: 0  passed: 0  first-fail: ""]
+      # run-test takes the current stderr handle and returns result including result.stderr.
+      [result: [run-test item _prelude-scope-id state.stderr]]
+      # Write test result to stdout, threading the handle — next iteration forces this.
+      [new-stdout: [%stdout.write [format-result result] state.stdout]]
+      # passed is computed through new-stdout: the delta depends on new-stdout's length
+      # so that final-state.passed forces the entire stdout write chain (including failure path).
+      [delta: [bool->int result.passed]]
+      [idx:        [builtin-int-add state.idx 1]
+       total:      [builtin-int-add state.total 1]
+       passed:     [builtin-int-add state.passed
+                     [builtin-int-add delta
+                       [builtin-int-sub [builtin-dict-length new-stdout]
+                                        [builtin-dict-length new-stdout]]]]
+       first-fail: [match [builtin-eq-string state.first-fail ""]
+                     0: state.first-fail
+                     _: [match [bool->int result.passed]
+                          0: [join "" [result.path "\n  expected: " result.expected "\n  actual:   " result.actual]]
+                          _: ""]]
+       stdout:     new-stdout
+       stderr:     result.stderr]]
+    [idx: 0  total: 0  passed: 0  first-fail: ""  stdout: %stdout  stderr: %stderr]
     test-programs]
 ]
 
@@ -995,17 +999,21 @@
 # Final expression — summary + exit code
 # ============================================================================
 
-[wrote: [%stdout.write [join "" [
+# Write summary to stdout, chained from final-state.stdout (the last test write).
+# On success: summary-stdout is the program's return value — Rust forces it, cascading all writes.
+# On failure: final-state.passed was computed through new-stdout in each step (via the
+#   delta + dict-length trick), so the raise message's use of final-state.passed forces the
+#   entire stdout write chain including all test result lines.
+[n-failed: [builtin-int-sub final-state.total final-state.passed]]
+[summary-stdout: [%stdout.write [join "" [
     "\n"
     [builtin-int->string final-state.passed] "/" [builtin-int->string final-state.total] " tests passed"
-    [match [builtin-eq-int final-state.passed final-state.total]
-      0: [join "" [", " [builtin-int->string [builtin-int-sub final-state.total final-state.passed]] " failed\n"]]
+    [match [builtin-eq-int n-failed 0]
+      0: [join "" [", " [builtin-int->string n-failed] " failed\n"]]
       _: "\n"]]]
-  %stdout]]
-[match [builtin-int-gte [builtin-dict-length wrote] 0]
-  0: []
-  _: [match [builtin-eq-int final-state.passed final-state.total]
-       0: [builtin-raise [join "" [
-             [builtin-int->string [builtin-int-sub final-state.total final-state.passed]] " test(s) failed\n"
-             final-state.first-fail]]]
-       _: []]]
+  final-state.stdout]]
+[match [builtin-eq-int n-failed 0]
+  0: [builtin-raise [join "" [
+        [builtin-int->string n-failed] " test(s) failed\n"
+        final-state.first-fail]]]
+  _: summary-stdout]
