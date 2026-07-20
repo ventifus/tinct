@@ -1411,14 +1411,47 @@ async fn infer_var_ref(
                 smap.insert(key, scheme.clone());
             }
         }
-        instantiate_scheme(
+        let constraints_len_before = state.constraints.len();
+        let result_type = instantiate_scheme(
             &scheme,
             state.level,
             state,
             Some(name),
             Some(node.span.clone()),
             &node.span,
-        )
+        );
+
+        // Record dispatch obligations for new class constraints added by instantiate_scheme.
+        for constraint in state.constraints[constraints_len_before..].to_vec() {
+            if let crate::types::Constraint::Class { class, vars, .. } = &constraint {
+                let det_positions: Vec<usize> = if class.determines.is_empty() {
+                    (0..vars.len()).collect()
+                } else {
+                    class.determines[0].0.clone()
+                };
+
+                for &det_pos in &det_positions {
+                    if let Some(crate::type_class::ConstraintArg::Var(typevar_name)) =
+                        vars.get(det_pos)
+                    {
+                        if let crate::ast::SurfaceExpression::VarRef { .. } = &node.expr {
+                            state.dispatch_obligations.push(
+                                crate::type_infer::DispatchObligation {
+                                    typevar_name: typevar_name.clone(),
+                                    varref_node: std::sync::Arc::clone(node),
+                                    class_name: class.name.clone(),
+                                    method_name: name.to_string(),
+                                    constraint_vars: vars.clone(),
+                                    det_positions: det_positions.clone(),
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        result_type
     } else {
         let mut err = TypeDiagnostic::error(
             "type-error",
@@ -4062,6 +4095,111 @@ pub(crate) async fn run_typecheck_dict(
                         if let Some(name) = key_name {
                             field_types.insert(name.clone(), ty);
                         }
+                        // T-1733: Register class method TypeSchemes after successful ClassDecl processing
+                        if let SurfaceDeclaration::ClassDecl {
+                            name: class_name,
+                            params,
+                            methods,
+                            ..
+                        } = decl_box.as_ref()
+                        {
+                            // Build annotation map from class params to themselves
+                            let mut ann_map: std::collections::HashMap<String, String> =
+                                params.iter().map(|p| (p.clone(), p.clone())).collect();
+
+                            // Look up the registered ClassDecl
+                            let class_arc_opt = {
+                                let env_guard = state.env.read().unwrap();
+                                env_guard
+                                    .get_class(class_name)
+                                    .map(|c| std::sync::Arc::new(c.clone()))
+                            };
+
+                            if let Some(class_arc) = class_arc_opt {
+                                for method_entry in methods {
+                                    // Extract method name from entry key
+                                    let method_name = if let Some(ref key_node) =
+                                        method_entry.node.key
+                                    {
+                                        match &key_node.expr {
+                                            crate::ast::SurfaceExpression::VarRef {
+                                                name, ..
+                                            } => Some(name.clone()),
+                                            crate::ast::SurfaceExpression::StringLiteral {
+                                                content,
+                                                ..
+                                            } => Some(content.clone()),
+                                            _ => None,
+                                        }
+                                    } else {
+                                        None
+                                    };
+
+                                    if let Some(method_name) = method_name {
+                                        // Parse method type from entry value expression.
+                                        // The value IS the type expression (e.g., [Fn@c [a b]]).
+                                        let stub_env = crate::types::TypeEnv::new();
+                                        let mut constraints = Vec::new();
+                                        let mut ann_map_mut = Some(&mut ann_map);
+                                        let mut row_ann_mapping = None;
+                                        let method_type_result =
+                                            Box::pin(super::typecheck_annot::resolve_type_expr(
+                                                &method_entry.node.value,
+                                                &stub_env,
+                                                state,
+                                                &mut constraints,
+                                                &mut ann_map_mut,
+                                                &mut row_ann_mapping,
+                                                None,
+                                            ))
+                                            .await;
+
+                                        match method_type_result {
+                                            Ok(method_type) => {
+                                                // Build Class constraint with class Arc and param vars
+                                                let constraint_vars: Vec<
+                                                    crate::type_class::ConstraintArg,
+                                                > = params
+                                                    .iter()
+                                                    .map(|p| {
+                                                        crate::type_class::ConstraintArg::Var(
+                                                            p.clone(),
+                                                        )
+                                                    })
+                                                    .collect();
+                                                let class_constraint =
+                                                    crate::types::Constraint::Class {
+                                                        class: class_arc.clone(),
+                                                        vars: constraint_vars,
+                                                        origin_name: None,
+                                                        origin_span: None,
+                                                    };
+
+                                                // Build TypeScheme with params, constraint, and method type
+                                                let scheme = crate::type_infer::TypeScheme {
+                                                    type_vars: params.clone(),
+                                                    constraints: vec![class_constraint],
+                                                    body: method_type,
+                                                    label_vars: Vec::new(),
+                                                    kind_vars: Vec::new(),
+                                                    doc: None,
+                                                    inner_schemes: None,
+                                                };
+
+                                                // Insert into dict_env
+                                                dict_env
+                                                    .write()
+                                                    .unwrap()
+                                                    .insert_scheme(method_name, scheme);
+                                            }
+                                            Err(type_err) => {
+                                                errors.push(type_err);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                     Err(mut errs) => {
                         if let Some(name) = key_name {
@@ -4522,6 +4660,24 @@ pub(crate) async fn run_typecheck_dict(
         fields: resolved_field_types,
         tail,
     });
+
+    // Drain remaining dispatch obligations as type errors.
+    for obligation in state.dispatch_obligations.drain(..) {
+        if let crate::ast::SurfaceExpression::VarRef { call_dispatch, .. } =
+            &obligation.varref_node.expr
+        {
+            if call_dispatch.get().is_none() {
+                errors.push(crate::error::TypeDiagnostic::error(
+                    "type-error",
+                    format!(
+                        "no [{}] instance found for method [{}]",
+                        obligation.class_name, obligation.method_name
+                    ),
+                    obligation.varref_node.span.clone(),
+                ));
+            }
+        }
+    }
 
     (record_type, schemes, errors)
 }

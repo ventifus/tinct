@@ -1201,20 +1201,20 @@ pub struct MacroProvenance {
 /// concrete instance). Read once by the lowerer when emitting the Call's function sub-expression.
 /// Interior-mutable via `OnceLock` so the type checker can set it through a shared reference
 /// to the `Arc<SurfaceNode>` that owns the VarRef.
-pub struct CallDispatch(std::sync::OnceLock<String>);
+pub struct CallDispatch(std::sync::OnceLock<(u32, u32)>);
 impl CallDispatch {
     pub fn new() -> Self {
         Self(std::sync::OnceLock::new())
     }
-    /// Returns the mangled instance binding name if set, or `None` if not yet dispatched.
-    pub fn get(&self) -> Option<&str> {
-        self.0.get().map(String::as_str)
+    /// Returns the (level, slot) coordinates if set, or `None` if not yet dispatched.
+    pub fn get(&self) -> Option<(u32, u32)> {
+        self.0.get().copied()
     }
-    /// Set the mangled instance binding name.  Silently ignores a second call (OnceLock
+    /// Set the (level, slot) coordinates.  Silently ignores a second call (OnceLock
     /// semantics): the first write wins.  Call sites must ensure the write happens at most
     /// once per VarRef (guaranteed because type-checking is a single forward pass).
-    pub fn set(&self, mangled_name: String) {
-        let _ = self.0.set(mangled_name);
+    pub fn set(&self, level: u32, slot: u32) {
+        let _ = self.0.set((level, slot));
     }
 }
 impl Clone for CallDispatch {

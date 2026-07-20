@@ -74,8 +74,6 @@ pub(crate) async fn eval_document_exprs_with_env(
     let mut current_env_id = parent_env_id.unwrap_or(0);
 
     let last_idx = expr_nodes.len() - 1;
-    // Track the root env_id for this document: the first FlatEnv allocated during evaluation.
-    let mut doc_root_env_id: Option<u32> = None;
 
     for (i, node) in expr_nodes.iter().enumerate() {
         let (core_spanned, lower_diags) =
@@ -93,7 +91,7 @@ pub(crate) async fn eval_document_exprs_with_env(
             // Last expression: return its thunk lazily (no materialization).
             let thunk =
                 crate::eval_core::eval_core_expr(&core_spanned, current_env_id, ctx).await?;
-            // Capture the root env_id: first new env allocated for this document.
+            // Capture the root env_id: first new env allocated for this expression.
             let new_env_id = {
                 let arena = ctx.scope_arena.borrow();
                 if arena.scopes.len() as u32 > arena_len_before {
@@ -102,8 +100,7 @@ pub(crate) async fn eval_document_exprs_with_env(
                     fallback_env_id
                 }
             };
-            let root_id = doc_root_env_id.unwrap_or(new_env_id);
-            return Ok((thunk, root_id));
+            return Ok((thunk, new_env_id));
         }
 
         // Intermediate expression: eval and materialize to extract potential bindings.
@@ -121,12 +118,9 @@ pub(crate) async fn eval_document_exprs_with_env(
             }
         };
 
-        // Update the doc_root_env_id and advance current_env_id to the new scope
-        // so subsequent dict allocations are children of this one.
+        // Advance current_env_id to the new scope so subsequent dict allocations
+        // are children of this one.
         if let Some(new_id) = node_env_id {
-            if doc_root_env_id.is_none() {
-                doc_root_env_id = Some(new_id);
-            }
             // Advance to the ROOT scope of this node (new_id = arena_len_before),
             // NOT the leaf. The root is the first FlatEnv allocated for this dict —
             // its letrec scope. Using the root ensures the FlatEnv display chain depth

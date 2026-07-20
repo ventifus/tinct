@@ -529,7 +529,7 @@
       [fn [let acc doc]
         [frames: [scope-to-frames state.scope-id]]
         [res: [builtin-resolve doc frames]]
-        [typed: [builtin-typecheck-doc res.doc state._tc]]
+        [typed: [builtin-typecheck-doc res.doc state._tc state.scope-id]]
         [merge acc [make-entry [builtin-dict-length acc] typed]]]
       []
       state.parsed.documents]]

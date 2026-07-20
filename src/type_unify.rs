@@ -469,6 +469,72 @@ async fn check_constraints_on_var(
             }
         }
     }
+
+    // Drain dispatch obligations keyed to this now-resolved TypeVar.
+    let pending: Vec<crate::type_infer::DispatchObligation> = state.dispatch_obligations.iter()
+        .filter(|o| {
+            o.typevar_name == var_name
+            && matches!(&o.varref_node.expr, crate::ast::SurfaceExpression::VarRef { call_dispatch, .. }
+                if call_dispatch.get().is_none())
+        })
+        .cloned()
+        .collect();
+
+    for obligation in &pending {
+        let resolved_vars: Vec<crate::type_def::Type> = obligation
+            .constraint_vars
+            .iter()
+            .map(|arg| match arg {
+                crate::type_class::ConstraintArg::Var(name) => state
+                    .subst
+                    .apply(&crate::type_def::Type::TypeVar(name.clone(), state.level)),
+                crate::type_class::ConstraintArg::Ground(ty) => ty.clone(),
+            })
+            .collect();
+
+        let det_types: Vec<crate::type_def::Type> = obligation
+            .det_positions
+            .iter()
+            .filter_map(|&i| resolved_vars.get(i).cloned())
+            .collect();
+
+        if det_types
+            .iter()
+            .any(|t| matches!(t, crate::type_def::Type::TypeVar(..)))
+        {
+            continue;
+        }
+
+        let dispatch_tags: Vec<Option<String>> = det_types
+            .iter()
+            .map(|t| {
+                let widened = crate::typecheck::typecheck_call::widen_literal_types(t.clone());
+                crate::typecheck::type_to_dispatch_tag(&widened)
+            })
+            .collect();
+        let type_args: Vec<&str> = dispatch_tags.iter().filter_map(|t| t.as_deref()).collect();
+        let mangled = crate::type_def::instance_binding_name(
+            &obligation.class_name,
+            &obligation.method_name,
+            &type_args,
+        );
+
+        if let Some(frames) = &state.scope_frames {
+            if let Some((level, slot)) = crate::lower::resolve_name_in_frames(frames, &mangled) {
+                if let crate::ast::SurfaceExpression::VarRef { call_dispatch, .. } =
+                    &obligation.varref_node.expr
+                {
+                    call_dispatch.set(level, slot);
+                }
+            }
+        }
+    }
+
+    state.dispatch_obligations.retain(|o| {
+        matches!(&o.varref_node.expr, crate::ast::SurfaceExpression::VarRef { call_dispatch, .. }
+            if call_dispatch.get().is_none())
+    });
+
     Ok(())
 }
 

@@ -754,7 +754,7 @@ pub(crate) fn register_type_aliases_env(
 ///
 /// `IntLiteral`/`StringLiteral` are promoted to `"Integer"`/`"String"` because instance arms
 /// are always annotated with the widened type (e.g., `@Integer`, never `@42`).
-fn type_to_dispatch_tag(ty: &Type) -> Option<String> {
+pub(crate) fn type_to_dispatch_tag(ty: &Type) -> Option<String> {
     match ty {
         Type::Int | Type::IntLiteral(_) => Some("Integer".to_string()),
         Type::Float => Some("Float".to_string()),

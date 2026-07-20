@@ -10,6 +10,26 @@ use std::sync::{Arc, RwLock};
 use crate::ast::Span;
 use crate::types::{Constraint, Kind, Row, Type};
 
+/// A deferred typeclass dispatch: connects a constraint TypeVar to the call-site VarRef.
+/// When check_constraints_on_var resolves the TypeVar to a concrete type, it uses this to
+/// set call_dispatch on the VarRef with the resolved (level, slot) coordinates.
+#[derive(Clone, Debug)]
+pub struct DispatchObligation {
+    /// The TypeVar name (at a determining position) that must resolve before dispatch fires.
+    pub typevar_name: String,
+    /// The call-site VarRef node. call_dispatch.set() is called on this.
+    pub varref_node: std::sync::Arc<crate::ast::SurfaceNode>,
+    /// Class name (e.g., "Addable")
+    pub class_name: String,
+    /// Method name (e.g., "+")
+    pub method_name: String,
+    /// Instantiated constraint vars (all positions). Applied with state.subst at resolution time.
+    pub constraint_vars: Vec<crate::type_class::ConstraintArg>,
+    /// Determining positions from the class's functional dependency.
+    /// For single-param classes with no FD: use vec![0] (all positions are determining).
+    pub det_positions: Vec<usize>,
+}
+
 /// All per-TypeVar metadata in one place.
 /// IndexMap preserves insertion order (= TypeVar creation order via monotonic counter),
 /// giving deterministic iteration across runs -- unlike HashMap which has random seeds.
@@ -335,6 +355,14 @@ pub struct InferState {
     /// Type constructor environment (from HEAD~1 design).
     /// Maps type constructor names to their TyConDef.
     pub tycon_env: std::collections::HashMap<String, std::sync::Arc<crate::type_def::TyConDef>>,
+    /// Scope frames derived from parent_scope_id. Used by check_constraints_on_var
+    /// to resolve typeclass dispatch decisions to (level, slot) coordinates.
+    /// Set by builtin-typecheck-doc before inference begins (T-1730).
+    pub scope_frames: Option<Vec<indexmap::IndexMap<String, u32>>>,
+    /// Deferred typeclass dispatch obligations, keyed by TypeVar name.
+    /// Added by T-1731 at VarRef instantiation time; drained by check_constraints_on_var
+    /// when the TypeVar resolves to a concrete type.
+    pub dispatch_obligations: Vec<DispatchObligation>,
 }
 
 impl InferState {
@@ -379,6 +407,8 @@ impl InferState {
             fd_in_progress: std::collections::HashSet::new(),
             tycon_env: std::collections::HashMap::new(),
             expansion_stack: Vec::new(),
+            scope_frames: None,
+            dispatch_obligations: Vec::new(),
         }
     }
 

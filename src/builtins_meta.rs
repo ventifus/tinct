@@ -2480,9 +2480,10 @@ pub(crate) fn builtin_resolve(
 
 /// `builtin-typecheck-doc`: Type-check a single resolved `Value::Document`.
 ///
-/// Takes 2 args:
+/// Takes 2 or 3 args:
 /// - arg0: Value::Document (already resolved)
 /// - arg1: Value::TypeContext
+/// - arg2 (optional): parent_scope_id (Int) — used to derive scope_frames for typeclass dispatch
 ///
 /// Returns Value::Document (same Arc — type annotations written inline).
 pub(crate) fn builtin_typecheck_doc(
@@ -2497,7 +2498,7 @@ pub(crate) fn builtin_typecheck_doc(
             ..
         } = ctx_arg;
         crate::builtins::reject_named("builtin-typecheck-doc", named.as_ref(), call_span.clone())?;
-        if args.len() != 2 {
+        if args.len() != 2 && args.len() != 3 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
 
@@ -2535,6 +2536,50 @@ pub(crate) fn builtin_typecheck_doc(
                 )
                 .into());
             }
+        };
+
+        // arg2 (optional): parent_scope_id for deriving scope_frames
+        let parent_scope_id_opt: Option<u32> = if args.len() == 3 {
+            let scope_id_val = ctx
+                .get_thunk(args[2])
+                .try_get_materialized()
+                .expect("pre-materialized by force_count/pos_strictness");
+            match scope_id_val {
+                Value::Int(n) => {
+                    if n < 0 {
+                        return Err(EvalError::type_mismatch_ctx(
+                            "builtin-typecheck-doc".to_string(),
+                            "non-negative Int (parent_scope_id)",
+                            &format!("{}", n),
+                            call_span,
+                        )
+                        .into());
+                    }
+                    let scope_id = n as u32;
+                    let arena_len = ctx.scope_arena.borrow().scopes.len();
+                    if (scope_id as usize) >= arena_len {
+                        return Err(EvalError::type_mismatch_ctx(
+                            "builtin-typecheck-doc".to_string(),
+                            &format!("scope_id < {} (arena size)", arena_len),
+                            &format!("{}", scope_id),
+                            call_span,
+                        )
+                        .into());
+                    }
+                    Some(scope_id)
+                }
+                other => {
+                    return Err(EvalError::type_mismatch_ctx(
+                        "builtin-typecheck-doc".to_string(),
+                        "Int (parent_scope_id)",
+                        other.type_name(),
+                        call_span,
+                    )
+                    .into());
+                }
+            }
+        } else {
+            None
         };
 
         // Extract TypeContext state
@@ -2576,6 +2621,38 @@ pub(crate) fn builtin_typecheck_doc(
                 }
             }
             state.type_stage_map = Some(ts_map);
+
+            // Derive scope_frames from parent_scope_id if provided (T-1730).
+            // Walk the scope arena from parent_scope_id, building frames: each frame is
+            // a map from name → slot index for all named slots in that scope.
+            if let Some(parent_scope_id) = parent_scope_id_opt {
+                let derived_frames: Vec<indexmap::IndexMap<String, u32>> = {
+                    let arena = ctx.scope_arena.borrow();
+                    let mut rev = Vec::new();
+                    let mut cur = parent_scope_id;
+                    loop {
+                        let scope = &arena.scopes[cur as usize];
+                        let mut frame = indexmap::IndexMap::new();
+                        for (slot, thunk_opt) in scope.slots.iter().enumerate() {
+                            if let Some(t) = thunk_opt {
+                                if let Some(n) = t.span.name.as_deref() {
+                                    frame.insert(n.to_string(), slot as u32);
+                                }
+                            }
+                        }
+                        if !frame.is_empty() {
+                            rev.push(frame);
+                        }
+                        match scope.parent {
+                            Some(p) => cur = p.0,
+                            None => break,
+                        }
+                    }
+                    rev.reverse();
+                    rev
+                };
+                state.scope_frames = Some(derived_frames);
+            }
 
             let type_map = crate::ast::TypeAnnotationTable::new();
             let parent_env = Arc::clone(&guard.inference_env);

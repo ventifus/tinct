@@ -52,7 +52,7 @@ pub struct LowerDiagnostic {
 /// innermost frame outward and return the offset as the level.
 ///
 /// Returns `None` if the name is not found in any frame.
-fn resolve_name_in_frames(
+pub(crate) fn resolve_name_in_frames(
     frames: &[indexmap::IndexMap<String, u32>],
     name: &str,
 ) -> Option<(u32, u32)> {
@@ -631,6 +631,24 @@ fn lower_expr(
                 return acc;
             }
 
+            // Collect explicit (non-ClassDecl) keyed names so that ClassDecl method
+            // slot injection skips names that have explicit user definitions (e.g.
+            // `=: [fn [let x y] Boolean.False]` should not be overwritten by a
+            // ClassDecl method slot for `=`).
+            let explicit_keys: std::collections::HashSet<String> = entries.iter().filter_map(|se| {
+                let key_node = se.node.key.as_ref()?;
+                let is_class_decl = matches!(
+                    &se.node.value.expr,
+                    SurfaceExpression::Decl(d) if matches!(d.as_ref(), crate::ast::SurfaceDeclaration::ClassDecl { .. })
+                );
+                if is_class_decl { return None; }
+                match &key_node.expr {
+                    SurfaceExpression::VarRef { name, escaped: false, .. } => Some(name.clone()),
+                    SurfaceExpression::StringLiteral { content, .. } => Some(content.clone()),
+                    _ => None,
+                }
+            }).collect();
+
             let mut core_entries: Vec<Spanned<CoreEntry>> = Vec::with_capacity(entries.len());
             for se in entries {
                 if let SurfaceExpression::Decl(decl) = &se.node.value.expr {
@@ -735,10 +753,47 @@ fn lower_expr(
                             methods,
                             ..
                         } => {
+                            // ClassDecl method slots: for each method NOT explicitly defined
+                            // elsewhere in this dict, emit a slot-alignment filler entry with
+                            // an empty dict value. These slots are never accessed in correct
+                            // programs — the type checker sets call_dispatch to route calls
+                            // to the appropriate instance binding. If call_dispatch is not set
+                            // (type error), the empty-dict placeholder surfaces a proper error.
+                            //
+                            // Method slots MUST come BEFORE the class outer key to match the
+                            // resolver's key ordering in surface_dict_static_keys.
+                            for me in methods {
+                                let method_name = match me.node.key.as_ref() {
+                                    Some(k) => match &k.expr {
+                                        SurfaceExpression::StringLiteral { content, .. } => {
+                                            content.clone()
+                                        }
+                                        SurfaceExpression::VarRef { name, .. } => name.clone(),
+                                        _ => continue,
+                                    },
+                                    None => continue,
+                                };
+                                if !explicit_keys.contains(&method_name) {
+                                    let key = Some(Arc::new(Spanned::new(
+                                        CoreExpr::Str(method_name),
+                                        se.span.clone(),
+                                    )));
+                                    let value = Arc::new(Spanned::new(
+                                        CoreExpr::Dict(vec![]),
+                                        se.span.clone(),
+                                    ));
+                                    core_entries.push(Spanned::new(
+                                        CoreEntry { key, value },
+                                        se.span.clone(),
+                                    ));
+                                }
+                            }
+
                             // Named ClassDecl: emit an empty-dict runtime value so the outer
                             // key occupies a slot. This allows leading-dot re-exports like
                             // `Indexable: .Indexable` to reference the class across dict
-                            // boundaries.
+                            // boundaries. This MUST come AFTER method slots to preserve
+                            // slot alignment with the resolver.
                             if se.node.key.is_some() {
                                 let key = se.node.key.as_ref().map(|k| {
                                     let lowered = match &k.expr {
@@ -755,15 +810,6 @@ fn lower_expr(
                                 core_entries
                                     .push(Spanned::new(CoreEntry { key, value }, se.span.clone()));
                             }
-
-                            // Class methods contribute nothing to the eval env.
-                            // Dispatch is resolved statically by the type checker (call_dispatch
-                            // annotation on the call-site VarRef). If the type checker can't
-                            // resolve the instance, the call falls through to whatever function
-                            // is in scope under that name — or becomes an undefined-variable error.
-                            // The only method with a deliberate eval-env fallback is `=` (returns
-                            // Boolean.False for unknown types), defined explicitly in prelude.llt.
-                            let _ = methods; // suppress unused warning
                         }
                         _ => {
                             continue;
@@ -799,34 +845,25 @@ fn lower_expr(
         } => {
             // Compile-time instance dispatch rewriting: if the VarRef node for the function
             // has a call_dispatch annotation set by the type checker, rewrite the function
-            // reference to the instance binding name.
-            let lowered_func = if let SurfaceExpression::VarRef { call_dispatch, .. } = &func.expr {
-                if let Some(mangled_name) = call_dispatch.get() {
+            // reference to use the direct (level, slot) coordinates.
+            let lowered_func = if let SurfaceExpression::VarRef {
+                call_dispatch,
+                name,
+                ..
+            } = &func.expr
+            {
+                if let Some((level, slot)) = call_dispatch.get() {
                     // The type checker resolved this typeclass method call to a concrete instance
-                    // binding. Resolve the mangled name to De Bruijn coordinates using the
-                    // accumulated scope frames from the resolver run.
-                    match scope_frames.and_then(|f| resolve_name_in_frames(f, &mangled_name)) {
-                        Some((level, slot)) => Arc::new(Spanned::new(
-                            CoreExpr::Var {
-                                name: mangled_name.to_string(),
-                                level,
-                                slot,
-                                annotation: None,
-                            },
-                            func.span.clone(),
-                        )),
-                        None => {
-                            diagnostics.push(LowerDiagnostic {
-                                kind: LowerDiagnosticKind::Error,
-                                message: format!(
-                                    "call_dispatch: scope frames not available or instance binding '{}' not found — resolver did not run on this node",
-                                    mangled_name
-                                ),
-                                span: func.span.clone(),
-                            });
-                            Arc::new(Spanned::new(CoreExpr::Placeholder, func.span.clone()))
-                        }
-                    }
+                    // binding and recorded the direct coordinates. Use them directly.
+                    Arc::new(Spanned::new(
+                        CoreExpr::Var {
+                            name: name.clone(),
+                            level,
+                            slot,
+                            annotation: None,
+                        },
+                        func.span.clone(),
+                    ))
                 } else {
                     Arc::new(lower_inner(func, diagnostics, scope_frames))
                 }

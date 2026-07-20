@@ -1,0 +1,27 @@
+# Polymorphic typeclass dispatch via higher-order functions.
+#
+# Tests the dispatch_obligations path: when a typeclass method is called inside a
+# lambda, its argument types are TypeVars at lambda-definition time. Dispatch fires
+# when the TypeVars are resolved to concrete types by the caller's unification.
+#
+# Also covers derived prelude functions that use typeclass ops internally
+# (sort uses <, min/max use < and if, sum-via-reduce uses +).
+[
+  # Polymorphic via map — lambda arg x is TypeVar, resolved to Int by map
+  map-add-one:    [map [fn [let x] [+ x 1]] [1 2 3 4 5]]
+  map-eq-two:     [map [fn [let x] [= x 2]] [1 2 3]]
+  map-lt-three:   [map [fn [let x] [< x 3]] [1 2 3 4 5]]
+
+  # Polymorphic via reduce with explicit lambda (not direct + value passing)
+  sum:            [reduce [fn [let a b] [+ a b]] 0 [1 2 3 4 5]]
+
+  # Derived prelude functions that use typeclass ops internally
+  sorted:         [collect [sort [3 1 4 1 5 9 2 6]]]
+  min-val:        [min 7 3]
+  max-val:        [max 7 3]
+
+  # filter with comparison — polymorphic dispatch for <
+  evens-lt-10:    [collect [filter [fn [let x] [= 0 [mod x 2]]] [1 2 3 4 5 6 7 8 9 10]]]
+]
+=== out
+Dict({"map-add-one": Dict({0: Int(2), 1: Int(3), 2: Int(4), 3: Int(5), 4: Int(6)}), "map-eq-two": Dict({0: Variant(Boolean.False, Null), 1: Variant(Boolean.True, Null), 2: Variant(Boolean.False, Null)}), "map-lt-three": Dict({0: Variant(Boolean.True, Null), 1: Variant(Boolean.True, Null), 2: Variant(Boolean.False, Null), 3: Variant(Boolean.False, Null), 4: Variant(Boolean.False, Null)}), "sum": Int(15), "sorted": Dict({0: Int(1), 1: Int(1), 2: Int(2), 3: Int(3), 4: Int(4), 5: Int(5), 6: Int(6), 7: Int(9)}), "min-val": Int(3), "max-val": Int(7), "evens-lt-10": Dict({0: Int(2), 1: Int(4), 2: Int(6), 3: Int(8), 4: Int(10)})})

@@ -10030,7 +10030,7 @@ mod tests {
             })
         }
 
-        let dict_start = 800; // opening [ of the second dict
+        let dict_start = 820; // opening [ of the second dict
         let dict_end = lines.len().saturating_sub(2); // exclude the closing ] of the dict
 
         if !has_frame_loss(&lines, dict_start, dict_end) {

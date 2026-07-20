@@ -672,9 +672,75 @@ pub fn resolve_surface_program(
 ///    We register those same names so the resolver can find instance methods directly
 ///    when they are referenced from within the same letrec scope.
 fn surface_dict_static_keys(entries: &[Spanned<SurfaceEntry>]) -> Vec<String> {
+    // Pass 1: Collect all explicitly-named keys from non-ClassDecl entries.
+    // This lets us avoid injecting a class method name that shadows an explicit
+    // user binding (e.g. `=: [fn [let x y] Boolean.False]` in the same dict).
+    let explicit_keys: std::collections::HashSet<String> = entries
+        .iter()
+        .filter_map(|entry| {
+            let key_node = entry.node.key.as_ref()?;
+            // Skip ClassDecl entries — their outer key is not an "explicit" binding
+            // that should block method name injection.
+            let is_class_decl = matches!(
+                &entry.node.value.expr,
+                SurfaceExpression::Decl(d) if matches!(d.as_ref(), crate::ast::SurfaceDeclaration::ClassDecl { .. })
+            );
+            if is_class_decl {
+                return None;
+            }
+            match &key_node.expr {
+                SurfaceExpression::VarRef {
+                    name,
+                    escaped: false,
+                    ..
+                } => Some(name.clone()),
+                SurfaceExpression::StringLiteral { content, .. } => Some(content.clone()),
+                _ => None,
+            }
+        })
+        .collect();
+
+    // Pass 2: Build the key list. ClassDecl method names come BEFORE the class
+    // outer name so the lowerer's slot layout matches (methods first, then class).
     let mut keys = Vec::new();
     for entry in entries {
         if let Some(key_node) = &entry.node.key {
+            // Check if this keyed entry is a ClassDecl.
+            if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
+                if let crate::ast::SurfaceDeclaration::ClassDecl { methods, .. } = decl.as_ref() {
+                    // Inject method names that are NOT explicitly defined elsewhere
+                    // in this dict. This makes `+`, `<`, etc. resolvable as bindings.
+                    for me in methods {
+                        let method_name = match me.node.key.as_ref() {
+                            Some(k) => match &k.expr {
+                                SurfaceExpression::StringLiteral { content, .. } => content.clone(),
+                                SurfaceExpression::VarRef { name, .. } => name.clone(),
+                                _ => continue,
+                            },
+                            None => continue,
+                        };
+                        if !explicit_keys.contains(&method_name) {
+                            keys.push(method_name);
+                        }
+                    }
+                    // Then push the class outer name itself.
+                    match &key_node.expr {
+                        SurfaceExpression::StringLiteral { content, .. } => {
+                            keys.push(content.clone());
+                        }
+                        SurfaceExpression::VarRef {
+                            name,
+                            escaped: false,
+                            ..
+                        } => {
+                            keys.push(name.clone());
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+            }
+            // Non-ClassDecl keyed entry: push the key name (existing behavior).
             match &key_node.expr {
                 SurfaceExpression::StringLiteral { content, .. } => keys.push(content.clone()),
                 // Non-escaped VarRef (bare identifier) → static name for letrec scope.
