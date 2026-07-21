@@ -1,0 +1,11 @@
+# T-1743: transitive abandoned bindings.
+# Binding 'a' is defined in the first intermediate body.
+# Binding 'b' references 'a' in the second intermediate body.
+# Neither 'a' nor 'b' is referenced from the final expression (42).
+# The transitive analysis detects both as unreachable.
+[call [fn [let x] [a: [+ x 1]] [b: [+ a 2]] 42] 10]
+=== out
+Int(42)
+
+=== warn
+intermediate binding 'a' is defined but never referenced

@@ -1,9 +1,11 @@
 //! Unification, constraint solving, and substitution application for Hindley-Milner
 //! polymorphism with Boolean-Algebraic Subtyping (BAS) and structural record types.
 //!
-//! Type variable bindings are stored in `InferState.type_vars` (an `IndexMap<String, TypeVarEntry>`).
-//! The old `Substitution` struct has been removed; all binding operations go through
-//! `InferState.bind_type_var()` and lookups through `InferState.type_vars.get()`.
+//! Type variable bindings are stored in `InferState.type_vars` (an `IndexMap<String, TypeVarEntry>`),
+//! with each `TypeVarEntry` holding the variable's level, binding, and kind.
+//! `Substitution` (in `type_infer.rs`) is a finite renaming map used by `instantiate_scheme`
+//! to rename quantified variables to fresh names. `InferState.subst` is the global accumulated
+//! substitution for constraint propagation during inference.
 
 use indexmap::IndexMap;
 use std::borrow::Cow;

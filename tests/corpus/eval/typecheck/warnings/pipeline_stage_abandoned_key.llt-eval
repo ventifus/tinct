@@ -1,0 +1,10 @@
+# T-1742: Two-stage pipeline where one produced key is never consumed — warn.
+# Stage 1 produces both 'x' and 'y'; stage 2 only uses 'x'. 'y' is abandoned.
+[x: 1  y: 2]
+---
+[result: %.x]
+=== out
+Int(1)
+
+=== warn
+key 'y' is produced but never consumed

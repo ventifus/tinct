@@ -1,0 +1,18 @@
+# T-1661: NominalVariant.tycon is populated from the enclosing [type ...] declaration.
+# Before the fix, all 9 NominalVariant construction sites in resolve_type_dict and
+# resolve_type_expr produced tycon: "" (empty string). The match arms below exercise
+# constructor patterns that require the tycon to be correctly set for coverage checking.
+[
+  Color: [type Red Green Blue]
+  hex: [fn@String [let c@Color]
+    [match c
+      Color.Red:   "#ff0000"
+      Color.Green: "#00ff00"
+      Color.Blue:  "#0000ff"]]
+
+  r: [hex Color.Red]
+  g: [hex Color.Green]
+  b: [hex Color.Blue]
+]
+=== out
+Dict({"Color": Dict({"Red": Variant(Color.Red, Null), "Green": Variant(Color.Green, Null), "Blue": Variant(Color.Blue, Null)}), "hex": Function(c), "r": String("#ff0000"), "g": String("#00ff00"), "b": String("#0000ff")})

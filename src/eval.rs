@@ -1506,8 +1506,10 @@ pub(crate) fn match_pattern<'a>(
         let value = peel_annotated(value.clone());
 
         match &pattern.expr {
-            // Wildcard: ... → always matches
-            SurfaceExpression::Placeholder(None, None) => Ok(Some(Arc::clone(env))),
+            // Wildcard: all Placeholder forms (bare `...`, `...name`, `...name@Type`) match
+            // unconditionally. The name/annotation are declaration-layer concerns; in pattern
+            // position every Placeholder is a wildcard.
+            SurfaceExpression::Placeholder(..) => Ok(Some(Arc::clone(env))),
 
             // VarRef: pin comparison (look up in scope, compare value)
             SurfaceExpression::VarRef { resolution, .. } => {
@@ -1670,7 +1672,7 @@ pub(crate) fn match_pattern<'a>(
                                 }
                                 let sub_pat = &args[0];
                                 match &sub_pat.expr {
-                                    SurfaceExpression::Placeholder(None, None) => {
+                                    SurfaceExpression::Placeholder(..) => {
                                         // [Tag ...] — wildcard payload: tag matched, ignore payload
                                         Ok(Some(Arc::clone(env)))
                                     }

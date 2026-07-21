@@ -34,7 +34,7 @@ toml-val: [fn [let raw]
     [str-slice ts 1 [- [str-length ts] 1]]
     [match [try [fn [let] [to-int ts]]]
       [case [let v] [Result.Ok v] v]
-      _:                          ts]]]
+      ...:                          ts]]]
 
 # Handle key-value for array table: insert k=v into the current entry.
 toml-kv-arr: [fn [let state k v]

@@ -483,6 +483,23 @@ fn lower_expr(
                 // Build nested merge calls left-associatively.
                 // acc starts as the first segment dict, then folds over (rest, next_seg) pairs.
                 let span = arc.span.clone();
+
+                // Resolve `merge` through scope_frames to get correct de Bruijn coordinates.
+                let (merge_level, merge_slot) = match scope_frames
+                    .and_then(|frames| resolve_name_in_frames(frames, "merge"))
+                {
+                    Some(coords) => coords,
+                    None => {
+                        diagnostics.push(LowerDiagnostic {
+                            kind: LowerDiagnosticKind::Error,
+                            message: "spread-dict desugaring: 'merge' not found in scope frames"
+                                .to_string(),
+                            span: span.clone(),
+                        });
+                        return CoreExpr::Placeholder;
+                    }
+                };
+
                 let mut acc = lower_seg!(&segments[0]);
                 for (i, &ri) in rest_indices.iter().enumerate() {
                     // lower_inner returns Spanned<CoreExpr> — wrap in Arc directly.
@@ -493,8 +510,8 @@ fn lower_expr(
                         func: Arc::new(Spanned::new(
                             CoreExpr::Var {
                                 name: "merge".to_string(),
-                                level: u32::MAX,
-                                slot: u32::MAX,
+                                level: merge_level,
+                                slot: merge_slot,
                                 annotation: None,
                             },
                             span.clone(),
@@ -513,8 +530,8 @@ fn lower_expr(
                             func: Arc::new(Spanned::new(
                                 CoreExpr::Var {
                                     name: "merge".to_string(),
-                                    level: u32::MAX,
-                                    slot: u32::MAX,
+                                    level: merge_level,
+                                    slot: merge_slot,
                                     annotation: None,
                                 },
                                 span.clone(),

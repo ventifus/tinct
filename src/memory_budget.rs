@@ -17,7 +17,7 @@ pub const EXIT_OOM: i32 = 3;
 
 /// Set the memory limit in bytes. Zero means no limit.
 pub fn set_limit(bytes: u64) {
-    LIMIT.store(bytes as i64, Relaxed);
+    LIMIT.store(i64::try_from(bytes).unwrap_or(i64::MAX), Relaxed);
 }
 
 /// Record a thunk allocation and check if the limit has been exceeded.
@@ -39,6 +39,11 @@ pub fn record_thunk_free(bytes: usize, _count: usize) {
 /// Record scope allocation (the Scope struct and its Vec<Option<Arc<Thunk>>> backing).
 pub fn record_scope_alloc(bytes: usize) {
     SCOPE_BYTES.fetch_add(bytes as i64, Relaxed);
+}
+
+/// Record scope deallocation when a scope is dropped.
+pub fn record_scope_free(bytes: usize) {
+    SCOPE_BYTES.fetch_sub(bytes as i64, Relaxed);
 }
 
 /// Check if the OOM flag has been set.
@@ -143,6 +148,29 @@ mod tests {
         record_and_check(50);
         // Total is now 110 > 100 → OOM
         assert!(is_oom_flagged());
+    }
+
+    #[test]
+    fn test_scope_free() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset();
+        record_scope_alloc(50);
+        assert_eq!(allocated_bytes(), 50);
+        record_scope_free(50);
+        assert_eq!(allocated_bytes(), 0);
+    }
+
+    #[test]
+    fn test_scope_alloc_and_free_with_thunks() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset();
+        record_scope_alloc(50);
+        record_and_check(100);
+        assert_eq!(allocated_bytes(), 150);
+        record_scope_free(50);
+        assert_eq!(allocated_bytes(), 100);
+        record_thunk_free(100, 1);
+        assert_eq!(allocated_bytes(), 0);
     }
 
     #[test]

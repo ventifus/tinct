@@ -51,9 +51,12 @@ impl ScopeArena {
         );
         let id = ScopeId(len as u32);
         self.scopes.push(Scope::new(None, slot_count));
-        // Record scope allocation: Scope struct + Vec<Option<Arc<Thunk>>> backing.
+        // Read the actual capacity immediately after Vec::with_capacity(slot_count); for a
+        // freshly created Vec this equals slot_count, but using capacity() here ensures the
+        // alloc-side matches the free-side (drop_scope) which also uses capacity().
+        let actual_capacity = self.scopes.last().expect("just pushed").slots.capacity();
         let scope_bytes = std::mem::size_of::<Scope>()
-            + slot_count * std::mem::size_of::<Option<Arc<crate::value::Thunk>>>();
+            + actual_capacity * std::mem::size_of::<Option<Arc<crate::value::Thunk>>>();
         crate::memory_budget::record_scope_alloc(scope_bytes);
         id
     }
@@ -68,9 +71,12 @@ impl ScopeArena {
         );
         let id = ScopeId(len as u32);
         self.scopes.push(Scope::new(Some(parent_id), slot_count));
-        // Record scope allocation: Scope struct + Vec<Option<Arc<Thunk>>> backing.
+        // Read the actual capacity immediately after Vec::with_capacity(slot_count); for a
+        // freshly created Vec this equals slot_count, but using capacity() here ensures the
+        // alloc-side matches the free-side (drop_scope) which also uses capacity().
+        let actual_capacity = self.scopes.last().expect("just pushed").slots.capacity();
         let scope_bytes = std::mem::size_of::<Scope>()
-            + slot_count * std::mem::size_of::<Option<Arc<crate::value::Thunk>>>();
+            + actual_capacity * std::mem::size_of::<Option<Arc<crate::value::Thunk>>>();
         crate::memory_budget::record_scope_alloc(scope_bytes);
         id
     }
@@ -153,8 +159,14 @@ impl ScopeArena {
 
     /// Drop a scope: clear all thunk slots, freeing Arc<Thunk> references.
     pub fn drop_scope(&mut self, env_id: ScopeId) {
-        let live = self.scopes[env_id.0 as usize].count_live();
+        let scope = &self.scopes[env_id.0 as usize];
+        let live = scope.count_live();
+        // Record scope deallocation: same formula as alloc_root/alloc_child.
+        // Use slots.capacity() to match the with_capacity(slot_count) used at allocation time.
+        let scope_bytes = std::mem::size_of::<Scope>()
+            + scope.slots.capacity() * std::mem::size_of::<Option<Arc<crate::value::Thunk>>>();
         crate::memory_budget::record_thunk_free(live * PER_THUNK_BYTES, live);
+        crate::memory_budget::record_scope_free(scope_bytes);
         self.scopes[env_id.0 as usize].clear();
     }
 

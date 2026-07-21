@@ -131,7 +131,7 @@ to-json-pretty-impl: [fn [let v depth@Integer]
     [case [let _] [Program]     [json-program v]]
     [case [let _] [Document]    [json-document v]]
     [case [let _] [Expression]  [json-expression v]]
-    _:              [to-json-pretty-primitive v depth]]]
+    ...:              [to-json-pretty-primitive v depth]]]
 
 # ---- Back to regular serializer helpers ----
 
@@ -533,7 +533,7 @@ Not every tinct type is serializable — Fn, Handle, Task, Channel etc. produce 
       [case [let _] [Program]     [json-program v]]
       [case [let _] [Document]    [json-document v]]
       [case [let _] [Expression]  [json-expression v]]
-      _:              [to-json-primitive v]]]
+      ...:              [to-json-primitive v]]]
 
 to-json-pretty@[doc: "Serialize any tinct value to a pretty-printed JSON string with 2-space indentation.
 Expression, Document, and Program values use their full AST Variant encoding.

@@ -1,0 +1,7 @@
+# T-1742: Pass-through pattern — stage 2 accesses all keys from stage 1.
+# No abandoned-output warning when all produced keys are consumed.
+[x: 1  y: 2]
+---
+[a: %.x  b: %.y  total: [+ %.x %.y]]
+=== out
+Dict({"a": Int(1), "b": Int(2), "total": Int(3)})

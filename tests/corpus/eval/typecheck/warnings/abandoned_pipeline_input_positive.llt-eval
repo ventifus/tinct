@@ -1,0 +1,11 @@
+# T-1741: Positive test — two-document pipeline where stage 2 never references %.
+# Stage 1 produces a value; stage 2 is a non-first document but ignores its pipeline input.
+# Expected: abandoned-input warning fires for stage 2.
+42
+---
+[result: 99]
+=== out
+Int(99)
+
+=== warn
+does not reference pipeline input

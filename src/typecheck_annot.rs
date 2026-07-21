@@ -1277,6 +1277,7 @@ async fn resolve_fn_type(
                     ann_mapping,
                     row_ann_mapping,
                     type_params_scope,
+                    "",
                 )
                 .await
             }
@@ -1395,6 +1396,7 @@ async fn resolve_annotation_as_type(
                 ann_mapping,
                 row_ann_mapping,
                 type_params_scope,
+                "",
             )
             .await
         }
@@ -1656,6 +1658,7 @@ async fn resolve_property_dict_as_record(
         ann_mapping,
         row_ann_mapping,
         type_params_scope,
+        "",
     )
     .await;
 
@@ -2734,6 +2737,7 @@ async fn resolve_type_dict_with_guard(
                         ann_mapping,
                         row_ann_mapping,
                         type_params_scope,
+                        "",
                     )
                     .await;
                 }
@@ -2809,6 +2813,7 @@ async fn resolve_type_dict_with_guard(
         ann_mapping,
         row_ann_mapping,
         type_params_scope,
+        "",
     )
     .await
 }
@@ -2900,7 +2905,7 @@ pub(crate) async fn resolve_type_expr(
                 Err(e) if crate::eval::is_constructor_name(name) => {
                     let _ = e;
                     Ok(Type::NominalVariant {
-                        tycon: String::new(),
+                        tycon: lookup_tycon_for_ctor(state, name),
                         ctor: name.clone(),
                         fields: Row {
                             fields: indexmap::IndexMap::new(),
@@ -2921,6 +2926,7 @@ pub(crate) async fn resolve_type_expr(
                 ann_mapping,
                 row_ann_mapping,
                 type_params_scope,
+                "",
             ))
             .await
         }
@@ -3230,7 +3236,7 @@ pub(crate) async fn resolve_type_expr(
                         }
 
                         return Ok(Type::NominalVariant {
-                            tycon: String::new(),
+                            tycon: lookup_tycon_for_ctor(state, name),
                             ctor: name.clone(),
                             fields: Row {
                                 fields: fields_map,
@@ -3239,7 +3245,7 @@ pub(crate) async fn resolve_type_expr(
                         });
                     } else {
                         return Ok(Type::NominalVariant {
-                            tycon: String::new(),
+                            tycon: lookup_tycon_for_ctor(state, name),
                             ctor: name.clone(),
                             fields: Row {
                                 fields: indexmap::IndexMap::new(),
@@ -3351,6 +3357,27 @@ pub(crate) async fn resolve_type_expr(
     }
 }
 
+/// Reverse-lookup: given a bare constructor name (e.g. `"Red"`), find the tycon name
+/// (e.g. `"Color"`) by scanning `state.tycon_env` for any tycon whose `constructors` vec
+/// contains an entry whose qualified tag (`"Color.Red"`) ends with `".CtorName"`.
+///
+/// Returns the tycon name (e.g. `"Color"`) if found, or an empty string if not.
+/// Used by `resolve_type_expr` to populate `NominalVariant.tycon` when only the ctor
+/// name is available (e.g. bare uppercase VarRef fallback, implied-call constructor).
+fn lookup_tycon_for_ctor(state: &InferState, ctor_name: &str) -> String {
+    for (tycon_name, def) in &state.tycon_env {
+        for (qualified_tag, _arity) in &def.constructors {
+            // Qualified tag format: "TyConName.CtorName"
+            if let Some((_, bare_ctor)) = qualified_tag.split_once('.') {
+                if bare_ctor == ctor_name {
+                    return tycon_name.clone();
+                }
+            }
+        }
+    }
+    String::new()
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn resolve_type_dict(
     entries: &[Spanned<SurfaceEntry>],
@@ -3361,6 +3388,7 @@ pub(crate) async fn resolve_type_dict(
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
     type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
+    tycon_name: &str,
 ) -> Result<Type, TypeDiagnostic> {
     if let Some(fn_type) = Box::pin(try_resolve_fn_type_expr(
         entries,
@@ -3629,7 +3657,7 @@ pub(crate) async fn resolve_type_dict(
                             }
                         };
                         members.push(Type::NominalVariant {
-                            tycon: String::new(),
+                            tycon: tycon_name.to_string(),
                             ctor: ctor_name,
                             fields: Row {
                                 fields: variant_fields,
@@ -3644,7 +3672,7 @@ pub(crate) async fn resolve_type_dict(
                                 if crate::eval::is_constructor_name(name) =>
                             {
                                 members.push(Type::NominalVariant {
-                                    tycon: String::new(),
+                                    tycon: tycon_name.to_string(),
                                     ctor: name.clone(),
                                     fields: Row {
                                         fields: indexmap::IndexMap::new(),
@@ -3732,7 +3760,7 @@ pub(crate) async fn resolve_type_dict(
                         if all_remaining_positional {
                             if entries.len() == 1 {
                                 return Ok(Type::NominalVariant {
-                                    tycon: String::new(),
+                                    tycon: tycon_name.to_string(),
                                     ctor: tag.to_string(),
                                     fields: Row {
                                         fields: indexmap::IndexMap::new(),
@@ -3775,7 +3803,7 @@ pub(crate) async fn resolve_type_dict(
                                     let mut fields = indexmap::IndexMap::new();
                                     fields.insert("0".to_string(), payload_ty);
                                     return Ok(Type::NominalVariant {
-                                        tycon: String::new(),
+                                        tycon: tycon_name.to_string(),
                                         ctor: tag.to_string(),
                                         fields: Row {
                                             fields,
@@ -3835,7 +3863,7 @@ pub(crate) async fn resolve_type_dict(
                                 }
                             }
                             return Ok(Type::NominalVariant {
-                                tycon: String::new(),
+                                tycon: tycon_name.to_string(),
                                 ctor: tag.to_string(),
                                 fields: Row {
                                     fields: variant_fields,
@@ -3872,7 +3900,7 @@ pub(crate) async fn resolve_type_dict(
                         _ => unreachable!(),
                     };
                     Type::NominalVariant {
-                        tycon: String::new(),
+                        tycon: tycon_name.to_string(),
                         ctor: name,
                         fields: Row {
                             fields: indexmap::IndexMap::new(),

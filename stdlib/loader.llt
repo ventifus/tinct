@@ -125,7 +125,7 @@
         0: [_copy
               [builtin-builder-set [builtin-dict-key-nth d i] [builtin-dict-nth d i] builder]
               d n [builtin-int-add i 1]]
-        _: builder]]]
+        ...: builder]]]
     [builtin-builder-finish
       [_copy [_copy [builtin-make-builder] a [builtin-dict-length a] 0]
              b [builtin-dict-length b] 0]]]
@@ -134,13 +134,13 @@
     [chunk: [builtin-file-read f 65536]]
     [match [bytes-empty? chunk]
       0: [read-file f [builtin-bytes-concat acc chunk]]
-      _: acc]]
+      ...: acc]]
 
   # reduce and join defined with core builtins only (prelude not yet loaded).
   _reduce-loop: [fn [let f acc xs i len]
     [match [builtin-int-gte i len]
       0: [_reduce-loop f [f acc [builtin-get i xs]] xs [builtin-int-add i 1] len]
-      _: acc]]
+      ...: acc]]
   reduce: [fn [let f init xs] [_reduce-loop f init xs 0 [builtin-dict-length xs]]]
 
   _join-loop: [fn [let sep acc xs i len]
@@ -148,9 +148,9 @@
       0: [_join-loop sep
            [match [builtin-eq-int i 0]
              0: [builtin-string-concat acc [builtin-string-concat sep [builtin-get i xs]]]
-             _: [builtin-get 0 xs]]
+             ...: [builtin-get 0 xs]]
            xs [builtin-int-add i 1] len]
-      _: acc]]
+      ...: acc]]
   join: [fn [let sep xs] [_join-loop sep "" xs 0 [builtin-dict-length xs]]]
 
   # make-entry: construct single-entry dict from key and value.
@@ -161,13 +161,13 @@
   null?: [fn [let x]
     [match [builtin-eq-string [builtin-type-of x] "Dict"]
       0: 0
-      _: [builtin-eq-int [builtin-dict-length x] 0]]]
+      ...: [builtin-eq-int [builtin-dict-length x] 0]]]
 
   # get-or: dict.get with default fallback.
   get-or: [fn [let default key dict]
     [match [builtin-has-key? key dict]
       0: default
-      _: [builtin-get key dict]]]
+      ...: [builtin-get key dict]]]
 
   # _shift-keys: shift all integer keys in dict d by +1.
   # {0: v} → {1: v}, {0: a, 1: b} → {1: a, 2: b}
@@ -178,7 +178,7 @@
             [builtin-builder-set [builtin-int-add [builtin-dict-key-nth d i] 1]
                                  [builtin-dict-nth d i]
                                  builder]]
-      _: [builtin-builder-finish builder]]]
+      ...: [builtin-builder-finish builder]]]
 
   # scope-to-frames: build frames array from scope-id for builtin-resolve.
   # Walks from innermost to outermost via builtin-scope-parent, prepends each
@@ -190,7 +190,7 @@
     [parent: [builtin-scope-parent scope-id]]
     [match [null? parent]
       0: [_scope-to-frames-inner parent acc-next]
-      _: acc-next]]
+      ...: acc-next]]
   scope-to-frames: [fn [let scope-id]
     [_scope-to-frames-inner scope-id []]]
 
@@ -202,7 +202,7 @@
             [k: [builtin-get i keys]]
             [_object-map-step obj f keys [builtin-int-add i 1] n
               [builtin-builder-set k [f k [builtin-get k obj]] builder]]]]
-      _: [builtin-builder-finish builder]]]
+      ...: [builtin-builder-finish builder]]]
   object-map: [fn [let obj f]
     [keys: [builtin-keys obj]]
     [_object-map-step obj f keys 0 [builtin-dict-length keys] [builtin-make-builder]]]
@@ -293,7 +293,7 @@
             []]]]]
         [_warnings:  [match [builtin-has-key? "ok" tc-result]
             0: []
-            _: [builtin-get "ok" tc-result]]]
+            ...: [builtin-get "ok" tc-result]]]
         [merge acc [builtin-module name]]]
       []
       module-names]]
@@ -314,7 +314,7 @@
       [parent:   [builtin-get 1 entry]]
       [match [null? parent]
         0: [merge acc [make-entry [builtin-dict-length acc] scope-id]]
-        _: acc]]
+        ...: acc]]
     []
     [reduce
       [fn [let acc k]
@@ -326,7 +326,7 @@
   _fundamental-base-tc: [builtin-make-type-ctx]
   fundamental-tc: [match [builtin-int-gte [builtin-dict-length [uses-scope ["core"] _fundamental-base-tc root-scope-id]] 0]
     0: _fundamental-base-tc
-    _: _fundamental-base-tc]
+    ...: _fundamental-base-tc]
 
   # ── Named section accumulation ────────────────────────────────────────────
 
@@ -335,7 +335,7 @@
     [name: [get-or "" "name" meta]]
     [match [builtin-eq-string name ""]
       0: [merge state.named [make-entry [builtin-string-concat "%" name] val]]
-      _: state.named]]
+      ...: state.named]]
 
   # ── Diagnostic formatting ─────────────────────────────────────────────────
   # Each diagnostic is a unified error dict:
@@ -347,7 +347,7 @@
     [s: d.span]
     [file-part: [match [builtin-eq-int [builtin-dict-length s.file] 0]
       0: [builtin-string-concat s.file ":"]
-      _: "<unknown>:"]]
+      ...: "<unknown>:"]]
     [join "" [0: file-part  1: [builtin-int->string s.start-line]  2: ":"  3: [builtin-int->string s.start-col]  4: ": "  5: d.level  6: ": "  7: d.kind  8: " — "  9: d.message  10: "\n"]]]
 
   emit-diagnostics: [fn [let diagnostics]
@@ -378,7 +378,7 @@
     [_pe:           [builtin-dict-length [emit-diagnostics parse-result.diagnostics]]]
     [match [builtin-eq-int [builtin-int-add n-parse _pe] 0]
       0: [builtin-raise [join "" [[builtin-int->string n-parse] " parse error(s) in " path]]]
-      _: []]
+      ...: []]
     # Desugar the parsed program (expands $_ lambda, pipe, etc.)
     [desugared:     [builtin-desugar parse-result.program]]
     [docs:          [builtin-program-docs desugared]]
@@ -396,17 +396,17 @@
       [_re:     [builtin-dict-length [emit-diagnostics res.diagnostics]]]
       [match [builtin-eq-int [builtin-int-add n-re _re] 0]
         0: [builtin-raise [join "" [[builtin-int->string n-re] " resolve error(s) in " path]]]
-        _: []]
+        ...: []]
       [typed:   [builtin-typecheck-doc res.doc acc.tc]]
       [ev:      [builtin-eval typed scope]]
       [match [null? ev.diagnostics]
         0: [builtin-raise ev.diagnostics.0.message]
-        _: [call [fn [let]
+        ...: [call [fn [let]
              [doc-name:   [get-or "" "name" meta]]
              [next-scope: [builtin-scope-new ev.scope-id
                             [match [builtin-eq-string doc-name ""]
                               0: [%: ev.result]
-                              _: [make-entry doc-name ev.result]]]]
+                              ...: [make-entry doc-name ev.result]]]]
              [merge acc [scope-id: next-scope]]]]]]]
     # Split documents by stage using reduce (filter is not available before prelude loads).
     [split: [reduce
@@ -415,7 +415,7 @@
         [stage: [get-or "runtime" "stage" meta]]
         [match [builtin-eq-string stage "type"]
           0: [ts: [merge acc.ts [make-entry [builtin-dict-length acc.ts] doc]]  rt: acc.rt]
-          _: [ts: acc.ts  rt: [merge acc.rt [make-entry [builtin-dict-length acc.rt] doc]]]]]
+          ...: [ts: acc.ts  rt: [merge acc.rt [make-entry [builtin-dict-length acc.rt] doc]]]]]
       [ts: []  rt: []]
       docs]]
     # Pass 1: evaluate type-stage documents to build ts scope (for mutual recursion in type stage).
@@ -483,7 +483,7 @@
     [_re:  [builtin-dict-length [emit-diagnostics doc-resolved.diagnostics]]]
     [match [builtin-eq-int [builtin-int-add n-re _re] 0]
       0: [builtin-raise "resolve error(s)"]
-      _: []]
+      ...: []]
     # Type-check the document.
     [typed: [builtin-typecheck-doc doc-resolved.doc tc]]
     # Per-document arena: allocate, evaluate, migrate result to root arena, then drop.
@@ -497,15 +497,15 @@
            [_drop: [builtin-arena-drop doc-arena]]
            [match [builtin-int-gte [builtin-dict-length [builtin-type-of _drop]] 0]
              0: [builtin-raise eval-result.diagnostics.0.message]
-             _: [builtin-raise eval-result.diagnostics.0.message]]]]]
-      _: # Success path: migrate result to root arena, drop per-doc arena, then validate.
+             ...: [builtin-raise eval-result.diagnostics.0.message]]]]]
+      ...: # Success path: migrate result to root arena, drop per-doc arena, then validate.
          [call [fn [let]
            [migrated-result: [builtin-arena-migrate eval-result.result doc-arena %arena]]
            # _migrated-forced ensures migrate completes before drop — data dependency via type-of.
            [_migrated-forced: [builtin-int-gte [builtin-dict-length [builtin-type-of migrated-result]] 0]]
            [_drop: [match _migrated-forced
              0: [builtin-arena-drop doc-arena]
-             _: [builtin-arena-drop doc-arena]]]
+             ...: [builtin-arena-drop doc-arena]]]
            # Validate --- caps: declarations. Each declared cap must be present in scope.
            [caps-list: [get-or [] "caps" meta]]
            [_drop-forced: [builtin-int-gte [builtin-dict-length [builtin-type-of _drop]] 0]]
@@ -513,19 +513,19 @@
              0: [reduce [fn [let _ cap-name]
                    [match [builtin-cap-env-has? cap-name full-scope-r3]
                      Boolean.False: [builtin-raise [builtin-string-concat "missing required capability: " cap-name]]
-                     _: 0]]
+                     ...: 0]]
                    0 [builtin-keys caps-list]]
-             _: [reduce [fn [let _ cap-name]
+             ...: [reduce [fn [let _ cap-name]
                    [match [builtin-cap-env-has? cap-name full-scope-r3]
                      Boolean.False: [builtin-raise [builtin-string-concat "missing required capability: " cap-name]]
-                     _: 0]]
+                     ...: 0]]
                    0 [builtin-keys caps-list]]]]
            [_result-unforced: [merge state
              [percent: migrated-result
               named:   [update-named state migrated-result meta]]]]
            [match [builtin-int-gte _caps-forced 0]
              0: _result-unforced
-             _: _result-unforced]]]]]
+             ...: _result-unforced]]]]]
 
   # ── Pipeline item dispatch ────────────────────────────────────────────────
 
@@ -545,7 +545,7 @@
     [_pe:          [builtin-dict-length [emit-diagnostics parse-result.diagnostics]]]
     [match [builtin-eq-int _pe 0]
       0: [builtin-raise "parse error(s)"]
-      _: []]
+      ...: []]
     # Desugar + extract docs
     [desugared: [builtin-desugar parse-result.program]]
     [docs:      [builtin-program-docs desugared]]
@@ -567,7 +567,7 @@
     [_pe:          [builtin-dict-length [emit-diagnostics parse-result.diagnostics]]]
     [match [builtin-eq-int _pe 0]
       0: [builtin-raise "parse error(s)"]
-      _: []]
+      ...: []]
     # Desugar + extract docs
     [desugared: [builtin-desugar parse-result.program]]
     [docs:      [builtin-program-docs desugared]]
@@ -628,4 +628,4 @@
 
 [match [builtin-eq-int [builtin-dict-length %programs] 0]
   0: [cli-pipeline %programs formatter [] %cwd prelude-scope-id tc emit-ch]
-  _: [builtin-raise "no input files or expressions specified"]]
+  ...: [builtin-raise "no input files or expressions specified"]]

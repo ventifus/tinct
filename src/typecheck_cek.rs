@@ -3859,6 +3859,7 @@ pub(crate) async fn run_typecheck_dict(
                                 &mut Some(&mut ann_map_for_body),
                                 &mut None,
                                 None,
+                                alias_name,
                             )
                             .await
                             .unwrap_or(Type::Unknown)

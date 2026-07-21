@@ -25,7 +25,7 @@ is-direct-underscore: [fn [let expr@Expression]
       [is-direct-underscore t]]
     [case [let l] [Pipe lhs: l rhs: _ span: _]
       [is-direct-underscore l]]
-    _:
+    ...:
       false]]
 
 # has-direct-in-args: Check if any positional arg is DIRECT.
@@ -80,7 +80,7 @@ try-wrap: [fn [let expr@Expression depth@Integer]
           [wrap-in-lambda expr]
           []]]
       # All other cases: no wrapping
-      _:
+      ...:
         []]]]
 
 # has-underscore-param: Check if a parameter list contains `_`.
@@ -102,7 +102,7 @@ desugar-expr-impl: [fn [let expr@Expression depth@Integer]
     [match wrapped
       [case [let ps b ra d s] [Fn params: ps body: b return-ann: ra desugared: d span: s]
         [Fn params: ps body: [desugar-expr-impl b [+ depth 1]] return-ann: ra desugared: d span: s]]
-      _: wrapped]  # Shouldn't happen, but defensive
+      ...: wrapped]  # Shouldn't happen, but defensive
     # No wrapping — recurse into children
     [desugar-children expr depth]]]
 
@@ -189,7 +189,7 @@ desugar-children: [fn [let expr@Expression depth@Integer]
       [CaseArm pattern: [desugar-expr-impl p depth] body: [desugar-expr-impl b depth] span: s]]
 
     # Catch-all for any variants not explicitly handled
-    _: expr]]
+    ...: expr]]
 
 # desugar-entry: Desugar a dict entry (key and value).
 desugar-entry: [fn [let e@Entry depth@Integer]

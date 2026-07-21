@@ -54,8 +54,16 @@ struct IntermediateBodyInfo {
     /// bindings.  Computed as `self.scopes.len() - 1` immediately after `enter_scope`.
     /// Invariant: this index never changes once recorded — scopes pushed later go on top.
     scope_depth: usize,
-    /// `(name, definition_span, consumed)` for each static binding introduced by this body.
-    bindings: Vec<(String, crate::ast::Span, bool)>,
+    /// `(name, definition_span, consumed, referenced_by_final, references)` for each
+    /// static binding introduced by this body.
+    /// - `consumed`: true if referenced from ANY later body or the final expression.
+    /// - `referenced_by_final`: true if referenced directly from the final expression
+    ///   (current_body_index == usize::MAX at the time of reference).
+    /// - `references`: `(body_index, name)` pairs of earlier-body bindings referenced
+    ///   by THIS specific binding's own definition expression. Using `(body_index, name)`
+    ///   rather than just `name` avoids shadowing bugs: when two bodies both define a
+    ///   binding named `x`, BFS expansion uses the correct `x`'s refs, not both.
+    bindings: Vec<(String, crate::ast::Span, bool, bool, Vec<(usize, String)>)>,
     /// True when this info tracks function parameters rather than intermediate dict bindings.
     /// For params, any reference from within the function body counts as consumption,
     /// regardless of `current_body_index` (since params are introduced "before" all bodies).
@@ -73,6 +81,7 @@ struct SurfaceResolver {
     ///   Populated only when suppress_depth == 0 (annotation, static key, declaration, and
     ///   method-name positions are suppressed — they are not runtime variable references).
     /// - `kind = "lost-binding"`, `level = Warn`: lost intermediate binding or unused param.
+    /// - `kind = "abandoned-input"`, `level = Warn`: document never references pipeline input %.
     diagnostics: Vec<TypeDiagnostic>,
     /// > 0 when inside a context where unresolved VarRefs are not errors
     /// (annotation, static key, declaration position, etc.).
@@ -85,6 +94,18 @@ struct SurfaceResolver {
     /// `usize::MAX` means "final expression" — references during the final expression
     /// count as consumption for any enclosing intermediate body.
     current_body_index: usize,
+    /// Whether the pipeline input `%` was referenced during this document's walk.
+    /// Used for abandoned-input detection: if `%` was in the env but never resolved
+    /// by any VarRef, the document ignores its pipeline input.
+    percent_referenced: bool,
+    /// T-1743: Index into `self.intermediate_bodies` of the IntermediateBodyInfo for
+    /// the body currently being walked, paired with the name of the specific binding
+    /// whose value expression is being walked. Set by the Sequential handler before
+    /// walking each dict entry's value; cleared (None) between entries.
+    /// When set, cross-body references are recorded into THAT binding's per-binding
+    /// reference list rather than a shared body-level accumulator.
+    /// None when not inside a per-binding value walk.
+    current_binding_context: Option<(usize, String)>,
 }
 
 impl SurfaceResolver {
@@ -96,6 +117,8 @@ impl SurfaceResolver {
             suppress_depth: 0,
             intermediate_bodies: Vec::new(),
             current_body_index: usize::MAX,
+            percent_referenced: false,
+            current_binding_context: None,
         }
     }
 
@@ -124,6 +147,10 @@ impl SurfaceResolver {
         for (offset, (scope, _)) in self.scopes.iter().rev().enumerate() {
             if let Some(&slot) = scope.get(name) {
                 let level = u32::try_from(offset).expect("scope depth overflow");
+                // Track pipeline input % reference for abandoned-input detection.
+                if name == "%" {
+                    self.percent_referenced = true;
+                }
                 // Lost-binding detection: if this name resolves to an intermediate body's
                 // scope AND we are currently walking a later body (or the final expression),
                 // mark that binding as consumed.
@@ -142,9 +169,51 @@ impl SurfaceResolver {
                         let should_consume =
                             info.is_param || self.current_body_index > info.body_index;
                         if should_consume {
-                            for (bname, _, consumed) in &mut info.bindings {
+                            let is_final = self.current_body_index == usize::MAX;
+                            for (bname, _, consumed, ref_by_final, _) in &mut info.bindings {
                                 if bname == name {
                                     *consumed = true;
+                                    if is_final {
+                                        *ref_by_final = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // T-1743: Track cross-body references at binding granularity.
+                // If we are currently walking a non-final body AND walking a specific
+                // binding's value (current_binding_context is set), record the referenced
+                // name into THAT binding's per-binding reference list. This ensures
+                // only the binding that actually uses an earlier-body name is linked,
+                // not every binding in the same body.
+                if self.current_body_index != usize::MAX {
+                    if let Some((info_idx, cur_binding)) = self.current_binding_context.clone() {
+                        // Find the earlier-body binding's (body_index, name) pair so the
+                        // BFS key is precise. Two bodies may both define a binding named `x`;
+                        // using (body_index, name) avoids expanding refs from the wrong `x`.
+                        let ref_key: Option<(usize, String)> = self
+                            .intermediate_bodies
+                            .iter()
+                            .find(|info| {
+                                info.scope_depth == match_depth
+                                    && !info.is_param
+                                    && info.body_index < self.current_body_index
+                                    && info
+                                        .bindings
+                                        .iter()
+                                        .any(|(bname, _, _, _, _)| bname == name)
+                            })
+                            .map(|info| (info.body_index, name.to_string()));
+                        if let Some(key) = ref_key {
+                            // Use info_idx directly (no search by body_index) to avoid
+                            // ambiguity with nested Sequentials at the same body index.
+                            if let Some(info) = self.intermediate_bodies.get_mut(info_idx) {
+                                for (bname, _, _, _, refs) in &mut info.bindings {
+                                    if bname == &cur_binding {
+                                        refs.push(key);
+                                        break;
+                                    }
                                 }
                             }
                         }
@@ -178,6 +247,10 @@ impl SurfaceResolver {
             }
             if let Some(&slot) = scope.get(name) {
                 let level = u32::try_from(offset).expect("scope depth overflow");
+                // Track pipeline input % reference for abandoned-input detection.
+                if name == "%" {
+                    self.percent_referenced = true;
+                }
                 // Also track consumption for leading-dot resolved names.
                 let match_depth = self.scopes.len().saturating_sub(1 + offset);
                 for info in &mut self.intermediate_bodies {
@@ -185,9 +258,41 @@ impl SurfaceResolver {
                         let should_consume =
                             info.is_param || self.current_body_index > info.body_index;
                         if should_consume {
-                            for (bname, _, consumed) in &mut info.bindings {
+                            let is_final = self.current_body_index == usize::MAX;
+                            for (bname, _, consumed, ref_by_final, _) in &mut info.bindings {
                                 if bname == name {
                                     *consumed = true;
+                                    if is_final {
+                                        *ref_by_final = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // T-1743: Track cross-body references at binding granularity (leading-dot path).
+                if self.current_body_index != usize::MAX {
+                    if let Some((info_idx, cur_binding)) = self.current_binding_context.clone() {
+                        let ref_key: Option<(usize, String)> = self
+                            .intermediate_bodies
+                            .iter()
+                            .find(|info| {
+                                info.scope_depth == match_depth
+                                    && !info.is_param
+                                    && info.body_index < self.current_body_index
+                                    && info
+                                        .bindings
+                                        .iter()
+                                        .any(|(bname, _, _, _, _)| bname == name)
+                            })
+                            .map(|info| (info.body_index, name.to_string()));
+                        if let Some(key) = ref_key {
+                            if let Some(info) = self.intermediate_bodies.get_mut(info_idx) {
+                                for (bname, _, _, _, refs) in &mut info.bindings {
+                                    if bname == &cur_binding {
+                                        refs.push(key);
+                                        break;
+                                    }
                                 }
                             }
                         }
@@ -293,12 +398,26 @@ impl SurfaceResolver {
                 // consumed somewhere in the function body.  The scope_depth is recorded
                 // AFTER enter_scope so it is the absolute forward index of the param scope.
                 let param_scope_depth = self.scopes.len() - 1;
-                let param_bindings: Vec<(String, crate::ast::Span, bool)> = params
+                let param_bindings: Vec<(
+                    String,
+                    crate::ast::Span,
+                    bool,
+                    bool,
+                    Vec<(usize, String)>,
+                )> = params
                     .iter()
                     .map(|p| {
                         // Use the SurfaceNode span of the param node (the [let x] binding).
                         // `p` is a `Spanned<SurfaceParam>`; p.span is the param span.
-                        (p.node.name.clone(), p.span.clone(), false)
+                        // Parameters don't reference earlier intermediate bodies — the
+                        // per-binding references Vec is always empty for params.
+                        (
+                            p.node.name.clone(),
+                            p.span.clone(),
+                            false,
+                            false,
+                            Vec::new(),
+                        )
                     })
                     .collect();
                 let prev_body_index = self.current_body_index;
@@ -325,7 +444,7 @@ impl SurfaceResolver {
                     .intermediate_bodies
                     .pop()
                     .expect("param info must still be on stack");
-                for (name, span, consumed) in info.bindings {
+                for (name, span, consumed, _, _) in info.bindings {
                     if !consumed {
                         self.diagnostics.push(TypeDiagnostic {
                             level: DiagnosticLevel::Warn,
@@ -346,38 +465,167 @@ impl SurfaceResolver {
 
             SurfaceExpression::Sequential(exprs) => {
                 let prev_body_index = self.current_body_index;
+                let prev_binding_context = self.current_binding_context.take();
                 let intermediate_bodies_base = self.intermediate_bodies.len();
                 let mut injected = 0usize;
                 for (i, e) in exprs.iter().enumerate() {
                     let is_last = i == exprs.len() - 1;
                     // Set current_body_index so resolve_name knows which body we are in.
                     self.current_body_index = if is_last { usize::MAX } else { i };
-                    self.walk_surface_node(e);
+
                     if !is_last {
                         if let SurfaceExpression::Dict(entries) = &e.expr {
+                            // T-1743: Walk intermediate dict bodies entry-by-entry so that
+                            // cross-body references are attributed to the specific binding
+                            // whose value expression uses the earlier-body name, not to
+                            // every binding in the body (the body-level bug).
+                            //
+                            // The key invariant: IntermediateBodyInfo for body i must be
+                            // pushed into self.intermediate_bodies BEFORE walking body i's
+                            // values so that resolve_name (called during the value walk) can
+                            // find it by body_index and store per-binding references into it.
+
+                            // Step 1: Walk key expressions in outer scope (suppressed for
+                            // non-escaped static keys — same as the Dict arm logic).
+                            for entry in entries {
+                                if let Some(key) = &entry.node.key {
+                                    let is_static = matches!(
+                                        &key.expr,
+                                        SurfaceExpression::VarRef { escaped: false, .. }
+                                    );
+                                    if is_static {
+                                        self.suppress_depth += 1;
+                                    }
+                                    self.walk_surface_node(key);
+                                    if is_static {
+                                        self.suppress_depth -= 1;
+                                    }
+                                }
+                            }
+
                             // Use the full surface_dict_static_keys (including ClassDecl method
-                            // injection) for scope entry — same as the original code — so that
+                            // injection) for scope entry — same as the Dict arm — so that
                             // the scope frame matches what the evaluator sees.
                             let all_keys = surface_dict_static_keys(entries);
-                            if !all_keys.is_empty() {
+                            if all_keys.is_empty() {
+                                // No static keys: no scope injection needed. Walk values normally
+                                // (no per-binding tracking since no bindings are introduced).
+                                // Still need to walk the key annotations inside the (empty) scope.
+                                for entry in entries {
+                                    self.walk_surface_node(&entry.node.value);
+                                }
+                            } else {
+                                // Step 2: Enter the Dict letrec scope (for value walks to
+                                // reference sibling entries — same as the Dict arm behavior).
                                 self.enter_scope(&all_keys, ScopeKind::Dict);
-                                // Record scope_depth AFTER enter_scope so it is the absolute
-                                // forward index of this scope frame in self.scopes.
-                                let scope_depth = self.scopes.len() - 1;
-                                // For lost-binding tracking, only track simple user-written keys
-                                // (not injected ClassDecl method names or InstanceDecl names).
-                                let binding_list: Vec<(String, crate::ast::Span, bool)> =
-                                    surface_dict_keys_with_spans(entries)
-                                        .into_iter()
-                                        .map(|(name, span)| (name, span, false))
-                                        .collect();
-                                if !binding_list.is_empty() {
+
+                                // Step 3: Build binding_list for lost-binding tracking.
+                                let named_entries: Vec<(String, crate::ast::Span)> =
+                                    surface_dict_keys_with_spans(entries);
+                                let binding_list: Vec<(
+                                    String,
+                                    crate::ast::Span,
+                                    bool,
+                                    bool,
+                                    Vec<(usize, String)>,
+                                )> = named_entries
+                                    .iter()
+                                    .map(|(name, span)| {
+                                        (name.clone(), span.clone(), false, false, Vec::new())
+                                    })
+                                    .collect();
+                                let has_tracked_bindings = !binding_list.is_empty();
+                                // Push IntermediateBodyInfo BEFORE walking values so that
+                                // resolve_name can find it by body_index and store per-binding
+                                // refs into it during the value walk.
+                                // Use a placeholder scope_depth (the Dict letrec scope index).
+                                // We will update it to the Sequential scope index after step 7.
+                                let info_idx = self.intermediate_bodies.len();
+                                if has_tracked_bindings {
                                     self.intermediate_bodies.push(IntermediateBodyInfo {
                                         body_index: i,
-                                        scope_depth,
+                                        // Placeholder: will be updated to Sequential scope depth
+                                        // after entering the Sequential scope in step 7.
+                                        scope_depth: usize::MAX,
                                         bindings: binding_list,
                                         is_param: false,
                                     });
+                                }
+
+                                // Step 4: Walk key annotations inside the letrec scope
+                                // (same as the Dict arm — annotations can reference siblings).
+                                for entry in entries {
+                                    if let Some(key) = &entry.node.key {
+                                        if let SurfaceExpression::VarRef {
+                                            annotation: Some(ann),
+                                            ..
+                                        } = &key.expr
+                                        {
+                                            self.suppress_depth += 1;
+                                            self.walk_surface_annotation(ann);
+                                            self.suppress_depth -= 1;
+                                        }
+                                    }
+                                }
+
+                                // Step 5: Walk each entry's VALUE.
+                                // For tracked bindings, set current_binding_context so
+                                // resolve_name can record per-binding cross-body references.
+                                // For untracked bindings (positional entries, class/instance
+                                // decl entries), walk normally with context = None.
+                                for entry in entries {
+                                    let binding_name: Option<String> =
+                                        entry.node.key.as_ref().and_then(|key| match &key.expr {
+                                            SurfaceExpression::VarRef {
+                                                name,
+                                                escaped: false,
+                                                ..
+                                            } if has_tracked_bindings => {
+                                                // Only set if this name is in the tracked binding list.
+                                                self.intermediate_bodies
+                                                    .get(info_idx)
+                                                    .filter(|info| {
+                                                        info.bindings
+                                                            .iter()
+                                                            .any(|(bn, _, _, _, _)| bn == name)
+                                                    })
+                                                    .map(|_| name.clone())
+                                            }
+                                            SurfaceExpression::StringLiteral {
+                                                content, ..
+                                            } if has_tracked_bindings => self
+                                                .intermediate_bodies
+                                                .get(info_idx)
+                                                .filter(|info| {
+                                                    info.bindings
+                                                        .iter()
+                                                        .any(|(bn, _, _, _, _)| bn == content)
+                                                })
+                                                .map(|_| content.clone()),
+                                            _ => None,
+                                        });
+                                    // Set per-binding context (None for untracked entries).
+                                    self.current_binding_context =
+                                        binding_name.map(|name| (info_idx, name));
+                                    self.walk_surface_node(&entry.node.value);
+                                }
+                                // Clear binding context after walking all entries.
+                                self.current_binding_context = None;
+
+                                // Step 6: Exit the Dict letrec scope.
+                                self.exit_scope();
+
+                                // Step 7: Enter the Sequential scope (injected) so subsequent
+                                // bodies can reference this body's bindings. Record scope_depth
+                                // from this scope — this is what resolve_name uses to identify
+                                // which body a referenced name belongs to.
+                                self.enter_scope(&all_keys, ScopeKind::Dict);
+                                let sequential_scope_depth = self.scopes.len() - 1;
+                                if has_tracked_bindings {
+                                    // Update the scope_depth placeholder now that we have
+                                    // the correct Sequential scope index.
+                                    self.intermediate_bodies[info_idx].scope_depth =
+                                        sequential_scope_depth;
                                 }
                                 injected += 1;
                             }
@@ -385,36 +633,95 @@ impl SurfaceResolver {
                             // Non-dict node that nonetheless produces static keys
                             // (currently none, but keep the original fallback so the
                             // scope injection path stays correct for future cases).
+                            self.walk_surface_node(e);
                             if !keys.is_empty() {
                                 self.enter_scope(&keys, ScopeKind::Dict);
                                 injected += 1;
                             }
+                        } else {
+                            // Non-dict, non-key-producing intermediate body: walk normally.
+                            self.walk_surface_node(e);
                         }
+                    } else {
+                        // Final expression: walk normally.
+                        self.walk_surface_node(e);
                     }
                 }
-                // Emit warnings for any intermediate body bindings that were never consumed.
-                // Drain from intermediate_bodies_base upward (innermost first, but order
-                // doesn't matter for warning emission).
+                // T-1743: Transitive reachability analysis for lost-binding detection.
+                // This subsumes the direct T-1740 check: a binding is reachable if and
+                // only if the final expression (or a chain of bindings starting from
+                // the final expression) references it.
+                //
+                // 1. Seed the reachable set with bindings directly referenced by the final
+                //    expression (referenced_by_final == true).
+                // 2. BFS: for each reachable binding X, add only X's own per-binding references.
+                //    (Not all references of X's body — that was the body-level bug.)
+                // 3. Any binding NOT in the reachable set gets a lost-binding warning.
                 let drained: Vec<IntermediateBodyInfo> = self
                     .intermediate_bodies
                     .drain(intermediate_bodies_base..)
                     .collect();
-                for info in drained {
-                    for (name, span, consumed) in info.bindings {
-                        if !consumed {
-                            self.diagnostics.push(TypeDiagnostic {
-                                level: DiagnosticLevel::Warn,
-                                kind: "lost-binding",
-                                message: format!(
-                                    "intermediate binding '{}' is defined but never referenced from a later body — its value is lost in tinct's lazy evaluation",
-                                    name
-                                ),
-                                spans: vec![(span, String::new())],
-                                notes: vec![],
-                            });
+
+                // Collect all binding names and their per-binding info for reachability analysis.
+                // Each entry: ((body_index, name), span, per-binding-references).
+                // Using (body_index, name) as the unique key prevents the shadowing bug:
+                // when two bodies both define a binding named `x`, BFS expansion uses the
+                // correct `x`'s per-binding refs rather than merging refs from all `x`s.
+                let mut all_bindings: Vec<(
+                    (usize, String),
+                    crate::ast::Span,
+                    Vec<(usize, String)>,
+                )> = Vec::new();
+                let mut reachable: std::collections::HashSet<(usize, String)> =
+                    std::collections::HashSet::new();
+
+                for info in &drained {
+                    for (name, span, _, ref_by_final, per_binding_refs) in &info.bindings {
+                        let key = (info.body_index, name.clone());
+                        // Per-binding references: only what THIS binding's value uses.
+                        all_bindings.push((key.clone(), span.clone(), per_binding_refs.clone()));
+                        if *ref_by_final {
+                            reachable.insert(key);
                         }
                     }
                 }
+
+                // BFS: for each reachable (body_index, name) pair, expand using ONLY its own
+                // per-binding refs. Because each binding is keyed by (body_index, name), two
+                // bindings with the same name in different bodies are treated independently.
+                let mut queue: std::collections::VecDeque<(usize, String)> =
+                    reachable.iter().cloned().collect();
+                while let Some(key) = queue.pop_front() {
+                    for (bkey, _, refs) in &all_bindings {
+                        if bkey == &key {
+                            for referenced in refs {
+                                if reachable.insert(referenced.clone()) {
+                                    queue.push_back(referenced.clone());
+                                }
+                            }
+                            // Each (body_index, name) pair is unique — no need to continue.
+                            break;
+                        }
+                    }
+                }
+
+                // Emit warnings for bindings not in the reachable set.
+                for (key, span, _) in &all_bindings {
+                    if !reachable.contains(key) {
+                        self.diagnostics.push(TypeDiagnostic {
+                            level: DiagnosticLevel::Warn,
+                            kind: "lost-binding",
+                            message: format!(
+                                "intermediate binding '{}' is defined but never referenced from a later body — its value is lost in tinct's lazy evaluation",
+                                key.1
+                            ),
+                            spans: vec![(span.clone(), String::new())],
+                            notes: vec![],
+                        });
+                    }
+                }
+
+                self.current_binding_context = prev_binding_context;
                 self.current_body_index = prev_body_index;
                 for _ in 0..injected {
                     self.exit_scope();
@@ -818,6 +1125,7 @@ impl SurfaceResolver {
 /// - `diagnostics`: unified bag of resolve diagnostics (errors and warnings).
 ///   - `kind = "resolve-error"`, `level = Err`: undefined-variable VarRefs in expression position.
 ///   - `kind = "lost-binding"`, `level = Warn`: lost intermediate bindings and unused parameters.
+///   - `kind = "abandoned-input"`, `level = Warn`: document never references pipeline input %.
 /// - `new_frames`: scope frames ADDED by this document (not including `initial_frames`).
 pub fn resolve_surface_document_inplace(
     doc: &crate::ast::SurfaceDocument,
@@ -835,6 +1143,29 @@ pub fn resolve_surface_document_inplace(
     }
 
     let new_frames = resolver.walk_surface_document(doc);
+
+    // T-1741: Abandoned pipeline input % detection.
+    // If `%` was provided in the initial_frames (meaning this is not the first
+    // document in the pipeline) but was never referenced by any VarRef during
+    // resolution, the document ignores its pipeline input — emit a warning.
+    if !resolver.percent_referenced {
+        let percent_in_env = initial_frames.iter().any(|frame| frame.contains_key("%"));
+        if percent_in_env {
+            // Use the first item's span for the warning, or a synthetic span.
+            let span = doc
+                .items
+                .first()
+                .map(|item| item.span())
+                .unwrap_or_else(|| crate::rust_span!());
+            resolver.diagnostics.push(TypeDiagnostic {
+                level: DiagnosticLevel::Warn,
+                kind: "abandoned-input",
+                message: "document does not reference pipeline input %".to_string(),
+                spans: vec![(span, String::new())],
+                notes: vec![],
+            });
+        }
+    }
 
     // Exit seeded scopes
     for _ in initial_frames {
@@ -877,6 +1208,193 @@ pub fn resolve_surface_program(
 
     let table = resolver.finish();
     (table, new_frames)
+}
+
+/// T-1742: Extract the static produced keys of a document's final expression.
+///
+/// For a document whose last expression is a Dict (`[k1: v1  k2: v2]`), returns
+/// the list of static string-keyed names that this stage "produces" (makes available
+/// to the next pipeline document via `%`). Returns an empty Vec if the final expression
+/// is not a Dict or has no static keys.
+///
+/// Also returns the span of the final expression for use in pipeline lint warnings.
+pub fn collect_document_produced_keys(
+    doc: &crate::ast::SurfaceDocument,
+) -> (Vec<String>, crate::ast::Span) {
+    // Find the last Expr item.
+    let last_expr = doc.items.iter().rev().find_map(|item| match item {
+        SurfaceItem::Expr(node) => Some(node),
+        SurfaceItem::Decl(_) => None,
+    });
+    let Some(expr_node) = last_expr else {
+        return (Vec::new(), crate::rust_span!());
+    };
+    let span = expr_node.span.clone();
+    match &expr_node.expr {
+        SurfaceExpression::Dict(entries) => (surface_dict_static_keys(entries), span),
+        _ => (Vec::new(), span),
+    }
+}
+
+/// T-1742: Cross-document pipeline lint.
+///
+/// After resolving all documents in a pipeline, checks whether keys produced by
+/// non-final stages are consumed by the subsequent document. Keys produced but
+/// not consumed generate `abandoned-output` warnings.
+///
+/// If the subsequent document uses dynamic access to `%` (e.g. `[get key %]`
+/// with a variable key), the warning is suppressed for that stage because the
+/// accessed keys cannot be statically determined.
+///
+/// `stages` is a slice of `(produced_keys, percent_field_accesses, uses_dynamic_percent)`:
+/// - `produced_keys`: static key names from the stage's final expression.
+/// - `percent_field_accesses`: static `%.key` field access names from the stage's document.
+/// - `uses_dynamic_percent`: whether the stage uses `%` in a non-field context (dynamic access).
+///
+/// Returns a vec of `TypeDiagnostic` warnings for abandoned outputs.
+pub fn lint_pipeline_stages(
+    stages: &[(
+        Vec<String>,      // produced keys
+        Vec<String>,      // percent field accesses from next doc
+        bool,             // next doc uses dynamic percent access
+        crate::ast::Span, // span of the producing document's final expression
+    )],
+) -> Vec<TypeDiagnostic> {
+    let mut diagnostics = Vec::new();
+    for (produced_keys, consumed_keys, uses_dynamic, span) in stages {
+        if *uses_dynamic {
+            // Dynamic access to % — cannot statically determine consumed keys; suppress.
+            continue;
+        }
+        let consumed_set: std::collections::HashSet<&str> =
+            consumed_keys.iter().map(|s| s.as_str()).collect();
+        for key in produced_keys {
+            if !consumed_set.contains(key.as_str()) {
+                diagnostics.push(TypeDiagnostic {
+                    level: DiagnosticLevel::Warn,
+                    kind: "abandoned-output",
+                    message: format!(
+                        "key '{}' is produced but never consumed by the next pipeline stage",
+                        key
+                    ),
+                    spans: vec![(span.clone(), String::new())],
+                    notes: vec![],
+                });
+            }
+        }
+    }
+    diagnostics
+}
+
+/// Collect all static `%.key` field accesses from a document.
+///
+/// Walks the document's AST and returns the set of string field names accessed
+/// on `%` (the pipeline input). Also returns whether `%` is used in a non-field
+/// context (e.g., passed to a function, used as a match scrutinee), which
+/// indicates dynamic access that prevents static key analysis.
+pub fn collect_percent_accesses(doc: &crate::ast::SurfaceDocument) -> (Vec<String>, bool) {
+    let mut field_accesses = Vec::new();
+    let mut dynamic_use = false;
+    for item in &doc.items {
+        if let SurfaceItem::Expr(node) = item {
+            collect_percent_accesses_node(node, &mut field_accesses, &mut dynamic_use);
+        }
+    }
+    (field_accesses, dynamic_use)
+}
+
+/// Recursive helper: collect %.key accesses and detect dynamic % usage.
+fn collect_percent_accesses_node(
+    node: &Arc<SurfaceNode>,
+    accesses: &mut Vec<String>,
+    dynamic_use: &mut bool,
+) {
+    match &node.expr {
+        SurfaceExpression::Field {
+            expr: Some(target),
+            field,
+            ..
+        } => {
+            // Check if target is VarRef("%")
+            if matches!(&target.expr, SurfaceExpression::VarRef { name, .. } if name == "%") {
+                // %.key — target is VarRef("%"), no need to recurse into it.
+                // For Ident keys: record the key name as a consumed pipeline key.
+                // For Int keys: % used as an indexed sequence — no named key to record.
+                if let crate::ast::DotKey::Ident(key) = field {
+                    accesses.push(key.clone());
+                }
+                // DotKey::Int: % used as an indexed sequence — treat as dynamic access
+                // because the pipeline lint operates on named keys only.
+                else {
+                    *dynamic_use = true;
+                }
+            } else {
+                collect_percent_accesses_node(target, accesses, dynamic_use);
+            }
+        }
+        SurfaceExpression::VarRef { name, .. } if name == "%" => {
+            // % used in a non-field context — dynamic access
+            *dynamic_use = true;
+        }
+        // Recurse into child expressions
+        SurfaceExpression::Dict(entries) => {
+            for entry in entries {
+                if let Some(key) = &entry.node.key {
+                    collect_percent_accesses_node(key, accesses, dynamic_use);
+                }
+                collect_percent_accesses_node(&entry.node.value, accesses, dynamic_use);
+            }
+        }
+        SurfaceExpression::Fn { body, .. } => {
+            collect_percent_accesses_node(body, accesses, dynamic_use);
+        }
+        SurfaceExpression::Call {
+            func,
+            args,
+            named_args,
+            ..
+        } => {
+            collect_percent_accesses_node(func, accesses, dynamic_use);
+            for arg in args {
+                collect_percent_accesses_node(arg, accesses, dynamic_use);
+            }
+            for na in named_args {
+                collect_percent_accesses_node(&na.node.value, accesses, dynamic_use);
+            }
+        }
+        SurfaceExpression::Sequential(exprs) => {
+            for e in exprs {
+                collect_percent_accesses_node(e, accesses, dynamic_use);
+            }
+        }
+        SurfaceExpression::Pipe { lhs, rhs, .. } => {
+            collect_percent_accesses_node(lhs, accesses, dynamic_use);
+            collect_percent_accesses_node(rhs, accesses, dynamic_use);
+        }
+        SurfaceExpression::TypeAssert { expr, .. } => {
+            collect_percent_accesses_node(expr, accesses, dynamic_use);
+        }
+        SurfaceExpression::Match { scrutinee, arms } => {
+            collect_percent_accesses_node(scrutinee, accesses, dynamic_use);
+            for arm in arms {
+                collect_percent_accesses_node(&arm.pattern, accesses, dynamic_use);
+                if let Some(guard) = &arm.guard {
+                    collect_percent_accesses_node(guard, accesses, dynamic_use);
+                }
+                for body_expr in &arm.body {
+                    collect_percent_accesses_node(body_expr, accesses, dynamic_use);
+                }
+            }
+        }
+        SurfaceExpression::CaseArm { pattern, body, .. } => {
+            collect_percent_accesses_node(pattern, accesses, dynamic_use);
+            collect_percent_accesses_node(body, accesses, dynamic_use);
+        }
+        SurfaceExpression::Unquote(inner) | SurfaceExpression::UnquoteSplice(inner) => {
+            collect_percent_accesses_node(inner, accesses, dynamic_use);
+        }
+        _ => {}
+    }
 }
 
 /// Extract static string-keyed names from a SurfaceExpression::Dict's entries.
@@ -1381,5 +1899,337 @@ mod tests {
             .expect("$a should be resolved (key from prior expr in document)");
         // The first dict creates a scope with `a` as slot 0
         assert_eq!(coords.1, 0, "a is first key from prior expr, slot 0");
+    }
+
+    /// Helper: parse a single document and resolve with given initial frames.
+    /// Returns (program, diagnostics).
+    fn parse_and_resolve_doc_with_frames(
+        src: &str,
+        initial_frames: &[indexmap::IndexMap<String, u32>],
+    ) -> (crate::ast::SurfaceProgram, Vec<TypeDiagnostic>) {
+        let output = crate::parser::parse(src, test_file(src)).expect("parse failed");
+        let mut program = output.program;
+        crate::desugar::desugar_surface_program(&mut program);
+        let doc = &program.documents[0].node;
+        let (_, diagnostics, _) = resolve_surface_document_inplace(doc, initial_frames);
+        (program, diagnostics)
+    }
+
+    // --- T-1741: Abandoned pipeline input % ---
+
+    /// T-1741: When % is in the env but the document never references it,
+    /// emit an abandoned-input warning.
+    #[test]
+    fn abandoned_input_warns_when_percent_unused() {
+        let mut frame = indexmap::IndexMap::new();
+        frame.insert("%".to_string(), 0u32);
+        let (_, diagnostics) = parse_and_resolve_doc_with_frames("[+ 1 2]", &[frame]);
+        let abandoned = diagnostics
+            .iter()
+            .filter(|d| d.kind == "abandoned-input")
+            .count();
+        assert_eq!(
+            abandoned, 1,
+            "expected 1 abandoned-input warning when % is unused"
+        );
+    }
+
+    /// T-1741: When % is in the env and the document DOES reference it,
+    /// no abandoned-input warning.
+    #[test]
+    fn abandoned_input_no_warn_when_percent_used() {
+        let mut frame = indexmap::IndexMap::new();
+        frame.insert("%".to_string(), 0u32);
+        // $% is an escaped VarRef that references %
+        let (_, diagnostics) = parse_and_resolve_doc_with_frames("$%", &[frame]);
+        let abandoned = diagnostics
+            .iter()
+            .filter(|d| d.kind == "abandoned-input")
+            .count();
+        assert_eq!(
+            abandoned, 0,
+            "expected no abandoned-input warning when % is used"
+        );
+    }
+
+    /// T-1741: When % is NOT in the env (first document in pipeline),
+    /// no abandoned-input warning regardless of usage.
+    #[test]
+    fn abandoned_input_no_warn_when_percent_not_in_env() {
+        let (_, diagnostics) = parse_and_resolve_doc_with_frames("[+ 1 2]", &[]);
+        let abandoned = diagnostics
+            .iter()
+            .filter(|d| d.kind == "abandoned-input")
+            .count();
+        assert_eq!(
+            abandoned, 0,
+            "expected no abandoned-input warning when % is not in env"
+        );
+    }
+
+    // --- T-1743: Transitive lost-binding detection ---
+
+    /// Helper: parse and resolve, returning only the lost-binding diagnostics.
+    fn lost_binding_diagnostics(src: &str) -> Vec<TypeDiagnostic> {
+        let output = crate::parser::parse(src, test_file(src)).expect("parse failed");
+        let mut program = output.program;
+        crate::desugar::desugar_surface_program(&mut program);
+        let (_, _frames) = resolve_surface_program(&program, &[]);
+        // resolve_surface_program doesn't return diagnostics, so use per-doc resolve.
+        let doc = &program.documents[0].node;
+        let (_, diagnostics, _) = resolve_surface_document_inplace(doc, &[]);
+        diagnostics
+            .into_iter()
+            .filter(|d| d.kind == "lost-binding")
+            .collect()
+    }
+
+    /// T-1743: Both a and b are lost when b references a but neither
+    /// is referenced from the final expression.
+    #[test]
+    fn lost_binding_transitive_both_lost() {
+        // [fn [let x] [a: [+ x 1]] [b: [+ $a 2]] 42]
+        // a and b are both intermediate bindings; final expression is 42.
+        let diagnostics = lost_binding_diagnostics("[fn [let x] [a: [+ $x 1]] [b: [+ $a 2]] 42]");
+        let lost_names: Vec<&str> = diagnostics
+            .iter()
+            .filter_map(|d| {
+                d.message
+                    .strip_prefix("intermediate binding '")
+                    .and_then(|s| s.split('\'').next())
+            })
+            .collect();
+        assert!(
+            lost_names.contains(&"a"),
+            "expected lost-binding warning for 'a', got: {:?}",
+            lost_names
+        );
+        assert!(
+            lost_names.contains(&"b"),
+            "expected lost-binding warning for 'b', got: {:?}",
+            lost_names
+        );
+    }
+
+    /// T-1743: When b references a and the final expression references b,
+    /// both are transitively reachable — no warnings.
+    #[test]
+    fn lost_binding_transitive_chain_consumed() {
+        let diagnostics = lost_binding_diagnostics("[fn [let x] [a: [+ $x 1]] [b: [+ $a 2]] $b]");
+        assert!(
+            diagnostics.is_empty(),
+            "expected no lost-binding warnings when chain is consumed, got: {:?}",
+            diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    /// T-1743: When b references a but only a is referenced from the final
+    /// expression, b is lost but a is reachable.
+    #[test]
+    fn lost_binding_transitive_partial_reachability() {
+        let diagnostics = lost_binding_diagnostics("[fn [let x] [a: [+ $x 1]] [b: [+ $a 2]] $a]");
+        let lost_names: Vec<&str> = diagnostics
+            .iter()
+            .filter_map(|d| {
+                d.message
+                    .strip_prefix("intermediate binding '")
+                    .and_then(|s| s.split('\'').next())
+            })
+            .collect();
+        assert!(
+            lost_names.contains(&"b"),
+            "expected lost-binding warning for 'b', got: {:?}",
+            lost_names
+        );
+        assert!(
+            !lost_names.contains(&"a"),
+            "expected NO lost-binding warning for 'a' (directly referenced), got: {:?}",
+            lost_names
+        );
+    }
+
+    /// T-1743: Multi-binding-per-body — only the binding that uses an earlier-body name
+    /// is linked to it in the BFS; the other binding in the same body is NOT transitively
+    /// linked.
+    ///
+    /// Structure: fn with 3 bodies:
+    ///   body 0: [c_val: 99]
+    ///   body 1: [a: [+ x 1]   b: [+ x c_val]]   ← a is pure, b refs c_val from body 0
+    ///   final:  a                                 ← only a is directly referenced
+    ///
+    /// BFS (correct): reachable = {a}; a's per-binding refs = [] (a doesn't use c_val);
+    ///   c_val is never reached → warning for c_val. b is not reachable → warning for b.
+    ///
+    /// BFS (old buggy body-level): reachable = {a}; body 1's shared refs = [c_val];
+    ///   c_val would be incorrectly marked reachable → missing warning (false negative).
+    #[test]
+    fn lost_binding_multi_binding_per_body_granularity() {
+        // body 0: c_val; body 1: a (pure), b (uses c_val); final: $a
+        let diagnostics =
+            lost_binding_diagnostics("[fn [let x] [c_val: 99] [a: [+ $x 1]  b: [+ $x $c_val]] $a]");
+        let lost_names: Vec<&str> = diagnostics
+            .iter()
+            .filter_map(|d| {
+                d.message
+                    .strip_prefix("intermediate binding '")
+                    .and_then(|s| s.split('\'').next())
+            })
+            .collect();
+        // b is not reachable: final refs a, a refs nothing from body 0 or 1.
+        assert!(
+            lost_names.contains(&"b"),
+            "expected lost-binding warning for 'b' (not reachable), got: {:?}",
+            lost_names
+        );
+        // c_val is not reachable: only b uses it, and b is not reachable.
+        assert!(
+            lost_names.contains(&"c_val"),
+            "expected lost-binding warning for 'c_val' (only b uses it, b is not reachable), got: {:?}",
+            lost_names
+        );
+        // a IS reachable: directly referenced from the final expression.
+        assert!(
+            !lost_names.contains(&"a"),
+            "expected NO lost-binding warning for 'a' (directly referenced), got: {:?}",
+            lost_names
+        );
+    }
+
+    /// T-1743: Shadowing bug — two bodies define a binding with the same name.
+    ///
+    /// When body 2 defines `a` that is reachable (final refs it), and body 1 also defines
+    /// `a` (shadowed by body 2's `a`), the BFS must NOT expand refs from body 1's `a` when
+    /// processing body 2's `a`. Using (body_index, name) as the unique key prevents this.
+    ///
+    /// Structure:
+    ///   body 0: [c: 99]
+    ///   body 1: [a: $c]          ← a references c from body 0 (cross-body ref)
+    ///   body 2: [a: [+ $p 1]]    ← a shadows body 1's a; no cross-body refs
+    ///   final:  $a               ← resolves to body 2's a (innermost)
+    ///
+    /// Correct (new BFS): reachable = {(2,a)}; (2,a)'s refs = []; c and (1,a) not reachable → WARN.
+    /// Bug (old BFS by name): dequeues "a", finds both body 1's AND body 2's `a`.
+    ///   Expands body 1's `a`'s refs = [(0,"c")] → c incorrectly marked reachable → false negative.
+    #[test]
+    fn lost_binding_shadowing_body_index_key() {
+        // Three bodies: body 0 has c; body 1 has a (uses c); body 2 has a (shadows, pure).
+        // Final uses body 2's a. body 1's a and body 0's c should BOTH warn.
+        let diagnostics = lost_binding_diagnostics("[fn [let p] [c: 99] [a: $c] [a: [+ $p 1]] $a]");
+        let lost_names: Vec<&str> = diagnostics
+            .iter()
+            .filter_map(|d| {
+                d.message
+                    .strip_prefix("intermediate binding '")
+                    .and_then(|s| s.split('\'').next())
+            })
+            .collect();
+        // body 0's c is NOT reachable: only body 1's a (not reachable) uses it.
+        // Bug: old BFS would incorrectly mark c as reachable via body 2's a finding body 1's a's refs.
+        assert!(
+            lost_names.contains(&"c"),
+            "expected lost-binding warning for 'c' (only body 1's a uses it, body 1's a is not reachable), got: {:?}",
+            lost_names
+        );
+        // body 1's a is not reachable: final resolved to body 2's a (innermost scope wins).
+        assert!(
+            lost_names.contains(&"a"),
+            "expected lost-binding warning for body 1's 'a' (shadowed by body 2's a), got: {:?}",
+            lost_names
+        );
+        // body 2's a IS reachable: final expression directly references it.
+        // Since both body 1's and body 2's a would warn for 'a', check that body 2's a is NOT warned.
+        // We can verify this indirectly: exactly one 'a' warning (body 1's), not two.
+        let a_count = lost_names.iter().filter(|&&n| n == "a").count();
+        assert_eq!(
+            a_count, 1,
+            "expected exactly 1 warning for 'a' (body 1 only, not body 2's which is reachable), got: {:?}",
+            lost_names
+        );
+    }
+
+    // --- T-1742: Pipeline stage lint unit tests ---
+
+    /// T-1742: All keys produced by stage are consumed — no warnings.
+    #[test]
+    fn lint_pipeline_stages_all_consumed_no_warn() {
+        let dummy_span = crate::rust_span!();
+        let stages = vec![(
+            vec!["x".to_string(), "y".to_string()],
+            vec!["x".to_string(), "y".to_string()],
+            false,
+            dummy_span,
+        )];
+        let warnings = lint_pipeline_stages(&stages);
+        assert!(
+            warnings.is_empty(),
+            "expected no warnings when all keys consumed, got: {:?}",
+            warnings.iter().map(|w| &w.message).collect::<Vec<_>>()
+        );
+    }
+
+    /// T-1742: Stage produces a key that the next stage does not consume — warning fires.
+    #[test]
+    fn lint_pipeline_stages_ignored_key_warns() {
+        let dummy_span = crate::rust_span!();
+        let stages = vec![(
+            vec!["x".to_string(), "y".to_string()],
+            vec!["x".to_string()], // y not consumed
+            false,
+            dummy_span,
+        )];
+        let warnings = lint_pipeline_stages(&stages);
+        let abandoned: Vec<&str> = warnings
+            .iter()
+            .filter(|w| w.kind == "abandoned-output")
+            .map(|w| w.message.as_str())
+            .collect();
+        assert_eq!(
+            abandoned.len(),
+            1,
+            "expected 1 abandoned-output warning, got: {:?}",
+            abandoned
+        );
+        assert!(
+            abandoned[0].contains("'y'"),
+            "expected warning to mention key 'y', got: {:?}",
+            abandoned[0]
+        );
+    }
+
+    /// T-1742: Dynamic % access (uses_dynamic = true) suppresses all warnings.
+    #[test]
+    fn lint_pipeline_stages_dynamic_access_no_warn() {
+        let dummy_span = crate::rust_span!();
+        let stages = vec![(
+            vec!["x".to_string(), "y".to_string()],
+            vec![], // no static accesses — dynamic only
+            true,   // uses_dynamic = true
+            dummy_span,
+        )];
+        let warnings = lint_pipeline_stages(&stages);
+        assert!(
+            warnings.is_empty(),
+            "expected no warnings when dynamic % access, got: {:?}",
+            warnings.iter().map(|w| &w.message).collect::<Vec<_>>()
+        );
+    }
+
+    /// T-1742: Pass-through pattern — next stage consumes a superset of produced keys.
+    #[test]
+    fn lint_pipeline_stages_passthrough_no_warn() {
+        let dummy_span = crate::rust_span!();
+        // Next stage accesses x, y, z — all three, stage only produces x and y.
+        let stages = vec![(
+            vec!["x".to_string(), "y".to_string()],
+            vec!["x".to_string(), "y".to_string(), "z".to_string()],
+            false,
+            dummy_span,
+        )];
+        let warnings = lint_pipeline_stages(&stages);
+        assert!(
+            warnings.is_empty(),
+            "expected no warnings when all produced keys are consumed, got: {:?}",
+            warnings.iter().map(|w| &w.message).collect::<Vec<_>>()
+        );
     }
 }

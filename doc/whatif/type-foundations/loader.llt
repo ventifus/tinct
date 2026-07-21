@@ -37,7 +37,7 @@
 #
 # Naming convention: ALL core module exports use the builtin-* prefix.
 # Prelude re-exports them as user-facing names (if, channel, send, bytes, ...).
-# Parser keywords (fn, match, let, type, class, instance, macro) are always
+# Parser keywords (fn, match, let, type, class, instance) are always
 # available as syntax — not module exports.
 #
 # Structure — THREE DICTS IN ONE DOCUMENT (no --- separators):

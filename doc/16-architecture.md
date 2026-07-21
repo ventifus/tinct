@@ -312,9 +312,9 @@ struct EvalContext {
 
 **Arena sharing invariant:** All eval contexts that access stdlib dict fields must share the stdlib's `ThunkArena` (via `create_stdlib_env_with_arena`). Violating this causes index-out-of-bounds panics during dot-access resolution. When creating a stdlib environment, use `create_stdlib_env_with_arena(arena)` and pass the same arena instance to all contexts that will evaluate code accessing stdlib bindings. The CLI and REPL handle this correctly by creating a single arena at startup; library users must ensure arena consistency manually.
 
-**Threading pattern:** `Arc<EvalContext>` — thunks capture `Arc::clone(&ctx)` at creation time and use it at materialization time. This is necessary because thunks are deferred (`Unevaluated`, `PendingBuiltin`, `PendingCall`) and materialized in a different stack frame than where they were created. Unlike `Environment` (which uses `Arc<RwLock<...>>`), EvalContext does not need an outer lock because it achieves interior mutability through its `state: Arc<Mutex<EvalState>>` field — the config is immutable by construction and only the state needs mutation.
+**Threading pattern:** `Arc<EvalContext>` — thunks capture `Arc::clone(&ctx)` at creation time and use it at materialization time. This is necessary because thunks are deferred (all `UnevaluatedState` variants store `ctx: Arc<EvalContext>`) and materialized in a different stack frame than where they were created.
 
-**ThunkState captures EvalContext:** `Unevaluated`, `PendingBuiltin`, and `PendingCall` all store `ctx: Arc<EvalContext>` alongside their existing `env: Arc<RwLock<Environment>>`. When a thunk is materialized, it uses the captured context for include resolution, sandboxing, etc.
+**UnevaluatedState captures EvalContext:** All six `UnevaluatedState` variants (`Surface`, `AstField`, `CoreExpr`, `BuiltinCall`, `FnCall`, `Guarded`) store `ctx: Arc<EvalContext>` (except `Guarded` which does not need one). Environments are referenced by `env_id: u32` index into the `ScopeArena`. When a thunk is materialized via `try_claim()`, the captured context and env_id are used for evaluation.
 
 **BuiltinArgs:** Carries `ctx: Arc<EvalContext>` (was `Rc<EvalContext>` before the runtime-v2 sprint). Data is owned (not borrowed) so the struct can be moved into `Box<dyn Future>` (which has an implicit `'static` bound). Most builtins ignore ctx; `$include` and I/O builtins use it for include resolution and sandboxing. There is no `depth` field — the iterative CEK machine (see §Iterative Evaluator) uses heap-allocated continuations rather than tracking recursion depth.
 
@@ -351,20 +351,31 @@ enum Value {
 }
 
 struct Thunk {
-    expr: AstNode,
-    env: Environment,
-    state: RefCell<ThunkState>,
-    source: SourceLocation,       // definition-site location
+    inner: ThunkInner,
+    span: Span,
 }
 
+struct ThunkInner {
+    unevaluated: Mutex<(Option<UnevaluatedState>, Option<TaskId>)>,  // taken by try_claim()
+    result: OnceCell<Result<Value, Arc<EvalError>>>,                 // set once by settle()
+    notify: Arc<Notify>,                                              // wakes waiters on settlement
+}
+
+enum UnevaluatedState {
+    Surface { node, res, types, env_id, ctx },    // pre-lowering AST node from builtin-eval
+    AstField { node, field, ctx },                 // lazy AST field access
+    CoreExpr { expr, env_id, ctx },                // lowered expression body
+    BuiltinCall { def, args, named, call_span, caller_env_id, ctx },  // deferred builtin call
+    FnCall { func, args, named, call_span, caller_env_id, ctx, original_call },  // deferred function application
+    Guarded { inner, expected, field_path, guard_span, blame_label, default },   // TypeAssert proxy contract
+}
+
+// ThunkState is derived by inspecting the two ThunkInner fields:
 enum ThunkState {
-    Unevaluated,
-    PendingBuiltin(name, args),   // deferred builtin call
-    PendingCall(func, args, named, call_span, caller_env, ctx),  // deferred function application (lazy $map, $update, etc.); caller_env captures caller's environment for default param evaluation
-    InProgress,                   // cycle detection — hitting this during materialization means circular dep
-    Materialized(Value),
-    Failed(Box<EvalError>),       // error memoization — cached so re-access returns same error
-    Guarded { inner, expected, field_path, guard_span },  // TypeAssert proxy contract — validates field types on access
+    Unevaluated,                       // state present, no result
+    InProgress { evaluating_task },    // state taken (try_claim), no result yet
+    Materialized(Value),               // result OnceCell contains Ok(v)
+    Failed(Arc<EvalError>),            // result OnceCell contains Err(e)
 }
 
 struct SourceLocation {
@@ -476,17 +487,18 @@ enum Value {
     Builtin(BuiltinDef),          // was: Builtin { name: &'static str, func: BuiltinFn }
 }
 
-// ThunkState:
-ThunkState::PendingBuiltin {
+// UnevaluatedState (in ThunkInner.unevaluated):
+UnevaluatedState::BuiltinCall {
     def: BuiltinDef,              // replaces separate name + func fields
-    args: Box<Vec<Arc<Thunk>>>,
-    named: Box<IndexMap<String, Arc<Thunk>>>,
+    args: Vec<ThunkId>,
+    named: Option<IndexMap<String, ThunkId>>,
     call_span: Span,
+    caller_env_id: u32,
     ctx: Arc<EvalContext>,
 }
 ```
 
-Strictness travels with the value. When the evaluator encounters `Value::Builtin(def)` or dispatches `ThunkState::PendingBuiltin { def, ... }`, `def.pos_strictness` is immediately available with no hash lookup and no secondary table. This matches the STG machine's info-table model (Peyton Jones 1992) and is required for efficient dispatch in the eval/apply model (Marlow & Peyton Jones 2004).
+Strictness travels with the value. When the evaluator encounters `Value::Builtin(def)` or dispatches `UnevaluatedState::BuiltinCall { def, ... }`, `def.pos_strictness` is immediately available with no hash lookup and no secondary table. This matches the STG machine's info-table model (Peyton Jones 1992) and is required for efficient dispatch in the eval/apply model (Marlow & Peyton Jones 2004).
 
 #### Registration
 
@@ -576,7 +588,7 @@ S = Seq, I = Id, Sp = Spine
 **Implementation via `BuiltinForceArgData` generalization.** The CEK machine is iterative and cannot pre-materialize multiple arguments in a single step. W1 generalizes the existing `Cont::BuiltinForceArg` continuation (which already pre-materializes `args[0]` unconditionally) to cover all `Seq`/`Spine` positions:
 
 1. `BuiltinForceArgData` gains an `arg_idx: usize` field tracking which position is currently being materialized.
-2. When `PendingBuiltin { def, args, ... }` is dispatched, instead of immediately building `BuiltinArgs`, the dispatcher finds the first `Seq`/`Spine` position in `def.pos_strictness`, pushes `Cont::BuiltinForceArg { def, args, named, ..., arg_idx: i }`, and returns `Action::Materialize { thunk: args[i] }`.
+2. When `UnevaluatedState::BuiltinCall { def, args, ... }` is dispatched, instead of immediately building `BuiltinArgs`, the dispatcher finds the first `Seq`/`Spine` position in `def.pos_strictness`, pushes `Cont::BuiltinForceArg { def, args, named, ..., arg_idx: i }`, and returns `Action::Materialize { thunk: args[i] }`.
 3. In `apply_cont` for `Cont::BuiltinForceArg`, after the arg at `arg_idx` is materialized, find the next `Seq`/`Spine` position. If one exists, push another `Cont::BuiltinForceArg` with the incremented index. If none remain, construct `BuiltinArgs` and call `def.func`.
 4. The existing `builtin_name == "apply"` string comparison at `eval_materialize.rs:1114` is deleted — it becomes a specific instance of this general mechanism, since `$apply` is annotated `[Seq, Seq]`.
 
@@ -656,7 +668,7 @@ LLT source files are **untrusted input**. The parser, type checker, and evaluato
 
 1. **Integer overflow**: All arithmetic builtins (`$+`, `$-`, `$*`, `$/`) use checked arithmetic (`checked_add`, `checked_sub`, `checked_mul`) to prevent silent wraparound in release mode
 2. **Cycle detection**: `InProgress` thunk state sentinel prevents infinite loops from circular data structures
-3. **Error memoization**: Failed thunks cache errors in `ThunkState::Failed` to prevent repeated evaluation of broken computations
+3. **Error memoization**: Failed thunks cache errors in the result `OnceCell` to prevent repeated evaluation of broken computations
 4. **Depth tracking**: All recursive eval/materialize/typecheck paths check depth limits **before** recursion, not after
 5. **LSP crash prevention**: Document size limit, method name cap, `no_fs=true` by default, panic-safe error handling
 6. **Kernel-level sandboxing**: rlimits, Landlock filesystem ACLs, and seccomp-bpf syscall filtering (see §Implemented Kernel-Level Sandboxing)
@@ -744,4 +756,4 @@ Tinct uses a multi-layer testing approach that matches the component architectur
 - **Corpus tests** — end-to-end validation (tests/corpus/valid/, tests/corpus/invalid/). Test language features in combination; verify error messages match expected output.
 - **CLI integration tests** — LSP protocol tests, file I/O sandboxing tests (--no-fs flag, include guards).
 - **Coverage invariant** — new language features require BOTH unit tests (isolated) and corpus tests (end-to-end). Error paths must have corpus tests with substring matching.
-- **Depth limit discipline** — tests that exercise MAX_EVAL_DEPTH must use 16MB stack threads to avoid Rust stack overflow before LLT depth limit is reached.
+- **Depth limit discipline** — the iterative CEK machine uses heap-allocated continuations (`Vec<Cont>`), bounded by `MAX_CONTINUATION_STACK = 2048`, so Rust stack overflow does not occur for deep evaluation. Tests that exercise deep recursion patterns run normally without stack-size adjustments.

@@ -300,7 +300,14 @@ Each dual-dispatch builtin (`map`, `filter`, `take`, `drop`, `reduce`, `join`) r
 
 ## Thunk Lifecycle — Formal Specification
 
-Extends Launchbury (1993) natural semantics for call-by-need with five additional thunk states (Placeholder, PendingBuiltin, PendingCall, Guarded, Failed) for pre-allocation sentinels, deferred computation, contract validation, and error memoization. PendingBuiltin and PendingCall are defunctionalized continuations (Reynolds 1972; Danvy & Nielsen 2003) — they represent deferred computation as data rather than closures. Guarded implements proxy contracts (Findler & Felleisen 2002) for lazy TypeAssert field validation.
+Extends Launchbury (1993) natural semantics for call-by-need with deferred computation variants (BuiltinCall, FnCall, Guarded) for contract validation and error memoization. BuiltinCall and FnCall are defunctionalized continuations (Reynolds 1972; Danvy & Nielsen 2003) — they represent deferred computation as data rather than closures. Guarded implements proxy contracts (Findler & Felleisen 2002) for lazy TypeAssert field validation.
+
+**Implementation structure:** Each `Thunk` wraps a `ThunkInner` with two fields:
+
+- `unevaluated: Mutex<(Option<UnevaluatedState>, Option<tokio::task::Id>)>` — taken on evaluation start via `try_claim()`
+- `result: tokio::sync::OnceCell<Result<Value, Arc<EvalError>>>` — set exactly once on completion via `settle()`
+
+`UnevaluatedState` is a 6-variant enum: `Surface`, `AstField`, `CoreExpr`, `BuiltinCall`, `FnCall`, `Guarded`. Blackholing (cycle detection) is implemented by `try_claim()` returning `None` — if the state has already been taken, the thunk is in progress. Non-cacheable errors restore the state via `reset()`.
 
 **User-visible states:** As a user, you observe three effective states:
 
@@ -308,66 +315,43 @@ Extends Launchbury (1993) natural semantics for call-by-need with five additiona
 - A thunk is **materialized** when first accessed (you used a value; it was computed and cached).
 - A thunk is **failed** when a computation error occurred (the error is cached; re-accessing returns the same error).
 
-The runtime uses five additional internal states for deferred builtins (`PendingBuiltin`), deferred function calls (`PendingCall`), type assertion contracts (`Guarded`), cycle detection (`InProgress`), and pre-allocation sentinels (`Placeholder`).
-
-**State set:** `S = { Placeholder, Unevaluated, PendingBuiltin, PendingCall, Guarded, InProgress, Materialized, Failed }`
-
-Placeholder is a pre-construction sentinel excluded from all materialization rules. The materialization lifecycle has 7 participating states.
+The runtime distinguishes six `UnevaluatedState` variants internally: `Surface` (pre-lowering AST node), `AstField` (lazy AST field access), `CoreExpr` (lowered expression body), `BuiltinCall` (deferred builtin), `FnCall` (deferred function call), and `Guarded` (type assertion contract). The `ThunkState` enum derived from inspecting the two fields has four logical states: `Unevaluated` (state present, no result), `InProgress` (state taken, no result yet), `Materialized(Value)` (result is `Ok`), `Failed(Arc<EvalError>)` (result is `Err`).
 
 ### Part 1: State Transition Graph
 
-The valid state transitions form an almost-acyclic directed graph — nearly all transitions move strictly forward, with four backward edge exceptions: `InProgress → Guarded`, `InProgress → Unevaluated`, `InProgress → PendingBuiltin`, and `InProgress → PendingCall`, all of which restore state when a non-cacheable error (typically `DepthExceeded`) occurs and the thunk must be retried (see Exception below).
+The valid state transitions form an almost-acyclic directed graph — nearly all transitions move strictly forward, with one backward edge exception: `InProgress → {any UnevaluatedState variant}`, which restores state when a non-cacheable error (typically `DepthExceeded`) occurs and the thunk must be retried (see Exception below).
 
 ```text
-Placeholder ───────────────────────────────→ {any non-InProgress state}
-
-Unevaluated ──────────┐
-PendingBuiltin ────────┤
-PendingCall ───────────┼──→ InProgress ──┬──→ Materialized
-Guarded ──────────────┘                 └──→ Failed ⟲
+UnevaluatedState present ──→ InProgress (try_claim) ──┬──→ Materialized (settle Ok)
+                                                       └──→ Failed (settle Err) ⟲
 ```
 
-The transition graph governs state *transitions*, not construction. Thunks may be constructed directly in Placeholder state (via `Thunk::new_placeholder()`), Unevaluated, PendingBuiltin, PendingCall, Guarded, or Materialized state (via `Thunk::new_materialized`). The transition graph applies only to subsequent state changes.
+`try_claim()` atomically takes the `Option<UnevaluatedState>` from the `Mutex`, transitioning to InProgress. `settle()` writes the terminal result to the `OnceCell`. `reset()` restores state for non-cacheable error retry.
 
-Transition rules (each maps to one `take_*`, `set_materialized`, `restore_unevaluated`, or `cache_failure` call in `src/value.rs`):
+The transition graph governs state *transitions*, not construction. Thunks may be constructed with any `UnevaluatedState` variant, or directly in Materialized state (via `Thunk::value()`). The transition graph applies only to subsequent state changes.
+
+Transition rules (each maps to `try_claim()`, `settle()`, or `reset()` in `src/value.rs`):
 
 | Transition | Trigger | Atomicity |
 |-----------|---------|-----------|
-| Placeholder → {any non-InProgress state} | construction-time direct write | Direct write — pre-construction sentinel only; materializing a `Placeholder` thunk returns a `CircularDependency` error (the runtime treats Placeholder identically to InProgress — see `is_in_progress()` in `value.rs`). Legal targets: Unevaluated, PendingBuiltin, PendingCall, Guarded, Materialized. InProgress is excluded because it would trigger cycle detection on the next materialization attempt. |
-| Unevaluated → InProgress | `take_unevaluated()` | Atomic (`mem::replace`) |
-| PendingBuiltin → InProgress | `take_pending_builtin()` | Atomic (`mem::replace`) |
-| PendingCall → InProgress | `take_pending_call()` | Atomic (`mem::replace`) |
-| Guarded → InProgress | `take_guarded()` | Atomic (`mem::replace`) |
-| InProgress → Materialized | `set_materialized(v)` | Direct write (clears `unevaluated`, writes `Ok(v)` to result OnceCell) |
-| InProgress → Failed | `cache_failure(err)` | Direct write (clears `unevaluated`, sets `result` via OnceCell) |
-| InProgress → Unevaluated | `restore_unevaluated(UnevaluatedState::Unevaluated { ... })` | Direct write — **backward edge**, non-cacheable errors only; restores original state for retry |
-| InProgress → Guarded | `restore_unevaluated(UnevaluatedState::Guarded { ... })` | Direct write — **backward edge**, non-cacheable errors from builtins only; restores original state to allow retry |
-| InProgress → PendingBuiltin | `restore_unevaluated(UnevaluatedState::PendingBuiltin { ... })` | Direct write — **backward edge**, non-cacheable errors only; restores original state for retry |
-| InProgress → PendingCall | `restore_unevaluated(UnevaluatedState::PendingCall { ... })` | Direct write — **backward edge**, non-cacheable errors only; restores original state for retry |
-| Failed → Failed | `cache_failure(e')` | Direct write (diagnostic refinement only — enriches materialization spans and stack frames) |
+| {any UnevaluatedState} → InProgress | `try_claim()` | Atomic (`Option::take()` under `Mutex` lock; also records current `tokio::task::Id`) |
+| InProgress → Materialized | `settle(Ok(v))` | Writes `Ok(v)` to result `OnceCell`, clears task id, notifies waiters |
+| InProgress → Failed | `settle(Err(e))` | Writes `Err(e)` to result `OnceCell`, clears task id, notifies waiters |
+| InProgress → {original UnevaluatedState} | `reset(state)` | Restores `Option<UnevaluatedState>` under `Mutex` lock, clears task id — **backward edge**, non-cacheable errors only; restores original state for retry |
 
-**Monotonicity proof sketch:** `Placeholder` is a pre-construction sentinel — it sits below all other states in the construction-time ordering. It is not part of the materialization path: materializing a `Placeholder` thunk panics rather than transitioning through InProgress. `Placeholder` transitions directly to any non-InProgress state at allocation time, establishing the thunk's initial materialization state before any evaluation begins. This is a pure construction-time concept and does not interact with the Launchbury monotonicity argument below.
+**Monotonicity proof sketch:** The materialization graph has no cycles. One backward edge class exists (InProgress → UnevaluatedState via `reset()`), which is acyclic: InProgress cannot cycle back through a deferred state because the restored state transitions only to InProgress via `try_claim()`, and from there only to Materialized or Failed. Each UnevaluatedState variant transitions only to InProgress. InProgress transitions only to Materialized or Failed — with one exception: the backward edge for non-cacheable errors (see Exception below); these preserve semantic monotonicity because the thunk's observable meaning is unchanged between retries. Materialized is terminal (OnceCell is write-once). Failed is terminal for the same reason, though diagnostic refinement may enrich the error's stack frames. Therefore all transition sequences are finite, and the semantic content of a thunk is monotonically determined. ∎
 
-The materialization graph (excluding `Placeholder`) has no cycles. Four backward edges exist (InProgress → Unevaluated, InProgress → Guarded, InProgress → PendingBuiltin, InProgress → PendingCall), all acyclic: InProgress cannot cycle back through any of the four deferred states because none of those states transition to InProgress without first transitioning forward to Materialized or Failed on their own path. Each source state (Unevaluated, PendingBuiltin, PendingCall, Guarded) transitions only to InProgress. InProgress transitions only to Materialized or Failed — with one exception: the four backward edges for non-cacheable errors from deferred states (see Exception below); these preserve semantic monotonicity because the thunk's observable meaning is unchanged between retries. Materialized is terminal — no transitions out. Failed has a self-edge for diagnostic refinement (enriching materialization spans and stack frames), but the error's semantic identity is fixed — only diagnostic metadata may be updated. Therefore all transition sequences are finite, and the semantic content of a thunk is monotonically determined. ∎
+**Exception — retryable non-cacheable errors:** The backward edge (InProgress → UnevaluatedState via `reset()`) fires when evaluation fails with a non-cacheable error. This applies to all six UnevaluatedState variants uniformly. `DepthExceeded` can be raised by the continuation stack depth guard (`MAX_CONTINUATION_STACK = 2048` frames, `src/eval_materialize.rs`) inside the core CEK loop, and by individual builtins (e.g., `MAX_COLLECT_SIZE` in `$collect`). Because such errors are transient resource-bound conditions (not semantic errors), they are non-cacheable — `settle()` is skipped and the thunk is restored to its pre-InProgress state via `reset()` so the computation can be retried. This backward restoration means strict state-order monotonicity does not hold for the non-cacheable path. However, semantic monotonicity is preserved: the thunk's observable meaning is unchanged between attempts, and the error identity is not fixed. Every other error kind is cacheable and takes the normal `InProgress → Failed` forward edge. (`src/eval_materialize.rs`, in `force_step()`)
 
-**Exception — retryable non-cacheable errors:** Four backward edges exist for non-cacheable errors from deferred-computation states:
-
-- `InProgress → Unevaluated`: fires when an Unevaluated thunk's expr evaluation fails with a non-cacheable error; restores the original Unevaluated state for retry.
-- `InProgress → Guarded`: fires when a Guarded thunk's inner materialization fails with a non-cacheable error (see `[MATERIALIZE-GUARD-NONCACHEABLE]`).
-- `InProgress → PendingBuiltin`: fires when a PendingBuiltin's execution raises a non-cacheable error; restores the original PendingBuiltin state for retry.
-- `InProgress → PendingCall`: fires when a PendingCall's invocation raises a non-cacheable error; restores the original PendingCall state for retry.
-
-All four fire under the same condition: any non-cacheable error (e.g., `DepthExceeded`) from a deferred state restores that state for retry. `DepthExceeded` can be raised by the continuation stack depth guard (`MAX_CONTINUATION_STACK = 2048` frames, `src/eval_materialize.rs:309`) inside the core CEK loop, and by individual builtins (e.g., `MAX_COLLECT_SIZE` in `$collect`). Because such errors are transient resource-bound conditions (not semantic errors), they are non-cacheable — `cache_failure` is skipped and the thunk is restored to its pre-InProgress state so the computation can be retried. These backward restorations mean strict state-order monotonicity does not hold for the non-cacheable path. However, semantic monotonicity is preserved: the thunk's observable meaning is unchanged between attempts, and the error identity is not fixed. Every other error kind is cacheable and takes the normal `InProgress → Failed` forward edge. (`src/eval_materialize.rs`, in the `force_step()` match arms for `Unevaluated`, `Guarded`, `PendingBuiltin`, and `PendingCall`)
-
-**Atomicity invariant:** Each `take_*` method atomically swaps the thunk state to InProgress before returning the captured data. This ensures no observer can see the old state after the transition begins. The atomicity is provided by `std::mem::replace` under an exclusive `borrow_mut()` — Rust's borrow checker prevents double borrows within a single thread.
+**Atomicity invariant:** `try_claim()` atomically takes the `UnevaluatedState` from the `Mutex<(Option<UnevaluatedState>, Option<tokio::task::Id>)>` via `Option::take()` and records the current task id. This ensures no observer can see the old state after the transition begins. The `Mutex` provides exclusive access across async tasks; `settle()` writes the result to the `OnceCell` (write-once) and notifies all waiters via `tokio::sync::Notify`.
 
 ### Part 2: Materialization Rules
 
-Materialization dispatches on the current state to produce a value or error. Rules use two judgment forms: `materialize(θ) ⇒ v` where θ is a thunk and v is the resulting value; and `eval(e, ρ, Σ) ⇒ θ` where e is an expression, ρ is the lexical environment, Σ is the EvalContext (base directory, include guards, stdlib env), and θ is the resulting thunk. The EvalContext Σ is captured inside each thunk at construction time (written Σ_θ when referencing a specific thunk's context) and is not a parameter of `materialize` — it is part of the thunk's closure.
+Materialization dispatches on the `UnevaluatedState` variant to produce a value or error. Rules use two judgment forms: `materialize(θ) ⇒ v` where θ is a thunk and v is the resulting value; and `eval(e, ρ, Σ) ⇒ θ` where e is an expression, ρ is the lexical environment, Σ is the `EvalContext` (scope arena, include cache, capabilities), and θ is the resulting thunk. The `EvalContext` Σ is captured inside each `UnevaluatedState` variant at construction time (written Σ_θ when referencing a specific thunk's context) and is not a parameter of `materialize` — it is part of the thunk's closure.
 
-**Notation:** The rules use an implementation-oriented notation mixing imperative state updates (`θ.state ← InProgress`) with declarative judgments (`eval(expr, env, Σ_θ) ⇒ θ'`). `Σ_θ` denotes the evaluation context (`EvalContext`) captured at thunk construction time — it carries context-dependent state (base directory, include guards) that must reflect the thunk's definition site. A standard operational semantics would thread an explicit store σ mapping thunk IDs to states: `materialize(θ, σ) ⇒ (v, σ')`. The notation here maps directly to the `materialize()` implementation for ease of cross-checking.
+**Notation:** The rules use an implementation-oriented notation mixing imperative state updates (`try_claim(θ) → state`) with declarative judgments (`eval(expr, env, Σ_θ) ⇒ θ'`). `Σ_θ` denotes the evaluation context (`EvalContext`) captured at thunk construction time — it carries context-dependent state (scope arena, include cache) that must reflect the thunk's definition site. A standard operational semantics would thread an explicit store σ mapping thunk IDs to states: `materialize(θ, σ) ⇒ (v, σ')`. The notation here maps directly to the `force_step()` implementation for ease of cross-checking.
 
-**Depth tracking:** The iterative CEK machine (see §Iterative Evaluator below) has replaced recursive depth tracking with a bounded continuation stack. There is no `MAX_EVAL_DEPTH` check in the core materialization loop — the heap-allocated continuation stack (`Vec<Cont>`) replaces the Rust call stack and is bounded by `MAX_CONTINUATION_STACK = 2048` frames (`src/eval_materialize.rs:33`, ~192 KB). Sequence iteration guards in builtins use `MAX_COLLECT_SIZE` (1,000,000), a separate constant for preventing unbounded sequence collection.
+**Depth tracking:** The iterative CEK machine (see §Iterative Evaluator below) uses a heap-allocated continuation stack (`Vec<Cont>`) instead of the Rust call stack, bounded by `MAX_CONTINUATION_STACK = 2048` frames (`src/eval_materialize.rs`, ~192 KB). There is no `MAX_EVAL_DEPTH` in the core materialization loop. Sequence iteration guards in builtins use `MAX_COLLECT_SIZE` (1,000,000), a separate constant for preventing unbounded sequence collection.
 
 **[MATERIALIZE-CACHED]**
 
@@ -548,8 +532,8 @@ Six properties essential for call-by-need soundness (Launchbury 1993, Ariola & F
 |----------|--------|---------------|
 | **Determinism** | Satisfied | Pure subset only; `$include` introduces external state dependence |
 | **Sharing (evaluate-at-most-once)** | Satisfied | Materialized and Failed are semantically terminal — subsequent materializations return cached result (Failed may refine diagnostic metadata) |
-| **Monotonicity** | Satisfied with exceptions | transition graph has four backward edges (`InProgress → Guarded/Unevaluated/PendingBuiltin/PendingCall`) for non-cacheable errors from builtins (retry semantics); Failed self-edge refines diagnostics only (proven above) |
-| **Adequacy** | Holds for extensions | PendingBuiltin/PendingCall are observationally equivalent to Unevaluated (defunctionalization preserves semantics). Guarded is observationally equivalent to an Unevaluated thunk that materializes and validates (proxy contract). Failed extends the codomain from Value⊥ to Value + Error⊥ (absorbing, deterministic) |
+| **Monotonicity** | Satisfied with exceptions | one backward edge class (`InProgress → {original UnevaluatedState}` via `reset()`) for non-cacheable errors (retry semantics); Failed is terminal (OnceCell write-once) |
+| **Adequacy** | Holds for extensions | BuiltinCall/FnCall are observationally equivalent to CoreExpr (defunctionalization preserves semantics). Guarded is observationally equivalent to a CoreExpr thunk that materializes and validates (proxy contract). Failed extends the codomain from Value⊥ to Value + Error⊥ (absorbing, deterministic) |
 | **Confluence** | Pure subset only | `$include` makes evaluation order observable; in the pure subset, materialization order does not affect final values |
 | **Sharing preservation** | Satisfied | `Arc<Thunk>` ensures identity-based sharing; the CEK machine preserves thunk identity through continuation dispatch |
 
@@ -565,25 +549,25 @@ Implicit decisions in the current implementation, made explicit:
 
 **4. Finite vs productive thunk lifecycles.** Dict-entry thunks have a **finite lifecycle**: they must eventually reach Materialized or Failed. Seq tail thunks have a **productive lifecycle**: materializing a tail yields a Seq value (containing a new tail thunk) or the terminal `[]`. The state machine is identical; the liveness obligation differs. This distinction is not enforced by the type system — it is a semantic contract between the sequence constructors and the programmer (see §Productivity Obligations).
 
-### Adequacy of PendingBuiltin and PendingCall
+### Adequacy of BuiltinCall and FnCall
 
-These states are defunctionalized continuations (Reynolds 1972). Each is observationally equivalent to an Unevaluated thunk holding an expression that would perform the same computation:
+These `UnevaluatedState` variants are defunctionalized continuations (Reynolds 1972). Each is observationally equivalent to a `CoreExpr` thunk holding an expression that would perform the same computation:
 
-- `PendingBuiltin(f, args, named, cs, Σ_θ)` ≡ `Unevaluated([f ...args ...named], env, Σ_θ)` where env binds the arg thunks
-- `PendingCall(f_θ, args, named, cs, caller_env, Σ_θ)` ≡ `Unevaluated([call <materialize f_θ> ...args ...named], env, Σ_θ)`
-- `Guarded(θ_inner, τ, path, span)` ≡ `Unevaluated(<materialize θ_inner then validate ∈ τ>, env, Σ_θ)` — a proxy contract monitor (Findler & Felleisen 2002)
+- `BuiltinCall(def, args, named, cs, Σ_θ)` ≡ `CoreExpr([f ...args ...named], env, Σ_θ)` where env binds the arg thunks
+- `FnCall(f_θ, args, named, cs, caller_env, Σ_θ)` ≡ `CoreExpr([call <materialize f_θ> ...args ...named], env, Σ_θ)`
+- `Guarded(θ_inner, τ, path, span)` ≡ `CoreExpr(<materialize θ_inner then validate ∈ τ>, env, Σ_θ)` — a proxy contract monitor (Findler & Felleisen 2002)
 
-The equivalence for PendingCall holds because `eval` of `[call ...]` already performs dynamic dispatch on the callee — if `f_θ` materializes to a Builtin rather than a Function, both the PendingCall path (MATERIALIZE-CALL-BUILTIN) and the hypothetical Unevaluated path would dispatch to the same builtin.
+The equivalence for FnCall holds because `eval` of `[call ...]` already performs dynamic dispatch on the callee — if `f_θ` materializes to a Builtin rather than a Function, both the FnCall path (MATERIALIZE-CALL-BUILTIN) and the hypothetical CoreExpr path would dispatch to the same builtin.
 
-The difference is operational: PendingBuiltin/PendingCall avoid constructing AST nodes for deferred computations. A formal adequacy proof would show bisimulation: every materialization sequence starting with `PendingBuiltin(f, args, ...)` produces the same value as materializing `Unevaluated([f ...args], env)`. This is conjectured based on the defunctionalization correspondence (Reynolds 1972; Danvy & Nielsen 2003) but not mechanically verified.
+The difference is operational: BuiltinCall/FnCall avoid constructing AST nodes for deferred computations. A formal adequacy proof would show bisimulation: every materialization sequence starting with `BuiltinCall(def, args, ...)` produces the same value as materializing `CoreExpr([f ...args], env)`. This is conjectured based on the defunctionalization correspondence (Reynolds 1972; Danvy & Nielsen 2003) but not mechanically verified.
 
 ### Relationship to CEK Machine Migration
 
-The iterative evaluator (§Iterative Evaluator) uses explicit `Cont` variants on the continuation stack to process thunk state transitions. The CEK machine does not remove PendingBuiltin and PendingCall — these are permanent design elements representing persistent deferred computation:
+The iterative evaluator (§Iterative Evaluator) uses explicit `Cont` variants on the continuation stack to process thunk state transitions. The CEK machine does not remove BuiltinCall and FnCall — these are permanent design elements representing persistent deferred computation:
 
-- **PendingBuiltin** stores deferred builtin calls for lazy sequences (`$map`, `$filter`, `$fold_step`, etc.) and proxy handler dispatch. Cannot be replaced by Unevaluated because builtin function pointers (`BuiltinFn`) have no AST representation. Lazy sequences need persistent storage for deferred steps.
-- **PendingCall** stores deferred function calls for lazy dispatch and tail-call optimization. Represents work already done by `eval_call` (evaluated func_expr, wrapped args) that Unevaluated would duplicate.
-- The monotonicity proof and semantic properties remain unchanged — the 7-state transition graph (Unevaluated, PendingBuiltin, PendingCall, Guarded, InProgress, Materialized, Failed) is the stable design.
+- **BuiltinCall** (formerly PendingBuiltin) stores deferred builtin calls for lazy sequences (`$map`, `$filter`, `$fold_step`, etc.) and proxy handler dispatch. Cannot be replaced by CoreExpr because builtin function pointers (`BuiltinFn`) have no AST representation. Lazy sequences need persistent storage for deferred steps.
+- **FnCall** (formerly PendingCall) stores deferred function calls for lazy dispatch and tail-call optimization. Represents work already done by `eval_call` (evaluated func_expr, wrapped args) that CoreExpr would duplicate.
+- The monotonicity proof and semantic properties remain unchanged — the `UnevaluatedState` (6-variant) + `OnceCell` design is the stable architecture.
 - **Sharing preservation is the critical migration invariant**: thunk identity (`Arc<Thunk>` pointer) must be preserved through continuation dispatch. A materialized thunk must be the same allocation that was created at the definition site.
 - The iterative CEK machine uses heap-allocated continuations with no hardcoded depth bound
 

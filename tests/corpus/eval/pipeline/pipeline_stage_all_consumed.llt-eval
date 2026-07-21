@@ -1,0 +1,6 @@
+# T-1742: Two-stage pipeline where all produced keys are consumed — no warning.
+[x: 1  y: 2]
+---
+[result: [+ %.x %.y]]
+=== out
+Int(3)

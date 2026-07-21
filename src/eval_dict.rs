@@ -253,7 +253,7 @@ pub(crate) async fn eval_dict_core(
     // batch-acquire the arena lock once after the loop instead of once per entry.
     // The lock cannot be held across the .await in eval_key_core, so we must
     // collect first and write after.
-    let mut letrec_slots: Vec<(u32, ThunkId, String)> = Vec::new();
+    let mut letrec_slots: Vec<(u32, ThunkId)> = Vec::new();
 
     for entry in entries {
         // Determine if this entry has a static key (CoreExpr::Str or annotated Var).
@@ -380,16 +380,7 @@ pub(crate) async fn eval_dict_core(
         }
 
         if is_static_key {
-            // Extract the name for the slot. Use the same logic as the duplicate_key error path.
-            let name = match &entry.node.key {
-                Some(k_expr) => match &k_expr.node {
-                    CoreExpr::Str(s) => s.clone(),
-                    CoreExpr::Var { name, .. } => name.clone(),
-                    _ => "<computed>".to_string(), // should not occur for static keys
-                },
-                None => slot_idx.to_string(), // auto-indexed entries
-            };
-            letrec_slots.push((slot_idx, thunk_id, name));
+            letrec_slots.push((slot_idx, thunk_id));
             slot_idx += 1;
         }
     }
@@ -403,14 +394,14 @@ pub(crate) async fn eval_dict_core(
     // This ensures child scope slots exist before any are filled, maintaining letrec semantics.
     if !letrec_slots.is_empty() {
         let mut arena_guard = ctx.scope_arena.borrow_mut();
-        for (idx, _thunk_id, _name) in &letrec_slots {
+        for (idx, _thunk_id) in &letrec_slots {
             let reserved_idx = arena_guard.reserve_slot(env_id);
             debug_assert_eq!(
                 reserved_idx, *idx,
                 "letrec slot index must match reservation order"
             );
         }
-        for (idx, thunk_id, _name) in letrec_slots {
+        for (idx, thunk_id) in letrec_slots {
             arena_guard.fill_slot(env_id, idx, thunk_id);
         }
     }

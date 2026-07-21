@@ -2512,6 +2512,146 @@ pub(crate) fn builtin_resolve(
     })
 }
 
+// ── T-1742: Pipeline stage lint builtins ──────────────────────────────────────
+
+/// `builtin-lint-pipeline-docs`: Run the cross-document pipeline stage lint.
+///
+/// Takes 1 positional arg: a Dict of `Value::Document` objects (integer-keyed, in order).
+///
+/// For each consecutive pair of documents (doc[i], doc[i+1]):
+/// - Extracts the static produced keys from doc[i]'s final expression
+/// - Extracts the percent field accesses from doc[i+1]
+/// - Checks whether all produced keys are consumed; warns on abandoned keys
+///
+/// Returns `Dict[Int, DiagnosticDict]` using the same diagnostic format as `builtin-resolve`.
+/// The returned dict is a flat list of diagnostics (empty when no warnings).
+pub(crate) fn builtin_lint_pipeline_docs(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+            ..
+        } = ctx_arg;
+        crate::builtins::reject_named(
+            "builtin-lint-pipeline-docs",
+            named.as_ref(),
+            call_span.clone(),
+        )?;
+        if args.len() != 1 {
+            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+        }
+
+        let docs_val = ctx
+            .get_thunk(args[0])
+            .try_get_materialized()
+            .expect("pre-materialized by Strictness::Seq");
+        let docs_dict = match docs_val {
+            Value::Dict(d) => d,
+            other => {
+                return Err(EvalError::internal(
+                    format!(
+                        "builtin-lint-pipeline-docs: expected Dict, got {}",
+                        other.type_name()
+                    ),
+                    call_span,
+                )
+                .into())
+            }
+        };
+
+        // Sort document entries by integer key to get them in pipeline order.
+        let mut doc_entries: Vec<(i64, ThunkId)> = docs_dict
+            .iter()
+            .map(|(k, v)| match k {
+                HashableValue::Int(i) => (*i, *v),
+                other => panic!("docs outer key is not Int: {:?}", other),
+            })
+            .collect();
+        doc_entries.sort_by_key(|(i, _)| *i);
+
+        // Collect SurfaceDocument arcs from the thunks.
+        let mut doc_arcs: Vec<std::sync::Arc<crate::ast::SurfaceDocument>> = Vec::new();
+        for (_, tid) in &doc_entries {
+            let val =
+                crate::eval::materialize(&ctx.get_thunk(*tid), Some(&call_span), &ctx).await?;
+            if let Value::Document(d) = val {
+                doc_arcs.push(d);
+            } else {
+                return Err(EvalError::internal(
+                    format!(
+                        "builtin-lint-pipeline-docs: entry is not a Document: {}",
+                        val.type_name()
+                    ),
+                    call_span,
+                )
+                .into());
+            }
+        }
+
+        // Build lint_stages: for each consecutive pair (doc[i], doc[i+1]),
+        // collect produced keys of doc[i] and percent accesses of doc[i+1].
+        let mut lint_stages: Vec<(Vec<String>, Vec<String>, bool, crate::ast::Span)> = Vec::new();
+        for i in 0..doc_arcs.len().saturating_sub(1) {
+            let (produced_keys, span) =
+                crate::resolve::collect_document_produced_keys(&doc_arcs[i]);
+            let (field_accesses, dynamic_use) =
+                crate::resolve::collect_percent_accesses(&doc_arcs[i + 1]);
+            lint_stages.push((produced_keys, field_accesses, dynamic_use, span));
+        }
+
+        // Run the lint.
+        let warnings = crate::resolve::lint_pipeline_stages(&lint_stages);
+
+        // Build diagnostics dict using the same format as builtin-resolve.
+        let alloc = |v: Value| ctx.alloc_thunk(0, Arc::new(Thunk::value(v, call_span.clone())));
+        let mut diagnostics_dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+        for (i, diag) in warnings.iter().enumerate() {
+            let span_id = make_span_dict(diag.primary_span(), &ctx, &call_span);
+            let mut w: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+            w.insert(
+                HashableValue::Str("level".into()),
+                alloc(string_val(&diag.level.to_string())),
+            );
+            w.insert(
+                HashableValue::Str("kind".into()),
+                alloc(string_val(diag.kind)),
+            );
+            w.insert(
+                HashableValue::Str("message".into()),
+                alloc(string_val(&diag.message)),
+            );
+            w.insert(HashableValue::Str("span".into()), span_id);
+            let mut notes_dict = IndexMap::new();
+            for (j, note) in diag.notes.iter().enumerate() {
+                notes_dict.insert(HashableValue::Int(j as i64), alloc(string_val(note)));
+            }
+            w.insert(
+                HashableValue::Str("notes".into()),
+                alloc(Value::Dict(notes_dict)),
+            );
+            w.insert(
+                HashableValue::Str("call-stack".into()),
+                alloc(Value::Dict(IndexMap::new())),
+            );
+            w.insert(
+                HashableValue::Str("macro-expand".into()),
+                alloc(Value::Dict(IndexMap::new())),
+            );
+            w.insert(
+                HashableValue::Str("blame".into()),
+                alloc(Value::Dict(IndexMap::new())),
+            );
+            diagnostics_dict.insert(HashableValue::Int(i as i64), alloc(Value::Dict(w)));
+        }
+
+        ok_val(Value::Dict(diagnostics_dict), call_span)
+    })
+}
+
 // builtin_typecheck removed — use builtin_typecheck_doc for per-document type-checking
 
 /// `builtin-typecheck-doc`: Type-check a single resolved `Value::Document`.

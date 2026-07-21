@@ -1,0 +1,8 @@
+# T-1743: transitive reachability — no warning when chain is consumed.
+# Binding 'a' is defined in the first intermediate body.
+# Binding 'b' references 'a' in the second intermediate body.
+# The final expression references 'b', so both 'b' and 'a' are transitively
+# reachable — no lost-binding warning should fire.
+[call [fn [let x] [a: [+ x 1]] [b: [+ a 2]] b] 10]
+=== out
+Int(13)

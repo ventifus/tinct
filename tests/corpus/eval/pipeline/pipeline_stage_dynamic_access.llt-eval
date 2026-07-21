@@ -1,0 +1,8 @@
+# T-1742: Dynamic % access — next stage uses % non-statically, no abandoned-output warning.
+# Even though stage 1 produces 'y' and stage 2 only accesses 'x' statically,
+# the dynamic access to % suppresses the lint for this stage pair.
+[x: 1  y: 2]
+---
+[key: "x"  result: [get $key %]]
+=== out
+Dict({"key": String("x"), "result": Int(1)})
