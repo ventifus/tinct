@@ -942,7 +942,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
     let mut arm_data: Vec<SurfaceMatchArmData> = Vec::new();
 
     for (pattern_node, methods) in arms {
-        let pattern_types = extract_pattern_types(pattern_node, env, state)?;
+        let pattern_types = extract_pattern_types(pattern_node, env, state).await?;
 
         if pattern_types.len() != param_count {
             return Err(vec![TypeDiagnostic::error(

@@ -243,7 +243,8 @@ pub struct CoreMatchArm {
 enum Annotation {
     Simple(String),               // x@Number — shorthand
     PropertyDict(Vec<Spanned<SurfaceEntry>>),  // x@[type: Number  default: 30]
-    Annotated(String, Box<Annotation>),  // Seq@Integer — chained annotation
+    Annotated(Box<Annotation>, Box<Annotation>),  // Seq@Integer — chained annotation (outer may be any Annotation)
+    Quote,                        // @Expr — quoting sentinel; parser converts @Expr text to this immediately
 }
 ```
 

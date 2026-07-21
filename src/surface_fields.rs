@@ -431,7 +431,11 @@ pub fn dot_key_to_value(key: &DotKey, ctx: &std::sync::Arc<crate::eval::EvalCont
 /// - `Simple(name)`        → `[Simple  text: name]`
 /// - `PropertyDict(entries)` → `[PropertyDict  text: "display"  doc: "..."  return: "..."]`
 ///   The `doc:` and `return:` fields are present only when those keys exist.
-/// - `Annotated(name, inner)` → `[Annotated  text: "Name@Inner"  name: "Name"  inner: "Inner"]`
+/// - `Annotated(Simple(name), inner)` → `[Annotated  text: "Name@Inner"  name: "Name"  inner: "Inner"]`
+/// - `Annotated(other_outer, inner)` → `[Annotated  text: "..."  outer: <nested Annotation value>  inner: "Inner"]`
+///   When the outer is not Simple (e.g. `PropertyDict`), it is serialized recursively as a
+///   nested Annotation value in the `outer` field.  Consumers must check for `outer` first
+///   and fall back to `name` for Simple backward compatibility.
 ///
 /// The `text` field always contains the Display representation.
 /// This enables tinct AST-traversal code to extract annotation content (return types,
@@ -616,18 +620,32 @@ fn annotation_inner_to_value(
             }
             ("Annotation", "PropertyDict")
         }
-        Annotation::Annotated(name, inner) => {
-            let inner_text = inner.to_string();
+        Annotation::Annotated(outer, inner) => {
+            // When the outer is Simple, emit a flat "name" string for backward compatibility.
+            // When the outer is any other variant (e.g. PropertyDict), emit a structured
+            // "outer" field containing the recursively serialized annotation value so that
+            // deserialization can reconstruct the full Annotation without information loss.
+            match outer.as_ref() {
+                Annotation::Simple(name) => {
+                    payload_map.insert(
+                        HashableValue::Str("name".into()),
+                        ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(name), span.clone()))),
+                    );
+                }
+                other_outer => {
+                    let outer_val = annotation_inner_to_value(other_outer, span.clone(), ctx);
+                    payload_map.insert(
+                        HashableValue::Str("outer".into()),
+                        ctx.alloc_thunk(0, Arc::new(Thunk::value(outer_val, span.clone()))),
+                    );
+                }
+            }
+            // Serialize inner as a structured "inner-ann" recursive Annotation value.
+            // This is the only serialization form — no "inner" string fallback.
+            let inner_ann_val = annotation_inner_to_value(inner.as_ref(), span.clone(), ctx);
             payload_map.insert(
-                HashableValue::Str("name".into()),
-                ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(name), span.clone()))),
-            );
-            payload_map.insert(
-                HashableValue::Str("inner".into()),
-                ctx.alloc_thunk(
-                    0,
-                    Arc::new(Thunk::value(string_val(&inner_text), span.clone())),
-                ),
+                HashableValue::Str("inner-ann".into()),
+                ctx.alloc_thunk(0, Arc::new(Thunk::value(inner_ann_val, span.clone()))),
             );
             ("Annotation", "Annotated")
         }

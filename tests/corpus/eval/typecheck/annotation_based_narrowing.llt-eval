@@ -1,0 +1,20 @@
+# T-1761: Annotation-based narrowing — any function annotated with @[is: T] on
+# its first parameter declares that [foo? x] being true narrows x to T.
+# This test verifies the general mechanism works for user-defined predicates,
+# not just the hardcoded prelude names.
+[
+  # User-defined predicate: @[is: Int] on first param declares narrowing behavior.
+  my-int?@[doc: "User predicate: true when x is Int"]:
+    [fn@Boolean [let x@[is: Int]] [match x [@Integer _]: Boolean.True ...: Boolean.False]]
+
+  # Use the user-defined predicate in an if condition — x should narrow to Int.
+  describe: [fn [let x]
+    [if [my-int? x]
+      [builtin-int-add x 1]   # x is narrowed to Int here — builtin-int-add requires Int
+      "not an int"]]
+
+  r1: [describe 41]      # → 42
+  r2: [describe "hello"] # → "not an int"
+]
+=== out
+Dict({"my-int?": Function(x), "describe": Function(x), "r1": Int(42), "r2": String("not an int")})

@@ -1,0 +1,12 @@
+# stream.llt balanced-exprs: groups input lines into complete bracket expressions.
+# Blank lines and comment lines are skipped. Lines are accumulated until bracket
+# depth returns to 0.
+[stream: [include %libdir "codecs/stream.llt"]]
+[call [fn [let]
+  # Three single-line expressions separated by blank lines.
+  # each converts the auto-indexed dict to a lazy Seq for head/tail iteration.
+  [lines-input: [each ["[a: 1]" "" "[b: 2]" "" "[c: 3]"]]]
+  [exprs: [collect [stream.balanced-exprs lines-input]]]
+  [length exprs]]]
+=== out
+Int(3)

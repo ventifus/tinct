@@ -97,6 +97,7 @@ impl Env {
                     kind_vars: vec![],
                     doc: None,
                     inner_schemes: None,
+                    param_narrowings: Vec::new(),
                 }),
             },
         );

@@ -197,7 +197,7 @@ impl std::fmt::Display for Param {
 pub enum Annotation {
     Simple(String),
     PropertyDict(Vec<Spanned<SurfaceEntry>>),
-    Annotated(String, Box<Annotation>), // e.g., Seq@Int = Annotated("Seq", Simple("Int"))
+    Annotated(Box<Annotation>, Box<Annotation>), // e.g., Seq@Int = Annotated(Simple("Seq"), Simple("Int"))
     /// Quoting sentinel — produced by the parser when it sees `@Expr` and used exclusively
     /// to mark macro parameters that receive raw quoted AST instead of evaluated values.
     ///
@@ -227,7 +227,7 @@ impl Annotation {
                 }
             }),
             Annotation::Simple(_) => None,
-            Annotation::Annotated(_, _) => None,
+            Annotation::Annotated(_, inner) => inner.get_property(key),
             Annotation::Quote => None,
         }
     }
@@ -251,7 +251,7 @@ impl fmt::Display for Annotation {
                 }
                 write!(f, "]")
             }
-            Annotation::Annotated(name, inner) => write!(f, "{name}@{inner}"),
+            Annotation::Annotated(outer, inner) => write!(f, "{outer}@{inner}"),
             // Display intentionally renders as "Expr" — this is the user-visible text they
             // wrote in source (@Expr), not a semantic dependency on the prelude's Expr type.
             Annotation::Quote => write!(f, "Expr"),

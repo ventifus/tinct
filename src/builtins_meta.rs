@@ -45,7 +45,7 @@ use indexmap::IndexMap;
 
 use crate::ast::Span;
 use crate::builtins::{builtin, ok_val, reject_named, require_string, synthetic_call_expr};
-use crate::error::{EvalError, EvalResult};
+use crate::error::{ArityBound, EvalError, EvalResult};
 use crate::eval::{materialize, TypeContextData};
 use crate::eval_call::{invoke_function, CallContext};
 use crate::eval_materialize::make_span_dict;
@@ -2680,7 +2680,12 @@ pub(crate) fn builtin_typecheck_doc(
         } = ctx_arg;
         crate::builtins::reject_named("builtin-typecheck-doc", named.as_ref(), call_span.clone())?;
         if args.len() != 2 && args.len() != 3 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(EvalError::arity_mismatch_bound(
+                ArityBound::Range(2, 3),
+                args.len(),
+                call_span,
+            )
+            .into());
         }
 
         // arg0: Value::Document
@@ -3836,6 +3841,144 @@ pub(crate) fn builtin_variant_payload(
             )
             .into()),
         }
+    })
+}
+
+/// `builtin-eval-expr`: evaluate a single quoted AST expression node in a given scope.
+///
+/// Positional arg[0]: `Value::Expression` — a single quoted AST node (from `@Expr`-typed
+///   macro call or `builtin-ast-of`). Holds an `Arc<SurfaceNode>` directly.
+/// Positional arg[1]: `Value::Int` — the scope-id to evaluate in.
+///
+/// Returns: the evaluated value (any Value).
+///
+/// Evaluation pipeline:
+///   1. Extract `Arc<SurfaceNode>` from `Value::Expression`
+///   2. Wrap in a single-expression `SurfaceDocument`
+///   3. Desugar + resolve using the parent chain of `scope-id`
+///   4. Evaluate via `eval_document_exprs_with_env`
+///   5. Return the result value directly (not wrapped in a result dict)
+pub(crate) fn builtin_eval_expr(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+            ..
+        } = ctx_arg;
+        crate::builtins::reject_named("builtin-eval-expr", named.as_ref(), call_span.clone())?;
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+
+        // arg0: Value::Expression
+        let expr_val = ctx
+            .get_thunk(args[0])
+            .try_get_materialized()
+            .expect("pre-materialized by Strictness::Seq");
+        let expr_node: Arc<crate::ast::SurfaceNode> = match expr_val {
+            Value::Expression(node) => node,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-eval-expr".to_string(),
+                    "Expression",
+                    other.type_name(),
+                    call_span,
+                )
+                .into());
+            }
+        };
+
+        // arg1: Int (scope-id)
+        let scope_id_val = ctx
+            .get_thunk(args[1])
+            .try_get_materialized()
+            .expect("pre-materialized by Strictness::Seq");
+        let scope_id: u32 = match scope_id_val {
+            Value::Int(n) => {
+                let arena_len = ctx.scope_arena.borrow().scopes.len();
+                if n < 0 || (n as usize) >= arena_len {
+                    return Err(EvalError::user_error(
+                        format!(
+                            "builtin-eval-expr scope-id {} out of range (valid: 0..{})",
+                            n,
+                            arena_len.saturating_sub(1)
+                        ),
+                        call_span,
+                    )
+                    .into());
+                }
+                n as u32
+            }
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-eval-expr scope-id".to_string(),
+                    "Int",
+                    other.type_name(),
+                    call_span,
+                )
+                .into());
+            }
+        };
+
+        // Wrap in a single-expression SurfaceDocument.
+        let document = crate::ast::SurfaceDocument {
+            header: indexmap::IndexMap::new(),
+            items: vec![crate::ast::SurfaceItem::Expr(expr_node)],
+        };
+        let mut program = crate::ast::SurfaceProgram {
+            documents: vec![crate::ast::Spanned::new(
+                std::sync::Arc::new(document),
+                call_span.clone(),
+            )],
+        };
+
+        // Desugar + resolve in the scope's parent chain so all names at call site resolve.
+        crate::desugar::desugar_program_full(&mut program);
+        let initial_frames: Vec<indexmap::IndexMap<String, u32>> = {
+            let arena = ctx.scope_arena.borrow();
+            let chain = arena.collect_parent_chain(scope_id);
+            chain
+                .iter()
+                .map(|&id| {
+                    arena.scopes[id.0 as usize]
+                        .slots
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(slot, thunk_opt)| {
+                            let name = thunk_opt.as_ref()?.span.name.as_deref()?.to_string();
+                            Some((name, slot as u32))
+                        })
+                        .collect::<indexmap::IndexMap<String, u32>>()
+                })
+                .collect()
+        };
+        let (_resolve_table, _new_frames) =
+            crate::resolve::resolve_surface_program(&program, &initial_frames);
+
+        // Extract the single expression node.
+        let expression_nodes: Vec<Arc<crate::ast::SurfaceNode>> = program
+            .documents
+            .into_iter()
+            .flat_map(|d| d.node.items.clone())
+            .filter_map(|item| {
+                if let crate::ast::SurfaceItem::Expr(node) = item {
+                    Some(node)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Evaluate and return the result thunk directly.
+        let (result_thunk, _root_env_id) =
+            crate::eval::eval_document_exprs_with_env(&expression_nodes, &ctx, Some(scope_id))
+                .await?;
+
+        Ok(result_thunk)
     })
 }
 

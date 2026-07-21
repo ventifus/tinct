@@ -187,6 +187,16 @@ pub struct TypeScheme {
     pub doc: Option<String>,
     /// Nested schemes for function parameters (used for higher-rank types)
     pub inner_schemes: Option<HashMap<String, TypeScheme>>,
+    /// Per-parameter narrowing types declared via `@[narrows: T]` annotation on the binding.
+    ///
+    /// When a predicate function `foo?@[narrows: Int] [fn [let x] ...]` is defined, this
+    /// field holds `vec![Some(Type::Int)]`. `extract_narrowings` reads this to produce
+    /// `Narrowing::TypeOf` constraints when the function appears as a condition in an `if`
+    /// or match guard. Any function — not just prelude predicates — can declare narrowing.
+    ///
+    /// Index parallel to the function's parameter list. `None` means the parameter has no
+    /// declared narrowing; `Some(T)` means `[foo? x]` being true narrows `x` to `T`.
+    pub param_narrowings: Vec<Option<crate::type_def::Type>>,
 }
 
 impl TypeScheme {
@@ -200,6 +210,7 @@ impl TypeScheme {
             kind_vars: Vec::new(),
             doc: None,
             inner_schemes: None,
+            param_narrowings: Vec::new(),
         }
     }
 }
@@ -345,8 +356,6 @@ pub struct InferState {
     /// Populated in lib.rs by forcing all type-stage thunks before type-checking begins.
     /// Replaces the old lazy type_stage_thunks with fully materialized entries.
     pub type_stage_map: Option<std::collections::HashMap<String, TypeStageEntry>>,
-    /// Pending param narrowings from the most recently inferred function (compatibility field).
-    pub pending_param_narrowings: Vec<Option<Type>>,
     /// Unified TypeVar table (from HEAD~1 design).
     /// In the current design, TypeVar bindings are in `subst.type_map`, levels in `levels`,
     /// and kinds in `kind_env`. This field exists for compatibility with type_class.rs
@@ -409,7 +418,6 @@ impl InferState {
             main_env: None,
             eval_ctx: None,
             type_stage_map: None,
-            pending_param_narrowings: Vec::new(),
             type_vars: indexmap::IndexMap::new(),
             bounds: std::collections::HashMap::new(),
             fd_in_progress: std::collections::HashSet::new(),

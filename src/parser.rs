@@ -183,22 +183,25 @@ fn skip_whitespace_tokens(
     count
 }
 
-/// Parse an annotation directly from the token stream without sub-string re-parsing.
+/// Parse an annotation directly from the token stream for header contexts.
 ///
 /// Starts at `start_index` which must be `Token::At` or `Token::ImmediateAt`.
 /// Returns `(Annotation, next_index)` on success.
 ///
 /// Handles:
-/// - `@Name` → `Annotation::Simple("Name")`
-/// - `@Name@Inner` → `Annotation::Annotated("Name", inner)` (chained)
-/// - `@[key: val ...]` → `Annotation::PropertyDict(entries)` parsed directly from tokens
+/// - `@Name` → `Annotation::Simple("Name")` (via expression_to_annotation)
+/// - `@Expr` → `Annotation::Quote` (via expression_to_annotation)
+/// - `@Name@Inner` → `Annotation::Annotated(Simple("Name"), inner)` (T-1618: outer is Box<Annotation>)
+/// - `@[key: val ...]` → `Annotation::PropertyDict(entries)` (via expression_to_annotation)
+/// - `@[key: val ...]@Next` → `Annotation::Annotated(PropertyDict(...), Next)` (T-1618)
 ///
-/// No sub-string extraction or recursive `parse()` calls are used.
-///
-/// NOTE: This function is a separate annotation-parsing path that operates independently
-/// of the main `expression_to_annotation` + `AnnotationCollect` mechanism used everywhere
-/// else in the parser. Tracked in T-1617: "Unify header annotation parsing with
-/// AnnotationCollect — eliminate parse_annotation_direct".
+/// The `@Name` and `@[...]` cases build a `SurfaceNode` (VarRef or Dict) and delegate to
+/// `expression_to_annotation` for the actual annotation conversion — the same function used
+/// in the main body annotation path. The token-scanning loop for `@[...]` is necessary because
+/// header parsing occurs outside the main iterative parser's bracket-nesting stack machine;
+/// there is no mechanism to invoke the main Dict frame as a sub-routine from header context.
+/// Full structural unification with the main AnnotationCollect path would require extracting
+/// a standalone sub-parser for bracket expressions (tracked as T-1778).
 fn parse_annotation_direct(
     tokens: &[Spanned<Token>],
     start_index: usize,
@@ -238,6 +241,9 @@ fn parse_annotation_direct(
             let name_span = tokens[i].span.clone();
             i += 1;
 
+            // T-1617: Unify with main body AnnotationCollect path via expression_to_annotation.
+            // Build a VarRef SurfaceNode and check for chaining, then delegate conversion.
+
             // Check for chained annotation: @Name@Inner
             if i < tokens.len() && matches!(&tokens[i].node, Token::ImmediateAt) {
                 let (inner_ann, final_i) =
@@ -248,22 +254,39 @@ fn parse_annotation_direct(
                     file: name_span.file.clone(),
                     name: None,
                 };
+                // Build annotated VarRef node, then convert via expression_to_annotation.
+                let inner_varref = Arc::new(SurfaceNode::new(
+                    SurfaceExpression::VarRef {
+                        name: name.clone(),
+                        escaped: false,
+                        resolution: crate::ast::Resolution::new(),
+                        call_dispatch: crate::ast::CallDispatch::new(),
+                        annotation: Some(inner_ann),
+                    },
+                    full_span.clone(),
+                ));
                 return Ok((
-                    Spanned::new(
-                        Annotation::Annotated(name, Box::new(inner_ann.node)),
-                        full_span,
-                    ),
+                    Spanned::new(expression_to_annotation(&inner_varref), full_span),
                     final_i,
                 ));
             }
 
-            // `@Expr` is the quoting sentinel — convert to Annotation::Quote immediately
-            // so the quoting mechanism is independent of the prelude's Expr type name.
-            if name == "Expr" {
-                return Ok((Spanned::new(Annotation::Quote, name_span), i));
-            }
-
-            Ok((Spanned::new(Annotation::Simple(name), name_span), i))
+            // Simple @Name case — route through expression_to_annotation for unification.
+            // This handles @Expr → Quote, @Name → Simple(name), exactly as the main body does.
+            let varref_node = Arc::new(SurfaceNode::new(
+                SurfaceExpression::VarRef {
+                    name: name.clone(),
+                    escaped: false,
+                    resolution: crate::ast::Resolution::new(),
+                    call_dispatch: crate::ast::CallDispatch::new(),
+                    annotation: None,
+                },
+                name_span.clone(),
+            ));
+            Ok((
+                Spanned::new(expression_to_annotation(&varref_node), name_span),
+                i,
+            ))
         }
         Token::OpenBracket => {
             // @[key: val ...] property dict annotation — read tokens directly.
@@ -306,12 +329,48 @@ fn parse_annotation_direct(
                             };
                             i += 1; // consume ]
 
-                            // Note: chaining @[...]@Next is not representable in the current
-                            // Annotation type (Annotated takes a String name, not a PropertyDict).
-                            // Return the PropertyDict annotation and stop; chained property-dict
-                            // annotations are not yet supported (T-1618).
+                            // T-1617: Route through expression_to_annotation for unification
+                            // with the main body AnnotationCollect path.
+                            // T-1618: Annotation::Annotated now takes Box<Annotation> as outer,
+                            // so @[...]@Next is representable. Check for a chained annotation.
+                            if i < tokens.len() && matches!(&tokens[i].node, Token::ImmediateAt) {
+                                let (inner_ann, final_i) = parse_annotation_direct(
+                                    tokens,
+                                    i,
+                                    leading_comments,
+                                    blank_before,
+                                )?;
+                                let chained_span = Span {
+                                    start: bracket_start_span.start,
+                                    end: inner_ann.span.end,
+                                    file: bracket_start_span.file.clone(),
+                                    name: None,
+                                };
+                                // Build outer Dict annotation, then chain via Annotated.
+                                // T-1617: outer uses expression_to_annotation for consistency.
+                                let outer_dict_node = Arc::new(SurfaceNode::new(
+                                    SurfaceExpression::Dict(entries),
+                                    ann_span.clone(),
+                                ));
+                                let outer_ann = expression_to_annotation(&outer_dict_node);
+                                return Ok((
+                                    Spanned::new(
+                                        Annotation::Annotated(
+                                            Box::new(outer_ann),
+                                            Box::new(inner_ann.node),
+                                        ),
+                                        chained_span,
+                                    ),
+                                    final_i,
+                                ));
+                            }
+                            // T-1617: Build a Dict SurfaceNode and convert via expression_to_annotation.
+                            let dict_node = Arc::new(SurfaceNode::new(
+                                SurfaceExpression::Dict(entries),
+                                ann_span.clone(),
+                            ));
                             return Ok((
-                                Spanned::new(Annotation::PropertyDict(entries), ann_span),
+                                Spanned::new(expression_to_annotation(&dict_node), ann_span),
                                 i,
                             ));
                         }
@@ -786,7 +845,7 @@ fn skip_to_closing_bracket(tokens: &[Spanned<Token>], from_idx: usize) -> usize 
     tokens.len()
 }
 
-/// Map a `StackFrame` to a human-readable context string for diagnostic notes.
+// Map a `StackFrame` to a human-readable context string for diagnostic notes.
 impl std::fmt::Display for StackFrame {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -5995,7 +6054,10 @@ fn expression_to_annotation(node: &SurfaceNode) -> Annotation {
             name,
             annotation: Some(ann),
             ..
-        } => Annotation::Annotated(name.clone(), Box::new(ann.node.clone())),
+        } => Annotation::Annotated(
+            Box::new(Annotation::Simple(name.clone())),
+            Box::new(ann.node.clone()),
+        ),
         SurfaceExpression::Dict(entries) => Annotation::PropertyDict(entries.clone()),
         // Implied call with VarRef head (e.g. @[Seq Int] parsed as implied call) →
         // convert to PropertyDict: func as key-less entry 0, then each positional arg.
@@ -6092,13 +6154,27 @@ fn create_annotated_node(
 }
 
 /// Store a floating annotation on the current top Dict frame.
-fn set_floating_annotation(stack: &mut [StackFrame], ann: Spanned<Annotation>) {
+///
+/// Returns `Err` with a diagnostic if the top frame is not a Dict — floating annotations
+/// (`[@Type expr]`) are only meaningful inside dict contexts. In other frame types (Call,
+/// Fn, Pipe, etc.) the annotation would be silently discarded, which is almost certainly
+/// a user mistake.
+fn set_floating_annotation(
+    stack: &mut [StackFrame],
+    ann: Spanned<Annotation>,
+) -> Result<(), ParseError> {
     if let Some(StackFrame::Dict {
         ref mut floating_annotation,
         ..
     }) = stack.last_mut()
     {
         *floating_annotation = Some(ann);
+        Ok(())
+    } else {
+        Err(ParseError {
+            message: "floating annotation not valid in this context; `[@Type expr]` is only supported inside a dict".to_string(),
+            span: Some(ann.span),
+        })
     }
 }
 
@@ -6150,8 +6226,8 @@ fn drain_annotation_frames(
                     push_value(stack, current_document_items, annotated)?;
                 }
                 AnnotationTarget::Floating => {
-                    // Store on parent frame as floating_annotation
-                    set_floating_annotation(stack, spanned_ann);
+                    // Store on parent frame as floating_annotation; propagate error if not a Dict.
+                    set_floating_annotation(stack, spanned_ann)?;
                 }
                 AnnotationTarget::FnReturn => {
                     if let Some(StackFrame::Fn { return_ann, .. }) = stack.last_mut() {

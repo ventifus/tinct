@@ -172,6 +172,35 @@ These are stdlib functions defined in terms of `if`. Two options:
 
 The current implementation narrows `if` only.
 
+### Annotation-Based Narrowing (T-1761)
+
+Any function — not just prelude predicates — can declare that calling it with a single variable argument narrows that variable to a type in the true branch. Two annotation forms are supported:
+
+#### `@[narrows: T]` key annotation
+
+Attach to the binding key of a predicate function:
+
+```tinct
+my-int?@[narrows: Int]:
+  [fn@Boolean [let x] [match x [@Integer _]: Boolean.True _: Boolean.False]]
+```
+
+When `[my-int? x]` is true in an `if` condition, `x` is narrowed to `Int` in the true branch.
+
+#### `@[is: T]` parameter annotation
+
+Attach to the first parameter of the predicate's function body:
+
+```tinct
+my-int?: [fn@Boolean [let x@[is: Int]] [match x [@Integer _]: Boolean.True _: Boolean.False]]
+```
+
+The semantics are identical: `[my-int? x]` being true narrows `x` to `Int`.
+
+**Mechanism:** Both forms store `TypeScheme.param_narrowings[0] = Some(T)` when the predicate's type scheme is constructed. `extract_narrowings` (in `src/typecheck_narrow.rs`) looks up the called function's type scheme in the environment and reads `param_narrowings`. The narrowing logic is fully annotation-driven — no predicate names are hardcoded in Rust.
+
+**Limitation (B-545):** Structural narrowing patterns (`=`, `has?`, `and`, `type-of`) still use hardcoded function name matching. A protocol or annotation extension is needed to make those prelude-agnostic as well.
+
 ### Limitations
 
 1. **No false-branch narrowing.** The false branch gets the original unrefined

@@ -1,0 +1,14 @@
+# T-1621: AnnotatedWrap deferred path — annotated function dict entry.
+# The annotation PropertyDict on a function value triggers UnevaluatedState::AnnotatedWrap,
+# deferring the Value::Annotated wrapping until the function thunk is materialized.
+# This tests that annotation-of on an annotated function returns the annotation dict.
+[
+  # Annotated function: the value is a fn (non-literal), so AnnotatedWrap is used.
+  # annotation-of must return the annotation dict {doc: "adds one", version: "1.0"}.
+  f@[doc: "adds one" version: "1.0"]: [fn [let x] [+ x 1]]
+  ann: [annotation-of f]
+  has-doc: [= ann.doc "adds one"]
+  has-ver: [= ann.version "1.0"]
+]
+=== out
+Dict({"f": Function(x), "ann": Dict({"doc": String("adds one"), "version": String("1.0")}), "has-doc": Variant(Boolean.True, Null), "has-ver": Variant(Boolean.True, Null)})

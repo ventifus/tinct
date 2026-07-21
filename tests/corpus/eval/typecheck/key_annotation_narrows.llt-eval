@@ -1,0 +1,19 @@
+# T-1761: Key-level @[narrows: T] annotation — a binding annotated with
+# @[narrows: TypeName] declares that [foo? x] being true narrows x to TypeName.
+# This tests the key-level annotation path (distinct from @[is: T] on params).
+[
+  # Predicate with @[narrows: Int] on the binding key.
+  my-num?@[narrows: Int doc: "Narrows via key annotation"]:
+    [fn@Boolean [let x] [match x [@Integer _]: Boolean.True ...: Boolean.False]]
+
+  # Use the predicate in a conditional — x should narrow to Int in the true branch.
+  safe-double: [fn [let x]
+    [if [my-num? x]
+      [builtin-int-mul x 2]   # x narrowed to Int by key-level @[narrows: Int]
+      0]]
+
+  r1: [safe-double 21]   # → 42
+  r2: [safe-double "hi"] # → 0
+]
+=== out
+Dict({"my-num?": Function(x), "safe-double": Function(x), "r1": Int(42), "r2": Int(0)})

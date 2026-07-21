@@ -1572,7 +1572,7 @@ async fn infer_if_expr(
         .await
     };
 
-    let narrowings = typecheck_narrow::extract_narrowings(cond_node);
+    let narrowings = typecheck_narrow::extract_narrowings(cond_node, env);
 
     let true_ty = if narrowings.is_empty() {
         let mut local_stack = Vec::new();
@@ -3017,7 +3017,7 @@ async fn setup_match_arm_env(
             ))
             .await
         };
-        let guard_narrowings = typecheck_narrow::extract_narrowings(guard);
+        let guard_narrowings = typecheck_narrow::extract_narrowings(guard, &arm_env);
         if guard_narrowings.is_empty() {
             arm_env
         } else {
@@ -4188,6 +4188,7 @@ pub(crate) async fn run_typecheck_dict(
                                                     kind_vars: Vec::new(),
                                                     doc: None,
                                                     inner_schemes: None,
+                                                    param_narrowings: Vec::new(),
                                                 };
 
                                                 // Insert into dict_env
@@ -4539,6 +4540,94 @@ pub(crate) async fn run_typecheck_dict(
 
                     let doc = value_doc.or(key_doc);
 
+                    // Extract annotation-based narrowing hints for this binding (T-1761).
+                    //
+                    // Two sources of narrowing declarations (checked in priority order):
+                    //
+                    // 1. Key annotation `@[narrows: TypeName]` — e.g., `foo?@[narrows: Int]:`
+                    //    Declares that when `[foo? x]` evaluates to true, `x` narrows to `TypeName`.
+                    //
+                    // 2. First parameter `@[is: TypeName]` — e.g., `[fn [let x@[is: Int]] ...]`
+                    //    Declares that the predicate narrows its argument to `TypeName` in the
+                    //    true branch. This is the prelude convention (`int?`, `str?`, etc.).
+                    //
+                    // Both produce `scheme.param_narrowings = vec![Some(Type)]` so that
+                    // `extract_narrowings(cond, env)` can read it without knowing which
+                    // annotation style was used. `None` means "no narrowing declared".
+                    let param_narrowings: Vec<Option<crate::type_def::Type>> = 'narrowing: {
+                        // Source 1: key-level @[narrows: T]
+                        if let Some(ref key_node) = entry.node.key {
+                            if let SurfaceExpression::VarRef {
+                                annotation: Some(ann),
+                                ..
+                            } = &key_node.expr
+                            {
+                                if let Some(narrows_node) = ann.node.get_property("narrows") {
+                                    if let SurfaceExpression::VarRef {
+                                        name: type_name, ..
+                                    } = &narrows_node.expr
+                                    {
+                                        let ann_span = Spanned {
+                                            node: Annotation::Simple(type_name.clone()),
+                                            span: narrows_node.span.clone(),
+                                        };
+                                        let stub_env = TypeEnv::new();
+                                        let mut constraints: Vec<Constraint> = Vec::new();
+                                        let narrow_ty = typecheck_annot::resolve_annotation(
+                                            &ann_span.node,
+                                            &stub_env,
+                                            ann_span.span.clone(),
+                                            state,
+                                            &mut constraints,
+                                            &mut None,
+                                            &mut None,
+                                            None,
+                                        )
+                                        .await
+                                        .unwrap_or_else(|_| state.fresh_type_var(&ann_span.span));
+                                        break 'narrowing vec![Some(narrow_ty)];
+                                    }
+                                }
+                            }
+                        }
+                        // Source 2: first parameter @[is: T]
+                        if let SurfaceExpression::Fn { params, .. } = &entry.node.value.expr {
+                            if let Some(first_param) = params.first() {
+                                if let Some(ann) = &first_param.node.annotation {
+                                    if let Some(is_node) = ann.node.get_property("is") {
+                                        if let SurfaceExpression::VarRef {
+                                            name: type_name, ..
+                                        } = &is_node.expr
+                                        {
+                                            let ann_span = Spanned {
+                                                node: Annotation::Simple(type_name.clone()),
+                                                span: is_node.span.clone(),
+                                            };
+                                            let stub_env = TypeEnv::new();
+                                            let mut constraints: Vec<Constraint> = Vec::new();
+                                            let narrow_ty = typecheck_annot::resolve_annotation(
+                                                &ann_span.node,
+                                                &stub_env,
+                                                ann_span.span.clone(),
+                                                state,
+                                                &mut constraints,
+                                                &mut None,
+                                                &mut None,
+                                                None,
+                                            )
+                                            .await
+                                            .unwrap_or_else(|_| {
+                                                state.fresh_type_var(&ann_span.span)
+                                            });
+                                            break 'narrowing vec![Some(narrow_ty)];
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Vec::new()
+                    };
+
                     if state.failed_bindings.contains_key(name) {
                         let mut scheme = generalize_with_doc(
                             enclosing_level,
@@ -4550,6 +4639,7 @@ pub(crate) async fn run_typecheck_dict(
                         if let Some(inner) = entry_inner_schemes.get(name) {
                             scheme.inner_schemes = Some(inner.clone());
                         }
+                        scheme.param_narrowings = param_narrowings;
                         dict_env
                             .write()
                             .unwrap()
@@ -4570,6 +4660,7 @@ pub(crate) async fn run_typecheck_dict(
                     if let Some(inner) = entry_inner_schemes.get(name) {
                         scheme.inner_schemes = Some(inner.clone());
                     }
+                    scheme.param_narrowings = param_narrowings;
 
                     dict_env
                         .write()

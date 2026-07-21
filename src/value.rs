@@ -1143,6 +1143,16 @@ pub enum UnevaluatedState {
         blame_label: Option<crate::error::BlameLabel>,
         default: Option<GuardDefault>,
     },
+    /// Deferred Value::Annotated wrapper — forces inner thunk then wraps in Value::Annotated.
+    ///
+    /// Created by eval_dict_core (T-1621) when a dict-key annotation's value is a non-literal
+    /// thunk. When materialized, forces `inner` and produces
+    /// `Value::Annotated { inner: forced_inner, annotation }`.
+    AnnotatedWrap {
+        inner: ThunkId,
+        annotation: Box<Value>,
+        ctx: Arc<crate::eval::EvalContext>,
+    },
 }
 
 impl UnevaluatedState {
@@ -1154,6 +1164,7 @@ impl UnevaluatedState {
             UnevaluatedState::FnCall { caller_env_id, .. } => *caller_env_id,
             UnevaluatedState::AstField { .. } => 0,
             UnevaluatedState::Guarded { .. } => 0,
+            UnevaluatedState::AnnotatedWrap { .. } => 0,
         }
     }
 }
@@ -1296,6 +1307,33 @@ impl Thunk {
             inner: ThunkInner {
                 unevaluated: Mutex::new((
                     Some(UnevaluatedState::AstField { node, field, ctx }),
+                    None,
+                )),
+                result: tokio::sync::OnceCell::new(),
+                notify: Arc::new(tokio::sync::Notify::new()),
+            },
+            span,
+        }
+    }
+
+    /// Create a deferred Value::Annotated thunk (T-1621).
+    ///
+    /// When forced, materializes `inner` and produces
+    /// `Value::Annotated { inner: forced_inner, annotation }`.
+    pub fn annotated_wrap(
+        inner: ThunkId,
+        annotation: Value,
+        ctx: Arc<crate::eval::EvalContext>,
+        span: Span,
+    ) -> Self {
+        Self {
+            inner: ThunkInner {
+                unevaluated: Mutex::new((
+                    Some(UnevaluatedState::AnnotatedWrap {
+                        inner,
+                        annotation: Box::new(annotation),
+                        ctx,
+                    }),
                     None,
                 )),
                 result: tokio::sync::OnceCell::new(),
@@ -1547,6 +1585,15 @@ impl Thunk {
                 guard_span,
                 blame_label,
                 default,
+            },
+            UnevaluatedState::AnnotatedWrap {
+                inner,
+                annotation,
+                ctx: _,
+            } => UnevaluatedState::AnnotatedWrap {
+                inner,
+                annotation,
+                ctx: new_ctx,
             },
         };
         Some(Arc::new(Thunk {

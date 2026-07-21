@@ -1,0 +1,41 @@
+# VarRef resolution via display chain: builtin-scope-new creates a child scope,
+# builtin-scope-frame extracts its name→slot map, builtin-resolve threads those
+# frames so the VarRef `%` (pipeline input) resolves through the scope chain.
+#
+# Step 1: Evaluate [x: 99] in root scope. ev0.result = {x: 99}.
+# Step 2: Create sc1 = child scope with % = {x: 99}.
+# Step 3: Resolve and evaluate [result: %] in sc1. The VarRef % must resolve
+#         through the display chain to slot 0 of sc1's frame.
+# Step 4: ev1.result.result = {x: 99}. Verify x = 99.
+[call [fn [let]
+  # Evaluate [x: 99] in root scope
+  [src0: [builtin-str-bytes "[x: 99]"]]
+  [parsed0: [builtin-parse src0 "test0.llt"]]
+  [desug0: [builtin-desugar parsed0.program]]
+  [docs0: [builtin-program-docs desug0]]
+  [doc0: [builtin-get 0 docs0]]
+  [resolved0: [builtin-resolve doc0 []]]
+  [tc: [builtin-make-type-ctx]]
+  [typed0: [builtin-typecheck-doc resolved0.doc tc]]
+  [ev0: [builtin-eval typed0.doc 0]]
+  # ev0.result = {x: 99}
+  # Create sc1 as child of ev0.scope-id, binding % to ev0.result
+  [sc1: [builtin-scope-new ev0.scope-id [%: ev0.result]]]
+  # Build frames: ev0 scope as outermost, sc1 as innermost (holds %)
+  [frames1: [0: [builtin-scope-frame ev0.scope-id]  1: [builtin-scope-frame sc1]]]
+  # Parse [result: %] — the only VarRef is % which is in sc1's frame
+  [src1: [builtin-str-bytes "[result: %]"]]
+  [parsed1: [builtin-parse src1 "test1.llt"]]
+  [desug1: [builtin-desugar parsed1.program]]
+  [docs1: [builtin-program-docs desug1]]
+  [doc1: [builtin-get 0 docs1]]
+  [resolved1: [builtin-resolve doc1 frames1]]
+  [typed1: [builtin-typecheck-doc resolved1.doc tc]]
+  # Evaluate in sc1 — VarRef % resolves through the display chain
+  [ev1: [builtin-eval typed1.doc sc1]]
+  # ev1.result = {result: {x: 99}}
+  # Verify: get "result" from ev1.result, then get "x" from that
+  [inner: [builtin-get "result" ev1.result]]
+  [builtin-get "x" inner]]]
+=== out
+Int(99)

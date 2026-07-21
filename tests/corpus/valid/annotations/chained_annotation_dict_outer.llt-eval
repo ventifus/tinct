@@ -1,0 +1,6 @@
+# Chained annotation: x@Seq@Int in dict key position.
+# Produces Annotation::Annotated(Box::new(Simple("Seq")), Box::new(Simple("Int"))).
+# T-1618: outer is Box<Annotation>, not String — enabling any annotation as outer.
+[x@Seq@Int: 42]
+=== out
+[x@Seq@Int: 42]

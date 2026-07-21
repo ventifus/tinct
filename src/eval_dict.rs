@@ -37,9 +37,13 @@ fn value_to_key(value: &Value, span: &Span) -> EvalResult<HashableValue> {
 /// in the given environment context. This function evaluates each entry's key and value,
 /// materializes them, and builds a concrete Value::Dict.
 ///
-/// Used by T-1119 to evaluate `@[...]` annotations on dict key entries.
-fn eval_annotation_property_dict(
+/// Non-literal values (VarRefs, calls, fn expressions) are lowered to CoreExpr and
+/// evaluated in `parent_env_id` — the same environment as the enclosing dict's keys.
+///
+/// Used by T-1119/T-1620 to evaluate `@[...]` annotations on dict key entries.
+async fn eval_annotation_property_dict(
     entries: &[Spanned<crate::ast::SurfaceEntry>],
+    parent_env_id: u32,
     ctx: &Arc<EvalContext>,
 ) -> EvalResult<Value> {
     let mut dict_map: IndexMap<HashableValue, ThunkId> = IndexMap::with_capacity(entries.len());
@@ -105,47 +109,53 @@ fn eval_annotation_property_dict(
             k
         };
 
-        // Evaluate the value expression
-        // We need to lower SurfaceExpression to CoreExpr, then evaluate it
-        let value_thunk = {
-            // Simple path: annotations should use literal values for now (T-1124 handles full eval at fn definition).
-            // See T-1620 for completing full expression evaluation for annotation property dict values.
-            match &entry.node.value.expr {
-                SurfaceExpression::StringLiteral {
-                    content: s,
-                    delimiter,
-                    ..
-                } => {
-                    let processed = if delimiter.len() == 1 {
-                        crate::lower::process_escapes(s, delimiter)
-                    } else {
-                        s.clone()
-                    };
-                    Arc::new(Thunk::value(
-                        string_val(&processed),
-                        entry.node.value.span.clone(),
-                    ))
-                }
-                SurfaceExpression::Int(n) => {
-                    Arc::new(Thunk::value(Value::Int(*n), entry.node.value.span.clone()))
-                }
-                SurfaceExpression::U64(n) => {
-                    Arc::new(Thunk::value(Value::U64(*n), entry.node.value.span.clone()))
-                }
-                SurfaceExpression::Float(f) => Arc::new(Thunk::value(
-                    Value::Float(*f),
-                    entry.node.value.span.clone(),
-                )),
-                _ => {
-                    // Non-literal annotation values (VarRef type names, fn expressions, etc.)
-                    // are skipped — they appear in function return-type annotations like
-                    // @[return: Dict  doc: "..."] where Dict is a type name, not a runtime value.
-                    // T-1124 handles expression evaluation at fn-definition time for fn annotations;
-                    // dict-key annotations only carry literal metadata (strings, ints, numbers).
+        // Evaluate the value expression: literal values directly, complex expressions via lower+eval+materialize.
+        let value = match &entry.node.value.expr {
+            SurfaceExpression::StringLiteral {
+                content: s,
+                delimiter,
+                ..
+            } => {
+                let processed = if delimiter.len() == 1 {
+                    crate::lower::process_escapes(s, delimiter)
+                } else {
+                    s.clone()
+                };
+                string_val(&processed)
+            }
+            SurfaceExpression::Int(n) => Value::Int(*n),
+            SurfaceExpression::U64(n) => Value::U64(*n),
+            SurfaceExpression::Float(f) => Value::Float(*f),
+            _ => {
+                // T-1620: Non-literal annotation values are lowered to CoreExpr and evaluated.
+                // This handles VarRefs (type names like Dict, String), fn expressions, and calls.
+                // Annotation keys in ANNOTATION_EVAL_EXCLUDED_KEYS (return, constraint, bind, kinds)
+                // contain type-level VarRefs with no runtime resolution slots — skip them.
+                let key_str = match &key {
+                    HashableValue::Str(s) => Some(s.as_ref()),
+                    _ => None,
+                };
+                if key_str
+                    .map(|k| crate::ast::ANNOTATION_EVAL_EXCLUDED_KEYS.contains(&k))
+                    .unwrap_or(false)
+                {
                     continue;
                 }
+                let mut lower_diags = Vec::new();
+                let core_expr = crate::lower::lower_inner(
+                    &entry.node.value,
+                    &mut lower_diags,
+                    ctx.scope_frames.as_ref().map(|v| v.as_slice()),
+                );
+                if let Some(err) = crate::eval_materialize::lower_errors_to_eval_error(lower_diags)
+                {
+                    return Err(err);
+                }
+                let thunk = eval_core_expr(&core_expr, parent_env_id, ctx).await?;
+                materialize(&thunk, Some(&entry.node.value.span), ctx).await?
             }
         };
+        let value_thunk = Arc::new(Thunk::value(value, entry.node.value.span.clone()));
 
         let thunk_id = ctx.alloc_thunk(0, value_thunk);
         if dict_map.insert(key, thunk_id).is_some() {
@@ -320,21 +330,15 @@ pub(crate) async fn eval_dict_core(
                 // Simple annotations (e.g., Pi@Number) are type-level metadata, not runtime values.
                 if let Annotation::PropertyDict(ann_entries) = &annotation.node {
                     // Evaluate the annotation PropertyDict to a Value::Dict
-                    let annotation_value = eval_annotation_property_dict(ann_entries, ctx)?;
+                    let annotation_value =
+                        eval_annotation_property_dict(ann_entries, parent_env_id, ctx).await?;
 
-                    // T-1123: Value::Annotated stores materialized inner.
-                    // Only wrap in Value::Annotated when the inner value is already materialized
-                    // (i.e., a literal: Int, Float, Bool, Str). For non-literal values (VarRefs,
-                    // function calls, etc.), skip the wrapping and use the plain thunk. This
-                    // preserves laziness: forcing a non-literal annotated entry at dict construction
-                    // time would evaluate VarRefs against the current env, potentially failing if
-                    // the referenced name is not yet in scope (e.g., net builtins like
-                    // builtin-connect referenced in the prelude's annotated wrapper entries).
-                    // The trade-off: annotation-of on a dict-key-annotated non-literal entry
-                    // returns {} instead of the annotation dict — acceptable since the primary use
-                    // case for annotation-of is functions (FnAnnotation.extra) and unit constructors
-                    // (Value::Annotated from make-annotated), not arbitrary non-literal dict entries.
-                    // See T-1621 for completing Value::Annotated wrapping for non-literal entries.
+                    // T-1123/T-1621: Wrap value in Value::Annotated.
+                    // For literals (already materialized): wrap immediately in Value::Annotated.
+                    // For non-literals (functions, VarRefs, calls): create a deferred
+                    // AnnotatedWrap thunk that forces the inner value when accessed and wraps
+                    // it in Value::Annotated { annotation, inner: forced_inner }.
+                    // This preserves laziness for non-literal annotated entries.
                     if let Some(inner_val) = value_thunk.try_get_materialized() {
                         let span = value_thunk.span.clone();
                         Arc::new(Thunk::value(
@@ -345,7 +349,14 @@ pub(crate) async fn eval_dict_core(
                             span,
                         ))
                     } else {
-                        value_thunk
+                        let span = value_thunk.span.clone();
+                        let inner_id = ctx.alloc_thunk(0, value_thunk);
+                        Arc::new(Thunk::annotated_wrap(
+                            inner_id,
+                            annotation_value,
+                            Arc::clone(ctx),
+                            span,
+                        ))
                     }
                 } else {
                     // Simple/Annotated annotations are type-level only — use unannotated value

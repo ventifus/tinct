@@ -1407,11 +1407,11 @@ async fn resolve_annotation_as_type(
             )
             .await
         }
-        Annotation::Annotated(name, inner) => {
+        Annotation::Annotated(outer, inner) => {
             // For fn annotations, forward to full resolver
             // (e.g., fn@Seq@Int should resolve the Annotated properly)
             resolve_annotation(
-                &Annotation::Annotated(name.clone(), inner.clone()),
+                &Annotation::Annotated(outer.clone(), inner.clone()),
                 env,
                 span,
                 state,
@@ -1458,8 +1458,8 @@ pub(crate) async fn resolve_annotation(
             // (consistent with typecheck_narrow.rs:368).
             Ok(state.fresh_type_var(&span))
         }
-        Annotation::Annotated(name, inner) => {
-            // @Name@Inner means: apply type constructor `name` to type argument `inner`.
+        Annotation::Annotated(outer, inner) => {
+            // @Outer@Inner means: apply type constructor `outer` to type argument `inner`.
             // One path for all types — resolve the argument, then delegate to resolve_type_head
             // which handles TyCons, type-stage functions, classes, and kind constructors uniformly.
             let arg = Box::pin(resolve_annotation(
@@ -1473,15 +1473,38 @@ pub(crate) async fn resolve_annotation(
                 type_params_scope,
             ))
             .await?;
-            Box::pin(resolve_type_head(
-                name,
-                &[arg],
-                env,
-                state,
-                constraints,
-                span,
-            ))
-            .await
+            // Extract the name from outer for resolve_type_head dispatch.
+            // When outer is a Simple annotation (the common case: Seq@Int, Map@[K:V]),
+            // call resolve_type_head directly. For non-Simple outers (PropertyDict@Inner),
+            // resolve the outer to a type and produce App(outer_ty, arg).
+            match outer.as_ref() {
+                Annotation::Simple(name) => {
+                    Box::pin(resolve_type_head(
+                        name,
+                        &[arg],
+                        env,
+                        state,
+                        constraints,
+                        span,
+                    ))
+                    .await
+                }
+                _ => {
+                    // Non-Simple outer: resolve outer as a type then apply arg to it.
+                    let outer_ty = Box::pin(resolve_annotation(
+                        outer,
+                        env,
+                        span.clone(),
+                        state,
+                        constraints,
+                        ann_mapping,
+                        row_ann_mapping,
+                        type_params_scope,
+                    ))
+                    .await?;
+                    Ok(Type::App(Box::new(outer_ty), Box::new(arg)))
+                }
+            }
         }
         Annotation::PropertyDict(surface_entries) => {
             // PropertyDict can mean different things depending on its keys:
@@ -2869,8 +2892,10 @@ pub(crate) async fn resolve_type_expr(
                 // (e.g., `Handle@DirCap`, `Seq@Int`, `Map@[key: Str value: Int]` inline),
                 // reconstruct the `Annotation::Annotated(name, inner)` and dispatch through
                 // `resolve_annotation` which handles `"Handle"`, `"Seq"`, `"Map"`, etc.
-                let full_ann =
-                    Annotation::Annotated(name.clone(), Box::new(annotation.node.clone()));
+                let full_ann = Annotation::Annotated(
+                    Box::new(Annotation::Simple(name.clone())),
+                    Box::new(annotation.node.clone()),
+                );
                 Box::pin(resolve_annotation(
                     &full_ann,
                     env,
@@ -4374,22 +4399,28 @@ fn typenode_value_to_type<'a>(
                             _ => indexmap::IndexMap::new(), // Empty or unrecognized fields → empty record
                         };
 
-                        // Optional key-type and value-type fields enable Map[K:V] encoding.
-                        // If key-type is present, build a typed-key Uniform tail regardless of `open`.
+                        // Optional key-type/key: and value-type/value: fields enable Map[K:V] encoding.
+                        // Both `key-type:` and `key:` are accepted (likewise `value-type:` / `value:`).
+                        // If key-type (or key:) is present, build a typed-key Uniform tail regardless of `open`.
                         // row-polymorphic: 1 → sentinel RowVar; caller (resolve_type_head) will
                         // replace it with a fresh RowVar using InferState. This is a general protocol:
                         // any TypeNode that needs a fresh row var sets row-polymorphic: 1.
-                        let tail = if let Some(key_type_val) =
-                            payload_fields.get("key-type").cloned()
+                        let tail = if let Some(key_type_val) = payload_fields
+                            .get("key-type")
+                            .or_else(|| payload_fields.get("key"))
+                            .cloned()
                         {
                             let key_ty = typenode_value_to_type(&key_type_val, ctx).await?;
-                            // value-type defaults to Any when absent.
-                            let value_ty =
-                                if let Some(vt_val) = payload_fields.get("value-type").cloned() {
-                                    typenode_value_to_type(&vt_val, ctx).await?
-                                } else {
-                                    Type::Any
-                                };
+                            // value-type / value: defaults to Any when absent.
+                            let value_ty = if let Some(vt_val) = payload_fields
+                                .get("value-type")
+                                .or_else(|| payload_fields.get("value"))
+                                .cloned()
+                            {
+                                typenode_value_to_type(&vt_val, ctx).await?
+                            } else {
+                                Type::Any
+                            };
                             crate::type_def::RowTail::Uniform {
                                 key: Some(Box::new(key_ty)),
                                 value: Box::new(value_ty),
@@ -4823,15 +4854,128 @@ pub(crate) async fn eval_type_stage_value(
         })?;
 
     // Convert TypeNode Value → Type.
-    typenode_value_to_type(&result_val, &ctx)
+    // If the direct structural conversion fails (unrecognised TypeNode tag), try
+    // as_type_dispatch to normalise the value through the prelude's `as-typenode`
+    // function before giving up.
+    if let Some(ty) = typenode_value_to_type(&result_val, &ctx).await {
+        return Ok(ty);
+    }
+    if let Some(ty) = as_type_dispatch(&result_val, state).await {
+        return Ok(ty);
+    }
+    Err(TypeDiagnostic::error(
+        "type-error",
+        format!("type-stage result cannot be converted to Type: {result_val}"),
+        origin_span,
+    ))
+}
+
+/// Dispatch a TypeNode `Value` through the type-stage `as-typenode` protocol function.
+///
+/// This is the T-1059 hook for normalizing TypeNode values produced by type-stage
+/// expression evaluation using user-defined `as-type:` annotations on TypeNode
+/// constructors.  The name `as-typenode` is a **protocol contract** (D-7): Rust requires
+/// this exact name in the type-stage map; the prelude is responsible for providing it.
+/// This is not a prelude-specific hack — any compliant prelude must export a function
+/// named `as-typenode` that accepts a TypeNode value and returns a resolved Type.
+///
+/// ## When to call
+///
+/// Call `as_type_dispatch` when `typenode_value_to_type` returns `None` — i.e., when a
+/// TypeNode value has an unrecognised tag (typically a user-defined or prelude-defined
+/// constructor such as `TypeNode.Bool` or `TypeNode.SizedBytes`).  Rather than failing
+/// with an unrecognised-tag error, the caller should first try `as_type_dispatch` to
+/// let the type-stage normalise the value to an existing form.
+///
+/// ## Mechanism
+///
+/// 1. Looks up `as-typenode` in `state.type_stage_map` as a
+///    `TypeStageEntry::Function(thunk_id)`.
+/// 2. Materialises the thunk via `state.eval_ctx` to obtain the resolver function value.
+/// 3. Calls `eval_type_stage_value(fn_val, &[val.clone()], state)` — the function value
+///    receives the TypeNode value as its sole argument and returns a normalised TypeNode.
+/// 4. Converts the normalised TypeNode value to a `Type` via `typenode_value_to_type`.
+///
+/// Returns `None` if:
+/// - `state.type_stage_map` is absent or does not contain `as-typenode`.
+/// - The `as-typenode` entry is `Resolved` (not a function).
+/// - `state.eval_ctx` is `None`.
+/// - Thunk materialisation fails.
+/// - `eval_type_stage_value` returns an error.
+/// - The result of `eval_type_stage_value` is itself unrecognised (would cause recursion;
+///   stopped at this depth).
+///
+/// ## Protocol contract (Axiom 1 / D-7)
+///
+/// `as-typenode` is an Axiom 1 protocol entry — the Rust type checker requires that the
+/// active prelude provides a function named `as-typenode` that accepts TypeNode values and
+/// returns their resolved Type.  This is analogous to `tmpl`/`unindent` for strings (D-3):
+/// Rust defines the protocol; the prelude implements it.  A custom prelude must provide an
+/// `as-typenode` function under this exact name to participate in TypeNode dispatch.
+/// Tracked as decision D-7.
+pub(crate) async fn as_type_dispatch(val: &Value, state: &mut InferState) -> Option<Type> {
+    // Step 1: locate the `as-typenode` resolver in the type-stage map.
+    let thunk_id = match state
+        .type_stage_map
+        .as_ref()
+        .and_then(|m| m.get("as-typenode"))
+    {
+        Some(crate::type_infer::TypeStageEntry::Function(tid)) => *tid,
+        // Resolved entry is a ground Type, not a function — cannot call it.
+        Some(crate::type_infer::TypeStageEntry::Resolved(_)) => return None,
+        None => return None,
+    };
+
+    // Step 2: materialise the thunk to get the resolver function value.
+    let eval_ctx = state.eval_ctx.clone()?;
+    let resolver_thunk = eval_ctx.get_thunk(thunk_id);
+    let fn_val = crate::eval::materialize(&resolver_thunk, None, &eval_ctx)
         .await
-        .ok_or_else(|| {
-            TypeDiagnostic::error(
-                "type-error",
-                format!("type-stage result cannot be converted to Type: {result_val}"),
-                origin_span,
-            )
-        })
+        .ok()?;
+
+    // Step 3: call the resolver with the TypeNode value as its sole argument.
+    // We use evaluate_resolver_by_value (inline) rather than eval_type_stage_value so that the
+    // result conversion uses typenode_value_to_type ONLY (no as_type_dispatch fallback),
+    // preventing infinite recursion if the resolver itself returns an unrecognised tag.
+    let origin_span = rust_span!();
+    let arg_thunk_id = eval_ctx.alloc_thunk(
+        0,
+        std::sync::Arc::new(crate::value::Thunk::value(val.clone(), origin_span.clone())),
+    );
+
+    let result_thunk = match fn_val {
+        Value::Function {
+            ref params,
+            ref body,
+            closure_env_id,
+            ..
+        } => {
+            if params.len() != 1 {
+                return None; // as-typenode must be a single-parameter function
+            }
+            let call_ctx = crate::eval_call::CallContext {
+                params,
+                body,
+                closure_env_id,
+                positional: &[arg_thunk_id],
+                named: None,
+                default_env_id: closure_env_id,
+                call_span: origin_span.clone(),
+                ctx: &eval_ctx,
+            };
+            crate::eval_call::invoke_function(&call_ctx).await.ok()?
+        }
+        _ => return None,
+    };
+
+    let result_val = crate::eval::materialize(&result_thunk, None, &eval_ctx)
+        .await
+        .ok()?;
+
+    // Convert using typenode_value_to_type ONLY — no as_type_dispatch fallback here.
+    // This prevents infinite recursion: if the resolver itself returns an unrecognised tag,
+    // we return None rather than attempting further dispatch.
+    typenode_value_to_type(&result_val, &eval_ctx).await
 }
 
 /// Evaluate a type-stage `SurfaceNode` annotation expression and convert the result to
@@ -4887,7 +5031,6 @@ pub(crate) async fn eval_type_stage_expr(
     // Wrap the SurfaceNode in a lazy thunk that will evaluate it in the eval env.
     // Use empty resolution and type-annotation tables (no pre-resolved coordinates);
     // name lookup falls through to the tier-2 name-based path in the evaluator.
-    let _ = state; // state reserved for future use (e.g., scope-chain lookup)
     let surface_thunk = Arc::new(Thunk::surface(
         Arc::clone(node),
         Arc::new(std::collections::HashMap::new()),
@@ -4909,15 +5052,20 @@ pub(crate) async fn eval_type_stage_expr(
         })?;
 
     // Convert the materialized TypeNode Value to a Type.
-    typenode_value_to_type(&typenode_val, &ctx)
-        .await
-        .ok_or_else(|| {
-            TypeDiagnostic::error(
-                "type-error",
-                format!("type-stage expression produced an unrecognized value: {typenode_val}"),
-                node_span,
-            )
-        })
+    // If the direct structural conversion fails (unrecognised TypeNode tag), try
+    // as_type_dispatch to normalise the value through the prelude's `as-typenode`
+    // function before giving up.
+    if let Some(ty) = typenode_value_to_type(&typenode_val, &ctx).await {
+        return Ok(ty);
+    }
+    if let Some(ty) = as_type_dispatch(&typenode_val, state).await {
+        return Ok(ty);
+    }
+    Err(TypeDiagnostic::error(
+        "type-error",
+        format!("type-stage expression produced an unrecognized value: {typenode_val}"),
+        node_span,
+    ))
 }
 
 // ============================================================================

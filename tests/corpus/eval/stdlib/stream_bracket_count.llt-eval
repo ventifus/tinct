@@ -1,0 +1,10 @@
+# stream.llt bracket-count: counts net open bracket depth in a string.
+# [ adds 1, ] subtracts 1. String literals and # comments are ignored.
+[stream: [include %libdir "codecs/stream.llt"]]
+[
+  r1: [stream.bracket-count "[x: 1]"]    # depth 0 — balanced
+  r2: [stream.bracket-count "[a: [b: 2"] # depth 2 — two opens, no close
+  r3: [stream.bracket-count "hello"]     # depth 0 — no brackets
+]
+=== out
+Dict({"r1": Int(0), "r2": Int(2), "r3": Int(0)})

@@ -24,7 +24,7 @@ tests/corpus/
 │   ├── access/               # Access chain evaluation
 │   ├── builtins/             # Builtin function evaluation (44+ builtins)
 │   ├── cross_feature/        # Multi-feature interaction tests
-│   ├── errors/               # Expected eval failures (must include [EXXX] error code)
+│   ├── errors/               # Expected eval failures (must include a meaningful error message substring)
 │   ├── functions/            # Function definition, call, closure tests
 │   ├── laziness/             # Laziness proof tests (use $error in unused positions)
 │   ├── letrec/               # Letrec scoping and forward references
@@ -127,19 +127,21 @@ A test that produces a known type warning documents it explicitly:
 ```
 [call $+ "hello" 42]
 === out
-[E020] arity mismatch
+arity mismatch
 === warn
 cannot unify String with Int
 ```
 
 ### Error Tests (eval/errors/ and invalid/)
 
-**All error tests MUST include the error code `[EXXX]`** to ensure error code stability:
+**Error tests MUST include a meaningful substring of the actual error message** so that
+the test verifies real failure output. The runtime does **not** emit `[EXXX]` error codes
+in error messages — do not use `[EXXX]` codes as the expected substring:
 
 ```
 [call $+ 1 2 3]
 === out
-[E020] arity mismatch
+arity mismatch
 ```
 
 The `ERROR:` prefix (legacy format from before labeled sections) is still supported in
@@ -148,7 +150,7 @@ The `ERROR:` prefix (legacy format from before labeled sections) is still suppor
 ```
 [call $error "boom"]
 === out
-ERROR: [E024]
+ERROR: boom
 ```
 
 ### Type Error Tests (eval/type_errors/)
@@ -184,7 +186,7 @@ before evaluation.
 # no_fs
 [include "file.llt"]
 === out
-[E042] filesystem access is disabled
+filesystem access is disabled
 ```
 
 ### No Sections
@@ -243,7 +245,7 @@ Failed tests show the filename and error:
 ### Eval Tests (Evaluator)
 - **builtins/**: All 44 builtin functions with edge cases
 - **stdlib/**: All 51 stdlib functions (defined in stdlib/prelude.llt)
-- **errors/**: Expected eval failures with error codes (E001-E099)
+- **errors/**: Expected eval failures with meaningful error message substrings
 - **laziness/**: Tests proving values are NOT eagerly evaluated
 - **type_assertions/**: TypeAssert contract validation with defaults and fallbacks
 - **type_errors/**: Type checker error tests
@@ -257,28 +259,29 @@ Failed tests show the filename and error:
 - **letrec/**: Letrec scoping and forward references
 - **meta/**: Meta pipeline tests (builtin-parse/desugar/resolve/typecheck-doc/eval scope threading)
 
-## Error Code Coverage
+## Error Coverage
 
-The corpus tests cover most error codes (E001-E099). Some error codes are difficult or
-impossible to test in the corpus test framework:
+The corpus tests in `eval/errors/` cover a wide range of runtime failures. Some error
+conditions are difficult or impossible to trigger in the corpus test framework:
 
 ### Not Corpus-Testable (Require Unit Tests)
 
-- **E050 (IncludeNotAvailable):** Error code defined but never triggered in current codebase
-- **E051 (IncludeIoError):** Requires actual filesystem and nonexistent files (tested in unit tests)
-- **E052 (IncludeCycle):** Requires self-referencing files (tested in unit tests)
-- **E053 (IncludeParseFailed):** Requires include with invalid syntax (tested in unit tests)
-- **E054 (IncludeFileTooLarge):** Requires files >10MB (tested in unit tests)
-- **E055 (IncludeHashMismatch):** Requires integrity hash validation (tested in unit tests)
-- **E056 (IncludeHashRequired):** Requires `--require-integrity` flag (tested in unit tests)
-- **E057 (IncludePathNotAllowed):** Requires `--allowed-paths` restriction (tested in unit tests)
-- **E062 (JsonRange):** Unreachable with serde_json (defensive error, tested in unit tests)
-- **E043 (ResourceLimitExceeded - collect):** Requires >1M elements (tested in unit tests)
+- **IncludeNotAvailable:** Error defined but never triggered in current codebase
+- **IncludeIoError:** Requires actual filesystem and nonexistent files (tested in unit tests)
+- **IncludeCycle:** Requires self-referencing files (tested in unit tests)
+- **IncludeParseFailed:** Requires include with invalid syntax (tested in unit tests)
+- **IncludeFileTooLarge:** Requires files >10MB (tested in unit tests)
+- **IncludeHashMismatch:** Requires integrity hash validation (tested in unit tests)
+- **IncludeHashRequired:** Requires `--require-integrity` flag (tested in unit tests)
+- **IncludePathNotAllowed:** Requires `--allowed-paths` restriction (tested in unit tests)
+- **JsonRange:** Unreachable with serde_json (defensive error, tested in unit tests)
+- **ResourceLimitExceeded (collect):** Requires >1M elements (tested in unit tests)
 
-All include-related errors (E050-E057) are comprehensively tested in `src/builtins.rs`
-unit tests with temporary directories and cap-std sandboxing.
+All include-related errors are comprehensively tested in `src/builtins.rs` unit tests with
+temporary directories and cap-std sandboxing.
 
-### Corpus-Testable Error Codes
+### Corpus-Testable Errors
 
-All other error codes (E001-E099) have corpus tests in `tests/corpus/eval/errors/` or
-`tests/corpus/invalid/`. Run `just test-corpus` to verify.
+Most runtime errors have corpus tests in `tests/corpus/eval/errors/` or
+`tests/corpus/invalid/`. Each test's `=== error` section contains a substring of the
+actual error message produced at runtime. Run `just test-corpus` to verify.

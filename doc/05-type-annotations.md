@@ -990,7 +990,12 @@ type errors:
 - `is:` in function parameter: falsy → runtime error (hard)
 - `is:` throwing → always a hard runtime error, never a soft skip
 
-**Type narrowing.** Recognized type predicates narrow the TypeVar's type in the arm body: `int?` → `Int`, `string?` → `String`, `dict?` → open record. User-defined predicates produce no narrowing — the type in the body is the matched value's pre-guard type.
+**Type narrowing.** Any predicate function can declare narrowing behavior using annotations on its binding or parameters:
+
+- **`@[narrows: T]` key annotation** — e.g., `my-int?@[narrows: Int]:`. When `[my-int? x]` is true, `x` is narrowed to `T`.
+- **`@[is: T]` parameter annotation** — e.g., `[fn [let x@[is: Int]] ...]`. When the predicate is called with a single variable argument and returns true, that variable is narrowed to `T`.
+
+Both mechanisms store `TypeScheme.param_narrowings[0] = Some(T)` during type checking. `extract_narrowings` looks up the called function in the type environment and reads `param_narrowings`. Any function — not just prelude predicates — can participate in narrowing. The predicate narrowing mechanism is fully annotation-driven: no predicate names are hardcoded in Rust.
 
 **Narrowing only applies to AST control flow constructs.** Type narrowing fires only for `if`, `cond`, and `match` expressions (AST special forms with dedicated type checking rules). Prelude functions like `when` and `unless` (defined in `stdlib/prelude.llt` as calls to `builtin-if`) do NOT trigger narrowing because the type checker does not analyze function bodies — narrowing requires AST-level inspection. To narrow a value with a type predicate, use `if` directly: `[if [fn? x] ...]` instead of `[when [fn? x] ...]`.
 

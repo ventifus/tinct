@@ -1,0 +1,13 @@
+# F-19: @Expr on a function parameter produces Annotation::Quote at parse time.
+# The parser converts "@Expr" text to Annotation::Quote immediately, making it
+# independent of any prelude type name. The function still evaluates normally
+# (annotation-of on the function returns its extra annotation dict).
+[
+  # Function with @Expr annotated parameter — the annotation is Quote sentinel.
+  f@[doc: "accepts expr"]: [fn [let x@Expr] x]
+  # annotation-of the function returns the extra dict with doc field.
+  ann: [annotation-of f]
+  result: [= ann.doc "accepts expr"]
+]
+=== out
+Dict({"f": Function(x), "ann": Dict({"doc": String("accepts expr")}), "result": Variant(Boolean.True, Null)})

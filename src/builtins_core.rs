@@ -419,6 +419,8 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             0,
             ["msg"]
         ),
+        // builtin-try: takes 1 zero-arg function, calls it, returns `{ok: value}` on success
+        // or `{error: message}` (plain Dicts) on failure. See builtin_try in builtins_meta.rs.
         builtin!("builtin-try", builtin_try, [], 0, ["expr"]),
         // ── Type introspection ────────────────────────────────────────────────────────
         builtin!(
@@ -553,6 +555,13 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             ["doc", "scope-id"]
         ),
         builtin!(
+            "builtin-eval-expr",
+            crate::builtins_meta::builtin_eval_expr,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["expr", "scope-id"]
+        ),
+        builtin!(
             "builtin-variant-payload",
             builtin_variant_payload,
             [Strictness::Seq],
@@ -563,6 +572,17 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
         builtin!("builtin-scopes", builtin_scopes, [], 0),
         builtin!(
             "builtin-scope-new",
+            builtin_scope_new,
+            [Strictness::Seq, Strictness::Seq],
+            0,
+            ["parent", "entries"]
+        ),
+        // `builtin-extend-env` is the loader-facing alias for `builtin-scope-new`.
+        // Takes (parent-env-id: Int, bindings: Dict) and returns Int (the new scope-id).
+        // Registered here so loader.llt and user code can use the semantically meaningful
+        // name `extend-env` without a separate implementation.
+        builtin!(
+            "builtin-extend-env",
             builtin_scope_new,
             [Strictness::Seq, Strictness::Seq],
             0,

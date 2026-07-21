@@ -1,0 +1,3 @@
+[fn @Integer [let x] x]
+=== out
+1:5: floating annotation not valid in this context; `[@Type expr]` is only supported inside a dict

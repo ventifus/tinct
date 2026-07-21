@@ -762,9 +762,23 @@ fn dict_to_annotation(
             }
             "Annotated" => match &payload_val {
                 Value::Dict(d) => {
-                    let name = get_string_field(d, "name", path, ctx).unwrap_or_default();
-                    let inner = get_string_field(d, "inner", path, ctx).unwrap_or_default();
-                    Annotation::Annotated(name, Box::new(Annotation::Simple(inner)))
+                    // Deserialize outer: non-Simple outer is stored as a nested "outer" Annotation
+                    // value; Simple outer uses the flat "name" string for backward compatibility.
+                    let outer_ann = if let Ok(outer_val) = get_field(d, "outer", path, ctx) {
+                        dict_to_annotation(&outer_val, path, ctx)
+                            .map(|s| s.node)
+                            .unwrap_or_else(|_| Annotation::Simple(String::new()))
+                    } else {
+                        let name = get_string_field(d, "name", path, ctx).unwrap_or_default();
+                        Annotation::Simple(name)
+                    };
+                    // Deserialize inner from "inner-ann" (structured recursive Annotation value).
+                    let inner_ann_val = get_field(d, "inner-ann", path, ctx)
+                        .unwrap_or(Value::Dict(IndexMap::new()));
+                    let inner_ann = dict_to_annotation(&inner_ann_val, path, ctx)
+                        .map(|s| s.node)
+                        .unwrap_or_else(|_| Annotation::Simple(String::new()));
+                    Annotation::Annotated(Box::new(outer_ann), Box::new(inner_ann))
                 }
                 _ => Annotation::Simple(String::new()),
             },
@@ -795,7 +809,7 @@ fn dict_to_annotation(
             let name = get_string_field(dict, "name", path, ctx)?;
             let inner_val = get_dict_field(dict, "inner", path, ctx)?;
             let inner = dict_to_annotation(&inner_val, path, ctx)?;
-            Annotation::Annotated(name, Box::new(inner.node))
+            Annotation::Annotated(Box::new(Annotation::Simple(name)), Box::new(inner.node))
         }
         "dict" => {
             let entries_val = get_dict_field(dict, "entries", path, ctx)?;
@@ -2050,7 +2064,7 @@ pub(crate) fn annotation_to_thunk_id(
                 ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val("quote"), span.clone()))),
             );
         }
-        Annotation::Annotated(name, inner) => {
+        Annotation::Annotated(outer, inner) => {
             dict.insert(
                 HashableValue::Str("kind".into()),
                 ctx.alloc_thunk(
@@ -2058,10 +2072,22 @@ pub(crate) fn annotation_to_thunk_id(
                     Arc::new(Thunk::value(string_val("annotated"), span.clone())),
                 ),
             );
-            dict.insert(
-                HashableValue::Str("name".into()),
-                ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(name), span.clone()))),
-            );
+            // Serialize outer as "name" string for wire-format compat when outer is Simple.
+            // For non-Simple outers (e.g., PropertyDict@Next), serialize as "outer" dict.
+            match outer.as_ref() {
+                Annotation::Simple(name) => {
+                    dict.insert(
+                        HashableValue::Str("name".into()),
+                        ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(name), span.clone()))),
+                    );
+                }
+                _ => {
+                    dict.insert(
+                        HashableValue::Str("outer".into()),
+                        annotation_to_thunk_id(outer, span.clone(), ctx)?,
+                    );
+                }
+            }
             dict.insert(
                 HashableValue::Str("inner".into()),
                 annotation_to_thunk_id(inner, span.clone(), ctx)?,

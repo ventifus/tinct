@@ -121,6 +121,12 @@
       0: default
       ...: [builtin-get key dict]]]
 
+  # log-step: write msg to state.stderr and return state with updated handle.
+  # The returned state.stderr is the genuine consumer — it is forced when the next
+  # stage (or the reduce's passed computation) accesses state.stderr.
+  log-step: [fn [let msg state]
+    [merge state [stderr: [%stderr.write [builtin-string-concat msg "\n"] state.stderr]]]]
+
   # _shift-keys: shift all integer keys in dict d by +1.
   # {0: v} → {1: v}, {0: a, 1: b} → {1: a, 2: b}
   # Used by _scope-to-frames-inner to make room for new outermost frame at key 0.
@@ -419,13 +425,9 @@
            ...: [builtin-raise "if-ok: only 0, 1, or 2 pre-args supported"]]]]
 
   # ── Stage: load-bytes ─────────────────────────────────────────────────────────
-  # Opens state.path under cap and reads all bytes. Logs path via state.stderr.
-  # Returns state with updated stderr handle — next stage accesses state.stderr,
-  # forcing this write through the natural data-flow cascade.
+  # Opens state.path under cap and reads all bytes. Adds: bytes.
   load-bytes: [fn [let cap state]
-    [new-stderr: [%stderr.write [builtin-string-concat "loading: " [builtin-string-concat state.path "\n"]] state.stderr]]
-    [merge state [bytes: [read-file [builtin-file-open cap state.path "read"] [builtin-bytes]]
-                  stderr: new-stderr]]]
+    [merge state [bytes: [read-file [builtin-file-open cap state.path "read"] [builtin-bytes]]]]]
 
   # ── Stage: load-from-string ───────────────────────────────────────────────────
   # Converts a source string to bytes in state (for test programs, not files).
@@ -782,6 +784,7 @@
     # binding 'path' that this dict creates — avoiding a trivial self-reference.
     [parsed-state: [[path: .path  diagnostics: []  stderr: stderr-h]
                     | [if-ok load-from-string source]
+                    | [if-ok log-step "  parsing"]
                     | [if-ok parse-source]]]
     # pragma: ["no-prelude"] → use root-scope-id (no prelude); default → prelude.
     [parent-scope: [match [pragma-no-prelude? parsed-state]
@@ -798,7 +801,9 @@
                        %stderr: %stderr
                        %args:   %args]]]
     [$parsed-state
+     | [if-ok log-step "  evaluating"]
      | [if-ok eval-docs base-scope-id]
+     | [if-ok log-step "  typechecking"]
      | [if-ok typecheck-docs test-tc base-scope-id]
      | [if-ok format-output]]]
 
@@ -979,13 +984,18 @@
   # %prelude is a lazy forward reference to _prelude — safe because prelude captures it in
   # closures but never forces it during its own loading (only at user call-time).
   _prelude-result: [[path: "prelude.llt"  diagnostics: []  stderr: %stderr]
+    | [if-ok log-step "prelude: loading"]
     | [if-ok load-bytes %libdir]
+    | [if-ok log-step "prelude: parsing"]
     | [if-ok parse-source]
+    | [if-ok log-step "prelude: evaluating"]
     | [if-ok eval-program
         [%prelude: _prelude  Boolean: Boolean  True: True  False: False]
         fundamental-tc]
     | [if-ok export]
-    | [if-ok typecheck-program]]
+    | [if-ok log-step "prelude: typechecking"]
+    | [if-ok typecheck-program]
+    | [if-ok log-step "prelude: ready"]]
 
   # Fatal boundary: typecheck ERRORS on prelude mean execution is undefined behavior.
   # Type-checker warnings (tc-diagnostics) are advisory and non-fatal — valid prelude functions
@@ -1054,17 +1064,13 @@
     [fn [let state item]
       # run-test takes the current stderr handle and returns result including result.stderr.
       [result: [run-test item _prelude-scope-id _prelude-result.tc-ready state.stderr]]
-      # Write test result to stdout, threading the handle — next iteration forces this.
+      # Thread stdout and stderr handles forward — each write returns the next handle.
+      # Both chains collapse when the final dict's stdout/stderr fields are forced.
       [new-stdout: [%stdout.write [format-result result] state.stdout]]
-      # passed is computed through new-stdout: the delta depends on new-stdout's length
-      # so that final-state.passed forces the entire stdout write chain (including failure path).
       [delta: [bool->int result.passed]]
       [idx:        [builtin-int-add state.idx 1]
        total:      [builtin-int-add state.total 1]
-       passed:     [builtin-int-add state.passed
-                     [builtin-int-add delta
-                       [builtin-int-sub [builtin-dict-length new-stdout]
-                                        [builtin-dict-length new-stdout]]]]
+       passed:     [builtin-int-add state.passed delta]
        first-fail: [match [builtin-eq-string state.first-fail ""]
                      0: state.first-fail
                      ...: [match [bool->int result.passed]
@@ -1072,7 +1078,10 @@
                           ...: ""]]
        stdout:     new-stdout
        stderr:     result.stderr]]
-    [idx: 0  total: 0  passed: 0  first-fail: ""  stdout: %stdout  stderr: %stderr]
+    # Seed stderr with _prelude-result.stderr so the prelude loading chain and each
+    # test's chain are linked: the first test's result.stderr forces _prelude-result.stderr,
+    # and subsequent tests chain from there. Both streams share a single contiguous handle chain.
+    [idx: 0  total: 0  passed: 0  first-fail: ""  stdout: %stdout  stderr: _prelude-result.stderr]
     test-programs]
 ]
 
@@ -1080,15 +1089,8 @@
 # Final expression — summary + exit code
 # ============================================================================
 
-# Write summary to stdout, chained from final-state.stdout (the last test write).
-# On success: summary-stdout is the program's return value — Rust forces it, cascading all writes.
-# On failure: final-state.passed was computed through new-stdout in each step (via the
-#   delta + dict-length trick), so the raise message's use of final-state.passed forces the
-#   entire stdout write chain including all test result lines.
-# Emit prelude diagnostics as part of the summary — forces _prelude-result.diagnostics
-# through the return-value data-flow chain. If _prelude-result raised internally (hard failure),
-# the raise propagates here, outside any builtin-try, making the prelude error clearly visible.
-# Uses only Dict 1 / core builtins — no prelude functions — so it works even when prelude failed.
+# The final result dict contains the flush results for both streams.
+# Any consumer of the result accesses both fields, naturally evaluating both flush chains.
 [prelude-error-count:
   [reduce [fn [let acc d] [builtin-int-add acc [match [builtin-eq-string d.level "error"] 0: 0 ...: 1]]]
           0
@@ -1098,9 +1100,8 @@
     "\n"
     [builtin-int->string final-state.passed] "/" [builtin-int->string final-state.total] " tests passed"
     [match [builtin-eq-int n-failed 0]
-      0: [join "" [", " [builtin-int->string n-failed] " failed\n"]]
+      0: [join "" [", " [builtin-int->string n-failed] " failed\n" final-state.first-fail "\n"]]
       ...: "\n"]]]
   final-state.stdout]]
-[match [builtin-eq-int n-failed 0]
-  0: [builtin-raise [join "" [[builtin-int->string n-failed] " test(s) failed\n" final-state.first-fail]]]
-  ...: summary-stdout]
+[call [fn [let]
+  [stdout: [%stdout.flush summary-stdout]  stderr: [%stderr.flush final-state.stderr]]]]

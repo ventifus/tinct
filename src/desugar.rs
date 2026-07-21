@@ -712,7 +712,8 @@ fn desugar_surface_annotation(ann: &mut Annotation, depth: usize) {
             // annotations is a user error (type expressions don't evaluate), so we
             // do not recurse here.
         }
-        Annotation::Annotated(_name, inner) => {
+        Annotation::Annotated(outer, inner) => {
+            desugar_surface_annotation(outer, depth);
             desugar_surface_annotation(inner, depth);
         }
     }

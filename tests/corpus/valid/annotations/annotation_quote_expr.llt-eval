@@ -1,0 +1,6 @@
+# @Expr annotation produces Annotation::Quote — the quoting sentinel.
+# The parser converts @Expr text to Quote immediately, so this is
+# independent of what the prelude calls its AST node type.
+[fn [let x@Expr] x]
+=== out
+[fn [let x@Expr] x]

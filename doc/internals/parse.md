@@ -348,13 +348,20 @@ one, as in `[@Type expr]`).
 
 Annotation forms:
 - `@Name` → `Annotation::Simple("Name")`
-- `@Name@Inner` → `Annotation::Annotated("Name", inner)` (chained)
+- `@Expr` → `Annotation::Quote` — quoting sentinel; the parser converts `@Expr` text to this
+  variant immediately, making the quoting mechanism independent of the prelude's `Expr` type name.
+  The name `Expr` is effectively reserved in annotation position at the language level.
+- `@Name@Inner` → `Annotation::Annotated(Box::new(Simple("Name")), Box::new(inner))` (chained;
+  outer is `Box<Annotation>` since T-1618, enabling `@[...]@Next` chaining)
 - `@[key: val …]` → `Annotation::PropertyDict(entries)` — inside `[@Type expr]` brackets,
   whitespace is allowed (the annotation value is non-atomic)
 
 The `parse_annotation_direct` function handles annotations appearing in `---` separator lines
-(document header key-value pairs). This is a separate parsing path from the `AnnotationCollect`
-frame mechanism and does not share code with it. Unification is tracked in T-1617.
+(document header key-value pairs). It routes through `expression_to_annotation` (the same
+conversion function used by the main `AnnotationCollect` frame path), so the two paths share
+the core annotation-building logic. The separate token-scanning loop for `@[...]` bracket
+contents in `parse_annotation_direct` remains because header parsing occurs outside the main
+bracket-nesting stack machine. Full elimination is tracked in T-1778.
 
 ### Document Separator
 

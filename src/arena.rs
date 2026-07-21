@@ -219,6 +219,10 @@ impl ScopeArena {
     /// `truncate(start_env_id)`, those indices are out of bounds, so any subsequent
     /// `alloc_root`/`alloc_child` that pops a stale entry would index out of bounds and panic.
     ///
+    /// Additionally, any ScopeIds `>= start_env_id` that were already on `free_list` from
+    /// prior `drop_scope` calls are removed (`retain`) before truncation, ensuring no
+    /// stale out-of-bounds entries remain after the truncation.
+    ///
     /// Used by `builtin-arena-drop` to reclaim an entire arena region atomically.
     pub fn drop_range_and_truncate(&mut self, start_env_id: u32) {
         let end = self.scopes.len() as u32;
@@ -232,6 +236,10 @@ impl ScopeArena {
             self.scopes[eid as usize].clear();
             // Do NOT push to free_list — scopes.truncate() below will remove these entries.
         }
+        // Remove any free_list entries that now point past the end of the truncated Vec.
+        // Prior drop_scope calls may have pushed ScopeIds >= start_env_id onto free_list;
+        // those indices are out-of-bounds after truncation and must not be reused.
+        self.free_list.retain(|id| id.0 < start_env_id);
         self.scopes.truncate(start_env_id as usize);
     }
 
@@ -521,6 +529,12 @@ pub fn migrate_value(
 /// src_range ThunkIds remapped through `migrate_thunk_id`.
 ///
 /// Variants with no env_id or ThunkId fields (AstNodeField) are returned unchanged.
+///
+/// **Precondition:** `AnnotatedWrap` thunks must be fully materialized before the caller
+/// invokes `migrate_thunk_id`. This function panics (`unreachable!`) if an unevaluated
+/// `AnnotatedWrap` is encountered. The `ctx` field in `AnnotatedWrap` references the source
+/// `EvalContext`; migrating it unevaluated would leave `ctx` pointing to the source arena
+/// while `inner` points to the destination arena — a use-after-free class bug (B-514 / D-6).
 fn translate_unevaluated_state(
     state: crate::value::UnevaluatedState,
     src_range: &std::ops::Range<u32>,
@@ -685,6 +699,26 @@ fn translate_unevaluated_state(
         // AstNodeField has no env_id or ThunkId fields — return as-is.
         UnevaluatedState::AstField { node, field, ctx } => {
             UnevaluatedState::AstField { node, field, ctx }
+        }
+        // AnnotatedWrap must never be migrated in unevaluated form.
+        //
+        // Precondition: all AnnotatedWrap thunks are materialized before arena migration is
+        // called — the migration caller (builtin_arena_migrate / deep-materialize path) must
+        // force AnnotatedWrap thunks to materialized before invoking migrate_thunk_id.
+        //
+        // If this arm is reached, the caller violated the precondition: an AnnotatedWrap
+        // thunk was present in the arena without being forced first. The `ctx` field would
+        // reference the source EvalContext while `inner` (after translation) would point to
+        // the destination arena — a use-after-free class bug (same pattern as B-514 for
+        // BuiltinCall/FnCall). See Finding 4 of sprint S-934.
+        UnevaluatedState::AnnotatedWrap { inner, .. } => {
+            unreachable!(
+                "AnnotatedWrap thunk (inner={:?}) reached translate_unevaluated_state — \
+                 AnnotatedWrap thunks must be fully materialized before arena migration. \
+                 This is a precondition violation: the caller must force all AnnotatedWrap \
+                 thunks before calling migrate_thunk_id.",
+                inner,
+            )
         }
     }
 }
@@ -1498,5 +1532,52 @@ mod tests {
         assert_eq!(arena.scopes.len(), 2);
 
         let _ = (child1, child2); // suppress unused warnings
+    }
+
+    #[test]
+    fn test_drop_range_and_truncate_cleans_stale_free_list_entries() {
+        // Regression test: drop_range_and_truncate must remove pre-existing free_list entries
+        // that point into the truncation range. If drop_scope was called on a scope that is
+        // later inside the truncation range, its ScopeId would remain on the free_list and
+        // become an out-of-bounds index after scopes.truncate(). The retain() call in
+        // drop_range_and_truncate is the safety net for this case.
+        let mut arena = ScopeArena::new();
+
+        let root = arena.alloc_root(0);
+        let child1 = arena.alloc_child(root, 0);
+        let child2 = arena.alloc_child(root, 0);
+        assert_eq!(arena.scopes.len(), 3);
+
+        // drop_scope on child2 — pushes ScopeId(2) onto free_list.
+        // This simulates a caller that dropped an individual scope before deciding to
+        // truncate the whole range starting at child1.
+        arena.drop_scope(child2);
+        assert_eq!(arena.free_list.len(), 1, "child2 should be on free_list");
+        assert_eq!(arena.free_list[0].0, child2.0, "free_list entry must be child2");
+
+        // Now truncate starting at child1 — this must remove child2's stale entry from
+        // free_list before truncating, otherwise alloc_root/alloc_child would index
+        // out of bounds on the next call.
+        arena.drop_range_and_truncate(child1.0);
+        assert_eq!(
+            arena.scopes.len(),
+            1,
+            "after truncate(child1.0), scopes.len() must be 1"
+        );
+        assert_eq!(
+            arena.free_list.len(),
+            0,
+            "retain must have removed the stale child2 entry from free_list"
+        );
+
+        // This alloc must not panic (would panic if free_list still had stale child2 entry).
+        let new_id = arena.alloc_root(0);
+        assert_eq!(
+            new_id.0, 1,
+            "new alloc grows past root (stale free_list entry was cleaned)"
+        );
+        assert_eq!(arena.scopes.len(), 2);
+
+        let _ = child1; // suppress unused warning
     }
 }

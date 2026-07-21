@@ -6,26 +6,36 @@
 //! - Instance pattern type extraction and functional-dependency parameter index resolution
 //! - Pattern overlap / type unification probes (side-effect-free)
 //!
-//! ## Prelude coupling (B-507)
+//! ## Annotation-based narrowing (T-1761)
 //!
-//! `extract_narrowings` recognizes specific predicate function names (`int?`, `str?`,
-//! `bool?`, `seq?`, etc.) by string match. This couples the narrower to the prelude's
-//! naming conventions. The principled fix is annotation-based narrowing: predicate
-//! functions would declare their narrowing behavior via annotations (e.g.,
-//! `@[narrows: [type: Int]]`), and the type checker would read these annotations at
-//! call sites. This requires design work tracked separately.
+//! `extract_narrowings` supports two mechanisms for declaring narrowing behavior:
 //!
-//! The primitive types narrowed to (`Type::Int`, `Type::Float`, `Type::Str`) are Rust-level
-//! and prelude-agnostic. Predicates for prelude-defined types (`bool?`, `seq?`) currently
-//! narrow to `Type::Unknown` — the principled fix (annotation-based narrowing) is tracked
-//! as T-1761, which would allow predicates to declare their narrowing behavior via annotations.
+//! 1. **`@[narrows: TypeName]` key annotation** — e.g., `foo?@[narrows: Int]:`.
+//!    When `[foo? x]` is true, `x` is narrowed to `TypeName`.
+//!
+//! 2. **`@[is: TypeName]` parameter annotation** — e.g., `[fn [let x@[is: Int]] ...]`.
+//!    When the predicate is called with a single variable argument and returns true,
+//!    that variable is narrowed to `TypeName`.
+//!
+//! Both mechanisms store `TypeScheme.param_narrowings[0] = Some(T)` during Pass 4 of
+//! `run_typecheck_dict`. `extract_narrowings` looks up the called function in the
+//! type environment and reads `param_narrowings`. Any function — not just prelude
+//! predicates — can participate in narrowing by using these annotations.
+//!
+//! **Predicate narrowing** (`@[is: T]`, `@[narrows: T]`) is entirely annotation-driven — no
+//! predicate names are hardcoded in Rust. A custom prelude can name predicates anything.
+//!
+//! **Structural pattern narrowing** (`=`, `and`, `has?`, `type-of`) still uses hardcoded
+//! function names (B-545). A protocol entry or annotation extension is needed to make these
+//! prelude-agnostic as well.
 
 use std::sync::{Arc, RwLock};
 
-use crate::ast::{Annotation, Span, SurfaceExpression, SurfaceNode};
+use super::typecheck_annot;
+use crate::ast::{Span, SurfaceExpression, SurfaceNode};
 use crate::env::Env;
 use crate::error::TypeDiagnostic;
-use crate::types::{InferState, Row, Type, TypeScheme};
+use crate::types::{Constraint, InferState, Row, Type, TypeEnv, TypeScheme};
 
 /// Narrowing constraints extracted from conditional expressions.
 /// Each constraint refines the type of a variable in the true branch of an `if`.
@@ -41,7 +51,17 @@ pub(crate) enum Narrowing {
 
 /// Extract narrowing constraints from a condition expression (SurfaceNode version).
 /// Returns an empty vec for unrecognized patterns.
-pub(crate) fn extract_narrowings(cond: &Arc<SurfaceNode>) -> Vec<Narrowing> {
+///
+/// `env` is the type environment at the call site, used to look up annotation-based
+/// narrowing declarations (`param_narrowings` on the callee's TypeScheme). When a
+/// function is annotated with `@[narrows: T]` or has a first parameter annotated with
+/// `@[is: T]`, calling it with a single variable argument narrows that variable to `T`
+/// in the true branch. Any function registered in `env` can participate in narrowing —
+/// not just hardcoded prelude predicates.
+pub(crate) fn extract_narrowings(
+    cond: &Arc<SurfaceNode>,
+    env: &Arc<RwLock<Env>>,
+) -> Vec<Narrowing> {
     match &cond.expr {
         SurfaceExpression::Call {
             func,
@@ -85,101 +105,26 @@ pub(crate) fn extract_narrowings(cond: &Arc<SurfaceNode>) -> Vec<Narrowing> {
                     "and" => {
                         let mut narrowings = Vec::new();
                         for arg in args {
-                            narrowings.extend(extract_narrowings(arg));
+                            narrowings.extend(extract_narrowings(arg, env));
                         }
                         return narrowings;
                     }
-                    // Pattern: [int? x], [str? x], [dict? x], [bool? x], [float? x],
-                    // [fn? x], [null? x], [seq? x], [num? x]
-                    "int?" if args.len() == 1 => {
+                    // Annotation-based narrowing (T-1761): look up the function in env.
+                    // If its TypeScheme has `param_narrowings[0] = Some(T)`, then
+                    // `[foo? x]` being true narrows `x` to `T`. This is the general
+                    // mechanism — any function can declare narrowing via `@[narrows: T]`
+                    // or `@[is: T]` on its first parameter.
+                    _ if args.len() == 1 => {
                         if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
-                            return vec![Narrowing::TypeOf {
-                                var: var_name.clone(),
-                                ty: Type::Int,
-                            }];
-                        }
-                    }
-                    "str?" if args.len() == 1 => {
-                        if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
-                            return vec![Narrowing::TypeOf {
-                                var: var_name.clone(),
-                                ty: Type::Str,
-                            }];
-                        }
-                    }
-                    "dict?" if args.len() == 1 => {
-                        if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
-                            // dict? narrows to open record with no fields
-                            return vec![Narrowing::TypeOf {
-                                var: var_name.clone(),
-                                ty: Type::Dict(Row {
-                                    fields: indexmap::IndexMap::new(),
-                                    tail: crate::type_def::RowTail::Empty,
-                                }),
-                            }];
-                        }
-                    }
-                    "bool?" if args.len() == 1 => {
-                        if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
-                            // T-1761: principled annotation-based narrowing needed.
-                            // Boolean is a prelude-defined type; Rust must not hardcode its name.
-                            return vec![Narrowing::TypeOf {
-                                var: var_name.clone(),
-                                ty: Type::Unknown,
-                            }];
-                        }
-                    }
-                    "float?" if args.len() == 1 => {
-                        if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
-                            return vec![Narrowing::TypeOf {
-                                var: var_name.clone(),
-                                ty: Type::Float,
-                            }];
-                        }
-                    }
-                    "fn?" if args.len() == 1 => {
-                        if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
-                            return vec![Narrowing::TypeOf {
-                                var: var_name.clone(),
-                                ty: Type::Function {
-                                    params: vec![],
-                                    ret: Box::new(Type::Unknown),
-                                    typed_variadics: vec![],
-                                    rest: Some(Box::new(("rest".to_string(), Type::Unknown))),
-                                    required_count: 0,
-                                },
-                            }];
-                        }
-                    }
-                    "null?" if args.len() == 1 => {
-                        if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
-                            // null? narrows to empty closed record
-                            return vec![Narrowing::TypeOf {
-                                var: var_name.clone(),
-                                ty: Type::Dict(Row {
-                                    fields: indexmap::IndexMap::new(),
-                                    tail: crate::type_def::RowTail::Empty,
-                                }),
-                            }];
-                        }
-                    }
-                    "seq?" if args.len() == 1 => {
-                        if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
-                            // T-1761: principled annotation-based narrowing needed.
-                            // Seq is a prelude-defined type; Rust must not hardcode its name.
-                            return vec![Narrowing::TypeOf {
-                                var: var_name.clone(),
-                                ty: Type::Unknown,
-                            }];
-                        }
-                    }
-                    "num?" if args.len() == 1 => {
-                        if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
-                            // num? narrows to Int | Float
-                            return vec![Narrowing::TypeOf {
-                                var: var_name.clone(),
-                                ty: Type::normalize_union(vec![Type::Int, Type::Float]),
-                            }];
+                            let scheme = env.read().ok().and_then(|e| e.get_scheme(name));
+                            if let Some(scheme) = scheme {
+                                if let Some(Some(narrow_ty)) = scheme.param_narrowings.first() {
+                                    return vec![Narrowing::TypeOf {
+                                        var: var_name.clone(),
+                                        ty: narrow_ty.clone(),
+                                    }];
+                                }
+                            }
                         }
                     }
                     _ => {}
@@ -207,13 +152,9 @@ pub(crate) fn try_eq_literal(
                 ty: Type::StringLiteral(s.clone()),
             }),
             // true/false are plain identifiers in tinct — no native boolean type.
-            // T-1761: annotation-based narrowing needed for principled bool narrowing.
-            SurfaceExpression::VarRef { name: ref n, .. } if n == "true" || n == "false" => {
-                Some(Narrowing::EqLiteral {
-                    var: name.clone(),
-                    ty: Type::Unknown,
-                })
-            }
+            // No narrowing: x retains its original type. Emitting Unknown would
+            // degrade type checking (Axiom 4: no prelude-specific behavior in Rust).
+            SurfaceExpression::VarRef { name: ref n, .. } if n == "true" || n == "false" => None,
             _ => None,
         }
     } else {
@@ -247,13 +188,11 @@ pub(crate) fn try_type_of(left: &Arc<SurfaceNode>, right: &Arc<SurfaceNode>) -> 
                                 "Int" => Some(Type::Int),
                                 "Float" => Some(Type::Float),
                                 "String" => Some(Type::Str),
-                                // T-1761: "Bool" and "Seq" are prelude-defined types;
-                                // Rust must not hardcode their TyCon names. Use Unknown
-                                // until annotation-based narrowing is implemented.
-                                "Bool" | "Seq" => Some(Type::Unknown),
-                                "Number" => {
-                                    Some(Type::normalize_union(vec![Type::Int, Type::Float]))
-                                }
+                                // B-547 / B-545: "Bool" and "Seq" are prelude-defined types;
+                                // Rust must not hardcode their TyCon names. Return None
+                                // (no narrowing) so the variable retains its original type.
+                                // Emitting Unknown would actively degrade type checking.
+                                "Bool" | "Seq" => None,
                                 _ => None,
                             };
                             return ty.map(|t| Narrowing::TypeOf {
@@ -339,56 +278,10 @@ pub(crate) fn apply_narrowings(
 /// The PatternDecl stores the inner bracket `[a@Int b@Float]` as a single `SurfaceExpression::Dict`
 /// binding (auto-indexed entries). This function recursively extracts types from either:
 /// - `SurfaceExpression::Dict(entries)` — inner binding bracket; extracts each auto-indexed entry
-/// - `SurfaceExpression::Annotated { annotation, .. }` — `a@Type` form; resolves the annotation
-/// - `SurfaceExpression::VarRef { .. }` — bare identifier; treated as `Type::Unknown`
-///
-/// Resolve a type annotation synchronously for use in instance pattern extraction.
-///
-/// Returns a concrete type for primitives and known names, or a fresh TypeVar for
-/// complex/unresolvable annotations. Never returns `Type::Unknown` — that would
-/// trigger T017 for annotated patterns that simply have unresolvable type names.
-fn resolve_annotation_sync(ann: &crate::ast::Spanned<Annotation>, state: &mut InferState) -> Type {
-    fn resolve_name(name: &str) -> Type {
-        match name {
-            "Int" | "Integer" => Type::Int,
-            "Float" => Type::Float,
-            "String" | "Str" => Type::Str,
-            "Bytes" => Type::Bytes,
-            "Any" => Type::Any,
-            "Unknown" => Type::Unknown,
-            other => Type::TyCon(other.to_string()),
-        }
-    }
-
-    match &ann.node {
-        Annotation::Simple(name) => resolve_name(name),
-        Annotation::Quote => {
-            // The quoting annotation does not constrain to a statically-known type;
-            // no narrowing can be derived from it.
-            state.fresh_type_var(&ann.span)
-        }
-        Annotation::PropertyDict(entries) => {
-            // User-written @[type: T  default: ...] form — extract the type from the `type:` key.
-            for entry in entries {
-                let key_is_type = entry.node.key.as_ref().is_some_and(|k| {
-                    matches!(&k.expr, SurfaceExpression::StringLiteral { content: s, .. } if s == "type")
-                        || matches!(&k.expr, SurfaceExpression::VarRef { name, .. } if name == "type")
-                });
-                if key_is_type {
-                    if let SurfaceExpression::VarRef { name, .. } = &entry.node.value.expr {
-                        return resolve_name(name);
-                    }
-                    // Complex type expression (e.g., [List a]) — fall back to fresh TypeVar
-                    return state.fresh_type_var(&ann.span);
-                }
-            }
-            state.fresh_type_var(&ann.span)
-        }
-        Annotation::Annotated(name, _) => resolve_name(name),
-    }
-}
-
-pub(crate) fn extract_pattern_types(
+/// - `SurfaceExpression::VarRef { annotation: Some(ann), .. }` — `a@Type` form; resolves via
+///   `typecheck_annot::resolve_annotation`
+/// - `SurfaceExpression::VarRef { .. }` — bare identifier; treated as a fresh TypeVar
+pub(crate) async fn extract_pattern_types(
     pattern_node: &Arc<SurfaceNode>,
     env: &Arc<RwLock<Env>>,
     state: &mut InferState,
@@ -397,7 +290,7 @@ pub(crate) fn extract_pattern_types(
         SurfaceExpression::PatternDecl { bindings } | SurfaceExpression::LetDecl { bindings } => {
             let mut types = Vec::new();
             for binding in bindings {
-                extract_binding_types(binding, env, state, &mut types)?;
+                extract_binding_types(binding, env, state, &mut types).await?;
             }
             Ok(types)
         }
@@ -413,86 +306,93 @@ pub(crate) fn extract_pattern_types(
 ///
 /// - `SurfaceExpression::Dict(entries)` — inner binding bracket `[a@Int b@Float]` (old syntax); expands entries
 /// - `SurfaceExpression::LetDecl { bindings }` — inner binding bracket `[let a@Int b@Float]` (new syntax); expands bindings
-/// - `SurfaceExpression::Call { func, args, .. }` — implied call `[Type]` or `[Type arg1 arg2]`; infers the call type
-/// - `SurfaceExpression::Annotated { annotation, .. }` — `a@Type` form
-/// - `SurfaceExpression::VarRef { .. }` — bare identifier → `Type::Unknown`
+/// - `SurfaceExpression::Call { func, args, .. }` — implied call `[Type]` or `[Type arg1 arg2]`; treated as Unknown
+/// - `SurfaceExpression::VarRef { annotation: Some(ann), .. }` — `a@Type` form; resolved via `resolve_annotation`
+/// - `SurfaceExpression::VarRef { .. }` — bare identifier → fresh TypeVar (not Unknown, to suppress T017)
 /// - `SurfaceExpression::Placeholder(..)` — wildcard `_` → `Type::Unknown`
-#[allow(clippy::only_used_in_recursion)]
-pub(crate) fn extract_binding_types(
-    binding: &Arc<SurfaceNode>,
-    env: &Arc<RwLock<Env>>,
-    state: &mut InferState,
-    types: &mut Vec<Type>,
-) -> Result<(), Vec<TypeDiagnostic>> {
-    match &binding.expr {
-        // Binding bracket [a@Int b@Float] parsed as auto-indexed Dict (old syntax for multi-param).
-        // Named-key dicts like [key: k  value: v] represent a SINGLE structural type (a record),
-        // not multiple independent type parameters. Only auto-indexed (keyless) dicts expand.
-        SurfaceExpression::Dict(entries) => {
-            let all_keyless = entries.iter().all(|e| e.node.key.is_none());
-            if all_keyless {
-                for entry in entries {
-                    extract_binding_types(&entry.node.value, env, state, types)?;
+///
+/// Recursive async functions must return a `BoxFuture` to be object-safe.
+pub(crate) fn extract_binding_types<'a>(
+    binding: &'a Arc<SurfaceNode>,
+    env: &'a Arc<RwLock<Env>>,
+    state: &'a mut InferState,
+    types: &'a mut Vec<Type>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Vec<TypeDiagnostic>>> + 'a>> {
+    Box::pin(async move {
+        match &binding.expr {
+            // Binding bracket [a@Int b@Float] parsed as auto-indexed Dict (old syntax for multi-param).
+            // Named-key dicts like [key: k  value: v] represent a SINGLE structural type (a record),
+            // not multiple independent type parameters. Only auto-indexed (keyless) dicts expand.
+            SurfaceExpression::Dict(entries) => {
+                let all_keyless = entries.iter().all(|e| e.node.key.is_none());
+                if all_keyless {
+                    for entry in entries {
+                        extract_binding_types(&entry.node.value, env, state, types).await?;
+                    }
+                } else {
+                    // Named-key dict: single compound type (structural/record type)
+                    types.push(state.fresh_type_var(&binding.span));
                 }
-            } else {
-                // Named-key dict: single compound type (structural/record type)
+            }
+            // Inner binding bracket [let a@Int b@Float] (new unified-bindings syntax)
+            SurfaceExpression::LetDecl { bindings } => {
+                for sub_binding in bindings {
+                    extract_binding_types(sub_binding, env, state, types).await?;
+                }
+            }
+            // Implied call [Int] or [Result String] — treat as Unknown.
+            // Full parametric type resolution from annotation expressions is future work.
+            SurfaceExpression::Call { .. } => {
+                types.push(Type::Unknown);
+            }
+            // a@Type form: VarRef with annotation — resolve via typecheck_annot::resolve_annotation.
+            // A fresh TypeVar (not Unknown) is used on failure so T017 is suppressed for annotated
+            // patterns with complex/unresolvable type names.
+            SurfaceExpression::VarRef {
+                annotation: Some(ann),
+                ..
+            } => {
+                let stub_env = TypeEnv::new();
+                let mut constraints: Vec<Constraint> = Vec::new();
+                let ty = match typecheck_annot::resolve_annotation(
+                    &ann.node,
+                    &stub_env,
+                    ann.span.clone(),
+                    state,
+                    &mut constraints,
+                    &mut None,
+                    &mut None,
+                    None,
+                )
+                .await
+                {
+                    Ok(t) => t,
+                    Err(_) => state.fresh_type_var(&ann.span),
+                };
+                types.push(ty);
+            }
+            // Bare identifier in pattern position: represents a type variable (any type).
+            // Use a fresh TypeVar rather than Unknown so that:
+            // - T017 ("contains Unknown types") doesn't fire for intentional type variables
+            // - T016 coverage violations are still correctly detected (TypeVars in determined
+            //   positions that don't appear in determining positions still trigger T016)
+            SurfaceExpression::VarRef { .. } => {
                 types.push(state.fresh_type_var(&binding.span));
             }
-        }
-        // Inner binding bracket [let a@Int b@Float] (new unified-bindings syntax)
-        SurfaceExpression::LetDecl { bindings } => {
-            for sub_binding in bindings {
-                extract_binding_types(sub_binding, env, state, types)?;
+            // Gradual: wildcard placeholder
+            SurfaceExpression::Placeholder(..) => {
+                types.push(Type::Unknown);
+            }
+            _ => {
+                return Err(vec![TypeDiagnostic::error(
+                    "type-error",
+                    "pattern binding must be in form 'a@Type', bare identifier, or [let ...]",
+                    binding.span.clone(),
+                )]);
             }
         }
-        // Implied call [Int] or [Result String] — treat as a type name reference.
-        // [Int] is parsed as Call { func: VarRef("Int"), args: [], implied: true }.
-        // Try to resolve the func as a type annotation; fall back to Unknown on failure.
-        SurfaceExpression::Call {
-            func,
-            args,
-            implied: true,
-            ..
-        } if args.is_empty() => {
-            // resolve_annotation is async; push Unknown as fallback in sync context
-            types.push(Type::Unknown);
-        }
-        // Multi-arg implied call [Result String] or other complex type expressions:
-        // treat as Unknown (full parametric type resolution is future work).
-        SurfaceExpression::Call { .. } => {
-            types.push(Type::Unknown);
-        }
-        // a@Type form: VarRef with annotation
-        SurfaceExpression::VarRef {
-            annotation: Some(ann),
-            ..
-        } => {
-            // Resolve simple annotations synchronously to avoid T017 false positives.
-            // complex annotations fall back to a fresh TypeVar (not Unknown) so T017 is suppressed.
-            let ty = resolve_annotation_sync(ann, state);
-            types.push(ty);
-        }
-        // Bare identifier in pattern position: represents a type variable (any type).
-        // Use a fresh TypeVar rather than Unknown so that:
-        // - T017 ("contains Unknown types") doesn't fire for intentional type variables
-        // - T016 coverage violations are still correctly detected (TypeVars in determined
-        //   positions that don't appear in determining positions still trigger T016)
-        SurfaceExpression::VarRef { .. } => {
-            types.push(state.fresh_type_var(&binding.span));
-        }
-        // Gradual: wildcard placeholder
-        SurfaceExpression::Placeholder(..) => {
-            types.push(Type::Unknown);
-        }
-        _ => {
-            return Err(vec![TypeDiagnostic::error(
-                "type-error",
-                "pattern binding must be in form 'a@Type', bare identifier, or [let ...]",
-                binding.span.clone(),
-            )]);
-        }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Check if two pattern type lists could overlap (unify).
@@ -519,7 +419,6 @@ pub(crate) fn patterns_overlap(
     let saved_subst = state.subst.clone();
 
     // Use a temporary substitution so state.subst is also unaffected.
-    let _temp_subst = state.subst.clone();
     let overlaps = types_a.iter().zip(types_b.iter()).all(|(ty_a, ty_b)| {
         // Gradual: Unknown is the gradual-typing wildcard for unannotated pattern bindings.
         // Treat Unknown as distinct from any concrete type: a position with Unknown
@@ -578,7 +477,6 @@ pub(crate) fn types_can_unify(
     // check_constraints_on_var may miss bindings from the probe. This is acceptable
     // for instance consistency checks where types are typically concrete annotations,
     // but would need to be addressed for general-purpose unification probes.
-    let _temp_subst = state.subst.clone();
     let can_unify = types_a.iter().zip(types_b.iter()).all(|(ty_a, ty_b)| {
         ty_a == ty_b || matches!(ty_a, Type::Unknown) || matches!(ty_b, Type::Unknown)
     });

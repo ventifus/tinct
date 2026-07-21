@@ -1360,6 +1360,30 @@ async fn dispatch_state(
                 }
             }
         }
+
+        // T-1621: Deferred Value::Annotated wrapper.
+        // Forces the inner thunk and wraps the result in Value::Annotated { annotation, inner }.
+        UnevaluatedState::AnnotatedWrap {
+            inner,
+            annotation,
+            ctx: thunk_ctx,
+        } => {
+            let inner_arc = thunk_ctx.get_thunk(inner);
+            match materialize(&inner_arc, Some(&thunk.span), &thunk_ctx).await {
+                Ok(inner_val) => {
+                    let value = Value::Annotated {
+                        inner: Box::new(inner_val),
+                        annotation,
+                    };
+                    thunk.settle(Ok(value.clone()));
+                    Action::Continue(Ok(value))
+                }
+                Err(e) => {
+                    thunk.settle(Err(Arc::new((*e).clone())));
+                    Action::Continue(Err(e))
+                }
+            }
+        }
     }
 }
 

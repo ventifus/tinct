@@ -1001,7 +1001,9 @@ impl SurfaceResolver {
                     self.walk_surface_node(&entry.node.value);
                 }
             }
-            crate::ast::Annotation::Annotated(_, inner) => {
+            crate::ast::Annotation::Annotated(outer, inner) => {
+                let outer_spanned = Spanned::new(outer.as_ref().clone(), ann.span.clone());
+                self.walk_surface_annotation(&outer_spanned);
                 let inner_spanned = Spanned::new(inner.as_ref().clone(), ann.span.clone());
                 self.walk_surface_annotation(&inner_spanned);
             }

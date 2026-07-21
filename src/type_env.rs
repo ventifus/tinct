@@ -754,6 +754,7 @@ pub fn generalize_with_doc(
             kind_vars: Vec::new(),
             doc,
             inner_schemes: None,
+            param_narrowings: Vec::new(),
         };
     }
 
@@ -798,6 +799,7 @@ pub fn generalize_with_doc(
             kind_vars: Vec::new(),
             doc,
             inner_schemes: None,
+            param_narrowings: Vec::new(),
         }
     } else {
         // Filter constraints: keep only those on generalized variables
@@ -1073,6 +1075,7 @@ pub fn generalize_with_doc(
             kind_vars: Vec::new(),
             doc,
             inner_schemes: None,
+            param_narrowings: Vec::new(),
         }
     }
 }
@@ -2124,6 +2127,7 @@ mod help_suggestion_tests {
             label_vars: vec![],
             doc: None,
             inner_schemes: None,
+            param_narrowings: Vec::new(),
         };
 
         let instantiated = instantiate_scheme(
