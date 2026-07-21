@@ -2335,11 +2335,10 @@ async fn test_annotation_all_produces_intersection() {
     let source = "[result: [@[[all Int Str]] 42]]";
     // We just check that it parses without error — the check is that the annotation
     // resolves to an Intersection type (checking mode will verify against the value)
-    let result = check(source);
     // Int & Str is an uninhabited intersection — but type checking here is checking 42 : Int & Str
     // which should fail since 42 : Int is not a subtype of Str.
     // This is expected behavior — just verify no panic, and errors are type errors (not parse errors).
-    let _ = result; // may succeed or fail, but should not panic
+    let _ = check(source).await; // may succeed or fail, but should not panic
 }
 
 #[tokio::test]
@@ -2347,9 +2346,8 @@ async fn test_annotation_all_two_compatible_types() {
     // @[[all Int Float]] → Int & Float (intersection of numeric types)
     // Checking 42 against Int & Float — test that the intersection annotation doesn't crash
     let source = "[@[[all Int Float]] 42]";
-    let result = check(source);
     // Int & Float — may succeed or fail depending on intersection handling, just don't crash
-    let _ = result;
+    let _ = check(source).await;
 }
 
 #[tokio::test]
@@ -2620,11 +2618,10 @@ async fn test_case_arm_plain_binding_gets_scrutinee_type() {
     // T-1151: 2-arg [case [let n] body] now requires 3 positional args.
     // Parser rejects it before the typechecker sees it.
     // The new 3-arg form is [case [let bindings] pattern body].
-    let result = check("[result: [case [let n] n]]");
     // parse errors surface as type errors in check() since the tree is malformed
     // (parser recovery produces an Error node, which typechecks to Unknown).
     // The test is updated to expect a parse error in the output, not a successful check.
-    let _ = result; // test now documents the expected behavior change post-T-1151
+    let _ = check("[result: [case [let n] n]]").await; // test now documents the expected behavior change post-T-1151
 }
 
 #[tokio::test]
@@ -2632,24 +2629,21 @@ async fn test_case_arm_typed_binding_intersects_scrutinee() {
     // T-1151: 2-arg [case [let n@Integer] body] now requires 3 positional args.
     // Parser rejects it before the typechecker sees it.
     // The new 3-arg form is [case [let bindings] pattern body].
-    let result = check("[f: [fn [let x@Integer] [case [let n@Integer] n]]]");
-    let _ = result; // test updated to document behavior change post-T-1151
+    let _ = check("[f: [fn [let x@Integer] [case [let n@Integer] n]]]").await; // test updated to document behavior change post-T-1151
 }
 
 #[tokio::test]
 async fn test_case_arm_wildcard_no_binding() {
     // T-1151: 2-arg [case [let _] 42] now requires 3 positional args.
     // Parser rejects it before the typechecker sees it.
-    let result = check("[result: [case [let _] 42]]");
-    let _ = result; // test updated to document behavior change post-T-1151
+    let _ = check("[result: [case [let _] 42]]").await; // test updated to document behavior change post-T-1151
 }
 
 #[tokio::test]
 async fn test_case_arm_exact_value_match() {
     // T-1151: 2-arg [case 42 true] now requires 3 positional args.
     // Parser rejects it before the typechecker sees it.
-    let result = check("[result: [case 42 true]]");
-    let _ = result; // test updated to document behavior change post-T-1151
+    let _ = check("[result: [case 42 true]]").await; // test updated to document behavior change post-T-1151
 }
 
 #[tokio::test]

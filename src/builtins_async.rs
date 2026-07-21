@@ -508,8 +508,8 @@ pub(crate) fn builtin_recv(
                         // Channel closed
                         ok_val(
                             Value::Variant {
-                                tycon: "Closed".to_string(),
-                                ctor: "Closed".to_string(),
+                                tycon: Arc::from("Closed"),
+                                ctor: Arc::from("Closed"),
                                 payload: None,
                             },
                             call_span,
@@ -542,8 +542,8 @@ pub(crate) fn builtin_recv(
                         let count_thunk_id = ctx.alloc_thunk(0, count_thunk);
                         ok_val(
                             Value::Variant {
-                                tycon: "Lagged".to_string(),
-                                ctor: "Lagged".to_string(),
+                                tycon: Arc::from("Lagged"),
+                                ctor: Arc::from("Lagged"),
                                 payload: Some(count_thunk_id),
                             },
                             call_span,
@@ -553,8 +553,8 @@ pub(crate) fn builtin_recv(
                         // Channel closed
                         ok_val(
                             Value::Variant {
-                                tycon: "Closed".to_string(),
-                                ctor: "Closed".to_string(),
+                                tycon: Arc::from("Closed"),
+                                ctor: Arc::from("Closed"),
                                 payload: None,
                             },
                             call_span,
@@ -590,8 +590,8 @@ pub(crate) fn builtin_recv(
                         // Sender dropped before sending
                         ok_val(
                             Value::Variant {
-                                tycon: "Closed".to_string(),
-                                ctor: "Closed".to_string(),
+                                tycon: Arc::from("Closed"),
+                                ctor: Arc::from("Closed"),
                                 payload: None,
                             },
                             call_span,
@@ -769,8 +769,8 @@ pub(crate) fn builtin_try_send(
                         // Channel full: return [Full]
                         ok_val(
                             Value::Variant {
-                                tycon: "Full".to_string(),
-                                ctor: "Full".to_string(),
+                                tycon: Arc::from("Full"),
+                                ctor: Arc::from("Full"),
                                 payload: None,
                             },
                             call_span,
@@ -780,8 +780,8 @@ pub(crate) fn builtin_try_send(
                         // Channel closed: return [Closed] variant, consistent with recv/select-once
                         ok_val(
                             Value::Variant {
-                                tycon: "Closed".to_string(),
-                                ctor: "Closed".to_string(),
+                                tycon: Arc::from("Closed"),
+                                ctor: Arc::from("Closed"),
                                 payload: None,
                             },
                             call_span,
@@ -991,8 +991,8 @@ pub(crate) fn builtin_select_once(
                                     // All channels closed — return [Closed]
                                     return ok_val(
                                         Value::Variant {
-                                            tycon: "Closed".to_string(),
-                                            ctor: "Closed".to_string(),
+                                            tycon: Arc::from("Closed"),
+                                            ctor: Arc::from("Closed"),
                                             payload: None,
                                         },
                                         call_span,
@@ -1022,8 +1022,8 @@ pub(crate) fn builtin_select_once(
                                     // All channels closed — return [Closed]
                                     return ok_val(
                                         Value::Variant {
-                                            tycon: "Closed".to_string(),
-                                            ctor: "Closed".to_string(),
+                                            tycon: Arc::from("Closed"),
+                                            ctor: Arc::from("Closed"),
                                             payload: None,
                                         },
                                         call_span,
@@ -1051,8 +1051,8 @@ pub(crate) fn builtin_select_once(
                                 // All channels closed — return [Closed]
                                 return ok_val(
                                     Value::Variant {
-                                        tycon: "Closed".to_string(),
-                                        ctor: "Closed".to_string(),
+                                        tycon: Arc::from("Closed"),
+                                        ctor: Arc::from("Closed"),
                                         payload: None,
                                     },
                                     call_span,
@@ -1084,8 +1084,8 @@ pub(crate) fn builtin_select_once(
                                     // All channels closed — return [Closed]
                                     return ok_val(
                                         Value::Variant {
-                                            tycon: "Closed".to_string(),
-                                            ctor: "Closed".to_string(),
+                                            tycon: Arc::from("Closed"),
+                                            ctor: Arc::from("Closed"),
                                             payload: None,
                                         },
                                         call_span,
@@ -1596,8 +1596,8 @@ pub(crate) fn builtin_signal_channel(
                                     .split_once('.')
                                     .unwrap_or(("", sig_name.as_str()));
                                 let _ = tx_clone.try_send(Value::Variant {
-                                    tycon: sig_tycon.to_string(),
-                                    ctor: sig_ctor.to_string(),
+                                    tycon: Arc::from(sig_tycon),
+                                    ctor: Arc::from(sig_ctor),
                                     payload: None,
                                 });
                             }
@@ -1988,8 +1988,8 @@ pub(crate) fn builtin_with_cancel(
 
         ok_val(
             Value::Variant {
-                tycon: "CancelHandle".to_string(),
-                ctor: "CancelHandle".to_string(),
+                tycon: Arc::from("CancelHandle"),
+                ctor: Arc::from("CancelHandle"),
                 payload: Some(payload_thunk_id),
             },
             call_span,

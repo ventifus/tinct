@@ -211,7 +211,7 @@ impl TypeScheme {
 ///
 /// Stored in `InferState.scheme_map` during inference, then extracted and returned as part
 /// of the type-checking result for LSP consumers.
-pub type SchemeMap = HashMap<(usize, usize), TypeScheme>;
+pub type SchemeMap = HashMap<(u32, u32), TypeScheme>;
 
 /// Type-stage entry: either a resolved type or a function that must be evaluated.
 #[derive(Debug, Clone)]
@@ -229,6 +229,12 @@ pub enum TypeStageEntry {
 pub struct InferState {
     pub level: u32,
     pub levels: HashMap<String, u32>,
+    /// Cached InstanceEnv snapshot. Invalidated by `invalidate_env_caches` after any
+    /// `insert_instance` call. Rebuilt lazily by `build_instance_env_snapshot`.
+    cached_instance_env: Option<crate::types::InstanceEnv>,
+    /// Cached ClassEnv snapshot. Invalidated by `invalidate_env_caches` after any
+    /// `insert_class` call. Rebuilt lazily by `build_class_env_snapshot`.
+    cached_class_env: Option<crate::types::ClassEnv>,
     /// Global accumulated substitution: collects constraints from access-chain inference
     /// and other constraint generators. Applied when resolving type variables during
     /// inference, so that constraints from `$x.field1` are visible when processing
@@ -379,6 +385,8 @@ impl InferState {
         Self {
             level: 0,
             levels: HashMap::new(),
+            cached_instance_env: None,
+            cached_class_env: None,
             subst: Substitution::new(),
             constraints: Vec::new(),
             kind_env: HashMap::new(),
@@ -553,36 +561,61 @@ impl InferState {
 
     // fresh_row_var_name removed — BAS Step 4: no RowVar tails exist
 
+    /// Invalidate the cached InstanceEnv and ClassEnv snapshots.
+    ///
+    /// Must be called after every `insert_instance` or `insert_class` call so that
+    /// subsequent `build_instance_env_snapshot` / `build_class_env_snapshot` calls
+    /// rebuild against the updated env rather than serving stale data.
+    pub fn invalidate_env_caches(&mut self) {
+        self.cached_instance_env = None;
+        self.cached_class_env = None;
+    }
+
     /// Build a temporary `ClassEnv` from `self.env` for backward-compatible callers.
     ///
     /// This is a bridge for code that still needs a `ClassEnv` reference (e.g., `entails`,
     /// `satisfies_constraint`). The returned ClassEnv is a snapshot — it does not update
     /// when `self.env` changes. Use sparingly; prefer direct `self.env.read().get_class()`.
-    pub fn build_class_env_snapshot(&self) -> crate::types::ClassEnv {
-        let mut class_env = crate::types::ClassEnv::new();
-        let env_guard = self.env.read().unwrap();
-        for decl in env_guard.all_classes() {
-            class_env.insert(decl);
+    ///
+    /// The result is cached: repeated calls with no intervening `insert_class` return
+    /// a reference to the same snapshot without rebuilding. Call `invalidate_env_caches`
+    /// after any `insert_class` to flush the cache.
+    pub fn build_class_env_snapshot(&mut self) -> &crate::types::ClassEnv {
+        if self.cached_class_env.is_none() {
+            let mut class_env = crate::types::ClassEnv::new();
+            let env_guard = self.env.read().unwrap();
+            for decl in env_guard.all_classes() {
+                class_env.insert(decl);
+            }
+            self.cached_class_env = Some(class_env);
         }
-        class_env
+        self.cached_class_env.as_ref().unwrap()
     }
 
     /// Build a temporary `InstanceEnv` from `self.env` for backward-compatible callers.
     ///
     /// This is a bridge for code that still calls `InstanceEnv::resolve_instance`,
     /// `lookup_mptc`, or `reverse_lookup_mptc`. The returned InstanceEnv is a snapshot.
-    /// The borrow-checker pattern is:
-    ///   ```
-    ///   let inst_env = state.build_instance_env_snapshot();
+    ///
+    /// The result is cached: repeated calls with no intervening `insert_instance` return
+    /// a reference to the same snapshot without rebuilding. Call `invalidate_env_caches`
+    /// after any `insert_instance` to flush the cache.
+    ///
+    /// When you need an owned copy for async consumers, clone the reference:
+    ///   ```ignore
+    ///   let inst_env = state.build_instance_env_snapshot().clone();
     ///   let result = Box::pin(inst_env.resolve_instance(class_name, ty, state)).await;
     ///   ```
-    pub fn build_instance_env_snapshot(&self) -> crate::types::InstanceEnv {
-        let mut inst_env = crate::types::InstanceEnv::new();
-        let env_guard = self.env.read().unwrap();
-        for (_mangled, decl) in env_guard.all_instances() {
-            let _ = inst_env.insert(decl);
+    pub fn build_instance_env_snapshot(&mut self) -> &crate::types::InstanceEnv {
+        if self.cached_instance_env.is_none() {
+            let mut inst_env = crate::types::InstanceEnv::new();
+            let env_guard = self.env.read().unwrap();
+            for (_mangled, decl) in env_guard.all_instances() {
+                let _ = inst_env.insert(decl);
+            }
+            self.cached_instance_env = Some(inst_env);
         }
-        inst_env
+        self.cached_instance_env.as_ref().unwrap()
     }
 
     /// Compact the levels map by removing entries for TypeVars that have been unified.

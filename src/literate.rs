@@ -363,13 +363,13 @@ pub fn block_span_to_md(
             .count();
         Span::new(
             Position {
-                offset: span.start.offset + offset_delta,
-                line: span.start.line + block_start_line,
+                offset: span.start.offset + offset_delta as u32,
+                line: span.start.line + block_start_line as u32,
                 column: span.start.column,
             },
             Position {
-                offset: span.end.offset + offset_delta,
-                line: span.end.line + block_start_line,
+                offset: span.end.offset + offset_delta as u32,
+                line: span.end.line + block_start_line as u32,
                 column: span.end.column,
             },
             span.file.clone(),

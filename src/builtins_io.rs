@@ -319,7 +319,7 @@ pub(crate) fn builtin_narrow(
                     } => {
                         // Use ctor name directly ("Statable") for
                         // compatibility with T-974 qualified variant tags.
-                        let flag_name = ctor.as_str();
+                        let flag_name: &str = ctor;
                         match flag_name {
                             "Readable" => requested.readable = true,
                             "Statable" => requested.statable = true,

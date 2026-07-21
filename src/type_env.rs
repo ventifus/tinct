@@ -1055,7 +1055,7 @@ pub fn generalize_with_doc(
         // Simplify constraints: remove redundant constraints entailed by others
         // For example, if both `Comparable a` and `Equatable a` are present,
         // remove `Equatable a` (it's entailed via Comparable's superclass).
-        let class_env_snapshot = state.build_class_env_snapshot();
+        let class_env_snapshot = state.build_class_env_snapshot().clone();
         simplify_constraints(&class_env_snapshot, &mut generalizable_constraints);
 
         // Collect label vars: TypeVars that are label-kinded (Kind::Label in kind_env)
@@ -1736,6 +1736,7 @@ mod help_suggestion_tests {
             .write()
             .unwrap()
             .insert_instance(mangled, instance.clone());
+        state.invalidate_env_caches();
 
         // Resolve against Seq[Int]
         let target = Type::App(
@@ -1743,7 +1744,7 @@ mod help_suggestion_tests {
             Box::new(Type::Int),
         );
         // Build a temporary InstanceEnv snapshot to avoid borrow checker conflict
-        let inst_env = state.build_instance_env_snapshot();
+        let inst_env = state.build_instance_env_snapshot().clone();
         let resolved = inst_env
             .resolve_instance("Appendable", &target, &mut state)
             .await;

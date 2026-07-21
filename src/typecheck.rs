@@ -42,7 +42,7 @@ use typecheck_narrow::{
 /// Map from source span `(start_offset, end_offset)` to inferred type. Populated during type
 /// checking so LSP hover/diagnostics can look up types without re-running inference. Offsets
 /// are sufficient as keys; the full `Span` source text is not needed.
-pub type TypeMap = HashMap<(usize, usize), Type>;
+pub type TypeMap = HashMap<(u32, u32), Type>;
 
 /// Map from variable/parameter name to its documentation string.
 /// Populated during type checking by extracting `doc:` properties from annotations.
@@ -343,6 +343,8 @@ pub async fn typecheck_surface_program_with_env(
     // This ensures that variables declared in this program are visible to callers
     // that hold the returned Arc<RwLock<Env>> (e.g., subsequent builtin-typecheck-doc calls).
     merge_env_schemes_into_env(&env, &child_env);
+    // child_env is state.env — classes/instances were written to it via the merge.
+    state.invalidate_env_caches();
 
     (
         diagnostics,
@@ -405,6 +407,9 @@ fn merge_env_schemes_into_env(source_env: &Arc<RwLock<Env>>, target_env: &Arc<Rw
         }
         for (mangled, decl) in &frame.instances {
             guard.insert_instance(mangled.clone(), decl.clone());
+        }
+        for (name, def) in &frame.tycon_defs {
+            guard.insert_tycon_def(name.clone(), Arc::clone(def));
         }
     }
 }
@@ -685,11 +690,12 @@ fn extract_doc_from_surface_node(
         SurfaceExpression::TypeAssert { expr, .. } => {
             extract_doc_from_surface_node(expr, doc_map, None);
         }
-        SurfaceExpression::Field { expr, .. } => {
-            if let Some(target) = expr {
-                extract_doc_from_surface_node(target, doc_map, None);
-            }
+        SurfaceExpression::Field {
+            expr: Some(target), ..
+        } => {
+            extract_doc_from_surface_node(target, doc_map, None);
         }
+        SurfaceExpression::Field { expr: None, .. } => {}
         SurfaceExpression::Pipe { lhs, rhs, .. } => {
             extract_doc_from_surface_node(lhs, doc_map, None);
             extract_doc_from_surface_node(rhs, doc_map, None);
@@ -873,6 +879,7 @@ pub(crate) fn infer_class_decl_from_surface(
     };
 
     state.env.write().unwrap().insert_class(class_decl.clone());
+    state.invalidate_env_caches();
     for (param_name, kind) in &class_decl.params {
         if *kind == Kind::Operator {
             state.kind_env.insert(param_name.clone(), Kind::Operator);
@@ -1072,7 +1079,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
         // Unknown are filtered out (same semantics as lower.rs:extract_dispatch_tags).
         let type_args: Vec<String> = pattern_types
             .iter()
-            .filter_map(|ty| type_to_dispatch_tag(ty))
+            .filter_map(type_to_dispatch_tag)
             .collect();
 
         let mut method_types = HashMap::new();
@@ -1163,6 +1170,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
             .write()
             .unwrap()
             .insert_instance(mangled, instance_decl);
+        state.invalidate_env_caches();
     }
 
     Ok(Type::Dict(Row {

@@ -866,7 +866,7 @@ pub(crate) fn builtin_tls_peer_cert(
 // ── HTTP-sessions: QUIC and HTTP/3 ──────────────────────────────────────────────
 
 /// Sync wrapper around a `quinn::RecvStream` that bridges async reads to the
-/// synchronous `BufRead` trait expected by `Value::Handle`.
+/// synchronous `BufRead` trait (for internal async bridging).
 ///
 /// Each `read` call issues `block_on(recv.read_buf(...))` on the thread-local
 /// tokio runtime. This keeps all async I/O on one thread and avoids spawning.
@@ -950,7 +950,7 @@ impl std::io::BufRead for QuicRecvReader {
 }
 
 /// Sync wrapper around a `quinn::SendStream` that bridges async writes to the
-/// synchronous `Write` trait expected by `Value::Handle`.
+/// synchronous `Write` trait (for internal async bridging).
 struct QuicSendWriter {
     send: quinn::SendStream,
 }
@@ -2280,26 +2280,9 @@ pub(crate) fn builtin_send_datagram(
                 ok_val(Value::Dict(IndexMap::new()), call_span)
             }
 
-            // UDP / Unix datagram socket — synchronous send()
-            Value::DatagramHandle { socket, .. } => {
-                use crate::value::DatagramSocket;
-                match &socket {
-                    DatagramSocket::Udp(s) => s.borrow().send(&data_bytes),
-                    #[cfg(unix)]
-                    DatagramSocket::UnixDgram(s) => s.borrow().send(&data_bytes),
-                }
-                .map_err(|e| {
-                    EvalError::user_error(
-                        format!("send-datagram: send failed: {}", e),
-                        call_span.clone(),
-                    )
-                })?;
-                ok_val(Value::Dict(IndexMap::new()), call_span)
-            }
-
             other => Err(EvalError::type_mismatch_ctx(
                 "send-datagram".to_string(),
-                "DatagramHandle or QuicDatagramHandle",
+                "QuicDatagramHandle",
                 other.type_name(),
                 call_span.clone(),
             )
@@ -2366,29 +2349,9 @@ pub(crate) fn builtin_recv_datagram(
                 make_data_dict(payload.to_vec(), &ctx)
             }
 
-            // UDP / Unix datagram socket — synchronous recv() into a fixed-size buffer.
-            // 65507 bytes is the maximum IPv4 UDP payload (65535 - 20 IP header - 8 UDP header).
-            Value::DatagramHandle { socket, .. } => {
-                use crate::value::DatagramSocket;
-                let mut buf = vec![0u8; 65507];
-                let n = match &socket {
-                    DatagramSocket::Udp(s) => s.borrow().recv(&mut buf),
-                    #[cfg(unix)]
-                    DatagramSocket::UnixDgram(s) => s.borrow().recv(&mut buf),
-                }
-                .map_err(|e| {
-                    EvalError::user_error(
-                        format!("recv-datagram: recv failed: {}", e),
-                        call_span.clone(),
-                    )
-                })?;
-                buf.truncate(n);
-                make_data_dict(buf, &ctx)
-            }
-
             other => Err(EvalError::type_mismatch_ctx(
                 "recv-datagram".to_string(),
-                "DatagramHandle or QuicDatagramHandle",
+                "QuicDatagramHandle",
                 other.type_name(),
                 call_span.clone(),
             )

@@ -46,6 +46,7 @@ pub fn satisfies_constraint(ty: &Type, class_name: &str) -> bool {
 
 /// Internal implementation of constraint satisfaction with depth tracking.
 /// Conservative: returns false if depth limit exceeded (treat as constraint not satisfied).
+#[allow(clippy::only_used_in_recursion)]
 fn satisfies_constraint_inner(ty: &Type, class_name: &str, depth: usize) -> bool {
     // Depth guard: prevent unbounded recursion on pathological recursive types
     if depth >= MAX_CONSTRAINT_DEPTH {
@@ -305,17 +306,14 @@ async fn check_constraints_on_var(
                         // Found the field — unify the field TypeVar with the resolved type.
                         let field_var_ty = Type::TypeVar(field_var.clone(), state.level);
                         let mut sub_constraints = Vec::new();
-                        if let Err(e) = Box::pin(unify(
+                        Box::pin(unify(
                             &field_var_ty,
                             &field_ty,
                             state,
                             &mut sub_constraints,
                             span.clone(),
                         ))
-                        .await
-                        {
-                            return Err(e);
-                        }
+                        .await?;
                         constraints.extend(sub_constraints);
                     }
                     Err(e) => {
@@ -347,9 +345,7 @@ async fn check_constraints_on_var(
                             }) => {
                                 // Open dict — constraint violated.
                                 return Err(TypeDiagnostic::error("type-error",
-                                    format!(
-                                        "open dict (Dict) does not satisfy Record — Record requires a closed dict with known fields; use @Dict to accept any dict"
-                                    ),
+                                    "open dict (Dict) does not satisfy Record — Record requires a closed dict with known fields; use @Dict to accept any dict".to_string(),
                                     span.clone(),
                                 ));
                             }
@@ -390,7 +386,7 @@ async fn check_constraints_on_var(
                     ));
                 }
                 state.instance_resolution_depth += 1;
-                let inst_env = state.build_instance_env_snapshot();
+                let inst_env = state.build_instance_env_snapshot().clone();
                 let resolve_result =
                     Box::pin(inst_env.resolve_instance(&class, concrete_ty, state)).await;
                 state.instance_resolution_depth -= 1;
@@ -412,14 +408,13 @@ async fn check_constraints_on_var(
                             if satisfies_constraint(&widened, &class) {
                                 continue;
                             }
-                            let inst_env2 = state.build_instance_env_snapshot();
+                            let inst_env2 = state.build_instance_env_snapshot().clone();
                             state.instance_resolution_depth += 1;
                             let retry_result =
                                 Box::pin(inst_env2.resolve_instance(&class, &widened, state)).await;
                             state.instance_resolution_depth -= 1;
-                            match retry_result {
-                                Ok(Some(_)) => continue,
-                                _ => {}
+                            if let Ok(Some(_)) = retry_result {
+                                continue;
                             }
                         }
                         // No instance found even after widening - constraint violated
@@ -661,7 +656,7 @@ async fn improve_functional_dependency_inner(
             if all_ded_ground {
                 // Scan InstanceEnv for an instance whose determined-position type
                 // unifies with the ground determined types we have.
-                let instance_env = state.build_instance_env_snapshot();
+                let instance_env = state.build_instance_env_snapshot().clone();
                 if let Some((determining_types, det_pos_list)) = Box::pin(
                     instance_env.reverse_lookup_mptc(
                         class,
@@ -851,7 +846,7 @@ async fn improve_functional_dependency_inner(
                 let det_arg_types: Vec<Type> = det_types.iter().map(|(_, ty)| ty.clone()).collect();
 
                 // Build a temporary InstanceEnv snapshot to avoid borrow checker conflict.
-                let instance_env = state.build_instance_env_snapshot();
+                let instance_env = state.build_instance_env_snapshot().clone();
                 let lookup_result =
                     Box::pin(instance_env.lookup_mptc(class, &det_arg_types, state)).await;
 
@@ -862,7 +857,7 @@ async fn improve_functional_dependency_inner(
                         .map(|ty| crate::typecheck::typecheck_call::widen_literal_types(ty.clone()))
                         .collect();
                     if widened != det_arg_types {
-                        let instance_env2 = state.build_instance_env_snapshot();
+                        let instance_env2 = state.build_instance_env_snapshot().clone();
                         Box::pin(instance_env2.lookup_mptc(class, &widened, state)).await
                     } else {
                         None
@@ -2036,7 +2031,7 @@ async fn bas_cvar1_rewrite(
             state
                 .bounds
                 .entry(var_name.clone())
-                .or_insert_with(crate::bas::TypeVarBounds::new)
+                .or_default()
                 .add_lower(bound_type.clone());
         }
     }
@@ -2133,7 +2128,7 @@ async fn bas_cvar2_rewrite(
             state
                 .bounds
                 .entry(var_name.clone())
-                .or_insert_with(crate::bas::TypeVarBounds::new)
+                .or_default()
                 .add_upper(bound_type.clone());
         }
     }
@@ -3289,7 +3284,7 @@ pub async fn constrain(
                 state
                     .bounds
                     .entry(var_name.clone())
-                    .or_insert_with(crate::bas::TypeVarBounds::new)
+                    .or_default()
                     .add_lower(flat);
             }
             return Ok(());
@@ -3314,7 +3309,7 @@ pub async fn constrain(
                 state
                     .bounds
                     .entry(var_name.clone())
-                    .or_insert_with(crate::bas::TypeVarBounds::new)
+                    .or_default()
                     .add_upper(flat);
             }
             return Ok(());

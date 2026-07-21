@@ -394,9 +394,9 @@ fn collect_free_vars(
                 // T-1750: patterns are now SurfaceNode and introduce no bindings
                 // (only [case [let ...]] introduces bindings)
                 if let Some(guard) = &arm.guard {
-                    collect_free_vars(&guard.node, &param_scope, stdlib_env, out);
+                    collect_free_vars(&guard.node, param_scope, stdlib_env, out);
                 }
-                collect_free_vars(&arm.body.node, &param_scope, stdlib_env, out);
+                collect_free_vars(&arm.body.node, param_scope, stdlib_env, out);
             }
         }
 
@@ -803,7 +803,7 @@ fn core_expr_to_tinct(
                 let pattern_str = format!("{}", arm.pattern.expr);
                 let body_str = core_expr_to_tinct(
                     &arm.body.node,
-                    &param_scope,
+                    param_scope,
                     substitutions,
                     rename_map,
                     ctx,
@@ -812,7 +812,7 @@ fn core_expr_to_tinct(
                 if let Some(guard) = &arm.guard {
                     let guard_str = core_expr_to_tinct(
                         &guard.node,
-                        &param_scope,
+                        param_scope,
                         substitutions,
                         rename_map,
                         ctx,
@@ -1431,9 +1431,6 @@ impl Value {
             Value::QuicDatagramHandle { .. } => {
                 Err(format!("no tinct representation for {}", self.type_name()))
             }
-            Value::DatagramHandle { .. } => {
-                Err(format!("no tinct representation for {}", self.type_name()))
-            }
             Value::Task(_) => Err(format!("no tinct representation for {}", self.type_name())),
             Value::Channel(_) => Err(format!("no tinct representation for {}", self.type_name())),
             Value::Context(_) => Err(format!("no tinct representation for {}", self.type_name())),
@@ -1462,12 +1459,6 @@ impl Value {
             } else {
                 "false".to_string()
             }),
-            Value::Handle { .. } => {
-                Err(format!("no tinct representation for {}", self.type_name()))
-            }
-            Value::WriteHandle { .. } => {
-                Err(format!("no tinct representation for {}", self.type_name()))
-            }
             Value::Seq { .. } => Err(format!("no tinct representation for {}", self.type_name())),
             Value::Expression(_) => {
                 Err(format!("no tinct representation for {}", self.type_name()))

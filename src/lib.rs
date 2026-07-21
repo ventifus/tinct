@@ -213,7 +213,7 @@ pub async fn run_loader_pipeline(
                 .collect()
         };
         let (_table, new_frames) =
-            resolve::resolve_surface_program(&loader_program, &[root_frame.clone()]);
+            resolve::resolve_surface_program(&loader_program, std::slice::from_ref(&root_frame));
         // Combine: root_frame (outermost) followed by frames introduced by the program.
         let all_frames: Vec<indexmap::IndexMap<String, u32>> =
             std::iter::once(root_frame).chain(new_frames).collect();
@@ -230,7 +230,7 @@ pub async fn run_loader_pipeline(
             .documents
             .iter()
             .filter(|d| {
-                d.node.header.get("stage").map_or(false, |stage_node| {
+                d.node.header.get("stage").is_some_and(|stage_node| {
                     matches!(
                         &stage_node.expr,
                         crate::ast::SurfaceExpression::StringLiteral { content, .. }
@@ -508,6 +508,11 @@ pub trait ValueVisitor {
     ) -> Option<Result<Self::Output, Box<error::EvalError>>>;
 }
 
+/// Type alias for the pinned future returned by `visit_value`.
+type VisitValueFuture<'a, Output> = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<Output, Box<error::EvalError>>> + 'a>,
+>;
+
 /// Shared structural traversal for materialised `Value` trees.
 ///
 /// Handles depth limiting, `Overlay` flattening, and `Dict`/`Seq` entry
@@ -522,9 +527,7 @@ pub fn visit_value<'a, V: ValueVisitor + 'a>(
     depth: usize,
     visitor: &'a V,
     span: ast::Span,
-) -> std::pin::Pin<
-    Box<dyn std::future::Future<Output = Result<V::Output, Box<error::EvalError>>> + 'a>,
-> {
+) -> VisitValueFuture<'a, V::Output> {
     Box::pin(async move {
         if let Some(limit_result) = visitor.depth_limit_output(depth, span.clone()) {
             return limit_result;
@@ -632,9 +635,6 @@ pub fn visit_value<'a, V: ValueVisitor + 'a>(
             value::Value::QuicDatagramHandle(_) => Err(Box::new(
                 error::EvalError::value_not_serializable("QuicDatagramHandle".to_string(), span),
             )),
-            value::Value::DatagramHandle { .. } => Err(Box::new(
-                error::EvalError::value_not_serializable("DatagramHandle".to_string(), span),
-            )),
             value::Value::Program { .. } => Err(Box::new(
                 error::EvalError::value_not_serializable("Program".to_string(), span),
             )),
@@ -686,13 +686,6 @@ pub fn visit_value<'a, V: ValueVisitor + 'a>(
                 "Seq".to_string(),
                 span,
             ))),
-            value::Value::Handle { .. } => Err(Box::new(error::EvalError::value_not_serializable(
-                "Handle".to_string(),
-                span,
-            ))),
-            value::Value::WriteHandle { .. } => Err(Box::new(
-                error::EvalError::value_not_serializable("WriteHandle".to_string(), span),
-            )),
             value::Value::Expression(_) => Err(Box::new(error::EvalError::value_not_serializable(
                 "Expression".to_string(),
                 span,
@@ -1144,8 +1137,8 @@ mod tests {
     fn test_display_unit_variant() {
         // Unit variants display as their full qualified tag via Rust Display.
         let v = Value::Variant {
-            tycon: "Color".to_string(),
-            ctor: "Red".to_string(),
+            tycon: Arc::from("Color"),
+            ctor: Arc::from("Red"),
             payload: None,
         };
         assert_eq!(format!("{v}"), "Color.Red");
@@ -1162,13 +1155,13 @@ mod tests {
         let ctx = test_ctx().await;
 
         let red_val = Value::Variant {
-            tycon: "Color".to_string(),
-            ctor: "Red".to_string(),
+            tycon: Arc::from("Color"),
+            ctor: Arc::from("Red"),
             payload: None,
         };
         let green_val = Value::Variant {
-            tycon: "Color".to_string(),
-            ctor: "Green".to_string(),
+            tycon: Arc::from("Color"),
+            ctor: Arc::from("Green"),
             payload: None,
         };
 
@@ -1191,8 +1184,8 @@ mod tests {
 
         // A unit variant from a different type must produce the same structure.
         let user_val = Value::Variant {
-            tycon: "MyBool".to_string(),
-            ctor: "Yes".to_string(),
+            tycon: Arc::from("MyBool"),
+            ctor: Arc::from("Yes"),
             payload: None,
         };
         let user_display = value_to_display_string(&user_val, &ctx, rust_span!())

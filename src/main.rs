@@ -1389,7 +1389,8 @@ async fn run_eval(
         abs_path: String,
         /// Readable bytes handle opened pre-Landlock.
         // AMBIENT-OK: CLI bootstrap — operator-specified file paths.
-        handle: std::fs::File,
+        #[allow(clippy::disallowed_types)]
+        handle: std::fs::File, // cap_std not available pre-Landlock bootstrap path
     }
 
     // For -i input formatter: validate it exists and record its path.
@@ -1751,6 +1752,7 @@ async fn run_eval(
     // AMBIENT-OK: CLI bootstrap — operator-specified file paths via --cap-file.
     #[allow(clippy::disallowed_types, clippy::disallowed_methods)]
     if !no_fs {
+        #[allow(clippy::never_loop)] // TODO: implement --cap-file; currently always returns Err
         for cap_file_entry in &cap_file {
             // Parse NAME=PATH[:MODE]
             let (name, rest) = cap_file_entry.split_once('=').ok_or_else(|| {
@@ -2027,8 +2029,8 @@ async fn run_eval(
                         );
                         let payload_id = alloc_val(Value::Dict(payload_dict));
                         Value::Variant {
-                            tycon: "ProgramItem".to_string(),
-                            ctor: "File".to_string(),
+                            tycon: Arc::from("ProgramItem"),
+                            ctor: Arc::from("File"),
                             payload: Some(payload_id),
                         }
                     } else {
@@ -2056,8 +2058,8 @@ async fn run_eval(
                             .insert(HashableValue::Str("handle".into()), alloc_val(handle_value));
                         let payload_id = alloc_val(Value::Dict(payload_dict));
                         Value::Variant {
-                            tycon: "ProgramItem".to_string(),
-                            ctor: "File".to_string(),
+                            tycon: Arc::from("ProgramItem"),
+                            ctor: Arc::from("File"),
                             payload: Some(payload_id),
                         }
                     }
@@ -2071,8 +2073,8 @@ async fn run_eval(
                     );
                     let payload_id = alloc_val(Value::Dict(payload_dict));
                     Value::Variant {
-                        tycon: "ProgramItem".to_string(),
-                        ctor: "Expr".to_string(),
+                        tycon: Arc::from("ProgramItem"),
+                        ctor: Arc::from("Expr"),
                         payload: Some(payload_id),
                     }
                 }

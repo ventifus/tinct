@@ -296,7 +296,7 @@ pub(crate) fn builtin_macro_error(
         // Expect 1 or 2 arguments
         if args.len() != 1 && args.len() != 2 {
             return Err(EvalError::arity_mismatch(
-                if args.len() == 0 { 1 } else { 2 },
+                if args.is_empty() { 1 } else { 2 },
                 args.len(),
                 call_span,
             )
@@ -1401,7 +1401,9 @@ pub(crate) fn builtin_var_resolution(
         };
         let prog_val = materialize(&arg1_thunk, Some(&call_span), &ctx).await?;
         let program_id = match prog_val {
-            Value::Program { id, .. } => id,
+            Value::Program {
+                ref program_ref, ..
+            } => program_ref.id,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-var-resolution".to_string(),
@@ -1418,7 +1420,9 @@ pub(crate) fn builtin_var_resolution(
             node: &std::sync::Arc<crate::ast::SurfaceNode>,
             offset: usize,
         ) -> Option<Option<(u32, u32)>> {
-            if node.span.end.offset < offset || node.span.start.offset > offset {
+            if (node.span.end.offset as usize) < offset
+                || (node.span.start.offset as usize) > offset
+            {
                 return None;
             }
             use crate::ast::SurfaceExpression;
@@ -1702,7 +1706,6 @@ fn type_name(val: &Value) -> String {
         Value::Http2Session { .. } => "Http2Session",
         Value::Http3Session(_) => "Http3Session",
         Value::QuicDatagramHandle(_) => "QuicDatagramHandle",
-        Value::DatagramHandle { .. } => "DatagramHandle",
         Value::Program { .. } => "Program",
         Value::Document(_) => "Document",
         Value::Task(_) => "Task",
@@ -1718,8 +1721,6 @@ fn type_name(val: &Value) -> String {
         Value::Annotated { inner, .. } => return type_name(inner),
         Value::TypeContext(_) => "TypeContext",
         Value::Bool(_) => "Bool",
-        Value::Handle { .. } => "Handle",
-        Value::WriteHandle { .. } => "WriteHandle",
         Value::Seq { .. } => "Seq",
         Value::Expression(_) => "Expression",
         Value::Arena { .. } => "Arena",
@@ -2303,9 +2304,9 @@ pub(crate) fn builtin_parse(
             // Fatal parse: return empty program so {program, errors} is always usable.
             crate::ast::SurfaceProgram { documents: vec![] }
         };
-        let store_id = ctx.push_program(surface_program);
+        let program_ref = ctx.push_program(surface_program);
         let program_value = Value::Program {
-            id: store_id,
+            program_ref,
             resolutions: std::sync::Arc::new(Default::default()),
             types: std::sync::Arc::new(Default::default()),
             expects_resolved: std::sync::Arc::new(std::collections::HashMap::new()),
@@ -2856,8 +2857,10 @@ pub(crate) fn builtin_typecheck_doc(
 
         // Write results back to TypeContext:
         // - tycon_env: new type constructor definitions from this document
-        // - inference_env: the accumulated doc_env so subsequent documents see this document's
-        //   type schemes (Hindley-Milner accumulation across files per TypeContextData doc comment)
+        // - inference_env: merge doc_env chain into the single flat root so subsequent documents
+        //   see this document's type schemes. We merge rather than replace so that inference_env
+        //   stays as the single flat root (no parent chain growth). Inner frames win over outer
+        //   for same-named entries (merge_env_chain_into uses or_insert semantics).
         {
             let mut guard = tc_arc.lock().unwrap();
             for (name, def) in &state.tycon_env {
@@ -2866,7 +2869,8 @@ pub(crate) fn builtin_typecheck_doc(
                     .entry(name.clone())
                     .or_insert_with(|| Arc::clone(def));
             }
-            guard.inference_env = doc_env;
+            crate::env::merge_env_chain_into(&doc_env, &guard.inference_env);
+            // guard.inference_env stays unchanged — it is the single flat root
         }
 
         // Build unified diagnostics dict from all type diagnostics (errors + warnings + info)
@@ -3232,12 +3236,12 @@ pub(crate) fn builtin_program(
 
         // Construct the SurfaceProgram and push it into the program store.
         let surface_program = crate::ast::SurfaceProgram { documents };
-        let store_id = ctx.push_program(surface_program);
+        let program_ref = ctx.push_program(surface_program);
 
         // Return as Value::Program with empty tables (caller can run expand/resolve if needed)
         ok_val(
             Value::Program {
-                id: store_id,
+                program_ref,
                 resolutions: std::sync::Arc::new(Default::default()),
                 types: std::sync::Arc::new(Default::default()),
                 expects_resolved: std::sync::Arc::new(std::collections::HashMap::new()),
@@ -3271,13 +3275,19 @@ pub(crate) fn builtin_desugar(
             .get_thunk(args[0])
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let (program_id, resolutions, types, expects_resolved) = match program_val {
+        let (program_id, program_ref, resolutions, types, expects_resolved) = match program_val {
             Value::Program {
-                id,
+                program_ref,
                 resolutions,
                 types,
                 expects_resolved,
-            } => (id, resolutions, types, expects_resolved),
+            } => (
+                program_ref.id,
+                program_ref,
+                resolutions,
+                types,
+                expects_resolved,
+            ),
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-desugar".to_string(),
@@ -3323,7 +3333,7 @@ pub(crate) fn builtin_desugar(
 
         ok_val(
             Value::Program {
-                id: program_id,
+                program_ref,
                 resolutions,
                 types,
                 expects_resolved,
@@ -3358,7 +3368,9 @@ pub(crate) fn builtin_program_docs(
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
         let program_id = match program_val {
-            Value::Program { id, .. } => id,
+            Value::Program {
+                ref program_ref, ..
+            } => program_ref.id,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-program-docs".to_string(),
@@ -3997,7 +4009,7 @@ pub(crate) fn builtin_eval_macro_ast(
             .expect("pre-materialized by Strictness::Seq");
 
         let expr_node = match expr_val {
-            Value::Variant { ref tycon, .. } if tycon == "Expr" => {
+            Value::Variant { ref tycon, .. } if tycon.as_ref() == "Expr" => {
                 crate::surface_convert::dict_to_surface_node(&expr_val, &call_span, &ctx).map_err(
                     |e| {
                         EvalError::internal(
@@ -4157,7 +4169,7 @@ pub(crate) fn builtin_eval_types(
         for (_key, val_id) in &input_map {
             let val = materialize(&ctx.get_thunk(*val_id), Some(&call_span), &ctx).await?;
             match val {
-                Value::Variant { ref tycon, .. } if tycon == "Expr" => {
+                Value::Variant { ref tycon, .. } if tycon.as_ref() == "Expr" => {
                     let node = crate::surface_convert::dict_to_surface_node(&val, &call_span, &ctx)
                         .map_err(|e| {
                             EvalError::internal(
@@ -4554,28 +4566,25 @@ fn validate_value(
             let items_thunk = ctx.get_thunk(items_thunk_id);
             let items_val = materialize(&items_thunk, Some(&span), &ctx).await?;
             if let Value::Dict(items_schema) = items_val {
-                match &data {
-                    Value::Dict(ref data_dict) => {
-                        for (idx, (_key, &val_thunk_id)) in data_dict.iter().enumerate() {
-                            let val_thunk = ctx.get_thunk(val_thunk_id);
-                            let val = materialize(&val_thunk, Some(&span), &ctx).await?;
-                            let item_path = if path.is_empty() {
-                                format!("[{}]", idx)
-                            } else {
-                                format!("{}[{}]", path, idx)
-                            };
-                            let sub_violations = validate_value(
-                                items_schema.clone(),
-                                val,
-                                item_path,
-                                Arc::clone(&ctx),
-                                span.clone(),
-                            )
-                            .await?;
-                            violations.extend(sub_violations);
-                        }
+                if let Value::Dict(ref data_dict) = &data {
+                    for (idx, (_key, &val_thunk_id)) in data_dict.iter().enumerate() {
+                        let val_thunk = ctx.get_thunk(val_thunk_id);
+                        let val = materialize(&val_thunk, Some(&span), &ctx).await?;
+                        let item_path = if path.is_empty() {
+                            format!("[{}]", idx)
+                        } else {
+                            format!("{}[{}]", path, idx)
+                        };
+                        let sub_violations = validate_value(
+                            items_schema.clone(),
+                            val,
+                            item_path,
+                            Arc::clone(&ctx),
+                            span.clone(),
+                        )
+                        .await?;
+                        violations.extend(sub_violations);
                     }
-                    _ => {}
                 }
             }
         }
@@ -4662,10 +4671,12 @@ fn is_contractive_value<'a>(
 
         match val {
             // Case 1: bare RecursiveRef — non-contractive.
-            Value::Variant { ctor, .. } if ctor == "RecursiveRef" => false,
+            Value::Variant { ctor, .. } if ctor.as_ref() == "RecursiveRef" => false,
 
             // Case 3: Union and Intersect are non-guarding — recurse into all children.
-            Value::Variant { ctor, payload, .. } if ctor == "Union" || ctor == "Intersect" => {
+            Value::Variant { ctor, payload, .. }
+                if ctor.as_ref() == "Union" || ctor.as_ref() == "Intersect" =>
+            {
                 let payload_id = match payload {
                     Some(id) => *id,
                     None => return true,
@@ -4727,7 +4738,7 @@ async fn is_contractive_seq(types_thunk_id: ThunkId, ctx: &Arc<crate::eval::Eval
 /// Separated from `validate_value` so both can be async-recursive without
 /// requiring a mutually-recursive `Box::pin` type cycle. Takes owned parameters
 /// to enable `async move`.
-
+///
 /// `builtin-sequential`: construct a Sequential AST node from an expressions dict.
 ///
 /// Used by boot-level macros (`>>` in loader.llt and test-loader.llt) that need
@@ -4772,7 +4783,7 @@ pub(crate) fn builtin_sequential(
             let thunk = ctx.get_thunk(thunk_id);
             let val = materialize(&thunk, Some(&call_span), &ctx).await?;
             match val {
-                Value::Variant { ref tycon, .. } if tycon == "Expr" => {
+                Value::Variant { ref tycon, .. } if tycon.as_ref() == "Expr" => {
                     let node = crate::surface_convert::dict_to_surface_node(&val, &call_span, &ctx)
                         .map_err(|e| {
                             EvalError::internal(
@@ -4893,7 +4904,7 @@ pub(crate) fn builtin_ast_to_program(
 
         // Convert Expr.* Variant to SurfaceNode
         let expr_node = match expr_val {
-            Value::Variant { ref tycon, .. } if tycon == "Expr" => {
+            Value::Variant { ref tycon, .. } if tycon.as_ref() == "Expr" => {
                 crate::surface_convert::dict_to_surface_node(
                     &expr_val,
                     &call_site_span_actual,
@@ -4930,13 +4941,13 @@ pub(crate) fn builtin_ast_to_program(
             )],
         };
 
-        // Push into program store and return Value::Program { id }.
-        let store_id = ctx.push_program(program);
+        // Push into program store and return Value::Program { program_ref }.
+        let program_ref = ctx.push_program(program);
 
         // Return Value::Program
         ok_val(
             Value::Program {
-                id: store_id,
+                program_ref,
                 resolutions: Arc::new(Default::default()),
                 types: Arc::new(Default::default()),
                 expects_resolved: Arc::new(std::collections::HashMap::new()),
@@ -5050,7 +5061,7 @@ pub(crate) fn builtin_cap_env_has(
                         arena.scopes[eid.0 as usize].slots.iter().any(|t| {
                             t.as_ref()
                                 .and_then(|t| t.span.name.as_deref())
-                                .map_or(false, |n| n == name)
+                                .is_some_and(|n| n == name)
                         })
                     })
                 } else {
@@ -5164,13 +5175,11 @@ pub(crate) fn builtin_arena_drop(
             "arena-drop: end_env_id ({end_env_id}) < start_env_id ({start_env_id}) — double-drop or corrupt arena handle"
         );
         let mut arena_mut = ctx.scope_arena.borrow_mut();
-        for eid in start_env_id..end_env_id {
-            arena_mut.drop_scope(crate::arena::ScopeId(eid));
-        }
-        // Truncate the arena vec to free the empty FlatEnv shells.
-        // LIFO invariant: start_env_id is the stack top, so everything from
-        // start_env_id onward belongs to this arena and can be reclaimed.
-        arena_mut.scopes.truncate(start_env_id as usize);
+        // Use drop_range_and_truncate instead of drop_scope+truncate to avoid
+        // free_list corruption: drop_scope pushes ScopeIds onto free_list, but
+        // subsequent scopes.truncate() makes those indices invalid — any alloc_root/
+        // alloc_child popping from free_list would then index out of bounds.
+        arena_mut.drop_range_and_truncate(start_env_id);
         Ok(Arc::new(Thunk::value(
             Value::Dict(indexmap::IndexMap::new()),
             call_span,
@@ -5234,11 +5243,11 @@ pub(crate) fn builtin_arena_stats(
         let alloc_str = |v: Value| ctx.alloc_thunk(0, Arc::new(Thunk::value(v, call_span.clone())));
         result_map.insert(
             HashableValue::Str("name".into()),
-            alloc_str(string_val(&name.to_string())),
+            alloc_str(string_val(name.as_ref())),
         );
         result_map.insert(
             HashableValue::Str("thunks-allocated".into()),
-            alloc_str(Value::Int(thunks_allocated as i64)),
+            alloc_str(Value::Int(thunks_allocated)),
         );
         result_map.insert(
             HashableValue::Str("thunks-live".into()),
@@ -5591,8 +5600,8 @@ mod tests {
     #[tokio::test]
     async fn tag_of_bare_variant() {
         let variant = Value::Variant {
-            tycon: "Color".to_string(),
-            ctor: "Red".to_string(),
+            tycon: Arc::from("Color"),
+            ctor: Arc::from("Red"),
             payload: None,
         };
         let ctx = test_ctx();
@@ -5614,8 +5623,8 @@ mod tests {
     #[tokio::test]
     async fn tag_of_annotated_variant_single_wrap() {
         let variant = Value::Variant {
-            tycon: "SimpleType".to_string(),
-            ctor: "Leaf".to_string(),
+            tycon: Arc::from("SimpleType"),
+            ctor: Arc::from("Leaf"),
             payload: None,
         };
         let annotation = Value::Dict(IndexMap::new());
@@ -5642,8 +5651,8 @@ mod tests {
     #[tokio::test]
     async fn tag_of_annotated_variant_double_wrap() {
         let variant = Value::Variant {
-            tycon: "Shape".to_string(),
-            ctor: "Circle".to_string(),
+            tycon: Arc::from("Shape"),
+            ctor: Arc::from("Circle"),
             payload: None,
         };
         let inner_annotated = Value::Annotated {

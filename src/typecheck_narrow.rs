@@ -341,7 +341,9 @@ pub(crate) fn apply_narrowings(
 /// - `SurfaceExpression::Dict(entries)` — inner binding bracket; extracts each auto-indexed entry
 /// - `SurfaceExpression::Annotated { annotation, .. }` — `a@Type` form; resolves the annotation
 /// - `SurfaceExpression::VarRef { .. }` — bare identifier; treated as `Type::Unknown`
+///
 /// Resolve a type annotation synchronously for use in instance pattern extraction.
+///
 /// Returns a concrete type for primitives and known names, or a fresh TypeVar for
 /// complex/unresolvable annotations. Never returns `Type::Unknown` — that would
 /// trigger T017 for annotated patterns that simply have unresolvable type names.
@@ -363,12 +365,12 @@ fn resolve_annotation_sync(ann: &crate::ast::Spanned<Annotation>, state: &mut In
         Annotation::Quote => {
             // The quoting annotation does not constrain to a statically-known type;
             // no narrowing can be derived from it.
-            return state.fresh_type_var(&ann.span);
+            state.fresh_type_var(&ann.span)
         }
         Annotation::PropertyDict(entries) => {
             // User-written @[type: T  default: ...] form — extract the type from the `type:` key.
             for entry in entries {
-                let key_is_type = entry.node.key.as_ref().map_or(false, |k| {
+                let key_is_type = entry.node.key.as_ref().is_some_and(|k| {
                     matches!(&k.expr, SurfaceExpression::StringLiteral { content: s, .. } if s == "type")
                         || matches!(&k.expr, SurfaceExpression::VarRef { name, .. } if name == "type")
                 });
@@ -415,6 +417,7 @@ pub(crate) fn extract_pattern_types(
 /// - `SurfaceExpression::Annotated { annotation, .. }` — `a@Type` form
 /// - `SurfaceExpression::VarRef { .. }` — bare identifier → `Type::Unknown`
 /// - `SurfaceExpression::Placeholder(..)` — wildcard `_` → `Type::Unknown`
+#[allow(clippy::only_used_in_recursion)]
 pub(crate) fn extract_binding_types(
     binding: &Arc<SurfaceNode>,
     env: &Arc<RwLock<Env>>,

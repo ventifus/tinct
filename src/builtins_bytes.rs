@@ -504,9 +504,9 @@ pub(crate) fn builtin_ct_equal(
 /// - `format`: Int discriminant identifying the encoding format.
 ///   The prelude wrapper converts from the nominal ByteOrder type to Int before calling.
 ///   Discriminant values:
-///     0=Int8, 1=UInt8, 2=Int16LE, 3=Int16BE, 4=UInt16LE, 5=UInt16BE,
-///     6=Int32LE, 7=Int32BE, 8=UInt32LE, 9=UInt32BE, 10=Int64LE, 11=Int64BE,
-///     12=UInt64LE, 13=UInt64BE, 14=Float32LE, 15=Float32BE, 16=Float64LE, 17=Float64BE
+///   0=Int8, 1=UInt8, 2=Int16LE, 3=Int16BE, 4=UInt16LE, 5=UInt16BE,
+///   6=Int32LE, 7=Int32BE, 8=UInt32LE, 9=UInt32BE, 10=Int64LE, 11=Int64BE,
+///   12=UInt64LE, 13=UInt64BE, 14=Float32LE, 15=Float32BE, 16=Float64LE, 17=Float64BE
 /// - `value`: Int or Float to encode
 ///
 /// Returns Bytes of the appropriate length.

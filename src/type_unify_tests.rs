@@ -1118,6 +1118,7 @@ async fn test_reverse_fd_back_propagates_determining_type() {
         structural_discharge: crate::type_class::StructuralDischarge::None,
         method_signatures: vec![],
     });
+    state.invalidate_env_caches();
 
     // Register instance: MySeq Int Str
     // MPTC instances are encoded as Record with numbered fields.
@@ -1136,6 +1137,7 @@ async fn test_reverse_fd_back_propagates_determining_type() {
     };
     let mangled = format!("ɪɴꜱᴛᴀɴᴄᴇ⧼{} {}⧽", inst.class_name, inst.instance_type);
     state.env.write().unwrap().insert_instance(mangled, inst);
+    state.invalidate_env_caches();
 
     // Create type variables t0 (determining, pos 0) and t1 (determined, pos 1).
     state.set_level("t0".to_string(), 0);
@@ -1206,6 +1208,7 @@ async fn test_reverse_fd_does_not_fire_when_not_injective() {
         structural_discharge: crate::type_class::StructuralDischarge::None,
         method_signatures: vec![],
     });
+    state.invalidate_env_caches();
 
     // Register instance: MyNonInj Int Str
     let mut instance_fields = IndexMap::new();
@@ -1223,6 +1226,7 @@ async fn test_reverse_fd_does_not_fire_when_not_injective() {
     };
     let mangled = format!("ɪɴꜱᴛᴀɴᴄᴇ⧼{} {}⧽", inst.class_name, inst.instance_type);
     state.env.write().unwrap().insert_instance(mangled, inst);
+    state.invalidate_env_caches();
 
     state.set_level("t0".to_string(), 0);
     state.set_level("t1".to_string(), 0);
@@ -1409,6 +1413,7 @@ async fn test_fd_in_progress_terminates_mutual_recursion() {
         structural_discharge: crate::type_class::StructuralDischarge::None,
         method_signatures: vec![],
     });
+    state.invalidate_env_caches();
 
     // Register instance: BiDir Int Str
     let mut instance_fields = IndexMap::new();
@@ -1426,6 +1431,7 @@ async fn test_fd_in_progress_terminates_mutual_recursion() {
     };
     let mangled = format!("ɪɴꜱᴛᴀɴᴄᴇ⧼{} {}⧽", inst.class_name, inst.instance_type);
     state.env.write().unwrap().insert_instance(mangled, inst);
+    state.invalidate_env_caches();
 
     // Create type variables.
     state.set_level("t0".to_string(), 0);

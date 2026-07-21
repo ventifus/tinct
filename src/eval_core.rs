@@ -95,61 +95,56 @@ async fn collect_seq_elements(
     let mut elements = Vec::new();
     let current = value.clone();
 
-    loop {
-        match current {
-            Value::Dict(ref dict) => {
-                // Integer-keyed Dict (from macro variadic args) — collect elements in key order
-                // Validate that all keys are integers and sequential from 0
-                let mut int_entries: Vec<(i64, ThunkId)> = Vec::new();
-                for (key, thunk_id) in dict {
-                    if let HashableValue::Int(i) = key {
-                        int_entries.push((*i, *thunk_id));
-                    } else {
-                        return Err(EvalError::type_mismatch(
-                            "Seq or integer-keyed Dict",
-                            "Dict with non-integer keys",
-                            span,
-                        )
-                        .into());
-                    }
+    match current {
+        Value::Dict(ref dict) => {
+            // Integer-keyed Dict (from macro variadic args) — collect elements in key order
+            // Validate that all keys are integers and sequential from 0
+            let mut int_entries: Vec<(i64, ThunkId)> = Vec::new();
+            for (key, thunk_id) in dict {
+                if let HashableValue::Int(i) = key {
+                    int_entries.push((*i, *thunk_id));
+                } else {
+                    return Err(EvalError::type_mismatch(
+                        "Seq or integer-keyed Dict",
+                        "Dict with non-integer keys",
+                        span,
+                    )
+                    .into());
                 }
-
-                // Sort by integer key
-                int_entries.sort_by_key(|(i, _)| *i);
-
-                // Validate sequential from 0
-                for (idx, (i, _)) in int_entries.iter().enumerate() {
-                    if *i != idx as i64 {
-                        return Err(EvalError::type_mismatch(
-                            "Seq or sequential integer-keyed Dict (0, 1, 2, ...)",
-                            &format!(
-                                "Dict with non-sequential keys (expected {}, found {})",
-                                idx, i
-                            ),
-                            span,
-                        )
-                        .into());
-                    }
-                }
-
-                // Materialize each element
-                for (_, thunk_id) in int_entries {
-                    let thunk = ctx.get_thunk(thunk_id);
-                    let value = materialize(&thunk, Some(&span), ctx).await?;
-                    elements.push(value);
-                }
-
-                // Done — Dict entries have been processed
-                break;
             }
-            _ => {
-                return Err(EvalError::type_mismatch(
-                    "Seq or integer-keyed Dict",
-                    current.type_name(),
-                    span,
-                )
-                .into());
+
+            // Sort by integer key
+            int_entries.sort_by_key(|(i, _)| *i);
+
+            // Validate sequential from 0
+            for (idx, (i, _)) in int_entries.iter().enumerate() {
+                if *i != idx as i64 {
+                    return Err(EvalError::type_mismatch(
+                        "Seq or sequential integer-keyed Dict (0, 1, 2, ...)",
+                        &format!(
+                            "Dict with non-sequential keys (expected {}, found {})",
+                            idx, i
+                        ),
+                        span,
+                    )
+                    .into());
+                }
             }
+
+            // Materialize each element
+            for (_, thunk_id) in int_entries {
+                let thunk = ctx.get_thunk(thunk_id);
+                let value = materialize(&thunk, Some(&span), ctx).await?;
+                elements.push(value);
+            }
+        }
+        _ => {
+            return Err(EvalError::type_mismatch(
+                "Seq or integer-keyed Dict",
+                current.type_name(),
+                span,
+            )
+            .into());
         }
     }
 
@@ -728,8 +723,8 @@ pub(crate) fn eval_core_expr<'a>(
                 match payload {
                     None => Ok(Arc::new(Thunk::value(
                         Value::Variant {
-                            tycon: tycon.to_string(),
-                            ctor: ctor.to_string(),
+                            tycon: Arc::from(tycon),
+                            ctor: Arc::from(ctor),
                             payload: None,
                         },
                         span.clone(),
@@ -741,8 +736,8 @@ pub(crate) fn eval_core_expr<'a>(
                             ctx.alloc_thunk(0, Arc::new(Thunk::value(payload_val, span.clone())));
                         Ok(Arc::new(Thunk::value(
                             Value::Variant {
-                                tycon: tycon.to_string(),
-                                ctor: ctor.to_string(),
+                                tycon: Arc::from(tycon),
+                                ctor: Arc::from(ctor),
                                 payload: Some(payload_id),
                             },
                             span.clone(),
@@ -753,8 +748,8 @@ pub(crate) fn eval_core_expr<'a>(
 
             CoreExpr::UnitVariant { tycon, ctor } => Ok(Arc::new(Thunk::value(
                 Value::Variant {
-                    tycon: tycon.clone(),
-                    ctor: ctor.clone(),
+                    tycon: Arc::from(tycon.as_str()),
+                    ctor: Arc::from(ctor.as_str()),
                     payload: None,
                 },
                 span.clone(),

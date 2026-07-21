@@ -140,8 +140,8 @@ struct Lexer<'a> {
     input: &'a str,
     chars: std::str::CharIndices<'a>,
     current: Option<(usize, char)>,
-    line: usize,
-    column: usize,
+    line: u32,
+    column: u32,
     last_newline_offset: usize,
     tokens: Vec<Spanned<Token>>,
     /// Tracks if horizontal whitespace (spaces/tabs, not newlines) was skipped before the current position.
@@ -204,7 +204,10 @@ impl<'a> Lexer<'a> {
 
     fn current_position(&self) -> Position {
         Position {
-            offset: self.current.map(|(i, _)| i).unwrap_or(self.input.len()),
+            offset: self
+                .current
+                .map(|(i, _)| i as u32)
+                .unwrap_or(self.input.len() as u32),
             line: self.line,
             column: self.column,
         }
@@ -527,14 +530,14 @@ impl<'a> Lexer<'a> {
             let empty_content = String::new();
             for k in 0..(quote_count / 2) {
                 let pair_start = Position {
-                    offset: start.offset + k * 2,
+                    offset: start.offset + (k * 2) as u32,
                     line: start.line,
-                    column: start.column + k * 2,
+                    column: start.column + (k * 2) as u32,
                 };
                 let pair_end = Position {
-                    offset: start.offset + k * 2 + 2,
+                    offset: start.offset + (k * 2 + 2) as u32,
                     line: start.line,
-                    column: start.column + k * 2 + 2,
+                    column: start.column + (k * 2 + 2) as u32,
                 };
                 self.tokens.push(Spanned::new(
                     Token::StringLiteral {

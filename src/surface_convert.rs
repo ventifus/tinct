@@ -156,7 +156,7 @@ fn dict_to_surface_node_inner(
         payload: None,
     } = val
     {
-        if tycon == "Expr" && ctor == "AstError" {
+        if tycon.as_ref() == "Expr" && ctor.as_ref() == "AstError" {
             return Ok(Arc::new(SurfaceNode::new(
                 SurfaceExpression::Error(call_site_span.clone()),
                 call_site_span.clone(),
@@ -729,7 +729,7 @@ fn dict_to_annotation(
         payload: Some(payload_id),
     } = val
     {
-        if tycon != "Annotation" {
+        if tycon.as_ref() != "Annotation" {
             return Err(AstError {
                 message: format!("expected Annotation variant, got {tycon}.{ctor}"),
                 field_path: path.iter().map(|s| s.to_string()).collect(),
@@ -739,7 +739,7 @@ fn dict_to_annotation(
         let payload_val = payload_thunk
             .try_get_materialized()
             .unwrap_or_else(|| Value::Dict(indexmap::IndexMap::new()));
-        let ann = match ctor.as_str() {
+        let ann = match ctor.as_ref() {
             "Quote" => Annotation::Quote,
             "Simple" => match &payload_val {
                 Value::Dict(d) => {
@@ -979,21 +979,21 @@ fn extract_position(val: &Value, ctx: &Arc<crate::eval::EvalContext>) -> Option<
             let line_id = dict.get(&HashableValue::Str("line".into()))?;
             let line_thunk = ctx.get_thunk(*line_id);
             let line = match line_thunk.try_get_materialized()? {
-                Value::Int(n) => n as usize,
+                Value::Int(n) => n as u32,
                 _ => return None,
             };
 
             let col_id = dict.get(&HashableValue::Str("col".into()))?;
             let col_thunk = ctx.get_thunk(*col_id);
             let column = match col_thunk.try_get_materialized()? {
-                Value::Int(n) => n as usize,
+                Value::Int(n) => n as u32,
                 _ => return None,
             };
 
             let offset_id = dict.get(&HashableValue::Str("offset".into()))?;
             let offset_thunk = ctx.get_thunk(*offset_id);
             let offset = match offset_thunk.try_get_materialized()? {
-                Value::Int(n) => n as usize,
+                Value::Int(n) => n as u32,
                 _ => return None,
             };
 
@@ -1139,8 +1139,8 @@ pub(crate) fn alloc_entry_list(
         );
         // Expr.Entry variant
         let entry_variant = Value::Variant {
-            tycon: "Expr".to_string(),
-            ctor: "Entry".to_string(),
+            tycon: Arc::from("Expr"),
+            ctor: Arc::from("Entry"),
             payload: Some(payload_id),
         };
         let entry_thunk =
@@ -1182,8 +1182,8 @@ pub(crate) fn alloc_named_arg_list(
             0,
             Arc::new(Thunk::value(
                 Value::Variant {
-                    tycon: "Expr".into(),
-                    ctor: "NamedArg".into(),
+                    tycon: Arc::from("Expr"),
+                    ctor: Arc::from("NamedArg"),
                     payload: Some(payload_id),
                 },
                 na.span.clone(),
@@ -1232,8 +1232,8 @@ pub(crate) fn alloc_param_list(
             0,
             Arc::new(Thunk::value(
                 Value::Variant {
-                    tycon: "Expr".into(),
-                    ctor: "Param".into(),
+                    tycon: Arc::from("Expr"),
+                    ctor: Arc::from("Param"),
                     payload: Some(param_payload_id),
                 },
                 p.span.clone(),
@@ -1306,8 +1306,8 @@ pub(crate) fn make_variant_with_payload(
     let payload_id = ctx.alloc_thunk(0, Arc::new(Thunk::value(payload_val, span.clone())));
     let (tycon, ctor) = tag.split_once('.').unwrap_or(("", tag));
     Value::Variant {
-        tycon: tycon.to_string(),
-        ctor: ctor.to_string(),
+        tycon: Arc::from(tycon),
+        ctor: Arc::from(ctor),
         payload: Some(payload_id),
     }
 }
@@ -1315,8 +1315,8 @@ pub(crate) fn make_variant_with_payload(
 pub(crate) fn make_unit_variant(tag: &str) -> Value {
     let (tycon, ctor) = tag.split_once('.').unwrap_or(("", tag));
     Value::Variant {
-        tycon: tycon.to_string(),
-        ctor: ctor.to_string(),
+        tycon: Arc::from(tycon),
+        ctor: Arc::from(ctor),
         payload: None,
     }
 }
@@ -1354,7 +1354,7 @@ pub(crate) fn extract_tag_and_dict(
                     field_path: vec![],
                 })?;
             match payload_val {
-                Value::Dict(d) => Ok((ctor.clone(), d)),
+                Value::Dict(d) => Ok((ctor.to_string(), d)),
                 _ => Err(AstError {
                     message: format!(
                         "Expr variant payload must be Dict, got {}",
@@ -1855,9 +1855,9 @@ pub struct AstToDictOpts<'a> {
 /// Comment and blank-line metadata from ParseOutput.
 #[derive(Clone)]
 pub struct CommentMaps<'a> {
-    pub leading_comments: &'a std::collections::BTreeMap<usize, Vec<String>>,
-    pub trailing_comments: &'a std::collections::BTreeMap<usize, String>,
-    pub blank_before: &'a std::collections::BTreeMap<usize, bool>,
+    pub leading_comments: &'a std::collections::BTreeMap<u32, Vec<String>>,
+    pub trailing_comments: &'a std::collections::BTreeMap<u32, String>,
+    pub blank_before: &'a std::collections::BTreeMap<u32, bool>,
 }
 
 // ============================================================================
@@ -2518,8 +2518,8 @@ fn surface_decl_to_thunk_id(
         0,
         Arc::new(Thunk::value(
             Value::Variant {
-                tycon: vt_tycon.to_string(),
-                ctor: vt_ctor.to_string(),
+                tycon: Arc::from(vt_tycon),
+                ctor: Arc::from(vt_ctor),
                 payload: Some(payload_id),
             },
             span,
@@ -2548,7 +2548,7 @@ fn override_bare_in_literal_variant(
         payload: Some(payload_id),
     } = val
     {
-        if tycon == "Expr" && ctor == "Literal" {
+        if tycon.as_ref() == "Expr" && ctor.as_ref() == "Literal" {
             let payload_thunk = ctx.get_thunk(payload_id);
             if let Some(Value::Dict(mut dict)) = payload_thunk.try_get_materialized() {
                 let new_bare_id = ctx.alloc_thunk(
@@ -2596,7 +2596,7 @@ fn alloc_entry_list_with_opts(
                             // Span starts at the opening quote for quoted strings,
                             // or at the first identifier char for bare words.
                             // Check the character AT the span start.
-                            let offset = key_node.span.start.offset;
+                            let offset = key_node.span.start.offset as usize;
                             source.as_bytes().get(offset) != Some(&b'"')
                         }
                         None => false,
@@ -2665,8 +2665,8 @@ fn alloc_entry_list_with_opts(
         );
         // Expr.Entry variant
         let entry_variant = Value::Variant {
-            tycon: "Expr".to_string(),
-            ctor: "Entry".to_string(),
+            tycon: Arc::from("Expr"),
+            ctor: Arc::from("Entry"),
             payload: Some(payload_id),
         };
         let entry_thunk =
@@ -2698,8 +2698,8 @@ fn surface_node_to_thunk_id(
         );
         inject_span_into_expr_variant(
             Value::Variant {
-                tycon: "Expr".to_string(),
-                ctor: "Dict".to_string(),
+                tycon: Arc::from("Expr"),
+                ctor: Arc::from("Dict"),
                 payload: Some(payload_id),
             },
             &node.span,
@@ -3096,7 +3096,7 @@ mod tests {
         // Find the offset of 'b' (the second entry's key).
         // In "[a: 1\nb: 2]": [ at 0, a at 1, : at 2, ' ' at 3, 1 at 4, \n at 5, b at 6
         let mut blank_before_map = BTreeMap::new();
-        blank_before_map.insert(6usize, true); // mark 'b' as having a blank line before it
+        blank_before_map.insert(6u32, true); // mark 'b' as having a blank line before it
         let comment_maps = CommentMaps {
             leading_comments: &parse_output.leading_comments,
             trailing_comments: &parse_output.trailing_comments,

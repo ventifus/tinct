@@ -129,8 +129,8 @@ fn key_to_string(expr: &SurfaceExpression) -> Option<String> {
 fn skip_whitespace_tokens(
     tokens: &[Spanned<Token>],
     current_index: usize,
-    leading_comments: &mut BTreeMap<usize, Vec<String>>,
-    blank_before: &mut BTreeMap<usize, bool>,
+    leading_comments: &mut BTreeMap<u32, Vec<String>>,
+    blank_before: &mut BTreeMap<u32, bool>,
 ) -> usize {
     let mut count = 0;
     let mut idx = current_index;
@@ -202,8 +202,8 @@ fn skip_whitespace_tokens(
 fn parse_annotation_direct(
     tokens: &[Spanned<Token>],
     start_index: usize,
-    leading_comments: &mut BTreeMap<usize, Vec<String>>,
-    blank_before: &mut BTreeMap<usize, bool>,
+    leading_comments: &mut BTreeMap<u32, Vec<String>>,
+    blank_before: &mut BTreeMap<u32, bool>,
 ) -> Result<(Spanned<Annotation>, usize), ParseError> {
     let mut i = start_index;
 
@@ -736,9 +736,9 @@ enum CallArg {
 /// The formatter uses all fields.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParseOutput {
-    pub leading_comments: BTreeMap<usize, Vec<String>>,
-    pub trailing_comments: BTreeMap<usize, String>,
-    pub blank_before: BTreeMap<usize, bool>,
+    pub leading_comments: BTreeMap<u32, Vec<String>>,
+    pub trailing_comments: BTreeMap<u32, String>,
+    pub blank_before: BTreeMap<u32, bool>,
     /// Recovered parse diagnostics (errors inside bracket forms where the parser continued).
     pub diagnostics: Vec<TypeDiagnostic>,
     /// The parsed Surface AST program — the primary output of the parser.
@@ -1092,9 +1092,9 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
     let mut documents: Vec<Spanned<Arc<SurfaceDocument>>> = Vec::new();
 
     // Comment maps
-    let mut leading_comments: BTreeMap<usize, Vec<String>> = BTreeMap::new();
-    let mut trailing_comments: BTreeMap<usize, String> = BTreeMap::new();
-    let mut blank_before: BTreeMap<usize, bool> = BTreeMap::new();
+    let mut leading_comments: BTreeMap<u32, Vec<String>> = BTreeMap::new();
+    let mut trailing_comments: BTreeMap<u32, String> = BTreeMap::new();
+    let mut blank_before: BTreeMap<u32, bool> = BTreeMap::new();
 
     // Recovered parse diagnostics (errors inside bracket forms).
     let mut diagnostics: Vec<TypeDiagnostic> = Vec::new();
@@ -2604,44 +2604,42 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                         span_start,
                     } => {
                         // CaseDecl requires [let bindings] pattern body+
-                        if let_bindings.is_none() {
-                            close_bracket_recover!(ParseError {
-                                message: "case arm requires [let bindings] pattern body"
-                                    .to_string(),
-                                span: Some(dict_span(span_start)),
-                            });
-                        } else if pattern.is_none() {
-                            close_bracket_recover!(ParseError {
-                                message: "case arm requires [let bindings] pattern body"
-                                    .to_string(),
-                                span: Some(dict_span(span_start)),
-                            });
-                        } else if body.is_empty() {
-                            close_bracket_recover!(ParseError {
-                                message: "case arm requires [let bindings] pattern body"
-                                    .to_string(),
-                                span: Some(dict_span(span_start)),
-                            });
-                        } else {
-                            #[allow(clippy::unnecessary_unwrap)]
-                            let body_expr = if body.len() == 1 {
-                                body.into_iter().next().unwrap()
+                        if let (Some(let_bindings_val), Some(pattern_val)) = (let_bindings, pattern)
+                        {
+                            if body.is_empty() {
+                                close_bracket_recover!(ParseError {
+                                    message: "case arm requires [let bindings] pattern body"
+                                        .to_string(),
+                                    span: Some(dict_span(span_start)),
+                                });
                             } else {
-                                mk(SurfaceExpression::Sequential(body), dict_span(span_start))
-                            };
-                            let spanned_case = mk(
-                                SurfaceExpression::CaseArm {
-                                    let_bindings: let_bindings.unwrap(),
-                                    pattern: pattern.unwrap(),
-                                    body: body_expr,
-                                },
-                                dict_span(span_start),
-                            );
-                            if let Err(push_err) =
-                                push_value(&mut stack, &mut current_document_items, spanned_case)
-                            {
-                                close_bracket_recover!(push_err);
+                                let body_expr = if body.len() == 1 {
+                                    body.into_iter().next().expect("body len == 1")
+                                } else {
+                                    mk(SurfaceExpression::Sequential(body), dict_span(span_start))
+                                };
+                                let spanned_case = mk(
+                                    SurfaceExpression::CaseArm {
+                                        let_bindings: let_bindings_val,
+                                        pattern: pattern_val,
+                                        body: body_expr,
+                                    },
+                                    dict_span(span_start),
+                                );
+                                if let Err(push_err) = push_value(
+                                    &mut stack,
+                                    &mut current_document_items,
+                                    spanned_case,
+                                ) {
+                                    close_bracket_recover!(push_err);
+                                }
                             }
+                        } else {
+                            close_bracket_recover!(ParseError {
+                                message: "case arm requires [let bindings] pattern body"
+                                    .to_string(),
+                                span: Some(dict_span(span_start)),
+                            });
                         }
                     }
 
@@ -2893,7 +2891,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                             if last_entry.node.key.is_none() {
                                 match &last_entry.node.value.expr {
                                     SurfaceExpression::VarRef { name, .. }
-                                        if name.chars().next().map_or(false, |c| c.is_uppercase()) =>
+                                        if name.chars().next().is_some_and(|c| c.is_uppercase()) =>
                                     {
                                         // Pop the last positional entry, use its value as the key.
                                         let popped = type_exprs.pop().unwrap();
@@ -3111,21 +3109,20 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                 );
                 // Check if this string literal is a potential dict key (e.g. ["key": value]).
                 // Use peek_next_horizontal: a newline before `:` breaks key detection per spec.
-                if matches!(stack.last(), Some(StackFrame::Dict { .. })) {
-                    if peek_next_horizontal(&token_vec, i)
+                if matches!(stack.last(), Some(StackFrame::Dict { .. }))
+                    && peek_next_horizontal(&token_vec, i)
                         .map(|(t, _)| matches!(t, Token::Colon))
                         .unwrap_or(false)
+                {
+                    if let Some(StackFrame::Dict {
+                        ref mut pending_key,
+                        ..
+                    }) = stack.last_mut()
                     {
-                        if let Some(StackFrame::Dict {
-                            ref mut pending_key,
-                            ..
-                        }) = stack.last_mut()
-                        {
-                            *pending_key = Some(expr);
-                            last_significant_span = Some(span);
-                            i += 1;
-                            continue;
-                        }
+                        *pending_key = Some(expr);
+                        last_significant_span = Some(span);
+                        i += 1;
+                        continue;
                     }
                 }
                 if let Err(push_err) = push_value(&mut stack, &mut current_document_items, expr) {
@@ -4005,15 +4002,12 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                         // Leading-dot at document level — no target
                         None
                     } else {
-                        match current_document_items.last() {
-                            Some(SurfaceItem::Decl(_)) => {
-                                return Err(TypeDiagnostic::error(
-                                    "parse-error",
-                                    "dot access requires a value expression, not a declaration",
-                                    span,
-                                ));
-                            }
-                            _ => {}
+                        if let Some(SurfaceItem::Decl(_)) = current_document_items.last() {
+                            return Err(TypeDiagnostic::error(
+                                "parse-error",
+                                "dot access requires a value expression, not a declaration",
+                                span,
+                            ));
                         }
                         match current_document_items.pop().unwrap() {
                             SurfaceItem::Expr(node) => Some(node),
@@ -4022,10 +4016,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                     }
                 } else {
                     // Inside a frame — try to pop the last value; on failure use leading-dot
-                    match pop_last_value_from_frame(&mut stack, span.clone()) {
-                        Ok(t) => Some(t),
-                        Err(_) => None,
-                    }
+                    pop_last_value_from_frame(&mut stack, span.clone()).ok()
                 };
 
                 i += 1; // Consume the Dot
@@ -4705,7 +4696,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                 column: 1,
             },
             end: Position {
-                offset: source.len(),
+                offset: source.len() as u32,
                 line: 1,
                 column: 1,
             },
@@ -4726,7 +4717,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                 column: 1,
             },
             end: Position {
-                offset: source.len(),
+                offset: source.len() as u32,
                 line: 1,
                 column: 1,
             },
@@ -5328,7 +5319,7 @@ fn push_expr_to_parent(
                     } => match &func.expr {
                         SurfaceExpression::VarRef {
                             name, annotation, ..
-                        } if name.chars().next().map_or(false, |c| c.is_uppercase()) => {
+                        } if name.chars().next().is_some_and(|c| c.is_uppercase()) => {
                             if annotation.is_some() {
                                 // Annotated func: only named args are invalid here; positional
                                 // args are valid as function-type alias parameters,
@@ -5946,12 +5937,23 @@ fn inject_class_name_from_key(node: &Arc<SurfaceNode>, key: &Arc<SurfaceNode>) -
     };
 
     // Check if the value is a ClassDecl with an empty name.
-    match &node.expr {
-        SurfaceExpression::Decl(decl_box) => {
-            if let SurfaceDeclaration::ClassDecl { name, .. } = decl_box.as_ref() {
-                if name.is_empty() {
-                    // Reconstruct with the binding name injected.
-                    if let SurfaceDeclaration::ClassDecl {
+    if let SurfaceExpression::Decl(decl_box) = &node.expr {
+        if let SurfaceDeclaration::ClassDecl { name, .. } = decl_box.as_ref() {
+            if name.is_empty() {
+                // Reconstruct with the binding name injected.
+                if let SurfaceDeclaration::ClassDecl {
+                    params,
+                    superclasses,
+                    methods,
+                    determines,
+                    resolver,
+                    resolver_injective,
+                    structural,
+                    ..
+                } = decl_box.as_ref().clone()
+                {
+                    let new_decl = SurfaceDeclaration::ClassDecl {
+                        name: key_name,
                         params,
                         superclasses,
                         methods,
@@ -5959,28 +5961,14 @@ fn inject_class_name_from_key(node: &Arc<SurfaceNode>, key: &Arc<SurfaceNode>) -
                         resolver,
                         resolver_injective,
                         structural,
-                        ..
-                    } = decl_box.as_ref().clone()
-                    {
-                        let new_decl = SurfaceDeclaration::ClassDecl {
-                            name: key_name,
-                            params,
-                            superclasses,
-                            methods,
-                            determines,
-                            resolver,
-                            resolver_injective,
-                            structural,
-                        };
-                        return mk(
-                            SurfaceExpression::Decl(Box::new(new_decl)),
-                            node.span.clone(),
-                        );
-                    }
+                    };
+                    return mk(
+                        SurfaceExpression::Decl(Box::new(new_decl)),
+                        node.span.clone(),
+                    );
                 }
             }
         }
-        _ => {}
     }
     Arc::clone(node)
 }
@@ -6104,7 +6092,7 @@ fn create_annotated_node(
 }
 
 /// Store a floating annotation on the current top Dict frame.
-fn set_floating_annotation(stack: &mut Vec<StackFrame>, ann: Spanned<Annotation>) {
+fn set_floating_annotation(stack: &mut [StackFrame], ann: Spanned<Annotation>) {
     if let Some(StackFrame::Dict {
         ref mut floating_annotation,
         ..

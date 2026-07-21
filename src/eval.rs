@@ -327,6 +327,46 @@ pub struct EvalConfig {
     pub source_file: Option<String>,
 }
 
+/// Stable handle to a program entry in the program store.
+///
+/// Carries the index (`id`) and a weak pointer to the store. When all `Value::Program`
+/// values that reference this entry are dropped (i.e., the `Rc<ProgramRef>` ref-count
+/// reaches zero), `Drop` sets `store[id] = None`, freeing the `SurfaceProgram` AST.
+/// This releases the parsed AST once it is no longer needed for evaluation or desugaring,
+/// avoiding unbounded accumulation in long-running pipelines.
+///
+/// The store is accessed via `Weak` to avoid a retain cycle: `EvalContext` holds the
+/// store (`Rc`), and `Value::Program` is stored in thunks that live inside the same
+/// arena owned by the context. A strong `Rc` here would form a cycle. The `Weak`
+/// degrades gracefully if the context is dropped first.
+///
+/// Note: `ProgramRef` uses `Rc<ProgramRef>` (not `Arc`) because `ProgramRef.store` is
+/// `Rc::Weak`, making `ProgramRef` !Send. This is correct — `Value` is already `!Send`.
+pub struct ProgramRef {
+    /// Index into `EvalContext.program_store`.
+    pub id: u32,
+    /// Weak reference to the shared program store (avoids retain cycle with EvalContext).
+    store: std::rc::Weak<RefCell<Vec<Option<crate::ast::SurfaceProgram>>>>,
+}
+
+impl Drop for ProgramRef {
+    fn drop(&mut self) {
+        // Try to upgrade the Weak — fails silently if the EvalContext was already dropped.
+        if let Some(store_rc) = self.store.upgrade() {
+            let mut store = store_rc.borrow_mut();
+            if let Some(slot) = store.get_mut(self.id as usize) {
+                *slot = None;
+            }
+        }
+    }
+}
+
+impl std::fmt::Debug for ProgramRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ProgramRef(id={})", self.id)
+    }
+}
+
 /// Evaluation infrastructure context: separates session config from variable bindings.
 ///
 /// Config is immutable (Arc without Mutex); scope_arena is Rc<RefCell<>> (single-threaded only).
@@ -340,12 +380,12 @@ pub struct EvalContext {
     /// **Shared ownership:** Rc<RefCell<>> allows child contexts to share the parent's arena.
     /// Safe because the eval runtime is strictly single-threaded (LocalSet + current_thread).
     pub(crate) scope_arena: Rc<RefCell<ScopeArena>>,
-    /// Program store: append-only Vec of SurfaceProgram values, indexed by u32.
-    /// `Value::Program { id }` carries a u32 index into this store instead of an Arc.
-    /// Shared (Rc::clone) across all child contexts so that any context can read a program
-    /// that was created by another context in the same evaluation session.
-    /// Programs are never removed — entries accumulate per evaluation run.
-    pub(crate) program_store: Rc<RefCell<Vec<crate::ast::SurfaceProgram>>>,
+    /// Program store: append-only Vec of optional SurfaceProgram values, indexed by u32.
+    /// `Value::Program { program_ref }` carries a `Rc<ProgramRef>` whose `Drop` implementation
+    /// sets `store[id] = None`, releasing the AST once no `Value::Program` referencing it
+    /// remains alive. Shared (Rc::clone) across all child contexts so that any context can
+    /// read a program that was created by another context in the same evaluation session.
+    pub(crate) program_store: Rc<RefCell<Vec<Option<crate::ast::SurfaceProgram>>>>,
     /// Env variable allowlist. None = unrestricted (all allowed), Some(set) = only those in set.
     /// Some(empty) means all denied (--no-env mode).
     pub env_allowed: Option<HashSet<String>>,
@@ -696,10 +736,29 @@ impl EvalContext {
     }
 
     /// Allocate a thunk in the given scope and return its ID.
+    ///
+    /// When profiling is active, records creation-time data (active span and timestamp)
+    /// in `ProfilingCollector.thunk_creation` keyed by the returned `ThunkId`. This is the
+    /// only site where both the ThunkId and the profiling context are simultaneously available.
     pub fn alloc_thunk(&self, env_id: u32, thunk: Arc<Thunk>) -> ThunkId {
-        self.scope_arena
+        let id = self
+            .scope_arena
             .borrow_mut()
-            .push_slot(ScopeId(env_id), thunk)
+            .push_slot(ScopeId(env_id), thunk);
+        if let Some(ref profiling) = self.profiling {
+            let mut prof = profiling.lock().unwrap();
+            let create_parent = prof.current_span_id();
+            let create_time_us = prof.baseline_instant().elapsed().as_micros() as u64;
+            prof.record_thunk_creation(
+                id.scope_id,
+                id.slot,
+                crate::profiling::ThunkCreationData {
+                    create_parent,
+                    create_time_us,
+                },
+            );
+        }
+        id
     }
 
     /// Get a cloned Arc<Thunk> from the arena by ID.
@@ -754,38 +813,51 @@ impl EvalContext {
         self.blame_map.lock().unwrap().get(&thunk_id).cloned()
     }
 
-    /// Push a SurfaceProgram into the program store and return its u32 id.
+    /// Push a SurfaceProgram into the program store and return a `ProgramRef` handle.
     ///
-    /// The id is stable for the lifetime of this EvalContext and all contexts sharing
-    /// the same program_store (i.e., all child contexts created via with_* methods).
-    pub(crate) fn push_program(&self, program: crate::ast::SurfaceProgram) -> u32 {
+    /// The returned `Rc<ProgramRef>` should be stored in `Value::Program`. When the last
+    /// `Rc<ProgramRef>` is dropped, the `ProgramRef::drop` implementation sets
+    /// `store[id] = None`, freeing the `SurfaceProgram` AST. The id is stable for the
+    /// lifetime of this EvalContext and all contexts sharing the same program_store.
+    pub(crate) fn push_program(&self, program: crate::ast::SurfaceProgram) -> Rc<ProgramRef> {
         let mut store = self.program_store.borrow_mut();
         let id = store.len() as u32;
-        store.push(program);
-        id
+        store.push(Some(program));
+        Rc::new(ProgramRef {
+            id,
+            store: Rc::downgrade(&self.program_store),
+        })
     }
 
     /// Mutate the SurfaceProgram at the given id in-place via a closure.
     ///
     /// Used by `builtin_desugar` to apply desugar passes without cloning.
+    /// Panics if the slot has been dropped (ProgramRef was deallocated before this call).
     pub(crate) fn with_program_mut<F>(&self, id: u32, f: F)
     where
         F: FnOnce(&mut crate::ast::SurfaceProgram),
     {
         let mut store = self.program_store.borrow_mut();
-        f(&mut store[id as usize]);
+        let program = store[id as usize]
+            .as_mut()
+            .expect("with_program_mut: program slot has been dropped (ProgramRef deallocated)");
+        f(program);
     }
 
     /// Borrow the SurfaceProgram at the given id for reading.
     ///
     /// The closure receives a reference to the SurfaceProgram; the borrow is
     /// released when the closure returns.
+    /// Panics if the slot has been dropped (ProgramRef was deallocated before this call).
     pub(crate) fn with_program<F, R>(&self, id: u32, f: F) -> R
     where
         F: FnOnce(&crate::ast::SurfaceProgram) -> R,
     {
         let store = self.program_store.borrow();
-        f(&store[id as usize])
+        let program = store[id as usize]
+            .as_ref()
+            .expect("with_program: program slot has been dropped (ProgramRef deallocated)");
+        f(program)
     }
 
     /// Set the type constructor environment from type inference.
@@ -946,8 +1018,8 @@ pub fn ground_type_of(v: &Value) -> Type {
         Value::NetCap(_) => Type::Unknown,
         // Variant payload types erased (payload ThunkId has no static type without the schema).
         Value::Variant { tycon, ctor, .. } => Type::NominalVariant {
-            tycon: tycon.clone(),
-            ctor: ctor.clone(),
+            tycon: tycon.as_ref().to_string(),
+            ctor: ctor.as_ref().to_string(),
             fields: Row {
                 fields: indexmap::IndexMap::new(),
                 tail: crate::type_def::RowTail::Empty,
@@ -1050,7 +1122,6 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type, ctx: &EvalConte
                             matches!(value, Value::DirCap { .. } | Value::RevocableDirCap { .. })
                         }
                         "NetCap" => matches!(value, Value::NetCap(_)),
-                        "Handle" => matches!(value, Value::Handle { .. }),
                         "BuilderHandle" => matches!(value, Value::Builder(_)),
                         "Task" => matches!(value, Value::Task(_)),
                         "Channel" => matches!(value, Value::Channel(_)),
@@ -1069,7 +1140,7 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type, ctx: &EvalConte
                     }
                 } else if !def.constructors.is_empty() {
                     // Nominal (user-defined) type: value must be a Variant with tycon matching name.
-                    matches!(value, Value::Variant { tycon, .. } if tycon == name)
+                    matches!(value, Value::Variant { tycon, .. } if tycon.as_ref() == name)
                 } else {
                     // TyCon found but no builtin_type and no constructors yet (T-1003/T-1018).
                     // Conservative: unknown structure, return false.
@@ -1518,27 +1589,29 @@ pub(crate) fn match_pattern<'a>(
                 match resolution.get() {
                     Some(Some((level, slot))) => {
                         // FlatEnv dispatch via parent-chain traversal.
-                        let arena = ctx.scope_arena.borrow();
-                        let level_idx = level as usize;
-                        let target_result = arena.walk_parent_chain(env_id, level_idx);
-                        let t = match target_result {
-                            Ok(target_env_id) => {
-                                let slot_idx = slot as usize;
-                                arena.scopes[target_env_id.0 as usize]
-                                    .get(slot_idx as u32)
-                                    .map(Arc::clone)
+                        let t = {
+                            let arena = ctx.scope_arena.borrow();
+                            let level_idx = level as usize;
+                            let target_result = arena.walk_parent_chain(env_id, level_idx);
+                            match target_result {
+                                Ok(target_env_id) => {
+                                    let slot_idx = slot as usize;
+                                    arena.scopes[target_env_id.0 as usize]
+                                        .get(slot_idx as u32)
+                                        .map(Arc::clone)
+                                }
+                                Err(depth_reached) => {
+                                    let chain_depth = arena.collect_parent_chain(env_id).len();
+                                    drop(arena);
+                                    return Err(EvalError::internal(
+                                        format!("Pattern pin: level={level} out of range for scope chain depth {chain_depth} (ran out of parents at hop {depth_reached})"),
+                                        value_span.clone(),
+                                    )
+                                    .into());
+                                }
                             }
-                            Err(depth_reached) => {
-                                let chain_depth = arena.collect_parent_chain(env_id).len();
-                                drop(arena);
-                                return Err(EvalError::internal(
-                                    format!("Pattern pin: level={level} out of range for scope chain depth {chain_depth} (ran out of parents at hop {depth_reached})"),
-                                    value_span.clone(),
-                                )
-                                .into());
-                            }
+                            // arena is dropped here (end of block)
                         };
-                        drop(arena);
                         let var_thunk = match t {
                             Some(thunk) => thunk,
                             None => {
@@ -2000,8 +2073,7 @@ pub(crate) fn primitive_eq(a: Value, b: Value) -> bool {
             if a.len() != b.len() {
                 return false;
             }
-            a.iter()
-                .all(|(k, id_a)| b.get(k).map_or(false, |id_b| id_a == id_b))
+            a.iter().all(|(k, id_a)| b.get(k) == Some(id_a))
         }
         _ => false,
     }
@@ -4401,15 +4473,15 @@ mod tests {
         let tycon = Type::TyCon("Color".to_string());
         // Variant with matching tycon matches
         let red = Value::Variant {
-            tycon: "Color".to_string(),
-            ctor: "Red".to_string(),
+            tycon: Arc::from("Color"),
+            ctor: Arc::from("Red"),
             payload: None,
         };
         assert!(value_matches_type(&red, &tycon, &ctx));
         // Variant with different tycon does not match
         let wrong = Value::Variant {
-            tycon: "Shape".to_string(),
-            ctor: "Circle".to_string(),
+            tycon: Arc::from("Shape"),
+            ctor: Arc::from("Circle"),
             payload: None,
         };
         assert!(!value_matches_type(&wrong, &tycon, &ctx));
@@ -4495,8 +4567,8 @@ mod tests {
 
         // Color.Red variant must pass @Color check.
         let color_red = Value::Variant {
-            tycon: "Color".to_string(),
-            ctor: "Red".to_string(),
+            tycon: Arc::from("Color"),
+            ctor: Arc::from("Red"),
             payload: None,
         };
         assert!(
@@ -4506,8 +4578,8 @@ mod tests {
 
         // Color.Green variant must also pass.
         let color_green = Value::Variant {
-            tycon: "Color".to_string(),
-            ctor: "Green".to_string(),
+            tycon: Arc::from("Color"),
+            ctor: Arc::from("Green"),
             payload: None,
         };
         assert!(
@@ -4517,8 +4589,8 @@ mod tests {
 
         // A value from a different TyCon must not pass — no cross-TyCon confusion.
         let other = Value::Variant {
-            tycon: "Shape".to_string(),
-            ctor: "Circle".to_string(),
+            tycon: Arc::from("Shape"),
+            ctor: Arc::from("Circle"),
             payload: None,
         };
         assert!(
@@ -4561,8 +4633,8 @@ mod tests {
             "String is a primitive type"
         );
         let color_variant = Value::Variant {
-            tycon: "Color".to_string(),
-            ctor: "Red".to_string(),
+            tycon: Arc::from("Color"),
+            ctor: Arc::from("Red"),
             payload: None,
         };
         assert_eq!(

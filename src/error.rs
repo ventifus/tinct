@@ -1755,23 +1755,29 @@ pub fn render_span_snippet(source: &str, span: Span) -> Option<String> {
     // Split source into lines
     let lines: Vec<&str> = source.lines().collect();
 
+    // Convert position fields to usize for indexing.
+    let start_line = span.start.line as usize;
+    let end_line_raw = span.end.line as usize;
+    let start_col_raw = span.start.column as usize;
+    let end_col_raw = span.end.column as usize;
+
     // Span uses 1-based line numbers
-    if span.start.line < 1 || span.start.line > lines.len() {
+    if start_line < 1 || start_line > lines.len() {
         return None; // Span out of bounds
     }
 
     // Width of the largest line number shown, for consistent gutter alignment.
-    let end_line = span.end.line.min(lines.len());
+    let end_line = end_line_raw.min(lines.len());
     let line_num_width = end_line.to_string().len();
     let padding = " ".repeat(line_num_width);
 
     let mut snippet = String::new();
 
-    if span.start.line == end_line {
+    if start_line == end_line {
         // ── Single-line span ──────────────────────────────────────────────
-        let line_text = lines[span.start.line - 1];
-        let start_col = span.start.column.saturating_sub(1).min(line_text.len());
-        let end_col = span.end.column.saturating_sub(1).min(line_text.len());
+        let line_text = lines[start_line - 1];
+        let start_col = start_col_raw.saturating_sub(1).min(line_text.len());
+        let end_col = end_col_raw.saturating_sub(1).min(line_text.len());
         let caret_length = if end_col > start_col {
             end_col - start_col
         } else {
@@ -1780,7 +1786,7 @@ pub fn render_span_snippet(source: &str, span: Span) -> Option<String> {
 
         snippet.push_str(&format!(
             "  {:>width$} | {}\n",
-            span.start.line,
+            start_line,
             line_text,
             width = line_num_width
         ));
@@ -1789,16 +1795,16 @@ pub fn render_span_snippet(source: &str, span: Span) -> Option<String> {
         snippet.push_str(&"^".repeat(caret_length));
     } else {
         // ── Multi-line span ───────────────────────────────────────────────
-        let first_line = lines[span.start.line - 1];
+        let first_line = lines[start_line - 1];
         snippet.push_str(&format!(
             "  {:>width$} | {}\n",
-            span.start.line,
+            start_line,
             first_line,
             width = line_num_width
         ));
 
         // Middle lines: show full line content (no caret yet).
-        for line_num in (span.start.line + 1)..end_line {
+        for line_num in (start_line + 1)..end_line {
             let line_text = lines[line_num - 1];
             snippet.push_str(&format!(
                 "  {:>width$} | {}\n",
@@ -1810,7 +1816,7 @@ pub fn render_span_snippet(source: &str, span: Span) -> Option<String> {
 
         // Last line: show from col 0 to end_col, with caret under it.
         let last_line = lines[end_line - 1];
-        let end_col = span.end.column.saturating_sub(1).min(last_line.len());
+        let end_col = end_col_raw.saturating_sub(1).min(last_line.len());
         snippet.push_str(&format!(
             "  {:>width$} | {}\n",
             end_line,

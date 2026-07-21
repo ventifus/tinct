@@ -1795,7 +1795,7 @@ async fn instantiate_tycon_def(
                     // conflict: resolve_instance takes &self on InstanceEnv AND &mut state
                     // simultaneously, which Rust's borrow checker would reject if both were
                     // fields of InferState. The snapshot is built once per constraint check.
-                    let instance_env = state.build_instance_env_snapshot();
+                    let instance_env = state.build_instance_env_snapshot().clone();
                     let error_span = origin_span.clone().unwrap_or_else(|| rust_span!());
                     match Box::pin(instance_env.resolve_instance(&class.name, arg_type, state))
                         .await
@@ -2294,7 +2294,7 @@ pub(crate) async fn resolve_type_name(
 ) -> Result<Type, TypeDiagnostic> {
     match name {
         // Kind constraints — not types, require special handling before the type-stage path.
-        "Operator" => return Err(TypeDiagnostic::error("type-error",
+        "Operator" => Err(TypeDiagnostic::error("type-error",
             "Operator is a kind, not a type — annotate a class type parameter as `f@Operator`, not a value expression",
             span,
         )),
@@ -2303,7 +2303,7 @@ pub(crate) async fn resolve_type_name(
             let level = state.level;
             let (fresh, fresh_ty) = state.fresh_type_var_with(Some("_label"), Some(level), Kind::Label, &span);
             state.kind_env.insert(fresh.clone(), Kind::Label);
-            return Ok(fresh_ty);
+            Ok(fresh_ty)
         }
         // All fundamental types (Integer, String, Float, Bytes, Never, Any,
         // Proxy, Dict, Expr, Unknown) are declared in builtin_core.llt and resolved through
@@ -4553,8 +4553,8 @@ fn typenode_value_to_type<'a>(
                     if let Some(val) = thunk.try_get_materialized() {
                         match val {
                             Value::Variant { tycon, .. } => match &prefix {
-                                None => prefix = Some(tycon.clone()),
-                                Some(existing) if *existing == tycon => {}
+                                None => prefix = Some(tycon.to_string()),
+                                Some(existing) if existing.as_str() == tycon.as_ref() => {}
                                 _ => {
                                     all_match = false;
                                     break;
@@ -4574,7 +4574,7 @@ fn typenode_value_to_type<'a>(
                     }
                 }
                 if all_match {
-                    prefix.map(|p| Type::TyCon(p))
+                    prefix.map(Type::TyCon)
                 } else {
                     None
                 }
@@ -4619,43 +4619,43 @@ fn type_to_typenode_value<'a>(
 
         Some(match ty {
             Type::Int => Value::Variant {
-                tycon: "TypeNode".to_string(),
-                ctor: "Int".to_string(),
+                tycon: Arc::from("TypeNode"),
+                ctor: Arc::from("Int"),
                 payload: None,
             },
             Type::Float => Value::Variant {
-                tycon: "TypeNode".to_string(),
-                ctor: "Float".to_string(),
+                tycon: Arc::from("TypeNode"),
+                ctor: Arc::from("Float"),
                 payload: None,
             },
             Type::Str => Value::Variant {
-                tycon: "TypeNode".to_string(),
-                ctor: "String".to_string(),
+                tycon: Arc::from("TypeNode"),
+                ctor: Arc::from("String"),
                 payload: None,
             },
             Type::Bytes => Value::Variant {
-                tycon: "TypeNode".to_string(),
-                ctor: "Bytes".to_string(),
+                tycon: Arc::from("TypeNode"),
+                ctor: Arc::from("Bytes"),
                 payload: None,
             },
             Type::Any => Value::Variant {
-                tycon: "TypeNode".to_string(),
-                ctor: "Top".to_string(),
+                tycon: Arc::from("TypeNode"),
+                ctor: Arc::from("Top"),
                 payload: None,
             },
             Type::Never => Value::Variant {
-                tycon: "TypeNode".to_string(),
-                ctor: "Never".to_string(),
+                tycon: Arc::from("TypeNode"),
+                ctor: Arc::from("Never"),
                 payload: None,
             },
             Type::Unknown => Value::Variant {
-                tycon: "TypeNode".to_string(),
-                ctor: "Unknown".to_string(),
+                tycon: Arc::from("TypeNode"),
+                ctor: Arc::from("Unknown"),
                 payload: None,
             },
             Type::Proxy => Value::Variant {
-                tycon: "TypeNode".to_string(),
-                ctor: "Proxy".to_string(),
+                tycon: Arc::from("TypeNode"),
+                ctor: Arc::from("Proxy"),
                 payload: None,
             },
             Type::TypeVar(name, level) => {
@@ -4665,8 +4665,8 @@ fn type_to_typenode_value<'a>(
                 payload.insert(HashableValue::Str("level".into()), alloc_int(*level as i64));
                 let payload_tid = alloc_val(Value::Dict(payload));
                 Value::Variant {
-                    tycon: "TypeNode".to_string(),
-                    ctor: "TypeVar".to_string(),
+                    tycon: Arc::from("TypeNode"),
+                    ctor: Arc::from("TypeVar"),
                     payload: Some(payload_tid),
                 }
             }
@@ -4689,8 +4689,8 @@ fn type_to_typenode_value<'a>(
                 payload.insert(HashableValue::Str("open".into()), open_tid);
                 let payload_tid = alloc_val(Value::Dict(payload));
                 Value::Variant {
-                    tycon: "TypeNode".to_string(),
-                    ctor: "Dict".to_string(),
+                    tycon: Arc::from("TypeNode"),
+                    ctor: Arc::from("Dict"),
                     payload: Some(payload_tid),
                 }
             }
@@ -4708,8 +4708,8 @@ fn type_to_typenode_value<'a>(
                 payload.insert(HashableValue::Str("types".into()), types_tid);
                 let payload_tid = alloc_val(Value::Dict(payload));
                 Value::Variant {
-                    tycon: "TypeNode".to_string(),
-                    ctor: "Union".to_string(),
+                    tycon: Arc::from("TypeNode"),
+                    ctor: Arc::from("Union"),
                     payload: Some(payload_tid),
                 }
             }

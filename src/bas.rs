@@ -94,6 +94,7 @@ pub enum Atom {
     /// Record that cannot be decomposed into single-field intersections:
     /// - Empty record {} (no fields)
     /// - Record with RowTail::Uniform (infinitary field constraint)
+    ///
     /// These are treated as indivisible atoms; subtyping is handled directly.
     Record(Row),
 }

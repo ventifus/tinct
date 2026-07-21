@@ -165,8 +165,8 @@ pub(crate) fn builtin_length(
 /// materialized at merge time. Flattening to an IndexMap is deferred until the
 /// overlay is actually accessed (via `require_dict`, `visit_value`, etc.).
 ///
-/// Type validation (both args must be Dicts) is also deferred to flatten time,
-
+/// Type validation (both args must be Dicts) is also deferred to flatten time.
+///
 /// `field-get`: Dot-access key lookup — the desugared form of `target.field`.
 ///
 /// Takes 2 args: key (String or Int) and target (Dict, Proxy, Variant, Program, Document).
@@ -342,7 +342,7 @@ async fn field_get_on_value(
                     let composite_tag = format!("{}.{}", tycon, ctor);
                     if let HashableValue::Str(ref field_name) = key {
                         if let Some(tycon_env) = ctx.tycon_env.get() {
-                            if let Some(def) = tycon_env.get(tycon.as_str()) {
+                            if let Some(def) = tycon_env.get(&*tycon) {
                                 if let Some(constants) =
                                     def.constructor_constants.get(composite_tag.as_str())
                                 {

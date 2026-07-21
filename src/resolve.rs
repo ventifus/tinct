@@ -43,6 +43,14 @@ enum ScopeKind {
     Other,
 }
 
+/// Type alias for a binding entry in `IntermediateBodyInfo::bindings`:
+/// `(name, span, consumed, referenced_by_final, per_binding_refs)`.
+type BindingEntry = (String, crate::ast::Span, bool, bool, Vec<(usize, String)>);
+
+/// Type alias for the `all_bindings` reachability analysis structure:
+/// `((body_index, name), span, per_binding_refs)`.
+type ReachabilityEntry = ((usize, String), crate::ast::Span, Vec<(usize, String)>);
+
 /// Tracks one intermediate dict body inside a `SurfaceExpression::Sequential`
 /// (or one function's parameter list) for lost-binding detection.
 struct IntermediateBodyInfo {
@@ -63,7 +71,7 @@ struct IntermediateBodyInfo {
     ///   by THIS specific binding's own definition expression. Using `(body_index, name)`
     ///   rather than just `name` avoids shadowing bugs: when two bodies both define a
     ///   binding named `x`, BFS expansion uses the correct `x`'s refs, not both.
-    bindings: Vec<(String, crate::ast::Span, bool, bool, Vec<(usize, String)>)>,
+    bindings: Vec<BindingEntry>,
     /// True when this info tracks function parameters rather than intermediate dict bindings.
     /// For params, any reference from within the function body counts as consumption,
     /// regardless of `current_body_index` (since params are introduced "before" all bodies).
@@ -84,7 +92,7 @@ struct SurfaceResolver {
     /// - `kind = "abandoned-input"`, `level = Warn`: document never references pipeline input %.
     diagnostics: Vec<TypeDiagnostic>,
     /// > 0 when inside a context where unresolved VarRefs are not errors
-    /// (annotation, static key, declaration position, etc.).
+    /// > (annotation, static key, declaration position, etc.).
     suppress_depth: usize,
     /// Stack of in-progress intermediate bodies for lost-binding detection.
     /// Each entry tracks one intermediate body dict's bindings and whether each
@@ -398,13 +406,7 @@ impl SurfaceResolver {
                 // consumed somewhere in the function body.  The scope_depth is recorded
                 // AFTER enter_scope so it is the absolute forward index of the param scope.
                 let param_scope_depth = self.scopes.len() - 1;
-                let param_bindings: Vec<(
-                    String,
-                    crate::ast::Span,
-                    bool,
-                    bool,
-                    Vec<(usize, String)>,
-                )> = params
+                let param_bindings: Vec<BindingEntry> = params
                     .iter()
                     .map(|p| {
                         // Use the SurfaceNode span of the param node (the [let x] binding).
@@ -522,13 +524,7 @@ impl SurfaceResolver {
                                 // Step 3: Build binding_list for lost-binding tracking.
                                 let named_entries: Vec<(String, crate::ast::Span)> =
                                     surface_dict_keys_with_spans(entries);
-                                let binding_list: Vec<(
-                                    String,
-                                    crate::ast::Span,
-                                    bool,
-                                    bool,
-                                    Vec<(usize, String)>,
-                                )> = named_entries
+                                let binding_list: Vec<BindingEntry> = named_entries
                                     .iter()
                                     .map(|(name, span)| {
                                         (name.clone(), span.clone(), false, false, Vec::new())
@@ -667,11 +663,7 @@ impl SurfaceResolver {
                 // Using (body_index, name) as the unique key prevents the shadowing bug:
                 // when two bodies both define a binding named `x`, BFS expansion uses the
                 // correct `x`'s per-binding refs rather than merging refs from all `x`s.
-                let mut all_bindings: Vec<(
-                    (usize, String),
-                    crate::ast::Span,
-                    Vec<(usize, String)>,
-                )> = Vec::new();
+                let mut all_bindings: Vec<ReachabilityEntry> = Vec::new();
                 let mut reachable: std::collections::HashSet<(usize, String)> =
                     std::collections::HashSet::new();
 
@@ -759,7 +751,7 @@ impl SurfaceResolver {
                     // If field-get is not in scope (resolver not seeded with env), leave
                     // the OnceLock unset — the lowerer falls back to (MAX, MAX).
                     if let Some(coords) = self.resolve_name("field-get") {
-                        let _ = resolution.set(Some(coords));
+                        resolution.set(Some(coords));
                     }
                 } else if let crate::ast::DotKey::Ident(name) = field {
                     // Leading-dot `.name`: look up in the PARENT scope, skipping the
@@ -768,10 +760,10 @@ impl SurfaceResolver {
                     // `.a.b.c` chains work correctly: only this innermost `expr: None`
                     // case uses parent lookup; outer `.b` / `.c` use normal field-get.
                     if let Some(coords) = self.resolve_name_parent(name) {
-                        let _ = resolution.set(Some(coords));
+                        resolution.set(Some(coords));
                     } else {
                         // Resolver ran but name not found in parent — emit error node.
-                        let _ = resolution.set(None);
+                        resolution.set(None);
                     }
                 }
                 // Leading-dot with integer key (`.0`) is a parse error; no resolution needed.
@@ -943,12 +935,17 @@ impl SurfaceResolver {
         match &node.expr {
             // Annotated VarRef: `Red@[as-type: [fn [let t] t]]` (bare unit constructor)
             SurfaceExpression::VarRef {
-                name, annotation, ..
+                name,
+                annotation: Some(ann),
+                ..
             } if crate::eval::is_constructor_name(name) => {
-                if let Some(ann) = annotation {
-                    self.walk_ctor_annotation_values(ann);
-                }
+                self.walk_ctor_annotation_values(ann);
             }
+            SurfaceExpression::VarRef {
+                name,
+                annotation: None,
+                ..
+            } if crate::eval::is_constructor_name(name) => {}
             // Bracket form: `[Dict@[as-type: ...] fields: ...]` or `[Int@[...]]`
             // The parser wraps annotated constructors in a bracket (a single-entry Dict).
             // Recurse through it to find the actual VarRef or Call inside.
@@ -1716,7 +1713,7 @@ mod tests {
         assert!(!refs.is_empty(), "expected at least one VarRef node");
         for (id, _) in &refs {
             assert!(
-                table.get(id).is_none(),
+                !table.contains_key(id),
                 "free VarRef should have no entry in the resolution table"
             );
         }
@@ -1878,7 +1875,7 @@ mod tests {
         // nothing, so $x has no slot assignment (remains a FreeVar).
         for (id, _) in &refs {
             assert!(
-                table.get(id).is_none(),
+                !table.contains_key(id),
                 "wildcard binds nothing; $x in wildcard arm body must not be slot-resolved"
             );
         }

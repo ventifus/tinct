@@ -30,19 +30,42 @@ pub struct ScopeId(pub u32);
 ///
 /// Each `Scope` directly owns its `Arc<Thunk>` values — thunks are addressed by
 /// `ThunkId { scope_id, slot }` which indexes into the owning Scope.
+///
+/// Dropped scopes have their slots cleared but their `Scope` struct remains in the `scopes`
+/// Vec at the same index (so existing `ScopeId` values remain valid). The `free_list` tracks
+/// these cleared-slot structs so they can be reused by subsequent `alloc_root`/`alloc_child`
+/// calls without growing the Vec further.
 #[derive(Debug)]
 pub struct ScopeArena {
     pub(crate) scopes: Vec<Scope>,
+    /// Indices of scopes that have been dropped (slots cleared) and are available for reuse.
+    /// `drop_scope` pushes to this list; `alloc_root`/`alloc_child` pop from it first.
+    free_list: Vec<ScopeId>,
 }
 
 impl ScopeArena {
     /// Create a new empty environment arena.
     pub fn new() -> Self {
-        Self { scopes: Vec::new() }
+        Self {
+            scopes: Vec::new(),
+            free_list: Vec::new(),
+        }
     }
 
     /// Allocate a root environment (no parent) with the given slot capacity.
     pub fn alloc_root(&mut self, slot_count: usize) -> ScopeId {
+        if let Some(id) = self.free_list.pop() {
+            // Reinitialize the recycled Scope: clear parent, reserve capacity.
+            let scope = &mut self.scopes[id.0 as usize];
+            scope.parent = None;
+            // slots was cleared by drop_scope; reserve capacity for new use.
+            scope.slots.reserve(slot_count);
+            let actual_capacity = scope.slots.capacity();
+            let scope_bytes = std::mem::size_of::<Scope>()
+                + actual_capacity * std::mem::size_of::<Option<Arc<crate::value::Thunk>>>();
+            crate::memory_budget::record_scope_alloc(scope_bytes);
+            return id;
+        }
         let len = self.scopes.len();
         assert!(
             len < u32::MAX as usize,
@@ -63,6 +86,18 @@ impl ScopeArena {
 
     /// Allocate a child environment with the given parent.
     pub fn alloc_child(&mut self, parent_id: ScopeId, slot_count: usize) -> ScopeId {
+        if let Some(id) = self.free_list.pop() {
+            // Reinitialize the recycled Scope: set parent, reserve capacity.
+            let scope = &mut self.scopes[id.0 as usize];
+            scope.parent = Some(parent_id);
+            // slots was cleared by drop_scope; reserve capacity for new use.
+            scope.slots.reserve(slot_count);
+            let actual_capacity = scope.slots.capacity();
+            let scope_bytes = std::mem::size_of::<Scope>()
+                + actual_capacity * std::mem::size_of::<Option<Arc<crate::value::Thunk>>>();
+            crate::memory_budget::record_scope_alloc(scope_bytes);
+            return id;
+        }
         let len = self.scopes.len();
         assert!(
             len < u32::MAX as usize,
@@ -158,6 +193,11 @@ impl ScopeArena {
     }
 
     /// Drop a scope: clear all thunk slots, freeing Arc<Thunk> references.
+    ///
+    /// The `Scope` struct itself is retained in `self.scopes` at the same index — the `ScopeId`
+    /// remains a valid array index for the lifetime of the arena. The cleared `Scope` is pushed
+    /// onto the `free_list` so that `alloc_root`/`alloc_child` can reuse the slot without
+    /// growing the `scopes` Vec.
     pub fn drop_scope(&mut self, env_id: ScopeId) {
         let scope = &self.scopes[env_id.0 as usize];
         let live = scope.count_live();
@@ -168,6 +208,31 @@ impl ScopeArena {
         crate::memory_budget::record_thunk_free(live * PER_THUNK_BYTES, live);
         crate::memory_budget::record_scope_free(scope_bytes);
         self.scopes[env_id.0 as usize].clear();
+        // Make this slot available for future alloc_root/alloc_child calls.
+        self.free_list.push(env_id);
+    }
+
+    /// Drop all scopes in `[start_env_id, scopes.len())` and truncate the Vec.
+    ///
+    /// Unlike calling `drop_scope` in a loop followed by `scopes.truncate()`, this method
+    /// does NOT push freed ScopeIds onto `free_list`. Doing so would be wrong: after
+    /// `truncate(start_env_id)`, those indices are out of bounds, so any subsequent
+    /// `alloc_root`/`alloc_child` that pops a stale entry would index out of bounds and panic.
+    ///
+    /// Used by `builtin-arena-drop` to reclaim an entire arena region atomically.
+    pub fn drop_range_and_truncate(&mut self, start_env_id: u32) {
+        let end = self.scopes.len() as u32;
+        for eid in start_env_id..end {
+            let scope = &self.scopes[eid as usize];
+            let live = scope.count_live();
+            let scope_bytes = std::mem::size_of::<Scope>()
+                + scope.slots.capacity() * std::mem::size_of::<Option<Arc<crate::value::Thunk>>>();
+            crate::memory_budget::record_thunk_free(live * PER_THUNK_BYTES, live);
+            crate::memory_budget::record_scope_free(scope_bytes);
+            self.scopes[eid as usize].clear();
+            // Do NOT push to free_list — scopes.truncate() below will remove these entries.
+        }
+        self.scopes.truncate(start_env_id as usize);
     }
 
     /// Get a reference to the environment at the given handle.
@@ -1358,5 +1423,80 @@ mod tests {
                 std::mem::discriminant(&other)
             ),
         }
+    }
+
+    #[test]
+    fn test_free_list_reuse_bounds_scopes_len() {
+        let mut arena = ScopeArena::new();
+
+        // Alloc and drop a scope; its slot should go to the free list.
+        let id0 = arena.alloc_root(0);
+        assert_eq!(arena.scopes.len(), 1);
+        arena.drop_scope(id0);
+        assert_eq!(arena.free_list.len(), 1);
+
+        // Next alloc should reuse the freed slot, not grow scopes.
+        let id1 = arena.alloc_root(0);
+        assert_eq!(
+            arena.scopes.len(),
+            1,
+            "scopes.len() must stay 1 after reuse"
+        );
+        assert_eq!(
+            arena.free_list.len(),
+            0,
+            "free_list should be empty after pop"
+        );
+        assert_eq!(id1.0, id0.0, "reused scope should have same index");
+
+        // Alloc two, drop one, alloc one more — still bounded.
+        let id2 = arena.alloc_root(0);
+        assert_eq!(arena.scopes.len(), 2);
+        arena.drop_scope(id1);
+        let id3 = arena.alloc_root(0);
+        assert_eq!(
+            arena.scopes.len(),
+            2,
+            "scopes.len() must stay 2 after reuse"
+        );
+        assert_eq!(id3.0, id1.0, "reused slot index must match dropped id");
+        let _ = id2; // keep id2 alive to verify it wasn't corrupted
+    }
+
+    #[test]
+    fn test_drop_range_and_truncate_no_free_list_corruption() {
+        // Regression test: drop_range_and_truncate must NOT push dropped ScopeIds
+        // onto free_list, because scopes.truncate() removes them from the Vec.
+        // If free_list contained stale indices >= start_env_id, subsequent
+        // alloc_root/alloc_child would index out of bounds and panic.
+        let mut arena = ScopeArena::new();
+
+        let root = arena.alloc_root(0);
+        let child1 = arena.alloc_child(root, 0);
+        let child2 = arena.alloc_child(root, 0);
+        assert_eq!(arena.scopes.len(), 3);
+
+        // Simulate builtin-arena-drop: drop child1..end and truncate.
+        arena.drop_range_and_truncate(child1.0);
+        assert_eq!(
+            arena.scopes.len(),
+            1,
+            "after truncate(child1.0), scopes.len() must be 1"
+        );
+        assert_eq!(
+            arena.free_list.len(),
+            0,
+            "drop_range_and_truncate must not populate free_list with truncated IDs"
+        );
+
+        // This alloc must not panic (would panic if free_list had stale [1, 2]).
+        let new_id = arena.alloc_root(0);
+        assert_eq!(
+            new_id.0, 1,
+            "new alloc grows past root (no stale free_list entries)"
+        );
+        assert_eq!(arena.scopes.len(), 2);
+
+        let _ = (child1, child2); // suppress unused warnings
     }
 }

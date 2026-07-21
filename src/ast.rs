@@ -72,9 +72,9 @@ impl std::fmt::Display for DotKey {
 /// Byte offset + line/column position in source text
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Position {
-    pub offset: usize,
-    pub line: usize,
-    pub column: usize,
+    pub offset: u32,
+    pub line: u32,
+    pub column: u32,
 }
 
 /// Source span (start..end). Every span must carry its source file —
@@ -127,7 +127,7 @@ impl Span {
     pub fn rust_source(file: &'static str, line: u32) -> Self {
         let pos = Position {
             offset: 0,
-            line: line as usize,
+            line,
             column: 1,
         };
         Self {

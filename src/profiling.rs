@@ -51,9 +51,9 @@ pub struct SpanRecord {
     /// Source file path; empty string for Rust builtins.
     pub source_file: Option<String>,
     /// Byte offset into source file (line, col) packed as `line * 1_000_000 + col`.
-    pub source_start: Option<(usize, usize)>,
+    pub source_start: Option<(u32, u32)>,
     /// Byte offset into source file (line, col) packed as `line * 1_000_000 + col`.
-    pub source_end: Option<(usize, usize)>,
+    pub source_end: Option<(u32, u32)>,
     /// Leading characters of source at this span (for display in traces).
     pub source_text: Option<String>,
     /// Builtin name (e.g., "builtin-map") if this is a Rust builtin.
@@ -94,9 +94,9 @@ impl SpanRecord {
         }
 
         // Helper to format Option<(line,col)> as packed int or 0
-        fn opt_linecol(v: Option<(usize, usize)>) -> String {
+        fn opt_linecol(v: Option<(u32, u32)>) -> String {
             match v {
-                Some((line, col)) => ((line * 1000000 + col) as i64).to_string(),
+                Some((line, col)) => ((line as i64) * 1000000 + col as i64).to_string(),
                 None => "0".to_string(),
             }
         }
@@ -184,7 +184,7 @@ impl SpanRecord {
             HashableValue::Str("source-start".into()),
             alloc(
                 self.source_start
-                    .map(|(line, col)| Value::Int((line * 1000000 + col) as i64))
+                    .map(|(line, col)| Value::Int((line as i64) * 1000000 + col as i64))
                     .unwrap_or(Value::Int(0)),
                 ctx,
             ),
@@ -194,7 +194,7 @@ impl SpanRecord {
             HashableValue::Str("source-end".into()),
             alloc(
                 self.source_end
-                    .map(|(line, col)| Value::Int((line * 1000000 + col) as i64))
+                    .map(|(line, col)| Value::Int((line as i64) * 1000000 + col as i64))
                     .unwrap_or(Value::Int(0)),
                 ctx,
             ),
@@ -261,6 +261,20 @@ impl SpanRecord {
     }
 }
 
+/// Per-thunk creation-time data stored in the profiling side table.
+///
+/// Keyed by `(scope_id, slot)` (= `ThunkId` fields). Populated when profiling is active
+/// at thunk construction time; consumed (and removed) by `ProfilingSpanGuard` when the
+/// thunk is forced. Storing this data here instead of on every `Thunk` saves 16 bytes per
+/// thunk in the common (profiling-disabled) case.
+#[derive(Debug, Clone)]
+pub struct ThunkCreationData {
+    /// ID of the profiling span active when this thunk was allocated.
+    pub create_parent: Option<u64>,
+    /// Wall-clock microseconds since the profiling baseline when this thunk was allocated.
+    pub create_time_us: u64,
+}
+
 /// Profiling collector: records span data during evaluation.
 ///
 /// Maintains a stack of open span IDs to track nested materialization and provides
@@ -278,6 +292,10 @@ pub struct ProfilingCollector {
     baseline: Instant,
     /// Index into `spans` of the first span not yet returned by `drain_new`.
     drain_cursor: usize,
+    /// Per-thunk creation-time data: keyed by `(scope_id, slot)`.
+    /// Populated by `record_thunk_creation` when a thunk is allocated with profiling active.
+    /// Consumed (entry removed) by `take_thunk_creation` when the thunk is forced.
+    pub(crate) thunk_creation: std::collections::HashMap<(u32, u32), ThunkCreationData>,
 }
 
 impl ProfilingCollector {
@@ -289,7 +307,26 @@ impl ProfilingCollector {
             next_id: 0,
             baseline: Instant::now(),
             drain_cursor: 0,
+            thunk_creation: std::collections::HashMap::new(),
         }
+    }
+
+    /// Record creation-time profiling data for a thunk identified by `(scope_id, slot)`.
+    ///
+    /// Called immediately after a thunk's `ThunkId` is known (i.e., after `push_slot` returns).
+    /// No-ops if profiling is disabled (the caller must hold a lock on the collector before
+    /// calling, so this is only reached when profiling is active).
+    pub fn record_thunk_creation(&mut self, scope_id: u32, slot: u32, data: ThunkCreationData) {
+        self.thunk_creation.insert((scope_id, slot), data);
+    }
+
+    /// Consume and return the creation-time data for a thunk identified by `(scope_id, slot)`.
+    ///
+    /// Returns `None` if no entry exists (e.g., thunk was created before profiling was enabled,
+    /// or the entry was already consumed by a previous force). The entry is removed on first read
+    /// — creation data is consumed once when the span is opened.
+    pub fn take_thunk_creation(&mut self, scope_id: u32, slot: u32) -> Option<ThunkCreationData> {
+        self.thunk_creation.remove(&(scope_id, slot))
     }
 
     /// Open a new span and return its ID.
@@ -301,8 +338,8 @@ impl ProfilingCollector {
     pub fn open_span(
         &mut self,
         source_file: Option<String>,
-        source_start: Option<(usize, usize)>,
-        source_end: Option<(usize, usize)>,
+        source_start: Option<(u32, u32)>,
+        source_end: Option<(u32, u32)>,
         source_text: Option<String>,
         builtin_name: Option<String>,
         origin_builtin: Option<String>,

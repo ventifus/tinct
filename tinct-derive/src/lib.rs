@@ -111,19 +111,16 @@ fn parse_enum_attrs(attrs: &[syn::Attribute]) -> Result<EnumAttrs, syn::Error> {
         let meta = attr.parse_meta()?;
         if let Meta::List(MetaList { nested, .. }) = meta {
             for item in nested {
-                match item {
-                    NestedMeta::Meta(Meta::NameValue(MetaNameValue { path, lit, .. })) => {
-                        if path.is_ident("prefix") {
-                            if let Lit::Str(s) = lit {
-                                result.prefix = Some(s.value());
-                            }
-                        } else if path.is_ident("helpers") {
-                            if let Lit::Str(s) = lit {
-                                result.helpers = Some(s.value());
-                            }
+                if let NestedMeta::Meta(Meta::NameValue(MetaNameValue { path, lit, .. })) = item {
+                    if path.is_ident("prefix") {
+                        if let Lit::Str(s) = lit {
+                            result.prefix = Some(s.value());
+                        }
+                    } else if path.is_ident("helpers") {
+                        if let Lit::Str(s) = lit {
+                            result.helpers = Some(s.value());
                         }
                     }
-                    _ => {}
                 }
             }
         }
@@ -163,22 +160,20 @@ fn parse_variant_attrs(attrs: &[syn::Attribute]) -> Result<VariantAttrs, syn::Er
                         path,
                         nested: inner,
                         ..
-                    })) => {
-                        if path.is_ident("inject") {
-                            // inject(bare = true) or inject(field = true/false, ...)
-                            for inject_item in inner {
-                                if let NestedMeta::Meta(Meta::NameValue(MetaNameValue {
-                                    path: field_path,
-                                    lit: Lit::Bool(b),
-                                    ..
-                                })) = inject_item
-                                {
-                                    let field_name = field_path
-                                        .get_ident()
-                                        .map(|id| id.to_string())
-                                        .unwrap_or_default();
-                                    result.inject.push((field_name, b.value));
-                                }
+                    })) if path.is_ident("inject") => {
+                        // inject(bare = true) or inject(field = true/false, ...)
+                        for inject_item in inner {
+                            if let NestedMeta::Meta(Meta::NameValue(MetaNameValue {
+                                path: field_path,
+                                lit: Lit::Bool(b),
+                                ..
+                            })) = inject_item
+                            {
+                                let field_name = field_path
+                                    .get_ident()
+                                    .map(|id| id.to_string())
+                                    .unwrap_or_default();
+                                result.inject.push((field_name, b.value));
                             }
                         }
                     }
@@ -255,13 +250,11 @@ fn parse_field_attrs(attrs: &[syn::Attribute]) -> Result<FieldAttrs, syn::Error>
                         path,
                         nested: inner,
                         ..
-                    })) => {
-                        if path.is_ident("key_aliases") {
-                            // key_aliases(["alias1", "alias2"]) — parse list of string literals
-                            for alias_item in inner {
-                                if let NestedMeta::Lit(Lit::Str(s)) = alias_item {
-                                    result.key_aliases.push(s.value());
-                                }
+                    })) if path.is_ident("key_aliases") => {
+                        // key_aliases(["alias1", "alias2"]) — parse list of string literals
+                        for alias_item in inner {
+                            if let NestedMeta::Lit(Lit::Str(s)) = alias_item {
+                                result.key_aliases.push(s.value());
                             }
                         }
                     }
@@ -964,12 +957,12 @@ fn build_from_expr_arm_body(
                 quote! {
                     {
                         let __ann = #helpers::get_annotation_field_with_aliases(&dict, #key, #aliases_ts, ctx)?;
-                        let __start_offset = #helpers::get_int_field_with_aliases(&dict, #start_offset_key, &[], ctx)? as usize;
-                        let __start_line   = #helpers::get_int_field_with_aliases(&dict, #start_line_key,   &[], ctx)? as usize;
-                        let __start_col    = #helpers::get_int_field_with_aliases(&dict, #start_col_key,    &[], ctx)? as usize;
-                        let __end_offset   = #helpers::get_int_field_with_aliases(&dict, #end_offset_key,   &[], ctx)? as usize;
-                        let __end_line     = #helpers::get_int_field_with_aliases(&dict, #end_line_key,     &[], ctx)? as usize;
-                        let __end_col      = #helpers::get_int_field_with_aliases(&dict, #end_col_key,      &[], ctx)? as usize;
+                        let __start_offset = #helpers::get_int_field_with_aliases(&dict, #start_offset_key, &[], ctx)? as u32;
+                        let __start_line   = #helpers::get_int_field_with_aliases(&dict, #start_line_key,   &[], ctx)? as u32;
+                        let __start_col    = #helpers::get_int_field_with_aliases(&dict, #start_col_key,    &[], ctx)? as u32;
+                        let __end_offset   = #helpers::get_int_field_with_aliases(&dict, #end_offset_key,   &[], ctx)? as u32;
+                        let __end_line     = #helpers::get_int_field_with_aliases(&dict, #end_line_key,     &[], ctx)? as u32;
+                        let __end_col      = #helpers::get_int_field_with_aliases(&dict, #end_col_key,      &[], ctx)? as u32;
                         let __ann_span = crate::ast::Span::new(
                             crate::ast::Position { offset: __start_offset, line: __start_line, column: __start_col },
                             crate::ast::Position { offset: __end_offset,   line: __end_line,   column: __end_col   },

@@ -727,6 +727,96 @@ impl Default for Env {
     }
 }
 
+/// Walk the parent chain of `src` (innermost-first) up to but not including `dst`,
+/// and merge every collected frame's bindings into `dst`.
+///
+/// Innermost entries win: `or_insert`-style semantics prevent an outer frame from
+/// overwriting a name that was already contributed by a closer frame. This preserves
+/// shadowing: if frame A (inner) defines `x` and frame B (outer) also defines `x`,
+/// only frame A's scheme reaches `dst`.
+///
+/// All six binding categories are merged: slots, extras, type_aliases, classes,
+/// instances, and tycon_defs.
+///
+/// `dst` must be an ancestor of `src` (or the walk stops at the root frame).
+/// `dst` itself is never pushed into the collected frames — the walk stops before
+/// `dst` via `Arc::ptr_eq`. This prevents a write-then-read-lock deadlock on `dst`.
+pub fn merge_env_chain_into(src: &Arc<RwLock<Env>>, dst: &Arc<RwLock<Env>>) {
+    // Collect all frames from innermost to outermost, stopping before dst.
+    // dst must never appear in `frames` — we hold a write lock on dst during the
+    // merge loop below, and attempting to read-lock it would deadlock on glibc.
+    let mut frames: Vec<Arc<RwLock<Env>>> = Vec::new();
+    let mut current = Some(Arc::clone(src));
+    while let Some(arc) = current {
+        if Arc::ptr_eq(&arc, dst) {
+            break; // stop before dst — dst is never added to frames
+        }
+        let parent = arc.read().unwrap().parent.as_ref().map(Arc::clone);
+        frames.push(arc);
+        current = parent;
+    }
+    if frames.is_empty() {
+        return;
+    }
+    let mut guard = dst.write().unwrap();
+    // Walk innermost-to-outermost (frames[0] is innermost) so inner frames' or_insert
+    // wins: the innermost frame is processed first and its entries are inserted; when
+    // the outer frame is processed, or_insert skips already-present keys.
+    for frame_arc in frames.iter() {
+        let frame = frame_arc.read().unwrap();
+        for (name, slot) in &frame.slots {
+            guard
+                .slots
+                .entry(name.clone())
+                .or_insert_with(|| slot.clone());
+        }
+        for (name, slot) in &frame.extras {
+            guard
+                .extras
+                .entry(name.clone())
+                .or_insert_with(|| slot.clone());
+        }
+        for (name, alias) in &frame.type_aliases {
+            guard
+                .type_aliases
+                .entry(name.clone())
+                .or_insert_with(|| alias.clone());
+        }
+        for (name, decl) in &frame.classes {
+            guard
+                .classes
+                .entry(name.clone())
+                .or_insert_with(|| decl.clone());
+        }
+        for (mangled, decl) in &frame.instances {
+            guard
+                .instances
+                .entry(mangled.clone())
+                .or_insert_with(|| decl.clone());
+        }
+        for (name, def) in &frame.tycon_defs {
+            guard
+                .tycon_defs
+                .entry(name.clone())
+                .or_insert_with(|| Arc::clone(def));
+        }
+    }
+}
+
+impl std::fmt::Debug for Env {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Env")
+            .field("slots", &self.slots.len())
+            .field("extras", &self.extras.len())
+            .field("classes", &self.classes.len())
+            .field("instances", &self.instances.len())
+            .field("type_aliases", &self.type_aliases.len())
+            .field("tycon_defs", &self.tycon_defs.len())
+            .field("has_parent", &self.parent.is_some())
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, RwLock};
@@ -792,18 +882,142 @@ mod tests {
             "inner frame TyConDef should shadow outer frame"
         );
     }
-}
 
-impl std::fmt::Debug for Env {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Env")
-            .field("slots", &self.slots.len())
-            .field("extras", &self.extras.len())
-            .field("classes", &self.classes.len())
-            .field("instances", &self.instances.len())
-            .field("type_aliases", &self.type_aliases.len())
-            .field("tycon_defs", &self.tycon_defs.len())
-            .field("has_parent", &self.parent.is_some())
-            .finish()
+    // -----------------------------------------------------------------------
+    // merge_env_chain_into tests
+    // -----------------------------------------------------------------------
+
+    use super::merge_env_chain_into;
+
+    #[test]
+    fn test_merge_env_chain_basic() {
+        // Basic merge: binding from child frame appears in dst after the call.
+        let dst = Arc::new(RwLock::new(Env::new()));
+        let mut child_raw = Env::with_parent(Arc::clone(&dst));
+        child_raw.insert_tycon_def("Foo".to_string(), make_def("Foo"));
+        let child = Arc::new(RwLock::new(child_raw));
+
+        merge_env_chain_into(&child, &dst);
+
+        let guard = dst.read().unwrap();
+        assert!(
+            guard.lookup_tycon_def("Foo").is_some(),
+            "Foo from child should be merged into dst"
+        );
+    }
+
+    #[test]
+    fn test_merge_env_chain_inner_wins_over_outer() {
+        // Shadowing: if both an inner and an outer frame define the same name,
+        // the inner frame's definition should appear in dst.
+        // merge_env_chain_into collects frames innermost-first (frames[0] = inner),
+        // then iterates innermost-first with or_insert_with: inner is inserted first,
+        // and when outer is processed, or_insert_with skips the already-present key.
+        let dst = Arc::new(RwLock::new(Env::new()));
+
+        let mut outer_raw = Env::with_parent(Arc::clone(&dst));
+        let outer_def = make_def("Thing");
+        outer_raw.insert_tycon_def("Thing".to_string(), Arc::clone(&outer_def));
+        let outer = Arc::new(RwLock::new(outer_raw));
+
+        let mut inner_raw = Env::with_parent(Arc::clone(&outer));
+        let inner_def = make_def("Thing");
+        inner_raw.insert_tycon_def("Thing".to_string(), Arc::clone(&inner_def));
+        let inner = Arc::new(RwLock::new(inner_raw));
+
+        // inner → outer → dst
+        merge_env_chain_into(&inner, &dst);
+
+        let guard = dst.read().unwrap();
+        let found = guard.lookup_tycon_def("Thing");
+        assert!(found.is_some(), "Thing should appear in dst");
+        // merge iterates innermost-first; inner_def is inserted first via or_insert_with,
+        // so when outer is processed, the key already exists and or_insert_with is a no-op.
+        assert!(
+            Arc::ptr_eq(&found.unwrap(), &inner_def),
+            "inner frame's definition should win over outer frame's"
+        );
+    }
+
+    #[test]
+    fn test_merge_env_chain_dst_in_chain_no_deadlock() {
+        // This is the critical regression test: dst is in the parent chain of src.
+        // The Arc::ptr_eq stop must prevent dst from being pushed into frames,
+        // which would cause a write+read deadlock on glibc.
+        //
+        // Chain: child2 → child1 → dst
+        let dst = Arc::new(RwLock::new(Env::new()));
+
+        let mut child1_raw = Env::with_parent(Arc::clone(&dst));
+        child1_raw.insert_tycon_def("FromChild1".to_string(), make_def("FromChild1"));
+        let child1 = Arc::new(RwLock::new(child1_raw));
+
+        let mut child2_raw = Env::with_parent(Arc::clone(&child1));
+        child2_raw.insert_tycon_def("FromChild2".to_string(), make_def("FromChild2"));
+        let child2 = Arc::new(RwLock::new(child2_raw));
+
+        // Must not deadlock, and must populate dst with child1 and child2 bindings.
+        merge_env_chain_into(&child2, &dst);
+
+        let guard = dst.read().unwrap();
+        assert!(
+            guard.lookup_tycon_def("FromChild2").is_some(),
+            "child2's binding should be merged into dst"
+        );
+        assert!(
+            guard.lookup_tycon_def("FromChild1").is_some(),
+            "child1's binding should be merged into dst"
+        );
+    }
+
+    #[test]
+    fn test_merge_env_chain_dst_pre_existing_not_overwritten() {
+        // dst's own pre-existing bindings are NOT overwritten by inner frames
+        // because merge uses or_insert semantics.
+        //
+        // Chain: child → dst
+        // Both child and dst define "Shared". dst's definition should survive.
+        let mut dst_raw = Env::new();
+        let dst_def = make_def("Shared");
+        dst_raw.insert_tycon_def("Shared".to_string(), Arc::clone(&dst_def));
+        let dst = Arc::new(RwLock::new(dst_raw));
+
+        let mut child_raw = Env::with_parent(Arc::clone(&dst));
+        let child_def = make_def("Shared");
+        child_raw.insert_tycon_def("Shared".to_string(), Arc::clone(&child_def));
+        let child = Arc::new(RwLock::new(child_raw));
+
+        merge_env_chain_into(&child, &dst);
+
+        let guard = dst.read().unwrap();
+        let found = guard.tycon_defs.get("Shared");
+        assert!(found.is_some(), "Shared must still be in dst");
+        // dst's entry was already present before merge_env_chain_into ran.
+        // or_insert_with in the merge loop sees the key already exists and is a no-op,
+        // so dst's original definition is preserved.
+        assert!(
+            Arc::ptr_eq(found.unwrap(), &dst_def),
+            "dst's pre-existing definition of Shared should not be overwritten"
+        );
+    }
+
+    #[test]
+    fn test_merge_env_chain_tycon_defs_merged() {
+        // Verify that tycon_defs (not just slots) are merged.
+        let dst = Arc::new(RwLock::new(Env::new()));
+        let mut child_raw = Env::with_parent(Arc::clone(&dst));
+        let def = make_def("MyType");
+        child_raw.insert_tycon_def("MyType".to_string(), Arc::clone(&def));
+        let child = Arc::new(RwLock::new(child_raw));
+
+        merge_env_chain_into(&child, &dst);
+
+        let guard = dst.read().unwrap();
+        let found = guard.tycon_defs.get("MyType");
+        assert!(found.is_some(), "tycon_def from child must appear in dst");
+        assert!(
+            Arc::ptr_eq(found.unwrap(), &def),
+            "the merged tycon_def must be the same Arc"
+        );
     }
 }

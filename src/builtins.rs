@@ -100,7 +100,6 @@ pub(crate) fn ok_val(v: Value, span: Span) -> EvalResult<Arc<Thunk>> {
 
 /// Convert a `Value::Bytes` slice into a lazy collection of `Value::Int` (one per byte).
 ///
-
 /// Helper: create a synthetic CoreExpr::Call for builtin-generated calls.
 ///
 /// Used when builtins construct PendingCall thunks (e.g., map, filter, until).
@@ -2704,8 +2703,8 @@ mod tests {
         let ctx = test_ctx();
         let variant = alloc(
             Value::Variant {
-                tycon: "Color".to_string(),
-                ctor: "Red".to_string(),
+                tycon: Arc::from("Color"),
+                ctor: Arc::from("Red"),
                 payload: None,
             },
             &ctx,
@@ -3027,7 +3026,7 @@ mod tests {
         let ctx = test_ctx();
         let d = thunk_dict(IndexMap::new(), &ctx);
         let err = run(builtin_length(BuiltinArgs {
-            args: vec![d.clone(), d],
+            args: vec![d, d],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -5278,8 +5277,8 @@ mod tests {
         let ctx = test_ctx();
         let xs = alloc(
             Value::Variant {
-                tycon: "Color".to_string(),
-                ctor: "Red".to_string(),
+                tycon: Arc::from("Color"),
+                ctor: Arc::from("Red"),
                 payload: None,
             },
             &ctx,

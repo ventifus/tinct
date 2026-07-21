@@ -1282,7 +1282,7 @@ pub(crate) fn extract_dispatch_tags(arm_pattern: &SurfaceExpression) -> Vec<Opti
 /// Class method types follow the pattern `[Fn@RetType [ParamType1 ParamType2 ...]]`.
 /// In the surface AST, this is a `Call { func: VarRef("Fn"), args: [Dict([...])] }`.
 /// The arity is the number of entries in the parameter list dict.
-
+///
 /// Extract the type name from a dict entry key for TypeAlias qualified tags.
 ///
 /// Recognized key forms (same as desugar.rs):

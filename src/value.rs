@@ -561,20 +561,6 @@ pub enum Value {
     },
     /// Network capability — authority to connect to specified hosts/subnets
     NetCap(Rc<Vec<NetCapEntry>>),
-    /// Open file/stream handle with capability metadata.
-    Handle {
-        caps: HashMap<String, Value>,
-        inner: Rc<std::cell::RefCell<Box<dyn std::io::BufRead>>>,
-        write_inner: Option<Rc<std::cell::RefCell<Box<dyn std::io::Write>>>>,
-        seek_inner: Option<Rc<std::cell::RefCell<Box<dyn std::io::Seek>>>>,
-        raw_tcp: Option<Rc<RefCell<Option<std::net::TcpStream>>>>,
-        creation_span: Span,
-    },
-    /// Write-only file/stream handle with capability metadata.
-    WriteHandle {
-        caps: HashMap<String, Value>,
-        inner: Rc<std::cell::RefCell<Box<dyn std::io::Write>>>,
-    },
     /// Raw OS file handle (thin wrapper over cap_std::fs::File, no buffering).
     /// Opened via `builtin-file-open`; read/written/sought via `builtin-file-*` builtins.
     File(Rc<std::cell::RefCell<cap_std::fs::File>>),
@@ -586,8 +572,8 @@ pub enum Value {
     },
     /// Nominal variant (enum-like value)
     Variant {
-        tycon: String,
-        ctor: String,
+        tycon: Arc<str>,
+        ctor: Arc<str>,
         payload: Option<ThunkId>,
     },
     /// Exact base-10 decimal (rust_decimal::Decimal, 96-bit software decimal).
@@ -621,24 +607,19 @@ pub enum Value {
     Http3Session(Rc<RefCell<Http3SessionState>>),
     /// QUIC datagram handle — unreliable message delivery over QUIC (RFC 9221).
     QuicDatagramHandle(Rc<quinn::Connection>),
-    /// Message-oriented datagram socket (UDP or Unix datagram).
-    DatagramHandle {
-        socket: DatagramSocket,
-        creation_span: Span,
-    },
 
     // =========================================================================
     // runtime-v2 native AST value types
     // =========================================================================
     /// A complete tinct program — the type returned by `load` and `expand`.
     ///
-    /// `id` is an index into `EvalContext.program_store` (a `Vec<SurfaceProgram>`).
-    /// Carrying an id instead of `Arc<SurfaceProgram>` means that `builtin_desugar` can
-    /// mutate the program in-place (via `with_program_mut`) without needing ownership or
-    /// deep-cloning to get a unique reference. Consistent with the arena pattern: ThunkId
-    /// is a coordinate, not data — programs are the same.
+    /// `program_ref` is a stable handle into `EvalContext.program_store`. When the last
+    /// `Rc<ProgramRef>` referencing this store entry is dropped, the `SurfaceProgram` AST
+    /// is freed. Access the index via `program_ref.id` and the program via
+    /// `ctx.with_program(program_ref.id, |p| ...)`. Consistent with the arena pattern:
+    /// ThunkId is a coordinate, not data — programs follow the same indirection.
     Program {
-        id: u32,
+        program_ref: std::rc::Rc<crate::eval::ProgramRef>,
         resolutions: Arc<crate::ast::ResolutionTable>,
         types: Arc<crate::ast::TypeAnnotationTable>,
         expects_resolved: Arc<HashMap<crate::ast::Span, crate::types::Type>>,
@@ -732,14 +713,6 @@ pub struct Http3SessionState {
     pub _driver: tokio::task::JoinHandle<()>,
 }
 
-/// Socket variant carried inside `Value::DatagramHandle`.
-#[derive(Clone, Debug)]
-pub enum DatagramSocket {
-    Udp(Rc<RefCell<std::net::UdpSocket>>),
-    #[cfg(unix)]
-    UnixDgram(Rc<RefCell<std::os::unix::net::UnixDatagram>>),
-}
-
 /// Helper function to construct a `Value::String` from a string slice.
 pub fn string_val(s: &str) -> Value {
     Value::String {
@@ -776,8 +749,6 @@ impl Value {
             Value::Overlay(..) => "Dict",
             Value::DirCap { .. } => "DirCap",
             Value::NetCap(_) => "NetCap",
-            Value::Handle { .. } => "Handle",
-            Value::WriteHandle { .. } => "WriteHandle",
             Value::File(_) => "File",
             Value::RevocableDirCap { .. } => "DirCap",
             Value::Variant { .. } => "Variant",
@@ -793,7 +764,6 @@ impl Value {
             Value::Http2Session { .. } => "Http2Session",
             Value::Http3Session(_) => "Http3Session",
             Value::QuicDatagramHandle(_) => "QuicDatagramHandle",
-            Value::DatagramHandle { .. } => "DatagramHandle",
             Value::Program { .. } => "Program",
             Value::Document(_) => "Document",
             Value::Expression(_) => "Expression",
@@ -826,7 +796,6 @@ impl Value {
             // Both DirCap variants map to the declared "DirCap" type.
             Value::DirCap { .. } | Value::RevocableDirCap { .. } => Some("DirCap"),
             Value::NetCap(_) => Some("NetCap"),
-            Value::Handle { .. } => Some("Handle"),
             Value::File(_) => Some("File"),
             // type_name() returns "Builder" but the declared TyCon is "BuilderHandle".
             Value::Builder(_) => Some("BuilderHandle"),
@@ -897,8 +866,6 @@ impl fmt::Debug for Value {
             Value::Overlay(..) => write!(f, "Overlay(...)"),
             Value::DirCap { .. } => write!(f, "DirCap"),
             Value::NetCap(entries) => write!(f, "NetCap({} entries)", entries.len()),
-            Value::Handle { caps, .. } => write!(f, "Handle({} caps)", caps.len()),
-            Value::WriteHandle { caps, .. } => write!(f, "WriteHandle({} caps)", caps.len()),
             Value::File(_) => write!(f, "File"),
             Value::RevocableDirCap { revoked, .. } => {
                 if revoked.get() {
@@ -936,7 +903,6 @@ impl fmt::Debug for Value {
             Value::Http2Session { base_url, .. } => write!(f, "Http2Session({base_url})"),
             Value::Http3Session(_) => write!(f, "Http3Session"),
             Value::QuicDatagramHandle(_) => write!(f, "QuicDatagramHandle"),
-            Value::DatagramHandle { .. } => write!(f, "DatagramHandle"),
             Value::Program { .. } => write!(f, "Program(...)"),
             Value::Document(_) => write!(f, "Document(...)"),
             Value::Expression(node) => write!(
@@ -999,8 +965,6 @@ impl fmt::Display for Value {
             Value::Overlay(..) => write!(f, "[<overlay>]"),
             Value::DirCap { .. } => write!(f, "<DirCap>"),
             Value::NetCap(_) => write!(f, "<NetCap>"),
-            Value::Handle { .. } => write!(f, "<Handle>"),
-            Value::WriteHandle { .. } => write!(f, "<WriteHandle>"),
             Value::File(_) => write!(f, "<File>"),
             Value::RevocableDirCap { revoked, .. } => {
                 if revoked.get() {
@@ -1040,7 +1004,6 @@ impl fmt::Display for Value {
             Value::Http2Session { base_url, .. } => write!(f, "<Http2Session {base_url}>"),
             Value::Http3Session(_) => write!(f, "<Http3Session>"),
             Value::QuicDatagramHandle(_) => write!(f, "<QuicDatagramHandle>"),
-            Value::DatagramHandle { .. } => write!(f, "<DatagramHandle>"),
             Value::Program { .. } => write!(f, "<program>"),
             Value::Document(_) => write!(f, "<document>"),
             Value::Expression(node) => write!(
@@ -1227,8 +1190,6 @@ pub enum ThunkState {
 pub struct Thunk {
     inner: ThunkInner,
     pub(crate) span: Span,
-    pub(crate) create_parent: Option<u64>,
-    pub(crate) create_time_us: u64,
 }
 
 #[allow(dead_code)]
@@ -1254,20 +1215,6 @@ impl Drop for ThunkPanicGuard {
 }
 
 impl Thunk {
-    /// Helper: extract profiling data (create_parent, create_time_us) from context.
-    fn profiling_data(ctx: &Arc<crate::eval::EvalContext>) -> (Option<u64>, u64) {
-        if let Some(ref profiling) = ctx.profiling {
-            let guard = profiling.lock().unwrap();
-            let baseline = guard.baseline_instant();
-            (
-                guard.current_span_id(),
-                baseline.elapsed().as_micros() as u64,
-            )
-        } else {
-            (None, 0)
-        }
-    }
-
     /// Create a placeholder thunk for letrec pre-allocation.
     pub fn placeholder(span: Span) -> Self {
         Self {
@@ -1277,8 +1224,6 @@ impl Thunk {
                 notify: Arc::new(tokio::sync::Notify::new()),
             },
             span,
-            create_parent: None,
-            create_time_us: 0,
         }
     }
 
@@ -1289,7 +1234,6 @@ impl Thunk {
         ctx: Arc<crate::eval::EvalContext>,
         span: Span,
     ) -> Self {
-        let (create_parent, create_time_us) = Self::profiling_data(&ctx);
         Self {
             inner: ThunkInner {
                 unevaluated: Mutex::new((
@@ -1300,8 +1244,6 @@ impl Thunk {
                 notify: Arc::new(tokio::sync::Notify::new()),
             },
             span,
-            create_parent,
-            create_time_us,
         }
     }
 
@@ -1312,12 +1254,7 @@ impl Thunk {
             notify: Arc::new(tokio::sync::Notify::new()),
         };
         let _ = inner.result.set(Ok(value));
-        Self {
-            inner,
-            span,
-            create_parent: None,
-            create_time_us: 0,
-        }
+        Self { inner, span }
     }
 
     /// Create a Surface thunk — wraps a SurfaceNode for lazy evaluation.
@@ -1329,7 +1266,6 @@ impl Thunk {
         ctx: Arc<crate::eval::EvalContext>,
         span: Span,
     ) -> Self {
-        let (create_parent, create_time_us) = Self::profiling_data(&ctx);
         Self {
             inner: ThunkInner {
                 unevaluated: Mutex::new((
@@ -1346,8 +1282,6 @@ impl Thunk {
                 notify: Arc::new(tokio::sync::Notify::new()),
             },
             span,
-            create_parent,
-            create_time_us,
         }
     }
 
@@ -1358,7 +1292,6 @@ impl Thunk {
         ctx: Arc<crate::eval::EvalContext>,
         span: Span,
     ) -> Self {
-        let (create_parent, create_time_us) = Self::profiling_data(&ctx);
         Self {
             inner: ThunkInner {
                 unevaluated: Mutex::new((
@@ -1369,8 +1302,6 @@ impl Thunk {
                 notify: Arc::new(tokio::sync::Notify::new()),
             },
             span,
-            create_parent,
-            create_time_us,
         }
     }
 
@@ -1382,7 +1313,6 @@ impl Thunk {
         caller_env_id: u32,
         ctx: Arc<crate::eval::EvalContext>,
     ) -> Self {
-        let (create_parent, create_time_us) = Self::profiling_data(&ctx);
         Self {
             inner: ThunkInner {
                 unevaluated: Mutex::new((
@@ -1400,11 +1330,10 @@ impl Thunk {
                 notify: Arc::new(tokio::sync::Notify::new()),
             },
             span,
-            create_parent,
-            create_time_us,
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn fn_call(
         func: ThunkId,
         args: Vec<ThunkId>,
@@ -1420,7 +1349,6 @@ impl Thunk {
         } else {
             Some(Box::new(named))
         };
-        let (create_parent, create_time_us) = Self::profiling_data(&ctx);
         Self {
             inner: ThunkInner {
                 unevaluated: Mutex::new((
@@ -1439,8 +1367,6 @@ impl Thunk {
                 notify: Arc::new(tokio::sync::Notify::new()),
             },
             span,
-            create_parent,
-            create_time_us,
         }
     }
 
@@ -1469,8 +1395,6 @@ impl Thunk {
                 notify: Arc::new(tokio::sync::Notify::new()),
             },
             span: guard_span.with_name(Arc::from("type guard")),
-            create_parent: None,
-            create_time_us: 0,
         }
     }
 
@@ -1632,8 +1556,6 @@ impl Thunk {
                 notify: Arc::new(tokio::sync::Notify::new()),
             },
             span: self.span.clone(),
-            create_parent: self.create_parent,
-            create_time_us: self.create_time_us,
         }))
     }
 

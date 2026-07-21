@@ -67,7 +67,7 @@ impl NormCtxt {
 ///      a. Look up `fn_name` in the type-stage scope chain via `ctx.eval_ctx`.
 ///      b. Materialize the resolver thunk and call `call_strict_resolver`.
 ///      c. If evaluation fails or the name is not found, return stuck TypeStageApp
-///         (caller can retry via deferred_equalities)
+///      (caller can retry via deferred_equalities)
 ///    - If depth exceeded or cycle detected, return stuck TypeStageApp
 /// 3. Cache the result (only for ground types)
 ///
@@ -205,8 +205,8 @@ fn type_to_typenode(ty: &Type) -> Option<Value> {
     // tycon is always "TypeNode" for all TypeNode variants.
     let leaf = |ctor: &str| -> Value {
         Value::Variant {
-            tycon: "TypeNode".to_string(),
-            ctor: ctor.to_string(),
+            tycon: Arc::from("TypeNode"),
+            ctor: Arc::from(ctor),
             payload: None,
         }
     };
@@ -268,7 +268,7 @@ pub(crate) async fn call_strict_resolver(
     }
 
     // Convert Type args to TypeNode values.
-    let type_args: Vec<Value> = args.iter().filter_map(|ty| type_to_typenode(ty)).collect();
+    let type_args: Vec<Value> = args.iter().filter_map(type_to_typenode).collect();
     if type_args.len() != args.len() {
         return None;
     }
@@ -280,7 +280,7 @@ pub(crate) async fn call_strict_resolver(
     let call_frame = {
         let mut arena = eval_ctx.scope_arena.borrow_mut();
         let frame_id = arena.alloc_child(crate::arena::ScopeId(closure_env_id), params.len());
-        for (param, val) in params.iter().zip(type_args.into_iter()) {
+        for (param, val) in params.iter().zip(type_args) {
             let span = crate::rust_span!().with_name(std::sync::Arc::from(param.name.as_str()));
             arena.push_slot(frame_id, Arc::new(crate::value::Thunk::value(val, span)));
         }

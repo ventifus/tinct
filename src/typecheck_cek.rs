@@ -54,6 +54,16 @@ pub(crate) struct Scc {
     pub(crate) indices: Vec<usize>,
 }
 
+/// Type alias for the instantiated function signature tuple used in `AfterCallFunc` handling:
+/// `(params, return_type, typed_variadics, rest, required_count)`.
+type InstFuncSig = (
+    Vec<(Option<String>, crate::types::Type)>,
+    crate::types::Type,
+    Vec<(String, crate::types::Type)>,
+    Option<Box<(String, crate::types::Type)>>,
+    usize,
+);
+
 // ===== TypeCheckCont enum =====
 
 /// Explicit continuation stack for the type checker CEK machine.
@@ -68,6 +78,7 @@ pub(crate) struct Scc {
 /// The `#[allow(dead_code)]` below suppresses the "variant never constructed" warning
 /// for `AfterDictSccMember`, `AfterTypeAliasReg`, and `AfterClassInstancePreReg`.
 #[allow(dead_code)]
+#[allow(clippy::enum_variant_names)]
 pub(crate) enum TypeCheckCont {
     /// After inferring a function body, restore saved level/expected_return and build fn type.
     AfterFnBody {
@@ -537,8 +548,7 @@ async fn infer_step(
 
             // General call: push AfterCallFunc, evaluate func
             let args_cloned: Vec<Arc<SurfaceNode>> = args.iter().map(Arc::clone).collect();
-            let named_args_cloned: Vec<Spanned<SurfaceNamedArg>> =
-                named_args.iter().cloned().collect();
+            let named_args_cloned: Vec<Spanned<SurfaceNamedArg>> = named_args.to_vec();
             stack.push(TypeCheckCont::AfterCallFunc {
                 args: args_cloned,
                 named_args: named_args_cloned,
@@ -606,7 +616,7 @@ async fn infer_step(
 
         // ===== Match — compound: eval scrutinee first =====
         SurfaceExpression::Match { scrutinee, arms } => {
-            let arms_cloned: Vec<SurfaceMatchArm> = arms.iter().cloned().collect();
+            let arms_cloned: Vec<SurfaceMatchArm> = arms.to_vec();
             stack.push(TypeCheckCont::AfterMatchScrutinee {
                 arms: arms_cloned,
                 env: Arc::clone(env),
@@ -777,17 +787,14 @@ async fn apply_cont(
                             !matches!(body_resolved, Type::Unknown | Type::Any | Type::TypeVar(..));
                         if body_is_concrete {
                             for member in members {
-                                if matches!(member, Type::Function { .. }) {
-                                    if !Type::is_consistent_subtype(&body_resolved, member) {
-                                        errors.push(TypeDiagnostic::error(
-                                            "unification-failure",
-                                            format!(
-                                                "cannot unify {} with {}",
-                                                member, &body_resolved
-                                            ),
-                                            node_span.clone(),
-                                        ));
-                                    }
+                                if matches!(member, Type::Function { .. })
+                                    && !Type::is_consistent_subtype(&body_resolved, member)
+                                {
+                                    errors.push(TypeDiagnostic::error(
+                                        "unification-failure",
+                                        format!("cannot unify {} with {}", member, &body_resolved),
+                                        node_span.clone(),
+                                    ));
                                 }
                             }
                         }
@@ -988,7 +995,7 @@ async fn apply_cont(
                     TypeCheckAction::Done(Type::Unknown)
                 }
                 Some((arm_env, next_remaining_scrutinee)) => {
-                    let remaining_arms: Vec<SurfaceMatchArm> = arms[1..].iter().cloned().collect();
+                    let remaining_arms: Vec<SurfaceMatchArm> = arms[1..].to_vec();
                     stack.push(TypeCheckCont::AfterMatchArm {
                         remaining_arms,
                         env,
@@ -1040,8 +1047,7 @@ async fn apply_cont(
                         TypeCheckAction::Done(match_ty)
                     }
                     Some((arm_env, next_remaining_scrutinee)) => {
-                        let next_remaining: Vec<SurfaceMatchArm> =
-                            remaining_arms[1..].iter().cloned().collect();
+                        let next_remaining: Vec<SurfaceMatchArm> = remaining_arms[1..].to_vec();
                         stack.push(TypeCheckCont::AfterMatchArm {
                             remaining_arms: next_remaining,
                             env,
@@ -1423,8 +1429,8 @@ async fn infer_var_ref(
         );
 
         // Record dispatch obligations for new class constraints added by instantiate_scheme.
-        for constraint in state.constraints[constraints_len_before..].to_vec() {
-            if let crate::types::Constraint::Class { class, vars, .. } = &constraint {
+        for constraint in &state.constraints[constraints_len_before..] {
+            if let crate::types::Constraint::Class { class, vars, .. } = constraint {
                 let det_positions: Vec<usize> = if class.determines.is_empty() {
                     (0..vars.len()).collect()
                 } else {
@@ -1877,13 +1883,8 @@ async fn apply_cont_call_func(
             required_count,
         } => {
             // Instantiate if needed
-            let (inst_params, inst_ret, inst_typed_variadics, inst_rest, inst_required): (
-                Vec<(Option<String>, Type)>,
-                Type,
-                Vec<(String, Type)>,
-                Option<Box<(String, Type)>>,
-                usize,
-            ) = if func_ty.has_inference_vars() {
+            let (inst_params, inst_ret, inst_typed_variadics, inst_rest, inst_required): InstFuncSig =
+                if func_ty.has_inference_vars() {
                 // CALL-POLY: instantiate at current level
                 let inst_ty = instantiate_at_level(&func_ty, state, &span);
                 match inst_ty {
@@ -2801,7 +2802,7 @@ async fn infer_fn_push_cont(
         let resolved = match &ret_ann.node {
             Annotation::PropertyDict(entries)
                 if entries.iter().any(|e| {
-                    e.node.key.as_ref().map_or(false, |k| {
+                    e.node.key.as_ref().is_some_and(|k| {
                         matches!(&k.expr,
                             SurfaceExpression::StringLiteral { content: s, .. }
                                 if STANDARD_ANN_KEYS.contains(&s.as_str()))
@@ -3566,7 +3567,7 @@ pub(crate) fn type_contains_typevar(ty: &Type, name: &str) -> bool {
             row.fields.values().any(|t| type_contains_typevar(t, name))
                 || match &row.tail {
                     RowTail::Uniform { key: k, value: v } => {
-                        k.as_ref().map_or(false, |t| type_contains_typevar(t, name))
+                        k.as_ref().is_some_and(|t| type_contains_typevar(t, name))
                             || type_contains_typevar(v, name)
                     }
                     RowTail::Empty => false,
@@ -4278,10 +4279,8 @@ pub(crate) async fn run_typecheck_dict(
             if let Some(name) = key_name {
                 let saved_constraints = std::mem::take(&mut state.constraints);
 
-                // TypeAssert annotation resolution is async; skip here (type_assert_ty = None).
-                let type_assert_ty: Option<Type> = None;
-
                 // Infer the entry value using run_typecheck (CEK path, no Rust stack recursion).
+                // Note: TypeAssert annotation resolution is async; type_assert_ty = None for now.
                 // For nested Dict values, call run_typecheck_dict directly to capture schemes.
                 let (value_ty, nested_schemes_opt) =
                     if let SurfaceExpression::Dict(nested_entries) = &entry.node.value.expr {
@@ -4427,7 +4426,7 @@ pub(crate) async fn run_typecheck_dict(
                     Err(mut errs) => {
                         let error_ty = Type::error_with(errs.clone());
                         errors.append(&mut errs);
-                        let fallback_ty = type_assert_ty.unwrap_or(error_ty);
+                        let fallback_ty = error_ty;
                         field_types.insert(name.clone(), fallback_ty.clone());
                         state
                             .failed_bindings
@@ -4631,10 +4630,9 @@ pub(crate) async fn run_typecheck_dict(
                     if orig_name != next_name =>
                 {
                     let local_map = subst.type_map.borrow();
-                    let is_cycle = local_map.get(next_name.as_str()).map_or(
-                        false,
-                        |t| matches!(t, Type::TypeVar(n, _) if n == orig_name),
-                    );
+                    let is_cycle = local_map
+                        .get(next_name.as_str())
+                        .is_some_and(|t| matches!(t, Type::TypeVar(n, _) if n == orig_name));
                     drop(local_map);
                     if is_cycle {
                         Type::Unknown
