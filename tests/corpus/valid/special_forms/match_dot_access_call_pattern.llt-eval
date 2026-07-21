@@ -1,5 +1,5 @@
 [match r
     [Result.Ok v]: v
-    _: "error"]
+    ...: "error"]
 === out
-[match r [Result.Ok v] v _ "error"]
+[match r [Result.Ok v] v ... "error"]

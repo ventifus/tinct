@@ -688,7 +688,7 @@ found: [match [lookup config "timeout"]
 [match x
     n@[is: [> _ 0]]:   "positive"
     n@[is: [< _ 0]]:   "negative"
-    _:                  "zero"]
+    ...:                  "zero"]
 
 [match result
     [ok: v] | [success: v]   v

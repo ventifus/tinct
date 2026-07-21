@@ -1,9 +1,9 @@
-# S-844 T-964: DotAccess in Call-func position produces Pattern::Constructor with qualified tag.
-# [Result.Ok v] → Constructor { tag: "Result.Ok", binding: Some(Pin("v")) }
+# S-844 T-964: DotAccess in Call-func position produces a constructor pattern with qualified tag.
+# [Result.Ok v] → Call { func: Field(VarRef("Result"), "Ok"), args: [VarRef("v")] }
 # Parser accepts this syntax. Variant tags are qualified (Result.Ok, etc.) after S-850.
-# The _ arm fires here because the scrutinee is a String "x", not a Result.Ok variant.
+# The ... arm fires here because the scrutinee is a String "x", not a Result.Ok variant.
 [match "x"
     [case [let v] [Result.Ok v] v]
-    _:             "other"]
+    ...:           "other"]
 === out
 String("other")

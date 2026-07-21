@@ -2,7 +2,7 @@
 # Unannotated ...rest collects excess positionals as Dict{0: T0, 1: T1, ...}.
 # Typed buckets (...x@T) collect into Seq cons-lists; unannotated rest into Dict.
 # Empty variadic = Dict({}); non-empty = Dict({Int(0): val0, Int(1): val1, ...}).
-[f: [fn [let x ...rest] rest]
+[f: [fn [let _ ...rest] rest]
  result: [f 10 20 30]]
 === out
-Dict({"f": Function(x, rest), "result": Dict({Int(0): Int(20), Int(1): Int(30)})})
+Dict({"f": Function(_, rest), "result": Dict({Int(0): Int(20), Int(1): Int(30)})})

@@ -1,10 +1,11 @@
-# Multiple TypeAssert patterns in different match arms.
-# Demonstrates that TypeAssert patterns correctly discriminate between types.
-# Uses bare uppercase (TypeAssertPending) instead of [@Type x] with unbound x.
+# After S-944, Integer and String are plain VarRefs (Pattern::TypeAssertPending is deleted).
+# Integer resolves to TypeNode.Int; String resolves to TypeNode.String.
+# Pin comparisons all fail — primitive_eq(value, TypeNode.variant) = false for any runtime value.
+# All scrutinees fall to the wildcard arm → "other".
 [
-  test-int:    [match 42       Int: "int"     String: "string"  _: "other"]
-  test-string: [match "hello"  Int: "int"     String: "string"  _: "other"]
-  test-float:  [match 3.14     Int: "int"     String: "string"  _: "other"]
+  test-int:    [match 42       Integer: "int"     String: "string"  ...: "other"]
+  test-string: [match "hello"  Integer: "int"     String: "string"  ...: "other"]
+  test-float:  [match 3.14     Integer: "int"     String: "string"  ...: "other"]
 ]
 === out
-Dict({"test-int": String("int"), "test-string": String("string"), "test-float": String("other")})
+Dict({"test-int": String("other"), "test-string": String("other"), "test-float": String("other")})

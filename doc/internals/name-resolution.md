@@ -44,7 +44,7 @@ Three states:
 
 `Clone` resets to `None` (empty). This is intentional: a cloned `Arc<SurfaceNode>` has a different pointer identity and lives in a potentially different scope — it must be resolved fresh.
 
-`Resolution` is also the type used on `Pattern::Pin` nodes. The semantics are identical: the OnceLock holds the resolved coordinates of the pinned name, or `Some(None)` when the name was not in scope (which causes the pin to act as a wildcard at runtime).
+`Resolution` is also the type used on `VarRef` nodes that appear in match arm pattern position — these are pin patterns. The semantics are identical: the OnceLock holds the resolved coordinates of the pinned name, or `Some(None)` when the name was not in scope (which causes the arm to silently not match at runtime).
 
 ### `ResolutionTable` — map keyed by node identity
 
@@ -158,22 +158,19 @@ All injected scopes are exited together at the end. This mirrors the evaluator's
 
 The same logic applies at the document level: `walk_surface_document` tracks injected scopes, collects the new frames at the end (innermost last), and returns them as `new_frames`. These frames represent the document's contribution to the scope chain and are passed as `initial_frames` for the next document.
 
-### Match arms (Pattern-based)
+### Match arms
 
 ```
 [match x
-  [case [let n] SomePattern $n]]
+  Color.Red: "red"
+  ...:       "other"]
 ```
 
-`extract_pattern_bindings(pattern)` collects names bound by the pattern. Only variable-binding pattern forms contribute names; wildcard `_`, literals, `Pin`, and `TypeAssert` patterns bind nothing.
+For each non-CaseArm match arm, the resolver walks `arm.pattern` with `suppress_depth` incremented by 1. This means:
 
-For each arm:
-1. If the pattern binds names: `enter_scope(bound_names)`.
-2. Walk guard (if present) inside the scope.
-3. Walk all body expressions inside the scope.
-4. `exit_scope()` (if scope was opened).
-
-Wildcard arms open no scope — a VarRef in a wildcard arm body that references a wildcard-bound name has no entry in the resolution table.
+- All VarRefs in pattern position whose names are not found in scope produce `Some(None)` (OnceLock set to unresolvable) rather than emitting an "undefined variable" error. The eval dispatch in `match_pattern` treats `Some(None)` as "arm does not match" — the arm is silently skipped for this scrutinee.
+- VarRefs that ARE in scope produce `Some(Some((level, slot)))` as normal — these become pin patterns (equality check against the in-scope value).
+- No scope is created for the arm pattern itself. The arm body and guard see the same scope as the scrutinee.
 
 ### CaseArm `[case [let n m] pattern body]`
 
@@ -204,10 +201,9 @@ Positions that increment `suppress_depth`:
 | `LetDecl`/`PatternDecl` binding names (`[let x]`) | Name declarations |
 | Instance pattern arms (`[let a@String]`) | Type-matching context |
 | Instance method-name keys (in implementation) | Declaration position |
+| Non-CaseArm match arm patterns (`arm.pattern`) | Pattern VarRefs are pins or wildcards, not runtime lookups; unresolvable names produce `Some(None)` → arm silently does not match |
 
 Escaped dict keys (`$x:`) and annotation PropertyDict values (in constructor bodies) are intentionally **not** suppressed — they are runtime expressions and must resolve correctly.
-
-The wildcard `_` is also never added to `unresolved` even at `suppress_depth == 0`.
 
 ---
 
@@ -241,13 +237,9 @@ Variables inside a `Quote` node are AST data, not runtime references. The resolv
 
 Constructor names, field type expressions, and type parameters are type-level — walking them would produce false "undefined variable" errors. The resolver surgically walks **only** annotation PropertyDict values on constructors, because those are runtime closures stored via `builtin-make-annotated`.
 
-### Or-pattern branches
+### VarRef in pattern position (pin)
 
-All branches of an or-pattern must bind the same variable names in the same order. The resolver collects bindings only from the first branch; a `debug_assert` verifies other branches match in debug builds.
-
-### Pattern::Pin
-
-`Pattern::Pin(name, resolution)` carries its own `Resolution` OnceLock. The resolver writes the de Bruijn coordinates of `name` as found in the *outer* scope (the scope active when the match scrutinee is evaluated). `Some(None)` means the name is not in scope, causing the pin to act as a wildcard. This is distinct from `Pattern::Variable` (which does not exist — bare lowercase names in match arms are always `Pin` as of T-1154; named bindings require `[case [let n] ...]`).
+A `VarRef` node inside a match arm pattern (or inside a CaseArm's structural pattern) is a pin. The resolver writes the de Bruijn coordinates of the name as found in the scope active at the pattern site. `Some(None)` means the name is not in scope; at runtime the evaluator silently skips the arm (no-match). Named bindings in match arms always require `[case [let n] ...]` — a bare VarRef in pattern position is never a fresh binding.
 
 ---
 
@@ -268,10 +260,14 @@ The resolver processes documents sequentially: each document's new_frames accumu
 pub fn resolve_surface_document_inplace(
     doc: &SurfaceDocument,
     initial_frames: &[IndexMap<String, u32>],
-) -> (ResolutionTable, Vec<(String, Span)>, Vec<IndexMap<String, u32>>)
+) -> (ResolutionTable, Vec<(String, Span)>, Vec<(String, Span)>, Vec<IndexMap<String, u32>>)
 ```
 
-Resolves a single document. Also returns `errors` — `(name, span)` pairs for genuinely unresolved expression-position VarRefs. Used by `builtin-resolve` in the meta API for per-document incremental resolution.
+Resolves a single document. Also returns:
+- `errors` — `(name, span)` pairs for genuinely unresolved expression-position VarRefs.
+- `warnings` — `(message, span)` pairs for lost intermediate bindings and unused function parameters.
+
+Used by `builtin-resolve` in the meta API for per-document incremental resolution. The `builtin-resolve` function returns errors in `diagnostics` (preserving the existing error-only contract) and warnings in a separate `warnings` key.
 
 Both functions are purely functional with respect to the AST (no mutation visible to callers), but they do write to the inline `Resolution` OnceLocks on each VarRef node.
 

@@ -63,7 +63,7 @@
   map-children: [fn [let f t]
     [match t
       [SimpleType.Branch p]: [SimpleType.Branch inner: [f p.inner]]
-      _:                     t]]
+      ...:                   t]]
 
   # ── Leaf tests ──────────────────────────────────────────────────────────────
 

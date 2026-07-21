@@ -104,10 +104,7 @@ enum SurfaceDeclaration {
 The Surface AST is the parser's native output and the authoritative representation before lowering. Key characteristics:
 
 - **Arc-wrapped nodes:** `Arc<SurfaceNode>` enables shared ownership across multiple references without copying the AST.
-- **Side-table design:** Variable resolution (`ResolutionTable`) and type annotations (`TypeAnnotationTable`) are stored separately. This replaces the old `RefCell<Option<...>>` in-node mutation pattern. `TypeAnnotationTable` has two maps:
-  - `node_types: HashMap<NodeId, Type>` — keyed by `NodeId` (derived from `Arc` raw pointer), used for `SurfaceExpression::TypeAssert` annotation nodes resolved during type checking.
-  - `pattern_types: HashMap<Span, Type>` — keyed by the annotation's `Span`, populated by `record_pattern_elaborations` in `src/typecheck.rs` for `Pattern::TypeAssertPending` elaborations. `lower_pattern` in `src/lower.rs` consumes this map to convert `TypeAssertPending` → `TypeAssert` with resolved types.
-  - `drain_into()` drains both maps in a single call. This is the only transfer/drain method for external callers — `drain()` was deleted (T-1044) to prevent accidental loss of `pattern_types` data when only `node_types` was drained.
+- **Side-table design:** Variable resolution (`ResolutionTable`) and type annotations (`TypeAnnotationTable`) are stored separately. This replaces the old `RefCell<Option<...>>` in-node mutation pattern. `TypeAnnotationTable` is `HashMap<NodeId, Type>` — keyed by `NodeId` (derived from `Arc` raw pointer), used for `SurfaceExpression::TypeAssert` annotation nodes resolved during type checking. The `drain_into()` method transfers entries between tables.
 - **Pipe is preserved:** `SurfaceExpression::Pipe` remains in the Surface AST. The **lowering pass** (`src/lower.rs`) eliminates Pipe by rewriting it to `Call` before evaluation (see §Pipe Desugaring below).
 - **Expr/Decl separation:** Documents contain `SurfaceItem` entries, which are either expressions (`SurfaceItem::Expr`) or declarations (`SurfaceItem::Decl`). This separates top-level declarations (TypeAlias, ClassDecl, etc.) from expressions at the type level.
 - **ParseOutput returns SurfaceProgram:** `parse()` returns `ParseOutput { program: SurfaceProgram, ... }`. The `.program` field is the native Surface AST.
@@ -122,7 +119,8 @@ After the Surface AST is resolved and type-checked, the **lowering pass** (`src/
 
 - **Pipe eliminated:** `SurfaceExpression::Pipe` is rewritten to nested `Call` expressions.
 - **Resolution baked in:** Variable references are resolved to de Bruijn indices or environment lookups.
-- **Type assertions preserved with resolved types:** `TypeAssert` carries a `resolved_type: Type` from the `TypeAnnotationTable` set during type checking. For `[@Type expr]` patterns, `lower_pattern` converts `Pattern::TypeAssertPending` → `Pattern::TypeAssert` by looking up the annotation span in `TypeAnnotationTable.pattern_types`. The evaluator checks the resolved type at force time via `value_matches_type`. `TypeAssertPending` remains as a fallback path for `--no-typecheck` mode and macro-synthesized patterns.
+- **Type assertions preserved with resolved types:** `TypeAssert` carries a `resolved_type: Type` from the `TypeAnnotationTable` set during type checking. The evaluator checks the resolved type at force time via `value_matches_type`. When typecheck is skipped, the lowerer falls back to `Type::Unknown` (accept-all).
+- **Match arm patterns pass through as `Arc<SurfaceNode>`:** `SurfaceMatchArm.pattern` is stored as an `Arc<SurfaceNode>` and passed through to the evaluator unchanged — no lowering step converts match arm patterns into a separate pattern representation.
 
 ```rust
 /// Source location
@@ -236,7 +234,7 @@ pub struct CoreParam {
 
 /// A match arm in a CoreExpr::Match.
 pub struct CoreMatchArm {
-    pub pattern: Spanned<Pattern>,
+    pub pattern: Arc<SurfaceNode>,
     pub guard: Option<Arc<Spanned<CoreExpr>>>,
     pub body: Arc<Spanned<CoreExpr>>,
 }
@@ -290,7 +288,7 @@ enum Annotation {
 
 - `VarRef { name, escaped: false, .. }` — bare identifier binding (e.g., `x`)
 - `Annotated { name, annotation }` — typed binding (e.g., `x@Integer`) or structural test (e.g., `v: Ok`)
-- `Placeholder` (represented as `_`) — wildcard match, introduces no binding
+- `Placeholder` (represented as `...`) — wildcard match, introduces no binding; `_` in a LetDecl is a bare `VarRef`, not a Placeholder
 - Nested `LetDecl` — multi-level pattern for constructor payloads (e.g., `[let [let inner]]`)
 
 LetDecl appears in:
@@ -472,7 +470,7 @@ The evaluator never sees a `DotAccess` node — only `Call` nodes from the lower
 
 ### Conventions
 
-- **`Value::Variant` tag on Expr nodes** — `Variant("Call", {fn: ..., args: ...})`, `Variant("VarRef", {name: "x", span: ...})`. Tags are PascalCase. Structural nodes (SurfaceEntry, Annotation, Pattern, SurfaceDocument, SurfaceProgram) remain plain dicts with a `type:` string discriminator
+- **`Value::Variant` tag on Expr nodes** — `Variant("Call", {fn: ..., args: ...})`, `Variant("VarRef", {name: "x", span: ...})`. Tags are PascalCase. Structural nodes (SurfaceEntry, Annotation, SurfaceDocument, SurfaceProgram) remain plain dicts with a `type:` string discriminator
 - **`[]` for absent optionals** — never omit the key (except comment fields, which are absent when empty)
 - **`span:` on every node** — `[start: [line: 1 col: 5 offset: 4] end: [line: 1 col: 12 offset: 11]]`. "Every node" means every `Spanned<T>` wrapper, not every sub-element; `DotKey` has no independent span
 - **`schema-version: 1`** on the root `File` node — bump on breaking changes

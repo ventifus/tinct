@@ -4,6 +4,6 @@
 [Result: [type [let a] Ok: [value: a] Error: [msg: Str]]]
 [result: [match [Ok value: 1]
   [case [Ok value: 1] "hit"]
-  _: "miss"]]
+  ...: "miss"]]
 === out
 Dict({"result": String("miss")})

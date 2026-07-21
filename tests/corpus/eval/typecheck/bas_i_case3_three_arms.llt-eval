@@ -6,7 +6,7 @@
   [match x
     Int:  "integer"
     Str:  "string"
-    _:    "other"]]
+    ...:  "other"]]
  r1: [describe 42]
  r2: [describe "hello"]
  r3: [describe True]]

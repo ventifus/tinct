@@ -13,9 +13,10 @@
 //! See doc/whatif/arena-patterns.md §Variable Resolution Pass Design for the full specification.
 
 use crate::ast::{
-    node_id, Pattern, ResolutionTable, Spanned, SurfaceDeclaration, SurfaceDocument, SurfaceEntry,
+    node_id, ResolutionTable, Spanned, SurfaceDeclaration, SurfaceDocument, SurfaceEntry,
     SurfaceExpression, SurfaceItem, SurfaceNode, SurfaceProgram,
 };
+use crate::error::{DiagnosticLevel, TypeDiagnostic};
 use std::sync::Arc;
 
 // ============================================================================
@@ -42,21 +43,48 @@ enum ScopeKind {
     Other,
 }
 
+/// Tracks one intermediate dict body inside a `SurfaceExpression::Sequential`
+/// (or one function's parameter list) for lost-binding detection.
+struct IntermediateBodyInfo {
+    /// Index of the body that introduced these bindings (0-based within the Sequential).
+    /// Only used when `is_param = false`: a binding is consumed only if referenced
+    /// from a body with index strictly greater than `body_index`.
+    body_index: usize,
+    /// Absolute forward index of the scope frame in `self.scopes` that holds these
+    /// bindings.  Computed as `self.scopes.len() - 1` immediately after `enter_scope`.
+    /// Invariant: this index never changes once recorded — scopes pushed later go on top.
+    scope_depth: usize,
+    /// `(name, definition_span, consumed)` for each static binding introduced by this body.
+    bindings: Vec<(String, crate::ast::Span, bool)>,
+    /// True when this info tracks function parameters rather than intermediate dict bindings.
+    /// For params, any reference from within the function body counts as consumption,
+    /// regardless of `current_body_index` (since params are introduced "before" all bodies).
+    is_param: bool,
+}
+
 struct SurfaceResolver {
     /// Each scope frame is an (IndexMap<String, u32>, ScopeKind) pair.
     /// The IndexMap maps name → actual slot index; ScopeKind marks whether this is
     /// a letrec dict scope (for leading-dot parent-scope resolution).
     scopes: Vec<(indexmap::IndexMap<String, u32>, ScopeKind)>,
     table: ResolutionTable,
-    /// Unresolved VarRefs in expression position: (name, span).
-    /// Populated only when suppress_depth == 0.  Positions that are NOT runtime
-    /// variable references (annotations, static dict keys, LetDecl binding names,
-    /// instance/class method-name keys, instance patterns) increment suppress_depth
-    /// so they never contribute false positives.
-    unresolved: Vec<(String, crate::ast::Span)>,
+    /// Diagnostics accumulated during the walk (errors and warnings unified).
+    /// - `kind = "resolve-error"`, `level = Err`: undefined variable in expression position.
+    ///   Populated only when suppress_depth == 0 (annotation, static key, declaration, and
+    ///   method-name positions are suppressed — they are not runtime variable references).
+    /// - `kind = "lost-binding"`, `level = Warn`: lost intermediate binding or unused param.
+    diagnostics: Vec<TypeDiagnostic>,
     /// > 0 when inside a context where unresolved VarRefs are not errors
     /// (annotation, static key, declaration position, etc.).
     suppress_depth: usize,
+    /// Stack of in-progress intermediate bodies for lost-binding detection.
+    /// Each entry tracks one intermediate body dict's bindings and whether each
+    /// binding was consumed (referenced) from any later body.
+    intermediate_bodies: Vec<IntermediateBodyInfo>,
+    /// Index of the body currently being walked within the innermost Sequential.
+    /// `usize::MAX` means "final expression" — references during the final expression
+    /// count as consumption for any enclosing intermediate body.
+    current_body_index: usize,
 }
 
 impl SurfaceResolver {
@@ -64,8 +92,10 @@ impl SurfaceResolver {
         Self {
             scopes: Vec::new(),
             table: ResolutionTable::new(),
-            unresolved: Vec::new(),
+            diagnostics: Vec::new(),
             suppress_depth: 0,
+            intermediate_bodies: Vec::new(),
+            current_body_index: usize::MAX,
         }
     }
 
@@ -90,10 +120,36 @@ impl SurfaceResolver {
             .expect("exit_scope called with empty stack");
     }
 
-    fn resolve_name(&self, name: &str) -> Option<(u32, u32)> {
+    fn resolve_name(&mut self, name: &str) -> Option<(u32, u32)> {
         for (offset, (scope, _)) in self.scopes.iter().rev().enumerate() {
             if let Some(&slot) = scope.get(name) {
                 let level = u32::try_from(offset).expect("scope depth overflow");
+                // Lost-binding detection: if this name resolves to an intermediate body's
+                // scope AND we are currently walking a later body (or the final expression),
+                // mark that binding as consumed.
+                //
+                // `match_depth` is the absolute forward index of the matched scope frame
+                // in `self.scopes`.  It equals `self.scopes.len() - 1 - offset` and is
+                // invariant even as more scopes are pushed on top later.
+                let match_depth = self.scopes.len().saturating_sub(1 + offset);
+                for info in &mut self.intermediate_bodies {
+                    if info.scope_depth == match_depth {
+                        // The match is in this intermediate body's scope.
+                        // For parameter scopes (is_param=true): any reference from within
+                        // the function body counts, so mark consumed unconditionally.
+                        // For intermediate dict scopes (is_param=false): mark consumed only
+                        // when the current walk position is AFTER the introducing body.
+                        let should_consume =
+                            info.is_param || self.current_body_index > info.body_index;
+                        if should_consume {
+                            for (bname, _, consumed) in &mut info.bindings {
+                                if bname == name {
+                                    *consumed = true;
+                                }
+                            }
+                        }
+                    }
+                }
                 return Some((level, slot));
             }
         }
@@ -111,7 +167,7 @@ impl SurfaceResolver {
     /// - `[dict_scope, fn_params]`: skip dict_scope → search fn_params ✓
     /// - `[fn_scope, dict_scope, outer]`: skip fn_scope (Other), skip dict_scope (Dict) → search outer ✓
     /// - `[inner_dict, outer_dict, fn_params]`: skip inner_dict (Dict) → search outer_dict ✓
-    fn resolve_name_parent(&self, name: &str) -> Option<(u32, u32)> {
+    fn resolve_name_parent(&mut self, name: &str) -> Option<(u32, u32)> {
         let mut passed_dict = false;
         for (offset, (scope, kind)) in self.scopes.iter().rev().enumerate() {
             if !passed_dict {
@@ -122,6 +178,21 @@ impl SurfaceResolver {
             }
             if let Some(&slot) = scope.get(name) {
                 let level = u32::try_from(offset).expect("scope depth overflow");
+                // Also track consumption for leading-dot resolved names.
+                let match_depth = self.scopes.len().saturating_sub(1 + offset);
+                for info in &mut self.intermediate_bodies {
+                    if info.scope_depth == match_depth {
+                        let should_consume =
+                            info.is_param || self.current_body_index > info.body_index;
+                        if should_consume {
+                            for (bname, _, consumed) in &mut info.bindings {
+                                if bname == name {
+                                    *consumed = true;
+                                }
+                            }
+                        }
+                    }
+                }
                 return Some((level, slot));
             }
         }
@@ -140,15 +211,21 @@ impl SurfaceResolver {
                 if let Some(coords) = self.resolve_name(name) {
                     resolution.set(Some(coords));
                     self.table.insert(node_id(arc), coords);
-                } else if self.suppress_depth == 0 && name != "_" {
-                    // Genuinely unresolved expression VarRef. Record for builtin-resolve
-                    // error reporting. suppress_depth > 0 when in annotation, static
-                    // dict-key, LetDecl binding, or declaration method-name position —
-                    // none of those are runtime variable references.
-                    self.unresolved.push((name.clone(), arc.span.clone()));
+                } else {
+                    // Name not in scope. Always set Some(None) so consumers can
+                    // distinguish "not found" from "resolver never ran" (None = bug).
+                    resolution.set(None);
+                    if self.suppress_depth == 0 {
+                        // Genuinely unresolved expression VarRef. suppress_depth > 0 when
+                        // in annotation, static dict-key, LetDecl binding, or declaration
+                        // method-name position — none of those are runtime variable references.
+                        self.diagnostics.push(TypeDiagnostic::error(
+                            "resolve-error",
+                            format!("undefined variable: {}", name),
+                            arc.span.clone(),
+                        ));
+                    }
                 }
-                // OnceLock left unset (None): the lowerer treats None as
-                // "undefined variable" and emits LowerDiagnostic::Error.
             }
 
             SurfaceExpression::Dict(entries) => {
@@ -173,6 +250,24 @@ impl SurfaceResolver {
                 }
 
                 self.enter_scope(&static_keys, ScopeKind::Dict);
+                // Walk key annotations INSIDE the letrec scope so that annotation
+                // values can reference the dict's own entries (forward letrec refs).
+                // E.g., `Int@[as-type: [fn [let t] t]  supertype: TypeNode.Bytes]: []`
+                // — the annotation lambda `[fn [let t] t]` needs `t` resolved, and
+                // `TypeNode.Bytes` needs `TypeNode` which is in this dict's scope.
+                for entry in entries {
+                    if let Some(key) = &entry.node.key {
+                        if let SurfaceExpression::VarRef {
+                            annotation: Some(ann),
+                            ..
+                        } = &key.expr
+                        {
+                            self.suppress_depth += 1;
+                            self.walk_surface_annotation(ann);
+                            self.suppress_depth -= 1;
+                        }
+                    }
+                }
                 for entry in entries {
                     self.walk_surface_node(&entry.node.value);
                 }
@@ -193,17 +288,103 @@ impl SurfaceResolver {
                 }
                 let param_names: Vec<String> = params.iter().map(|p| p.node.name.clone()).collect();
                 self.enter_scope(&param_names, ScopeKind::Other);
+
+                // Lost-binding detection: track each parameter as a binding that must be
+                // consumed somewhere in the function body.  The scope_depth is recorded
+                // AFTER enter_scope so it is the absolute forward index of the param scope.
+                let param_scope_depth = self.scopes.len() - 1;
+                let param_bindings: Vec<(String, crate::ast::Span, bool)> = params
+                    .iter()
+                    .map(|p| {
+                        // Use the SurfaceNode span of the param node (the [let x] binding).
+                        // `p` is a `Spanned<SurfaceParam>`; p.span is the param span.
+                        (p.node.name.clone(), p.span.clone(), false)
+                    })
+                    .collect();
+                let prev_body_index = self.current_body_index;
+                self.current_body_index = usize::MAX; // body is "after" all param bindings
+                let param_info_idx = self.intermediate_bodies.len();
+                self.intermediate_bodies.push(IntermediateBodyInfo {
+                    body_index: 0,
+                    scope_depth: param_scope_depth,
+                    bindings: param_bindings,
+                    is_param: true,
+                });
+
                 self.walk_surface_node(body);
+
+                // Pop the param entry we pushed and emit warnings for unused params.
+                // The pop is balanced: walk_surface_node(body) restores all nested
+                // pushes/pops before returning.
+                debug_assert_eq!(
+                    self.intermediate_bodies.len(),
+                    param_info_idx + 1,
+                    "intermediate_bodies stack unbalanced after fn body walk"
+                );
+                let info = self
+                    .intermediate_bodies
+                    .pop()
+                    .expect("param info must still be on stack");
+                for (name, span, consumed) in info.bindings {
+                    if !consumed {
+                        self.diagnostics.push(TypeDiagnostic {
+                            level: DiagnosticLevel::Warn,
+                            kind: "lost-binding",
+                            message: format!(
+                                "parameter '{}' is never referenced in the function body",
+                                name
+                            ),
+                            spans: vec![(span, String::new())],
+                            notes: vec![],
+                        });
+                    }
+                }
+                self.current_body_index = prev_body_index;
+
                 self.exit_scope();
             }
 
             SurfaceExpression::Sequential(exprs) => {
+                let prev_body_index = self.current_body_index;
+                let intermediate_bodies_base = self.intermediate_bodies.len();
                 let mut injected = 0usize;
                 for (i, e) in exprs.iter().enumerate() {
                     let is_last = i == exprs.len() - 1;
+                    // Set current_body_index so resolve_name knows which body we are in.
+                    self.current_body_index = if is_last { usize::MAX } else { i };
                     self.walk_surface_node(e);
                     if !is_last {
-                        if let Some(keys) = surface_node_static_keys(e) {
+                        if let SurfaceExpression::Dict(entries) = &e.expr {
+                            // Use the full surface_dict_static_keys (including ClassDecl method
+                            // injection) for scope entry — same as the original code — so that
+                            // the scope frame matches what the evaluator sees.
+                            let all_keys = surface_dict_static_keys(entries);
+                            if !all_keys.is_empty() {
+                                self.enter_scope(&all_keys, ScopeKind::Dict);
+                                // Record scope_depth AFTER enter_scope so it is the absolute
+                                // forward index of this scope frame in self.scopes.
+                                let scope_depth = self.scopes.len() - 1;
+                                // For lost-binding tracking, only track simple user-written keys
+                                // (not injected ClassDecl method names or InstanceDecl names).
+                                let binding_list: Vec<(String, crate::ast::Span, bool)> =
+                                    surface_dict_keys_with_spans(entries)
+                                        .into_iter()
+                                        .map(|(name, span)| (name, span, false))
+                                        .collect();
+                                if !binding_list.is_empty() {
+                                    self.intermediate_bodies.push(IntermediateBodyInfo {
+                                        body_index: i,
+                                        scope_depth,
+                                        bindings: binding_list,
+                                        is_param: false,
+                                    });
+                                }
+                                injected += 1;
+                            }
+                        } else if let Some(keys) = surface_node_static_keys(e) {
+                            // Non-dict node that nonetheless produces static keys
+                            // (currently none, but keep the original fallback so the
+                            // scope injection path stays correct for future cases).
                             if !keys.is_empty() {
                                 self.enter_scope(&keys, ScopeKind::Dict);
                                 injected += 1;
@@ -211,6 +392,30 @@ impl SurfaceResolver {
                         }
                     }
                 }
+                // Emit warnings for any intermediate body bindings that were never consumed.
+                // Drain from intermediate_bodies_base upward (innermost first, but order
+                // doesn't matter for warning emission).
+                let drained: Vec<IntermediateBodyInfo> = self
+                    .intermediate_bodies
+                    .drain(intermediate_bodies_base..)
+                    .collect();
+                for info in drained {
+                    for (name, span, consumed) in info.bindings {
+                        if !consumed {
+                            self.diagnostics.push(TypeDiagnostic {
+                                level: DiagnosticLevel::Warn,
+                                kind: "lost-binding",
+                                message: format!(
+                                    "intermediate binding '{}' is defined but never referenced from a later body — its value is lost in tinct's lazy evaluation",
+                                    name
+                                ),
+                                spans: vec![(span, String::new())],
+                                notes: vec![],
+                            });
+                        }
+                    }
+                }
+                self.current_body_index = prev_body_index;
                 for _ in 0..injected {
                     self.exit_scope();
                 }
@@ -288,29 +493,20 @@ impl SurfaceResolver {
             SurfaceExpression::Match { scrutinee, arms } => {
                 self.walk_surface_node(scrutinee);
                 for arm in arms {
-                    // Extract pattern-bound variables
-                    let bound_names = extract_pattern_bindings(&arm.pattern);
-
-                    // Only push a scope when the pattern actually binds variables.
-                    // Wildcard (`_`), literals, TypeTag, and Pin patterns bind nothing;
-                    // allocating an empty IndexMap and pushing/popping it is pure overhead.
-                    let has_bindings = !bound_names.is_empty();
-                    if has_bindings {
-                        self.enter_scope(&bound_names, ScopeKind::Other);
-                    }
-
-                    // Walk guard (if present) inside the pattern scope
+                    // Walk the pattern as a SurfaceNode with suppress_depth incremented.
+                    // This prevents undefined-variable errors for VarRefs in pattern position —
+                    // unresolved VarRefs get Some(None), which eval treats as "arm does not match".
+                    // CaseArm patterns are handled separately below (they have their own scope).
+                    self.suppress_depth += 1;
+                    self.walk_surface_node(&arm.pattern);
+                    self.suppress_depth -= 1;
+                    // Match arm patterns introduce NO new bindings to arm scope.
+                    // Only [case [let names] ...] form introduces bindings.
                     if let Some(guard) = &arm.guard {
                         self.walk_surface_node(guard);
                     }
-
-                    // Walk all body expressions inside the pattern scope
                     for body_expr in &arm.body {
                         self.walk_surface_node(body_expr);
-                    }
-
-                    if has_bindings {
-                        self.exit_scope();
                     }
                 }
             }
@@ -342,7 +538,14 @@ impl SurfaceResolver {
                         .iter()
                         .filter_map(|b| {
                             if let SurfaceExpression::VarRef { name, .. } = &b.expr {
-                                Some(name.clone())
+                                // `_` is a wildcard, not a binding — exclude it so the pattern
+                                // position VarRef for `_` remains unresolved (Some(None)), which
+                                // eval treats as wildcard rather than a pin.
+                                if name == "_" {
+                                    None
+                                } else {
+                                    Some(name.clone())
+                                }
                             } else {
                                 None
                             }
@@ -404,9 +607,21 @@ impl SurfaceResolver {
     fn walk_type_alias_body(&mut self, body: &Arc<SurfaceNode>) {
         match &body.expr {
             SurfaceExpression::Dict(entries) => {
-                // Multi-constructor union: each positional entry is one constructor.
+                // Multi-constructor union. Each entry is one constructor:
+                //   - Named constructor: `Constructor@[annotation]: [fields]`
+                //     The KEY holds the constructor name and annotation; the VALUE is
+                //     the field type dict (type-level, not walked at runtime).
+                //   - Positional (unit) constructor: `Constructor@[annotation]`
+                //     (no key) — the VALUE is the constructor node itself.
+                // Walk only the node that carries the constructor name and annotation.
                 for entry in entries {
-                    self.walk_ctor_node(&entry.node.value);
+                    if let Some(key) = &entry.node.key {
+                        // Named constructor: annotation is on the key.
+                        self.walk_ctor_node(key);
+                    } else {
+                        // Positional constructor: annotation is on the value.
+                        self.walk_ctor_node(&entry.node.value);
+                    }
                 }
             }
             _ => {
@@ -577,8 +792,8 @@ impl SurfaceResolver {
         self.table
     }
 
-    fn finish_with_errors(self) -> (ResolutionTable, Vec<(String, crate::ast::Span)>) {
-        (self.table, self.unresolved)
+    fn finish_with_errors(self) -> (ResolutionTable, Vec<TypeDiagnostic>) {
+        (self.table, self.diagnostics)
     }
 }
 
@@ -595,18 +810,21 @@ impl SurfaceResolver {
 ///
 /// Accepts `initial_frames` from prior resolver runs as input to establish outer scopes.
 /// Names not found in the scope stack have their OnceLock left unset (None) and are
-/// returned in the errors vec as `(name, span)` pairs. Only expression-position VarRefs
-/// are reported — annotation type names, static dict keys, LetDecl binding names, and
-/// class/instance method-name keys are suppressed (they are not runtime variable references).
+/// returned as `TypeDiagnostic` entries with `kind = "resolve-error"`. Only expression-position
+/// VarRefs are reported — annotation type names, static dict keys, LetDecl binding names,
+/// and class/instance method-name keys are suppressed (not runtime variable references).
 ///
-/// Returns `(ResolutionTable, errors, new_frames)` where `new_frames` are the scope frames
-/// ADDED by this document (not including `initial_frames`).
+/// Returns `(ResolutionTable, diagnostics, new_frames)` where:
+/// - `diagnostics`: unified bag of resolve diagnostics (errors and warnings).
+///   - `kind = "resolve-error"`, `level = Err`: undefined-variable VarRefs in expression position.
+///   - `kind = "lost-binding"`, `level = Warn`: lost intermediate bindings and unused parameters.
+/// - `new_frames`: scope frames ADDED by this document (not including `initial_frames`).
 pub fn resolve_surface_document_inplace(
     doc: &crate::ast::SurfaceDocument,
     initial_frames: &[indexmap::IndexMap<String, u32>],
 ) -> (
     ResolutionTable,
-    Vec<(String, crate::ast::Span)>,
+    Vec<TypeDiagnostic>,
     Vec<indexmap::IndexMap<String, u32>>,
 ) {
     let mut resolver = SurfaceResolver::new();
@@ -623,8 +841,8 @@ pub fn resolve_surface_document_inplace(
         resolver.exit_scope();
     }
 
-    let (table, errors) = resolver.finish_with_errors();
-    (table, errors, new_frames)
+    let (table, diagnostics) = resolver.finish_with_errors();
+    (table, diagnostics, new_frames)
 }
 
 /// Resolve all VarRef nodes in a SurfaceProgram and return a ResolutionTable.
@@ -791,99 +1009,50 @@ fn surface_node_static_keys(node: &Arc<SurfaceNode>) -> Option<Vec<String>> {
     }
 }
 
-/// Extract all variable names bound by a pattern.
-/// This is used to create scope bindings for match arm bodies.
+/// Extract static string-keyed names WITH their definition spans from a Dict node's entries.
 ///
-/// Examples:
-/// - `_` (Wildcard) → []
-/// - `x` (Variable) → ["x"]
-/// - `[Some v]` (Constructor) → ["v"]
-/// - `[Dict {x, y: z}]` → ["x", "z"]
-/// - `[seq h t]` → ["h", "t"]
-/// - `x | y` (Or) → ["x", "y"] (both branches must bind same vars)
-fn extract_pattern_bindings(pattern: &Spanned<Pattern>) -> Vec<String> {
-    let mut bindings = Vec::new();
-    collect_pattern_bindings(&pattern.node, &mut bindings);
-    bindings
-}
-
-/// Recursively collect all variable bindings from a pattern.
-fn collect_pattern_bindings(pattern: &Pattern, out: &mut Vec<String>) {
-    match pattern {
-        Pattern::Wildcard => {
-            // Wildcard matches anything but binds no variables
+/// Returns only the simple (non-ClassDecl, non-InstanceDecl) keyed entries that produce
+/// direct letrec scope bindings — the same set that `surface_dict_static_keys` emits for
+/// non-class entries.  Class method injections and instance method injections are excluded
+/// because their slots are implementation details, not user-written bindings.
+fn surface_dict_keys_with_spans(
+    entries: &[Spanned<SurfaceEntry>],
+) -> Vec<(String, crate::ast::Span)> {
+    let mut result = Vec::new();
+    for entry in entries {
+        let key_node = match &entry.node.key {
+            Some(k) => k,
+            None => continue,
+        };
+        // Skip ClassDecl and InstanceDecl entries — their method injections are
+        // implementation details, not plain user bindings.
+        let is_special_decl = matches!(
+            &entry.node.value.expr,
+            SurfaceExpression::Decl(d)
+                if matches!(
+                    d.as_ref(),
+                    crate::ast::SurfaceDeclaration::ClassDecl { .. }
+                    | crate::ast::SurfaceDeclaration::InstanceDecl { .. }
+                )
+        );
+        if is_special_decl {
+            continue;
         }
-        Pattern::Pin(..) => {
-            // Pin patterns (bare names and $name) match against scope values, don't bind
-        }
-        Pattern::Literal(_) => {
-            // Literal patterns bind no variables
-        }
-        Pattern::Dict { fields, .. } => {
-            // Dict pattern: each field has a key and an inner pattern. The
-            // bound name comes from the inner pattern (typically Variable(name)),
-            // not directly from the key string. `{x}` desugars to key="x" with
-            // inner pattern Variable("x"); `{x: y}` has key="x" with inner
-            // pattern Variable("y"). We recurse into each field's inner pattern.
-            for (_key, field_pattern) in fields {
-                collect_pattern_bindings(&field_pattern.node, out);
+        match &key_node.expr {
+            SurfaceExpression::StringLiteral { content, .. } => {
+                result.push((content.clone(), key_node.span.clone()));
             }
-        }
-        Pattern::Constructor { binding, .. } => {
-            // Constructor pattern: optional payload binding
-            // `[Some v]` binds `v`, `None` binds nothing
-            if let Some(payload_pattern) = binding {
-                collect_pattern_bindings(&payload_pattern.node, out);
+            SurfaceExpression::VarRef {
+                name,
+                escaped: false,
+                ..
+            } => {
+                result.push((name.clone(), key_node.span.clone()));
             }
+            _ => {}
         }
-        Pattern::Or(branches) => {
-            // Or-pattern invariant: every branch must bind the SAME variable names
-            // in the SAME ORDER. Slot indices are assigned from the first branch;
-            // the evaluator uses these same slot indices when binding any branch.
-            // A pattern like `(x, y) | (y, x)` would be rejected by the type-checker
-            // as a name-order mismatch, but we assert the invariant here in debug
-            // mode to catch bugs early (e.g., from desugar or macro expansion).
-            //
-            // Invariant enforcement: the semantic validator / type-checker is the
-            // primary enforcer. This debug_assert is a belt-and-suspenders check.
-            if let Some(first_branch) = branches.first() {
-                collect_pattern_bindings(&first_branch.node, out);
-
-                #[cfg(debug_assertions)]
-                {
-                    let first_names: Vec<String> = {
-                        let mut v = Vec::new();
-                        collect_pattern_bindings(&first_branch.node, &mut v);
-                        v
-                    };
-                    for other_branch in branches.iter().skip(1) {
-                        let mut other_names = Vec::new();
-                        collect_pattern_bindings(&other_branch.node, &mut other_names);
-                        debug_assert_eq!(
-                            first_names, other_names,
-                            "Or-pattern branches must bind the same variable names in the same \
-                             order. First branch binds {:?} but another branch binds {:?}. \
-                             This is a resolver invariant violation — check desugaring or \
-                             pattern validation.",
-                            first_names, other_names,
-                        );
-                    }
-                }
-            }
-        }
-        // TypeAssertPending/TypeAssert/Predicate patterns bind no variables directly
-        Pattern::TypeAssertPending { inner, .. } => {
-            if let Some(inner_pat) = inner {
-                collect_pattern_bindings(&inner_pat.node, out);
-            }
-        }
-        Pattern::TypeAssert { inner, .. } => {
-            if let Some(inner_pat) = inner {
-                collect_pattern_bindings(&inner_pat.node, out);
-            }
-        }
-        Pattern::Predicate { .. } => {}
     }
+    result
 }
 
 #[cfg(test)]
@@ -992,6 +1161,7 @@ mod tests {
             SurfaceExpression::Match { scrutinee, arms } => {
                 collect_varrefs_in_node(scrutinee, name, out);
                 for arm in arms {
+                    collect_varrefs_in_node(&arm.pattern, name, out);
                     if let Some(guard) = &arm.guard {
                         collect_varrefs_in_node(guard, name, out);
                     }
@@ -1154,7 +1324,7 @@ mod tests {
     #[test]
     fn match_dict_pattern_bindings() {
         // Match with two type arms; both arm bodies reference outer $x.
-        let src = "[x: 1  result: [match $x Int: [+ $x 1] _: 0]]";
+        let src = "[x: 1  result: [match $x Int: [+ $x 1] ...: 0]]";
         let (program, table) = parse_and_resolve(src);
 
         // Check $x resolves (should appear at least twice: match scrutinee + Int arm body)
@@ -1178,7 +1348,7 @@ mod tests {
     fn match_wildcard_pattern_no_bindings() {
         // `$x` in the wildcard arm body refers to nothing bound by `_`.
         // The resolver must not produce a table entry for this VarRef.
-        let (program, table) = parse_and_resolve("[match val _: $x]");
+        let (program, table) = parse_and_resolve("[match val ...: $x]");
         let refs = find_varref_nodes(&program, "x");
         // There should be at least one VarRef for $x (in the arm body)
         assert!(

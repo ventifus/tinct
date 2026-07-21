@@ -1,6 +1,9 @@
-[match [match 42 Int: "int" _: "other"]
+# After S-944, Integer is a plain VarRef (Pattern::TypeAssertPending is deleted).
+# Integer resolves to TypeNode.Int; primitive_eq(42, TypeNode.Int) = false → wildcard fires → "other".
+# Outer match: "other" matches "other": arm → "matched-other".
+[match [match 42 Integer: "int" ...: "other"]
     "int":    "matched-int"
     "other":  "matched-other"
-    _:        "unknown"]
+    ...:      "unknown"]
 === out
-String("matched-int")
+String("matched-other")

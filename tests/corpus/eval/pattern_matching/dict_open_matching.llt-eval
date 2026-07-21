@@ -1,6 +1,6 @@
 # Open matching: extra keys allowed
 [match [ok: 42  extra: "data"]
   [case [let v] [ok: v] v]
-  _:            0]
+  ...:          0]
 === out
 Int(42)

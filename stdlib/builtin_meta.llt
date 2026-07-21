@@ -21,9 +21,11 @@
   builtin-validate:          [fn@Program    [let prog@Any ctx@TypeContext] ...]
 
   # ── Reflection and introspection ───────────────────────────────────────────
-  # tag-of: return the variant tag string (e.g. "Boolean.True") or type name.
+  # tag-of: return the qualified constructor name (e.g. "Color.Red", "Boolean.True").
   builtin-tag-of:            [fn@String  [let x@Any] ...]
-  # type-of: return a string describing the runtime value type ("Int", "Dict", etc.).
+  # variant?: return 1 if value is a nominal variant (Value::Variant), 0 otherwise.
+  builtin-variant?:          [fn@Integer [let x@Any] ...]
+  # type-of: return the tinct-level type name — the tycon for variants, kind for primitives.
   builtin-type-of:           [fn@String  [let x@Any] ...]
   # annotation-of: return the PropertyDict annotation stored on a value (or []).
   builtin-annotation-of:     [fn@Dict    [let x@Any] ...]

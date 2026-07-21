@@ -18,10 +18,8 @@ use crate::ast::{
     SurfaceDeclaration, SurfaceDocument, SurfaceEntry, SurfaceExpression, SurfaceItem,
     SurfaceMatchArm, SurfaceNamedArg, SurfaceNode, SurfaceParam, SurfaceProgram,
 };
+use crate::error::TypeDiagnostic;
 use crate::lexer::{self, Token};
-
-/// Type alias for pattern with optional guard (used in match arms)
-type PatternWithGuard = (Spanned<Pattern>, Option<Arc<SurfaceNode>>);
 
 /// Parser-local shorthand: create an `Arc<SurfaceNode>` with fresh inline annotations.
 /// Equivalent to `Arc::new(SurfaceNode::new(expr, span))`.
@@ -30,11 +28,16 @@ fn mk(expr: SurfaceExpression, span: Span) -> Arc<SurfaceNode> {
     Arc::new(SurfaceNode::new(expr, span))
 }
 
-/// Error returned when parsing fails, including message and optional source location.
+/// Parser-internal error type: message and optional source location.
+///
+/// Private to this module. At public API boundaries (parse(), parse_surface_expression(),
+/// format_parse_error(), ParseOutput.diagnostics) this is converted to `TypeDiagnostic`
+/// via the `From<ParseError>` impl (which enables `?` propagation) or by explicit
+/// `TypeDiagnostic::error(...)` calls with a context note.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ParseError {
-    pub message: String,
-    pub span: Option<Span>,
+struct ParseError {
+    message: String,
+    span: Option<Span>,
 }
 
 impl std::fmt::Display for ParseError {
@@ -52,6 +55,17 @@ impl std::fmt::Display for ParseError {
 }
 
 impl std::error::Error for ParseError {}
+
+/// `From<ParseError> for TypeDiagnostic` — enables `?` and `return Err(e)` within `parse()`.
+///
+/// When the error has no span, uses a Rust-source span via `rust_span!()` as a fallback.
+/// This impl is private to the parser module (ParseError is a private type).
+impl From<ParseError> for TypeDiagnostic {
+    fn from(err: ParseError) -> Self {
+        let span = err.span.unwrap_or_else(|| crate::rust_span!());
+        TypeDiagnostic::error("parse-error", err.message, span)
+    }
+}
 
 /// Maximum nesting depth for bracket expressions (enforced before allocation).
 const MAX_PARSE_DEPTH: usize = 256;
@@ -102,9 +116,9 @@ fn key_to_string(expr: &SurfaceExpression) -> Option<String> {
         SurfaceExpression::Int(n) => Some(n.to_string()),
         SurfaceExpression::U64(n) => Some(n.to_string()),
         SurfaceExpression::Float(n) => Some(n.to_string()),
-        // VarRef is no longer expected here: bare identifier keys are normalized to StringLiteral
-        // in push_value before key_to_string is called. Escaped VarRef keys ($foo:) are
-        // computed keys whose string representation isn't known at parse time → None.
+        // Bare identifier keys are normalized to StringLiteral in push_value before
+        // key_to_string is called. Escaped VarRef keys ($foo:) are computed keys whose
+        // string representation isn't known at parse time → None.
         _ => None,
     }
 }
@@ -288,10 +302,8 @@ fn parse_annotation_direct(
 
                             // Note: chaining @[...]@Next is not representable in the current
                             // Annotation type (Annotated takes a String name, not a PropertyDict).
-                            // For now, return the PropertyDict annotation and stop — the semantic
-                            // meaning of chained property-dict annotations is unresolved.
-                            // Tracked in T-1618: "Extend Annotation::Annotated to support
-                            // PropertyDict as outer in chained annotations".
+                            // Return the PropertyDict annotation and stop; chained property-dict
+                            // annotations are not yet supported (T-1618).
                             return Ok((
                                 Spanned::new(Annotation::PropertyDict(entries), ann_span),
                                 i,
@@ -550,12 +562,12 @@ enum StackFrame {
         expr: Option<Arc<SurfaceNode>>,
         span_start: Position,
     },
-    /// Unquote special form: `[unquote expr]` (only valid inside quote)
+    /// Unquote special form: `[unquote expr]` — produces `SurfaceExpression::Unquote`
     Unquote {
         expr: Option<Arc<SurfaceNode>>,
         span_start: Position,
     },
-    /// Unquote-splice special form: `[unquote-splice expr]` (only valid in list positions inside quote)
+    /// Unquote-splice special form: `[unquote-splice expr]` — produces `SurfaceExpression::UnquoteSplice`
     UnquoteSplice {
         expr: Option<Arc<SurfaceNode>>,
         span_start: Position,
@@ -574,8 +586,8 @@ enum StackFrame {
         arms: Vec<SurfaceMatchArm>,
         /// Pending pattern expression (before colon) — may be bracket or identifier
         pending_pattern_expr: Option<Arc<SurfaceNode>>,
-        /// Pending pattern (with optional guard) after conversion from pending_pattern_expr
-        pending_pattern: Option<PatternWithGuard>,
+        /// Pending pattern (SurfaceNode) paired with optional guard expression after the colon
+        pending_pattern: Option<(Arc<SurfaceNode>, Option<Arc<SurfaceNode>>)>,
         span_start: Position,
     },
     /// Class declaration: `[class [param...] [structural-metadata] method: Type ...]`
@@ -612,15 +624,11 @@ enum StackFrame {
     /// Binding declaration: `[let x@Int y@Float z: default]`
     /// Used in fn params, class TypeVars, type alias params, instance arm keys, and case arms.
     ///
-    /// Colon semantics inside [let ...]:
-    /// - `name: default_val` (VarRef, other RHS) → named param with default
-    ///
-    /// Structural tests use the 3-arg `[case [let bindings] pattern body]` form;
-    /// `name: Constructor` is not valid inside `[let ...]`.
+    /// Colon inside `[let ...]` introduces a default value: `name: default_val`.
     ///
     /// `pending_key` holds the left-hand side node popped when `:` is seen.
     /// - VarRef { name, .. } → single-binding left-hand side
-    /// - LetDecl { bindings } → multi-payload binding group `[a b]`
+    /// - LetDecl { bindings } → multi-binding group `[a b]`
     LetDecl {
         bindings: Vec<Arc<SurfaceNode>>,
         /// Pending left-hand-side node for `lhs: rhs` syntax.
@@ -694,8 +702,8 @@ impl PartialEq for AnnotationTarget {
 
 /// Intermediate representation for call arguments (positional or named).
 ///
-/// During call parsing, arguments are collected in order. The evaluator later
-/// enforces the C-PRIORITY binding order (see `doc/04-functions.md §Call Convention`).
+/// During call parsing, arguments are collected in order as they appear in the source.
+/// Named and positional arguments may be freely interleaved — the parser imposes no ordering.
 #[derive(Debug, Clone, PartialEq)]
 enum CallArg {
     Positional(Arc<SurfaceNode>),
@@ -713,21 +721,20 @@ enum CallArg {
 /// `blank_before` is keyed by the `span.start.offset` of the node and set to `true` when
 /// there was a blank line (consecutive newlines) before that node.
 ///
-/// `errors` contains parse errors that were recovered from during parsing. These are
-/// errors that occurred inside bracket forms; the parser substituted an `SurfaceExpression::Error`
-/// node and continued. Fatal errors (lexer failure, unclosed brackets at top level)
-/// still cause `parse()` to return `Err(...)`.
+/// `diagnostics` contains parse diagnostics (always `kind = "parse-error"`, level = Err) that
+/// were recovered from during parsing. These are errors that occurred inside bracket forms;
+/// the parser substituted an `SurfaceExpression::Error` node and continued. Fatal errors
+/// (lexer failure, unclosed brackets at top level) still cause `parse()` to return `Err(...)`.
 ///
-/// The evaluator and type checker consume only `program`; the formatter uses all fields.
-///
-/// External pipeline consumers that don't need comments should access `.program` directly.
+/// Pipeline stages that do not need comment data should access `.program` directly.
+/// The formatter uses all fields.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParseOutput {
     pub leading_comments: BTreeMap<usize, Vec<String>>,
     pub trailing_comments: BTreeMap<usize, String>,
     pub blank_before: BTreeMap<usize, bool>,
-    /// Recovered parse errors (errors inside bracket forms where the parser continued).
-    pub errors: Vec<ParseError>,
+    /// Recovered parse diagnostics (errors inside bracket forms where the parser continued).
+    pub diagnostics: Vec<TypeDiagnostic>,
     /// The parsed Surface AST program — the primary output of the parser.
     pub program: crate::ast::SurfaceProgram,
 }
@@ -773,10 +780,34 @@ fn skip_to_closing_bracket(tokens: &[Spanned<Token>], from_idx: usize) -> usize 
     tokens.len()
 }
 
+/// Map a `StackFrame` to a human-readable context string for diagnostic notes.
+impl std::fmt::Display for StackFrame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StackFrame::Match { .. } => write!(f, "match expression"),
+            StackFrame::Dict { .. } => write!(f, "dict"),
+            StackFrame::Call { .. } => write!(f, "call expression"),
+            StackFrame::Fn { .. } => write!(f, "fn expression"),
+            StackFrame::LetDecl { .. } => write!(f, "let binding"),
+            StackFrame::TypeAlias { .. } => write!(f, "type declaration"),
+            StackFrame::ClassDecl { .. } => write!(f, "class declaration"),
+            StackFrame::InstanceDecl { .. } => write!(f, "instance declaration"),
+            StackFrame::PatternDecl { .. } => write!(f, "pattern declaration"),
+            StackFrame::Quote { .. } => write!(f, "quote expression"),
+            StackFrame::Unquote { .. } => write!(f, "unquote expression"),
+            StackFrame::UnquoteSplice { .. } => write!(f, "unquote-splice expression"),
+            StackFrame::SyntaxClass { .. } => write!(f, "syntax class"),
+            StackFrame::AnnotationCollect { .. } => write!(f, "annotation"),
+            StackFrame::CaseDecl { .. } => write!(f, "case arm"),
+            StackFrame::Pipe { .. } => write!(f, "pipe expression"),
+        }
+    }
+}
+
 /// Recover from a parse error that occurred *inside* a bracket form (the frame is already pushed).
 ///
 /// Called when an error occurs while processing tokens inside an existing `StackFrame`. This function:
-/// 1. Records the error in `recovered_errors`.
+/// 1. Records the error in `diagnostics` with a context note from the innermost frame.
 /// 2. Pops the innermost `StackFrame` (which contained the error).
 /// 3. For Dict/Call frames: builds a partial expression with valid entries collected so far,
 ///    plus an `SurfaceExpression::Error` entry for the malformed part.
@@ -796,9 +827,13 @@ fn recover_from_bracket_error(
     skip_from_idx: usize,
     stack: &mut Vec<StackFrame>,
     current_document_items: &mut Vec<SurfaceItem>,
-    recovered_errors: &mut Vec<ParseError>,
+    diagnostics: &mut Vec<TypeDiagnostic>,
 ) -> usize {
-    recovered_errors.push(error);
+    let mut diag = TypeDiagnostic::error("parse-error", error.message, error_span.clone());
+    if let Some(frame) = stack.last() {
+        diag = diag.with_note(format!("while parsing {}", frame));
+    }
+    diagnostics.push(diag);
 
     // Pop the frame that contained the error (the innermost one).
     // If the stack is empty, we have nothing to pop — this shouldn't happen if the caller
@@ -976,7 +1011,7 @@ fn recover_from_bracket_error(
 /// Called when the parser fails to push a new `StackFrame` (e.g., depth limit exceeded).
 /// Since no frame was pushed, this
 /// function does NOT pop anything. It:
-/// 1. Records the error in `recovered_errors`.
+/// 1. Records the error in `diagnostics` with a context note from the parent frame (if any).
 /// 2. Pushes `SurfaceExpression::Error(error_span)` to the current top frame (or document).
 /// 3. Skips `i` past the `]` that closes the bracket that failed to open.
 ///
@@ -991,9 +1026,13 @@ fn recover_from_failed_open(
     skip_from_idx: usize,
     stack: &mut Vec<StackFrame>,
     current_document_items: &mut Vec<SurfaceItem>,
-    recovered_errors: &mut Vec<ParseError>,
+    diagnostics: &mut Vec<TypeDiagnostic>,
 ) -> usize {
-    recovered_errors.push(error);
+    let mut diag = TypeDiagnostic::error("parse-error", error.message, error_span.clone());
+    if let Some(frame) = stack.last() {
+        diag = diag.with_note(format!("while parsing {}", frame));
+    }
+    diagnostics.push(diag);
 
     // Push SurfaceExpression::Error into the current top frame (without popping — no frame was pushed).
     let error_expr = mk(SurfaceExpression::Error(error_span.clone()), error_span);
@@ -1032,19 +1071,13 @@ fn recover_from_failed_open(
 /// `SurfaceExpression::Error` node and skipping to the matching `]`. Recovered errors are collected
 /// in `ParseOutput.errors`. Fatal errors (lexer failure, unclosed brackets) still
 /// cause this function to return `Err(...)`.
-pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseError> {
+pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDiagnostic> {
     // Tokenize the input via the lexer
-    let tokens = lexer::tokenize(source, Arc::clone(&file)).map_err(|e| ParseError {
-        message: e.message,
-        span: Some(e.span),
-    })?;
+    let tokens = lexer::tokenize(source, Arc::clone(&file))
+        .map_err(|e| TypeDiagnostic::error("parse-error", e.message, e.span))?;
 
     // Stack of frames tracking bracket nesting
     let mut stack: Vec<StackFrame> = Vec::new();
-
-    // Quote nesting depth — incremented when entering [quote ...], decremented when leaving.
-    // Used to track whether we're inside a quote (depth > 0) for unquote/unquote-splice validation.
-    let mut quote_depth: u32 = 0;
 
     // Current document being built (one or more items: expressions and declarations)
     let mut current_document_items: Vec<SurfaceItem> = Vec::new();
@@ -1057,8 +1090,8 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
     let mut trailing_comments: BTreeMap<usize, String> = BTreeMap::new();
     let mut blank_before: BTreeMap<usize, bool> = BTreeMap::new();
 
-    // Recovered parse errors (errors inside bracket forms)
-    let mut recovered_errors: Vec<ParseError> = Vec::new();
+    // Recovered parse diagnostics (errors inside bracket forms).
+    let mut diagnostics: Vec<TypeDiagnostic> = Vec::new();
 
     // Track the span of the last significant token for trailing comment detection
     let mut last_significant_span: Option<Span> = None;
@@ -1125,11 +1158,15 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                             i + 1, // skip from inside the bracket we tried to open
                             &mut stack,
                             &mut current_document_items,
-                            &mut recovered_errors,
+                            &mut diagnostics,
                         );
                         continue;
                     }
-                    return Err(err);
+                    return Err(TypeDiagnostic::error(
+                        "parse-error",
+                        format!("maximum nesting depth exceeded (limit: {MAX_PARSE_DEPTH})"),
+                        span,
+                    ));
                 }
 
                 // Context-sensitive rule: inside [let ...], nested brackets are always
@@ -1275,7 +1312,6 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                             expr: None,
                             span_start: span.start,
                         });
-                        quote_depth += 1; // Entering a quote context
                         i += 1; // Consume the OpenBracket
                                 // Skip whitespace and consume the "quote" token
                         i += skip_whitespace_tokens(
@@ -1296,18 +1332,10 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                     {
                         // Unquote form: [unquote expr]
                         // (Not an unquote form if the keyword is followed by colon: [unquote: x] is a dict.)
-                        // (depth already checked above)
-                        if quote_depth == 0 {
-                            return Err(ParseError {
-                                message: "unquote is only valid inside [quote ...]".to_string(),
-                                span: Some(span),
-                            });
-                        }
                         stack.push(StackFrame::Unquote {
                             expr: None,
                             span_start: span.start,
                         });
-                        quote_depth -= 1; // Unquote decrements depth (evaluates in outer context)
                         i += 1; // Consume the OpenBracket
                                 // Skip whitespace and consume the "unquote" token
                         i += skip_whitespace_tokens(
@@ -1328,27 +1356,10 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                     {
                         // Unquote-splice form: [unquote-splice expr]
                         // (Not an unquote-splice form if the keyword is followed by colon: [unquote-splice: x] is a dict.)
-                        // (depth already checked above)
-                        if quote_depth == 0 {
-                            return Err(ParseError {
-                                message: "unquote-splice is only valid inside [quote ...]"
-                                    .to_string(),
-                                span: Some(span),
-                            });
-                        }
-                        // Check if we're at the top level of a quote (not in a list position).
-                        // If the parent frame is Quote, that's an error per Bawden (1999).
-                        if matches!(stack.last(), Some(StackFrame::Quote { .. })) {
-                            return Err(ParseError {
-                                message: "unquote-splice at top level of [quote ...] is invalid; it must be in a list position".to_string(),
-                                span: Some(span),
-                            });
-                        }
                         stack.push(StackFrame::UnquoteSplice {
                             expr: None,
                             span_start: span.start,
                         });
-                        quote_depth -= 1; // Unquote-splice decrements depth (evaluates in outer context)
                         i += 1; // Consume the OpenBracket
                                 // Skip whitespace and consume the "unquote-splice" token
                         i += skip_whitespace_tokens(
@@ -1668,9 +1679,8 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
 
             Token::CloseBracket => {
                 // Pop the frame and construct the AST node
-                let frame = stack.pop().ok_or_else(|| ParseError {
-                    message: "unmatched closing bracket".to_string(),
-                    span: Some(span.clone()),
+                let frame = stack.pop().ok_or_else(|| {
+                    TypeDiagnostic::error("parse-error", "unmatched closing bracket", span.clone())
                 })?;
                 // Record what was just popped — useful when unclosed brackets remain at EOF
                 last_popped_frame = Some(frame_info_static(&frame));
@@ -1691,7 +1701,12 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                     ($err:expr) => {{
                         let err: ParseError = $err;
                         let error_span = err.span.clone().unwrap_or_else(|| span.clone());
-                        recovered_errors.push(err);
+                        let mut diag =
+                            TypeDiagnostic::error("parse-error", err.message, error_span.clone());
+                        if let Some(frame) = stack.last() {
+                            diag = diag.with_note(format!("while parsing {}", frame));
+                        }
+                        diagnostics.push(diag);
                         let error_expr =
                             mk(SurfaceExpression::Error(error_span.clone()), error_span);
                         // Push to parent context (stack has already had the frame popped).
@@ -1772,11 +1787,11 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                                                 i + 1,
                                                 &mut stack,
                                                 &mut current_document_items,
-                                                &mut recovered_errors,
+                                                &mut diagnostics,
                                             );
                                             continue;
                                         }
-                                        return Err(drain_err);
+                                        return Err(drain_err.into());
                                     }
                                     // Early continue — don't fall through to the rest of Dict handling
                                     last_significant_span = Some(span.clone());
@@ -2062,10 +2077,6 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                             //   - `[type Int]` — simple alias
                             //
                             // Multiple entries, or a single named entry → wrap in a Dict.
-                            // The type checker detects:
-                            //   - All positional uppercase VarRefs → union of unit constructors
-                            //   - Any named (uppercase-keyed) entry → new payload constructor form
-                            //   - Mixed positional uppercase VarRefs + named entries → mixed union
                             let body = if type_exprs.len() == 1 && type_exprs[0].node.key.is_none()
                             {
                                 // Single positional entry — use the value directly as the body.
@@ -2082,9 +2093,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                             } else {
                                 // Declaration appears inside an expression (e.g., dict value).
                                 // Preserve the full declaration via SurfaceExpression::Decl so
-                                // the type checker can register class/instance/type declarations
-                                // found inside dicts (Pass 0c). At runtime this evaluates as
-                                // Placeholder (error when forced outside type-checking context).
+                                // it remains traversable in expression position.
                                 let node = mk(
                                     SurfaceExpression::Decl(Box::new(spanned_decl.node)),
                                     spanned_decl.span,
@@ -2098,77 +2107,63 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                         }
                     }
 
-                    StackFrame::Quote { expr, span_start } => {
-                        quote_depth -= 1; // Leaving a quote context
-                        match expr {
-                            None => {
-                                close_bracket_recover!(ParseError {
-                                    message: "quote form requires an expression".to_string(),
-                                    span: Some(span.clone()),
-                                });
-                            }
-                            Some(expr) => {
-                                let spanned_quote =
-                                    mk(SurfaceExpression::Quote(expr), dict_span(span_start));
-                                if let Err(push_err) = push_value(
-                                    &mut stack,
-                                    &mut current_document_items,
-                                    spanned_quote,
-                                ) {
-                                    close_bracket_recover!(push_err);
-                                }
+                    StackFrame::Quote { expr, span_start } => match expr {
+                        None => {
+                            close_bracket_recover!(ParseError {
+                                message: "quote form requires an expression".to_string(),
+                                span: Some(span.clone()),
+                            });
+                        }
+                        Some(expr) => {
+                            let spanned_quote =
+                                mk(SurfaceExpression::Quote(expr), dict_span(span_start));
+                            if let Err(push_err) =
+                                push_value(&mut stack, &mut current_document_items, spanned_quote)
+                            {
+                                close_bracket_recover!(push_err);
                             }
                         }
-                    }
+                    },
 
-                    StackFrame::Unquote { expr, span_start } => {
-                        quote_depth += 1; // Leaving an unquote context (back to quote context)
-                        match expr {
-                            None => {
-                                close_bracket_recover!(ParseError {
-                                    message: "unquote form requires an expression".to_string(),
-                                    span: Some(span.clone()),
-                                });
-                            }
-                            Some(expr) => {
-                                let spanned_unquote =
-                                    mk(SurfaceExpression::Unquote(expr), dict_span(span_start));
-                                if let Err(push_err) = push_value(
-                                    &mut stack,
-                                    &mut current_document_items,
-                                    spanned_unquote,
-                                ) {
-                                    close_bracket_recover!(push_err);
-                                }
+                    StackFrame::Unquote { expr, span_start } => match expr {
+                        None => {
+                            close_bracket_recover!(ParseError {
+                                message: "unquote form requires an expression".to_string(),
+                                span: Some(span.clone()),
+                            });
+                        }
+                        Some(expr) => {
+                            let spanned_unquote =
+                                mk(SurfaceExpression::Unquote(expr), dict_span(span_start));
+                            if let Err(push_err) =
+                                push_value(&mut stack, &mut current_document_items, spanned_unquote)
+                            {
+                                close_bracket_recover!(push_err);
                             }
                         }
-                    }
+                    },
 
-                    StackFrame::UnquoteSplice { expr, span_start } => {
-                        quote_depth += 1; // Leaving an unquote-splice context (back to quote context)
-                        match expr {
-                            None => {
-                                close_bracket_recover!(ParseError {
-                                    message: "unquote-splice form requires an expression"
-                                        .to_string(),
-                                    span: Some(span.clone()),
-                                });
-                            }
-                            Some(expr) => {
-                                let spanned_unquote_splice = mk(
-                                    SurfaceExpression::UnquoteSplice(expr),
-                                    dict_span(span_start),
-                                );
-                                if let Err(push_err) = push_value(
-                                    &mut stack,
-                                    &mut current_document_items,
-                                    spanned_unquote_splice,
-                                ) {
-                                    close_bracket_recover!(push_err);
-                                }
+                    StackFrame::UnquoteSplice { expr, span_start } => match expr {
+                        None => {
+                            close_bracket_recover!(ParseError {
+                                message: "unquote-splice form requires an expression".to_string(),
+                                span: Some(span.clone()),
+                            });
+                        }
+                        Some(expr) => {
+                            let spanned_unquote_splice = mk(
+                                SurfaceExpression::UnquoteSplice(expr),
+                                dict_span(span_start),
+                            );
+                            if let Err(push_err) = push_value(
+                                &mut stack,
+                                &mut current_document_items,
+                                spanned_unquote_splice,
+                            ) {
+                                close_bracket_recover!(push_err);
                             }
                         }
-                    }
+                    },
 
                     StackFrame::SyntaxClass {
                         name,
@@ -2206,9 +2201,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                             } else {
                                 // Declaration appears inside an expression (e.g., dict value).
                                 // Preserve the full declaration via SurfaceExpression::Decl so
-                                // the type checker can register class/instance/type declarations
-                                // found inside dicts (Pass 0c). At runtime this evaluates as
-                                // Placeholder (error when forced outside type-checking context).
+                                // it remains traversable in expression position.
                                 let node = mk(
                                     SurfaceExpression::Decl(Box::new(spanned_decl.node)),
                                     spanned_decl.span,
@@ -2287,8 +2280,8 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                         structural_metadata,
                         span_start,
                     } => {
-                        // Semantic validation of class name moved to type checker.
-                        // Use empty string as placeholder if name not set.
+                        // Use empty string as placeholder if name not set (name is injected
+                        // from the parent dict binding, e.g. `MyClass: [class ...]`).
                         if pending_key.is_some() {
                             close_bracket_recover!(ParseError {
                                 message: "class form has incomplete method (key without value)"
@@ -2452,9 +2445,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                             } else {
                                 // Declaration appears inside an expression (e.g., dict value).
                                 // Preserve the full declaration via SurfaceExpression::Decl so
-                                // the type checker can register class/instance/type declarations
-                                // found inside dicts (Pass 0c). At runtime this evaluates as
-                                // Placeholder (error when forced outside type-checking context).
+                                // it remains traversable in expression position.
                                 let node = mk(
                                     SurfaceExpression::Decl(Box::new(spanned_decl.node)),
                                     spanned_decl.span,
@@ -2536,9 +2527,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                             } else {
                                 // Declaration appears inside an expression (e.g., dict value).
                                 // Preserve the full declaration via SurfaceExpression::Decl so
-                                // the type checker can register class/instance/type declarations
-                                // found inside dicts (Pass 0c). At runtime this evaluates as
-                                // Placeholder (error when forced outside type-checking context).
+                                // it remains traversable in expression position.
                                 let node = mk(
                                     SurfaceExpression::Decl(Box::new(spanned_decl.node)),
                                     spanned_decl.span,
@@ -2668,10 +2657,11 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                         // the enclosing bracket is closed while an annotation was still pending.
                         // This is always a parse error — valid code never produces this state.
                         // Return a fatal error: the parse is fundamentally broken at this point.
-                        return Err(ParseError {
-                            message: "annotation @ requires an expression before `]`".to_string(),
-                            span: Some(span.clone()),
-                        });
+                        return Err(TypeDiagnostic::error(
+                            "parse-error",
+                            "annotation @ requires an expression before `]`",
+                            span.clone(),
+                        ));
                     }
                 }
 
@@ -2692,11 +2682,11 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                             i + 1,
                             &mut stack,
                             &mut current_document_items,
-                            &mut recovered_errors,
+                            &mut diagnostics,
                         );
                         continue;
                     }
-                    return Err(drain_err);
+                    return Err(drain_err.into());
                 }
 
                 last_significant_span = Some(span);
@@ -2826,15 +2816,10 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                                 span: Some(span.clone()),
                             })
                         } else {
-                            // Convert the pending pattern expression to a Pattern.
+                            // Store the pending pattern expression directly as the pattern.
                             let surface_node = pending_pattern_expr.take().unwrap();
-                            match surface_node_to_pattern_with_guard(surface_node) {
-                                Ok((pattern, guard)) => {
-                                    *pending_pattern = Some((pattern, guard));
-                                    None // Next expression will be the body
-                                }
-                                Err(e) => Some(e),
-                            }
+                            *pending_pattern = Some((surface_node, None));
+                            None // Next expression will be the body
                         }
                     }
                     Some(StackFrame::SyntaxClass {
@@ -2902,7 +2887,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                             if last_entry.node.key.is_none() {
                                 match &last_entry.node.value.expr {
                                     SurfaceExpression::VarRef { name, .. }
-                                        if crate::eval::is_constructor_name(name) =>
+                                        if name.chars().next().map_or(false, |c| c.is_uppercase()) =>
                                     {
                                         // Pop the last positional entry, use its value as the key.
                                         let popped = type_exprs.pop().unwrap();
@@ -2954,11 +2939,11 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                             i + 1,
                             &mut stack,
                             &mut current_document_items,
-                            &mut recovered_errors,
+                            &mut diagnostics,
                         );
                         continue;
                     }
-                    return Err(err);
+                    return Err(err.into());
                 }
                 i += 1;
                 continue;
@@ -2990,11 +2975,11 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                             i + 1,
                             &mut stack,
                             &mut current_document_items,
-                            &mut recovered_errors,
+                            &mut diagnostics,
                         );
                         continue;
                     }
-                    return Err(push_err);
+                    return Err(push_err.into());
                 }
                 if let Err(drain_err) = drain_annotation_frames(
                     &mut stack,
@@ -3010,11 +2995,11 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                             i + 1,
                             &mut stack,
                             &mut current_document_items,
-                            &mut recovered_errors,
+                            &mut diagnostics,
                         );
                         continue;
                     }
-                    return Err(drain_err);
+                    return Err(drain_err.into());
                 }
                 last_significant_span = Some(span);
                 i += 1;
@@ -3032,11 +3017,11 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                             i + 1,
                             &mut stack,
                             &mut current_document_items,
-                            &mut recovered_errors,
+                            &mut diagnostics,
                         );
                         continue;
                     }
-                    return Err(push_err);
+                    return Err(push_err.into());
                 }
                 if let Err(drain_err) = drain_annotation_frames(
                     &mut stack,
@@ -3052,11 +3037,11 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                             i + 1,
                             &mut stack,
                             &mut current_document_items,
-                            &mut recovered_errors,
+                            &mut diagnostics,
                         );
                         continue;
                     }
-                    return Err(drain_err);
+                    return Err(drain_err.into());
                 }
                 last_significant_span = Some(span);
                 i += 1;
@@ -3074,11 +3059,11 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                             i + 1,
                             &mut stack,
                             &mut current_document_items,
-                            &mut recovered_errors,
+                            &mut diagnostics,
                         );
                         continue;
                     }
-                    return Err(push_err);
+                    return Err(push_err.into());
                 }
                 if let Err(drain_err) = drain_annotation_frames(
                     &mut stack,
@@ -3094,11 +3079,11 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                             i + 1,
                             &mut stack,
                             &mut current_document_items,
-                            &mut recovered_errors,
+                            &mut diagnostics,
                         );
                         continue;
                     }
-                    return Err(drain_err);
+                    return Err(drain_err.into());
                 }
                 last_significant_span = Some(span);
                 i += 1;
@@ -3146,11 +3131,11 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                             i + 1,
                             &mut stack,
                             &mut current_document_items,
-                            &mut recovered_errors,
+                            &mut diagnostics,
                         );
                         continue;
                     }
-                    return Err(push_err);
+                    return Err(push_err.into());
                 }
                 if let Err(drain_err) = drain_annotation_frames(
                     &mut stack,
@@ -3166,11 +3151,11 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                             i + 1,
                             &mut stack,
                             &mut current_document_items,
-                            &mut recovered_errors,
+                            &mut diagnostics,
                         );
                         continue;
                     }
-                    return Err(drain_err);
+                    return Err(drain_err.into());
                 }
                 last_significant_span = Some(span);
                 i += 1;
@@ -3309,11 +3294,11 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                                         i + 1,
                                         &mut stack,
                                         &mut current_document_items,
-                                        &mut recovered_errors,
+                                        &mut diagnostics,
                                     );
                                     continue;
                                 }
-                                return Err(push_err);
+                                return Err(push_err.into());
                             }
                             if let Err(drain_err) = drain_annotation_frames(
                                 &mut stack,
@@ -3329,11 +3314,11 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                                         i + 1,
                                         &mut stack,
                                         &mut current_document_items,
-                                        &mut recovered_errors,
+                                        &mut diagnostics,
                                     );
                                     continue;
                                 }
-                                return Err(drain_err);
+                                return Err(drain_err.into());
                             }
                             last_significant_span = Some(span);
                             i += 1;
@@ -3362,11 +3347,11 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                                 i + 1,
                                 &mut stack,
                                 &mut current_document_items,
-                                &mut recovered_errors,
+                                &mut diagnostics,
                             );
                             continue;
                         }
-                        return Err(push_err);
+                        return Err(push_err.into());
                     }
                     if let Err(drain_err) = drain_annotation_frames(
                         &mut stack,
@@ -3382,11 +3367,11 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                                 i + 1,
                                 &mut stack,
                                 &mut current_document_items,
-                                &mut recovered_errors,
+                                &mut diagnostics,
                             );
                             continue;
                         }
-                        return Err(drain_err);
+                        return Err(drain_err.into());
                     }
                     last_significant_span = Some(span);
                     i += 1;
@@ -3428,11 +3413,11 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                             i + 1,
                             &mut stack,
                             &mut current_document_items,
-                            &mut recovered_errors,
+                            &mut diagnostics,
                         );
                         continue;
                     }
-                    return Err(push_err);
+                    return Err(push_err.into());
                 }
                 if let Err(drain_err) = drain_annotation_frames(
                     &mut stack,
@@ -3448,11 +3433,11 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                             i + 1,
                             &mut stack,
                             &mut current_document_items,
-                            &mut recovered_errors,
+                            &mut diagnostics,
                         );
                         continue;
                     }
-                    return Err(drain_err);
+                    return Err(drain_err.into());
                 }
                 last_significant_span = Some(span);
                 i += 1;
@@ -3501,11 +3486,11 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
             Token::DocSeparator => {
                 // Document separator: finalize current document and start a new one
                 if !stack.is_empty() {
-                    return Err(ParseError {
-                        message: "document separator cannot appear inside bracket expressions"
-                            .to_string(),
-                        span: Some(span),
-                    });
+                    return Err(TypeDiagnostic::error(
+                        "parse-error",
+                        "document separator cannot appear inside bracket expressions",
+                        span,
+                    ));
                 }
 
                 // Finalize current document (even if empty) with previously parsed header
@@ -3564,27 +3549,27 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                                     {
                                         // Consume the annotation and ignore the section name
                                         // (bare % is still an error, but a more informative one)
-                                        return Err(ParseError {
-                                            message: "bare '%' in section header: expected a name after '%' (e.g. '--- %name' or '--- %name@Type')".to_string(),
-                                            span: Some(id_span),
-                                        });
+                                        return Err(TypeDiagnostic::error(
+                                            "parse-error",
+                                            "bare '%' in section header: expected a name after '%' (e.g. '--- %name' or '--- %name@Type')",
+                                            id_span,
+                                        ));
                                     }
-                                    return Err(ParseError {
-                                        message: "bare '%' in section header: expected a name after '%' (e.g. '--- %name')".to_string(),
-                                        span: Some(id_span),
-                                    });
+                                    return Err(TypeDiagnostic::error(
+                                        "parse-error",
+                                        "bare '%' in section header: expected a name after '%' (e.g. '--- %name')",
+                                        id_span,
+                                    ));
                                 }
 
                                 // Duplicate section name detection
                                 let full_name = format!("%{}", section_name);
                                 if seen_section_names.contains(&section_name) {
-                                    return Err(ParseError {
-                                        message: format!(
-                                            "duplicate section name '{}' in file",
-                                            full_name
-                                        ),
-                                        span: Some(id_span),
-                                    });
+                                    return Err(TypeDiagnostic::error(
+                                        "parse-error",
+                                        format!("duplicate section name '{}' in file", full_name),
+                                        id_span,
+                                    ));
                                 }
                                 seen_section_names.insert(section_name.clone());
 
@@ -3644,23 +3629,25 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
 
                             // Expect colon for key: value pairs
                             if i >= token_vec.len() || !matches!(&token_vec[i].node, Token::Colon) {
-                                return Err(ParseError {
-                                    message: format!("expected ':' after '{}' in header", key),
-                                    span: Some(if i < token_vec.len() {
+                                return Err(TypeDiagnostic::error(
+                                    "parse-error",
+                                    format!("expected ':' after '{}' in header", key),
+                                    if i < token_vec.len() {
                                         token_vec[i].span.clone()
                                     } else {
                                         token_vec[i - 1].span.clone()
-                                    }),
-                                });
+                                    },
+                                ));
                             }
                             i += 1;
 
                             // Parse value as a simple expression — bracket or literal
                             if i >= token_vec.len() {
-                                return Err(ParseError {
-                                    message: format!("expected value after '{}:' in header", key),
-                                    span: Some(token_vec[i - 1].span.clone()),
-                                });
+                                return Err(TypeDiagnostic::error(
+                                    "parse-error",
+                                    format!("expected value after '{}:' in header", key),
+                                    token_vec[i - 1].span.clone(),
+                                ));
                             }
 
                             // Start a temporary parse by pushing the value tokens onto the stack
@@ -3674,10 +3661,11 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                             // This handles brackets, literals, identifiers
                             loop {
                                 if i >= token_vec.len() {
-                                    return Err(ParseError {
-                                        message: format!("unexpected end of input while parsing header value for '{}'", key),
-                                        span: Some(token_vec[i - 1].span.clone()),
-                                    });
+                                    return Err(TypeDiagnostic::error(
+                                        "parse-error",
+                                        format!("unexpected end of input while parsing header value for '{}'", key),
+                                        token_vec[i - 1].span.clone(),
+                                    ));
                                 }
 
                                 // Check if we should stop (end of value)
@@ -3747,11 +3735,11 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                                                 i += 1;
                                             }
                                         } else {
-                                            return Err(ParseError {
-                                                message: "unexpected ']' in header value"
-                                                    .to_string(),
-                                                span: Some(token_vec[i].span.clone()),
-                                            });
+                                            return Err(TypeDiagnostic::error(
+                                                "parse-error",
+                                                "unexpected ']' in header value",
+                                                token_vec[i].span.clone(),
+                                            ));
                                         }
                                     }
                                     Token::StringLiteral {
@@ -3836,10 +3824,11 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                                                 }
                                             }
                                         }
-                                        return Err(ParseError {
-                                            message: "unexpected ':' in header value".to_string(),
-                                            span: Some(token_vec[i].span.clone()),
-                                        });
+                                        return Err(TypeDiagnostic::error(
+                                            "parse-error",
+                                            "unexpected ':' in header value",
+                                            token_vec[i].span.clone(),
+                                        ));
                                     }
                                     Token::Int(n) => {
                                         let lit_span = token_vec[i].span.clone();
@@ -3943,38 +3932,35 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                                         }
                                     }
                                     _ => {
-                                        return Err(ParseError {
-                                            message: format!(
+                                        return Err(TypeDiagnostic::error(
+                                            "parse-error",
+                                            format!(
                                                 "unsupported token in header value: {:?}",
                                                 token_vec[i].node
                                             ),
-                                            span: Some(token_vec[i].span.clone()),
-                                        });
+                                            token_vec[i].span.clone(),
+                                        ));
                                     }
                                 }
                             }
 
                             // Extract the single parsed value
                             if temp_items.len() != 1 {
-                                return Err(ParseError {
-                                    message: format!(
-                                        "failed to parse value for header key '{}'",
-                                        key
-                                    ),
-                                    span: Some(token_vec[value_start_i].span.clone()),
-                                });
+                                return Err(TypeDiagnostic::error(
+                                    "parse-error",
+                                    format!("failed to parse value for header key '{}'", key),
+                                    token_vec[value_start_i].span.clone(),
+                                ));
                             }
                             if let SurfaceItem::Expr(node) = temp_items.into_iter().next().unwrap()
                             {
                                 value_node = node;
                             } else {
-                                return Err(ParseError {
-                                    message: format!(
-                                        "header value for '{}' must be an expression",
-                                        key
-                                    ),
-                                    span: Some(token_vec[value_start_i].span.clone()),
-                                });
+                                return Err(TypeDiagnostic::error(
+                                    "parse-error",
+                                    format!("header value for '{}' must be an expression", key),
+                                    token_vec[value_start_i].span.clone(),
+                                ));
                             }
 
                             // Store in header
@@ -3982,13 +3968,14 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                         }
                         _ => {
                             // Unexpected token in header
-                            return Err(ParseError {
-                                message: format!(
+                            return Err(TypeDiagnostic::error(
+                                "parse-error",
+                                format!(
                                     "unexpected token in section header: {:?}",
                                     token_vec[i].node
                                 ),
-                                span: Some(token_vec[i].span.clone()),
-                            });
+                                token_vec[i].span.clone(),
+                            ));
                         }
                     }
                 }
@@ -4014,12 +4001,11 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                     } else {
                         match current_document_items.last() {
                             Some(SurfaceItem::Decl(_)) => {
-                                return Err(ParseError {
-                                    message:
-                                        "dot access requires a value expression, not a declaration"
-                                            .to_string(),
-                                    span: Some(span),
-                                });
+                                return Err(TypeDiagnostic::error(
+                                    "parse-error",
+                                    "dot access requires a value expression, not a declaration",
+                                    span,
+                                ));
                             }
                             _ => {}
                         }
@@ -4055,11 +4041,11 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                             i,
                             &mut stack,
                             &mut current_document_items,
-                            &mut recovered_errors,
+                            &mut diagnostics,
                         );
                         continue;
                     }
-                    return Err(err);
+                    return Err(err.into());
                 }
 
                 // Next token must be an Identifier or Int for the field name.
@@ -4095,7 +4081,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                                 i + 1,
                                 &mut stack,
                                 &mut current_document_items,
-                                &mut recovered_errors,
+                                &mut diagnostics,
                             );
                             continue;
                         }
@@ -4112,7 +4098,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                                 i + 1,
                                 &mut stack,
                                 &mut current_document_items,
-                                &mut recovered_errors,
+                                &mut diagnostics,
                             );
                             continue;
                         }
@@ -4135,11 +4121,11 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                                     i + 1,
                                     &mut stack,
                                     &mut current_document_items,
-                                    &mut recovered_errors,
+                                    &mut diagnostics,
                                 );
                                 continue;
                             }
-                            return Err(err);
+                            return Err(err.into());
                         }
                         let field_key = crate::ast::DotKey::Int(*n);
                         let dot_access_span = Span {
@@ -4169,7 +4155,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                                 i + 1,
                                 &mut stack,
                                 &mut current_document_items,
-                                &mut recovered_errors,
+                                &mut diagnostics,
                             );
                             continue;
                         }
@@ -4186,7 +4172,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                                 i + 1,
                                 &mut stack,
                                 &mut current_document_items,
-                                &mut recovered_errors,
+                                &mut diagnostics,
                             );
                             continue;
                         }
@@ -4210,11 +4196,11 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                                 i + 1,
                                 &mut stack,
                                 &mut current_document_items,
-                                &mut recovered_errors,
+                                &mut diagnostics,
                             );
                             continue;
                         }
-                        return Err(err);
+                        return Err(err.into());
                     }
                 }
             }
@@ -4225,21 +4211,20 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                 // Inside [...], | terminates call argument accumulation
                 let lhs = if stack.is_empty() {
                     if current_document_items.is_empty() {
-                        return Err(ParseError {
-                            message: "pipe operator requires a left-hand expression before '|'"
-                                .to_string(),
-                            span: Some(span),
-                        });
+                        return Err(TypeDiagnostic::error(
+                            "parse-error",
+                            "pipe operator requires a left-hand expression before '|'",
+                            span,
+                        ));
                     }
                     match current_document_items.pop().unwrap() {
                         SurfaceItem::Expr(node) => node,
                         SurfaceItem::Decl(_) => {
-                            return Err(ParseError {
-                                message:
-                                    "pipe operator requires a value expression, not a declaration"
-                                        .to_string(),
-                                span: Some(span),
-                            });
+                            return Err(TypeDiagnostic::error(
+                                "parse-error",
+                                "pipe operator requires a value expression, not a declaration",
+                                span,
+                            ));
                         }
                     }
                 } else {
@@ -4254,7 +4239,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                                 i + 1,
                                 &mut stack,
                                 &mut current_document_items,
-                                &mut recovered_errors,
+                                &mut diagnostics,
                             );
                             continue;
                         }
@@ -4323,133 +4308,75 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
             }
 
             Token::Ellipsis => {
-                // Three-dot handling:
-                // 1. Inside Dict frame + followed by identifier: Expr::Rest(Some(name)) — rest marker
-                // 2. Inside Dict frame + not followed by identifier: Expr::Rest(None) — open row
-                // 3. Outside Dict frame + followed by identifier: error (variadic only in dict)
-                // 4. Outside Dict frame + not followed by identifier: Expr::Placeholder
+                // `...` produces Placeholder(name, annotation) unconditionally.
                 let ellipsis_span = span;
-                i += 1; // Consume ellipsis
+                i += 1;
                 i +=
                     skip_whitespace_tokens(&token_vec, i, &mut leading_comments, &mut blank_before);
 
-                // Check for optional name after ...
-                let has_following_identifier =
-                    i < token_vec.len() && matches!(&token_vec[i].node, Token::Identifier(_));
-
-                let in_dict_or_letdecl = matches!(
-                    stack.last(),
-                    Some(StackFrame::Dict { .. }) | Some(StackFrame::LetDecl { .. })
-                );
-                if in_dict_or_letdecl {
-                    // Inside Dict or LetDecl: this is a rest/variadic marker
-                    let (rest_name, rest_end) = if has_following_identifier {
+                // Consume optional name: `...name` or bare `...`
+                let (placeholder_name, name_end, name_advance) =
+                    if i < token_vec.len() && matches!(&token_vec[i].node, Token::Identifier(_)) {
                         if let Token::Identifier(name) = &token_vec[i].node {
                             let n = name.clone();
                             let end_span = token_vec[i].span.clone();
-                            (
-                                Some(n.clone()),
-                                Span {
-                                    start: ellipsis_span.start,
-                                    end: end_span.end,
-                                    file: ellipsis_span.file.clone(),
-                                    name: Some(Arc::from(n.as_str())),
-                                },
-                            )
+                            let combined = Span {
+                                start: ellipsis_span.start,
+                                end: end_span.end,
+                                file: ellipsis_span.file.clone(),
+                                name: Some(Arc::from(n.as_str())),
+                            };
+                            (Some(n), combined, 1)
                         } else {
                             unreachable!()
                         }
                     } else {
-                        (None, ellipsis_span)
+                        (None, ellipsis_span.clone(), 0)
                     };
-                    let name_advance = if rest_name.is_some() { 1 } else { 0 };
-                    // Check for @Annotation immediately after the name (e.g. ...args@Type).
-                    // The name identifier hasn't been consumed yet (name_advance handles that),
-                    // so i+name_advance points to the token right after the name.
-                    let (rest_annotation, annotation_advance) = if rest_name.is_some() {
-                        let after_name = i + name_advance;
-                        if after_name < token_vec.len()
-                            && matches!(&token_vec[after_name].node, Token::ImmediateAt)
-                        {
-                            match parse_annotation_direct(
-                                &token_vec,
-                                after_name,
-                                &mut leading_comments,
-                                &mut blank_before,
-                            ) {
-                                Ok((ann, next_i)) => (Some(ann), next_i - after_name),
-                                Err(_) => (None, 0),
-                            }
-                        } else {
-                            (None, 0)
+
+                // Consume optional @Annotation after the name: `...name@Type`
+                let (placeholder_annotation, annotation_advance) = if placeholder_name.is_some() {
+                    let after_name = i + name_advance;
+                    if after_name < token_vec.len()
+                        && matches!(&token_vec[after_name].node, Token::ImmediateAt)
+                    {
+                        match parse_annotation_direct(
+                            &token_vec,
+                            after_name,
+                            &mut leading_comments,
+                            &mut blank_before,
+                        ) {
+                            Ok((ann, next_i)) => (Some(ann), next_i - after_name),
+                            Err(_) => (None, 0),
                         }
                     } else {
                         (None, 0)
-                    };
-                    let rest_expr = mk(
-                        SurfaceExpression::Placeholder(rest_name, rest_annotation),
-                        rest_end.clone(),
-                    );
-                    if let Err(push_err) =
-                        push_value(&mut stack, &mut current_document_items, rest_expr)
-                    {
-                        i = recover_from_bracket_error(
-                            push_err,
-                            rest_end,
-                            &token_vec,
-                            i + name_advance + annotation_advance,
-                            &mut stack,
-                            &mut current_document_items,
-                            &mut recovered_errors,
-                        );
-                        continue;
                     }
-                    last_significant_span = Some(rest_end);
-                    i += name_advance + annotation_advance;
-                    continue;
-                } else if has_following_identifier {
-                    // Outside Dict/LetDecl, with identifier: error (variadic only in those contexts)
-                    let err = ParseError {
-                        message: "variadic/rest markers not yet supported outside dict context"
-                            .to_string(),
-                        span: Some(ellipsis_span.clone()),
-                    };
-                    if !stack.is_empty() {
-                        i = recover_from_bracket_error(
-                            err,
-                            ellipsis_span,
-                            &token_vec,
-                            i,
-                            &mut stack,
-                            &mut current_document_items,
-                            &mut recovered_errors,
-                        );
-                        continue;
-                    }
-                    return Err(err);
                 } else {
-                    // Outside Dict, no identifier: Expr::Placeholder
-                    let placeholder_expr = mk(
-                        SurfaceExpression::Placeholder(None, None),
-                        ellipsis_span.clone(),
+                    (None, 0)
+                };
+
+                let placeholder_expr = mk(
+                    SurfaceExpression::Placeholder(placeholder_name, placeholder_annotation),
+                    name_end.clone(),
+                );
+                if let Err(push_err) =
+                    push_value(&mut stack, &mut current_document_items, placeholder_expr)
+                {
+                    i = recover_from_bracket_error(
+                        push_err,
+                        name_end,
+                        &token_vec,
+                        i + name_advance + annotation_advance,
+                        &mut stack,
+                        &mut current_document_items,
+                        &mut diagnostics,
                     );
-                    if let Err(push_err) =
-                        push_value(&mut stack, &mut current_document_items, placeholder_expr)
-                    {
-                        i = recover_from_bracket_error(
-                            push_err,
-                            ellipsis_span,
-                            &token_vec,
-                            i,
-                            &mut stack,
-                            &mut current_document_items,
-                            &mut recovered_errors,
-                        );
-                        continue;
-                    }
-                    last_significant_span = Some(ellipsis_span);
                     continue;
                 }
+                last_significant_span = Some(name_end);
+                i += name_advance + annotation_advance;
+                continue;
             }
 
             Token::Let | Token::Case => {
@@ -4592,11 +4519,11 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                                         i + 1,
                                         &mut stack,
                                         &mut current_document_items,
-                                        &mut recovered_errors,
+                                        &mut diagnostics,
                                     );
                                     continue;
                                 }
-                                return Err(push_err);
+                                return Err(push_err.into());
                             }
                             if let Err(drain_err) = drain_annotation_frames(
                                 &mut stack,
@@ -4612,11 +4539,11 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                                         i + 1,
                                         &mut stack,
                                         &mut current_document_items,
-                                        &mut recovered_errors,
+                                        &mut diagnostics,
                                     );
                                     continue;
                                 }
-                                return Err(drain_err);
+                                return Err(drain_err.into());
                             }
                             last_significant_span = Some(span);
                             i += 1;
@@ -4645,11 +4572,11 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                                 i + 1,
                                 &mut stack,
                                 &mut current_document_items,
-                                &mut recovered_errors,
+                                &mut diagnostics,
                             );
                             continue;
                         }
-                        return Err(push_err);
+                        return Err(push_err.into());
                     }
                     if let Err(drain_err) = drain_annotation_frames(
                         &mut stack,
@@ -4665,11 +4592,11 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
                                 i + 1,
                                 &mut stack,
                                 &mut current_document_items,
-                                &mut recovered_errors,
+                                &mut diagnostics,
                             );
                             continue;
                         }
-                        return Err(drain_err);
+                        return Err(drain_err.into());
                     }
                     last_significant_span = Some(span);
                     i += 1;
@@ -4755,10 +4682,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
             )
         };
 
-        return Err(ParseError {
-            message,
-            span: Some(unclosed_span),
-        });
+        return Err(TypeDiagnostic::error("parse-error", message, unclosed_span));
     }
 
     // Build the final file
@@ -4812,7 +4736,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseEr
         leading_comments,
         trailing_comments,
         blank_before,
-        errors: recovered_errors,
+        diagnostics,
         program,
     })
 }
@@ -5132,435 +5056,6 @@ fn pop_last_value_from_frame(
     }
 }
 
-/// Helper: push an expression to the parent frame or current document.
-/// Convert an expression to a pattern for match arms.
-///
-/// Pattern syntax (basic implementation):
-/// - `_` → Wildcard
-/// - Bare lowercase identifier → Pin (T-1154: was Variable binding; now compare/wildcard)
-/// - `$name` (escaped) → Pin (explicit pin against scope value)
-/// - Bare uppercase identifier → Constructor { tag, binding: None } (unqualified — type checker elaborates)
-/// - Int/Float/Bool/Str literal → Literal pattern
-/// - `[Constructor]` (zero-arg bracket) → Constructor { binding: None } — matches unit variants by tag
-///
-/// Extract all variable names bound by a pattern
-fn pattern_variables(pattern: &Pattern) -> std::collections::HashSet<String> {
-    let mut vars = std::collections::HashSet::new();
-    collect_pattern_variables(pattern, &mut vars);
-    vars
-}
-
-/// Recursively collect all variable bindings from a pattern
-#[allow(clippy::only_used_in_recursion)]
-fn collect_pattern_variables(pattern: &Pattern, vars: &mut std::collections::HashSet<String>) {
-    match pattern {
-        Pattern::Dict { fields, .. } => {
-            for (_, field_pattern) in fields {
-                collect_pattern_variables(&field_pattern.node, vars);
-            }
-        }
-        Pattern::Constructor { binding, .. } => {
-            if let Some(binding_pattern) = binding {
-                collect_pattern_variables(&binding_pattern.node, vars);
-            }
-        }
-        Pattern::Or(patterns) => {
-            // For or-patterns, we only collect from the first branch
-            // (all branches must bind the same variables, verified separately)
-            if let Some(first) = patterns.first() {
-                collect_pattern_variables(&first.node, vars);
-            }
-        }
-        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(..) => {
-            // These don't bind variables
-        }
-        Pattern::TypeAssertPending { inner, .. } => {
-            if let Some(inner_pat) = inner {
-                collect_pattern_variables(&inner_pat.node, vars);
-            }
-        }
-        Pattern::TypeAssert { inner, .. } => {
-            if let Some(inner_pat) = inner {
-                collect_pattern_variables(&inner_pat.node, vars);
-            }
-        }
-        Pattern::Predicate { .. } => {
-            // Predicate patterns do not introduce variable bindings
-        }
-    }
-}
-
-/// Extract guard expression from annotation if present
-fn extract_guard(annotation: &Spanned<Annotation>) -> Option<Arc<SurfaceNode>> {
-    match &annotation.node {
-        Annotation::PropertyDict(props) => {
-            // SurfaceEntry: key is Option<Arc<SurfaceNode>>, value is Arc<SurfaceNode>.
-            for entry in props {
-                if let Some(ref key_node) = entry.node.key {
-                    match &key_node.expr {
-                        SurfaceExpression::VarRef { name, .. } if name == "is" => {
-                            return Some(Arc::clone(&entry.node.value));
-                        }
-                        SurfaceExpression::StringLiteral { content, .. } if content == "is" => {
-                            return Some(Arc::clone(&entry.node.value));
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            None
-        }
-        _ => None,
-    }
-}
-
-fn surface_node_to_pattern(node: Arc<SurfaceNode>) -> Result<Spanned<Pattern>, ParseError> {
-    surface_node_to_pattern_with_guard(node).map(|(pat, _)| pat)
-}
-
-/// Convert a SurfaceNode to a pattern, extracting guard if present.
-/// This is the primary path — `expr_to_pattern_with_guard` is a legacy bridge.
-fn surface_node_to_pattern_with_guard(
-    node: Arc<SurfaceNode>,
-) -> Result<PatternWithGuard, ParseError> {
-    let span = node.span.clone();
-    let (pattern, guard) = match &node.expr {
-        // Handle Pipe as or-pattern separator
-        SurfaceExpression::Pipe { lhs, rhs, .. } => {
-            let (left_pat, left_guard) = surface_node_to_pattern_with_guard(Arc::clone(lhs))?;
-            let (right_pat, right_guard) = surface_node_to_pattern_with_guard(Arc::clone(rhs))?;
-
-            // Or-patterns can't have guards on individual branches
-            if left_guard.is_some() || right_guard.is_some() {
-                return Err(ParseError {
-                    message:
-                        "or-pattern branches cannot have guards (use guard on the whole pattern)"
-                            .to_string(),
-                    span: Some(span),
-                });
-            }
-
-            // Check that both branches bind the same set of variables
-            let left_vars = pattern_variables(&left_pat.node);
-            let right_vars = pattern_variables(&right_pat.node);
-            if left_vars != right_vars {
-                let missing_left: Vec<_> = right_vars.difference(&left_vars).collect();
-                let missing_right: Vec<_> = left_vars.difference(&right_vars).collect();
-                let mut msg = "or-pattern branches must bind the same variables".to_string();
-                if !missing_left.is_empty() {
-                    msg.push_str(&format!(
-                        " (left branch missing: {})",
-                        missing_left
-                            .iter()
-                            .map(|s| s.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ));
-                }
-                if !missing_right.is_empty() {
-                    msg.push_str(&format!(
-                        " (right branch missing: {})",
-                        missing_right
-                            .iter()
-                            .map(|s| s.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ));
-                }
-                return Err(ParseError {
-                    message: msg,
-                    span: Some(span),
-                });
-            }
-
-            (Pattern::Or(vec![left_pat, right_pat]), None)
-        }
-        // Handle annotated patterns (e.g., n@Int, n@[is: pred])
-        // Now represented as VarRef { name, annotation: Some(ann) }.
-        SurfaceExpression::VarRef {
-            name,
-            annotation: Some(annotation),
-            ..
-        } => {
-            let name = name.as_str();
-            // Extract guard from `is:` annotation
-            let guard = extract_guard(annotation);
-
-            // Determine the base pattern
-            let base_pattern = if name == "_" {
-                Pattern::Wildcard
-            } else if name.chars().next().is_some_and(|c| c.is_lowercase()) {
-                Pattern::Pin(name.to_string(), crate::ast::Resolution::new())
-            } else if name.chars().next().is_some_and(|c| c.is_uppercase()) {
-                // T-1109: Bare uppercase names in pattern position are unqualified constructor
-                // patterns and are now a hard parse error. Use qualified form (e.g., `Result.Ok:`
-                // instead of `Ok:`).
-                return Err(ParseError {
-                    message: format!(
-                        "unqualified constructor pattern '{}' — use qualified form like 'TypeName.{}' \
-                         (bare uppercase names in pattern position are not allowed)",
-                        name, name
-                    ),
-                    span: Some(span),
-                });
-            } else {
-                return Err(ParseError {
-                    message: format!(
-                        "invalid pattern: '{}' (must start with lowercase, uppercase, or be '_')",
-                        name
-                    ),
-                    span: Some(span),
-                });
-            };
-
-            (base_pattern, guard)
-        }
-        SurfaceExpression::VarRef { name, .. } if name == "_" => (Pattern::Wildcard, None),
-        SurfaceExpression::VarRef { name, escaped, .. } if *escaped => {
-            // Escaped ref: $name in pattern context → pin pattern
-            (
-                Pattern::Pin(name.clone(), crate::ast::Resolution::new()),
-                None,
-            )
-        }
-        SurfaceExpression::VarRef { name, .. }
-            if name.chars().next().is_some_and(|c| c.is_lowercase()) =>
-        {
-            (
-                Pattern::Pin(name.clone(), crate::ast::Resolution::new()),
-                None,
-            )
-        }
-        SurfaceExpression::VarRef { name, .. }
-            if name.chars().next().is_some_and(|c| c.is_uppercase()) =>
-        {
-            // Bare uppercase identifier in pattern position: type assertion pattern.
-            // `Int:`, `Str:`, `Color:` — asks "does this value have this type?"
-            // Produces TypeAssertPending resolved by lower_pattern via annotation_name_to_type.
-            // Qualified constructor patterns ([Result.Ok v], Color.Red:) use the Field arm.
-            (
-                Pattern::TypeAssertPending {
-                    annotation: Spanned::new(
-                        crate::ast::Annotation::Simple(name.clone()),
-                        span.clone(),
-                    ),
-                    inner: None,
-                    resolved: crate::ast::TypeAnnotation::new(),
-                },
-                None,
-            )
-        }
-        SurfaceExpression::VarRef { name, .. } => {
-            // Other cases (e.g., names starting with special chars like %)
-            return Err(ParseError {
-                message: format!(
-                    "invalid pattern: '{}' (must start with lowercase, uppercase, or be '_')",
-                    name
-                ),
-                span: Some(span),
-            });
-        }
-        SurfaceExpression::Int(n) => (Pattern::Literal(LiteralPattern::Int(*n)), None),
-        SurfaceExpression::U64(n) => (Pattern::Literal(LiteralPattern::U64(*n)), None),
-        SurfaceExpression::Float(f) => (Pattern::Literal(LiteralPattern::Float(*f)), None),
-        SurfaceExpression::StringLiteral { content, .. } => {
-            (Pattern::Literal(LiteralPattern::Str(content.clone())), None)
-        }
-        SurfaceExpression::Dict(entries) => {
-            // Dict pattern: [key1: pat1  key2: pat2] or [key: pat ...]
-            // Note: [TypeName ctor arg] parses as an implied Call (never a Dict); use
-            // [TypeName.Ctor binding] for constructor patterns.
-
-            // Regular dict pattern
-            let mut fields = Vec::new();
-            // Dict patterns are OPEN by default (rest: true): [a: x  b: y] matches
-            // any dict with at least fields a and b (extra keys allowed). This is
-            // consistent with row polymorphism and more useful for configuration data.
-            // A trailing `!` entry (future syntax) would make the pattern closed:
-            // [a: x  b: y !] matches ONLY dicts with exactly a and b.
-            // [] (open empty) matches any dict. [!] (closed empty, future) matches only null.
-            let mut has_rest = true; // Default to open matching
-
-            for entry in entries {
-                if let SurfaceExpression::Placeholder(..) = &entry.node.value.expr {
-                    // This is a `...` rest marker (explicit open matching — redundant but allowed)
-                    has_rest = true;
-                    continue;
-                }
-
-                let key_str = if let Some(k) = &entry.node.key {
-                    match &k.expr {
-                        SurfaceExpression::VarRef { name, .. } => name.clone(),
-                        SurfaceExpression::StringLiteral { content, .. } => content.clone(),
-                        _ => {
-                            return Err(ParseError {
-                                message: "dict pattern key must be an identifier or string"
-                                    .to_string(),
-                                span: Some(k.span.clone()),
-                            });
-                        }
-                    }
-                } else {
-                    return Err(ParseError {
-                        message: "dict pattern requires named fields (auto-indexed entries not supported)".to_string(),
-                        span: Some(entry.span.clone()),
-                    });
-                };
-
-                let value_pattern = surface_node_to_pattern(Arc::clone(&entry.node.value))?;
-                fields.push((key_str, value_pattern));
-            }
-
-            (
-                Pattern::Dict {
-                    fields,
-                    rest: has_rest,
-                },
-                None,
-            )
-        }
-        SurfaceExpression::Call {
-            func,
-            args,
-            named_args,
-            ..
-        } if named_args.is_empty() => {
-            // Check if this is a special pattern form: [Seq h t], [Constructor payload],
-            // or a predicate pattern (lowercase/operator head).
-            if let SurfaceExpression::VarRef { name, .. } = &func.expr {
-                match (name.as_str(), args.len()) {
-                    (_, 1) if name.chars().next().is_some_and(|c| c.is_uppercase()) => {
-                        // T-1109: Bare uppercase names are unqualified constructor patterns — now a hard error.
-                        return Err(ParseError {
-                            message: format!(
-                                "unqualified constructor pattern '[{}]' — use qualified form like '[TypeName.{}]' \
-                                 (bare uppercase names in pattern position are not allowed)",
-                                name, name
-                            ),
-                            span: Some(span),
-                        });
-                    }
-                    (_, 0) if name.chars().next().is_some_and(|c| c.is_uppercase()) => {
-                        // T-1109: Bare uppercase names are unqualified constructor patterns — now a hard error.
-                        return Err(ParseError {
-                            message: format!(
-                                "unqualified constructor pattern '[{}]' — use qualified form like '[TypeName.{}]' \
-                                 (bare uppercase names in pattern position are not allowed)",
-                                name, name
-                            ),
-                            span: Some(span),
-                        });
-                    }
-                    _ if name.chars().next().is_some_and(|c| c.is_lowercase())
-                        || name.chars().next().is_some_and(|c| !c.is_alphabetic()) =>
-                    {
-                        // T-1140: Predicate pattern — lowercase name or operator as call head.
-                        // [contains? "ob"], [> _ 0], [fn [let x] [> x 3]], [not empty?], etc.
-                        // The whole call node (func + args) is the predicate expression:
-                        //   at match time, call it with the scrutinee appended as the last arg.
-                        // Keywords (let, fn, type, match, etc.) are not reachable here because
-                        // they parse as dedicated StackFrame forms, not as Call nodes.
-                        (
-                            Pattern::Predicate {
-                                call: Arc::clone(&node),
-                                to_match_binding: crate::ast::MatchableBinding::new(),
-                            },
-                            None,
-                        )
-                    }
-                    _ => {
-                        return Err(ParseError {
-                            message: "invalid pattern: expected identifier, literal, dict, or _"
-                                .to_string(),
-                            span: Some(span),
-                        });
-                    }
-                }
-            } else if let Some(tag) = crate::ast::flatten_dot_access_to_tag(&func.expr) {
-                // T-964: Field in Call-func position — qualified constructor pattern.
-                // [Result.Ok v] → Constructor { tag: "Result.Ok", binding: Some(payload_pat) }
-                // [Result.Ok]   → Constructor { tag: "Result.Ok", binding: None }
-                match args.len() {
-                    1 => {
-                        let payload_pat = surface_node_to_pattern(Arc::clone(&args[0]))?;
-                        (
-                            Pattern::Constructor {
-                                tag,
-                                binding: Some(Box::new(payload_pat)),
-                            },
-                            None,
-                        )
-                    }
-                    0 => (Pattern::Constructor { tag, binding: None }, None),
-                    _ => {
-                        return Err(ParseError {
-                            message:
-                                "invalid pattern: constructor pattern takes at most one payload"
-                                    .to_string(),
-                            span: Some(span),
-                        });
-                    }
-                }
-            } else {
-                // T-1140: Non-VarRef, non-Field call head — treat as predicate pattern.
-                // Covers lambda-headed patterns: [[fn [let x] [> x 3]] ...] (unusual but valid).
-                (
-                    Pattern::Predicate {
-                        call: Arc::clone(&node),
-                        to_match_binding: crate::ast::MatchableBinding::new(),
-                    },
-                    None,
-                )
-            }
-        }
-        // T-963: TypeAssert ([@Type expr]) in pattern position → TypeAssertPending
-        SurfaceExpression::TypeAssert {
-            annotation, expr, ..
-        } => {
-            let inner_pat = surface_node_to_pattern(Arc::clone(expr))?;
-            (
-                Pattern::TypeAssertPending {
-                    annotation: annotation.clone(),
-                    inner: Some(Box::new(inner_pat)),
-                    resolved: crate::ast::TypeAnnotation::new(),
-                },
-                None,
-            )
-        }
-        // T-964: Bare Field (Color.Red, Net.Transport.Tcp) in pattern position →
-        // qualified Constructor with no binding (unit constructor pattern)
-        SurfaceExpression::Field { .. } => {
-            match crate::ast::flatten_dot_access_to_tag(&node.expr) {
-                Some(tag) => (Pattern::Constructor { tag, binding: None }, None),
-                None => {
-                    return Err(ParseError {
-                        message: "invalid pattern: numeric index in dot-access constructor tag"
-                            .to_string(),
-                        span: Some(span),
-                    })
-                }
-            }
-        }
-        // T-1140: Function literal in pattern position — predicate pattern.
-        // [fn [let x] body] as a pattern: the fn expression is evaluated to produce a function,
-        // then called with the scrutinee as its argument. Useful for inline predicates.
-        SurfaceExpression::Fn { .. } => (
-            Pattern::Predicate {
-                call: Arc::clone(&node),
-                to_match_binding: crate::ast::MatchableBinding::new(),
-            },
-            None,
-        ),
-        _ => {
-            return Err(ParseError {
-                message: "invalid pattern: expected identifier, literal, dict, or _".to_string(),
-                span: Some(span),
-            });
-        }
-    };
-    Ok((Spanned::new(pattern, span), guard))
-}
-
 fn push_expr_to_parent(
     stack: &mut Vec<StackFrame>,
     current_document_items: &mut Vec<SurfaceItem>,
@@ -5628,10 +5123,7 @@ fn push_expr_to_parent(
                             });
                         }
 
-                        // No variadic validation at parse time — variadics are just annotated
-                        // parameters with `...` prefix. The type system handles ordering
-                        // constraints (untyped fallback must be last, etc.) the same way
-                        // match exhaustiveness handles wildcard ordering.
+                        // The parser accepts parameters in any order.
 
                         // Extract parameters from LetDecl bindings
                         *params_consumed = true;
@@ -5698,8 +5190,7 @@ fn push_expr_to_parent(
                         // First expression is not a [let ...] binding list — parse error.
                         // Per unified-bindings invariant: fn parameter list must use [let ...] form.
                         return Err(ParseError {
-                            message: "fn parameter list must use [let ...] form (e.g. [fn [let x y] body]); \
-                                      [fn [x y] body] without `let` is no longer valid"
+                            message: "`[fn ...]` parameter bracket must start with `let` (e.g. `[fn [let x y] body]`)"
                                 .to_string(),
                             span: Some(node.span.clone()),
                         });
@@ -5749,9 +5240,7 @@ fn push_expr_to_parent(
                                         annotation: Some(annotation),
                                         ..
                                     } => {
-                                        // Annotated binding (e.g., `a@Covariant`).
-                                        // Store the full Spanned<Annotation> — the type checker extracts
-                                        // variance and class constraint info from it.
+                                        // Annotated binding (e.g., `a@Covariant`): store name + annotation.
                                         params.push((name.clone(), Some(annotation.clone())));
                                     }
                                     SurfaceExpression::VarRef {
@@ -5767,14 +5256,12 @@ fn push_expr_to_parent(
                             return Ok(());
                         }
                     } else {
-                        // Not a LetDecl. Check if it looks like old-form type params:
-                        // [type [a b c] Body] — a Call with all-lowercase VarRef func and args.
-                        // This pattern is no longer valid; require [type [let a b c] Body].
-                        //
-                        // We only flag this when the first expression is an implied Call
-                        // whose func AND all positional args are lowercase VarRefs (no named args).
-                        // Type expressions like [or Int Null] have uppercase args and are not flagged.
-                        let looks_like_old_form_params = if let SurfaceExpression::Call {
+                        // Not a LetDecl. Check if it looks like a bare-name param list:
+                        // [type [a b c] Body] — an implied Call whose func and all positional
+                        // args are lowercase VarRefs with no named args. This is distinguishable
+                        // from a real type expression like [or Int Null] (which has uppercase args).
+                        // A [let ...] wrapper is required for type parameter lists.
+                        let is_bare_name_param_list = if let SurfaceExpression::Call {
                             func,
                             args,
                             named_args,
@@ -5802,11 +5289,9 @@ fn push_expr_to_parent(
                             false
                         };
 
-                        if looks_like_old_form_params {
+                        if is_bare_name_param_list {
                             return Err(ParseError {
-                                message: "type alias parameter list must use [let ...] form \
-                                    (e.g. [type [let a b] Body]); \
-                                    [type [a b] Body] without `let` is no longer valid"
+                                message: "`[type ...]` parameter bracket must start with `let` (e.g. `[type [let a b] Body]`)"
                                     .to_string(),
                                 span: Some(node.span.clone()),
                             });
@@ -5814,28 +5299,20 @@ fn push_expr_to_parent(
                     }
                 }
 
-                // T-1539: Detect old-form payload constructor syntax.
-                // Two old forms exist:
-                //   (a) Named-arg form: `[CtorName field: Type ...]` — has named args
-                //   (b) Positional-arg form: `[CtorName PositionalType]` — has positional args
-                //
-                // Both are implied Calls whose func is a plain (unannotated) uppercase VarRef.
-                // Any implied Call with an uppercase func inside a [type ...] body is the old form:
-                // in the new syntax, type bodies only accept bare constructor names (VarRef), named
-                // constructors (via pending_key: `Ctor: [fields]`), and [let ...] type params.
+                // Detect an implied Call with an uppercase-named func inside [type ...] body.
+                // Valid type body elements are: bare VarRef (unit constructor), keyed entry
+                // (named constructor via pending_key), and [let ...] type params. An implied Call
+                // whose func is an uppercase VarRef is not a valid type body element.
                 //
                 // Detection is annotation-sensitive:
-                //   - Unannotated func (`Fn` with no `@`): ANY args (positional or named) = old form.
-                //     `[File field: Type]`      — unannotated, named args → old form
-                //     `[Ok a]`                  — unannotated, positional args → old form
-                //   - Annotated func (`Fn@Integer`): ONLY named args = old form.
-                //     `[Node@[...] field: Type]` — annotated, named args → old form
-                //     `[Fn@Integer [Integer Integer]]` — annotated, positional args → function-type alias, allowed
-                // The new form is `CtorName@[annotation]: [fields]` (keyed entry in type body).
+                //   - Unannotated uppercase func: ANY args (positional or named) → invalid.
+                //     `[File field: Type]`      — unannotated, named args → invalid
+                //     `[Ok a]`                  — unannotated, positional args → invalid
+                //   - Annotated uppercase func: ONLY named args → invalid; positional args are
+                //     valid as function-type alias parameters: `[Fn@Integer [Integer Integer]]`.
                 //
-                // Structural alias form (single positional dict with all lowercase-keyed entries)
-                // is not affected — it is a Dict node, not a Call node.
-                let is_old_payload_ctor = match &node.expr {
+                // Dict nodes (structural alias bodies) are not affected — they are not Calls.
+                let is_invalid_call_in_type_body = match &node.expr {
                     SurfaceExpression::Call {
                         func,
                         args,
@@ -5845,14 +5322,14 @@ fn push_expr_to_parent(
                     } => match &func.expr {
                         SurfaceExpression::VarRef {
                             name, annotation, ..
-                        } if crate::eval::is_constructor_name(name) => {
+                        } if name.chars().next().map_or(false, |c| c.is_uppercase()) => {
                             if annotation.is_some() {
-                                // Annotated func: only named args signal the old payload ctor form.
-                                // Positional args are valid as function-type alias parameters,
+                                // Annotated func: only named args are invalid here; positional
+                                // args are valid as function-type alias parameters,
                                 // e.g. `[Fn@Integer [Integer Integer]]`.
                                 !named_args.is_empty()
                             } else {
-                                // Unannotated func: any args (positional or named) = old form.
+                                // Unannotated func: any args (positional or named) are invalid.
                                 !args.is_empty() || !named_args.is_empty()
                             }
                         }
@@ -5860,7 +5337,7 @@ fn push_expr_to_parent(
                     },
                     _ => false,
                 };
-                if is_old_payload_ctor {
+                if is_invalid_call_in_type_body {
                     let (ctor_name, ctor_annotation) = match &node.expr {
                         SurfaceExpression::Call { func, .. } => match &func.expr {
                             SurfaceExpression::VarRef {
@@ -5879,7 +5356,8 @@ fn push_expr_to_parent(
                     };
                     return Err(ParseError {
                         message: format!(
-                            "payload constructor syntax has changed: use `{qualified}: [fields]` instead of `[{qualified} fields]`"
+                            "unexpected call form `[{qualified} ...]` inside `[type ...]`; \
+                             named constructors use keyed entry syntax: `{qualified}: [fields]`"
                         ),
                         span: Some(node.span.clone()),
                     });
@@ -6073,16 +5551,20 @@ fn push_expr_to_parent(
                     Ok(())
                 } else if matches!(node.expr, SurfaceExpression::CaseArm { .. }) {
                     // [case ...] arms are complete (pattern + body in one expression).
-                    // Store as a MatchArm with Wildcard sentinel pattern; the evaluator
-                    // detects SurfaceExpression::CaseArm in the body and calls eval_case_arm directly.
+                    // Store as a MatchArm with Wildcard sentinel pattern (as SurfaceNode) and the CaseArm as body.
                     if pending_pattern_expr.is_some() || pending_pattern.is_some() {
                         return Err(ParseError {
                             message: "match pattern must be followed by `:` and a body before a [case ...] arm".to_string(),
                             span: Some(node.span.clone()),
                         });
                     }
+                    // Create a wildcard SurfaceNode as the pattern placeholder
+                    let wildcard_pattern = mk(
+                        SurfaceExpression::Placeholder(None, None),
+                        node.span.clone(),
+                    );
                     arms.push(SurfaceMatchArm {
-                        pattern: Spanned::new(Pattern::Wildcard, node.span.clone()),
+                        pattern: wildcard_pattern,
                         guard: None,
                         body: vec![node],
                         guard_matchable_binding: crate::ast::MatchableBinding::new(),
@@ -6098,7 +5580,7 @@ fn push_expr_to_parent(
                     *pending_pattern_expr = Some(node);
                     Ok(())
                 } else if pending_pattern.is_some() {
-                    // We have a pending pattern (converted) — this must be the body (first expr)
+                    // We have a pending pattern (raw SurfaceNode) — this must be the body (first expr)
                     let (pattern, guard) = pending_pattern.take().unwrap();
                     arms.push(SurfaceMatchArm {
                         pattern,
@@ -6148,7 +5630,7 @@ fn push_expr_to_parent(
                                 {
                                     params.push(param_name.clone());
                                 }
-                                // Non-identifier params silently skipped; semantic validation in type checker
+                                // Non-identifier params silently skipped.
                             }
                             // Mark header as parsed (name stays None until set by parent Dict frame)
                             *name = Some(String::new());
@@ -6245,8 +5727,7 @@ fn push_expr_to_parent(
             }) => {
                 // LetDecl collects binding expressions.
                 // Each element can be: VarRef (bare binding), Annotated (typed binding),
-                // Rest (variadic), structural test (name: Constructor or [a b]: Constructor),
-                // or named-param-with-default (name: default_value).
+                // Rest (`...` prefixed), or named-with-default (name: default_value).
                 //
                 // `pending_rhs` defers commitment of `pending_key: rhs` pairs until the RHS is
                 // fully assembled. This allows `Result.Ok` (which arrives as VarRef "Result"
@@ -6367,26 +5848,26 @@ fn commit_let_pending(
     };
 
     // Detect if RHS is an uppercase constructor name (bare or qualified).
-    // This form is no longer supported — the `name: Constructor` structural test syntax has been
-    // removed in favour of the 3-arg `[case [let bindings] pattern body]` form (T-1151).
+    // In a [let ...] binding, a named entry whose RHS is an uppercase name is not a valid binding.
     let is_constructor_rhs =
         dot_path_name(&rhs_node).is_some_and(|s| s.starts_with(|c: char| c.is_uppercase()));
 
     match key_node.expr.clone() {
-        // `name: Constructor` — formerly the structural test form; now a parse error.
+        // `name: Constructor` inside [let ...] — RHS is a constructor, not a valid default value.
         SurfaceExpression::VarRef { name: key_name, .. } if is_constructor_rhs => Err(ParseError {
             message: format!(
-                "structural test syntax `{}: ...` removed; \
-                     use [case [let bindings] [Constructor v] body] form instead",
+                "unexpected constructor `{}` as value in `[let ...]` binding `{}: ...`; \
+                 constructor names are not valid binding defaults",
+                dot_path_name(&rhs_node).unwrap_or_default(),
                 key_name
             ),
             span: Some(combined_span),
         }),
 
-        // `[a b]: Constructor` — multi-payload structural test; not valid syntax.
+        // `[a b]: Constructor` inside [let ...] — binding group with constructor RHS.
         SurfaceExpression::LetDecl { .. } if is_constructor_rhs => Err(ParseError {
-            message: "structural test syntax `[...]: Constructor` removed; \
-                      use [case [let bindings] [Constructor v] body] form instead"
+            message: "unexpected `[...]: Constructor` form in `[let ...]` binding; \
+                      constructor names are not valid binding defaults"
                 .to_string(),
             span: Some(rhs_node.span.clone()),
         }),
@@ -6429,8 +5910,8 @@ fn commit_let_pending(
         // `[a b]: default_value` — binding group before colon with a non-constructor RHS;
         // a binding group cannot have a default value.
         SurfaceExpression::LetDecl { .. } => Err(ParseError {
-            message: "binding group `[...]` before `:` is no longer supported; \
-                      use [case [let bindings] pattern body] form for structural tests"
+            message: "unexpected `[...]` binding group before `:` in `[let ...]`; \
+                      binding groups cannot have default values"
                 .to_string(),
             span: Some(rhs_node.span.clone()),
         }),
@@ -6515,8 +5996,7 @@ fn expression_to_annotation(node: &SurfaceNode) -> Annotation {
         } => Annotation::Annotated(name.clone(), Box::new(ann.node.clone())),
         SurfaceExpression::Dict(entries) => Annotation::PropertyDict(entries.clone()),
         // Implied call with VarRef head (e.g. @[Seq Int] parsed as implied call) →
-        // convert to PropertyDict with auto-indexed entries so the type resolver can
-        // detect parameterized alias applications.
+        // convert to PropertyDict: func as key-less entry 0, then each positional arg.
         SurfaceExpression::Call {
             implied: true,
             func,
@@ -6701,10 +6181,9 @@ fn push_value(
             ..
         }) => {
             if let Some(key) = pending_key.take() {
-                // Normalize bare identifier keys to Str at parse time.
-                // VarRef { escaped: false } means the key was written as a bare word (e.g., `foo:`);
-                // it is semantically a string key, not a variable reference.
-                // VarRef { escaped: true } means `$foo:` — a computed key — and passes through.
+                // Normalize bare identifier keys to StringLiteral at parse time.
+                // VarRef { escaped: false } is a bare word (e.g. `foo:`) and normalizes to Str.
+                // VarRef { escaped: true } is `$foo:` — a computed key — and passes through.
                 let key = match &key.expr {
                     // Normalize bare identifier keys (no annotation, not escaped) to Str.
                     // Annotated keys (`myFunc@[doc: "..."]`) are NOT normalized — they retain
@@ -6897,19 +6376,20 @@ fn push_value(
 /// declaration items (`SurfaceItem::Decl`), wraps them in `SurfaceExpression::Decl` so
 /// top-level declarations can be displayed uniformly. For callers needing the raw
 /// `SurfaceProgram`, use `parse()` directly.
-pub fn parse_surface_expression(input: &str) -> Result<Arc<SurfaceNode>, ParseError> {
+pub fn parse_surface_expression(input: &str) -> Result<Arc<SurfaceNode>, TypeDiagnostic> {
     let file = Arc::new(SourceFile {
         path: Arc::from("<expression>"),
         content: Arc::from(input),
     });
-    let output = parse(input, file)?;
+    let output = parse(input, Arc::clone(&file))?;
     let surface = &output.program;
 
     if surface.documents.is_empty() {
-        return Err(ParseError {
-            message: "no documents in input".to_string(),
-            span: Some(crate::rust_span!()),
-        });
+        return Err(TypeDiagnostic::error(
+            "parse-error",
+            "no documents in input",
+            crate::rust_span!(),
+        ));
     }
 
     let first_doc = &surface.documents[0];
@@ -6924,10 +6404,11 @@ pub fn parse_surface_expression(input: &str) -> Result<Arc<SurfaceNode>, ParseEr
                 decl.span.clone(),
             ))
         }
-        None => Err(ParseError {
-            message: "no items in first document".to_string(),
-            span: Some(first_doc.span.clone()),
-        }),
+        None => Err(TypeDiagnostic::error(
+            "parse-error",
+            "no items in first document",
+            first_doc.span.clone(),
+        )),
     }
 }
 
@@ -6936,11 +6417,11 @@ pub fn parse_surface_expression(input: &str) -> Result<Arc<SurfaceNode>, ParseEr
 /// This function ALWAYS succeeds (returns a `ParseOutput`), even when there are parse errors.
 /// Unlike `parse()` (which returns `Err` on fatal errors like lexer failure
 /// or unclosed brackets at top level), this function converts all fatal errors into
-/// `ParseOutput.errors` and returns a synthetic AST.
+/// `ParseOutput.diagnostics` and returns a synthetic AST.
 ///
 /// Errors that occur inside bracket forms are recovered from: the parser substitutes
 /// `SurfaceExpression::Error` nodes and continues. Fatal errors (lexer failure, unclosed brackets at
-/// top level) are also recovered: they are recorded in `ParseOutput.errors` and a minimal
+/// top level) are also recovered: they are recorded in `ParseOutput.diagnostics` and a minimal
 /// empty `File` AST is returned.
 ///
 /// Use this function when you want to report ALL parse errors at once (e.g. in an LSP
@@ -6952,7 +6433,7 @@ pub fn parse_with_recovery(input: &str) -> ParseOutput {
     });
     match parse(input, file) {
         Ok(output) => output,
-        Err(fatal_error) => {
+        Err(fatal_diag) => {
             // Fatal error (lexer failure, unclosed brackets, etc.)
             // Construct a synthetic empty SurfaceProgram with the error recorded.
             let program = SurfaceProgram { documents: vec![] };
@@ -6960,14 +6441,14 @@ pub fn parse_with_recovery(input: &str) -> ParseOutput {
                 leading_comments: BTreeMap::new(),
                 trailing_comments: BTreeMap::new(),
                 blank_before: BTreeMap::new(),
-                errors: vec![fatal_error],
+                diagnostics: vec![fatal_diag],
                 program,
             }
         }
     }
 }
 
-/// Format a parse error with Rust-style rich diagnostics (snippet + caret).
+/// Format a parse diagnostic with Rust-style rich diagnostics (snippet + caret).
 ///
 /// Produces output matching the format of `format_type_diagnostic`:
 /// ```text
@@ -6977,15 +6458,15 @@ pub fn parse_with_recovery(input: &str) -> ParseOutput {
 /// 10 | [invalid syntax here
 ///    |               ^^^^^
 /// ```
-pub fn format_parse_error(err: &ParseError, source: &str, file_name: &str) -> String {
+pub fn format_parse_error(err: &TypeDiagnostic, source: &str, file_name: &str) -> String {
     use crate::error::render_span_snippet;
 
-    // If there's no span, fall back to basic message formatting
-    if err.span.is_none() {
+    // If there are no spans, fall back to basic message formatting
+    if err.spans.is_empty() {
         return format!("error: {}", err.message);
     }
 
-    let span = err.span.clone().unwrap();
+    let span = err.spans[0].0.clone();
     let line = span.start.line;
     let col = span.start.column;
 
@@ -7007,6 +6488,7 @@ pub fn format_parse_error(err: &ParseError, source: &str, file_name: &str) -> St
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::DiagnosticLevel;
 
     fn test_file(src: &str) -> Arc<SourceFile> {
         Arc::new(SourceFile {
@@ -7416,8 +6898,8 @@ mod tests {
 
     #[test]
     fn test_bracket_access_removed_parses_as_two_expressions() {
-        // $a[0] — BracketAccess syntax removed. Now parses as two separate expressions:
-        // VarRef("a") and Dict([Int(0)]). The `[` is always OpenBracket.
+        // $a[0] parses as two separate expressions: VarRef("a") and Dict([Int(0)]).
+        // The `[` is always OpenBracket — bracket access is not part of the grammar.
         let src = "$a[0]";
         let output = parse(src, test_file(src)).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
@@ -7441,7 +6923,7 @@ mod tests {
     // --- Error path tests ---
     //
     // Errors inside bracket forms are now recovered from: parse() returns Ok with
-    // ParseOutput.errors non-empty rather than returning Err. Tests use `output.errors`.
+    // ParseOutput.diagnostics non-empty rather than returning Err. Tests use `output.diagnostics`.
     // Only top-level / structural errors (unmatched ], unclosed [, DocSeparator inside
     // brackets) remain as parse() returning Err.
 
@@ -7450,13 +6932,13 @@ mod tests {
         let src = "[call]";
         let output = parse(src, test_file(src)).expect("recovery should succeed");
         assert!(
-            !output.errors.is_empty(),
+            !output.diagnostics.is_empty(),
             "expected recovered error for empty call form"
         );
         assert!(
-            output.errors[0].message.contains("call form requires"),
+            output.diagnostics[0].message.contains("call form requires"),
             "expected error about call form requiring a function, got: {}",
-            output.errors[0].message
+            output.diagnostics[0].message
         );
     }
 
@@ -7466,13 +6948,13 @@ mod tests {
         let src = "[call f: $x]";
         let output = parse(src, test_file(src)).expect("recovery should succeed");
         assert!(
-            !output.errors.is_empty(),
+            !output.diagnostics.is_empty(),
             "expected recovered error for named-arg func"
         );
         assert!(
-            output.errors[0].message.contains("named argument"),
+            output.diagnostics[0].message.contains("named argument"),
             "expected error about named argument, got: {}",
-            output.errors[0].message
+            output.diagnostics[0].message
         );
     }
 
@@ -7482,13 +6964,13 @@ mod tests {
         let src = "[a:]";
         let output = parse(src, test_file(src)).expect("recovery should succeed");
         assert!(
-            !output.errors.is_empty(),
+            !output.diagnostics.is_empty(),
             "expected recovered error for key without value"
         );
         assert!(
-            output.errors[0].message.contains("key without value"),
+            output.diagnostics[0].message.contains("key without value"),
             "expected 'key without value' error, got: {}",
-            output.errors[0].message
+            output.diagnostics[0].message
         );
     }
 
@@ -7498,13 +6980,13 @@ mod tests {
         let src = "[call $f x:]";
         let output = parse(src, test_file(src)).expect("recovery should succeed");
         assert!(
-            !output.errors.is_empty(),
+            !output.diagnostics.is_empty(),
             "expected recovered error for named arg without value"
         );
         assert!(
-            output.errors[0].message.contains("without value"),
+            output.diagnostics[0].message.contains("without value"),
             "expected 'without value' error for named arg, got: {}",
-            output.errors[0].message
+            output.diagnostics[0].message
         );
     }
 
@@ -7513,15 +6995,15 @@ mod tests {
         let src = "[type]";
         let output = parse(src, test_file(src)).expect("recovery should succeed");
         assert!(
-            !output.errors.is_empty(),
+            !output.diagnostics.is_empty(),
             "expected recovered error for empty type-alias"
         );
         assert!(
-            output.errors[0]
+            output.diagnostics[0]
                 .message
                 .contains("type-alias form requires"),
             "expected error about type-alias requiring a type expression, got: {}",
-            output.errors[0].message
+            output.diagnostics[0].message
         );
     }
 
@@ -7531,17 +7013,17 @@ mod tests {
         // consumes the ] so the outer Dict bracket is unclosed → "unclosed bracket" error.
         let output = parse_with_recovery("[@]");
         assert!(
-            !output.errors.is_empty(),
+            !output.diagnostics.is_empty(),
             "expected recovered error for bare @ with no annotation"
         );
         // The AnnotationCollect frame consumes the ] (its value or the close),
         // leaving the outer Dict bracket without a close.
         assert!(
-            output.errors[0].message.contains("unclosed bracket")
-                || output.errors[0].message.contains("extra annotation")
-                || output.errors[0].message.contains("annotation"),
+            output.diagnostics[0].message.contains("unclosed bracket")
+                || output.diagnostics[0].message.contains("extra annotation")
+                || output.diagnostics[0].message.contains("annotation"),
             "expected error related to unclosed bracket or annotation, got: {}",
-            output.errors[0].message
+            output.diagnostics[0].message
         );
     }
 
@@ -7551,14 +7033,16 @@ mod tests {
         let src = "[@Number]";
         let output = parse(src, test_file(src)).expect("recovery should succeed");
         assert!(
-            !output.errors.is_empty(),
+            !output.diagnostics.is_empty(),
             "expected recovered error for type-assert without expression"
         );
         assert!(
-            output.errors[0].message.contains("type-assert form")
-                && output.errors[0].message.contains("requires an expression"),
+            output.diagnostics[0].message.contains("type-assert form")
+                && output.diagnostics[0]
+                    .message
+                    .contains("requires an expression"),
             "expected error about missing expression, got: {}",
-            output.errors[0].message
+            output.diagnostics[0].message
         );
     }
 
@@ -7569,37 +7053,37 @@ mod tests {
         let src = "[fn :]";
         let output = parse(src, test_file(src)).expect("recovery should succeed");
         assert!(
-            !output.errors.is_empty(),
+            !output.diagnostics.is_empty(),
             "expected recovered error for colon in fn form"
         );
         assert!(
-            output.errors[0].message.contains("key without value")
-                || output.errors[0].message.contains("`:` without a key")
-                || output.errors[0]
+            output.diagnostics[0].message.contains("key without value")
+                || output.diagnostics[0].message.contains("`:` without a key")
+                || output.diagnostics[0]
                     .message
                     .contains("`:` is not valid inside a")
-                || output.errors[0]
+                || output.diagnostics[0]
                     .message
                     .contains("`:` at document top level"),
             "expected key-related error for [fn :], got: {}",
-            output.errors[0].message
+            output.diagnostics[0].message
         );
         // Also test the true "colon outside dict/call" case: colon in a TypeAlias frame
         let src2 = "[type x :]";
         let output2 = parse(src2, test_file(src2)).expect("recovery should succeed");
         assert!(
-            !output2.errors.is_empty(),
+            !output2.diagnostics.is_empty(),
             "expected recovered error for colon in type-alias form"
         );
         assert!(
-            output2.errors[0]
+            output2.diagnostics[0]
                 .message
                 .contains("`:` is not valid inside a type form")
-                || output2.errors[0]
+                || output2.diagnostics[0]
                     .message
                     .contains("must follow an uppercase constructor name"),
             "expected error about colon in wrong context for [type x :], got: {}",
-            output2.errors[0].message
+            output2.diagnostics[0].message
         );
     }
 
@@ -7609,13 +7093,13 @@ mod tests {
         let src = "[:]";
         let output = parse(src, test_file(src)).expect("recovery should succeed");
         assert!(
-            !output.errors.is_empty(),
+            !output.diagnostics.is_empty(),
             "expected recovered error for colon without key"
         );
         assert!(
-            output.errors[0].message.contains("`:` without a key"),
+            output.diagnostics[0].message.contains("`:` without a key"),
             "expected error about colon without key, got: {}",
-            output.errors[0].message
+            output.diagnostics[0].message
         );
     }
 
@@ -7625,9 +7109,9 @@ mod tests {
         let src = "[fn [let] 1 2]";
         let output = parse(src, test_file(src)).expect("parse should succeed");
         assert!(
-            output.errors.is_empty(),
+            output.diagnostics.is_empty(),
             "multi-expression fn bodies should parse successfully via Sequential, got errors: {:?}",
-            output.errors
+            output.diagnostics
         );
         // The fn body should be wrapped in SurfaceExpression::Sequential
         let items = surf_items(&output.program.documents[0].node);
@@ -7649,9 +7133,9 @@ mod tests {
         let src = "[type 1 2]";
         let output = parse(src, test_file(src)).expect("parse should succeed");
         assert!(
-            output.errors.is_empty(),
+            output.diagnostics.is_empty(),
             "multi-entry [type T1 T2 ...] should parse without errors, got: {:?}",
-            output.errors
+            output.diagnostics
         );
         // [type ...] is a declaration — access via SurfaceItem::Decl
         let items = &output.program.documents[0].node.items;
@@ -7685,46 +7169,46 @@ mod tests {
     }
 
     #[test]
-    fn test_type_alias_old_form_params_rejected() {
-        // [type [a b] Body] — old-form params (no `let`) must be rejected
+    fn test_type_alias_bare_name_params_rejected() {
+        // [type [a b] Body] — bare-name params without `let` must be rejected
         let src = "[type [a b] Int]";
         let output = parse(src, test_file(src)).expect("recovery should succeed");
         assert!(
-            !output.errors.is_empty(),
-            "expected error for old-form type params [type [a b] Int], got no errors"
+            !output.diagnostics.is_empty(),
+            "expected error for [type [a b] Int] (missing `let`), got no errors"
         );
         assert!(
-            output.errors[0].message.contains("[let ...] form"),
-            "expected error about [let ...] form, got: {}",
-            output.errors[0].message
+            output.diagnostics[0].message.contains("must start with"),
+            "expected error about missing `let`, got: {}",
+            output.diagnostics[0].message
         );
     }
 
     #[test]
-    fn test_type_alias_old_form_single_param_rejected() {
-        // [type [a] Body] — old-form single param (no `let`) must be rejected
+    fn test_type_alias_bare_name_single_param_rejected() {
+        // [type [a] Body] — bare-name single param without `let` must be rejected
         let src = "[type [a] Int]";
         let output = parse(src, test_file(src)).expect("recovery should succeed");
         assert!(
-            !output.errors.is_empty(),
-            "expected error for old-form type params [type [a] Int], got no errors"
+            !output.diagnostics.is_empty(),
+            "expected error for [type [a] Int] (missing `let`), got no errors"
         );
         assert!(
-            output.errors[0].message.contains("[let ...] form"),
-            "expected error about [let ...] form, got: {}",
-            output.errors[0].message
+            output.diagnostics[0].message.contains("must start with"),
+            "expected error about missing `let`, got: {}",
+            output.diagnostics[0].message
         );
     }
 
     #[test]
     fn test_type_alias_let_params_accepted() {
-        // [type [let a b] Body] — new form with `let` must be accepted
+        // [type [let a b] Body] — `let`-wrapped params must be accepted
         let src = "[type [let a b] Int]";
         let output = parse(src, test_file(src)).expect("parse failed");
         assert!(
-            output.errors.is_empty(),
+            output.diagnostics.is_empty(),
             "[type [let a b] Body] should parse without errors, got: {:?}",
-            output.errors
+            output.diagnostics
         );
         let items = &output.program.documents[0].node.items;
         assert_eq!(items.len(), 1, "expected one item");
@@ -7747,9 +7231,9 @@ mod tests {
         let output =
             parse("[type [let] Int]", test_file("[type [let] Int]")).expect("parse failed");
         assert!(
-            output.errors.is_empty(),
+            output.diagnostics.is_empty(),
             "[type [let] Body] should parse without errors, got: {:?}",
-            output.errors
+            output.diagnostics
         );
         let items = &output.program.documents[0].node.items;
         match &items[0] {
@@ -7765,13 +7249,13 @@ mod tests {
 
     #[test]
     fn test_type_alias_uppercase_type_expr_not_flagged() {
-        // [type [or Int Null]] — type expression with uppercase names is NOT flagged as old-form params
+        // [type [or Int Null]] — type expression with uppercase names is NOT rejected as a bare-name param list
         let output =
             parse("[type [or Int Null]]", test_file("[type [or Int Null]]")).expect("parse failed");
         assert!(
-            output.errors.is_empty(),
+            output.diagnostics.is_empty(),
             "[type [or Int Null]] should parse without errors, got: {:?}",
-            output.errors
+            output.diagnostics
         );
         let items = &output.program.documents[0].node.items;
         match &items[0] {
@@ -7824,15 +7308,15 @@ mod tests {
         // [fn] — fn with no body
         let output = parse("[fn]", test_file("[fn]")).expect("recovery should succeed");
         assert!(
-            !output.errors.is_empty(),
+            !output.diagnostics.is_empty(),
             "expected recovered error for empty fn form"
         );
         assert!(
-            output.errors[0]
+            output.diagnostics[0]
                 .message
                 .contains("fn form requires a body expression"),
             "expected error about fn requiring a body, got: {}",
-            output.errors[0].message
+            output.diagnostics[0].message
         );
     }
 
@@ -8040,13 +7524,13 @@ mod tests {
         let output =
             parse("[call $f :]", test_file("[call $f :]")).expect("recovery should succeed");
         assert!(
-            !output.errors.is_empty(),
+            !output.diagnostics.is_empty(),
             "expected recovered error for colon without name in call frame"
         );
         assert!(
-            output.errors[0].message.contains("without a name"),
+            output.diagnostics[0].message.contains("without a name"),
             "expected error about colon without a name in call frame, got: {}",
-            output.errors[0].message
+            output.diagnostics[0].message
         );
     }
 
@@ -8056,14 +7540,16 @@ mod tests {
         // → error because there's nothing to annotate.
         let output = parse("[@123]", test_file("[@123]")).expect("recovery should succeed");
         assert!(
-            !output.errors.is_empty(),
+            !output.diagnostics.is_empty(),
             "expected recovered error for floating annotation with no expression"
         );
         assert!(
-            output.errors[0].message.contains("type-assert form")
-                || output.errors[0].message.contains("requires an expression"),
+            output.diagnostics[0].message.contains("type-assert form")
+                || output.diagnostics[0]
+                    .message
+                    .contains("requires an expression"),
             "expected error about missing expression after annotation, got: {}",
-            output.errors[0].message
+            output.diagnostics[0].message
         );
     }
 
@@ -8427,10 +7913,8 @@ mod tests {
 
     #[test]
     fn test_fn_param_variadic_not_last() {
-        // [let ...args x] — variadic followed by fixed param: parser accepts this.
-        // Ordering constraints (untyped fallback must be last) are enforced by the
-        // type system, not the parser. Parameters are match patterns — the parser is
-        // as general and permissive as possible.
+        // [let ...args x] — `...` param followed by a plain param. The parser accepts
+        // any parameter ordering.
         let result = parse(
             "[fn [let ...args x] $x]",
             test_file("[fn [let ...args x] $x]"),
@@ -8443,9 +7927,8 @@ mod tests {
 
     #[test]
     fn test_fn_multiple_variadic() {
-        // [let ...args ...rest] — multiple variadic params: parser accepts this.
-        // From the parser's perspective, variadics are just annotated things with `...` prefix.
-        // The type system handles multi-variadic routing via match semantics.
+        // [let ...args ...rest] — two `...` params. The parser accepts any number of
+        // `...`-prefixed params in any position.
         let result = parse(
             "[fn [let ...args ...rest] $x]",
             test_file("[fn [let ...args ...rest] $x]"),
@@ -8455,9 +7938,9 @@ mod tests {
 
     #[test]
     fn test_range_outside_bracket_access() {
-        // `..` always emits two consecutive Dot tokens — `Token::Range` has been removed.
-        // `1..5` lexes as Int(1), Dot, Dot, Int(5). The first Dot triggers dot-access on Int(1)
-        // but the next token is another Dot (not an identifier) → parse error at top level.
+        // `..` emits two consecutive Dot tokens. `1..5` lexes as Int(1), Dot, Dot, Int(5).
+        // The first Dot triggers dot-access on Int(1) but the next token is another Dot
+        // (not an identifier) → parse error at top level.
         // At top level (stack empty), the parser returns Err rather than recovering.
         let err = parse("1..5", test_file("1..5")).unwrap_err();
         assert!(
@@ -8785,18 +8268,18 @@ mod tests {
         let output =
             parse("[a: 1  a: 2]", test_file("[a: 1  a: 2]")).expect("recovery should succeed");
         assert!(
-            !output.errors.is_empty(),
+            !output.diagnostics.is_empty(),
             "expected recovered error for duplicate key"
         );
         assert!(
-            output.errors[0].message.contains("duplicate key"),
+            output.diagnostics[0].message.contains("duplicate key"),
             "expected 'duplicate key' in error, got: {}",
-            output.errors[0].message
+            output.diagnostics[0].message
         );
         assert!(
-            output.errors[0].message.contains("\"a\""),
+            output.diagnostics[0].message.contains("\"a\""),
             "expected key name in error, got: {}",
-            output.errors[0].message
+            output.diagnostics[0].message
         );
     }
 
@@ -8958,13 +8441,13 @@ mod tests {
         let output =
             parse("[call\n: x]", test_file("[call\n: x]")).expect("recovery should succeed");
         assert!(
-            !output.errors.is_empty(),
+            !output.diagnostics.is_empty(),
             "expected recovered error for colon without name in call form"
         );
         assert!(
-            output.errors[0].message.contains("`:` without a name"),
+            output.diagnostics[0].message.contains("`:` without a name"),
             "expected error about colon without name, got: {}",
-            output.errors[0].message
+            output.diagnostics[0].message
         );
     }
 
@@ -8977,11 +8460,15 @@ mod tests {
         // [a:] — key without value; recovered with SurfaceExpression::Error node
         let src = "[a:]";
         let output = parse(src, test_file(src)).expect("recovery should succeed");
-        assert_eq!(output.errors.len(), 1, "expected exactly 1 recovered error");
+        assert_eq!(
+            output.diagnostics.len(),
+            1,
+            "expected exactly 1 recovered error"
+        );
         assert!(
-            output.errors[0].message.contains("key without value"),
+            output.diagnostics[0].message.contains("key without value"),
             "expected 'key without value' error, got: {}",
-            output.errors[0].message
+            output.diagnostics[0].message
         );
         // The document should contain one expression (the SurfaceExpression::Error node)
         let items = surf_items(&output.program.documents[0].node);
@@ -9000,10 +8487,14 @@ mod tests {
         // Two consecutive broken bracket forms at document level
         let output = parse("[a:] [b:]", test_file("[a:] [b:]")).expect("recovery should succeed");
         assert_eq!(
-            output.errors.len(),
+            output.diagnostics.len(),
             2,
             "expected 2 recovered errors, got {:?}",
-            output.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+            output
+                .diagnostics
+                .iter()
+                .map(|e| &e.message)
+                .collect::<Vec<_>>()
         );
         let items = surf_items(&output.program.documents[0].node);
         assert_eq!(
@@ -9029,11 +8520,11 @@ mod tests {
         // [outer: [inner:]] — inner bracket has key without value; outer should still parse
         let output = parse("[outer: [inner:]]", test_file("[outer: [inner:]]"))
             .expect("recovery should succeed");
-        assert_eq!(output.errors.len(), 1, "expected 1 recovered error");
+        assert_eq!(output.diagnostics.len(), 1, "expected 1 recovered error");
         assert!(
-            output.errors[0].message.contains("key without value"),
+            output.diagnostics[0].message.contains("key without value"),
             "expected 'key without value' error, got: {}",
-            output.errors[0].message
+            output.diagnostics[0].message
         );
         // The outer dict should have one entry
         let items = surf_items(&output.program.documents[0].node);
@@ -9062,9 +8553,9 @@ mod tests {
     fn test_parse_with_recovery_valid_input() {
         let output = parse_with_recovery("[a: 1 b: 2]");
         assert!(
-            output.errors.is_empty(),
+            output.diagnostics.is_empty(),
             "expected no errors for valid input, got: {:?}",
-            output.errors
+            output.diagnostics
         );
         let items = surf_items(&output.program.documents[0].node);
         assert_eq!(items.len(), 1);
@@ -9075,11 +8566,13 @@ mod tests {
     #[test]
     fn test_parse_with_recovery_error_input() {
         let output = parse_with_recovery("[fn]");
-        assert_eq!(output.errors.len(), 1, "expected 1 recovered error");
+        assert_eq!(output.diagnostics.len(), 1, "expected 1 recovered error");
         assert!(
-            output.errors[0].message.contains("fn form requires a body"),
+            output.diagnostics[0]
+                .message
+                .contains("fn form requires a body"),
             "expected fn-body error, got: {}",
-            output.errors[0].message
+            output.diagnostics[0].message
         );
     }
 
@@ -9087,11 +8580,11 @@ mod tests {
     #[test]
     fn test_parse_with_recovery_fatal_error() {
         let output = parse_with_recovery("[");
-        assert_eq!(output.errors.len(), 1, "expected 1 fatal error");
+        assert_eq!(output.diagnostics.len(), 1, "expected 1 fatal error");
         assert!(
-            output.errors[0].message.contains("unclosed bracket"),
+            output.diagnostics[0].message.contains("unclosed bracket"),
             "expected unclosed-bracket error, got: {}",
-            output.errors[0].message
+            output.diagnostics[0].message
         );
         assert_eq!(
             output.program.documents.len(),
@@ -9107,11 +8600,15 @@ mod tests {
         // Should recover with a partial dict containing the valid entry plus an error entry
         let output =
             parse("[a: 1  a: 2]", test_file("[a: 1  a: 2]")).expect("recovery should succeed");
-        assert_eq!(output.errors.len(), 1, "expected exactly 1 recovered error");
+        assert_eq!(
+            output.diagnostics.len(),
+            1,
+            "expected exactly 1 recovered error"
+        );
         assert!(
-            output.errors[0].message.contains("duplicate key"),
+            output.diagnostics[0].message.contains("duplicate key"),
             "expected 'duplicate key' error, got: {}",
-            output.errors[0].message
+            output.diagnostics[0].message
         );
 
         let items = surf_items(&output.program.documents[0].node);
@@ -9201,8 +8698,8 @@ mod tests {
 
     #[test]
     fn test_underscore_exclusion_positions() {
-        // Verify that $_ in exclusion positions (dict key) is parsed as VarRef.
-        // Bracket access and range access syntax have been removed.
+        // Verify that $_ in key position ([$_: 42]) is parsed as VarRef.
+        // Bracket access and range access are not part of the grammar.
 
         // $_ in dict key position: [$_: 42]
         let expr = parse_surf_node("[$_: 42]");
@@ -9574,10 +9071,13 @@ mod tests {
 
     #[test]
     fn test_format_parse_error_no_span() {
-        // Create a parse error without a span
-        let err = ParseError {
+        // Create a parse diagnostic without spans (empty spans vec → no-span fallback)
+        let err = TypeDiagnostic {
+            level: DiagnosticLevel::Err,
+            kind: "parse-error",
             message: "test error".to_string(),
-            span: None,
+            spans: vec![],
+            notes: vec![],
         };
 
         // Format it
@@ -9774,9 +9274,9 @@ mod tests {
         // [let [let x y]] — outer LetDecl with one binding: an inner LetDecl
         let output = parse("[let [let x y]]", test_file("[let [let x y]]")).expect("parse failed");
         assert!(
-            output.errors.is_empty(),
+            output.diagnostics.is_empty(),
             "expected no parse errors for [let [let x y]], got: {:?}",
-            output.errors
+            output.diagnostics
         );
         let items = surf_items(&output.program.documents[0].node);
         assert_eq!(items.len(), 1, "expected one top-level expression");
@@ -9842,18 +9342,19 @@ mod tests {
     /// earlier that didn't drain), that stale frame would intercept subsequent `:` or value tokens.
     ///
     /// This test exercises the minimal reproducer from test-loader.llt line 64:
-    ///   `[fn [let b] [match b [@Integer _]: b _: 1]]`
+    ///   `[fn [let b] [match b [@Integer ...]: b ...: 1]]`
     #[test]
     fn test_type_assert_in_match_arm_pattern() {
         // This is the minimal form of bool->int from test-loader.llt line 64.
         // [@Integer _] is a TypeAssert pattern in a match arm — it must parse cleanly.
-        let src_type_assert = "[x: [fn [let b] [match b Boolean.False: 0 [@Integer _]: b _: 1]] x]";
+        let src_type_assert =
+            "[x: [fn [let b] [match b Boolean.False: 0 [@Integer ...]: b ...: 1]] x]";
         let output =
             parse(src_type_assert, test_file(src_type_assert)).expect("parse should succeed");
         assert!(
-            output.errors.is_empty(),
+            output.diagnostics.is_empty(),
             "expected no parse errors, got: {:?}",
-            output.errors
+            output.diagnostics
         );
         let items = surf_items(&output.program.documents[0].node);
         assert_eq!(items.len(), 1, "expected 1 top-level expression (Dict)");
@@ -9887,12 +9388,12 @@ mod tests {
     fn test_type_assert_match_arm_followed_by_keyed_entry() {
         // This matches the shape of the test-loader.llt failure: after a fn containing a
         // match with [@Type _] arm, the NEXT entry in the outer dict must parse correctly.
-        let src_arm_keyed = "[bool->int: [fn [let b] [match b Boolean.False: 0 [@Integer _]: b _: 1]] typecheck-docs: 42]";
+        let src_arm_keyed = "[bool->int: [fn [let b] [match b Boolean.False: 0 [@Integer ...]: b ...: 1]] typecheck-docs: 42]";
         let output = parse(src_arm_keyed, test_file(src_arm_keyed)).expect("parse should succeed");
         assert!(
-            output.errors.is_empty(),
+            output.diagnostics.is_empty(),
             "expected no parse errors for match-with-type-assert followed by keyed entry, got: {:?}",
-            output.errors
+            output.diagnostics
         );
         let items = surf_items(&output.program.documents[0].node);
         assert_eq!(items.len(), 1);
@@ -9928,9 +9429,9 @@ mod tests {
         let output =
             parse(src_annotated_key, test_file(src_annotated_key)).expect("parse should succeed");
         assert!(
-            output.errors.is_empty(),
+            output.diagnostics.is_empty(),
             "expected no errors for key@[annotation]: val, got: {:?}",
-            output.errors
+            output.diagnostics
         );
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
@@ -9957,9 +9458,9 @@ mod tests {
         let src = "[whenM: [fn@[return: Unknown  doc: \"\"\"\nMultiline doc.\n\"\"\"] [let app cond action]\n  [if cond action [app.pure []]]]  other: 42]";
         let output = parse_with_recovery(src);
         assert!(
-            output.errors.is_empty(),
+            output.diagnostics.is_empty(),
             "fn@[multiline-annotation] lost its frame: {:?}",
-            output.errors
+            output.diagnostics
         );
     }
 
@@ -9969,9 +9470,9 @@ mod tests {
         let src = "[f@[doc: \"x\"]: [fn@[bind: [a]  return: a] [let p d xs] xs]  other: 42]";
         let output = parse_with_recovery(src);
         assert!(
-            output.errors.is_empty(),
+            output.diagnostics.is_empty(),
             "fn@[bind: [a] return: a] lost its frame: {:?}",
-            output.errors
+            output.diagnostics
         );
     }
 
@@ -9982,9 +9483,9 @@ mod tests {
         let src = "[range@[return: Integer  doc: \"\"\"\nMultiline doc.\n\"\"\"]: [fn [let x] x]  other: 42]";
         let output = parse(src, test_file(src)).expect("parse should succeed");
         assert!(
-            output.errors.is_empty(),
+            output.diagnostics.is_empty(),
             "expected no errors for key@[multiline-annotation]: val, got: {:?}",
-            output.errors
+            output.diagnostics
         );
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
@@ -10003,67 +9504,5 @@ mod tests {
             }
             other => panic!("expected Dict, got {other:?}"),
         }
-    }
-
-    /// Binary-search for the exact line in prelude.llt where the Dict frame is lost.
-    /// Reports the first line that causes a colon-at-top-level error when parsing lines 806..N.
-    #[test]
-    fn test_find_prelude_frame_loss_line() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/stdlib/prelude.llt");
-        let content = std::fs::read_to_string(path).expect("failed to read prelude.llt");
-        let lines: Vec<&str> = content.lines().collect();
-
-        fn has_frame_loss(lines: &[&str], start: usize, end: usize) -> bool {
-            // start/end are 1-based line numbers (inclusive)
-            let mut src: String = lines
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| *i + 1 >= start && *i + 1 <= end)
-                .map(|(_, l)| *l)
-                .collect::<Vec<_>>()
-                .join("\n");
-            src.push_str("\ntest-key: 42\n]");
-            let output = crate::parser::parse_with_recovery(&src);
-            output.errors.iter().any(|e| {
-                e.message.contains("`:` at document top level")
-                    || e.message.contains("`:` is not valid inside")
-            })
-        }
-
-        let dict_start = 820; // opening [ of the second dict
-        let dict_end = lines.len().saturating_sub(2); // exclude the closing ] of the dict
-
-        if !has_frame_loss(&lines, dict_start, dict_end) {
-            // No issue — test passes
-            return;
-        }
-
-        // Binary search for the first line that introduces the frame loss
-        let mut lo = dict_start;
-        let mut hi = dict_end;
-        while lo < hi {
-            let mid = (lo + hi) / 2;
-            if has_frame_loss(&lines, dict_start, mid) {
-                hi = mid;
-            } else {
-                lo = mid + 1;
-            }
-        }
-
-        // lo is the first line that, when included, causes frame loss.
-        // Show the line and surrounding context.
-        let ctx_start = lo.saturating_sub(3).max(dict_start);
-        let ctx_end = (lo + 3).min(dict_end);
-        let context: Vec<String> = lines
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| *i + 1 >= ctx_start && *i + 1 <= ctx_end)
-            .map(|(i, l)| format!("{:4}: {}", i + 1, l))
-            .collect();
-        panic!(
-            "Parser loses Dict frame at prelude.llt line {}.\nContext:\n{}\n",
-            lo,
-            context.join("\n")
-        );
     }
 }

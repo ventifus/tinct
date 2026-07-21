@@ -788,7 +788,7 @@ Constructor patterns use the same dot syntax in pattern head position:
   [Result.Error e]: [log e]]
 ```
 
-Dot-access in pattern head position is syntactically assembled by the parser via `flatten_dot_access_to_tag` in `src/ast.rs`. Bare uppercase words in constructor patterns are also recognized and rewritten to their qualified form by `typecheck_match.rs`.
+Dot-access in pattern head position is syntactically assembled by the parser via `flatten_dot_access_to_tag` in `src/ast.rs`. Bare uppercase words in pattern position are treated as pin comparisons — they match only if the scrutinee equals the in-scope value of that name.
 
 **Constructor injection in expression position** — bare `Ok`, `Error`, `Some`, `None` work in expression position because `inject_adt_constructors_expr` (in `src/desugar.rs`) rewrites each `[type ...]` declaration to also inject its constructors as sibling dict entries. For example, declaring `Result: [type Ok: [value: a] Error: [msg: String]]` causes `Ok` and `Error` to be injected as callable constructor functions alongside `Result` in the enclosing scope. No separate prelude aliases are needed — and none exist (adding them would cause E030 duplicate key). B-340 tracks the type-checker UX limitation that these injected names are not currently visible to the type checker, which produces spurious T002 "undefined variable" warnings for bare `Ok`/`Error`/`Some`/`None` in user code.
 
@@ -830,7 +830,7 @@ data@{_@String : Int}             # String keys, Int values
 
 ```tinct
 Absent: [type Absent]
-absent?: [fn@Boolean [let x@Unknown] [match x Absent.Absent: true  _: false]]
+absent?: [fn@Boolean [let x@Unknown] [match x Absent.Absent: true  ...: false]]
 ```
 
 `[or Absent T]` is the structural optional type. Pattern matching is the canonical narrowing form:
@@ -838,7 +838,7 @@ absent?: [fn@Boolean [let x@Unknown] [match x Absent.Absent: true  _: false]]
 ```tinct
 [match x
   Absent.Absent:  "missing"
-  _:              "present"]
+  ...:            "present"]
 ```
 
 Builtins that return a missing value (`get?`, `env`) return `Absent.Absent` rather than `[]`. Testing with `absent?` or pattern matching on `Absent.Absent` is correct; `null?` checks only for `[]` (empty collection) and is not interchangeable. Note: `head` raises on `Seq.End` rather than returning `Absent.Absent`. `get-in?` returns `Absent.Absent` if any key in the path is missing; signature: `Dict -> [Seq String] -> Any`. Example: `[get-in? dict ["a" "b" "c"]]` (implemented in the prelude, T-1047, S-855).

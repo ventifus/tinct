@@ -341,132 +341,7 @@ fn params_to_list_dict(
     Value::Dict(map)
 }
 
-/// Serialize a Pattern to a dict Value in the format expected by dict_to_pattern.
-fn pattern_to_value(
-    pat: &crate::ast::Spanned<crate::ast::Pattern>,
-    ctx: &std::sync::Arc<crate::eval::EvalContext>,
-) -> Value {
-    use crate::ast::{LiteralPattern, Pattern};
-    use crate::value::{string_val, Thunk};
-    use indexmap::IndexMap;
-
-    let span = rust_span!();
-    let mk_str = |s: &str| string_val(s);
-    let alloc = |v: Value| ctx.alloc_thunk(0, Arc::new(Thunk::value(v, span.clone())));
-
-    let mut d: IndexMap<crate::value::HashableValue, crate::value::ThunkId> = IndexMap::new();
-
-    match &pat.node {
-        Pattern::Wildcard => {
-            d.insert(
-                crate::value::HashableValue::Str("type".into()),
-                alloc(mk_str("wildcard")),
-            );
-        }
-        Pattern::Pin(name, _) => {
-            d.insert(
-                crate::value::HashableValue::Str("type".into()),
-                alloc(mk_str("variable")),
-            );
-            d.insert(
-                crate::value::HashableValue::Str("name".into()),
-                alloc(mk_str(name)),
-            );
-        }
-        Pattern::Literal(lit) => {
-            d.insert(
-                crate::value::HashableValue::Str("type".into()),
-                alloc(mk_str("literal")),
-            );
-            let val = match lit {
-                LiteralPattern::Int(n) => Value::Int(*n),
-                LiteralPattern::U64(n) => Value::U64(*n),
-                LiteralPattern::Float(f) => Value::Float(*f),
-                LiteralPattern::Str(s) => string_val(s),
-            };
-            d.insert(crate::value::HashableValue::Str("value".into()), alloc(val));
-        }
-        Pattern::Dict { fields, rest } => {
-            d.insert(
-                crate::value::HashableValue::Str("type".into()),
-                alloc(mk_str("dict")),
-            );
-            let mut fields_map: IndexMap<crate::value::HashableValue, crate::value::ThunkId> =
-                IndexMap::new();
-            for (i, (key, sub_pat)) in fields.iter().enumerate() {
-                let mut field_dict: IndexMap<crate::value::HashableValue, crate::value::ThunkId> =
-                    IndexMap::new();
-                field_dict.insert(
-                    crate::value::HashableValue::Str("key".into()),
-                    alloc(mk_str(key)),
-                );
-                field_dict.insert(
-                    crate::value::HashableValue::Str("pattern".into()),
-                    alloc(pattern_to_value(sub_pat, ctx)),
-                );
-                fields_map.insert(
-                    crate::value::HashableValue::Int(i as i64),
-                    alloc(Value::Dict(field_dict)),
-                );
-            }
-            d.insert(
-                crate::value::HashableValue::Str("fields".into()),
-                alloc(Value::Dict(fields_map)),
-            );
-            d.insert(
-                crate::value::HashableValue::Str("rest".into()),
-                alloc(Value::Int(if *rest { 1 } else { 0 })),
-            );
-        }
-        Pattern::Constructor { tag, binding } => {
-            d.insert(
-                crate::value::HashableValue::Str("type".into()),
-                alloc(mk_str("constructor")),
-            );
-            d.insert(
-                crate::value::HashableValue::Str("tag".into()),
-                alloc(mk_str(tag)),
-            );
-            if let Some(sub_pat) = binding {
-                d.insert(
-                    crate::value::HashableValue::Str("binding".into()),
-                    alloc(pattern_to_value(sub_pat, ctx)),
-                );
-            } else {
-                d.insert(
-                    crate::value::HashableValue::Str("binding".into()),
-                    alloc(Value::Dict(IndexMap::new())),
-                );
-            }
-        }
-        Pattern::Or(pats) => {
-            d.insert(
-                crate::value::HashableValue::Str("type".into()),
-                alloc(mk_str("or")),
-            );
-            let mut pats_map: IndexMap<crate::value::HashableValue, crate::value::ThunkId> =
-                IndexMap::new();
-            for (i, sub_pat) in pats.iter().enumerate() {
-                pats_map.insert(
-                    crate::value::HashableValue::Int(i as i64),
-                    alloc(pattern_to_value(sub_pat, ctx)),
-                );
-            }
-            d.insert(
-                crate::value::HashableValue::Str("patterns".into()),
-                alloc(Value::Dict(pats_map)),
-            );
-        }
-        _ => {
-            // Unsupported pattern type — store as wildcard to avoid conversion errors
-            d.insert(
-                crate::value::HashableValue::Str("type".into()),
-                alloc(mk_str("wildcard")),
-            );
-        }
-    }
-    Value::Dict(d)
-}
+// pattern_to_value deleted (T-1750) — patterns are now Arc<SurfaceNode>, serialized via surface_node_to_expr_variant.
 
 /// Build a list Dict from SurfaceMatchArm nodes.
 fn match_arms_to_list_dict(
@@ -478,7 +353,8 @@ fn match_arms_to_list_dict(
     let span = rust_span!();
     let mut map = indexmap::IndexMap::new();
     for (i, arm) in arms.iter().enumerate() {
-        let pattern_val = pattern_to_value(&arm.pattern, ctx);
+        // T-1750: pattern is now Arc<SurfaceNode>, serialize directly like body and guard
+        let pattern_val = crate::surface_convert::surface_node_to_expr_variant(&arm.pattern, ctx);
         let body_val = crate::surface_convert::surface_node_to_expr_variant(arm.body_expr(), ctx);
         let guard_val = arm.guard.as_ref().map_or_else(
             || Value::Dict(indexmap::IndexMap::new()),

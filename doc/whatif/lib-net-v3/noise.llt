@@ -362,7 +362,7 @@
       [NoisePattern.IK]:     [noise-ik-accept h cfg]
       [NoisePattern.IKpsk2]: [noise-ik-accept h cfg]   # PSK injected via cfg.psk
       [NoisePattern.NK]:     [noise-nk-accept h cfg]
-      _:                     [error [str "noise: pattern " [tag-of cfg.pattern] " not yet implemented (supported: XX IK IKpsk2 NK)"]]]]
+      ...:                     [error [str "noise: pattern " [tag-of cfg.pattern] " not yet implemented (supported: XX IK IKpsk2 NK)"]]]]
 
   noise: [fn@[bind: [h]  return: [NoiseConnection h]  constraint: [h: ByteStream]] [let cfg@NoiseConfig h@h]
     [match cfg.pattern
@@ -370,7 +370,7 @@
       [NoisePattern.IK]:     [noise-ik-connect h cfg]
       [NoisePattern.IKpsk2]: [noise-ik-connect h cfg]   # PSK injected via cfg.psk
       [NoisePattern.NK]:     [noise-nk-connect h cfg]
-      _:                     [error [str "noise: pattern " [tag-of cfg.pattern] " not yet implemented (supported: XX IK IKpsk2 NK)"]]]]
+      ...:                     [error [str "noise: pattern " [tag-of cfg.pattern] " not yet implemented (supported: XX IK IKpsk2 NK)"]]]]
 
   # Transport messages: 2-byte length prefix | ciphertext (includes 16-byte poly tag).
   noise-write: [fn [let conn@NoiseConnection data@Bytes]

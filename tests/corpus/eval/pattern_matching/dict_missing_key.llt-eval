@@ -1,6 +1,6 @@
 # Pattern requires key that's not present
 [match [value: 42]
     [ok: v]:  v
-    _:        99]
+    ...:      99]
 === out
 Int(99)

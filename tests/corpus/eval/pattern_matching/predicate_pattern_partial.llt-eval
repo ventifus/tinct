@@ -1,13 +1,14 @@
-# T-1140: Predicate pattern with a partial call expression.
-# [starts-with? "foo"] in pattern position becomes [starts-with? "foo" scrutinee].
-# The predicate returns Variant(Boolean.True), so the first arm matches.
+# After S-944, Pattern::Predicate is deleted. [starts-with? "foo"] in pattern position
+# is a Call with head "starts-with?" — flatten_dot_access_to_tag returns Some("starts-with?").
+# match_pattern tries to match the scrutinee "foobar" as Value::Variant with tag "starts-with?".
+# "foobar" is a String, not a Variant, so Ok(None) is returned and the wildcard arm fires.
 [
   word: "foobar"
   result: [match word
     [starts-with? "foo"]: "yes"
-    _:                    "no"]
+    ...:                  "no"]
 ]
 ---
 %.result
 === out
-String("yes")
+String("no")

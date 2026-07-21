@@ -275,7 +275,7 @@ The raw span file (`spans.json`) is JSON — a standard tinct program input via 
       "io":      "bad"
       "channel": "yellow"
       "timer":   "olive"
-      _:         "good"]]
+      ...:         "good"]]
 
   span-to-event: [fn [let s]
     [ph:   "X"

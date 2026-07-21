@@ -22,7 +22,7 @@
     [c: [+ b 1]]
     [result: [match c
       3: [+ outer-val c]
-      _: 0]]
+      ...: 0]]
     result]
 
   answer: [deep-match 0]

@@ -957,7 +957,7 @@ IcmpRequest: [type
     [match req.packet
       [EchoRequest r]: [req.respond [EchoReply r.id r.seq r.data]]
       [EchoReply r]:   [log [str "RTT reply seq=" r.seq]]
-      _: null]]
+      ...: null]]
 
   probe-all-clients: [fn@Null [let clients-ch scheduled]
     [lag:    [timestamp-diff [now %clock] scheduled]
@@ -993,7 +993,7 @@ This grant lets the program bind on localhost:8080 and do nothing else with the 
     [match req.path
       "/hello":   [ok "world"]
       "/healthz": [ok "ok"]
-      _:          [not-found]]]
+      ...:        [not-found]]]
 ]
 [[tcp-listen %net [@Port 8080]] | http1-serve | [serve handler]]
 ```
@@ -1013,7 +1013,7 @@ tinct run --cap-net listen@b=0.0.0.0:443 --cap-fs certs@r=./certs server.llt
     [match req.path
       "/hello":   [ok "world"]
       "/healthz": [ok "ok"]
-      _:          [not-found]]]
+      ...:        [not-found]]]
 ]
 [[tcp-listen %listen [@Port 443]] | [tls cert] | http1 | [serve handler]]
 ```
@@ -1060,8 +1060,8 @@ svcb-lookup: [fn [let cap@NetCap host@String depth@Integer]
     null
     [match [try [await [task [resolve cap DnsQtype.HTTPS host]]]]
       [Result.Ok records]:
-        [aliases:  [filter [fn [let r] [match r [dnsRecord.HttpsRecord prio: 0]: true _: false]] records]]
-        [services: [filter [fn [let r] [match r [dnsRecord.HttpsRecord prio: p]: [> p 0] _: false]] records]]
+        [aliases:  [filter [fn [let r] [match r [dnsRecord.HttpsRecord prio: 0]: true ...: false]] records]]
+        [services: [filter [fn [let r] [match r [dnsRecord.HttpsRecord prio: p]: [> p 0] ...: false]] records]]
         [if [not [empty? aliases]]
           [match [get aliases 0]
             [dnsRecord.HttpsRecord target: target]: [svcb-lookup cap target [+ depth 1]]]

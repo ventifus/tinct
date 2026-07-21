@@ -12,7 +12,7 @@
       [case [let p] [Shape.Circle p] [* p.r p.r]]
       [case [let p] [Shape.Square p] [* p.s p.s]]
       [case [let p] [Shape.Rect p]   [* p.w p.h]]
-      _: 0]]
+      ...: 0]]
   total:   [reduce + 0 [map area [each shapes]]]
   compare: [fn [let a@Integer b@Integer] [if [> a b] a b]]
   larger:  [compare a: [area [Shape.Circle r: 3]] b: [area [Shape.Square s: 4]]]

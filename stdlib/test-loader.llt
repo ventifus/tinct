@@ -77,7 +77,7 @@
   _reduce-loop: [fn@[bind: [a]] [let f acc@a xs@Dict i@Integer len@Integer]
     [match [builtin-int-gte i len]
       0: [_reduce-loop f [f acc [builtin-get i xs]] xs [builtin-int-add i 1] len]
-      _: acc]]
+      ...: acc]]
   reduce: [fn [let f init xs] [_reduce-loop f init xs 0 [builtin-dict-length xs]]]
 
   _join-loop: [fn [let sep@String acc@String xs@Dict i@Integer len@Integer]
@@ -85,13 +85,13 @@
       0: [_join-loop sep
             [match [builtin-eq-int i 0]
               0: [builtin-string-concat acc [builtin-string-concat sep [builtin-get i xs]]]
-              _: [builtin-get 0 xs]]
+              ...: [builtin-get 0 xs]]
             xs [builtin-int-add i 1] len]
-      _: acc]]
+      ...: acc]]
   join: [fn [let sep xs] [_join-loop sep "" xs 0 [builtin-dict-length xs]]]
 
-  # bool->int: Boolean.False→0, Int pass-through, anything else→1.
-  bool->int: [fn [let b] [match b Boolean.False: 0 [@Integer _]: b _: 1]]
+  # bool->int: Boolean.False→0, anything else→1.
+  bool->int: [fn [let b] [match b Boolean.False: 0 ...: 1]]
 
   # %stdout and %stderr: protocol dicts wrapping the stateless Rust builtins.
   # These MUST be defined here because test-loader runs as --init and main.rs
@@ -109,7 +109,7 @@
   null?: [fn [let x]
     [match [builtin-eq-string [builtin-type-of x] "Dict"]
       0: 0
-      _: [builtin-eq-int [builtin-dict-length x] 0]]]
+      ...: [builtin-eq-int [builtin-dict-length x] 0]]]
 
   # make-entry: construct single-entry dict from key and value.
   # Defined here for Dict 1 because it runs before prelude is loaded.
@@ -119,7 +119,7 @@
   get-or: [fn [let default key dict]
     [match [builtin-has-key? key dict]
       0: default
-      _: [builtin-get key dict]]]
+      ...: [builtin-get key dict]]]
 
   # _shift-keys: shift all integer keys in dict d by +1.
   # {0: v} → {1: v}, {0: a, 1: b} → {1: a, 2: b}
@@ -130,7 +130,7 @@
             [builtin-builder-set [builtin-int-add [builtin-dict-key-nth d i] 1]
                                  [builtin-dict-nth d i]
                                  builder]]
-      _: [builtin-builder-finish builder]]]
+      ...: [builtin-builder-finish builder]]]
 
   # scope-to-frames: build frames array from scope-id for builtin-resolve.
   # Walks from innermost to outermost via builtin-scope-parent, prepends each
@@ -142,7 +142,7 @@
     [parent: [builtin-scope-parent scope-id]]
     [match [null? parent]
       0: [_scope-to-frames-inner parent acc-next]
-      _: acc-next]]
+      ...: acc-next]]
   scope-to-frames: [fn [let scope-id]
     [_scope-to-frames-inner scope-id []]]
 
@@ -154,7 +154,7 @@
             [k: [builtin-get i keys]]
             [_object-map-step obj f keys [builtin-int-add i 1] n
               [builtin-builder-set k [f k [builtin-get k obj]] builder]]]]
-      _: [builtin-builder-finish builder]]]
+      ...: [builtin-builder-finish builder]]]
   object-map: [fn [let obj f]
     [keys: [builtin-keys obj]]
     [_object-map-step obj f keys 0 [builtin-dict-length keys] [builtin-make-builder]]]
@@ -165,7 +165,7 @@
         0: [_copy
               [builtin-builder-set [builtin-dict-key-nth d i] [builtin-dict-nth d i] builder]
               d n [builtin-int-add i 1]]
-        _: builder]]]
+        ...: builder]]]
     [builtin-builder-finish
       [_copy [_copy [builtin-make-builder] a [builtin-dict-length a] 0]
              b [builtin-dict-length b] 0]]]
@@ -174,7 +174,7 @@
     [chunk: [builtin-file-read handle 65536]]
     [match [bytes-empty? chunk]
       0: [read-file handle [builtin-bytes-concat acc chunk]]
-      _: acc]]
+      ...: acc]]
 
   # make-string-handle: a write handle backed by a builder that accumulates to a string.
   # Uses ONLY core builtins — no prelude functions. Safe in Dict 1 bootstrap context.
@@ -185,7 +185,7 @@
                  [wrote: [builtin-builder-set [builtin-dict-length [builtin-builder-snapshot buf]] s buf]]
                  [match [builtin-int-gt [builtin-dict-length [builtin-builder-snapshot wrote]] -1]
                    0: h
-                   _: h]]
+                   ...: h]]
        flush:  [fn [let h] h]
        close:  [fn [let h] h]
        read:   [fn []
@@ -201,14 +201,14 @@
     [n: [builtin-str-length s]]
     [match [builtin-int-gt n 0]
       0: s
-      _: [builtin-str-slice s 0 [builtin-int-sub n 1]]]]
+      ...: [builtin-str-slice s 0 [builtin-int-sub n 1]]]]
 
   # Format a single diagnostic dict as a human-readable error line.
   format-diagnostic: [fn [let d]
     [s: d.span]
     [file-part: [match [builtin-eq-int [builtin-dict-length s.file] 0]
       0: [builtin-string-concat s.file ":"]
-      _: "<unknown>:"]]
+      ...: "<unknown>:"]]
     [loc: [builtin-string-concat file-part [builtin-string-concat [builtin-int->string s.start-line] [builtin-string-concat ":" [builtin-int->string s.start-col]]]]]
     [stack-empty: [builtin-eq-int [builtin-dict-length d.call-stack] 0]]
     [base-line: [builtin-string-concat loc [builtin-string-concat ": " [builtin-string-concat d.level [builtin-string-concat ": " [builtin-string-concat d.kind [builtin-string-concat " — " [builtin-string-concat d.message "\n"]]]]]]]]
@@ -218,43 +218,40 @@
             [fn [let acc note] [builtin-string-concat acc [builtin-string-concat note "\n"]]]
             base-line
             d.notes]
-      _: base-line]]
+      ...: base-line]]
     [match stack-empty
       0: [reduce
             [fn [let acc frame]
               [frame-file: [match [builtin-eq-int [builtin-dict-length frame.span.file] 0]
                 0: [builtin-string-concat frame.span.file ":"]
-                _: ""]]
+                ...: ""]]
               [builtin-string-concat acc [builtin-string-concat "  in " [builtin-string-concat frame.label [builtin-string-concat " at " [builtin-string-concat frame-file [builtin-string-concat [builtin-int->string frame.span.start-line] [builtin-string-concat ":" [builtin-string-concat [builtin-int->string frame.span.start-col] "\n"]]]]]]]]]
             with-notes
             d.call-stack]
-      _: with-notes]]
+      ...: with-notes]]
 
-  # _emit-loop: writes each diagnostic to handle h, returns count written.
-  # h is the caller's current stderr handle; each write depends on it, cascading writes.
-  # Count is used by callers in [builtin-int-add n _e] = 0 checks — on the materialisation path.
-  _emit-loop: [fn@Integer [let diags@Dict i@Integer len@Integer acc@Integer h]
+  # _emit-loop: writes each diagnostic to handle h, returns the updated handle.
+  # h threads through each write, cascading writes so the caller's consumer of the
+  # returned handle forces the entire emit chain.
+  _emit-loop: [fn [let diags@Dict i@Integer len@Integer h]
     [match [builtin-int-gte i len]
       0: [_emit-loop diags [builtin-int-add i 1] len
-            [builtin-int-add acc
-              [builtin-int-gte
-                [builtin-dict-length [%stderr.write [format-diagnostic [builtin-get i diags]] h]]
-                0]]
-            h]
-      _: acc]]
+            [%stderr.write [format-diagnostic [builtin-get i diags]] h]]
+      ...: h]]
 
-  # emit-diagnostics: write all diagnostics to h, return count written.
-  # n + emit-diagnostics = 0 iff n = 0 (no errors) AND count = 0 (nothing written).
+  # emit-diagnostics: write all diagnostics to h, return the updated stderr handle.
+  # The returned handle is the genuine consumer — whoever accesses state.stderr next
+  # forces this chain.
   emit-diagnostics: [fn [let diagnostics h]
-    [_emit-loop diagnostics 0 [builtin-dict-length diagnostics] 0 h]]
+    [_emit-loop diagnostics 0 [builtin-dict-length diagnostics] h]]
 
   # _count-errors-inner: count diagnostics with level "error"
   _count-errors-inner: [fn [let diags n i acc]
     [match [builtin-int-gte i n]
       0: [match [builtin-eq-string [builtin-dict-nth diags i].level "error"]
            0: [_count-errors-inner diags n [builtin-int-add i 1] acc]
-           _: [_count-errors-inner diags n [builtin-int-add i 1] [builtin-int-add acc 1]]]
-      _: acc]]
+           ...: [_count-errors-inner diags n [builtin-int-add i 1] [builtin-int-add acc 1]]]
+      ...: acc]]
 
   count-errors: [fn [let diags]
     [_count-errors-inner diags [builtin-dict-length diags] 0 0]]
@@ -265,7 +262,7 @@
       0: [_append-diags-inner
            [merge acc [make-entry [builtin-int-add offset i] [builtin-dict-nth new-diags i]]]
            new-diags n offset [builtin-int-add i 1]]
-      _: acc]]
+      ...: acc]]
 
   append-diags: [fn [let acc new-diags]
     [n:      [builtin-dict-length new-diags]]
@@ -284,7 +281,7 @@
   # Two-pass: evaluate type-stage docs first to enrich the TypeContext, then
   # typecheck all docs with the enriched TypeContext so that annotations like
   # @Integer/@String/@Never resolve correctly from the type-stage values.
-  uses-scope: [fn [let module-names seed-tc seed-scope-id]
+  uses-scope: [fn [let module-names seed-tc seed-scope-id starting-h]
     [reduce
       [fn [let acc name]
         [decl-path:     [builtin-string-concat "builtin_" [builtin-string-concat name ".llt"]]
@@ -303,7 +300,7 @@
                  [stage: [get-or "runtime" "stage" meta]]
                  [match [builtin-eq-string stage "type"]
                    0: [ts: acc.ts  rt: [merge acc.rt [make-entry [builtin-dict-length acc.rt] doc]]]
-                   _: [ts: [merge acc.ts [make-entry [builtin-dict-length acc.ts] doc]]  rt: acc.rt]]]
+                   ...: [ts: [merge acc.ts [make-entry [builtin-dict-length acc.ts] doc]]  rt: acc.rt]]]
                [ts: []  rt: []]
                decl-docs]]
              # Pass 1: evaluate type-stage docs to get a scope with TypeNode values.
@@ -348,14 +345,12 @@
              all-diagnostics]]]
          diagnostics:    [match [builtin-has-key? "ok" tc-result]
              0: []
-             _: [builtin-get "ok" tc-result]]
-         n-w:         [emit-diagnostics diagnostics %stderr]
+             ...: [builtin-get "ok" tc-result]]
+         new-stderr:  [emit-diagnostics diagnostics acc.stderr]
          module-impl: [builtin-module name]]
-        # n-w (count of warnings written) is the condition — forces all writes before merge.
-        [match [builtin-int-gte n-w 0]
-          0: [merge acc module-impl]
-          _: [merge acc module-impl]]]
-      []
+        [impls:  [merge acc.impls module-impl]
+         stderr: new-stderr]]
+      [impls: []  stderr: starting-h]
       module-names]]
 
   # Discover the root scope-id: the only scope with a null parent in builtin-scopes.
@@ -366,8 +361,8 @@
       [scope-id: [builtin-get 0 entry]]
       [parent:   [builtin-get 1 entry]]
       [match [null? parent]
-        0: [merge acc [make-entry [builtin-dict-length acc] scope-id]]
-        _: acc]]
+        0: acc
+        ...: [merge acc [make-entry [builtin-dict-length acc] scope-id]]]]
     []
     [reduce
       [fn [let acc k]
@@ -381,9 +376,9 @@
   # implicit Rust back-channel. Core types (DirCap, Int, Bytes, etc.) are
   # available to all downstream builtin-typecheck calls via this explicit seed.
   _fundamental-base-tc: [builtin-make-type-ctx]
-  fundamental-tc: [match [builtin-int-gte [builtin-dict-length [uses-scope ["core"] _fundamental-base-tc root-scope-id]] 0]
+  fundamental-tc: [match [builtin-int-gte [builtin-dict-length [uses-scope ["core"] _fundamental-base-tc root-scope-id %stderr]] 0]
     0: _fundamental-base-tc
-    _: _fundamental-base-tc]
+    ...: _fundamental-base-tc]
 
   # ── Pragma helpers ───────────────────────────────────────────────────────────
   # pragma-no-prelude?: true if the first document in a parsed state carries
@@ -393,16 +388,16 @@
     [match [builtin-int-gte i n]
       0: [match [builtin-eq-string [get-or "" i pragmas] "no-prelude"]
            0: [_has-no-prelude-pragma pragmas n [builtin-int-add i 1]]
-           _: 1]  # found
-      _: 0]]     # exhausted — not found
+           ...: 1]  # found
+      ...: 0]]     # exhausted — not found
 
   pragma-no-prelude?: [fn [let state]
     [match [builtin-eq-int [count-errors state.diagnostics] 0]
       0: 0  # parse failed — treat as no pragma
-      _: [docs: state.parsed.documents]
+      ...: [docs: state.parsed.documents]
          [match [builtin-eq-int [builtin-dict-length docs] 0]
            0: 0  # no documents
-           _: [meta: [builtin-doc-meta [builtin-get 0 docs] root-scope-id]]
+           ...: [meta: [builtin-doc-meta [builtin-get 0 docs] root-scope-id]]
               [pragmas: [get-or [] "pragma" meta]]
               [_has-no-prelude-pragma pragmas [builtin-dict-length pragmas] 0]]]]
 
@@ -417,11 +412,11 @@
     [state: [builtin-dict-nth args [builtin-int-sub n 1]]]
     [match [builtin-eq-int [count-errors state.diagnostics] 0]
       0: state
-      _: [match [builtin-int-sub n 1]
+      ...: [match [builtin-int-sub n 1]
            0: [f state]
            1: [f [builtin-dict-nth args 0] state]
            2: [f [builtin-dict-nth args 0] [builtin-dict-nth args 1] state]
-           _: [builtin-raise "if-ok: only 0, 1, or 2 pre-args supported"]]]]
+           ...: [builtin-raise "if-ok: only 0, 1, or 2 pre-args supported"]]]]
 
   # ── Stage: load-bytes ─────────────────────────────────────────────────────────
   # Opens state.path under cap and reads all bytes. Logs path via state.stderr.
@@ -441,15 +436,15 @@
   # Parses state.bytes into state.parsed and desugars the program.
   # On parse errors: emits diagnostics via state.stderr and sets state.diagnostics.
   parse-source: [fn [let state]
-    [r:  [builtin-parse state.bytes state.path]]
-    [n:  [builtin-dict-length r.diagnostics]]
-    [_e: [emit-diagnostics r.diagnostics state.stderr]]
-    [match [builtin-eq-int [builtin-int-add n _e] 0]
-      0: [merge state [diagnostics: r.diagnostics]]
-      _: [call [fn [let]
+    [r:          [builtin-parse state.bytes state.path]]
+    [n:          [builtin-dict-length r.diagnostics]]
+    [new-stderr: [emit-diagnostics r.diagnostics state.stderr]]
+    [match [builtin-eq-int n 0]
+      0: [merge state [diagnostics: r.diagnostics  stderr: new-stderr]]
+      ...: [call [fn [let]
            [desugared: [builtin-desugar r.program]]
            [docs: [builtin-program-docs desugared]]
-           [merge state [parsed: [program: r.program  documents: docs]]]]]]]
+           [merge state [parsed: [program: r.program  documents: docs]  stderr: new-stderr]]]]]]
 
   # ── Stage: eval-program ───────────────────────────────────────────────────────
   # Two-pass eval on state.parsed: type-stage documents first, then runtime.
@@ -463,28 +458,28 @@
       [Boolean: Boolean  True: Boolean.True  False: Boolean.False]]]
     [eval-doc: [fn [let acc doc]
       [meta:    [builtin-doc-meta doc acc.scope-id]]
-      [uses:    [uses-scope [get-or [] "uses" meta] acc.tc acc.scope-id]]
-      [scope:   [builtin-scope-new acc.scope-id uses]]
-      [frames:  [scope-to-frames scope]]
-      [res:     [builtin-resolve doc frames]]
-      [n-re:    [builtin-dict-length res.diagnostics]]
-      [_re:     [emit-diagnostics res.diagnostics acc.stderr]]
-      [match [builtin-eq-int [builtin-int-add n-re _re] 0]
+      [uses-result: [uses-scope [get-or [] "uses" meta] acc.tc acc.scope-id acc.stderr]]
+      [scope:       [builtin-scope-new acc.scope-id uses-result.impls]]
+      [frames:      [scope-to-frames scope]]
+      [res:         [builtin-resolve doc frames]]
+      [n-re:        [count-errors res.diagnostics]]
+      [new-stderr:  [emit-diagnostics res.diagnostics uses-result.stderr]]
+      [match [builtin-eq-int n-re 0]
         0: [builtin-raise [reduce [fn [let acc d] [builtin-string-concat acc [format-diagnostic d]]]
                                   "" res.diagnostics]]
-        _: [call [fn [let]
+        ...: [call [fn [let]
              [tc-result: [builtin-typecheck-doc res.doc acc.tc]]
              [typed:     tc-result.doc]
              [ev:        [builtin-eval typed scope]]
              [match [null? ev.diagnostics]
                0: [builtin-raise ev.diagnostics.0.message]
-               _: [call [fn [let]
+               ...: [call [fn [let]
                     [doc-name: [get-or "" "name" meta]]
                     [next-scope: [builtin-scope-new ev.scope-id
                                    [match [builtin-eq-string doc-name ""]
                                      0: [%: ev.result]
-                                     _: [make-entry doc-name ev.result]]]]
-                    [merge acc [scope-id: next-scope  tc: acc.tc  last-result: ev.result]]]]]]]]]]
+                                     ...: [make-entry doc-name ev.result]]]]
+                    [merge acc [scope-id: next-scope  tc: acc.tc  last-result: ev.result  stderr: new-stderr]]]]]]]]]]
     # Split documents by stage: check meta.stage string (not doc.stage tag)
     [split: [reduce
       [fn [let acc doc]
@@ -492,7 +487,7 @@
         [stage: [get-or "runtime" "stage" meta]]
         [match [builtin-eq-string stage "type"]
           0: [ts: acc.ts  rt: [merge acc.rt [make-entry [builtin-dict-length acc.rt] doc]]]
-          _: [ts: [merge acc.ts [make-entry [builtin-dict-length acc.ts] doc]]  rt: acc.rt]]]
+          ...: [ts: [merge acc.ts [make-entry [builtin-dict-length acc.ts] doc]]  rt: acc.rt]]]
       [ts: []  rt: []]
       state.parsed.documents]]
     # Capture the tc parameter under a different name so the inner accumulator dict
@@ -505,19 +500,26 @@
     [_tc: [builtin-tc-with-scope ts-acc.tc ts-acc.scope-id]]
     # Pass 2: evaluate runtime documents
     [final-acc: [reduce eval-doc [scope-id: ts-acc.scope-id  tc: _tc  last-result: []  stderr: ts-acc.stderr] split.rt]]
-    # final-acc tracks last-result from the most recent eval-doc call
+    # final-acc tracks last-result and stderr from the most recent eval-doc call.
+    # stderr: final-acc.stderr threads out the updated handle so callers can continue
+    # the chain — accessing state.stderr next forces all emits from eval-program.
     [merge state
       [scope-id:    final-acc.scope-id
        last-result: final-acc.last-result
-       _tc:         _tc]]]
+       _tc:         _tc
+       stderr:      final-acc.stderr]]]
 
   # ── Stage: export ─────────────────────────────────────────────────────────────
   # Promotes the last document's exported dict entries into the env.
   # Adds: full-scope-id.
+  # Creates a dedicated export scope that directly contains all public bindings
+  # from the last document's result dict. This ensures the resolver can find
+  # exported names at a known de Bruijn level (one hop from base-scope-id),
+  # rather than relying on the deep parent chain through E2.
   export: [fn [let state]
     [exported: [match [builtin-eq-string [builtin-type-of state.last-result] "Dict"]
       0: []
-      _: state.last-result]]
+      ...: state.last-result]]
     [merge state [full-scope-id: [builtin-scope-new state.scope-id exported]]]]
 
   # ── Stage: typecheck-program ──────────────────────────────────────────────────
@@ -541,11 +543,15 @@
           tdoc.diagnostics]]
       []
       typed-docs]]
-    [_e: [emit-diagnostics all-diagnostics state.stderr]]
-    [match [builtin-int-gte _e 0]
-      0: [merge state [tc-diagnostics: all-diagnostics]]
-      _: [merge state [tc-diagnostics: all-diagnostics]]]]
-]
+    [new-stderr: [emit-diagnostics all-diagnostics state.stderr]]
+    # tc-ready: the TypeContext after all builtin-typecheck-doc calls for this program have
+    # completed. Its inference_env now contains type schemes for every binding in the program.
+    # Callers that need the enriched TC (e.g. test typechecking after prelude loads) should
+    # receive tc-ready as an explicit parameter — accessing it forces all typecheck work.
+    # new-stderr is the updated handle after emitting all tc diagnostics; threading it into
+    # the returned state ensures the emit chain is forced when state.stderr is next accessed.
+    [merge state [tc-diagnostics: all-diagnostics  tc-ready: state._tc  stderr: new-stderr]]
+]]
 
 # ============================================================================
 # Dict 2 — Test runner functions
@@ -572,19 +578,19 @@
     [sep-pos: [builtin-str-index-of "\n=== " content]]
     [match [builtin-eq-int sep-pos -1]
       0: [builtin-str-slice content 0 sep-pos]
-      _: content]]
+      ...: content]]
 
   section-strip-nl: [fn [let sv sl]
     [match [builtin-eq-int sl 0]
       0: [match [builtin-eq-string [builtin-str-slice sv [builtin-int-add sl -1] sl] "\n"]
            0: sv
-           _: [builtin-str-slice sv 0 [builtin-int-add sl -1]]]
-      _: sv]]
+           ...: [builtin-str-slice sv 0 [builtin-int-add sl -1]]]
+      ...: sv]]
 
   section-cut-at: [fn [let sv si]
     [match [builtin-eq-int si -1]
       0: [builtin-str-slice sv 0 si]
-      _: sv]]
+      ...: sv]]
 
   section-trim: [fn [let bt]
     [section-strip-nl
@@ -601,7 +607,7 @@
                 [builtin-str-index-of sep content]
                 [builtin-str-length sep]]
               [builtin-str-length content]]]
-      _: ""]]
+      ...: ""]]
 
   # ── Test pipeline stages ──────────────────────────────────────────────────────
   # These operate on the same state dict as the prelude pipeline stages (if-ok,
@@ -616,43 +622,47 @@
     [try-result: [builtin-try [call [fn []
       [test-state: [reduce
         [fn [let st doc]
-          [meta:  [builtin-doc-meta doc st.scope-id]]
-          [uses:  [uses-scope [get-or [] "uses" meta] fundamental-tc st.scope-id]]
-          [scope: [builtin-scope-new st.scope-id uses]]
-          [frames: [scope-to-frames scope]]
-          [r:     [builtin-resolve doc frames]]
-          [n-re:  [builtin-dict-length r.diagnostics]]
-          [_re:   [emit-diagnostics r.diagnostics st.stderr]]
-          [match [builtin-eq-int [builtin-int-add n-re _re] 0]
+          [meta:        [builtin-doc-meta doc st.scope-id]]
+          [uses-result: [uses-scope [get-or [] "uses" meta] fundamental-tc st.scope-id st.stderr]]
+          [scope:       [builtin-scope-new st.scope-id uses-result.impls]]
+          [frames:      [scope-to-frames scope]]
+          [r:           [builtin-resolve doc frames]]
+          [n-re:        [count-errors r.diagnostics]]
+          [new-stderr:  [emit-diagnostics r.diagnostics uses-result.stderr]]
+          [match [builtin-eq-int n-re 0]
             0: [builtin-raise [reduce [fn [let acc d] [builtin-string-concat acc [format-diagnostic d]]]
                                       "" r.diagnostics]]
-            _: [call [fn [let]
+            ...: [call [fn [let]
                  [typed: [builtin-typecheck-doc r.doc st.tc].doc]
                  [ev:    [builtin-eval typed scope]]
                  [match [null? ev.diagnostics]
                    0: [builtin-raise ev.diagnostics.0.message]
-                   _: [call [fn [let]
-                        # T-1507: Validate --- caps: declarations against the evaluated scope.
+                   ...: [call [fn [let]
+                        # T-1507: Validate --- caps: declarations. The reduce raises if any cap
+                        # is missing, otherwise returns ev.result. caps-validated IS consumed
+                        # by validated-result, making this genuine data-flow (not a forcing trick).
                         [caps-list: [get-or [] "caps" meta]]
-                        [_caps-ok: [reduce [fn [let _ cap-name]
-                          [match [builtin-cap-env-has? cap-name scope]
-                            Boolean.False: [builtin-raise [builtin-string-concat "missing required capability: " cap-name]]
-                            _: 0]]
-                          0 [builtin-keys caps-list]]]
-                        # T-1506: Validate --- expects: type annotation against the document result.
-                        # builtin-check-type raises on mismatch; passes return the value unchanged.
+                        [caps-validated: [reduce
+                          [fn [let result cap-name]
+                            [match [builtin-cap-env-has? cap-name scope]
+                              Boolean.False: [builtin-raise [builtin-string-concat "missing required capability: " cap-name]]
+                              ...: result]]
+                          ev.result
+                          [builtin-keys caps-list]]]
+                        # T-1506: Validate --- expects: type annotation. builtin-check-type raises
+                        # on mismatch; on success returns caps-validated unchanged.
                         [expects: [get-or [] "expects" meta]]
-                        [_expects-forced: [match [builtin-eq-int [builtin-dict-length expects] 0]
-                          0: [builtin-int-gte [builtin-dict-length [builtin-type-of [builtin-check-type expects ev.result]]] _caps-ok]
-                          _: _caps-ok]]
-                        [match [builtin-int-gte _expects-forced 0]
-                          0: [scope-id: ev.scope-id  last-result: ev.result  tc: st.tc  stderr: st.stderr]
-                          _: [scope-id: ev.scope-id  last-result: ev.result  tc: st.tc  stderr: st.stderr]]]]]]]]]
+                        [validated-result: [match [builtin-eq-int [builtin-dict-length expects] 0]
+                          0: [builtin-check-type expects caps-validated]
+                          ...: caps-validated]]
+                        [scope-id: ev.scope-id  last-result: validated-result  tc: st.tc  stderr: new-stderr]
+                        ]]]]]]]
         [scope-id: base-scope  last-result: []  tc: fundamental-tc  stderr: state.stderr]
         state.parsed.documents]]
       [scope-id:   test-state.scope-id
        last-result: test-state.last-result
        tc:         test-state.tc
+       stderr:     test-state.stderr
        documents:  state.parsed.documents]]]]]
     [match [builtin-has-key? "ok" try-result]
       # Error path: write the caught error to state.stderr, return error state.
@@ -661,37 +671,48 @@
                [level: "error"  kind: "eval-error"  message: [builtin-get "error" try-result]
                 span: []  notes: []  call-stack: []  macro-expand: []  blame: []]]
                        stderr: [%stderr.write [builtin-get "error" try-result] state.stderr]]]
-      _: [merge state
+      ...: [merge state
            [scope-id:   [builtin-get "ok" try-result].scope-id
             last-result: [builtin-get "ok" try-result].last-result
             tc:         [builtin-get "ok" try-result].tc
+            stderr:     [builtin-get "ok" try-result].stderr
             documents:  state.parsed.documents]]]]
 
-  # typecheck-docs: typecheck state.documents against base-scope.
+  # typecheck-docs: typecheck state.documents using tc (the ready TypeContext).
+  # tc must be the enriched TypeContext returned by typecheck-program — specifically
+  # _prelude-result.tc-ready — so that prelude's type schemes are available for resolution.
   # Adds: tc-diagnostics.
+  # tc-diagnostics includes both resolver diagnostics (res.diagnostics: errors and warnings,
+  # level="error"/"warning") and typecheck diagnostics so that === warn/error sections can
+  # match either kind. Callers distinguish severity by reading d.level on each entry.
   typecheck-docs: [fn [let tc base-scope state]
-    [typed-docs: [match [builtin-int-gte [builtin-dict-length [builtin-type-of state.scope-id]] 0]
+    [per-doc-diags: [match [builtin-int-gte [builtin-dict-length [builtin-type-of state.scope-id]] 0]
       0: []
-      _: [reduce
+      ...: [reduce
            [fn [let acc doc]
              [frames: [scope-to-frames state.scope-id]]
              [res: [builtin-resolve doc frames]]
-             [typed: [builtin-typecheck-doc res.doc tc]]
-             [merge acc [make-entry [builtin-dict-length acc] typed]]]
+             [typed: [builtin-typecheck-doc res.doc tc state.scope-id]]
+             # Collect all resolver diagnostics (res.diagnostics: errors + warnings) AND
+             # typecheck diagnostics into a single list for this document.
+             # res.diagnostics is the unified bag; callers read d.level to filter by severity.
+             [doc-diags: [reduce
+               [fn [let wacc w] [merge wacc [make-entry [builtin-dict-length wacc] w]]]
+               res.diagnostics
+               typed.diagnostics]]
+             [merge acc [make-entry [builtin-dict-length acc] doc-diags]]]
            []
            state.documents]]]
     [all-diagnostics: [reduce
-      [fn [let acc tdoc]
+      [fn [let acc doc-diags]
         [reduce
           [fn [let wacc w] [merge wacc [make-entry [builtin-dict-length wacc] w]]]
           acc
-          tdoc.diagnostics]]
+          doc-diags]]
       []
-      typed-docs]]
-    [_e: [emit-diagnostics all-diagnostics state.stderr]]
-    [match [builtin-int-gte _e 0]
-      0: [merge state [tc-diagnostics: all-diagnostics]]
-      _: [merge state [tc-diagnostics: all-diagnostics]]]]
+      per-doc-diags]]
+    [new-stderr: [emit-diagnostics all-diagnostics state.stderr]]
+    [merge state [tc-diagnostics: all-diagnostics  stderr: new-stderr]]]
 
   # format-output: format state.last-result into state.output using builtin-llt-repr.
   format-output: [fn [let state]
@@ -700,7 +721,9 @@
   # run-test-pipeline: evaluate a test source string through the full pipeline.
   # Returns a state dict with output, tc-diagnostics, and stderr: final-handle.
   # stderr-h threads through — next consumer forces the write chain.
-  run-test-pipeline: [fn [let source path prelude-scope-id stderr-h]
+  # prelude-tc: the TypeContext returned by _prelude-result.tc-ready — already enriched with
+  # prelude's type schemes. Passed explicitly so test typechecking sees prelude's types.
+  run-test-pipeline: [fn [let source path prelude-scope-id prelude-tc stderr-h]
     [capture: [make-string-handle]]
     # Parse first so pragma headers are available before the scope is constructed.
     # .path references the function parameter from the parent scope, not the letrec
@@ -711,7 +734,11 @@
     # pragma: ["no-prelude"] → use root-scope-id (no prelude); default → prelude.
     [parent-scope: [match [pragma-no-prelude? parsed-state]
                      0: prelude-scope-id
-                     _: root-scope-id]]
+                     ...: root-scope-id]]
+    # For no-prelude tests, use fundamental-tc (no prelude types needed).
+    [test-tc: [match [pragma-no-prelude? parsed-state]
+                 0: prelude-tc
+                 ...: fundamental-tc]]
     [base-scope-id: [builtin-scope-new parent-scope
                       [%cwd:    %cwd
                        %libdir: %libdir
@@ -720,14 +747,14 @@
                        %args:   %args]]]
     [$parsed-state
      | [if-ok eval-docs base-scope-id]
-     | [if-ok typecheck-docs fundamental-tc base-scope-id]
+     | [if-ok typecheck-docs test-tc base-scope-id]
      | [if-ok format-output]]]
 
   # path-has-component: true if path contains "/component/" as a path segment.
   path-has-component: [fn [let path component]
     [match [builtin-eq-int [builtin-str-index-of [join "" ["/" component "/"] ] path] -1]
       0: Boolean.True
-      _: Boolean.False]]
+      ...: Boolean.False]]
 
   # check-path-sections: enforce that warn/error sections only appear in
   # appropriately named directories.
@@ -736,19 +763,19 @@
     [in-errors:   [path-has-component path "errors"]]
     [warn-ok: [match [builtin-eq-string expected-warn ""]
                 0: in-warnings
-                _: Boolean.True]]
+                ...: Boolean.True]]
     [error-ok: [match [builtin-eq-string expected-error ""]
                   0: in-errors
-                  _: [match [builtin-eq-int [builtin-str-index-of "ERROR:" actual-out] 0]
+                  ...: [match [builtin-eq-int [builtin-str-index-of "ERROR:" actual-out] 0]
                        0: Boolean.True
-                       _: in-errors]]]
+                       ...: in-errors]]]
     [match [bool->int warn-ok]
       0: [join "" ["=== warn section not allowed outside warnings/ directory: " path]]
-      _: [match [bool->int error-ok]
+      ...: [match [bool->int error-ok]
            0: [match [builtin-eq-string expected-error ""]
                 0: [join "" ["=== error section not allowed outside errors/ directory: " path]]
-                _: [join "" ["ERROR: output not allowed outside errors/ directory: " path]]]
-           _: ""]]]
+                ...: [join "" ["ERROR: output not allowed outside errors/ directory: " path]]]
+           ...: ""]]]
 
   # check-warn: validate typecheck warnings against the expected-warn section.
   check-warn: [fn [let warnings expected-warn]
@@ -756,21 +783,21 @@
     [warn-text: [reduce
       [fn [let acc w] [builtin-string-concat acc [builtin-string-concat [match [builtin-eq-string acc ""]
                                                                            0: "\n"
-                                                                           _: ""] w.message]]]
+                                                                           ...: ""] w.message]]]
       ""
       warnings]]
     [match [builtin-eq-string expected-warn ""]
       0: [match [builtin-eq-int [builtin-str-index-of expected-warn warn-text] -1]
            0: ""
-           _: [join "" ["expected warning not found:\n  " expected-warn "\nactual:\n  " warn-text]]]
-      _: [match [builtin-eq-int warn-count 0]
+           ...: [join "" ["expected warning not found:\n  " expected-warn "\nactual:\n  " warn-text]]]
+      ...: [match [builtin-eq-int warn-count 0]
            0: [join "" ["expected no warnings, got:\n" warn-text]]
-           _: ""]]]
+           ...: ""]]]
 
   # run-test-file: execute a single file ProgramItem as a corpus test.
   # run-test-file: execute a single file ProgramItem. Takes stderr-h from run-test.
   # Returns result dict including stderr: pipe-result.stderr so the cascade continues.
-  run-test-file: [fn [let p prelude-scope-id stderr-h]
+  run-test-file: [fn [let p prelude-scope-id prelude-tc stderr-h]
     [bytes:          [read-file p.handle [builtin-bytes]]]
     [content:        [builtin-bytes-str bytes]]
     [source:         [extract-source content]]
@@ -779,82 +806,82 @@
     [expected-error: [extract-section content "error"]]
 
     # Run test through the pipeline. Errors are returned as state.diagnostics (no builtin-try needed).
-    [pipe-result: [run-test-pipeline source p.path prelude-scope-id stderr-h]]
+    [pipe-result: [run-test-pipeline source p.path prelude-scope-id prelude-tc stderr-h]]
 
     [try-ok: [builtin-eq-int [count-errors pipe-result.diagnostics] 0]]
 
     # Extract the formatter output or an ERROR: prefix.
     [raw-output: [match try-ok
         0: [builtin-string-concat "ERROR: " [builtin-dict-nth pipe-result.diagnostics 0].message]
-        _: pipe-result.output]]
+        ...: pipe-result.output]]
 
     # Strip trailing newline from formatter output (formatters add a final \n).
     [actual: [match try-ok
         0: raw-output
-        _: [strip-trailing-newline raw-output]]]
+        ...: [strip-trailing-newline raw-output]]]
 
-    [eval-warnings: [match try-ok 0: [] _: pipe-result.tc-diagnostics]]
+    [eval-warnings: [match try-ok 0: [] ...: pipe-result.tc-diagnostics]]
 
     # === error: substring match; === out: exact match
     [out-passed: [match [builtin-eq-string expected-error ""]
                    0: [match [builtin-eq-int [builtin-str-index-of expected-error actual] -1]
                         0: 1
-                        _: 0]
-                   _: [builtin-eq-string actual expected-out]]]
+                        ...: 0]
+                   ...: [builtin-eq-string actual expected-out]]]
 
     [path-fail: [check-path-sections p.path expected-warn expected-error actual]]
     [path-passed: [builtin-eq-string path-fail ""]]
 
     [warn-fail: [match try-ok
       0: ""
-      _: [check-warn eval-warnings expected-warn]]]
+      ...: [check-warn eval-warnings expected-warn]]]
     [warn-passed: [builtin-eq-string warn-fail ""]]
 
     [r-path:    p.path]
     [r-passed:  [match out-passed
       0: 0
-      _: [match warn-passed
+      ...: [match warn-passed
            0: 0
-           _: path-passed]]]
+           ...: path-passed]]]
     [r-actual:  [match path-passed
                   0: [join "" ["out: " actual "\npath: " path-fail]]
-                  _: [join "" [
+                  ...: [join "" [
                        [match out-passed
                          0: [join "" ["out: "  actual    "\n"]]
-                         _: ""]
+                         ...: ""]
                        [match warn-passed
                          0: [join "" ["warn: " warn-fail "\n"]]
-                         _: ""]]]]]
+                         ...: ""]]]]]
     [r-expected: [match path-passed
                    0: [join "" ["out: "
                          [match [builtin-eq-string expected-error ""]
                            0: expected-error
-                           _: expected-out]]]
-                   _: [join "" [
+                           ...: expected-out]]]
+                   ...: [join "" [
                         [match out-passed
                           0: [join "" ["out: "
                                [match [builtin-eq-string expected-error ""]
                                  0: expected-error
-                                 _: expected-out]
+                                 ...: expected-out]
                                "\n"]]
-                          _: ""]
+                          ...: ""]
                         [match warn-passed
                           0: [join "" ["warn: " expected-warn "\n"]]
-                          _: ""]]]]]
+                          ...: ""]]]]]
     [path: r-path  passed: r-passed  actual: r-actual  expected: r-expected
      stderr: pipe-result.stderr]]
 
   # run-test: run one ProgramItem as a corpus test.
   # Takes stderr-h so the "test: path" log write threads into the data-flow cascade.
   # Returns result dict including stderr: updated-handle so the outer reduce can chain it.
-  run-test: [fn [let item prelude-scope-id stderr-h]
-    [p:         [match [builtin-eq-string [builtin-tag-of item] "ProgramItem.File"]
-                  0: item.path
-                  _: "<expr>"]]
+  run-test: [fn [let item prelude-scope-id prelude-tc stderr-h]
+    [p:         [match item
+                  ProgramItem.File: item.path
+                  ...:                    "<expr>"]]
     [new-stderr: [%stderr.write [builtin-string-concat "test:    " [builtin-string-concat p "\n"]] stderr-h]]
     [base-result: [match item
-      [ProgramItem.File _]: [run-test-file item prelude-scope-id new-stderr]
-      [ProgramItem.Expr _]: [path: "<expr>"  passed: Boolean.True  actual: ""  expected: ""  stderr: new-stderr]]]
+      ProgramItem.File: [run-test-file item prelude-scope-id prelude-tc new-stderr]
+      ProgramItem.Expr: [path: "<expr>"  passed: Boolean.True  actual: ""  expected: ""  stderr: new-stderr]]]
     base-result]
 
   # format-result: render test outcome line.
@@ -867,14 +894,14 @@
                  [builtin-string-concat r.expected
                    [builtin-string-concat "\n  actual:   "
                      [builtin-string-concat r.actual "\n"]]]]]
-          _: "pass\n"]]]]
+          ...: "pass\n"]]]]
 
   # check-llt-eval: true if a filename ends with ".llt-eval".
   check-llt-eval: [fn [let name]
     [len: [builtin-str-length name]]
     [match [builtin-lt len 9]
       0: [builtin-eq-string [builtin-str-slice name [builtin-int-sub len 9] len] ".llt-eval"]
-      _: 0]]
+      ...: 0]]
 
   # find-corpus-files: recursively walk cap/dir-path, accumulate .llt-eval files.
   find-corpus-files: [fn@Dict [let cap dir-path state@Dict]
@@ -885,8 +912,8 @@
         [match [builtin-eq-string entry.type "dir"]
           0: [match [check-llt-eval entry.name]
                0: st
-               _: [merge st [make-entry [builtin-dict-length st] [ProgramItem.File path: full  handle: [builtin-file-open cap full "read"]]]]]
-          _: [find-corpus-files cap full st]]]
+               ...: [merge st [make-entry [builtin-dict-length st] [ProgramItem.File path: full  handle: [builtin-file-open cap full "read"]]]]]
+          ...: [find-corpus-files cap full st]]]
       state
       entries]]
 ]
@@ -908,9 +935,6 @@
     | [if-ok export]
     | [if-ok typecheck-program]]
 
-  # _prelude-scope-id: full-export scope-id so test programs have prelude functions in scope.
-  _prelude-scope-id: _prelude-result.full-scope-id
-
   # Fatal boundary: typecheck ERRORS on prelude mean execution is undefined behavior.
   # Type-checker warnings (tc-diagnostics) are advisory and non-fatal — valid prelude functions
   # may produce warnings (e.g. exhaustiveness warnings for intentionally type-restricted
@@ -920,22 +944,27 @@
     0: [builtin-raise [join "" ["prelude failed — cannot continue\n"
           [reduce [fn [let acc d] [builtin-string-concat acc [builtin-string-concat [format-diagnostic d] "\n"]]]
                   "" _prelude-result.diagnostics]]]]
-    _: _prelude-result.full-scope-id]
+    ...: _prelude-result.full-scope-id]
 
-  _prelude-ok: [builtin-int-gte [builtin-dict-length [builtin-type-of _prelude]] 0]
+  # _prelude-scope-id goes through _prelude (not _prelude-result.full-scope-id directly) so
+  # prelude loading errors propagate here rather than being caught by per-test builtin-try.
+  _prelude-scope-id: _prelude
 
   # Pre-parse cli/out/llt.llt once (parse only — NOT resolved).
   # Resolution happens per-test inside run-test-pipeline with fmt-env
   # (prelude + % = test result + capture stdout), exactly as the CLI does.
   _llt-formatter-expanded: [call [fn []
-    [parse-result:  [builtin-parse
-                      [read-file [builtin-file-open %libdir "cli/out/llt.llt" "read"] [builtin-bytes]]
-                      "cli/out/llt.llt"]]
-    # Emit parse errors as a data dependency (no >> needed).
-    [_pe:           [emit-diagnostics parse-result.diagnostics %stderr]]
-    [match [builtin-int-gte _pe 0]
-      0: parse-result.program
-      _: parse-result.program]]]
+    [parse-result: [builtin-parse
+                     [read-file [builtin-file-open %libdir "cli/out/llt.llt" "read"] [builtin-bytes]]
+                     "cli/out/llt.llt"]]
+    # If the formatter has parse errors, raise — _formatter-ok's builtin-try catches this.
+    # The raise message includes formatted diagnostics so the error is not silently swallowed.
+    # On success (no errors), return the program directly; no emit needed for empty diagnostics.
+    [n-pe: [builtin-dict-length parse-result.diagnostics]]
+    [match [builtin-eq-int n-pe 0]
+      0: [builtin-raise [reduce [fn [let acc d] [builtin-string-concat acc [format-diagnostic d]]]
+                                 "cli/out/llt.llt parse errors:\n" parse-result.diagnostics]]
+      ...: parse-result.program]]]
 
   # Bootstrap check: verify the formatter loaded correctly.
   # On failure, print the actual error from builtin-try and raise — never silently swallow it.
@@ -944,15 +973,15 @@
         0: [call [fn [let _w]
                     [match [builtin-int-gte [builtin-dict-length _w] 0]
                       0: [builtin-raise "llt.llt formatter failed to load"]
-                      _: [builtin-raise "llt.llt formatter failed to load"]]]
+                      ...: [builtin-raise "llt.llt formatter failed to load"]]]
               [%stderr.write
                 [builtin-string-concat "\nbootstrap error: llt.llt formatter failed to load\nCannot run corpus tests.\nCause: "
                   [builtin-string-concat
                     [match [builtin-has-key? "error" _raw]
                       0: "(unknown — try result has no error field)"
-                      _: _raw.error]
+                      ...: _raw.error]
                     "\n"]] %stderr]]
-        _: 1]]
+        ...: 1]]
     [builtin-try [builtin-program-docs _llt-formatter-expanded]]]
 
   # Discover test files (or use the ones given on the command line).
@@ -962,9 +991,9 @@
   # inside run-test-pipeline when a test actually needs prelude.
   test-programs: [match [builtin-eq-int _formatter-ok 1]
     0: []
-    _: [match [builtin-eq-int [builtin-dict-length %programs] 0]
+    ...: [match [builtin-eq-int [builtin-dict-length %programs] 0]
          0: %programs
-         _: [find-corpus-files
+         ...: [find-corpus-files
                [builtin-narrow %cwd "tests/corpus"]
                "."
                []]]]
@@ -972,7 +1001,7 @@
   final-state: [reduce
     [fn [let state item]
       # run-test takes the current stderr handle and returns result including result.stderr.
-      [result: [run-test item _prelude-scope-id state.stderr]]
+      [result: [run-test item _prelude-scope-id _prelude-result.tc-ready state.stderr]]
       # Write test result to stdout, threading the handle — next iteration forces this.
       [new-stdout: [%stdout.write [format-result result] state.stdout]]
       # passed is computed through new-stdout: the delta depends on new-stdout's length
@@ -986,9 +1015,9 @@
                                         [builtin-dict-length new-stdout]]]]
        first-fail: [match [builtin-eq-string state.first-fail ""]
                      0: state.first-fail
-                     _: [match [bool->int result.passed]
+                     ...: [match [bool->int result.passed]
                           0: [join "" [result.path "\n  expected: " result.expected "\n  actual:   " result.actual]]
-                          _: ""]]
+                          ...: ""]]
        stdout:     new-stdout
        stderr:     result.stderr]]
     [idx: 0  total: 0  passed: 0  first-fail: ""  stdout: %stdout  stderr: %stderr]
@@ -1004,16 +1033,22 @@
 # On failure: final-state.passed was computed through new-stdout in each step (via the
 #   delta + dict-length trick), so the raise message's use of final-state.passed forces the
 #   entire stdout write chain including all test result lines.
-[n-failed: [builtin-int-sub final-state.total final-state.passed]]
+# Emit prelude diagnostics as part of the summary — forces _prelude-result.diagnostics
+# through the return-value data-flow chain. If _prelude-result raised internally (hard failure),
+# the raise propagates here, outside any builtin-try, making the prelude error clearly visible.
+# Uses only Dict 1 / core builtins — no prelude functions — so it works even when prelude failed.
+[prelude-error-count:
+  [reduce [fn [let acc d] [builtin-int-add acc [match [builtin-eq-string d.level "error"] 0: 0 ...: 1]]]
+          0
+          _prelude-result.diagnostics]]
+[n-failed: [builtin-int-add prelude-error-count [builtin-int-sub final-state.total final-state.passed]]]
 [summary-stdout: [%stdout.write [join "" [
     "\n"
     [builtin-int->string final-state.passed] "/" [builtin-int->string final-state.total] " tests passed"
     [match [builtin-eq-int n-failed 0]
       0: [join "" [", " [builtin-int->string n-failed] " failed\n"]]
-      _: "\n"]]]
+      ...: "\n"]]]
   final-state.stdout]]
 [match [builtin-eq-int n-failed 0]
-  0: [builtin-raise [join "" [
-        [builtin-int->string n-failed] " test(s) failed\n"
-        final-state.first-fail]]]
-  _: summary-stdout]
+  0: [builtin-raise [join "" [[builtin-int->string n-failed] " test(s) failed\n" final-state.first-fail]]]
+  ...: summary-stdout]

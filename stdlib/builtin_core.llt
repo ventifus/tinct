@@ -165,6 +165,7 @@
   builtin-check-type:      [fn@Any     [let type-name@String x@Any] ...]
   builtin-variant-payload: [fn@Any     [let variant@Any] ...]
   builtin-tag-of:          [fn@String  [let x@Any] ...]
+  builtin-variant?:        [fn@Integer [let x@Any] ...]
   builtin-llt-repr:        [fn@String  [let x@Any] ...]
 
   # ── Capability ─────────────────────────────────────────────────────────────
@@ -186,7 +187,9 @@
   builtin-desugar:        [fn@Program  [let prog@Program] ...]
   # resolve: resolve VarRef de Bruijn coords in a document against scope frames.
   # frames: {frame-index: {var-name: slot-index}, ...}
-  # Returns {doc, diagnostics}.
+  # Returns {doc, diagnostics, warnings}.
+  # diagnostics: error-level diagnostics only (undefined variables).
+  # warnings: warning-level diagnostics (lost-binding, unused-param).
   builtin-resolve:        [fn@Dict     [let doc@Document frames@[Map Int [Map String Int]]] ...]
   # eval: evaluate a resolved+typed document in a scope; returns {result, scope-id, diagnostics}.
   builtin-eval:           [fn@Dict     [let typed@Document scope-id@Integer] ...]

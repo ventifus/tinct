@@ -403,7 +403,7 @@ an FNode). Maintains the invariant: FTDeep.size = total leaf count at every leve
               prefix: p.prefix
               spine:  [ft-push-right-sized [FNode.FNode3 size: 3  left: s.a  mid: s.b  right: s.c] 3 p.spine]
               suffix: [Digit.Two a: s.d  b: x]]
-          _:
+          ...:
             [FingerTree.FTDeep
               size:   [+ p.size x-size]
               prefix: p.prefix
@@ -415,7 +415,7 @@ an FNode). Maintains the invariant: FTDeep.size = total leaf count at every leve
       [Digit.One   s]: [Digit.Two   a: s.a  b: x]
       [Digit.Two   s]: [Digit.Three a: s.a  b: s.b  c: x]
       [Digit.Three s]: [Digit.Four  a: s.a  b: s.b  c: s.c  d: x]
-      _: [raise "digit-push-right: digit is full (Four)"]]]
+      ...: [raise "digit-push-right: digit is full (Four)"]]]
 
   # ── Index access ─────────────────────────────────────────────────────────────
 
@@ -445,14 +445,14 @@ elem-get:  a → Int → leaf — navigate into element to reach the leaf at off
       [match x
         [FNode.FNode2 p]: p.size
         [FNode.FNode3 p]: p.size
-        _:               1]]
+        ...:               1]]
 
   fnode-elem-get@[doc: "Internal: self-similar descent into nested FNodes to reach a leaf. Correct at any spine depth — at depth 1 the wildcard arm returns the leaf directly."]:
     [fn [let node i]
       [match node
         [FNode.FNode2 fn2]: [fnode2-elem-get fn2.left fn2.right i]
         [FNode.FNode3 fn3]: [fnode3-elem-get fn3.left fn3.mid fn3.right i]
-        _:                  node]]
+        ...:                  node]]
 
   fnode2-elem-get@[doc: "Internal: index into a 2-child FNode."]:
     [fn [let left right i]
@@ -561,7 +561,7 @@ Dict structure must migrate.
       [Digit.One   s]: [Digit.Two   a: x  b: s.a]
       [Digit.Two   s]: [Digit.Three a: x  b: s.a  c: s.b]
       [Digit.Three s]: [Digit.Four  a: x  b: s.a  c: s.b  d: s.c]
-      _: [raise "digit-push-left: digit is full (Four)"]]]
+      ...: [raise "digit-push-left: digit is full (Four)"]]]
 
   digit-first: [fn [let d]
     [match d
@@ -598,7 +598,7 @@ Dict structure must migrate.
               prefix: [Digit.Two a: x  b: s.a]
               spine:  [ft-push-left-sized [FNode.FNode3 size: 3  left: s.b  mid: s.c  right: s.d] 3 p.spine]
               suffix: p.suffix]
-          _:
+          ...:
             [FingerTree.FTDeep
               size:   [+ p.size x-size]
               prefix: [digit-push-left x p.prefix]
@@ -651,7 +651,7 @@ Dict structure must migrate.
                   Seq.End:
                     [Seq.Cons head: [FNode.FNode3 size: 3  left: p1.head  mid: p2.head  right: p3.head]
                               tail: Seq.End]
-                  _:
+                  ...:
                     [Seq.Cons head: [FNode.FNode2 size: 2  left: p1.head  right: p2.head]
                               tail: [chunk-fnodes p2.tail]]]]]]
 
@@ -667,10 +667,10 @@ Dict structure must migrate.
       Seq.End:
         [match left
           FingerTree.FTEmpty: right
-          _:
+          ...:
             [match right
               FingerTree.FTEmpty: left
-              _: [ft-concat-sized left right fnode-size]]]
+              ...: [ft-concat-sized left right fnode-size]]]
       [Seq.Cons p]:
         [ft-add-nodes [ft-push-right-sized p.head [fnode-size p.head] left] p.tail right]]]
 
@@ -813,8 +813,8 @@ Float is NOT Hashable: NaN != NaN violates reflexivity of =.
     [let k@Boolean]:
       [=:    [fn [let a b]
                 [match a
-                  Boolean.True:  [match b  Boolean.True: true   _: false]
-                  Boolean.False: [match b  Boolean.False: true  _: false]]]
+                  Boolean.True:  [match b  Boolean.True: true   ...: false]
+                  Boolean.False: [match b  Boolean.False: true  ...: false]]]
        hash: [fn [let a] [match a  Boolean.True: 1  Boolean.False: 0]]]]
 
 

@@ -323,27 +323,34 @@ the `ok`/`err` field names become the nominal constructor names `Ok`/`Err`.
 enforcement**. The `Type::Union` members already encode the expected arm style:
 
 ```rust
-// Structural union member → expects Pattern::Dict arms
+// Structural union member → expects SurfaceExpression::Dict arms
 Type::Record(fields: {ok: TypeVar(a)}, tail: Open)
 
-// Nominal union member → expects Pattern::Constructor arms
+// Nominal union member → expects SurfaceExpression::Call arms (tag extracted via flatten_dot_access_to_tag_node)
 Type::NominalVariant { tycon: "Result", ctor: "Ok", fields: Row { value: TypeVar(a) } }
 
-// Literal union member → expects Pattern::StringLiteral arms
+// Literal union member → expects SurfaceExpression::Str arms
 Type::StringLiteral("pending")
 ```
 
 For each arm, `infer_match()` calls `find_compatible_member()` to correlate the
-arm's pattern to a union member by style:
+arm's pattern to a union member by style. Match arm patterns are `Arc<SurfaceNode>`;
+the function dispatches on the inner `SurfaceExpression` variant:
 
 ```rust
-fn find_compatible_member<'a>(pattern: &Pattern, members: &'a [Type]) -> Option<&'a Type> {
-    members.iter().find(|member| match (pattern, member) {
-        (Pattern::Dict(_),                    Type::Record(..))          => true,
-        (Pattern::Constructor { tag, .. },    Type::NominalVariant { tycon, ctor, .. }) => *tag == format!("{}.{}", tycon, ctor),
-        (Pattern::StringLiteral(s),           Type::StringLiteral(t))    => s == t,
-        (Pattern::Wildcard,                   _)                         => true,
-        _                                                                 => false,
+fn find_compatible_member<'a>(pattern: &Arc<SurfaceNode>, members: &'a [Type]) -> Option<&'a Type> {
+    members.iter().find(|member| match (&pattern.expr, member) {
+        (SurfaceExpression::Dict { .. },              Type::Record(..))          => true,
+        (SurfaceExpression::Call { func, .. },        Type::NominalVariant { tycon, ctor, .. }) => {
+            // Extract the qualified tag string ("TypeName.CtorName") from the call head
+            // using flatten_dot_access_to_tag_node, then compare to "{tycon}.{ctor}"
+            flatten_dot_access_to_tag_node(func)
+                .map(|tag| tag == format!("{}.{}", tycon, ctor))
+                .unwrap_or(false)
+        }
+        (SurfaceExpression::Str(s),                   Type::StringLiteral(t))    => s == t,
+        (SurfaceExpression::Placeholder(..),           _)                         => true,
+        _                                                                          => false,
     })
 }
 ```
@@ -358,7 +365,7 @@ Mixed: [type [ok: a] Err: [msg: Str] "pending"]
     [ok: v]:   [process v]      # → correlates to Record([ok:a])
     [Err msg]: [handle msg]     # → correlates to NominalVariant { tycon: "Mixed", ctor: "Err", fields: {msg: Str} }
     "pending": [wait]           # → correlates to StringLiteral("pending")
-    _:         [error "???"]]   # → wildcard, compatible with all
+    ...:       [error "???"]]   # → wildcard, compatible with all
 ```
 
 ## References

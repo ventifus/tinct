@@ -105,7 +105,7 @@ annotation-to-str: [fn [ann]
           # Extract the return type value for display
           [ret: [find-first-or [fn [e] [= "return" e.key]] null ann.entries]
             [if [null? ret] "" [annotation-value-str ret.value]]]]
-      _: ""]]]
+      ...: ""]]]
 
 # Build "fn@RetType [a@Integer  b@String]" from an ast-of result.
 # Note: function metadata dicts use "return-ann" key, not "annotation".

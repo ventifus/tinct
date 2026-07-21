@@ -191,7 +191,7 @@ BAS refinement in `match` arms narrows from annotated types:
   @[x: Int  y: Str]:  ...    # Record branch — x and y proved present
   @[Map [Str: Int]]:  ...    # Map branch — get returns Int|Null
   @Dict:              ...    # catch-all for untyped dicts
-  _:                  ...]
+  ...:                ...]
 ```
 
 ### The Empty Dict and `Map@[K: V]`

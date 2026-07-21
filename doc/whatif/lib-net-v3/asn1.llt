@@ -89,7 +89,7 @@
            [match tag-num
              16: [asnValue.AsnSeq children]
              17: [asnValue.AsnSet children]
-             _:  [asnValue.AsnSeq children]]]   # context-constructed: treat as SEQUENCE
+             ...:  [asnValue.AsnSeq children]]]   # context-constructed: treat as SEQUENCE
          [der-parse-seq raw 0 []]]
         [match tag-num
           1:  [asnValue.AsnBool  [not [= [get raw 0] 0]]]
@@ -103,7 +103,7 @@
           22: [asnValue.AsnStr  [bytes-str raw]]    # IA5String
           23: [asnValue.AsnTime [bytes-str raw]]    # UTCTime
           24: [asnValue.AsnTime [bytes-str raw]]    # GeneralizedTime
-          _:  [asnValue.AsnRaw  tag-num raw]]]]
+          ...:  [asnValue.AsnRaw  tag-num raw]]]]
     [value: value  next: [+ len-result.value-offset len-result.len]]]
 
   # Parse a sequence of DER elements from b[offset..] into a [Seq AsnValue].

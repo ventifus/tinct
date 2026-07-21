@@ -69,7 +69,7 @@ WgConnector: [
     [match transport
       Tcp: [wg-open-tcp  host port opts]
       Udp: [wg-open-udp  host port opts]
-      _:   [error [str "unsupported transport: " [tag-of transport]]]]]]
+      ...: [error [str "unsupported transport: " [tag-of transport]]]]]]
 
 # Use it anywhere NetCap was accepted:
 [tls-connect wg Tcp "api.example.com" 443 tls-opts]
@@ -109,7 +109,7 @@ http-get: [fn [connector@Connector url@Url headers@Dict tls-opts@[or TlsOpts Nul
   [conn: [match url.scheme
     "https": [tls-connect connector Tcp url.host url.port [tls-opts or []]]
     "http":  [connect connector Tcp url.host url.port]
-    _:       [error [str "http-get: unsupported scheme: " url.scheme]]]]
+    ...:     [error [str "http-get: unsupported scheme: " url.scheme]]]]
   [write conn [str-bytes [build-http-request "GET" url.path headers]]]
   [parse-http-response [slurp conn]]]
 

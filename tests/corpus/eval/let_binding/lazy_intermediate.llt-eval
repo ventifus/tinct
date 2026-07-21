@@ -1,6 +1,8 @@
 # Lazy evaluation: unused bindings in fn bodies are never forced.
-# The raise in 'unused' never fires because it is never accessed.
-[test: [fn [let x] [unused: [raise "dead binding"]] [+ x 1]]]
+# The raise in '_' (wildcard) never fires because it is never accessed.
+# Using _ for the binding name suppresses the lost-binding lint — it is the
+# conventional placeholder for a value computed but intentionally not used.
+[test: [fn [let x] [_: [raise "dead binding"]] [+ x 1]]]
 [test 41]
 === out
 Int(42)

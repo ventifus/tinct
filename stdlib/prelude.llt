@@ -593,11 +593,10 @@ cond-impl: [fn@[bind: [a]  return: [or a Null]] [let pairs@Dict i@Integer]
 # bool->int-priv: Boolean.False→0, Int→n (pass-through), anything else→1.
 # Defined in the private dict so bootstrap functions (partition-step, etc.) can use it.
 bool->int-priv: [fn [let b]
-    [match [builtin-eq-string [builtin-type-of b] "Boolean.False"]
-      0: [match [builtin-eq-string [builtin-type-of b] "Int"]
-        0: 1
-        _: b]
-      _: 0]]
+    [match b
+      Boolean.False: 0
+      [@Integer _]:  b
+      _:             1]]
 
 # raw-to-result: convert the {ok: val} / {error: msg} dict returned by builtin-try into
 # a Result.Ok / Result.Error variant for downstream match arms to consume.
@@ -964,8 +963,10 @@ Expr: [type
   Placeholder                        # the ... form
   ExprError:    [span: Any]]
 
-variant?@[doc: "Check if value is a Variant."]: [fn@Boolean [let v]
-  [= [type-of v] "Variant"]]
+variant?@[doc: "Check if value is a nominal variant (constructed by a type constructor)."]: [fn@Boolean [let v]
+  [match [builtin-variant? v]
+    0: Boolean.False
+    _: Boolean.True]]
 
 payload-of@[return: Dict  doc: """
 Extract the payload dict from a Variant value.
@@ -3291,8 +3292,8 @@ write@[doc: "Write content to a handle (content first, handle last). Returns han
       [builtin-file-write h s]
       [if [dict? h]
         [h.write s h]
-        [match [builtin-tag-of h]
-          "StringWriter.Writer": [StringWriter.Writer cells: [builtin-string-concat h.cells s]]
+        [match h
+          [StringWriter.Writer _]: [StringWriter.Writer cells: [builtin-string-concat h.cells s]]
           _: [raise [join "" ["write: unsupported handle: " [builtin-type-of h]]]]]]]]
 seek@[doc: "Seek to a position in a seekable file handle."]:
   [fn [let pos h]
@@ -3336,7 +3337,7 @@ read-chunk@[doc: "Read up to n bytes from a handle (size first, handle last)."]:
       [h.read-chunk n h]]]
 
 # Meta primitives: resolve/eval for AST introspection and meta-programming.
-resolve@[doc: "Resolve a Document against scope frames, returning {doc, errors}. Args: doc frames."]: builtin-resolve
+resolve@[doc: "Resolve a Document against scope frames, returning {doc, diagnostics, warnings}. diagnostics: errors only (undefined variables). warnings: lost-binding / unused-param. Args: doc frames."]: builtin-resolve
 program@[doc: "Construct a Program value from a sequence of Document values. Used for program transformation."]: builtin-program
 eval@[doc: "Evaluate a resolved+typed Document in a scope. Args: typed-doc scope-id. Returns {result, scope-id, errors}."]: builtin-eval
 eval-types@[doc: "Evaluate expressions in the type-stage environment"]: builtin-eval-types
@@ -5221,18 +5222,17 @@ do-empty-dict-node: [fn [let]
 # Check if a step AST is a binding step (a dict literal with at least one entry).
 # A binding step was written as [name: expr] in the do-block.
 do-is-binding: [fn [let step]
-  [= [tag-of step] "Dict"]]
+  [match step [Dict _]: Boolean.True _: Boolean.False]]
 
 # Check if the first arg looks like an inferred-form step rather than an explicit monad.
 # Explicit monad args are Var or DotAccess.
 # Inferred form: the first arg is a binding dict or any other expression.
 # Returns True if this is the inferred form (no explicit monad given).
 do-is-inferred-form: [fn [let first-arg]
-  [if [= [tag-of first-arg] "Var"]
-    False
-    [if [= [tag-of first-arg] "DotAccess"]
-      False
-      True]]]
+  [match first-arg
+    [Var _]:       Boolean.False
+    [DotAccess _]: Boolean.False
+    _:             Boolean.True]]
 
 # Extract the binding name from a binding step.
 # For Value::Expression(Dict): step.entries returns {0: Entry{key, value, span}}.
@@ -5366,9 +5366,9 @@ begin: >>
 # Single-arg [task e] passes through to builtin-task directly.
 # Uses typed variadics (...first@Expr, ...rest@Expr) — all args must be Expr values.
 task: [fn [let first@Expr ...rest@Expr]
-  [ast: [match [builtin-eq-string [builtin-tag-of rest] "Seq.End"]
-    0: [quote [builtin-task [>> [unquote first] [unquote-splice rest]]]]
-    _: [quote [builtin-task [unquote first]]]]]
+  [ast: [match rest
+    Seq.End: [quote [builtin-task [unquote first]]]
+    _:       [quote [builtin-task [>> [unquote first] [unquote-splice rest]]]]]]
   [eval-macro-ast ast]]
 
 ]

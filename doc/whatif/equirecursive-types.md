@@ -521,7 +521,7 @@ expand_all_tycon_apps(node, stack, env):
       # Qualified constructor leaf — preserve as-is (nominal identity)
       node
 
-    _:
+    ...:
       # All other TypeNode constructors: recurse into children via TypeNode.children.
       # Reconstruction uses typenode_map_children — the TypeNode functor map
       # (the natural inverse of TypeNode.children; kept alongside the TypeNode declaration).
@@ -635,7 +635,7 @@ count-numbers: [fn@Integer [v@JsonValue]
     Float:                1
     [Seq items]:          [sum [map count-numbers items]]
     [Map String val]:     [sum [map count-numbers [values val]]]
-    _:                    0]]
+    ...:                  0]]
 ```
 
 **Why not a nominal ADT?** `from-json` returns plain structural values — ints, strings, sequences, dicts. There is no tinct constructor wrapping the data, and there should not be: nominal variants do not round-trip through JSON (`[from-json [to-json v]]` must recover the original structure, not wrap it in constructors). Equirecursive structural typing expresses the actual shape.
@@ -954,7 +954,7 @@ where `TypeNode.TypeConstructor "a"` is a param token (unqualified, no '.') subs
 
 1. **`expand_named(name, args, stack) -> CheckerType`**: Unified lookup via `env.lookup_tycon_def(name)` which returns `Arc<TyConDef>`. All named types — primitives, structural aliases, nominal ADTs — are registered as `Arc<TyConDef>` entries; there is no separate name-list fast path. The expansion stack is `IndexSet<(Arc<TyConDef>, String)>` — cycle detection uses `Arc::ptr_eq` on the stored Arc handles, giving stable identity across nested scope lookups. Wraps in `TypeNode.Recursive` only at the cycle-origin level. See §Annotation Resolver for the complete algorithm.
 
-2. **`expand_all_tycon_apps(node, stack) -> CheckerType`**: Recursively eliminates transient `TypeNode.TypeApplication`/bare `TypeNode.TypeConstructor` by calling `expand_named`. The TypeApplication and TypeConstructor arms use Rust-level tag matching (the frequent hot cases). The `_:` fallthrough uses `typenode_map_children` — a pre-cached tinct function resolved once at init, not `eval_type_stage_value` on a raw AST expression per node. New TypeNode constructors are handled by the fallthrough automatically.
+2. **`expand_all_tycon_apps(node, stack) -> CheckerType`**: Recursively eliminates transient `TypeNode.TypeApplication`/bare `TypeNode.TypeConstructor` by calling `expand_named`. The TypeApplication and TypeConstructor arms use Rust-level tag matching (the frequent hot cases). The `...:` fallthrough uses `typenode_map_children` — a pre-cached tinct function resolved once at init, not `eval_type_stage_value` on a raw AST expression per node. New TypeNode constructors are handled by the fallthrough automatically.
 
 3. **`eval_type_stage_expr(expr, env) -> CheckerType`**: Evaluates expression annotations via `materialize_sync`. Result goes through `TypeNode.as-type` normalization + `expand_all_tycon_apps`.
 

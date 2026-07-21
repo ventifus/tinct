@@ -1,6 +1,6 @@
 [match [@[or Int String] 42]
     Int:     "int"
     String:  "str"
-    _:       "catch-all"]
+    ...:     "catch-all"]
 === out
 [TypeError] inaccessible match arm: reachable only via diverging (bottom) values

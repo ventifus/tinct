@@ -4,7 +4,7 @@
 [is-red: [fn [let c]
   [match c
     Color.Red: Boolean.True
-    _:         Boolean.False]]]
+    ...:       Boolean.False]]]
 [
   r1: [is-red Color.Red]
   r2: [is-red Color.Green]

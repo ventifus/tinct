@@ -4,7 +4,7 @@
 [Result: [type [let a] Ok: [value: a] Error: [msg: Str]]]
 [is-ok-1: [fn [let r] [match r
   [Result.Ok payload]: [= payload.value 1]
-  _: Boolean.False]]]
+  ...: Boolean.False]]]
 [r: [is-ok-1 [Result.Ok value: 1]]]
 === out
 Dict({"r": Variant(Boolean.True, Null)})

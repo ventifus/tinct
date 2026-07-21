@@ -4,6 +4,6 @@
 [eval [seq [quote [match 1
     0: "zero"
     1: "one"
-    _: "other"]] Seq.End]]
+    ...: "other"]] Seq.End]]
 === out
 String("one")

@@ -13,7 +13,7 @@ elimination via pattern matching (`result.ok` is a type error on a
 
 ## Supersession Notes
 
-- **Nominal variants are required, not optional**: Before [boolean-algebraic-subtyping.md](boolean-algebraic-subtyping.md) (2026-05-09), structural key-set ADTs and nominal variants were alternatives. Under BAS, S-RcdTop collapses disjoint single-field record unions to `Top`, making nominal variants the only viable mechanism for discriminated unions in the type system. `Value::Variant` and `Pattern::Constructor` are implemented at runtime; `Type::NominalVariant` is tracked as a pending type-system addition.
+- **Nominal variants are required, not optional**: Before [boolean-algebraic-subtyping.md](boolean-algebraic-subtyping.md) (2026-05-09), structural key-set ADTs and nominal variants were alternatives. Under BAS, S-RcdTop collapses disjoint single-field record unions to `Top`, making nominal variants the only viable mechanism for discriminated unions in the type system. `Value::Variant` is the runtime representation; constructor match arms use `SurfaceExpression::Call` (dot-access tag + payload arg) dispatched by `match_pattern` in `eval.rs`. `Type::NominalVariant` is tracked as a pending type-system addition.
 - **`payload` field type**: The feature doc shows `payload: Option<Rc<Thunk>>` but the arena migration (see [arena-patterns.md](arena-patterns.md)) changed this to `Option<ThunkId>`.
 
 ## Design
@@ -227,13 +227,23 @@ constructor values in the environment at eval time.
 
 ### AST (`src/ast.rs`)
 
-Add `Pattern::Constructor { tag: String, binding: Option<Box<Spanned<Pattern>>> }`
-for nominal patterns. No new `Expr` variant is needed — constructor names in
-expression position are regular `Expr::VarRef` nodes that resolve to constructor
-values (unit variants or constructor closures) in the environment. This is the
-standard ML/Haskell approach: constructors are values, not special syntax.
+No new `Expr` variant is needed for constructor names in expression position —
+they are regular `Expr::VarRef` nodes that resolve to constructor values (unit
+variants or constructor closures) in the environment. This is the standard
+ML/Haskell approach: constructors are values, not special syntax.
 
-Impact: Minor. One new AST variant (`Pattern::Constructor`), well-isolated.
+Match arm patterns are stored as `SurfaceMatchArm.pattern: Arc<SurfaceNode>` —
+raw surface nodes, not a Pattern enum. A constructor pattern in a match arm is
+represented as a `SurfaceExpression::Call { func, args, named_args }` where
+`func` is a `SurfaceExpression::Field` (dot-access resolving the constructor tag,
+e.g. `Option.Some`) and `args[0]` is the sub-pattern for the payload
+(`Placeholder(None, None)` for a wildcard, a `VarRef` for a pin). `named_args`
+is empty. Unit constructor patterns appear as bare `SurfaceExpression::Field` nodes
+(no args).
+
+Impact: Minor. No new AST enum variant. The `Pattern` enum (formerly including
+`Pattern::Constructor`) has been entirely deleted; all pattern matching dispatches
+on `SurfaceExpression` variants directly.
 
 ### Value Representation (`src/value.rs`)
 
@@ -278,9 +288,14 @@ Constructor calls like `[Some 42]` are regular function application — the
 evaluator looks up `Some` via `Expr::VarRef`, finds the constructor closure,
 and applies it. No special evaluation path is needed.
 
-`[match]` arm evaluation: for `Pattern::Constructor`, materialize the scrutinee,
-check if it is `Value::Variant { tycon, ctor, .. }` with the matching tycon and ctor, bind the payload
-thunk to the pattern variable.
+`[match]` arm evaluation: `match_pattern` in `eval.rs` dispatches on the
+`SurfaceExpression` variant of the arm's pattern node. For a constructor pattern
+(`SurfaceExpression::Call` with a `Field` func), it materializes the scrutinee,
+checks that it is `Value::Variant { tycon, ctor, .. }` with the matching tycon and
+ctor extracted via `flatten_dot_access_to_tag`, then recursively matches the
+payload against `args[0]`: a `Placeholder` sub-pattern is a wildcard (always
+succeeds, no binding); a `VarRef` sub-pattern with a resolved binding is a pin
+(compare for equality); a general sub-pattern recurses into `match_pattern`.
 
 Impact: Low–Moderate. Constructor registration at `[type]` declaration time
 is new. Constructor application reuses existing function call machinery. Constructor

@@ -1,0 +1,12 @@
+# [Shape.Circle payload] with payload not in scope: Call arm returns Ok(None) (VarRef resolves to
+# Some(None)), so the arm does not match and the wildcard ...: 0 fires instead.
+# This documents the correct post-S-944 behavior: no error, wildcard fires, area = Int(0).
+[
+  Shape: [type Circle: [r: Int]]
+  sh:    [Shape.Circle r: 5]
+  area:  [match sh
+    [Shape.Circle payload]: payload.r
+    ...:                    0]
+]
+=== out
+Dict({"Shape": Dict({"Circle": Function(r)}), "sh": Variant(Shape.Circle, Dict({"r": Int(5)})), "area": Int(0)})

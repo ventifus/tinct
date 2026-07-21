@@ -482,7 +482,7 @@
   # family: 1=IPv4, 2=IPv6. Address truncated to ceil(prefix-len/8) bytes.
   # prefix-len=0 is the privacy signal — address bytes are empty.
   ecs-opt-bytes: [fn [let cs@clientSubnet]
-    [family:     [match cs.addr [IpAddress.Ipv4 _]: 1 _: 2]]
+    [family:     [match cs.addr [IpAddress.Ipv4 _]: 1 ...: 2]]
     [addr-bytes: [match cs.addr [IpAddress.Ipv4 b]: b [IpAddress.Ipv6 b]: b [IpAddress.Ipv6Zone b _]: b]]
     [n-bytes:    [/ [+ cs.prefix-len 7] 8]]    # ceil(prefix-len / 8)
     [truncated:  [slice addr-bytes 0 n-bytes]]
@@ -523,7 +523,7 @@
           # If q.tcp forced, use TCP resolver for UDP nameservers; others keep native transport.
           [resolver: [match [if q.tcp ns ns]
             [nameserver.UdpNameserver addr: addr _]: [dns-tcp-resolver cap addr]
-            _:                                       [ns-to-resolver cap ns]]]
+            ...:                                       [ns-to-resolver cap ns]]]
           [send-and-recv: [fn [let qr]
             [match [try [await [timeout timeout [resolver qr]]]]
               [Result.Ok resp]:
@@ -545,10 +545,10 @@
                   [match [send-and-recv q-retry]
                     [Result.Ok r2]: r2
                     [Result.Error _]: [dns-try-servers cap rest q [- remaining 1] timeout]]
-                _:
+                ...:
                   # TC=1: truncated UDP response — retry over TCP unless q.ignore-tc.
                   [if [and resp.tc [not q.ignore-tc]
-                           [match ns [nameserver.UdpNameserver _]: true _: false]]
+                           [match ns [nameserver.UdpNameserver _]: true ...: false]]
                     [match [try [await [timeout timeout [[dns-tcp-resolver cap ns.addr] q-full]]]]
                       [Result.Ok tcp-resp]: tcp-resp
                       [Result.Error _]:     resp]
@@ -617,7 +617,7 @@
               [dnsRcode.NXDomain]: [try-records cap config rest qtype opts]
               [dnsRcode.Refused]:  dnsError.Refused
               [dnsRcode.NotImpl]:  dnsError.NotImplemented
-              _:                   resp]    # full DnsResponse
+              ...:                   resp]    # full DnsResponse
           [Result.Error _]: [try-records cap config rest qtype opts]]]]
 
   # try-ips: run the ndots+search candidate loop; extract IPs from the first name
@@ -639,7 +639,7 @@
               [dnsRcode.NXDomain]: [try-ips cap config rest qtype]
               [dnsRcode.Refused]:  dnsError.Refused
               [dnsRcode.NotImpl]:  dnsError.NotImplemented
-              _:
+              ...:
                 [ips: [extract-ips resp.answers qtype cap 0]]
                 [if [empty? ips]
                   [try-ips cap config rest qtype]   # no IPs in answer — try next candidate
@@ -657,7 +657,7 @@
         [match r
           [dnsRecord.ARecord _]:    [= qtype dnsQtype.A]
           [dnsRecord.AAAARecord _]: [= qtype dnsQtype.AAAA]
-          _: false]] records]]
+          ...: false]] records]]
       [flat-map [fn [let r]
         [match r
           [dnsRecord.ARecord     addr: addr]: [if [= qtype dnsQtype.A]    [list addr] []]
@@ -669,7 +669,7 @@
               [match [try [lookup-ips cap qtype [str name "."]]]
                 [Result.Ok addrs]: addrs
                 [Result.Error _]:  []]]
-          _: []]]
+          ...: []]]
        records]]]
 
   dns-https-send: [fn [let client path@String q@DnsQuery]
@@ -1045,7 +1045,7 @@
                       [merge params [alpn: [parse-alpn 0 []]]]]
                 3:  [merge params [port: [uint16 ByteOrder.Network vdata]]]
                 5:  [merge params [ech: vdata]]
-                _:  params]]
+                ...:  params]]
               [parse-svcparams [+ pos 4 vlen] new-params]]]]]
         [raw-params: [parse-svcparams target-res.next []]]
         [params: [svcParams
@@ -1058,7 +1058,7 @@
           mandatory:       [or [get? raw-params mandatory] Absent.Absent]
           other:           []]]
         [dnsRecord.HttpsRecord  prio: prio  target: target-res.name  params: params  ttl: ttl]
-      _:  # Unknown record type
+      ...:  # Unknown record type
         [dnsRecord.UnknownRecord  qtype: qtype  data: [slice b offset data-end]  ttl: ttl]]]
 
   # Parse N resource records starting at offset in b. Returns [records: [Seq dnsRecord] next: Int].
@@ -1129,7 +1129,7 @@
         [ar-result: [parse-rrs b ns-result.next arcount []]]
         # Extract OPT record from additional section (if present).
         # The OPT pseudorecord carries EDNS extended RCODE and the server cookie option.
-        [opt: [find [fn [let r] [match r [dnsRecord.OptRecord _]: true _: false]] ar-result.records]]
+        [opt: [find [fn [let r] [match r [dnsRecord.OptRecord _]: true ...: false]] ar-result.records]]
         [edns-rcode: [match opt
           null:                  0
           [dnsRecord.OptRecord o]: o.edns-rcode]]

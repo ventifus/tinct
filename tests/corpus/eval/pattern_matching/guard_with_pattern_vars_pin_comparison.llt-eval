@@ -1,10 +1,11 @@
-# Test that when the pin name is already in scope, it does comparison, not binding
+# @[is: predicate] guard in CaseArm position — supported via eval_structural_pattern_inner.
+# The case arm binds the scrutinee to `result`, then the [is: ...] predicate tests [> result 5].
+# Scrutinee 10 satisfies [> 10 5], so the "matched" arm fires.
 [
   expected: 10
   result: [match 10
-    expected@[is: [> expected 5]]:   "matched"
-    _:                                "no match"]
+    [case [let result] result@[is: [> result 5]] "matched"]
+    ...:                                         "no match"]
 ]
-
 === out
 Dict({"expected": Int(10), "result": String("matched")})

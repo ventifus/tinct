@@ -1,14 +1,14 @@
-# Match on an annotated unit constructor must succeed (S-855 bug fix).
-# Pattern::Constructor must peel Value::Annotated wrappers before matching the inner Variant.
+# Match on an annotated unit constructor must succeed (S-855 bug fix, maintained in S-944).
+# The Field and Call arms in match_pattern must peel Value::Annotated wrappers before matching.
 # Red@[category: "primary"] evaluates to Value::Annotated { inner: Variant("MyType.Red", None), .. }.
-# Before the fix, the Constructor arm fell through to _ => Ok(None), causing the wildcard to fire.
-# After the fix, Value::Annotated is peeled and the inner Variant tag "MyType.Red" is matched.
+# Before the fix, the Field arm fell through to _ => Ok(None), causing the wildcard to fire.
+# After the fix, peel_annotated(value.clone()) is applied and the inner Variant tag "MyType.Red" is matched.
 # Uses MyType.Red as scrutinee (T-1086: qualified form is in typecheck scope; unqualified Red is not).
 [
   MyType:  [type Red@[category: "primary"]: []]
   matched: [match MyType.Red
     MyType.Red: "matched"
-    _:          "wildcard"]
+    ...:        "wildcard"]
   result:  [= matched "matched"]
 ]
 === out

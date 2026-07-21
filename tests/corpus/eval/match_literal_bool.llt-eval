@@ -1,6 +1,6 @@
 [match True
     True:   "yes"
     False:  "no"
-    _:      "unknown"]
+    ...:    "unknown"]
 === out
 String("yes")

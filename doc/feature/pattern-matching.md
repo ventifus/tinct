@@ -3,340 +3,277 @@
 ## Overview
 
 `[match x ...]` is a first-class `Expr::Match` AST node with dedicated
-type checker and evaluator support. It replaces `type-of` + string
-comparison chains with flat arm lists that dispatch on type, literal
-value, dict structure, seq structure, or guards. The type checker narrows
-the scrutinee type per-arm, checks exhaustiveness against inferred union
-types, and computes precise result types. Arms use dict syntax — the
-pattern spec is the key, the body is the value.
+type checker and evaluator support. Arms use dict syntax — the
+pattern is the key, the body is the value. The evaluator materializes the
+scrutinee, tries arms top-to-bottom, and evaluates the first matching arm's
+body. No match → runtime error.
 
-## Design
+## Pattern Syntax
 
-`[match]` is implemented as a first-class `Expr::Match` AST node — a
-parser special form with dedicated type checker and evaluator support.
+Patterns are `Arc<SurfaceNode>` values — the same AST nodes as expressions.
+The evaluator's `match_pattern` function dispatches on `SurfaceExpression`
+variant to determine matching behavior.
 
-**Context-sensitive key identity:** Inside `[match]`, the parser enters a dedicated
-match-arm parsing mode where the full annotated expression is the key identity —
-`n@Integer` and `n@String` are distinct keys even though both have base name `n`. This
-is implemented in the parser directly (not via a syntax class in stdlib). Regular
-dicts are unchanged: `[n@Integer: 1  n@String: "2"]` remains a duplicate-key error.
+### Wildcard
 
-**Pattern syntax** (the key position of each arm):
+`...:` (Placeholder(None, None)) — always matches, no binding:
 
 ```tinct
-# Type patterns — uppercase bare word is a type tag
 [match x
-    Int:  [+ x 1]       # matches if x is an Int; x still in scope
-    Str:  i"got: $x"    # matches if x is a Str
-    _:    x]            # wildcard — always matches
+    42:   "forty-two"
+    ...:  "other"]
+```
 
-# Variable binding — lowercase bare word binds the scrutinee
+### Literal Patterns
+
+Integer, float, or string literals match by equality:
+
+```tinct
 [match x
-    n:  [+ n 1]]        # n is bound to x's value; rarely useful but complete
+    0:       "zero"
+    42:      "the answer"
+    "hello": "greeting"
+    3.14:    "pi"
+    ...:     "other"]
+```
 
-# Type + binding — annotated bare word: bind AND type-constrain
-[match x
-    n@Integer:  [+ n 1]
-    n@String:  i"got: $n"
-    _:      x]
+### Constructor Tag Patterns (Field)
 
-# **Note:** `n@Integer:` is a compile-time type annotation that narrows the inferred type of `n`
-# within the arm body. It does NOT perform a runtime type check — for runtime type checking,
-# use `[is: int?]` guard instead.
+A dot-access expression in pattern position matches a `Value::Variant` by
+tag — the chain `TypeName.CtorName` must equal `tycon.ctor` in the variant:
 
-# Literal patterns — literals match by equality
-[match x
-    42:      the-answer
-    true:    yes
-    "hello": greeting
-    _:       other]
+```tinct
+[match color
+    Color.Red:   "#ff0000"
+    Color.Green: "#00ff00"
+    Color.Blue:  "#0000ff"
+    ...:         "unknown"]
+```
 
-# Guards via `is:` annotation — predicate must return true
-[match x
-    n@[is: [> _ 0]]:   "positive"
-    n@[is: [< _ 0]]:   "negative"
-    _:                  "zero"]
+The tag must be a fully qualified `TypeName.CtorName` — bare uppercase names
+are not automatically qualified at runtime. The evaluator flattens the
+dot-access chain via `flatten_dot_access_to_tag` to produce the tag string.
 
-# Type + guard combined
-[match x
-    n@[type: Int  is: [> _ 0]]:   i"positive int: $n"
-    n@Integer:                         i"non-positive int: $n"
-    _:                             "not an int"]
+### Constructor + Payload Patterns (Call)
 
-# Dict patterns — dict literal as key, destructures by key
+`[Tag payload-pattern]:` — matches a `Value::Variant` by tag AND then matches
+the payload value against `payload-pattern`:
+
+```tinct
+# Wildcard payload — match tag, ignore payload content
+[match sh
+    [Shape.Circle ...]: "any circle"
+    ...:                "other"]
+
+# Dict sub-pattern — match tag and destructure payload
+[match sh
+    [Shape.Circle [r: 5]]: "unit circle-ish"
+    [Shape.Circle ...]:    "some circle"
+    ...:                   "other"]
+```
+
+Rules for the payload sub-pattern:
+- `[Tag]:` (no arg) — tag match only, no payload check (same as bare `Tag:`)
+- `[Tag ...]:` — wildcard payload: tag matched, payload ignored
+- `[Tag [dict-pat]]:` — recursively matches payload against the dict pattern
+- `[Tag lit]:` — compares payload value against the literal
+- Multiple args are not supported; `[Tag a b]:` is a runtime error
+
+**For payload binding**, use the `[case [let p] ...]` form (see below) — the
+Call pattern form does not introduce new bindings.
+
+### Pin Patterns (VarRef)
+
+A lowercase bare word in pattern position is a **pin**: it looks up the
+variable in the current scope and compares the scrutinee against that value.
+If the name is not in scope, the resolver emits a diagnostic and the arm
+does not match.
+
+```tinct
+[
+  expected: 42
+  result: [match x
+    expected:  "got 42"     # pin — compares x against current value of expected
+    ...:       "other"]
+]
+```
+
+Pin semantics:
+- Resolver runs before the match and records the de Bruijn (level, slot) for each
+  VarRef in pattern position via a `Resolution` OnceLock.
+- At runtime: `Some(Some((level, slot)))` → look up value at that slot and compare.
+- `Some(None)` → name not in scope → resolver warned; arm does not match.
+- `None` → resolver did not run (internal error).
+
+**`...` is the explicit wildcard, not `_`.** A bare `_` in pattern position is
+treated as a pin attempt on the name `_`. Since `_` is almost never in scope,
+the resolver sets `Some(None)` and the arm silently never matches — it is NOT a
+wildcard. Use `...:` for wildcard arms.
+
+### Dict Patterns
+
+A dict literal in pattern position matches a dict value by checking that all
+specified keys are present and their values match the corresponding sub-patterns.
+Extra keys in the scrutinee are ignored (open matching):
+
+```tinct
 [match result
     [ok: v]:    v
     [err: msg]: [error msg]
-    _:          [error "unexpected"]]
-
-# Nested patterns
-[match event
-    [type: "click"  target: [id: id]]:  [handle-click id]
-    [type: "hover"  target: [id: id]]:  [handle-hover id]
-    _:                                   "ignored"]
-
-# Seq patterns — [seq h t] in key position
-[match xs
-    [seq h t]:  [process h t]
-    _:          "empty"]
-
-# Or-patterns — `|` pipe node as key; both sub-patterns must bind same vars
-[match result
-    [ok: v] | [success: v]:   v
-    [err: msg]:               [error msg]]
-
-# Pin operator — $name matches against existing variable value
-[match result
-    $expected:  "matched!"
-    other:      "no match"]
+    ...:        [error "unexpected"]]
 ```
 
-**`is:` predicate semantics:** The `is:` key in an annotation property dict
-is a `Fn@Boolean [Any]` predicate. The match macro calls it with the bound value.
-`true` = arm fires; `false` = fall through to next arm. Use `_` as the
-placeholder: `[> _ 0]` desugars to `[fn [_] [> _ 0]]`. For multiple
-predicates use `and` composition: `[is: [and [> _ 5] [< _ 10]]]`. Named
-contracts work directly: `n@[is: PortRange]` where `PortRange: [fn [v] ...]`.
-
-The pattern language is amenable to exhaustiveness analysis via `infer_match()`.
-The type checker narrows types per-arm, checks exhaustiveness against inferred
-union types, and computes precise result types.
-
-### Keyword Choice: `match` vs `case`
-
-`match` is used by Rust, Nickel, Scala, F#, OCaml. `case` is used by
-Haskell, Elixir, Erlang. `match` reads more naturally in tinct's bracket
-syntax: `[match x ...]` vs `[case x ...]`.
-
-### Pattern Variable Syntax
-
-In tinct, `x` is a variable reference (lookup). In patterns, `x` means
-"bind the matched value to `x`." This dual meaning follows Elixir's
-precedent (variables in patterns bind, not match). The alternative — a new
-sigil for pattern bindings — adds complexity without proportional benefit.
-
-**Pin operator:** Use `$name` to match against the existing value of a
-variable (pin), rather than binding a new variable named `name`. This
-is consistent with tinct's existing `$` semantics — `$` already marks a
-reference to something already named, in both expression and pattern context:
+Nested dict patterns compose recursively:
 
 ```tinct
-[match result
-    $expected:  "matched!"   # pin: result must equal current value of `expected`
-    other:      "no match"]  # bind: `other` is bound to result's value
-
 [match event
-    $start-event:  [handle-start]
-    $end-event:    [handle-end]
-    other:         [handle-other other]]
+    [type: "click"  target: [id: id-val]]:  [handle-click id-val]
+    [type: "hover"  target: [id: id-val]]:  [handle-hover id-val]
+    ...:                                     "ignored"]
 ```
 
-Bare `name` in a pattern = new binding. `$name` in a pattern = match against
-the existing value. `$name` requires `name` to be in scope at the match site —
-an undefined `$name` is a compile-time or runtime error, same as `$name` in
-an expression.
+Note: the sub-patterns `v`, `msg`, `id-val` are themselves VarRef nodes in
+pattern position — they are pins. For these to work as bindings, use the
+CaseArm form.
 
-### Open vs Closed Dict Matching
+### CaseArm Form — Payload Binding
 
-Dict patterns default to **open matching** (extra keys allowed). This is
-consistent with row polymorphism's open records and is more useful for
-configuration data where extra fields are common. Closed matching (reject
-extra keys) uses explicit syntax (e.g., trailing `|` or `!`).
+`[case [let bindings...] pattern body]` — the canonical form for match arms
+that need to bind new names. It takes three arguments:
 
-### Interaction with `_` Desugaring
+1. `[let name1 name2 ...]` — names that this arm introduces as bindings
+2. `pattern` — the structural match (evaluated as in `match_pattern`)
+3. `body` — the expression to evaluate when the arm matches, with bindings in scope
 
-`[match]` bodies can use `_` normally — the `_` desugaring pass runs
-before evaluation, and `match` bodies are ordinary expressions. No special
-interaction. The match scrutinee can also be `_`, creating a function:
-`[fn [_] [match _ ...]]` via the WRAP-CALL rule.
+```tinct
+[match sh
+    [case [let p] [Shape.Circle p] [* p.r p.r]]
+    ...:                            0]
+```
 
-### Materialization Semantics
+In the CaseArm, `p` in the pattern position is a **binding**, not a pin —
+the arm introduces `p` into the body's scope and binds it to the payload dict.
+The `[let p]` declaration is what makes this a binding rather than a pin.
 
-Pattern matching on the scrutinee is inherently materializing (like
-`type-of`). This means `[match thunk ...]` forces `thunk`. Within
-dict patterns, only matched keys are forced. This is documented in
-doc/08-evaluation.md Builtin Materialization Behavior as the standard pattern for
-builtins that need to inspect value structure.
+More examples:
 
-### Why a Special Form (Not a Macro)
+```tinct
+# Payload binding — p gets the variant's payload dict
+[match result
+    [case [let p] [Result.Ok p]    p.value]
+    [case [let p] [Result.Error p] [error p.msg]]
+    ...:                           [error "no match"]]
 
-`[match]` is implemented as an `Expr::Match` parser special form rather
-than via `[macro match ...]`. This was decided after evaluating both
-approaches against the type system requirements:
-
-1. **Type checker integration.** As a first-class AST node, the type
-   checker's `infer_match()` narrows the scrutinee type per-arm,
-   checks exhaustiveness against inferred union types, and computes a
-   precise union result type `τ₁ | τ₂ | τ₃` — none of which are
-   possible when match desugars to `if` chains before the type checker
-   runs. See Tobin-Hochstadt & Felleisen (2010) for the theoretical
-   basis of per-arm narrowing.
-
-2. **No fragile coupling.** A macro must produce `if`/`int?` chains
-   that the narrowing extractor (`extract_narrowings()`) pattern-matches
-   against. Two independently maintained components must agree on AST
-   shapes with no enforced contract. With `Expr::Match`, the type checker
-   handles patterns directly — no reverse-engineering.
-
-3. **Exhaustiveness with inferred types.** The type checker has access to
-   inferred scrutinee types, enabling automatic coverage checking without
-   requiring explicit `[@Type ...]` annotations. A macro runs before the
-   type checker and can only check coverage against declared type aliases.
-
-4. **Not match-as-function.** Nickel's match-as-function interacts poorly
-   with tinct's `_` desugaring — both introduce implicit parameters. The
-   `[match scrutinee ...]` form with an explicit scrutinee avoids this
-   conflict and is clearer to read.
-
-The trade-off is AST surface area: `Expr::Match` adds one arm to every
-exhaustive match on `Expr` in the codebase (~20 sites). This is a
-one-time cost that pays for itself through type checker clarity.
+# Dict pattern with binding — v gets the value at key "ok"
+[match response
+    [case [let v] [ok: v] [str "success: " v]]
+    [case [let] [err: ...] "error"]
+    ...:                   "unknown"]
+```
 
 ## Implementation
 
 ### Parser (`src/parser.rs`)
 
-`match` is a keyword alongside `call`, `fn`, `type`. The parser enters a
-pattern-parsing mode for match arms: bare names as bindings, capitalized
-words as type tags, literals as literal patterns. Arms are parsed as
-pattern-body pairs.
+`match` is a keyword. The parser enters match-arm parsing mode for the key
+position of each arm: the full expression is parsed as a `SurfaceNode` and
+stored directly as `SurfaceMatchArm.pattern: Arc<SurfaceNode>`.
+
+`[case [let bindings] pattern body]` is parsed as a `SurfaceExpression::CaseArm`.
+The resolver and evaluator handle it specially.
 
 ### AST (`src/ast.rs`)
 
-`Expr::Match` with `MatchArm` and `Pattern` types. `Pattern` covers type
-tags, literals, wildcards, variable bindings, dict/seq destructuring,
-or-patterns, and guards. Every exhaustive match on `Expr` gains one arm
-(~20 sites).
+`SurfaceMatchArm.pattern` is an `Arc<SurfaceNode>` — the same type as any
+other surface expression. The `Pattern` enum was deleted in S-944 (T-1750);
+all pattern dispatch now operates on `SurfaceExpression` variants directly.
+
+The `flatten_dot_access_to_tag` function extracts a qualified tag string from
+a dot-access chain (`Color.Red` → `"Color.Red"`). Used by both the Field and
+Call arms of `match_pattern`.
+
+### Resolver (`src/resolve.rs`)
+
+`walk_surface_node` walks `arm.pattern` for each match arm. For `VarRef`
+nodes in pattern position, `collect_varrefs_in_node` includes them in the
+lost-binding lint analysis.
+
+The resolver sets each `VarRef.resolution` OnceLock before evaluation:
+- `Some(Some((level, slot)))` — variable found at that de Bruijn coordinate
+- `Some(None)` — variable not in scope; resolver emits a diagnostic
 
 ### Evaluator (`src/eval.rs`)
 
-The `CoreExpr::Match` arm in `eval_core_expr` materializes the scrutinee, tries arms
-top-to-bottom. Each arm's pattern is matched against the scrutinee value via
-`match_pattern`. First matching arm's body is evaluated. No match → runtime error.
+`match_pattern(pattern, value, env, value_span, env_id, ctx)` dispatches on
+`SurfaceExpression`:
 
-### Type Checker (`src/typecheck.rs`)
+| Pattern form | AST node | Behavior |
+|---|---|---|
+| `...:` | `Placeholder(None, None)` | Always matches |
+| `varname:` | `VarRef { resolution }` | Pin: compare scrutinee to scope value |
+| `42:` / `"s":` / `3.14:` | `Int` / `StringLiteral` / `Float` | Literal equality |
+| `Tag.Ctor:` | `Field` | Tag match: check `tycon.ctor == tag` |
+| `[Tag ...]:` | `Call(args=[Placeholder])` | Tag match + ignore payload |
+| `[Tag sub]:` | `Call(args=[node])` | Tag match + recurse into payload |
+| `[k: sub]:` | `Dict` | Field presence + recurse into values |
+| Other | — | Runtime error: not a valid pattern |
+
+`eval_case_arm_structural_pattern` handles the `CaseArm` path, which
+introduces bindings into the arm environment before evaluating the body.
+
+### Coverage (`src/coverage.rs`)
+
+`ast_pattern_to_coverage` converts `Arc<SurfaceNode>` to coverage lattice
+elements:
+
+- `Placeholder(None, None)` → `Wildcard` (exhaustive)
+- `VarRef` with `Some(Some(...))` (resolved pin) → `Constructor` (non-exhaustive, specific tag)
+- `VarRef` with `Some(None)` (unresolvable) → `Wildcard` (conservative: may match anything)
+- `Field` → `Constructor` for the specific tag
+- `Call` → `Constructor` for the tag (payload ignored for coverage)
+- `Int` / `StringLiteral` / `Float` → `Literal`
+- `Dict` → structural dict coverage
+
+### Type Checker (`src/typecheck.rs`, `src/typecheck_match.rs`)
 
 `infer_match()` infers the scrutinee type, narrows it per-arm based on the
 pattern, infers each arm body under the narrowed environment, and joins arm
-result types. If the scrutinee is a union type, calls the coverage algorithm.
-Pattern types:
+result types.
 
-- `VarRef("_")` → wildcard: always matches
-- `VarRef("n")` (lowercase) → variable binding: always matches, bind `n`
-- `VarRef("Int")` (uppercase) → type pattern: `[int? scrutinee]`
-- `Int(42)` (literal) → literal match: `[= scrutinee 42]`
-- `Dict([ok: VarRef("v")])` → dict pattern: `[and [dict? s] [has? "ok" s]]`, bind `v`
-- `Annotated("n", Simple("Int"))` → type-constrained binding
-- `Annotated("n", PropertyDict([is: pred]))` → guard: call `pred` with bound value
-- `Pipe(p1, p2)` → or-pattern: try both sub-patterns
+**Narrowing:** Type-tag arms narrow statically. Dict patterns `[ok: v]:` narrow
+to `[ok: ...]`. Literal patterns narrow to the literal type. The type checker
+applies narrowing constraints directly from the `SurfaceExpression` pattern
+without desugaring to `if`/predicate chains.
 
-**Narrowing:** `infer_match()` narrows the scrutinee type per-arm directly:
-
-Type-predicate arms narrow statically. `n@Integer:` narrows `n` to `Int`
-in the arm body. Similarly `n@Str:` narrows to `Str`, dict patterns
-`[ok: v]:` narrow to `[ok: ...]`, etc. The type checker applies the
-narrowing constraint from the pattern directly — no desugaring to
-`if`/`int?` chains required.
-
-`is:` predicate arms do NOT narrow the type. `n@[is: [> _ 0]]:` proves a runtime
-condition (`n > 0`) but the type checker cannot derive a static type from an arbitrary
-`Fn@Boolean [Any]` predicate. `n` retains whatever type the scrutinee had — `Int` if the
-scrutinee was typed `Int`, `Any` if it was untyped. This is correct behavior: `is:`
-guards are value constraints, not type constraints.
-
-The distinction matters for arm body type safety: after `n@Integer:` the type checker
-knows `n` is an `Int` and can reject `n.field` as a type error; after `n@[is: [> _ 0]]:`,
-it cannot. Users who need both should compose: `n@[type: Int  is: [> _ 0]]:` gives
-type narrowing AND the value guard.
-
-### Exhaustiveness
-
-Exhaustiveness is checked in `infer_match()` when the scrutinee's type is a
-`Type::Union`. The type checker extracts the variant set from the scrutinee's
-union type and performs Maranget-style coverage analysis on the arm patterns:
-
-- Type-tag arms (`n@Integer:`) cover the `Int` variant
-- Dict pattern arms (`[ok: v]:`) cover the `[ok: a]` structural variant
-- Wildcard `_:` covers all remaining variants
-- Or-pattern arms (`p1 | p2:`) cover both sub-patterns
-- `is:` predicate arms are **opaque** — they do not contribute to coverage
-  (the guard is a runtime condition, not a type constraint)
-
-Without a union-typed scrutinee, no coverage analysis is performed —
-the match is dynamically correct but statically unverified. A runtime
-`MatchError` fires if no arm matches.
-
-- **Unreachable arms:** an arm after a wildcard `_:` is flagged as a type warning.
-- **`is:` arms and coverage:** **all guarded arms are fully opaque** to exhaustiveness
-  analysis. Arms with `is:` predicates — including combined `type:` + `is:` arms like
-  `n@[type: Int  is: [> _ 0]]:` — are excluded from coverage entirely, regardless of
-  any type constraint they carry. The `Int` type annotation in this example does **not**
-  contribute to coverage; the arm is treated as if it were `n@[is: [> _ 0]]:` with no
-  type constraint at all. This matches Karachalias et al. (2015) lazy bottom semantics:
-  guards are opaque runtime predicates whose truthfulness cannot be statically determined,
-  so the exhaustiveness checker conservatively assumes the arm might not match even when
-  its type constraint is satisfied. An unguarded `n@Integer:` arm or wildcard `_:` arm is
-  still required to satisfy exhaustiveness for the `Int` variant.
-
-### Lazy Evaluation
-
-The evaluator materializes the scrutinee then tries arms top-to-bottom.
-Dict pattern matching forces only matched keys — implemented via `has?`
-and dot access internally. Seq pattern matching uses `head` and `tail`,
-which force the head and leave the tail as a thunk. Only the matching
-arm's body evaluates. No new forcing semantics.
+**Exhaustiveness:** When the scrutinee's type is a `Type::Union`, the type
+checker performs Maranget-style coverage analysis on the arm patterns.
+`...:` (Placeholder/Wildcard) covers all remaining variants. Arms after a
+wildcard are flagged as unreachable.
 
 ## References
 
 **Pattern matching compilation:**
 
 - Augustsson, L. (1985). "Compiling pattern matching." In *FPCA '85*,
-  LNCS 201, pp. 368–381. Springer. — Decision tree compilation for
-  pattern matching in lazy functional languages.
+  LNCS 201, pp. 368–381. Springer.
 - Maranget, L. (2008). "Compiling pattern matching to good decision
-  trees." In *ML '08*, pp. 35–46. ACM. — Optimal decision trees for
-  pattern compilation. Directly applicable to Phase 2+ compilation.
+  trees." In *ML '08*, pp. 35–46. ACM.
 - Karachalias, G., Schrijvers, T., Vytiniotis, D. & Peyton Jones, S.
-  (2015). "GADTs meet their match: pattern-matching warnings that
-  account for GADTs, guards, and laziness." In *ICFP '15*, pp. 424–436.
-  ACM. — Extends exhaustiveness and redundancy checking to handle guards
-  (treated as opaque/irrefutable for coverage), laziness (divergent
-  scrutinees), and GADTs (type refinement in arms). The guard opacity
-  result directly applies to tinct's `is:` predicate arms: guards do not
-  contribute to coverage analysis.
+  (2015). "GADTs meet their match." In *ICFP '15*, pp. 424–436. ACM.
 - Scott, K. & Ramsey, N. (2000). "When do match-compilation heuristics
-  matter?" Technical Report CS-2000-13, University of Virginia. —
-  Empirical comparison of match compilation strategies; shows simple
-  heuristics suffice in practice.
+  matter?" Technical Report CS-2000-13, University of Virginia.
 - Peyton Jones, S.L. (1987). *The Implementation of Functional
-  Programming Languages.* Prentice Hall. Chapter 5: pattern matching
-  compilation strategies for lazy languages.
+  Programming Languages.* Prentice Hall. Chapter 5.
 
 **Pattern matching and laziness:**
 
 - Wadler, P. (1987). "Views: a way for pattern matching to cohabit with
-  data abstraction." In *POPL '87*, pp. 307–313. ACM. — Pattern matching
-  over abstract types via views. Relevant to tinct's dict/seq dispatch
-  where the underlying representation may differ from the pattern surface.
-
-**Nickel pattern matching:**
-
-- Nickel v1.5 changelog (2024). Introduction of match expressions with
-  record and enum patterns.
-- Nickel v1.7 changelog (2024). Extension with wildcards, constants,
-  guards, array patterns, and or-patterns.
-
-**Union elimination (Dhall model):**
-
-- Christiansen, D.R. (2013). "Bidirectional typing rules: a tutorial."
-  — Checking mode for eliminators ensures exhaustiveness.
+  data abstraction." In *POPL '87*, pp. 307–313. ACM.
 
 **Comparable language designs:**
 
-- Nix manual §5.1: Function argument set patterns (`{ x, y, ... }: body`).
-  No general pattern matching after 30+ years.
-- Jsonnet spec: No pattern matching. Type dispatch via `std.type()`.
-- jq manual: Compositional filters (`select()`, `//`, `try-catch`) as
-  pattern matching alternative.
+- Nickel v1.5/1.7 changelogs (2024). Record/enum patterns, wildcards,
+  guards, or-patterns.
 - Elixir: Pattern matching as core language feature. `case`, function
   heads, guards, pin operator.
+- Nix manual §5.1: Function argument set patterns.

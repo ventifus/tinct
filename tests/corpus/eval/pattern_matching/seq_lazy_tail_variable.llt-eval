@@ -4,6 +4,6 @@
 # p.tail is never accessed in the body — the raise must not fire.
 [match [seq 1 [raise "tail must not be forced"]]
   [case [let p] [Seq.Cons p] p.head]
-  _:                         0]
+  ...:                       0]
 === out
 Int(1)

@@ -25,7 +25,6 @@ The type checker reads:
 The type checker writes:
 - `TypeAnnotation` OnceLocks on `SurfaceExpression::TypeAssert.resolved_type` nodes — the resolved `Type` for `[@T expr]`
 - `TypeAnnotation` OnceLocks on `SurfaceParam.resolved_annotation_type` — the resolved type for each annotated function parameter
-- `TypeAnnotation` OnceLocks on `Pattern::TypeAssertPending.resolved` — resolved type for `n@T` match patterns
 - `CallDispatch` OnceLocks on `VarRef` nodes in call position — the mangled instance binding name for typeclass method calls
 - `SurfaceNode.type_guard` — a `TypeAnnotation` OnceLock written when the type checker needs to wrap a node with a runtime type assertion that wasn't written by the user
 - `InferState.type_annotation_table` — a `TypeAnnotationTable` (NodeId → Type) accumulated during inference, drained into the top-level table by `process_document`
@@ -236,7 +235,6 @@ The type checker writes these inline OnceLocks during its walk:
 | `TypeAnnotation` | `SurfaceNode.type_guard` | Type checker needs to add a runtime assertion not written by the user (gradual typing boundary) |
 | `TypeAnnotation` | `SurfaceExpression::TypeAssert.resolved_type` | Resolving the type of a `[@T expr]` annotation |
 | `TypeAnnotation` | `SurfaceParam.resolved_annotation_type` | Resolving an annotated function parameter's type (written by `infer_fn_push_cont`) |
-| `TypeAnnotation` | `Pattern::TypeAssertPending.resolved` | Resolving a type pattern `n@T` in a match arm |
 | `CallDispatch` | `SurfaceExpression::VarRef.call_dispatch` | Resolving a typeclass method call to a specific instance |
 | `MatchableBinding` | `SurfaceMatchArm.guard_matchable_binding` | Resolving the `to-match` Matchable instance for a predicate pattern |
 

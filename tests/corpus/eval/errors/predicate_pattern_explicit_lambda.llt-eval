@@ -1,0 +1,13 @@
+# After S-944, patterns are SurfaceNode dispatched in match_pattern. A lambda expression
+# in pattern position (SurfaceExpression::Fn) hits the `_ => Err(...)` catch-all arm
+# and produces "not a valid pattern: [fn ...]". This is a runtime eval error.
+[
+  word: "hello"
+  result: [match word
+    [fn [let x] [> [str-length x] 3]]: "long"
+    ...:                                "short"]
+]
+---
+%.result
+=== error
+not a valid pattern: [fn ...]

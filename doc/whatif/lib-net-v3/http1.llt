@@ -71,7 +71,7 @@
       413: "Payload Too Large"  422: "Unprocessable Entity"
       429: "Too Many Requests"
       500: "Internal Server Error"  502: "Bad Gateway"  503: "Service Unavailable"
-      _:   "Unknown"]]
+      ...:   "Unknown"]]
 ]
 
 # ── Public API. ───────────────────────────────────────────────────────────────────────────────────

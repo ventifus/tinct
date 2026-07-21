@@ -332,7 +332,7 @@ Simple arms with no bindings need no `[case]` wrapper:
   Color.Red:   "#ff0000"
   Color.Green: "#00ff00"
   42:          "forty-two"
-  _:           "other"]
+  ...:         "other"]
 ```
 
 ### Function Parameters
@@ -394,7 +394,7 @@ Range: [type [from: Int  to: Int]]
 [match score
   [case [let v] [Range 90 100] [str "A: " v]]
   [case [let v] [Range 80 90]  [str "B: " v]]
-  _:                            "below B"]
+  ...:                          "below B"]
 
 # Regex pattern (hypothetical, requires regex library)
 [instance Matchable RegexPattern
@@ -408,7 +408,7 @@ Range: [type [from: Int  to: Int]]
 [match name
   [starts-with? "Dr."]: "doctor"
   [ends-with? "PhD"]:   "academic"
-  _:                    "other"]
+  ...:                  "other"]
 ```
 
 ## What Would Change

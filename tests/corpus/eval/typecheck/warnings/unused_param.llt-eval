@@ -1,0 +1,8 @@
+# T-1740: parameter 'a' is declared but never referenced in the function body.
+# The function uses 'b' but ignores 'a' entirely.
+[call [fn [let a b] [+ b 1]] 99 2]
+=== out
+Int(3)
+
+=== warn
+parameter 'a' is never referenced

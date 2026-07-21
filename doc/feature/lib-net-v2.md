@@ -99,7 +99,7 @@ IcmpHttpConn: [
   connect: [fn [transport host]
     [match transport
       IcmpHttp: [open-icmp-stream %nc host]
-      _:        [error [str "unsupported transport: " [tag-of transport]]]]]]
+      ...:      [error [str "unsupported transport: " [tag-of transport]]]]]]
 
 [h: [connect IcmpHttpConn IcmpHttp "10.0.0.5"]]
 [http-get h [url "http://10.0.0.5/api"]]
@@ -129,7 +129,7 @@ MyConnector: [
     [match transport
       Tcp:        [open-tcp-via-wireguard address.0 address.1]
       UnixStream: [open-unix address.0]
-      _:          [error "unsupported"]]]]
+      ...:        [error "unsupported"]]]]
 ```
 
 ### The Layer Protocol
@@ -257,7 +257,7 @@ fetch: [fn@Result [connector url@Url opts@Dict]
   [match url.scheme
     "https": [fetch-https connector url opts]
     "http":  [fetch-http  connector url opts]
-    _:       [err: [str "fetch: unsupported scheme: " url.scheme]]]]
+    ...:     [err: [str "fetch: unsupported scheme: " url.scheme]]]]
 ```
 
 `fetch-https` negotiates the best available protocol. HTTP/2 is selected via ALPN in

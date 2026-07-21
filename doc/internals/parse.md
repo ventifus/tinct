@@ -275,8 +275,8 @@ state:
 | `field_slot` | `SlotAnnotation` | `Field` | Type checker | Lowerer |
 | `resolved_annotation_type` | `TypeAnnotation` | `SurfaceParam` | Type checker | Lowerer |
 | `resolved_type` | `TypeAnnotation` | `TypeAssert` | Type checker | Lowerer |
-| `pin_resolution` | `Resolution` | `Pattern::Pin` | Resolver | Evaluator |
-| `to_match_binding` | `MatchableBinding` | `Pattern::Predicate` | Type checker | Lowerer/evaluator |
+| `resolution` (in pattern) | `Resolution` | `VarRef` in pattern position | Resolver | Evaluator |
+| `guard_matchable_binding` | `MatchableBinding` | `SurfaceMatchArm` | Type checker | Lowerer/evaluator |
 
 Clone semantics: `Resolution`, `TypeAnnotation`, and `SlotAnnotation` **reset** to empty on clone
 (cloned nodes in new scopes must be re-annotated). `MatchableBinding` **preserves** its value

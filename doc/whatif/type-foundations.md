@@ -71,8 +71,8 @@ Dict keys need `Hash + Eq` (IndexMap implementation). `Equatable` and `Comparabl
 [instance Hashable [let k@Boolean]:
   [=:    [fn [let a b]
            [match a
-             Boolean.True:  [match b  Boolean.True: true   _: false]
-             Boolean.False: [match b  Boolean.False: true  _: false]]]
+             Boolean.True:  [match b  Boolean.True: true   ...: false]
+             Boolean.False: [match b  Boolean.False: true  ...: false]]]
    hash: [fn [let a] [match a  Boolean.True: 1  Boolean.False: 0]]]]
 
 [instance Sortable [let k@Integer]:
@@ -1336,7 +1336,7 @@ the type signature rather than through AST-structure inspection.
 **Alternative (current decision):** `if` stays as `∀a. Bool → a → a → a` with no narrowing.
 Users who need type narrowing use `match`:
 ```tinct
-[match x n@String: [use-as-string n]  _: fallback]
+[match x n@String: [use-as-string n]  ...: fallback]
 ```
 `match` already provides structural narrowing. `if` is a convenience for simple conditionals
 where narrowing is not required.
@@ -1714,7 +1714,7 @@ qtype->int: [fn [let qt@DnsQtype]
     [DnsQtype.A]: 1    [DnsQtype.AAAA]: 28  ...]]
 
 int->rcode: [fn [let n@Integer]
-  [match n  0: DnsRcode.NoError  1: DnsRcode.FormErr  ... _: DnsRcode.ServFail]]
+  [match n  0: DnsRcode.NoError  1: DnsRcode.FormErr  ... ...: DnsRcode.ServFail]]
 
 # After — zero lookup functions, constants live on the type:
 DnsQtype: [type [A code: 1] [AAAA code: 28] ...]

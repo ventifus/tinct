@@ -1727,7 +1727,7 @@ A **resolver** is a tinct function declared in a `--- stage: type` section. It r
       [[kind: "named" name: "Int"]    [kind: "named" name: "Float"]]: [kind: "named" name: "Float"]
       [[kind: "named" name: "Float"]  [kind: "named" name: "Int"]]:   [kind: "named" name: "Float"]
       [[kind: "named" name: "Float"]  [kind: "named" name: "Float"]]: [kind: "named" name: "Float"]
-      _:                                                               [kind: "named" name: "Unknown"]]]
+      ...:                                                             [kind: "named" name: "Unknown"]]]
 ]
 ---
 Addable: [class [a b c]  [determines: [[[a b] c]]  resolver: AddResult]

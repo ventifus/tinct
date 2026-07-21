@@ -102,19 +102,13 @@ Converts a `CoreExpr` back to a `SurfaceNode` for quote/unquote evaluation. Brid
 pub(crate) fn annotation_name_to_type(name: &str) -> Type
 ```
 
-Converts well-known type names (`"Int"`, `"String"`, `"Bool"`, `"Seq"`, etc.) to `Type` values for `TypeAssertPending` pattern lowering. `Type::Unknown` (accept-all) is the fallback for unrecognized names.
+Converts well-known type names (`"Int"`, `"String"`, `"Bool"`, `"Seq"`, etc.) to `Type` values for `TypeAssert` pattern coverage. `Type::Unknown` (accept-all) is the fallback for unrecognized names.
 
 ```rust
 pub(crate) fn extract_dispatch_tags(arm_pattern: &SurfaceExpression) -> Vec<Option<String>>
 ```
 
 Extracts concrete uppercase type annotation names from an instance arm pattern (`[let a@Int b@Float c]`). Returns one `Option<String>` per binding: `Some("Int")` for annotated concrete types, `None` for unannotated or TypeVar bindings. Used by instance binding name generation.
-
-```rust
-fn lower_pattern(pat: &Pattern) -> Pattern
-```
-
-Converts `TypeAssertPending` pattern nodes to `TypeAssert` by reading the inline `resolved` OnceLock and falling back to `annotation_name_to_type`. Recurses into `Or`, `Constructor`, and `Dict` sub-patterns. `Predicate` patterns carry a `SurfaceNode` that is left unchanged — it is lowered on demand inside `MatchDispatch` at eval time.
 
 ### `SurfaceExpression` → `CoreExpr` Dispatch Table
 
@@ -126,7 +120,6 @@ Converts `TypeAssertPending` pattern nodes to `TypeAssert` by reading the inline
 | `StringLiteral { prefix: "i", .. }` | *(asserts unreachable)* | Must be desugared before lowering |
 | `VarRef` with `resolution = Some(Some((l, s)))` | `Var { level: l, slot: s, name, annotation }` | Resolved |
 | `VarRef` with `resolution = Some(None)` | `Placeholder` + diagnostic | Explicitly unresolvable |
-| `VarRef` with `resolution = None`, name `"_"` | `Var { level: 0, slot: 0, name: "_" }` | Wildcard sentinel; coords never accessed |
 | `VarRef` with `resolution = None`, other name | `Placeholder` + diagnostic | Undefined variable |
 | `VarRef` with `call_dispatch` set | `Var` using mangled name coords from scope_frames | Typeclass instance dispatch |
 | `Field { expr: Some, field_slot: Some(s) }` | `Call(slot-get, [Int(s), target])` | O(1) typed field access; slot-get is always field-get-slot + 1 |
@@ -146,7 +139,7 @@ Converts `TypeAssertPending` pattern nodes to `TypeAssert` by reading the inline
 | `Fn` | `Fn` | Params → `CoreParam` with slot index; body lowered recursively |
 | `TypeAssert` | `CoreExpr::TypeAssert` with type from `resolved_type` OnceLock | Falls back to `Type::Unknown` if type check skipped or produced `Type::Error` |
 | `Rest(name)` | `CoreExpr::Rest(name)` | Only valid in type expressions |
-| `Match` | `Match` with lowered scrutinee and arms | Pattern lowering converts `TypeAssertPending` → `TypeAssert`; multi-body arms wrapped in `Sequential` |
+| `Match` | `Match` with lowered scrutinee and arms | arm patterns pass through as `Arc<SurfaceNode>`; multi-body arms wrapped in `Sequential` |
 | `Quote` | `Quote` | Inner lowered with a fresh throwaway diagnostic vec; `scope_frames: None` inside |
 | `Unquote` / `UnquoteSplice` | `Unquote` / `UnquoteSplice` | Diagnostics and scope_frames threaded |
 | `LetDecl` | `LetDecl` | Even-index bindings lowered as `Str` (name extraction); odd-index lowered normally |

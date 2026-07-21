@@ -1,7 +1,7 @@
 # PM9: Pin pattern with Dict — structural equality rejects dicts with different values.
 [
   d: [x: 1  y: 2]
-  r: [match [x: 1  y: 99]  $d: "matched"  _: "no"]
+  r: [match [x: 1  y: 99]  $d: "matched"  ...: "no"]
 ]
 === out
 Dict({"d": Dict({"x": Int(1), "y": Int(2)}), "r": String("no")})

@@ -252,7 +252,7 @@ A complete class + instance declaration:
       [[kind: "named" name: "Int"]    [kind: "named" name: "Float"]]: [kind: "named" name: "Float"]
       [[kind: "named" name: "Float"]  [kind: "named" name: "Int"]]:   [kind: "named" name: "Float"]
       [[kind: "named" name: "Float"]  [kind: "named" name: "Float"]]: [kind: "named" name: "Float"]
-      _:                                                               [kind: "named" name: "Unknown"]]]
+      ...:                                                               [kind: "named" name: "Unknown"]]]
 ]
 ---
 # Class declaration: ClassEnv (persistent — needed at type-check time AND runtime for dispatch)
@@ -674,7 +674,7 @@ See §`src/type_infer.rs — Deferred equality queue` in What Would Change for t
       [[kind: "named" name: "Int"]    [kind: "named" name: "Float"]]: [kind: "named" name: "Float"]
       [[kind: "named" name: "Float"]  [kind: "named" name: "Int"]]:   [kind: "named" name: "Float"]
       [[kind: "named" name: "Float"]  [kind: "named" name: "Float"]]: [kind: "named" name: "Float"]
-      _:                                                               [kind: "named" name: "Unknown"]]]
+      ...:                                                               [kind: "named" name: "Unknown"]]]
 ]
 ---
 # Trivial: class + instances
@@ -752,11 +752,11 @@ wrap-pair: [fn@[bind: [a b]  return: [record first: [AddResult a b]  second: [Ad
       [kind: "named" name: "Int"]:   [kind: "named" name: "String"]
       [kind: "named" name: "Float"]: [kind: "named" name: "String"]
       [kind: "named" name: "Bool"]:  [kind: "named" name: "String"]
-      _:                             [kind: "named" name: "Unknown"]]]
+      ...:                             [kind: "named" name: "Unknown"]]]
   FromStringResult: [fn [...args]
     [match [builtin-get 0 args]
       [kind: "named" name: "String"]: [kind: "named" name: "Unknown"]  # open-ended
-      _:                              [kind: "named" name: "Unknown"]]]
+      ...:                              [kind: "named" name: "Unknown"]]]
 ]
 ---
 # Trivial: bidirectional — a determines b AND b determines a
@@ -858,7 +858,7 @@ compute-scaled-timeout: [fn [cfg]
                                   port:    [kind: "named" name: "Int"]
                                   timeout: [kind: "named" name: "Int"]
                                   retries: [kind: "named" name: "Int"]]]
-      _: [kind: "named" name: "Unknown"]]]
+      ...: [kind: "named" name: "Unknown"]]]
 ]
 ---
 # Trivial: non-arithmetic MPTC — merging two record types
@@ -909,7 +909,7 @@ safe-add: [fn@[bind: [a b c]  return: [or c Null]  constraint: [a: Numeric  b: N
 # result: or(AddResult(Int,Int), Null) = or(Int, Null)
 [match [safe-add 100 200]
   x@[is: int?]: [str "sum: " x]
-  _:            "overflow"]
+  ...:            "overflow"]
 
 # Nontrivial: nominal variant wrapping MPTC result
 Result: [type [Ok a] [Err String]]
@@ -1072,7 +1072,7 @@ All tinct typeclass infrastructure in final form. Resolver functions in `--- sta
       [[kind: "named" name: "Int"]    [kind: "named" name: "Float"]]: [kind: "named" name: "Float"]
       [[kind: "named" name: "Float"]  [kind: "named" name: "Int"]]:   [kind: "named" name: "Float"]
       [[kind: "named" name: "Float"]  [kind: "named" name: "Float"]]: [kind: "named" name: "Float"]
-      _:                                                               [kind: "named" name: "Unknown"]]]
+      ...:                                                               [kind: "named" name: "Unknown"]]]
 
   SubResult:  [fn [...args] ...]    # same dispatch as AddResult
   MulResult:  [fn [...args] ...]    # same dispatch as AddResult
@@ -1195,7 +1195,7 @@ Applicative: [class [f]  [kinds: [f: Operator]  superclasses: [Functor]]
                         lift2: [fn@[return: [Maybe c]] [g@[Fn@c [a b]]  ma@[Maybe a]  mb@[Maybe b]]
                                   [match [ma mb]
                                     [[Some a] [Some b]]: [Some [g a b]]
-                                    _:                   None]]]]
+                                    ...:                   None]]]]
 
 Monad: [class [m]  [kinds: [m: Operator]  superclasses: [Applicative]]
   bind: [fn@[return: [m b]] [ma@[m a]  k@[Fn@[return: [m b]] [a]]]]]

@@ -1,11 +1,16 @@
-# Does [Shape.Circle payload]: payload.r bind payload in the non-case arm form?
-# Under T-1154, bare lowercase names in pattern position are Pin patterns.
-# If the name is not in scope, the T-1154 comment says it acts as a wildcard,
-# meaning payload would NOT be bound and payload.r would fail.
+# [Shape.Circle ...] in non-case-arm position is a Call pattern (wildcard payload).
+# [case [let p] [Shape.Circle p] body] binds the payload dict to p.
+# Both forms are tested here.
 [
   Shape: [type Circle: [r: Int]]
   sh:    [Shape.Circle r: 5]
   area:  [match sh
-    [Shape.Circle payload]: [* payload.r payload.r]
-    _:                      0]
+    [case [let p] [Shape.Circle p] [* p.r p.r]]
+    ...:                            0]
+  # Non-case-arm wildcard payload form: fires when tag matches, ignores payload
+  tagged: [match sh
+    [Shape.Circle ...]: 1
+    ...:                0]
 ]
+=== out
+Dict({"Shape": Dict({"Circle": Function(r)}), "sh": Variant(Shape.Circle, Dict({"r": Int(5)})), "area": Int(25), "tagged": Int(1)})

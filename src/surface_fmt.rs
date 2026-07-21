@@ -11,7 +11,7 @@ use indexmap::IndexMap;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::ast::{CoreExpr, LiteralPattern, Param, Pattern, Spanned};
+use crate::ast::{CoreExpr, Param, Spanned};
 use crate::env::Env;
 use crate::eval::core_expr_is_static_key;
 use crate::eval::EvalContext;
@@ -391,14 +391,12 @@ fn collect_free_vars(
         CoreExpr::Match { scrutinee, arms } => {
             collect_free_vars(&scrutinee.node, param_scope, stdlib_env, out);
             for arm in arms {
-                // Collect variables bound by the pattern, then recurse into body/guard
-                // with the extended scope.
-                let mut arm_scope = param_scope.clone();
-                collect_pattern_bindings(&arm.pattern.node, &mut arm_scope);
+                // T-1750: patterns are now SurfaceNode and introduce no bindings
+                // (only [case [let ...]] introduces bindings)
                 if let Some(guard) = &arm.guard {
-                    collect_free_vars(&guard.node, &arm_scope, stdlib_env, out);
+                    collect_free_vars(&guard.node, &param_scope, stdlib_env, out);
                 }
-                collect_free_vars(&arm.body.node, &arm_scope, stdlib_env, out);
+                collect_free_vars(&arm.body.node, &param_scope, stdlib_env, out);
             }
         }
 
@@ -563,44 +561,6 @@ fn collect_free_vars_in_quote(
         | CoreExpr::Rest(_)
         | CoreExpr::UnitVariant { .. }
         | CoreExpr::Placeholder => {}
-    }
-}
-
-/// Collect all variable names introduced by a `Pattern` into `scope`.
-/// Used to extend param scope for a match arm's body.
-#[allow(clippy::only_used_in_recursion)]
-fn collect_pattern_bindings(pattern: &Pattern, scope: &mut HashSet<String>) {
-    match pattern {
-        Pattern::Dict { fields, .. } => {
-            for (_, sub_pattern) in fields {
-                collect_pattern_bindings(&sub_pattern.node, scope);
-            }
-        }
-        Pattern::Constructor { binding, .. } => {
-            if let Some(binding) = binding {
-                collect_pattern_bindings(&binding.node, scope);
-            }
-        }
-        Pattern::Or(alts) => {
-            // Both branches must bind the same set of variables — collect from the first.
-            if let Some(first) = alts.first() {
-                collect_pattern_bindings(&first.node, scope);
-            }
-        }
-        // Non-binding patterns
-        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(..) => {}
-        Pattern::TypeAssertPending { inner, .. } => {
-            if let Some(inner_pat) = inner {
-                collect_pattern_bindings(&inner_pat.node, scope);
-            }
-        }
-        Pattern::TypeAssert { inner, .. } => {
-            if let Some(inner_pat) = inner {
-                collect_pattern_bindings(&inner_pat.node, scope);
-            }
-        }
-        // T-1140: Predicate patterns introduce no variable bindings.
-        Pattern::Predicate { .. } => {}
     }
 }
 
@@ -840,17 +800,19 @@ fn core_expr_to_tinct(
                 core_expr_to_tinct(&scrutinee.node, param_scope, substitutions, rename_map, ctx)?;
             let mut arm_parts = Vec::with_capacity(arms.len());
             for arm in arms {
-                let mut arm_scope = param_scope.clone();
-                collect_pattern_bindings(&arm.pattern.node, &mut arm_scope);
-
-                let pattern_str = serialize_pattern(&arm.pattern.node)?;
-                let body_str =
-                    core_expr_to_tinct(&arm.body.node, &arm_scope, substitutions, rename_map, ctx)?;
+                let pattern_str = format!("{}", arm.pattern.expr);
+                let body_str = core_expr_to_tinct(
+                    &arm.body.node,
+                    &param_scope,
+                    substitutions,
+                    rename_map,
+                    ctx,
+                )?;
 
                 if let Some(guard) = &arm.guard {
                     let guard_str = core_expr_to_tinct(
                         &guard.node,
-                        &arm_scope,
+                        &param_scope,
                         substitutions,
                         rename_map,
                         ctx,
@@ -1178,7 +1140,7 @@ fn core_expr_to_tinct_raw(
             )?;
             let mut arm_parts = Vec::new();
             for arm in arms {
-                let ps = serialize_pattern(&arm.pattern.node)?;
+                let ps = format!("{}", arm.pattern.expr);
                 let bs = core_expr_to_tinct_in_quote(
                     &arm.body.node,
                     depth,
@@ -1327,67 +1289,7 @@ fn core_expr_to_tinct_raw(
     }
 }
 
-/// Serialize a `Pattern` to tinct source text (for match arm pattern positions).
-fn serialize_pattern(pattern: &Pattern) -> Result<String, String> {
-    match pattern {
-        Pattern::Wildcard => Ok("_".to_string()),
-
-        Pattern::TypeAssertPending {
-            annotation, inner, ..
-        } => {
-            if let Some(inner_pat) = inner {
-                let inner_str = serialize_pattern(&inner_pat.node)?;
-                Ok(format!("[@{} {}]", annotation.node, inner_str))
-            } else {
-                Ok(format!("[@{}]", annotation.node))
-            }
-        }
-        Pattern::TypeAssert { inner, .. } => {
-            // TypeAssert is a post-elaboration form; surface_fmt serializes it as a placeholder.
-            if let Some(inner_pat) = inner {
-                let inner_str = serialize_pattern(&inner_pat.node)?;
-                Ok(format!("[@<resolved> {}]", inner_str))
-            } else {
-                Ok("[@<resolved>]".to_string())
-            }
-        }
-        // T-1154: bare lowercase names in pattern position are now Pin patterns.
-        // Serialize as bare name (no $); this round-trips correctly through the parser.
-        Pattern::Pin(name, _) => Ok(name.clone()),
-        Pattern::Literal(lit) => match lit {
-            LiteralPattern::Int(n) => Ok(fmt_int(*n)),
-            LiteralPattern::U64(n) => Ok(format!("{n}u")),
-            LiteralPattern::Float(f) => fmt_float(*f),
-            LiteralPattern::Str(s) => Ok(fmt_string(s)),
-        },
-        Pattern::Dict { fields, rest } => {
-            let mut parts = Vec::new();
-            for (key, sub_pat) in fields {
-                let sub = serialize_pattern(&sub_pat.node)?;
-                parts.push(format!("{}: {}", key, sub));
-            }
-            if *rest {
-                parts.push("..".to_string());
-            }
-            Ok(format!("[{}]", parts.join("  ")))
-        }
-        Pattern::Constructor { tag, binding } => match binding {
-            None => Ok(tag.clone()),
-            Some(inner) => {
-                let inner_str = serialize_pattern(&inner.node)?;
-                Ok(format!("[{} {}]", tag, inner_str))
-            }
-        },
-        Pattern::Or(alts) => {
-            let parts: Result<Vec<_>, _> =
-                alts.iter().map(|a| serialize_pattern(&a.node)).collect();
-            Ok(parts?.join(" | "))
-        }
-        // T-1140: Predicate patterns — serialize as <predicate> placeholder.
-        // The SurfaceNode is not available for round-trip serialization in this context.
-        Pattern::Predicate { .. } => Ok("<predicate>".to_string()),
-    }
-}
+// serialize_pattern deleted (T-1750) — patterns are now SurfaceNode, not Pattern enum.
 
 // ────────────────────────────────────────────────────────────────────────────────
 // Helpers

@@ -10,7 +10,7 @@
     depth-match: [fn [let n]
         [match n
             0:   "done"
-            _:   [depth-match [- n 1]]]]
+            ...: [depth-match [- n 1]]]]
 
     result: [depth-match 100]
 ]

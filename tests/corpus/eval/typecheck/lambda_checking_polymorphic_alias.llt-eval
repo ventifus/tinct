@@ -4,8 +4,8 @@
 # against a concrete type (Int) → String.
 [
   Mapper: [type [let a b] [Fn@b [a]]]
-  f: [@[Mapper Integer String] [fn [let v@Integer] "result"]]
+  f: [@[Mapper Integer String] [fn [let _@Integer] "result"]]
   result: [f 123]
 ]
 === out
-Dict({"Mapper": Dict({}), "f": Function(v), "result": String("result")})
+Dict({"Mapper": Dict({}), "f": Function(_), "result": String("result")})

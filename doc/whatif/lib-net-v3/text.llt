@@ -23,7 +23,7 @@
       [bmp2-cp?]: [concat [bytes ByteOrder.Network [@UInt8 [bor 0xE0 [shr cp 12]]]]
                            [bytes ByteOrder.Network [@UInt8 [bor 0x80 [band [shr cp 6] 0x3F]]]]
                            [bytes ByteOrder.Network [@UInt8 [bor 0x80 [band cp 0x3F]]]]]
-      _:           [concat [bytes ByteOrder.Network [@UInt8 [bor 0xF0 [shr cp 18]]]]
+      ...:           [concat [bytes ByteOrder.Network [@UInt8 [bor 0xF0 [shr cp 18]]]]
                             [bytes ByteOrder.Network [@UInt8 [bor 0x80 [band [shr cp 12] 0x3F]]]]
                             [bytes ByteOrder.Network [@UInt8 [bor 0x80 [band [shr cp 6]  0x3F]]]]
                             [bytes ByteOrder.Network [@UInt8 [bor 0x80 [band cp          0x3F]]]]]]]
@@ -56,7 +56,7 @@
        [ascii?]:  [value: b0                     next: [+ offset 1]]
        [utf8-2?]: [value: [utf8-2 buf offset b0] next: [+ offset 2]]
        [utf8-3?]: [value: [utf8-3 buf offset b0] next: [+ offset 3]]
-       _:          [h buf offset]]]
+       ...:          [h buf offset]]]
      [end: [gcb-cluster-end buf offset [gcb-property r0.value] gcb-initial-state]]
      [collect-cps: [fn [let off acc]
        [if [>= off end]
@@ -461,7 +461,7 @@
       [[and [in-range? _ 0xAC00 0xD7A3] [= 0 [mod [- _ 0xAC00] 28]]]]: "LV"
       [in-range? _ 0xAC00 0xD7A3]:                               "LVT"
       [in-ranges? gcb-extended-pictographic]:                    "ExtPic"
-      _:                                                         "Other"]]
+      ...:                                                         "Other"]]
 
   # ── UAX#29 grapheme cluster boundary algorithm ────────────────────────────────
   # Returns true if there is a grapheme cluster boundary BEFORE cp2.
@@ -505,7 +505,7 @@
       # GB12/13: RI × RI — break between each pair (state counts RIs seen)
       [p1: "RI"   p2: "RI"]:                                                        [= [mod state.ri-count 2] 1]
       # GB999: break everywhere else
-      _: true]]
+      ...: true]]
 
   # Advance grapheme state after processing a code point with given property.
   gcb-next-state: [fn [let prop@String prev-state]
@@ -519,7 +519,7 @@
                     ri-count: 0]
       "RI":        [ep-seen?: false  extend-after-ep?: false
                     ri-count: [+ prev-state.ri-count 1]]
-      _:           [ep-seen?: false  extend-after-ep?: false  ri-count: 0]]]
+      ...:           [ep-seen?: false  extend-after-ep?: false  ri-count: 0]]]
 
   gcb-initial-state: [ep-seen?: false  extend-after-ep?: false  ri-count: 0]
 
@@ -533,7 +533,7 @@
       [ascii?]:  [value: b0                next: [+ offset 1]]
       [utf8-2?]: [value: [utf8-2 b offset b0]  next: [+ offset 2]]
       [utf8-3?]: [value: [utf8-3 b offset b0]  next: [+ offset 3]]
-      _:          [value: [utf8-4 b offset b0]  next: [+ offset 4]]]]
+      ...:          [value: [utf8-4 b offset b0]  next: [+ offset 4]]]]
 
   # Scan forward from `cluster-start`, collecting code points belonging to one grapheme cluster.
   # Returns {end: Int} — the byte offset just after the cluster.
@@ -566,7 +566,7 @@
             [ascii?]:  [step [+ i 1] [cons b0 acc]]
             [utf8-2?]: [step [+ i 2] [cons [utf8-2 b i b0] acc]]
             [utf8-3?]: [step [+ i 3] [cons [utf8-3 b i b0] acc]]
-            _:          [step [+ i 4] [cons [utf8-4 b i b0] acc]]]]]
+            ...:          [step [+ i 4] [cons [utf8-4 b i b0] acc]]]]]
     [step 0 []]]
 
   # ── IDNA2008 Unicode property tables ─────────────────────────────────────────
@@ -766,7 +766,7 @@
         [match cp
           0x200C: [valid-zwnj? cps i]                                # ZWNJ
           0x200D: [virama? [if [> i 0] [get cps [- i 1]] 0]]        # ZWJ — only valid after Virama
-          _:      true]]                                              # other code points: always OK
+          ...:      true]]                                              # other code points: always OK
        [entries cps]]]]
 
   # ── Punycode / IDNA2008 ───────────────────────────────────────────────────────
@@ -1061,7 +1061,7 @@
       [Result.Error [str "invalid IDNA label: " label]]
       [match cps
         [[all? ascii?]]: [Result.Ok [lower normalized]]              # ASCII-only: just lowercase
-        _:               [Result.Ok [str "xn--" [punycode-encode cps]]]]]]  # non-ASCII: Punycode
+        ...:               [Result.Ok [str "xn--" [punycode-encode cps]]]]]]  # non-ASCII: Punycode
 
   # to-a-label-hostname: apply to-a-label to each dot-separated label.
   # "münchen.example.com" → "xn--mnchen-3ya.example.com"
@@ -1070,7 +1070,7 @@
   to-a-label-hostname: [fn [let hostname@String]
     [labels: [str-split "." hostname]]
     [results: [map to-a-label labels]]
-    [if [any? [fn [let r] [match r [Result.Error _]: true _: false]] results]
+    [if [any? [fn [let r] [match r [Result.Error _]: true ...: false]] results]
       hostname   # any label invalid — return original (matching will fail)
       [join "." [map [fn [let r] [match r [Result.Ok s]: s]] results]]]]
 

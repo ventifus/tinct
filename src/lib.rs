@@ -103,8 +103,8 @@ pub use ast::{
     CallDispatch, MacroProvenance, Provenance, Resolution, SlotAnnotation, SurfaceEntry,
     SurfaceExpression, SurfaceNode, SurfaceProgram, TypeAnnotation,
 };
-/// Parser entry points and error type.
-pub use parser::{format_parse_error, parse, parse_surface_expression, ParseError, ParseOutput};
+/// Parser entry points.
+pub use parser::{format_parse_error, parse, parse_surface_expression, ParseOutput};
 
 /// Evaluation functions.
 pub use eval::{
@@ -175,6 +175,12 @@ pub async fn run_loader_pipeline(
     });
     let loader_parsed = parse(init_source, Arc::clone(&loader_sf))
         .map_err(|e| format!("{init_path} parse error: {e}"))?;
+    for diag in &loader_parsed.diagnostics {
+        eprintln!(
+            "{}",
+            crate::parser::format_parse_error(diag, init_source, init_path)
+        );
+    }
     let mut loader_program = loader_parsed.program;
 
     desugar::desugar_program_full(&mut loader_program);

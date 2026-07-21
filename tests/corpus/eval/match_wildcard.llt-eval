@@ -1,6 +1,10 @@
+# After S-944, Integer and String are plain VarRefs (Pattern::TypeAssertPending is deleted).
+# Integer resolves to TypeNode.Int (a variant); String resolves to TypeNode.String (a variant).
+# Pin comparisons: primitive_eq(3.14, TypeNode.Int) = false, primitive_eq(3.14, TypeNode.String) = false.
+# The wildcard arm fires.
 [match 3.14
-    Int:   "number"
-    Str:   "string"
-    _:     "other"]
+    Integer: "number"
+    String:  "string"
+    ...:     "other"]
 === out
 String("other")

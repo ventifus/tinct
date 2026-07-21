@@ -1695,6 +1695,20 @@ impl TypeDiagnostic {
     }
 }
 
+impl std::fmt::Display for TypeDiagnostic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some((span, _)) = self.spans.first() {
+            write!(
+                f,
+                "{}:{}: {}",
+                span.start.line, span.start.column, self.message
+            )
+        } else {
+            write!(f, "{}", self.message)
+        }
+    }
+}
+
 pub fn has_type_errors(diags: &[TypeDiagnostic]) -> bool {
     diags.iter().any(|d| d.level == DiagnosticLevel::Err)
 }

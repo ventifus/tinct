@@ -3,6 +3,6 @@
 # Only p.head is accessed in the body — the tail is not forced.
 [match [seq 10 [seq 20 [seq 30 []]]]
   [case [let p] [Seq.Cons p] [+ p.head 5]]
-  _:                         0]
+  ...:                       0]
 === out
 Int(15)

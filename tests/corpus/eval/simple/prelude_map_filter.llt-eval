@@ -1,0 +1,6 @@
+[
+  doubled: [collect [map [fn [let x] [+ x 1]] [each [0: 1  1: 2  2: 3]]]]
+  evens:   [collect [filter [fn [let x] [= 0 [mod x 2]]] [each [0: 1  1: 2  2: 3  3: 4]]]]
+]
+=== out
+Dict({"doubled": Dict({0: Int(2), 1: Int(3), 2: Int(4)}), "evens": Dict({0: Int(2), 1: Int(4)})})

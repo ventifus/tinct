@@ -774,7 +774,7 @@ This invariant is complete: `[a b c]` is always an implied call. A reader never 
 - **`pattern`** — the structural match expression. Dispatch depends on the head token:
   - Uppercase or dot-access head (`Constructor`, `Result.Ok`) → structural match against a nominal variant
   - Lowercase or operator head (`[> n 0]`, `[= n x]`) → guard expression, evaluated with all `[let]` names bound to the scrutinee
-  - `_` → wildcard, always matches
+  - `...` → wildcard, always matches
 - **`body`** — the expression evaluated when the arm matches, with `[let]` names in scope.
 
 **Binding-name rule:** A name appearing in `pattern` that is listed in `[let bindings]` is a fresh binding — it receives a value from the match. A name in `pattern` that is NOT listed in `[let]` is a pin — it is looked up from the enclosing scope and compared against the scrutinee.
@@ -783,7 +783,7 @@ This invariant is complete: `[a b c]` is always an implied call. A reader never 
 [match result
   [case [let v]  [Result.Ok v]   v]           # bind v to Ok's payload
   [case [let e]  [Result.Err e]  [log e]]     # bind e to Err's payload
-  [case [let _]  _               0]]          # wildcard
+  ...:                           0]           # wildcard — no binding
 
 [match status
   [case [let]   200              "ok"]        # exact value — empty [let], no new bindings
@@ -793,7 +793,7 @@ This invariant is complete: `[a b c]` is always an implied call. A reader never 
 [match value
   [case [let n]  [> n 0]  "positive"]        # guard: lowercase head → guard expression
   [case [let n]  [< n 0]  "negative"]
-  [case [let _]  _        "zero"]]           # wildcard fallback
+  ...:                    "zero"]            # wildcard fallback
 ```
 
 Non-binding arms (no new names needed) use shorthand keyed syntax:
@@ -803,7 +803,7 @@ Non-binding arms (no new names needed) use shorthand keyed syntax:
   Color.Red:   "#ff0000"   # unit constructor — no binding
   Color.Green: "#00ff00"
   42:          "forty-two" # literal equality — no binding
-  _:           "other"]    # wildcard — no binding
+  ...:         "other"]    # wildcard — no binding
 ```
 
 ### Placeholder Expression — `...`
@@ -817,7 +817,7 @@ config: [host: "localhost"  port: ...]        # required but unset — fails whe
 
 [match x
   [case [let v]  [Result.Ok v]   v]
-  [case [let _]  [Result.Err _]  ...]]       # unreachable branch guard
+  [case [let]    [Result.Err ...]  ...]]     # unreachable branch guard
 ```
 
 `...` has type `Unknown` — the gradual escape hatch. It satisfies any type constraint without generating a type error. `UnimplementedError` is catchable via `$try`.
@@ -830,7 +830,7 @@ config: [host: "localhost"  port: ...]        # required but unset — fails whe
 [match x
   [case [let]   0  "zero"]
   [case [let]   1  "one"]
-  [case [let _] _  "other"]]
+  ...:              "other"]
 
 [match response
   [case [let result]  [Result.Ok result]   result]

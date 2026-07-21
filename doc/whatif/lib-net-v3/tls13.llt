@@ -133,7 +133,7 @@
       # EC key OID discriminant byte (simplified: check for EC curve params)
       0x2a: [p256-sign private-key input]   # 1.2.840.10045.3.1.7 = P-256
       0x0a: [ed25519-sign private-key input]
-      _:    [rsa-pss-sign private-key input]]]
+      ...:    [rsa-pss-sign private-key input]]]
 
   verify-sig: [fn [let public-key@Bytes input@Bytes sig@Bytes scheme@[Seq Int]]
     # scheme: OID as [Seq Int] identifying the signature algorithm
@@ -141,7 +141,7 @@
       7: [p256-verify    public-key input sig]  # EC P-256
       8: [p384-verify    public-key input sig]  # EC P-384
       1: [ed25519-verify public-key input sig]  # Ed25519
-      _: [rsa-pss-verify public-key input sig]]]
+      ...: [rsa-pss-verify public-key input sig]]]
   # RFC 8446 §4.1.2: ClientHello = legacy_version(2) + random(32) + session_id(1+N) +
   #   cipher_suites(2+2*N) + legacy_compression(1+1) + extensions(2+N).
   # Returns record with fields: random cipher-suites session-id extensions
@@ -253,7 +253,7 @@
     [match hash
       [Sha256.Sha256]: [hmac-sha256 key data]
       [Sha384.Sha384]: [hmac-sha384 key data]
-      _:               [hmac-sha256 key data]]]
+      ...:               [hmac-sha256 key data]]]
 
   # ── TLS record helpers (internal — called via ByteStream dispatch, never directly) ──
 
@@ -290,7 +290,7 @@
       [Sha256.Sha256]: [sha256 transcript]
       [Sha384.Sha384]: [sha384 transcript]
       [Sha512.Sha512]: [sha512 transcript]
-      _:               [sha256 transcript]]]
+      ...:               [sha256 transcript]]]
     [hkdf-expand-label secret label transcript-hash [length transcript-hash] hash]]
 
   tls13-key-schedule: [fn [let dh-shared@[Bytes 32] ch-bytes@Bytes sh-bytes@Bytes cipher@CipherSuite]
@@ -429,7 +429,7 @@
     [sni: [or th.sni
       [match th.handle.addr
         [Hostname.Hostname h]: h
-        _: Absent.Absent]]]
+        ...: Absent.Absent]]]
     [if [absent? sni]
       [TlsError.HandshakeFailed reason: "no hostname for SNI — use [Hostname.Hostname h] or set sni explicitly"]
       [tls-handshake th.handle.stream
@@ -583,7 +583,7 @@
       [expected-fin: [hmac p.hash ks.fin-server-key [match p.hash
         [Sha256.Sha256]: [sha256 [concat ch-bytes sh-bytes ee-record cert-record cv-record]]
         [Sha384.Sha384]: [sha384 [concat ch-bytes sh-bytes ee-record cert-record cv-record]]
-        _:               [sha256 [concat ch-bytes sh-bytes ee-record cert-record cv-record]]]]]
+        ...:               [sha256 [concat ch-bytes sh-bytes ee-record cert-record cv-record]]]]]
       [if [not [= expected-fin server-fin-mac]]
         [raise "TLS: server Finished MAC mismatch"]
         null]
@@ -592,7 +592,7 @@
       [client-fin-data: [hmac p.hash ks.fin-client-key [match p.hash
         [Sha256.Sha256]: [sha256 [concat ch-bytes sh-bytes ee-record cert-record cv-record fin-record]]
         [Sha384.Sha384]: [sha384 [concat ch-bytes sh-bytes ee-record cert-record cv-record fin-record]]
-        _:               [sha256 [concat ch-bytes sh-bytes ee-record cert-record cv-record fin-record]]]]]
+        ...:               [sha256 [concat ch-bytes sh-bytes ee-record cert-record cv-record fin-record]]]]]
       [tls-write-record hs-conn ContentType.Handshake [encode-finished client-fin-data]]
 
       # Step 9: install application traffic keys → return TlsConnection
@@ -729,7 +729,7 @@
         [transcript-hash: [match p.hash
           [Sha256.Sha256]: [sha256 transcript-so-far]
           [Sha384.Sha384]: [sha384 transcript-so-far]
-          _:               [sha256 transcript-so-far]]]
+          ...:               [sha256 transcript-so-far]]]
         [tls-cv-context-prefix: [str-bytes [concat
           "                                                                "   # 64 spaces
           "TLS 1.3, server CertificateVerify"]]]
@@ -742,7 +742,7 @@
         [full-transcript-hash: [match p.hash
           [Sha256.Sha256]: [sha256 [concat ch-bytes sh-bytes ee-bytes cert-msg cv-msg]]
           [Sha384.Sha384]: [sha384 [concat ch-bytes sh-bytes ee-bytes cert-msg cv-msg]]
-          _:               [sha256 [concat ch-bytes sh-bytes ee-bytes cert-msg cv-msg]]]]
+          ...:               [sha256 [concat ch-bytes sh-bytes ee-bytes cert-msg cv-msg]]]]
         [fin-mac: [hmac p.hash ks.fin-server-key full-transcript-hash]]
         [fin-msg: [encode-finished fin-mac]]
         [tls-write-record hs-conn ContentType.Handshake fin-msg]
@@ -753,7 +753,7 @@
         [client-transcript-hash: [match p.hash
           [Sha256.Sha256]: [sha256 [concat ch-bytes sh-bytes ee-bytes cert-msg cv-msg fin-msg]]
           [Sha384.Sha384]: [sha384 [concat ch-bytes sh-bytes ee-bytes cert-msg cv-msg fin-msg]]
-          _:               [sha256 [concat ch-bytes sh-bytes ee-bytes cert-msg cv-msg fin-msg]]]]
+          ...:               [sha256 [concat ch-bytes sh-bytes ee-bytes cert-msg cv-msg fin-msg]]]]
         [expected-client-fin: [hmac p.hash ks.fin-client-key client-transcript-hash]]
         [if [not [= expected-client-fin client-fin-mac]]
           [TlsError.HandshakeFailed "client Finished MAC mismatch"]

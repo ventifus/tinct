@@ -86,7 +86,7 @@
       "zstd":     [to-compressed-codec ZstdCodec]
       "identity": [to-compressed-codec IdentityCodec]
       "*":        [to-compressed-codec GzipCodec]
-      _:          []]]
+      ...:          []]]
 ]
 
 # ── Public API. ───────────────────────────────────────────────────────────────

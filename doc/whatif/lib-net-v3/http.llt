@@ -65,7 +65,7 @@
       | tls-commit]
 
   scheme-default-port: [fn [let scheme@String]
-    [match scheme "https": 443  "http": 80  _: 443]]
+    [match scheme "https": 443  "http": 80  ...: 443]]
 
   # max-decompressed: ceiling on decompressed output size (bytes).
   # Default 256 MB. Enforced by the Rust builtins (builtin-gzip-decode etc.)
@@ -118,8 +118,8 @@
           [records: resp.answers]
           # RFC 9460 §3: AliasMode = prio 0; ServiceMode = prio > 0.
           # When multiple ServiceMode records exist, sort by priority (lowest first).
-          [aliases:  [filter [fn [let r] [match r [dnsRecord.HttpsRecord prio: 0]: true _: false]] records]]
-          [services: [filter [fn [let r] [match r [dnsRecord.HttpsRecord prio: p]: [> p 0] _: false]] records]]
+          [aliases:  [filter [fn [let r] [match r [dnsRecord.HttpsRecord prio: 0]: true ...: false]] records]]
+          [services: [filter [fn [let r] [match r [dnsRecord.HttpsRecord prio: p]: [> p 0] ...: false]] records]]
           [if [not [empty? aliases]]
             # Follow the first AliasMode redirect (depth-limited)
             [match [get aliases 0]

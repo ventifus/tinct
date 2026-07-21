@@ -19,7 +19,7 @@
       1: [band [uint16 ByteOrder.Network [concat [bytes ByteOrder.Network [@UInt8 b0]] [read h 1]]] 0x3FFF]
       2: [band [uint32 ByteOrder.Network [concat [bytes ByteOrder.Network [@UInt8 b0]] [read h 3]]] 0x3FFFFFFF]
       3: [band [uint64 ByteOrder.Network [concat [bytes ByteOrder.Network [@UInt8 b0]] [read h 7]]] 0x3FFFFFFFFFFFFFFF]
-      _: [error "unreachable"]]]
+      ...: [error "unreachable"]]]
 
   # Encode n as QUIC variable-length integer. Chooses minimum-width encoding.
   encode-varint: [fn [let n@Integer]
@@ -159,7 +159,7 @@
             1:  [parse-settings val-res.next qpack-max-table-size val-res.value]   # MAX_FIELD_SECTION_SIZE
             6:  [parse-settings val-res.next val-res.value max-field-section-size]  # QPACK_MAX_TABLE_CAPACITY
             7:  [parse-settings val-res.next qpack-max-table-size max-field-section-size]  # QPACK_BLOCKED_STREAMS (ignored)
-            _:  [parse-settings val-res.next qpack-max-table-size max-field-section-size]]]]]]]   # unknown: skip
+            ...:  [parse-settings val-res.next qpack-max-table-size max-field-section-size]]]]]]]   # unknown: skip
     [peer-settings: [parse-settings 0 Absent.Absent Absent.Absent]]
     # Receive peer QPACK encoder and decoder streams (next two incoming streams)
     [peer-qpack-enc: [match [recv conn.substreams]
@@ -400,7 +400,7 @@
         1: [value: [band [uint16 ByteOrder.Network [slice b off [+ off 2]]] 0x3FFF]           next: [+ off 2]]
         2: [value: [band [uint32 ByteOrder.Network [slice b off [+ off 4]]] 0x3FFFFFFF]      next: [+ off 4]]
         3: [value: [band [uint64 ByteOrder.Network [slice b off [+ off 8]]] 0x3FFFFFFFFFFFFFFF] next: [+ off 8]]
-        _: [error "H3FrameCodec: unreachable varint prefix"]]]]
+        ...: [error "H3FrameCodec: unreachable varint prefix"]]]]
     [type-res: [parse-varint-at data offset]]
     [len-res:  [parse-varint-at data type-res.next]]
     [ft-int:   type-res.value]

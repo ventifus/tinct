@@ -33,7 +33,7 @@
       Int:  "integer"
       Str:  "text"
       Bool: "boolean"
-      _:    "unknown"]]
+      ...:  "unknown"]]
 
   # Test case 1: call with Int → should resolve DescribableInt instance
   r1: [describe-it 42]

@@ -18,7 +18,7 @@
   # Variant comparison via pattern matching — no Equatable instance for Transport
   tcp-is-tcp: [match Tcp
     Transport.Tcp: Boolean.True
-    _:             Boolean.False]
+    ...:           Boolean.False]
 
   # All 6 transport constructors exist
   all-six: [0: Tcp  1: Udp  2: UnixStream  3: UnixDatagram  4: NamedPipe  5: Icmp]

@@ -163,7 +163,7 @@
                                         stream-id: frame.stream-id
                                         payload: [bytes ByteOrder.Network [@H2ErrorCode 8]]]]]]]]  # CANCEL=8
                 [send out [connection: connection  request: request  stream: stream]]
-              _: null]
+              ...: null]
             [step]]]]
       [step]]]
 ]
@@ -532,7 +532,7 @@
                   headers: resp-headers
                   body:    new-body]
                 [collect-response resp-headers new-body]]
-            _: [collect-response resp-headers resp-body]]
+            ...: [collect-response resp-headers resp-body]]
           # Frame for a different stream — skip and continue
           [collect-response resp-headers resp-body]]]]
       [collect-response [] [bytes 0]]]]

@@ -100,12 +100,11 @@ Examples:
   VarRef node:             => {0: node}             (single element)
   any other node:          => {0: node}             (fallback: wrap in list)
 """] [let node]
-  [match [tag-of node]
-    "Call":    [concat [0: [get "fn" node]] [get "args" node]]
-    "LetDecl": [get "bindings" node]
-    "Dict":    [map [fn [let e] [get "value" e]] [get "entries" node]]
-    "VarRef":  [0: node]
-    _:         [0: node]]]
+  [match node
+    [Expr.Call _]:    [concat [0: [get "fn" node]] [get "args" node]]
+    [Expr.LetDecl _]: [get "bindings" node]
+    [Expr.Dict _]:    [map [fn [let e] [get "value" e]] [get "entries" node]]
+    ...:              [0: node]]]
 
 # ident — construct a VarRef from a string name
 #

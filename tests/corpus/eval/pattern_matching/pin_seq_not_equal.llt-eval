@@ -1,7 +1,7 @@
 # PM9: Pin pattern with Seq — structural equality rejects seqs with different elements.
 [
   s: [seq 1 [seq 2 []]]
-  r: [match [seq 1 [seq 99 []]]  $s: "matched"  _: "no"]
+  r: [match [seq 1 [seq 99 []]]  $s: "matched"  ...: "no"]
 ]
 === out
 Dict({"s": Seq(Int(1), ...), "r": String("no")})

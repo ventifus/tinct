@@ -7,8 +7,8 @@
   result: [match [get 1 outer]
     [case [let s] s [match [get 0 outer]
       [case [let i] i [str i " and " s]]
-      _: "no-int"]]
-    _: "no-string"]
+      ...: "no-int"]]
+    ...: "no-string"]
 ]
 === out
 Dict({"outer": Dict({0: Int(1), 1: String("hello"), 2: Float(3.14)}), "result": String("1 and hello")})

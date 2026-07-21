@@ -1,6 +1,10 @@
+# After S-944, Dict and Seq are plain VarRefs (Pattern::TypeAssertPending is deleted).
+# Dict resolves to a TypeNode.Dict variant from prelude; Seq resolves to a function from prelude.
+# Pin comparisons both fail (Dict([x:1]) != TypeNode.Dict variant, Dict([x:1]) != Seq function).
+# The wildcard arm fires.
 [match [x: 1]
     Dict:  "is-dict"
     Seq:   "is-seq"
-    _:     "other"]
+    ...:   "other"]
 === out
-String("is-dict")
+String("other")

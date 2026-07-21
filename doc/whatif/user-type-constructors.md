@@ -493,10 +493,10 @@ The handling of `unify(Row { fields, tail: Empty }, Row { fields: {}, tail: Unif
 
 ```tinct
 Absent: [type Absent]                         # prelude unit nominal type
-absent?: [fn@Boolean [let x@Unknown] [match x Absent.Absent: true  _: false]]  # predicate
+absent?: [fn@Boolean [let x@Unknown] [match x Absent.Absent: true  ...: false]]  # predicate
 ```
 
-No named `absent` binding. Test by pattern matching (`Absent.Absent: ... _: ...`) or via `[absent? x]`. `absent?` has type `Unknown → Bool` — it accepts any runtime value and checks if it is `Absent.Absent`. The `@Unknown` annotation on `x` is correct and intentional: `absent?` is a type-erasing runtime predicate, in the same category as `null?`. Both need `@Unknown` because their purpose is precisely to be called on values whose compile-time type is not known. Do NOT implement as `[= x Absent.Absent]` — that constrains `x` to `NominalVariant{"Absent.Absent"}` making it useless for mixed-type inputs.
+No named `absent` binding. Test by pattern matching (`Absent.Absent: ... ...: ...`) or via `[absent? x]`. `absent?` has type `Unknown → Bool` — it accepts any runtime value and checks if it is `Absent.Absent`. The `@Unknown` annotation on `x` is correct and intentional: `absent?` is a type-erasing runtime predicate, in the same category as `null?`. Both need `@Unknown` because their purpose is precisely to be called on values whose compile-time type is not known. Do NOT implement as `[= x Absent.Absent]` — that constrains `x` to `NominalVariant{"Absent.Absent"}` making it useless for mixed-type inputs.
 
 **`[or Absent T]` is structural `Optional T`:**
 
@@ -519,7 +519,7 @@ config@[host: [or Absent String]  port: Int]   # host may be absent; if present,
 
 [match x
   Absent.Absent:  "missing"    # x : Absent in this arm
-  _:              "present"]   # x : T in this arm
+  ...:            "present"]   # x : T in this arm
 ```
 
 `[has? "host" d]` narrows via the existing narrowing pass. `[absent? x]` as a function call does not narrow — tinct's narrowing is syntactic (inspects the source expression at the `[if ...]` call site) and does not perform interprocedural analysis. Use pattern matching directly when the narrowed type is needed.
@@ -927,7 +927,7 @@ Tinct currently has three equality implementations, all divergent:
 | `values_eq_impl` | `builtins_math.rs:488` | `=` builtin (`builtin_eq`) | async; most complete; has payload-Variant |
 | `values_equal` | `builtins_meta.rs:2937` | `CaseArmExactValueCheck` (actual call site) | **sync**; only Int/Float/String/Bool/empty-dict |
 
-The actual call site for exact-value pattern arms uses the **sync** `builtins_meta` version — the most limited. This means `[match [Result.Ok value: 1]  [Result.Ok value: 1]: "hit"  _: "miss"]` silently produces `"miss"`. Exact-value arms never match on any Variant, non-empty Dict, or Seq. This is the same class of divergence bug that motivated this analysis.
+The actual call site for exact-value pattern arms uses the **sync** `builtins_meta` version — the most limited. This means `[match [Result.Ok value: 1]  [Result.Ok value: 1]: "hit"  ...: "miss"]` silently produces `"miss"`. Exact-value arms never match on any Variant, non-empty Dict, or Seq. This is the same class of divergence bug that motivated this analysis.
 
 The invariant that must hold: **`[= a b]` returns true if and only if `a: arm` matches `b`**. All three paths must implement the same semantics or this invariant is violated.
 
@@ -1083,7 +1083,7 @@ Seq:    [type [let a@Covariant]  Nil  [Cons head: a  tail: [Seq a]]]
 Map:    [type [let k@Equatable v]  [_@k : v]]
 Handle: [type [let a] ...]
 Absent: [type Absent]
-absent?: [fn@Boolean [let x@Unknown] [match x Absent.Absent: true  _: false]]
+absent?: [fn@Boolean [let x@Unknown] [match x Absent.Absent: true  ...: false]]
 ```
 
 **`do-desugar-inferred` and `do-var-node` deleted.** These two prelude functions (`prelude.llt:3496-3498` and `prelude.llt:3398-3399`) power the current inferred-monad `[do ...]` path — `do-var-node` generates sentinel `VarRef` nodes (`ℊꜱʏᴍ⧼do-infer⧽N`), `do-desugar-inferred` assembles them into the `[do ...]` body. Once `[do ...]` desugaring produces a complete AST at typecheck time (with `bind_node` and `pure_node` embedded inline), no sentinel variables appear in the emitted AST and these prelude functions are unreachable. Delete both. The `[macro do ...]` declaration itself stays; only its inferred-monad branch is replaced by the typecheck-time elaboration path.
@@ -1114,8 +1114,8 @@ Ok: Result.Ok   Error: Result.Error   Some: Maybe.Some   None: Maybe.None
 
 **`null?` stays; `absent?` is added.** `null?` checks for `[]` (empty dict, meaning "empty collection"), which is still a valid value. The two predicates are NOT interchangeable:
 
-- `null?` — `[match x []: true  _: false]` — true iff the value is `[]`
-- `absent?` — `[fn@Boolean [let x@Unknown] [match x Absent.Absent: true _: false]]` — true iff the value is `Absent.Absent`; `Unknown → Bool`
+- `null?` — `[match x []: true  ...: false]` — true iff the value is `[]`
+- `absent?` — `[fn@Boolean [let x@Unknown] [match x Absent.Absent: true ...: false]]` — true iff the value is `Absent.Absent`; `Unknown → Bool`
 
 After the migration, `[get? "missing-key" d]` returns `Absent.Absent`, not `[]`. Code that tests the result with `null?` will silently fail (get false instead of true). All such call sites in prelude must be migrated to `absent?`.
 

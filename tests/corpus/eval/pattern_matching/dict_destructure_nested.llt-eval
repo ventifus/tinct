@@ -1,5 +1,5 @@
 [match [user: [name: "alice"]]
   [case [let n] [user: [name: n]] n]
-  _:                               "unknown"]
+  ...:                             "unknown"]
 === out
 String("alice")

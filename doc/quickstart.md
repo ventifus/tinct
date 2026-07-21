@@ -326,7 +326,7 @@ Type declarations and construction:
     Color.Red:   "#ff0000"   # unit constructor patterns — qualified name, no brackets
     Color.Green: "#00ff00"
     Color.Blue:  "#0000ff"
-    _:           "unknown"]
+    ...:         "unknown"]
   # → "#ff0000"
 ]
 ```
@@ -342,8 +342,8 @@ Sum types with payloads use `try` in the standard library:
 
   # Pattern match on the result
   value: [match result
-    [Ok payload]:    payload.value     # → 3
-    [Error _]:       0]
+    [case [let payload] [Result.Ok payload]    payload.value]   # → 3
+    [case [let]         [Result.Error ...]     0]]
 ]
 ```
 
@@ -368,10 +368,10 @@ Constructors are always accessed with their qualified name `TypeName.CtorName` �
   # Payload variant: call constructor with named args
   something: [Option.Some value: 42]
 
-  # Pattern match — [Tag binding] binds the payload DICT; access named fields with dot
+  # Pattern match — use [case [let payload] [Tag payload] body] to bind the payload dict
   n: [match something
-        [Option.Some payload]: payload.value   # payload is the payload dict → payload.value = 42
-        _:                     0]               # wildcard fallback
+        [case [let payload] [Option.Some payload] payload.value]   # payload.value = 42
+        ...:                                     0]                # wildcard fallback
 ]
 ```
 
@@ -394,9 +394,9 @@ Constructors live inside the type dict, accessible as `TypeName.CtorName`. The v
   m: [Measure.Length r: 2.5]
 
   desc: [match m
-    [Measure.Length payload]: [str "length=" [str payload.r]]   # payload.r is the Float → 2.5
-    Measure.Zero:             "zero"
-    _:                        "unknown"]
+    [case [let payload] [Measure.Length payload] [str "length=" [str payload.r]]]   # → 2.5
+    Measure.Zero:                                "zero"
+    ...:                                         "unknown"]
   # → "length=2.5"
 ]
 ```
@@ -416,25 +416,25 @@ Patterns appear directly as `pattern: body` pairs inside `[match ...]`:
   # Structural dict match — destructures named fields into bindings
   url: [match data
     [case [let h p] [host: h  port: p] [str h ":" [str p]]]
-    [case [let _]   _                  "unknown"]]
+    ...:                               "unknown"]
   # → "localhost:8080"
 
   # Literal match
   label: [match 42
     0:   "zero"
     42:  "the answer"
-    _:   "other"]
+    ...: "other"]
   # → "the answer"
 
   # Nested dict destructuring
   city: [match [user: [name: "Alice"  city: "Portland"]]
     [case [let c] [user: [city: c]] c]
-    [case [let _] _                 "unknown"]]
+    ...:                            "unknown"]
   # → "Portland"
 ]
 ```
 
-**Constructor patterns** — unit constructors match with `Tag:` (bare) or `TypeName.Tag:`; payload constructors use `[Tag binding]` or `[TypeName.Tag binding]` to bind the payload dict:
+**Constructor patterns** — unit constructors match with `Tag:` (bare) or `TypeName.Tag:`; payload constructors use `[case [let binding] [Tag binding] body]` to match and bind the payload dict:
 
 ```tinct
 [
@@ -446,45 +446,45 @@ Patterns appear directly as `pattern: body` pairs inside `[match ...]`:
     Color.Red:   "#ff0000"
     Color.Green: "#00ff00"
     Color.Blue:  "#0000ff"
-    _:           "unknown"]
+    ...:         "unknown"]
   # → "#ff0000"
 
-  # Payload constructors — [Tag binding] binds the payload dict; access fields with dot
+  # Payload constructors — use [case [let payload] [Tag payload] body] to bind payload dict
   Shape: [type Circle: [r: Int] Square: [s: Int]]
   sh: [Shape.Circle r: 5]
 
   area: [match sh
-    [Shape.Circle payload]: [* 3 [* payload.r payload.r]]   # payload.r is the Int → 3*5*5 = 75
-    [Shape.Square payload]: [* payload.s payload.s]
-    _:                      0]
+    [case [let p] [Shape.Circle p] [* 3 [* p.r p.r]]]   # p.r is the Int → 3*5*5 = 75
+    [case [let p] [Shape.Square p] [* p.s p.s]]
+    ...:                           0]
   # → 75
 ]
 ```
 
-Patterns compose: a constructor pattern's binding can itself be a dict pattern, a literal, another constructor, or a wildcard `_`.
+Patterns compose: a constructor pattern's binding can itself be a dict pattern, a literal, another constructor, or a wildcard `...`.
 
-**Tag patterns are unambiguous:** uppercase names in pattern position are always constructor patterns. Lowercase names are variable captures. `_` is the wildcard.
+**Tag patterns are unambiguous:** dot-access names (`TypeName.Ctor`) in pattern position always match as constructor tags. Bare uppercase names are treated as variable references. `...` is the catch-all wildcard arm.
 
-**Type and binding patterns** — annotate a binding with a type to both narrow and bind:
+**Type-based dispatch** — to branch on the runtime type of a value, use the type predicate functions (`int?`, `str?`, `float?`, etc.) with `if` or `when`. Type annotation (`n@Integer`) in a direct match arm key position is not supported — it produces a runtime error:
 
 ```tinct
 [
-  # n@Integer: bind scrutinee to n, arm fires only when type is Int
+  # Use if/when with type predicates for type-based dispatch
   describe: [fn [let x]
-    [match x
-      n@Integer:  [str "int: " [str n]]
-      n@String:  [str "str: " n]
-      _:      "other"]]
+    [if [int? x]  [str "int: " [str x]]
+    [if [str? x]  [str "str: " x]
+                  "other"]]]
 
   r1: [describe 42]       # → "int: 42"
   r2: [describe "hello"]  # → "str: hello"
+  r3: [describe true]     # → "other"
 ]
 ```
 
 **`[case ...]` arms** — the canonical form for match arms that bind variables. Each arm takes exactly 3 arguments: `[case [let bindings] pattern body]`.
 
 - **`[let bindings]`** — names that will be bound by this arm (empty `[let]` for no new bindings)
-- **`pattern`** — the structural match: uppercase/dot-access head = constructor check; lowercase/operator head = guard expression; `_` = wildcard
+- **`pattern`** — the structural match: uppercase/dot-access head = constructor check; lowercase/operator head = guard expression; `...` = wildcard
 - **`body`** — the expression to evaluate when the arm matches, with bound names in scope
 
 ```tinct
@@ -493,11 +493,11 @@ Patterns compose: a constructor pattern's binding can itself be a dict pattern, 
 
   handle: [fn [let result]
     [match result
-      [case [let v] [Ok v]  [str "ok: " [str v.value]]]
-      [case [let _] [Err _] "error"]]]
+      [case [let v] [Result.Ok v]    [str "ok: " [str v.value]]]
+      [case [let]   [Result.Err ...] "error"]]]
 
-  r1: [handle [Ok value: 42]]    # → "ok: 42"
-  r2: [handle [Err msg: ""]]     # → "error"
+  r1: [handle [Result.Ok value: 42]]    # → "ok: 42"
+  r2: [handle [Result.Err msg: ""]]     # → "error"
 ]
 ```
 
@@ -508,7 +508,7 @@ Non-binding arms (no `[let ...]` needed) remain keyed:
   Color.Red:   "#ff0000"   # unit constructor — no binding
   Color.Green: "#00ff00"
   42:          "forty-two" # literal equality — no binding
-  _:           "other"]    # wildcard — no binding
+  ...:         "other"]    # catch-all wildcard
 ```
 
 ---
@@ -578,13 +578,13 @@ Errors propagate automatically through the thunk graph. Unused values never erro
 
   # try catches runtime errors; returns Result.Ok or Result.Error
   value:   [match [try [fn [] [+ 1 2]]]
-    [Ok payload]:    payload.value   # → 3
-    [Error _]:       0]
+    [case [let payload] [Result.Ok payload]    payload.value]   # → 3
+    [case [let]         [Result.Error ...]     0]]
 
   # match on try result for fallback pattern
   safe:    [match [try [fn [] [/ 1 0]]]
-              [Ok payload]:    payload.value
-              [Error _]:       0]
+    [case [let payload] [Result.Ok payload]    payload.value]
+    [case [let]         [Result.Error ...]     0]]
   # → 0 (division error caught)
 ]
 ```

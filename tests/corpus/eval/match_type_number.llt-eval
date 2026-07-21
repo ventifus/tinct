@@ -1,8 +1,10 @@
-# Number: is a TypeAssertPending pattern — resolves to Type::Number (covers Int and Float).
-# 3.14 is Float, which IS a Number, so the Number: arm matches.
+# After S-944, Number and Float are plain VarRefs (Pattern::TypeAssertPending is deleted).
+# Number resolves to a class dict from prelude; Float resolves to TypeNode.Float.
+# Pin comparisons: primitive_eq(3.14, Number-class) = false, primitive_eq(3.14, TypeNode.Float) = false.
+# The wildcard arm fires.
 [match 3.14
     Number:  "numeric"
-    Str:     "text"
-    _:       "other"]
+    Float:   "text"
+    ...:     "other"]
 === out
-String("numeric")
+String("other")

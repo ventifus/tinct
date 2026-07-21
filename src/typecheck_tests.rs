@@ -7,7 +7,6 @@ use crate::typecheck::typecheck_annot::{
     body_contains_tycon_ref, contains_recvar, expand_all_tycon_apps, expand_named,
     resolve_annotation, resolve_type_name,
 };
-use crate::typecheck::typecheck_narrow::collect_pattern_bindings;
 use crate::types::unify;
 use crate::types::TypeScheme;
 use crate::Annotation;
@@ -2048,7 +2047,7 @@ async fn test_match_arm_dict_pin_pattern_does_not_bind() {
     // T-1154: `[ok: v]` uses Pin for `v`. Pin does not inject `v` into scope.
     // Body `v` is undefined → type error.
     // Use wildcard body `0` for the arm to type-check, then verify the variable arm fails.
-    let result = check("[x: [match [ok: 42] [ok: v]: v _: 0]]").await;
+    let result = check("[x: [match [ok: 42] [ok: v]: v ...: 0]]").await;
     assert!(
         result.is_err(),
         "Pin pattern `v` in dict position must not bind; body `v` should be undefined: {:?}",
@@ -2059,7 +2058,7 @@ async fn test_match_arm_dict_pin_pattern_does_not_bind() {
 #[tokio::test]
 async fn test_match_arm_dict_pin_pattern_arithmetic_fails() {
     // T-1154: `[ok: v]` uses Pin. `v` not in scope → `[+ v 1]` is a type error.
-    let result = check("[x: [match [ok: 42] [ok: v]: [+ v 1] _: 0]]").await;
+    let result = check("[x: [match [ok: 42] [ok: v]: [+ v 1] ...: 0]]").await;
     assert!(
         result.is_err(),
         "Pin pattern `v` in dict must not bind; body `[+ v 1]` should fail: {:?}",
@@ -2069,8 +2068,8 @@ async fn test_match_arm_dict_pin_pattern_arithmetic_fails() {
 
 #[tokio::test]
 async fn test_match_arm_wildcard_no_bindings() {
-    // Pattern::Wildcard introduces no bindings — no undefined variable errors.
-    let result = check("[x: [match 42 _: 99]]").await;
+    // Wildcard pattern introduces no bindings — no undefined variable errors.
+    let result = check("[x: [match 42 ...: 99]]").await;
     assert!(
         result.is_ok(),
         "wildcard pattern with no bindings should type-check: {:?}",
@@ -2082,7 +2081,7 @@ async fn test_match_arm_wildcard_no_bindings() {
 async fn test_match_arm_nested_dict_pin_pattern_does_not_bind() {
     // T-1154: `[a: v1  b: v2]` uses Pin patterns. Neither v1 nor v2 are bound.
     // Body `[+ v1 v2]` is a type error (both undefined).
-    let result = check("[x: [match [a: 1  b: 2] [a: v1  b: v2]: [+ v1 v2] _: 0]]").await;
+    let result = check("[x: [match [a: 1  b: 2] [a: v1  b: v2]: [+ v1 v2] ...: 0]]").await;
     assert!(
         result.is_err(),
         "Pin patterns in nested dict must not bind; body should fail: {:?}",
@@ -2239,129 +2238,7 @@ async fn test_variadic_fixed_after_variadic_is_error() {
 
 // -- SCC-based binding group analysis tests --
 
-#[tokio::test]
-async fn test_collect_pattern_bindings_pin() {
-    // Unit test for collect_pattern_bindings: Pin pattern does not introduce bindings
-    // (Pin compares against an existing variable in scope, does not bind a new name)
-    let mut out = Vec::new();
-    collect_pattern_bindings(
-        &Pattern::Pin("x".into(), crate::ast::Resolution::new()),
-        &Type::Int,
-        &mut out,
-    );
-    assert_eq!(out.len(), 0, "Pin pattern should not introduce bindings");
-}
-
-#[tokio::test]
-async fn test_collect_pattern_bindings_dict_field_narrowed() {
-    // Unit test: Dict pattern on a concrete Record type — Pin sub-pattern produces no binding.
-    // (Pin compares against an existing variable in scope; it does not introduce a new binding.)
-    let scrutinee = Type::Dict(Row {
-        fields: {
-            let mut m = IndexMap::new();
-            m.insert("ok".into(), Type::Int);
-            m
-        },
-        tail: crate::type_def::RowTail::Empty,
-    });
-    let mut out = Vec::new();
-    collect_pattern_bindings(
-        &Pattern::Dict {
-            fields: vec![(
-                "ok".into(),
-                Spanned::new(
-                    Pattern::Pin("v".into(), crate::ast::Resolution::new()),
-                    rust_span!(),
-                ),
-            )],
-            rest: false,
-        },
-        &scrutinee,
-        &mut out,
-    );
-    assert_eq!(out.len(), 0, "Pin sub-pattern introduces no bindings");
-}
-
-#[tokio::test]
-async fn test_collect_pattern_bindings_dict_missing_field_falls_back_to_unknown() {
-    // Dict pattern with key not present in Record — Pin sub-pattern produces no binding.
-    // (Verifies the Dict arm recurses without panic even when key is absent from Record.)
-    let scrutinee = Type::Dict(Row {
-        fields: IndexMap::new(),
-        tail: crate::type_def::RowTail::Empty,
-    });
-    let mut out = Vec::new();
-    collect_pattern_bindings(
-        &Pattern::Dict {
-            fields: vec![(
-                "missing".into(),
-                Spanned::new(
-                    Pattern::Pin("v".into(), crate::ast::Resolution::new()),
-                    rust_span!(),
-                ),
-            )],
-            rest: false,
-        },
-        &scrutinee,
-        &mut out,
-    );
-    assert_eq!(out.len(), 0, "Pin sub-pattern introduces no bindings");
-}
-
-#[tokio::test]
-async fn test_collect_pattern_bindings_wildcard_no_bindings() {
-    // Wildcard pattern introduces no bindings
-    let mut out = Vec::new();
-    collect_pattern_bindings(&Pattern::Wildcard, &Type::Int, &mut out);
-    assert!(out.is_empty(), "wildcard should introduce no bindings");
-}
-
-#[tokio::test]
-async fn test_collect_pattern_bindings_or() {
-    // Or-pattern: only collects from first alternative
-    let mut out = Vec::new();
-    collect_pattern_bindings(
-        &Pattern::Or(vec![
-            Spanned::new(
-                Pattern::Pin("x".into(), crate::ast::Resolution::new()),
-                rust_span!(),
-            ),
-            Spanned::new(
-                Pattern::Pin("y".into(), crate::ast::Resolution::new()),
-                rust_span!(),
-            ),
-        ]),
-        &Type::Int,
-        &mut out,
-    );
-    assert_eq!(
-        out.len(),
-        0,
-        "Or-pattern with Pin sub-patterns introduces no bindings"
-    );
-}
-
-#[tokio::test]
-async fn test_collect_pattern_bindings_constructor_unknown_fallback() {
-    // Constructor pattern with Int scrutinee: no matching NominalVariant, falls back to Unknown
-    let mut out = Vec::new();
-    collect_pattern_bindings(
-        &Pattern::Constructor {
-            tag: "Maybe.Some".into(),
-            binding: Some(Box::new(Spanned::new(
-                Pattern::Pin("v".into(), crate::ast::Resolution::new()),
-                rust_span!(),
-            ))),
-        },
-        &Type::Int, // scrutinee type has no matching NominalVariant — falls back to Unknown
-        &mut out,
-    );
-    assert_eq!(
-        out.len(),
-        0,
-        "Pin binding in constructor pattern introduces no type bindings"
-    );
-}
+// collect_pattern_bindings tests deleted (T-1750) — Pattern enum deleted, patterns are now SurfaceNode.
 
 // ========== BAS Core Tests ==========
 
@@ -2493,7 +2370,7 @@ async fn test_annotation_without_produces_negation() {
 async fn test_i_case3_match_arm_sees_narrowed_scrutinee() {
     // Match with literal string patterns — verify that match type-checks without errors.
     // The I-Case3 narrowing means the second arm sees remaining_scrutinee ∩ ~first-literal.
-    let source = "[x: \"ok\"]\n[result: [match x\n    \"ok\": 1\n    \"err\": 2\n    _: 0]]";
+    let source = "[x: \"ok\"]\n[result: [match x\n    \"ok\": 1\n    \"err\": 2\n    ...: 0]]";
     let result = check(source).await;
     assert!(result.is_ok(), "match should type-check: {result:?}");
 }
@@ -2502,7 +2379,7 @@ async fn test_i_case3_match_arm_sees_narrowed_scrutinee() {
 async fn test_i_case3_wildcard_remaining_is_never() {
     // After a wildcard arm, remaining_scrutinee becomes Never (catch-all consumed).
     // Any subsequent arm would be unreachable — but we just verify no panic.
-    let source = "[x: 42]\n[result: [match x\n    _: 1\n    1: 2]]";
+    let source = "[x: 42]\n[result: [match x\n    ...: 1\n    1: 2]]";
     // The second arm after wildcard should be flagged as unreachable (if coverage checking fires)
     // or just succeed. Either way, no panic.
     let _ = check(source).await;
@@ -4047,7 +3924,7 @@ async fn test_type_stage_resolver_via_cek() {
 async fn test_match_expr_via_cek_exercises_after_match_arm() {
     // Test that AfterMatchScrutinee and AfterMatchArm continuations are exercised
     // by passing a Match expression directly to run_typecheck.
-    let src = "[match 42  42: \"forty-two\"  _: \"other\"]";
+    let src = "[match 42  42: \"forty-two\"  ...: \"other\"]";
     let mut program = crate::parse(src, test_file(src)).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
     let node = match &program.documents[0].node.items[0] {
@@ -4604,7 +4481,7 @@ async fn test_cek_sequential_env_extends_to_last_body() {
 /// would be the first arm's type only, not the collected union.
 #[tokio::test]
 async fn test_cek_match_three_arms_exercises_after_match_arm_self_push() {
-    let src = "[match 1  1: \"one\"  2: \"two\"  _: \"other\"]";
+    let src = "[match 1  1: \"one\"  2: \"two\"  ...: \"other\"]";
     let mut program = crate::parse(src, test_file(src)).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
     let node = match &program.documents[0].node.items[0] {
@@ -4648,7 +4525,7 @@ async fn test_cek_match_three_arms_exercises_after_match_arm_self_push() {
 /// it would loop infinitely or panic.
 #[tokio::test]
 async fn test_cek_match_single_arm_does_not_self_push() {
-    let src = "[match 42  _: \"any\"]";
+    let src = "[match 42  ...: \"any\"]";
     let mut program = crate::parse(src, test_file(src)).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
     let node = match &program.documents[0].node.items[0] {

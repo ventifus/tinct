@@ -3,6 +3,6 @@
 # trigger a coverage warning depending on the Bool scrutinee type inference.
 [match True
   [case [let x] x x]
-  _: False]
+  ...: False]
 === out
 Variant(Boolean.True, Null)

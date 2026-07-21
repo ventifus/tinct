@@ -1,9 +1,9 @@
-# T-1154: Pattern::Variable replaced by Pattern::Pin.
-# Duplicate pins are wildcards — arm fires but no name is bound.
+# T-1154: VarRef in pattern position is a pin (equality check) or wildcard (if not in scope).
+# Unresolved VarRefs in dict patterns act as wildcards — arm fires but no name is bound.
 # Use 3-arg [case [let b] [b: b] [+ b b]] to bind the field and double it.
 [match [a: 1 b: 2]
   [case [let b] [b: b] [+ b b]]
-  _: 0]
+  ...: 0]
 
 === out
 Int(4)

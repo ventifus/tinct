@@ -15,7 +15,7 @@
 [reduce [fn [let acc r]
   [match r
     [case [let p] [Result.Ok p]    [+ acc p.value]]
-    [Result.Error _]:              acc]]
+    ...:                           acc]]
   0 %.results]
 === out
 Float(95)

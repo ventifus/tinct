@@ -58,9 +58,9 @@ use crate::builtins_bytes::{builtin_bytes, builtin_bytes_concat};
 use crate::builtins_meta::{
     builtin_builtin_module, builtin_cap_env_has, builtin_check_type, builtin_desugar,
     builtin_doc_expressions, builtin_doc_meta, builtin_eval, builtin_get_type_context,
-    builtin_llt_repr, builtin_parse, builtin_program_docs, builtin_raise, builtin_resolve,
-    builtin_scope_frame, builtin_scope_new, builtin_scope_parent, builtin_scopes, builtin_tag_of,
-    builtin_tc_with_scope, builtin_try, builtin_type_of, builtin_typecheck_doc,
+    builtin_is_variant, builtin_llt_repr, builtin_parse, builtin_program_docs, builtin_raise,
+    builtin_resolve, builtin_scope_frame, builtin_scope_new, builtin_scope_parent, builtin_scopes,
+    builtin_tag_of, builtin_tc_with_scope, builtin_try, builtin_type_of, builtin_typecheck_doc,
     builtin_variant_payload,
 };
 // I/O implementations — Core-46 only.
@@ -639,6 +639,13 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
         builtin!(
             "builtin-tag-of",
             builtin_tag_of,
+            [Strictness::Seq],
+            0,
+            ["x"]
+        ),
+        builtin!(
+            "builtin-variant?",
+            builtin_is_variant,
             [Strictness::Seq],
             0,
             ["x"]

@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use indexmap::IndexMap;
 
 use crate::arena::{ScopeArena, ScopeId, ThunkId};
-use crate::ast::{Annotation, LiteralPattern, Pattern, Span, Spanned, SurfaceNode, SurfaceProgram};
+use crate::ast::{Span, Spanned, SurfaceNode, SurfaceProgram};
 use crate::error::{EvalError, EvalResult};
 use crate::rust_span;
 use crate::types::{Row, Type};
@@ -1082,64 +1082,6 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type, ctx: &EvalConte
     Type::is_consistent_subtype(&ground_type_of(value), expected)
 }
 
-/// Exact type discrimination for Pattern::TypeAssert matching.
-///
-/// Unlike `value_matches_type` (consistent subtyping for TypeAssert expression validation),
-/// pattern matching needs exact dispatch: `[@Int _]:` must NOT match Builtin values even
-/// though `ground_type_of(Builtin)` is Unknown, which is consistent with everything.
-///
-/// Key differences from value_matches_type:
-/// - Parameterized TyCon: matches any Variant whose tag starts with "Name."
-/// - Fn (variadic, 0 required params): matches both Value::Function AND Value::Builtin
-/// - Proxy: exact match only (not Unknown ≥ Proxy via gradual typing)
-/// - Unknown/Top: always match (gradual escape hatch for --no-typecheck, macros)
-pub(crate) fn pattern_type_matches(value: &Value, expected: &Type, ctx: &Arc<EvalContext>) -> bool {
-    match expected {
-        Type::Int | Type::IntLiteral(_) => matches!(value, Value::Int(_) | Value::U64(_)),
-        Type::Float => matches!(value, Value::Float(_)),
-        Type::Str | Type::StringLiteral(_) => matches!(value, Value::String { .. }),
-        Type::Bytes => matches!(value, Value::Bytes { .. }),
-        Type::Proxy => matches!(value, Value::Proxy { .. }),
-        // Record / Dict: any dict-like value satisfies an empty record annotation.
-        Type::Dict(_) => matches!(value, Value::Dict(_) | Value::Overlay(..)),
-        // @Fn (variadic, 0 required params): matches any callable including Builtin.
-        Type::Function {
-            typed_variadics,
-            rest,
-            required_count,
-            ..
-        } if (!typed_variadics.is_empty() || rest.is_some()) && *required_count == 0 => {
-            matches!(value, Value::Function { .. } | Value::Builtin(_))
-        }
-        Type::Function { .. } => matches!(value, Value::Function { .. }),
-        // App(TyCon(name), _): parameterized nominal type — value must be a Variant with tycon matching name.
-        // This is the generic rule for all user-declared parameterized types (Seq, Option, Map, etc.).
-        Type::App(f, _) if matches!(f.as_ref(), Type::TyCon(_)) => {
-            if let Type::TyCon(name) = f.as_ref() {
-                matches!(value, Value::Variant { tycon, .. } if tycon == name.as_str())
-            } else {
-                false
-            }
-        }
-        // Other TyCon / App: delegate to value_matches_type (handles user-defined nominal types).
-        Type::TyCon(_) | Type::App(_, _) => value_matches_type(value, expected, ctx),
-        Type::NominalVariant {
-            tycon: expected_tycon,
-            ctor: expected_ctor,
-            ..
-        } => {
-            matches!(value, Value::Variant { tycon, ctor, .. }
-                if tycon == expected_tycon && ctor == expected_ctor)
-        }
-        // Unknown / Top: always match.
-        Type::Unknown | Type::Any => true,
-        Type::Union(members) => members.iter().any(|m| pattern_type_matches(value, m, ctx)),
-        Type::Intersection(members) => members.iter().all(|m| pattern_type_matches(value, m, ctx)),
-        // Everything else: fall back to consistent subtyping.
-        _ => value_matches_type(value, expected, ctx),
-    }
-}
-
 /// Format a Type for error messages in TypeAssert.
 ///
 /// Currently delegates to Type's Display impl. This wrapper provides a semantic
@@ -1543,107 +1485,13 @@ pub fn materialize<'a>(
     })
 }
 
-/// Collect all variable names bound by a pattern, recursing into sub-patterns.
-///
-/// Returns a list of `(name, span)` pairs for binding sub-patterns.
-/// Only `[case [let v] ...]` forms bind; no bare name leaf introduces a binding.
-/// Retained for linearity checking on composite patterns (Dict, Seq, Constructor, Or)
-/// that may carry binding sub-expressions in the future.
-///
-/// Duplicate names in the returned list indicate a non-linear pattern.
-///
-/// **Test-only.** Production code uses last-binding-wins semantics for non-linear
-/// patterns (see doc/14-patterns.md §Non-Linear Patterns). These functions exist
-/// solely to test the detection algorithm, not to enforce linearity at runtime.
-#[cfg(test)]
-#[allow(clippy::only_used_in_recursion)]
-fn collect_pattern_variable_names(pattern: &Spanned<Pattern>, out: &mut Vec<(String, Span)>) {
-    match &pattern.node {
-        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(..) => {
-            // No variable bindings — Pin compares against scope, does not bind
-        }
-        Pattern::TypeAssertPending { inner, .. } => {
-            if let Some(inner_pat) = inner {
-                collect_pattern_variable_names(inner_pat, out);
-            }
-        }
-        Pattern::TypeAssert { inner, .. } => {
-            if let Some(inner_pat) = inner {
-                collect_pattern_variable_names(inner_pat, out);
-            }
-        }
-        Pattern::Dict { fields, .. } => {
-            for (_key, field_pattern) in fields {
-                collect_pattern_variable_names(field_pattern, out);
-            }
-        }
-        Pattern::Constructor { binding, .. } => {
-            if let Some(payload_pattern) = binding {
-                collect_pattern_variable_names(payload_pattern, out);
-            }
-        }
-        Pattern::Or(branches) => {
-            // Accumulate names from all branches into the parent list.
-            // Top-level Or arms are handled by `check_pattern_linearity` before
-            // calling this function. For nested Or sub-patterns within a larger
-            // pattern, accumulating from all branches is conservative: any variable
-            // that appears in the nested Or cannot safely appear elsewhere in the arm
-            // (because whichever branch fires, that variable is bound).
-            for branch in branches {
-                collect_pattern_variable_names(branch, out);
-            }
-        }
-        // T-1140: Predicate patterns introduce no variable bindings.
-        Pattern::Predicate { .. } => {}
-    }
-}
-
-/// Check that a pattern is linear — every variable name appears at most once
-/// within a single branch.
-///
-/// Returns `Err` with E072 if a variable is bound more than once within a single
-/// arm or or-pattern branch.  Returns `Ok(())` if the pattern is linear.
-///
-/// Or-patterns are handled specially: each branch is checked independently, because
-/// the same variable appearing in every branch of `p1 | p2` is correct (required by
-/// the or-pattern completeness invariant).  Only a duplicate within a single branch
-/// is a linearity violation.
-///
-/// **Test-only.** Production code uses last-binding-wins semantics for non-linear
-/// patterns (see doc/14-patterns.md §Non-Linear Patterns). This function is retained
-/// as a test helper to verify duplicate-detection logic.
-#[cfg(test)]
-#[allow(clippy::result_large_err)]
-pub(crate) fn check_pattern_linearity(pattern: &Spanned<Pattern>) -> Result<(), EvalError> {
-    // Or-patterns: check each branch independently.
-    if let Pattern::Or(branches) = &pattern.node {
-        for branch in branches {
-            check_pattern_linearity(branch)?;
-        }
-        return Ok(());
-    }
-
-    // For all other patterns, collect all variable names into a flat list and
-    // detect duplicates.
-    let mut names: Vec<(String, Span)> = Vec::new();
-    collect_pattern_variable_names(pattern, &mut names);
-
-    let mut seen: HashSet<&str> = HashSet::with_capacity(names.len());
-    for (name, span) in &names {
-        if !seen.insert(name.as_str()) {
-            return Err(EvalError::duplicate_variable_in_pattern(name, span.clone()));
-        }
-    }
-    Ok(())
-}
-
 /// Match a pattern against a value, returning the extended environment if the pattern matches.
 ///
 /// Returns Ok(Some(env)) if the pattern matches (env contains any bindings from the pattern).
 /// Returns Ok(None) if the pattern does not match.
 /// Returns Err if there's an evaluation error (e.g., undefined pin variable).
 pub(crate) fn match_pattern<'a>(
-    pattern: &'a Pattern,
+    pattern: &'a Arc<SurfaceNode>,
     value: &'a Value,
     env: &'a Arc<RwLock<Env>>,
     value_span: &'a Span,
@@ -1651,124 +1499,19 @@ pub(crate) fn match_pattern<'a>(
     ctx: &'a Arc<EvalContext>,
 ) -> MatchPatternFuture<'a> {
     Box::pin(async move {
-        match pattern {
-            Pattern::Wildcard => {
-                // Wildcard always matches, no bindings
-                Ok(Some(Arc::clone(env)))
-            }
-            Pattern::TypeAssertPending {
-                annotation, inner, ..
-            } => {
-                // FALLBACK RUNTIME ELABORATION (B-338):
-                //
-                // In the normal pipeline, `lower_pattern` in `lower.rs` converts
-                // `TypeAssertPending → TypeAssert` using the inline `resolved` TypeAnnotation field
-                // populated by the type checker. When type checking runs, this arm is NOT
-                // reached — the `Pattern::TypeAssert` arm above handles those cases.
-                //
-                // This arm is only reached when:
-                // 1. `--no-typecheck` is in effect (type checking skipped; table is empty)
-                // 2. Macro-synthesized patterns that bypassed the type checker
-                //
-                // The fallback provides minimal runtime resolution for Simple annotations
-                // (primitive type names), covering the most common no-typecheck cases.
-                // Complex annotations (union types, record types) still always-match as
-                // before — they require the full type checker to resolve correctly.
-                let resolved = match &annotation.node {
-                    Annotation::Simple(name) => {
-                        // Map known primitive annotation names to canonical Type variants.
-                        // These bypass tycon_env lookup and go directly to is_consistent_subtype.
-                        //
-                        // WARNING: This list must stay in sync with resolve_annotation's primitive
-                        // handling in typecheck_annot.rs::resolve_type_name until T-1018 registers
-                        // builtin TyCons in tycon_env. "Num"/"Bytes" must appear in both places to
-                        // avoid phase inconsistency.
-                        let ty = match name.as_str() {
-                            "Int" => Type::Int,
-                            "Float" => Type::Float,
-                            "String" | "Str" => Type::Str,
-                            "Bytes" => Type::Bytes,
-                            // Unknown names: try TyCon as fallback.
-                            // Works for user-defined types once T-1018 populates tycon_env.
-                            // Also works for builtin TyCons ("Dict", "Fn", etc.) that are
-                            // registered with builtin_type discriminants in tycon_env.
-                            other => Type::TyCon(other.to_string()),
-                        };
-                        Some(ty)
-                    }
-                    _ => None, // Complex annotations: fall through as always-match (stub)
-                };
-                match resolved {
-                    Some(resolved_type) => {
-                        if !value_matches_type(value, &resolved_type, ctx) {
-                            return Ok(None); // type mismatch — arm does not match
-                        }
-                        match inner {
-                            None => Ok(Some(Arc::clone(env))),
-                            Some(pat) => {
-                                match_pattern(&pat.node, value, env, value_span, env_id, ctx).await
-                            }
-                        }
-                    }
-                    None => {
-                        // Complex annotation: always match (stub behavior)
-                        match inner {
-                            None => Ok(Some(Arc::clone(env))),
-                            Some(pat) => {
-                                match_pattern(&pat.node, value, env, value_span, env_id, ctx).await
-                            }
-                        }
-                    }
-                }
-            }
-            Pattern::TypeAssert {
-                resolved_type,
-                inner,
-            } => {
-                // Primary runtime path for typed patterns.
-                // lower.rs converts TypeAssertPending → TypeAssert (using annotation_name_to_type
-                // or the inline resolved TypeAnnotation when populated by the type checker).
-                // Uses pattern_type_matches (exact dispatch) rather than value_matches_type
-                // (gradual subtyping) so that e.g. [@Int _]: never matches Value::Builtin.
-                if !pattern_type_matches(value, resolved_type, ctx) {
-                    return Ok(None); // type mismatch — arm does not match
-                }
-                match inner {
-                    None => Ok(Some(Arc::clone(env))),
-                    Some(pat) => {
-                        match_pattern(&pat.node, value, env, value_span, env_id, ctx).await
-                    }
-                }
-            }
-            Pattern::Literal(lit) => {
-                // Literal matches if the value equals the literal
-                let matches = match (lit, value) {
-                    (LiteralPattern::Int(n), Value::Int(v)) => n == v,
-                    (LiteralPattern::U64(n), Value::U64(v)) => n == v,
-                    (LiteralPattern::Float(f), Value::Float(v)) => f == v,
-                    (
-                        LiteralPattern::Str(s),
-                        Value::String {
-                            ref source,
-                            start,
-                            end,
-                        },
-                    ) => s == &source[*start..*end],
-                    _ => false,
-                };
-                if matches {
-                    Ok(Some(Arc::clone(env)))
-                } else {
-                    Ok(None)
-                }
-            }
-            Pattern::Pin(_name, pin_resolution) => {
-                // Pin matches if the variable's current value equals the scrutinee value.
-                // Use $name syntax in patterns to pin against an existing variable.
-                // If the name was not in scope at resolve time (pin_resolution = Some(None)),
-                // act as wildcard (always matches, no binding).
-                // Use [case [let v] pattern body] to introduce new bindings.
-                let var_thunk = match pin_resolution.get() {
+        use crate::ast::SurfaceExpression;
+
+        // Peel Value::Annotated wrappers once at the top — annotations are transparent for
+        // pattern matching. This covers all arms: literals, pins, constructors, dicts.
+        let value = peel_annotated(value.clone());
+
+        match &pattern.expr {
+            // Wildcard: ... → always matches
+            SurfaceExpression::Placeholder(None, None) => Ok(Some(Arc::clone(env))),
+
+            // VarRef: pin comparison (look up in scope, compare value)
+            SurfaceExpression::VarRef { resolution, .. } => {
+                match resolution.get() {
                     Some(Some((level, slot))) => {
                         // FlatEnv dispatch via parent-chain traversal.
                         let arena = ctx.scope_arena.borrow();
@@ -1792,68 +1535,335 @@ pub(crate) fn match_pattern<'a>(
                             }
                         };
                         drop(arena);
-                        match t {
+                        let var_thunk = match t {
                             Some(thunk) => thunk,
                             None => {
-                                // Slot was allocated by B-515's eval_case_arm_structural_pattern
-                                // but is empty — this should not happen since bind_or_pin_name
-                                // fills the slot before the arm body is evaluated.
                                 return Err(EvalError::internal(
-                                    "pin pattern: arm FlatEnv slot empty — B-515 binding contract violated".to_string(),
+                                    "pin pattern: arm FlatEnv slot empty".to_string(),
                                     value_span.clone(),
-                                ).into());
+                                )
+                                .into());
                             }
+                        };
+
+                        let var_value = materialize(&var_thunk, Some(value_span), ctx).await?;
+                        let matches = primitive_eq(var_value, value.clone());
+                        if matches {
+                            Ok(Some(Arc::clone(env)))
+                        } else {
+                            Ok(None)
                         }
                     }
                     Some(None) => {
-                        // Name was not in scope at resolve time — wildcard behavior.
-                        return Ok(Some(Arc::clone(env)));
+                        // Name not found in scope (resolver may have suppressed the diagnostic
+                        // in pattern position via suppress_depth); arm does not match.
+                        Ok(None)
                     }
-                    None => {
-                        return Err(EvalError::internal(
-                            "pin pattern: resolver did not run on this node".to_string(),
-                            value_span.clone(),
-                        )
-                        .into());
-                    }
-                };
-                let var_value = materialize(&var_thunk, Some(value_span), ctx).await?;
+                    None => Err(EvalError::internal(
+                        "resolver did not run on pattern VarRef".to_string(),
+                        value_span.clone(),
+                    )
+                    .into()),
+                }
+            }
 
-                // Compare values for equality using primitive_eq — only handles
-                // Int, Float, String, unit Variant. No deep structural comparison.
-                let matches = primitive_eq(var_value, value.clone());
+            // Literal patterns: Int, U64, Float, StringLiteral
+            SurfaceExpression::Int(n) => {
+                let matches = matches!(value, Value::Int(v) if v == *n);
                 if matches {
                     Ok(Some(Arc::clone(env)))
                 } else {
                     Ok(None)
                 }
             }
-            Pattern::Dict { fields, rest } => {
-                // Dict pattern: match dict by keys, bind values to pattern variables
-                // Only force the fields that are matched — other fields stay as thunks
-                match value {
+
+            SurfaceExpression::U64(n) => {
+                let matches = matches!(value, Value::U64(v) if v == *n);
+                if matches {
+                    Ok(Some(Arc::clone(env)))
+                } else {
+                    Ok(None)
+                }
+            }
+
+            SurfaceExpression::Float(f) => {
+                let matches = matches!(value, Value::Float(v) if v == *f);
+                if matches {
+                    Ok(Some(Arc::clone(env)))
+                } else {
+                    Ok(None)
+                }
+            }
+
+            SurfaceExpression::StringLiteral { content, .. } => {
+                let matches = match &value {
+                    Value::String {
+                        ref source,
+                        start,
+                        end,
+                    } => content == &source[*start..*end],
+                    _ => false,
+                };
+                if matches {
+                    Ok(Some(Arc::clone(env)))
+                } else {
+                    Ok(None)
+                }
+            }
+
+            // Field (dot-access like Color.Red): constructor tag match
+            SurfaceExpression::Field { .. } => {
+                // Flatten the full dot-access chain to get the constructor tag
+                if let Some(tag) = crate::ast::flatten_dot_access_to_tag(&pattern.expr) {
+                    // Check if scrutinee is a Variant with matching tag
+                    match &value {
+                        Value::Variant { tycon, ctor, .. } => {
+                            let variant_tag = format!("{}.{}", tycon, ctor);
+                            if tag == variant_tag {
+                                Ok(Some(Arc::clone(env)))
+                            } else {
+                                Ok(None)
+                            }
+                        }
+                        _ => Ok(None),
+                    }
+                } else {
+                    Err(EvalError::user_error(
+                        "unsupported pattern form: dot-access must resolve to a constructor tag"
+                            .to_string(),
+                        pattern.span.clone(),
+                    )
+                    .into())
+                }
+            }
+
+            // Call pattern: [Tag payload] — constructor match with optional payload sub-pattern
+            SurfaceExpression::Call {
+                func,
+                args,
+                named_args,
+                ..
+            } if named_args.is_empty() => {
+                match crate::ast::flatten_dot_access_to_tag(&func.expr) {
+                    Some(tag) => {
+                        match &value {
+                            Value::Variant {
+                                tycon,
+                                ctor,
+                                payload,
+                            } => {
+                                let variant_tag = format!("{}.{}", tycon, ctor);
+                                if tag != variant_tag {
+                                    return Ok(None);
+                                }
+                                if args.is_empty() {
+                                    // [Tag] — no payload sub-pattern: tag match only
+                                    return Ok(Some(Arc::clone(env)));
+                                }
+                                if args.len() > 1 {
+                                    return Err(EvalError::user_error(
+                                        "Call pattern may have at most one payload sub-pattern"
+                                            .to_string(),
+                                        pattern.span.clone(),
+                                    )
+                                    .into());
+                                }
+                                let sub_pat = &args[0];
+                                match &sub_pat.expr {
+                                    SurfaceExpression::Placeholder(None, None) => {
+                                        // [Tag ...] — wildcard payload: tag matched, ignore payload
+                                        Ok(Some(Arc::clone(env)))
+                                    }
+                                    SurfaceExpression::VarRef { resolution, .. } => {
+                                        match resolution.get() {
+                                            Some(Some(_)) => {
+                                                // Resolved pin — compare against payload value
+                                                match payload {
+                                                    Some(payload_id) => {
+                                                        let payload_thunk =
+                                                            ctx.get_thunk(*payload_id);
+                                                        let payload_val = materialize(
+                                                            &payload_thunk,
+                                                            Some(value_span),
+                                                            ctx,
+                                                        )
+                                                        .await?;
+                                                        match_pattern(
+                                                            sub_pat,
+                                                            &payload_val,
+                                                            env,
+                                                            &sub_pat.span,
+                                                            env_id,
+                                                            ctx,
+                                                        )
+                                                        .await
+                                                    }
+                                                    None => Ok(None),
+                                                }
+                                            }
+                                            Some(None) => {
+                                                // Not in scope — resolver warned; arm does not match
+                                                Ok(None)
+                                            }
+                                            None => Err(EvalError::internal(
+                                                "resolver did not run on Call pattern VarRef"
+                                                    .to_string(),
+                                                value_span.clone(),
+                                            )
+                                            .into()),
+                                        }
+                                    }
+                                    _ => {
+                                        // Recurse: match sub-pattern against payload value
+                                        match payload {
+                                            Some(payload_id) => {
+                                                let payload_thunk = ctx.get_thunk(*payload_id);
+                                                let payload_val = materialize(
+                                                    &payload_thunk,
+                                                    Some(value_span),
+                                                    ctx,
+                                                )
+                                                .await?;
+                                                match_pattern(
+                                                    sub_pat,
+                                                    &payload_val,
+                                                    env,
+                                                    &sub_pat.span,
+                                                    env_id,
+                                                    ctx,
+                                                )
+                                                .await
+                                            }
+                                            None => Ok(None),
+                                        }
+                                    }
+                                }
+                            }
+                            _ => Ok(None),
+                        }
+                    }
+                    None => Err(EvalError::user_error(
+                        "not a valid pattern: Call head must resolve to a constructor tag"
+                            .to_string(),
+                        pattern.span.clone(),
+                    )
+                    .into()),
+                }
+            }
+
+            // Call pattern with named args: [Tag field: sub-pat ...] — named-field constructor match
+            SurfaceExpression::Call {
+                func, named_args, ..
+            } if !named_args.is_empty() => {
+                match crate::ast::flatten_dot_access_to_tag(&func.expr) {
+                    Some(tag) => {
+                        // Check if scrutinee is a Variant with the right tag
+                        let Value::Variant {
+                            tycon,
+                            ctor,
+                            payload,
+                        } = &value
+                        else {
+                            return Ok(None);
+                        };
+                        let variant_tag = format!("{}.{}", tycon, ctor);
+                        if tag != variant_tag {
+                            return Ok(None);
+                        }
+                        let Some(payload_id) = payload else {
+                            return Ok(None);
+                        };
+                        let payload_thunk = ctx.get_thunk(*payload_id);
+                        let payload_val =
+                            materialize(&payload_thunk, Some(value_span), ctx).await?;
+                        let Value::Dict(payload_map) = &payload_val else {
+                            return Ok(None);
+                        };
+                        // For each named arg, extract the field from the payload dict and
+                        // recursively match the sub-pattern.
+                        let mut result_env = Arc::clone(env);
+                        for na in named_args.iter() {
+                            let field_key = HashableValue::Str(Rc::from(na.node.name.as_str()));
+                            let Some(field_thunk_id) = payload_map.get(&field_key) else {
+                                return Ok(None);
+                            };
+                            let field_thunk = ctx.get_thunk(*field_thunk_id);
+                            let field_val =
+                                materialize(&field_thunk, Some(value_span), ctx).await?;
+                            match match_pattern(
+                                &na.node.value,
+                                &field_val,
+                                &result_env,
+                                &na.node.value.span,
+                                env_id,
+                                ctx,
+                            )
+                            .await?
+                            {
+                                Some(new_env) => {
+                                    result_env = new_env;
+                                }
+                                None => {
+                                    return Ok(None);
+                                }
+                            }
+                        }
+                        Ok(Some(result_env))
+                    }
+                    None => Err(EvalError::user_error(
+                        "not a valid pattern: Call head must resolve to a constructor tag"
+                            .to_string(),
+                        pattern.span.clone(),
+                    )
+                    .into()),
+                }
+            }
+
+            // Dict pattern: match dict structure
+            SurfaceExpression::Dict(entries) => {
+                match &value {
                     Value::Dict(dict_thunk_ids) => {
-                        // Start with the current environment
-                        let mut result_env =
-                            Arc::new(RwLock::new(Env::with_parent(Arc::clone(env))));
+                        let mut result_env = Arc::clone(env);
 
                         // Check each pattern field
-                        for (key, field_pattern) in fields {
+                        for entry in entries {
+                            // Extract the key — should be a string key
+                            let key_str = if let Some(key_node) = &entry.node.key {
+                                match &key_node.expr {
+                                    SurfaceExpression::VarRef { name, .. } => name.clone(),
+                                    SurfaceExpression::StringLiteral { content, .. } => {
+                                        content.clone()
+                                    }
+                                    _ => {
+                                        return Err(EvalError::user_error(
+                                            "dict pattern keys must be identifiers or string literals".to_string(),
+                                            key_node.span.clone(),
+                                        ).into());
+                                    }
+                                }
+                            } else {
+                                // Auto-indexed entry — not supported in patterns
+                                return Err(EvalError::user_error(
+                                    "dict patterns do not support auto-indexed entries".to_string(),
+                                    entry.span.clone(),
+                                )
+                                .into());
+                            };
+
                             // Look up the field in the dict
                             if let Some(field_thunk_id) =
-                                dict_thunk_ids.get(&HashableValue::Str(Rc::from(key.as_str())))
+                                dict_thunk_ids.get(&HashableValue::Str(Rc::from(key_str.as_str())))
                             {
-                                // Force the field value
                                 let field_thunk = ctx.get_thunk(*field_thunk_id);
                                 let field_value =
                                     materialize(&field_thunk, Some(value_span), ctx).await?;
 
                                 // Recursively match the field pattern
                                 match match_pattern(
-                                    &field_pattern.node,
+                                    &entry.node.value,
                                     &field_value,
                                     &result_env,
-                                    &field_pattern.span,
+                                    &entry.node.value.span,
                                     env_id,
                                     ctx,
                                 )
@@ -1863,42 +1873,19 @@ pub(crate) fn match_pattern<'a>(
                                         result_env = new_env;
                                     }
                                     None => {
-                                        // Field pattern didn't match
                                         return Ok(None);
                                     }
                                 }
                             } else {
-                                // Required field not present in dict
+                                // Required field not present
                                 return Ok(None);
-                            }
-                        }
-
-                        // If rest is false (closed matching), check for extra keys.
-                        // Pattern::Dict { rest: false } is unreachable from parsed programs —
-                        // the parser defaults to rest=true (open matching) — but reachable
-                        // from macro-constructed ASTs. When closed-dict syntax is added
-                        // (e.g. trailing !), this branch will also become reachable from parsed programs.
-                        if !rest {
-                            let pattern_keys: std::collections::HashSet<&str> =
-                                fields.iter().map(|(k, _)| k.as_str()).collect();
-                            for dict_key in dict_thunk_ids.keys() {
-                                let key_matches = match dict_key {
-                                    HashableValue::Str(s) => pattern_keys.contains(s.as_ref()),
-                                    HashableValue::Int(_) => false,
-                                };
-                                if !key_matches {
-                                    // Extra key found in closed matching mode
-                                    return Ok(None);
-                                }
                             }
                         }
 
                         Ok(Some(result_env))
                     }
                     Value::Overlay(l_id, r_id) => {
-                        // PM2: Overlay (e.g., from $merge) has type_name() == "Dict" and must
-                        // be matchable by Pattern::Dict. Flatten to a concrete map first, then
-                        // re-run the Dict matching logic on the flattened result.
+                        // Flatten overlay and retry
                         let flat_map = crate::builtins::flatten_overlay(
                             l_id,
                             r_id,
@@ -1907,12 +1894,8 @@ pub(crate) fn match_pattern<'a>(
                             value_span.clone(),
                         )
                         .await?;
-                        // Re-use the Value::Dict matching path by recursing with the flattened value.
                         match_pattern(
-                            &Pattern::Dict {
-                                fields: fields.clone(),
-                                rest: *rest,
-                            },
+                            pattern,
                             &Value::Dict(flat_map),
                             env,
                             value_span,
@@ -1925,129 +1908,31 @@ pub(crate) fn match_pattern<'a>(
                         payload: Some(payload_id),
                         ..
                     } => {
-                        // Auto-unpack variant payload for dict pattern matching:
-                        // a Variant with a dict payload can be matched by a dict pattern
-                        // against its payload (consistent with require_dict/flatten_overlay).
+                        // Auto-unpack variant payload for dict pattern matching
                         let payload_thunk = ctx.get_thunk(*payload_id);
                         let payload_val =
                             materialize(&payload_thunk, Some(value_span), ctx).await?;
-                        match_pattern(
-                            &Pattern::Dict {
-                                fields: fields.clone(),
-                                rest: *rest,
-                            },
-                            &payload_val,
-                            env,
-                            value_span,
-                            env_id,
-                            ctx,
-                        )
-                        .await
+                        match_pattern(pattern, &payload_val, env, value_span, env_id, ctx).await
                     }
-                    _ => {
-                        // Value is not a dict
-                        Ok(None)
-                    }
+                    _ => Ok(None),
                 }
             }
-            Pattern::Constructor { tag, binding } => {
-                // Peel Value::Annotated wrappers before matching.
-                // Unit constructors declared with @[...] annotations evaluate to
-                // Value::Annotated { inner: Variant(...), annotation: {...} }.
-                // Annotations are metadata-only — pattern matching sees only the inner value.
-                let value = {
-                    let mut v = value;
-                    while let Value::Annotated { inner, .. } = v {
-                        v = inner.as_ref();
-                    }
-                    v
-                };
-                // Constructor pattern: match Value::Variant by tag, bind payload if present
-                match value {
-                    Value::Variant {
-                        tycon: variant_tycon,
-                        ctor: variant_ctor,
-                        payload: variant_payload,
-                    } => {
-                        // Check if tags match (reconstruct composite tag from tycon.ctor)
-                        let variant_tag = format!("{}.{}", variant_tycon, variant_ctor);
-                        if tag != &variant_tag {
-                            return Ok(None);
-                        }
 
-                        // If pattern expects a payload, match it
-                        match (binding, variant_payload) {
-                            (Some(pattern), Some(payload_id)) => {
-                                // Force the payload value
-                                let payload_thunk = ctx.get_thunk(*payload_id);
-                                let payload_value =
-                                    materialize(&payload_thunk, Some(value_span), ctx).await?;
-
-                                // Match the payload pattern
-                                match_pattern(
-                                    &pattern.node,
-                                    &payload_value,
-                                    env,
-                                    &pattern.span,
-                                    env_id,
-                                    ctx,
-                                )
-                                .await
-                            }
-                            (None, None) => {
-                                // Unit variant matches unit variant: [Tag] pattern (Constructor { binding: None }) matches Variant { payload: None }
-                                Ok(Some(Arc::clone(env)))
-                            }
-                            (Some(_), None) => {
-                                // Pattern expects payload but variant has none
-                                Ok(None)
-                            }
-                            (None, Some(_)) => {
-                                // [Tag]: with no binding matches any variant with that tag,
-                                // regardless of whether it carries a payload — equivalent to [Tag _]:.
-                                Ok(Some(Arc::clone(env)))
-                            }
-                        }
-                    }
-                    _ => {
-                        // Value is not a Variant
-                        Ok(None)
-                    }
-                }
-            }
-            Pattern::Or(patterns) => {
-                // Or-pattern: try each sub-pattern in order
-                // The first one that matches determines the bindings
-                for sub_pattern in patterns {
-                    if let Some(bound_env) =
-                        match_pattern(&sub_pattern.node, value, env, value_span, env_id, ctx)
-                            .await?
-                    {
-                        return Ok(Some(bound_env));
-                    }
-                }
-                // None of the sub-patterns matched
-                Ok(None)
-            }
-            Pattern::Predicate { .. } => {
-                // T-1140: Predicate patterns must be intercepted in MatchDispatch before
-                // reaching match_pattern. This arm exists as a safety guard — it should
-                // never be reached in correctly structured evaluation paths.
-                Err(EvalError::internal(
-                    "Pattern::Predicate reached match_pattern directly; \
-                     must be handled in MatchDispatch before calling match_pattern"
-                        .to_string(),
-                    value_span.clone(),
-                )
-                .into())
-            }
+            _ => Err(EvalError::user_error(
+                format!(
+                    "not a valid pattern: {}",
+                    crate::surface_fields::surface_expr_tag(&pattern.expr)
+                ),
+                pattern.span.clone(),
+            )
+            .into()),
         }
-    }) // end Box::pin(async move {
+    })
 }
 
 /// Check if two values are equal.
 ///
-/// This is the canonical equality comparison used by pin patterns (`$var:`),
+/// This is the canonical equality comparison used by pin patterns (`varname:` — bare word in pattern position),
 /// exact-value case arms, the `$=` builtin, and schema enum constraints.
 ///
 /// Primitive types compare by value. Variants compare tag-first, then payload
@@ -5462,166 +5347,70 @@ mod tests {
 
     // ── PM3: pattern linearity tests ─────────────────────────────────────────
 
-    /// Helper: build a variable pattern Spanned<Pattern> at the default test span.
-    fn var_pattern(name: &str) -> Spanned<Pattern> {
-        sp(Pattern::Pin(
-            name.to_string(),
-            crate::ast::Resolution::new(),
-        ))
-    }
-
-    /// Helper: build a wildcard pattern Spanned<Pattern> at the default test span.
-    fn wildcard_pattern() -> Spanned<Pattern> {
-        sp(Pattern::Wildcard)
-    }
-
-    #[tokio::test]
-    async fn test_check_pattern_linearity_linear_is_ok() {
-        // A pattern with all distinct variables must pass linearity check.
-        let pattern = sp(Pattern::Dict {
-            fields: vec![
-                ("a".to_string(), var_pattern("x")),
-                ("b".to_string(), var_pattern("y")),
-                ("c".to_string(), var_pattern("z")),
-            ],
-            rest: true,
-        });
-        assert!(
-            check_pattern_linearity(&pattern).is_ok(),
-            "distinct variable names must pass"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_check_pattern_linearity_wildcard_is_ok() {
-        // Wildcards do not bind names; multiple wildcards are always linear.
-        let pattern = sp(Pattern::Dict {
-            fields: vec![
-                ("a".to_string(), wildcard_pattern()),
-                ("b".to_string(), wildcard_pattern()),
-            ],
-            rest: true,
-        });
-        assert!(
-            check_pattern_linearity(&pattern).is_ok(),
-            "multiple wildcards must not trigger linearity error"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_check_pattern_linearity_single_variable_is_ok() {
-        // A single variable binding is always linear.
-        let pattern = var_pattern("x");
-        assert!(check_pattern_linearity(&pattern).is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_check_pattern_linearity_pin_in_dict_not_a_violation() {
-        // T-1154: `[a: x  b: x  ...]:` — `x` appears twice, but as Pin (not Variable).
-        // Pin patterns do not bind names, so duplicate pin patterns are NOT linearity
-        // violations. Both arms act as wildcards when `x` is not in scope.
-        let pattern = sp(Pattern::Dict {
-            fields: vec![
-                ("a".to_string(), var_pattern("x")),
-                ("b".to_string(), var_pattern("x")),
-            ],
-            rest: true,
-        });
-        let result = check_pattern_linearity(&pattern);
-        assert!(
-            result.is_ok(),
-            "duplicate Pin patterns must NOT trigger linearity error; got: {:?}",
-            result.err()
-        );
-    }
-
-    #[tokio::test]
-    async fn test_check_pattern_linearity_pin_in_constructor_not_a_violation() {
-        // T-1154: `[Some [a: x  b: x]]:` — x appears twice inside Constructor payload
-        // as Pin patterns. Pin does not bind, so no linearity violation.
-        let payload = sp(Pattern::Dict {
-            fields: vec![
-                ("a".to_string(), var_pattern("x")),
-                ("b".to_string(), var_pattern("x")),
-            ],
-            rest: true,
-        });
-        let pattern = sp(Pattern::Constructor {
-            tag: "Maybe.Some".to_string(),
-            binding: Some(Box::new(payload)),
-        });
-        let result = check_pattern_linearity(&pattern);
-        assert!(
-            result.is_ok(),
-            "duplicate Pin patterns inside Constructor must NOT trigger linearity error"
-        );
-    }
-
     #[tokio::test]
     async fn test_pm3_match_expr_pin_pattern_does_not_bind() {
-        // Integration test: T-1154 — `[a: x  b: x  ...]: x` uses Pin patterns.
-        // Both `x` positions are unresolved pins → wildcards. The arm fires, but `x`
-        // is NOT bound anywhere. The body references `x` which is undefined.
-        //
-        // The lowerer eagerly produces an "undefined variable: x" error when it encounters
-        // an unresolved VarRef in the body. This causes eval_str to return Err immediately.
-        //
-        // match [a: 1  b: 2]
-        //   [a: x  b: x  ...]: x   ← arm pattern: Pins (wildcards); body: unresolved `x`
-        let result = eval_str(
+        // `[a: x  b: x  ...]: x` — `x` is undefined in both pattern and body.
+        // Pattern: each dict entry value `x` has resolution=Some(None) → arm doesn't match.
+        // No wildcard fallback → MatchExhaustion when forced.
+        // (Resolver emits "undefined variable: x" warnings, but lowerer silently
+        // produces CoreExpr::Placeholder for Some(None) — errors are resolver's responsibility.)
+        let thunk = eval_str(
             "[match [a: 1  b: 2]  [a: x  b: x  ...]: x]",
             empty_env(),
             &test_ctx(),
         )
-        .await;
-        // The lowerer eagerly errors on unresolved `x` in the body → eval returns Err.
+        .await
+        .expect("eval_str must succeed (arm simply doesn't match, body never reached)");
+        let result = materialize(&thunk, None, &test_ctx()).await;
         assert!(
             result.is_err(),
-            "expected eager lower error for unresolved body var x, got: {:?}",
-            result.ok()
+            "undefined-pin arm must produce MatchExhaustion when forced; got: {:?}",
+            result
+        );
+        assert!(
+            matches!(
+                result.unwrap_err().kind,
+                crate::error::ErrorKind::MatchExhaustion { .. }
+            ),
+            "expected MatchExhaustion from undefined pin pattern"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pm3_placeholder_wildcard_matches_dict() {
+        // Bare `...:` wildcard matches any scrutinee including dicts.
+        let thunk = eval_str("[match [a: 1  b: 2]  ...: 99]", empty_env(), &test_ctx())
+            .await
+            .expect("Placeholder wildcard must not error on eval");
+        let val = materialize(&thunk, None, &test_ctx())
+            .await
+            .expect("Placeholder wildcard must materialize without error");
+        assert_eq!(
+            val,
+            Value::Int(99),
+            "Placeholder wildcard arm must produce 99; got: {:?}",
+            val
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pm3_undefined_vrefs_in_arms_produce_match_exhaustion() {
+        // Undefined VarRefs in pattern position resolve to Some(None) → arm never matches.
+        // `[match 42  x: 1  x: 2]` with x undefined → MatchExhaustion.
+        let thunk = eval_str("[match 42  x: 1  x: 2]", empty_env(), &test_ctx())
+            .await
+            .expect("Eval must not error before thunk is forced");
+        let result = materialize(&thunk, None, &test_ctx()).await;
+        assert!(
+            result.is_err(),
+            "Undefined VarRef arms must produce MatchExhaustion when forced; got: {:?}",
+            result
         );
         let err = result.unwrap_err();
         assert!(
-            !err.to_string().is_empty(),
-            "expected a non-empty error for unresolved body var x, got: {:?}",
+            matches!(err.kind, crate::error::ErrorKind::MatchExhaustion { .. }),
+            "Expected MatchExhaustion, got: {:?}",
             err.kind
-        );
-    }
-
-    #[tokio::test]
-    async fn test_pm3_match_expr_pin_dict_pattern_fires_on_match() {
-        // Integration test: T-1154 — `[a: x  b: y  ...]: 99` uses Pin patterns.
-        // Both `x` and `y` are unresolved pins → wildcards. The arm fires on any dict.
-        // Body is `99` (does not reference the unbound pins), so result is 99.
-        //
-        // match [a: 1  b: 2]
-        //   [a: x  b: y  ...]: 99   ← arm fires (wildcards for x, y), body = 99
-        let result = eval_str(
-            "[match [a: 1  b: 2]  [a: x  b: y  ...]: 99]",
-            empty_env(),
-            &test_ctx(),
-        )
-        .await;
-        assert!(
-            result.is_ok(),
-            "Pin Dict pattern must not error on eval; got: {:?}",
-            result.err()
-        );
-    }
-
-    #[tokio::test]
-    async fn test_pm3_same_pin_in_different_arms_is_ok() {
-        // T-1154: `x: 1  x: 2` — both arms use Pin("x") which is unresolved → wildcard.
-        // First arm fires (wildcard matches 42), body = 1. Second arm never reached.
-        //
-        // match 42
-        //   x: 1    <- Pin("x") unresolved → wildcard; fires, returns 1
-        //   x: 2    <- never reached
-        let result = eval_str("[match 42  x: 1  x: 2]", empty_env(), &test_ctx()).await;
-        assert!(
-            result.is_ok(),
-            "Pin patterns in different arms must not error; got: {:?}",
-            result.err()
         );
     }
 

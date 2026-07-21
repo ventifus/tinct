@@ -1,4 +1,4 @@
-//! AST types: `Param`, `Annotation`, `Spanned<T>`, `Pattern`.
+//! AST types: `Param`, `Annotation`, `Spanned<T>`.
 //! Also: `SurfaceExpression`, `SurfaceNode`, `SurfaceProgram`, `CoreExpr` (runtime-v2 types).
 
 use crate::types::Type;
@@ -190,97 +190,7 @@ impl std::fmt::Display for Param {
 }
 
 // MatchArm deleted (used Expr which is now deleted). Replaced by SurfaceMatchArm.
-
-/// Pattern for match arms
-#[derive(Debug, Clone, PartialEq)]
-pub enum Pattern {
-    /// Wildcard pattern `_` — always matches
-    Wildcard,
-    /// Literal pattern — int, float, bool, or string literal
-    Literal(LiteralPattern),
-    /// Pin pattern — bare lowercase name or `$name` in pattern position.
-    ///
-    /// T-1154: Previously, `$name` (escaped) was Pin and bare `name` was `Variable`.
-    /// Now both produce `Pin`. Semantics:
-    /// - If `name` is in scope: compare scrutinee against the scope value (equality check).
-    /// - If `name` is not in scope: act as wildcard (always match, no binding introduced).
-    ///
-    /// To bind a name in a match arm, use `[case [let name] pattern body]`.
-    ///
-    /// `pin_resolution` carries the de Bruijn coordinates of `name` as resolved by the
-    /// resolver. Semantics of the OnceLock value:
-    /// - `None` (not set)           = resolver never ran on this node
-    /// - `Some(None)`               = resolver ran; name was NOT in scope → wildcard
-    /// - `Some(Some((level, slot)))` = resolver ran; name resolved to these coordinates
-    ///
-    /// Cloning resets the OnceLock (same as `Resolution::clone`), so cloned patterns
-    /// must be re-resolved. This matches the contract for `Resolution` on VarRef nodes.
-    Pin(String, Resolution),
-    /// Dict pattern — matches dicts by key, binds matched values to pattern variables
-    /// `rest: true` means open matching (extra keys allowed)
-    /// `rest: false` means closed matching (extra keys rejected)
-    Dict {
-        fields: Vec<(String, Spanned<Pattern>)>,
-        rest: bool,
-    },
-    /// Constructor pattern — matches nominal variants by tag, binds payload
-    /// `[Maybe.Some v]` matches `Variant { tycon: "Maybe", ctor: "Some", payload }` and binds `v` to the payload
-    /// `[Maybe.None]` (bracket form) matches `Variant { tycon: "Maybe", ctor: "None", payload: None }` via Constructor { binding: None }
-    Constructor {
-        tag: String,
-        binding: Option<Box<Spanned<Pattern>>>,
-    },
-    /// TypeAssertPending pattern — surface form produced by the parser; rewritten to TypeAssert
-    /// by the elaboration pass in typecheck_match.rs before type checking.
-    ///
-    /// `inner: None` = bare type assertion (currently unused by the parser; reserved for future forms)
-    /// `inner: Some(pat)` = type-guarded binding (`[@Int x]` produces TypeAssertPending with inner=Variable("x"))
-    TypeAssertPending {
-        annotation: Spanned<Annotation>,
-        inner: Option<Box<Spanned<Pattern>>>,
-        /// Type resolved by the type checker. Set inline; read by the lowerer to convert to TypeAssert.
-        resolved: TypeAnnotation,
-    },
-    /// TypeAssert pattern — core form used by the evaluator after elaboration.
-    /// Created from TypeAssertPending by the elaboration pass (typecheck phase).
-    TypeAssert {
-        resolved_type: Type,
-        inner: Option<Box<Spanned<Pattern>>>,
-    },
-    /// Or-pattern — matches if any sub-pattern matches
-    /// Both branches must bind the same set of variables
-    Or(Vec<Spanned<Pattern>>),
-    /// Predicate pattern — a call expression whose head is a lowercase name or operator.
-    ///
-    /// At runtime, the full call expression is evaluated as a function, then called with
-    /// the match scrutinee as its last positional argument. If the result is truthy (Int nonzero),
-    /// the arm matches; otherwise the arm is skipped.
-    ///
-    /// `[contains? "ob"]` in pattern position → `Predicate { call: SurfaceNode for [contains? "ob"], .. }`.
-    /// At match time: `[contains? "ob" scrutinee]` is evaluated.
-    ///
-    /// Predicate patterns do not introduce any variable bindings and do not count toward
-    /// exhaustiveness analysis (treated as wildcard for coverage purposes).
-    ///
-    /// `to_match_binding` is resolved by the type checker to the Matchable instance's
-    /// `to-match` method binding name (e.g., `"ɪɴꜱᴛᴀɴᴄᴇ⧼Matchable∷to-match⟨Boolean⟩⧽"`).
-    /// The evaluator uses this to call the correct instance without dynamic dispatch.
-    /// Empty if not yet resolved or type checking was skipped.
-    Predicate {
-        call: Arc<SurfaceNode>,
-        to_match_binding: MatchableBinding,
-    },
-}
-
-/// Literal pattern values
-#[derive(Debug, Clone, PartialEq)]
-pub enum LiteralPattern {
-    Int(i64),
-    /// Unsigned 64-bit integer (from `42u` literal patterns)
-    U64(u64),
-    Float(f64),
-    Str(String),
-}
+// Pattern enum deleted (T-1750) — match arm patterns are now Arc<SurfaceNode>.
 
 /// An annotation (type shorthand or property dict)
 #[derive(Debug, Clone, PartialEq)]
@@ -455,7 +365,7 @@ impl fmt::Display for SurfaceExpression {
             SurfaceExpression::Match { scrutinee, arms } => {
                 write!(f, "[match {}", scrutinee)?;
                 for arm in arms {
-                    write!(f, " {}", arm.pattern.node)?;
+                    write!(f, " {}", arm.pattern.expr)?;
                     for expr in &arm.body {
                         write!(f, " {}", expr)?;
                     }
@@ -561,83 +471,7 @@ impl fmt::Display for SurfaceDeclaration {
     }
 }
 
-impl fmt::Display for Pattern {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Pattern::Wildcard => write!(f, "_"),
-            Pattern::Literal(lit) => write!(f, "{lit}"),
-
-            Pattern::Pin(name, _) => write!(f, "{name}"),
-            Pattern::TypeAssertPending {
-                annotation, inner, ..
-            } => {
-                if let Some(inner) = inner {
-                    write!(f, "[@{} {}]", annotation.node, inner.node)
-                } else {
-                    write!(f, "[@{}]", annotation.node)
-                }
-            }
-            Pattern::TypeAssert { inner, .. } => {
-                if let Some(inner) = inner {
-                    write!(f, "[@<resolved> {}]", inner.node)
-                } else {
-                    write!(f, "[@<resolved>]")
-                }
-            }
-            Pattern::Dict { fields, rest } => {
-                write!(f, "[")?;
-                for (i, (key, pat)) in fields.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, " ")?;
-                    }
-                    write!(f, "{}: {}", key, pat.node)?;
-                }
-                if *rest {
-                    if !fields.is_empty() {
-                        write!(f, " ")?;
-                    }
-                    write!(f, "...")?;
-                }
-                write!(f, "]")
-            }
-            Pattern::Constructor { tag, binding } => {
-                if let Some(pat) = binding {
-                    write!(f, "[{} {}]", tag, pat.node)
-                } else {
-                    write!(f, "{}", tag)
-                }
-            }
-            Pattern::Or(patterns) => {
-                for (i, pat) in patterns.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, " | ")?;
-                    }
-                    write!(f, "{}", pat.node)?;
-                }
-                Ok(())
-            }
-            Pattern::Predicate { .. } => write!(f, "<predicate>"),
-        }
-    }
-}
-
-impl fmt::Display for LiteralPattern {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            LiteralPattern::Int(n) => write!(f, "{n}"),
-            LiteralPattern::U64(n) => write!(f, "{n}u"),
-            LiteralPattern::Float(n) => {
-                let s = n.to_string();
-                if !s.contains('.') && !s.contains('e') && !s.contains('E') {
-                    write!(f, "{s}.0")
-                } else {
-                    write!(f, "{s}")
-                }
-            }
-            LiteralPattern::Str(s) => write!(f, "{s:?}"),
-        }
-    }
-}
+// Display impls for Pattern and LiteralPattern deleted (T-1750).
 
 impl fmt::Display for Span {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1008,6 +842,18 @@ pub(crate) fn flatten_dot_access_to_tag(expr: &SurfaceExpression) -> Option<Stri
     }
 }
 
+/// Flatten a dot-access chain rooted at a `SurfaceNode` to a qualified tag string.
+///
+/// Returns `Some(tag)` when the node is a VarRef or a chain of `Field` (dot-access) nodes
+/// over an Ident key. Returns `None` for leading-dot forms, numeric indices, or other
+/// expression shapes that cannot be constructor names.
+///
+/// This is the `SurfaceNode`-level wrapper over `flatten_dot_access_to_tag`. Prefer this
+/// version when the caller already has an `Arc<SurfaceNode>`.
+pub(crate) fn flatten_dot_access_to_tag_node(node: &SurfaceNode) -> Option<String> {
+    flatten_dot_access_to_tag(&node.expr)
+}
+
 /// A match arm in a SurfaceExpression::Match.
 ///
 /// `body` is a non-empty Vec of expressions. Single-body arms have `body.len() == 1`.
@@ -1016,7 +862,7 @@ pub(crate) fn flatten_dot_access_to_tag(expr: &SurfaceExpression) -> Option<Stri
 /// The lowerer wraps multi-body in `CoreExpr::Sequential` (same as fn body lowering).
 #[derive(Debug, Clone, PartialEq)]
 pub struct SurfaceMatchArm {
-    pub pattern: Spanned<Pattern>,
+    pub pattern: Arc<SurfaceNode>,
     pub guard: Option<Arc<SurfaceNode>>,
     /// Non-empty Vec of body expressions. Single-expression arms have `body.len() == 1`.
     /// Multi-expression arms have all-but-last as intermediate scope dicts and last as result.
@@ -1324,7 +1170,7 @@ pub type TypeAnnotationTable = std::collections::HashMap<NodeId, crate::types::T
 
 /// Inline annotation for a predicate pattern's resolved Matchable `to-match` instance
 /// binding name. Written once by the type checker during match arm elaboration; read by
-/// the lowerer to carry the binding name into `CoreMatchArm::Pattern::Predicate`.
+/// the lowerer to carry the binding name into the match arm.
 ///
 /// Clone resets to empty (same semantics as other OnceLock annotations — cloned patterns
 /// in new scopes need fresh resolution).
@@ -1496,7 +1342,7 @@ pub struct CoreParam {
 /// A match arm in a CoreExpr::Match.
 #[derive(Debug, Clone)]
 pub struct CoreMatchArm {
-    pub pattern: Spanned<Pattern>,
+    pub pattern: Arc<SurfaceNode>,
     pub guard: Option<Arc<Spanned<CoreExpr>>>,
     pub body: Arc<Spanned<CoreExpr>>,
     /// Pre-resolved Matchable instance binding name for the guard's return type.

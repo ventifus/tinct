@@ -1,6 +1,6 @@
 # Empty seq doesn't match seq pattern
 [match []
     [Seq h t]:  h
-    _:          99]
+    ...:        99]
 === out
 Int(99)

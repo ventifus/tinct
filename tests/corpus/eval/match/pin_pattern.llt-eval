@@ -3,8 +3,8 @@
 
 [
   x: 42
-  r1: [match 42 $x: "matched" _: "no"]
-  r2: [match 99 $x: "matched" _: "no"]
+  r1: [match 42 $x: "matched" ...: "no"]
+  r2: [match 99 $x: "matched" ...: "no"]
 ]
 
 === out

@@ -8,7 +8,6 @@
 //! - `VarRef` → `Var` (resolved de Bruijn coordinates) or `Placeholder` (unresolvable — diagnostic emitted)
 //! - `Pipe { lhs, rhs }` → `Call { func: rhs, args: [lhs], implied: true }` (syntactic sugar)
 //! - `TypeAssert` → `TypeAssert` (with resolved_type from the inline TypeAnnotation field or Type::Unknown)
-//! - `TypeAssertPending` in patterns → `TypeAssert` (using the inline `resolved` TypeAnnotation field)
 //! - `Field` with `field_slot` set → `Call(slot-get, [Int(slot), target])` (O(1) positional access)
 //! - `Field` without `field_slot` → `Call(field-get, [Str/Int(key), target])` (key-based lookup)
 //! - `SurfaceNode.type_guard` set → wraps the lowered CoreExpr in `CoreExpr::TypeAssert`
@@ -17,7 +16,7 @@
 use std::sync::Arc;
 
 use crate::ast::{
-    CoreEntry, CoreExpr, CoreMatchArm, CoreNamedArg, CoreParam, Pattern, Spanned, SurfaceEntry,
+    CoreEntry, CoreExpr, CoreMatchArm, CoreNamedArg, CoreParam, Spanned, SurfaceEntry,
     SurfaceExpression, SurfaceNode,
 };
 use crate::rust_span;
@@ -196,12 +195,10 @@ pub(crate) fn lower_inner(
     Spanned::new(core_expr, span)
 }
 
-/// Resolve an annotation name to a Type for TypeAssertPending pattern lowering.
+/// Resolve an annotation name to a Type for TypeAssert pattern coverage.
 ///
-/// Mirrors typecheck_annot.rs::resolve_type_name for the builtin type names prelude
-/// uses in [@Type _]: patterns. Used when the inline `resolved` TypeAnnotation has no
-/// entry (which is always the case currently, as populate is not yet wired up).
-/// Unknown is the accept-all fallback for unrecognized names (--no-typecheck, macros).
+/// Used by coverage.rs when the resolved_type OnceLock has no entry (--no-typecheck,
+/// macros). Unknown is the accept-all fallback for unrecognized names.
 pub(crate) fn annotation_name_to_type(name: &str) -> crate::type_def::Type {
     use crate::type_def::Type;
     match name {
@@ -225,88 +222,7 @@ pub(crate) fn annotation_name_to_type(name: &str) -> crate::type_def::Type {
     }
 }
 
-/// Lower a `Pattern`, converting `TypeAssertPending → TypeAssert`.
-///
-/// TypeAssertPending is ALWAYS converted to TypeAssert — never left as-is.
-/// The inline `resolved` TypeAnnotation field is checked first (set by the type checker).
-/// If not set, `annotation_name_to_type` provides a direct name→Type mapping.
-/// Unknown is the fallback for unrecognized names (accept-all).
-///
-/// Recursively walks all sub-patterns so nested TypeAssertPending nodes are
-/// also converted (e.g., inside Or, Dict, Seq, Constructor bindings).
-fn lower_pattern(pat: &Pattern) -> Pattern {
-    match pat {
-        Pattern::TypeAssertPending {
-            annotation,
-            inner,
-            resolved,
-        } => {
-            // Read the inline resolved type — set by the type checker, or fall back to name→Type.
-            let resolved_type = resolved.get().cloned().unwrap_or_else(|| {
-                if let crate::ast::Annotation::Simple(name) = &annotation.node {
-                    annotation_name_to_type(name)
-                } else {
-                    crate::type_def::Type::Unknown
-                }
-            });
-            let lowered_inner = inner.as_ref().map(|boxed| {
-                Box::new(Spanned::new(lower_pattern(&boxed.node), boxed.span.clone()))
-            });
-            Pattern::TypeAssert {
-                resolved_type,
-                inner: lowered_inner,
-            }
-        }
-
-        Pattern::TypeAssert {
-            resolved_type,
-            inner,
-        } => {
-            // Already elaborated — recurse into inner.
-            let elaborated_inner = inner.as_ref().map(|boxed| {
-                Box::new(Spanned::new(lower_pattern(&boxed.node), boxed.span.clone()))
-            });
-            Pattern::TypeAssert {
-                resolved_type: resolved_type.clone(),
-                inner: elaborated_inner,
-            }
-        }
-
-        Pattern::Or(branches) => Pattern::Or(
-            branches
-                .iter()
-                .map(|b| Spanned::new(lower_pattern(&b.node), b.span.clone()))
-                .collect(),
-        ),
-
-        Pattern::Constructor { tag, binding } => Pattern::Constructor {
-            tag: tag.clone(),
-            binding: binding
-                .as_ref()
-                .map(|b| Box::new(Spanned::new(lower_pattern(&b.node), b.span.clone()))),
-        },
-
-        Pattern::Dict { fields, rest } => Pattern::Dict {
-            fields: fields
-                .iter()
-                .map(|(k, s)| {
-                    (
-                        k.clone(),
-                        Spanned::new(lower_pattern(&s.node), s.span.clone()),
-                    )
-                })
-                .collect(),
-            rest: *rest,
-        },
-
-        // Leaf patterns: no sub-patterns to lower.
-        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(..) => pat.clone(),
-
-        // T-1140: Predicate patterns carry a SurfaceNode — passed through unchanged.
-        // The SurfaceNode is lowered on demand inside MatchDispatch at eval time.
-        Pattern::Predicate { .. } => pat.clone(),
-    }
-}
+// lower_pattern deleted (T-1750) — match arm patterns are now Arc<SurfaceNode>, passed through unchanged.
 
 fn lower_expr(
     arc: &Arc<SurfaceNode>,
@@ -346,13 +262,10 @@ fn lower_expr(
         } => {
             match resolution.get() {
                 Some(None) => {
-                    // Explicitly marked unresolvable by the resolver — compile error.
-                    let message = format!("unresolvable variable: {}", name);
-                    diagnostics.push(LowerDiagnostic {
-                        kind: LowerDiagnosticKind::Error,
-                        message,
-                        span: arc.span.clone(),
-                    });
+                    // Name not in scope — resolver already emitted a diagnostic (or
+                    // intentionally suppressed it in pattern position). Produce a
+                    // Placeholder so downstream code sees a wildcard; the resolver
+                    // owns any error reporting.
                     CoreExpr::Placeholder
                 }
                 Some(Some((level, slot))) => CoreExpr::Var {
@@ -362,31 +275,18 @@ fn lower_expr(
                     annotation: annotation.clone(),
                 },
                 None => {
-                    if name == "_" {
-                        // `_` in pattern position is the wildcard sentinel: always matches,
-                        // no binding. The evaluator (eval_structural_pattern_inner) special-cases
-                        // Var { name: "_" } → Ok(true). De Bruijn coordinates are never accessed
-                        // for the wildcard, so 0/0 are safe dummy values.
-                        CoreExpr::Var {
-                            name: "_".to_string(),
-                            level: 0,
-                            slot: 0,
-                            annotation: annotation.clone(),
-                        }
-                    } else {
-                        // Resolver ran but this name was not found in any lexical scope.
-                        // Every user-written variable reference must have de Bruijn coordinates
-                        // assigned by the resolver (seeded from the env). A None here means the
-                        // name is genuinely undefined — emit a diagnostic and a Placeholder so
-                        // the error surfaces when (and only when) the thunk is forced.
-                        let message = format!("undefined variable: {}", name);
-                        diagnostics.push(LowerDiagnostic {
-                            kind: LowerDiagnosticKind::Error,
-                            message,
-                            span: arc.span.clone(),
-                        });
-                        CoreExpr::Placeholder
-                    }
+                    // Resolver did not run on this VarRef (OnceLock unset = internal error).
+                    // This occurs if the resolver skipped this node entirely — e.g., inside a
+                    // Quote body that wasn't suppressed, or a newly constructed node that bypassed
+                    // the resolver pass. Emit a diagnostic and produce a Placeholder so the error
+                    // surfaces at force time rather than silently producing wrong output.
+                    let message = format!("undefined variable: {}", name);
+                    diagnostics.push(LowerDiagnostic {
+                        kind: LowerDiagnosticKind::Error,
+                        message,
+                        span: arc.span.clone(),
+                    });
+                    CoreExpr::Placeholder
                 }
             }
         }
@@ -958,10 +858,8 @@ fn lower_expr(
             arms: arms
                 .iter()
                 .map(|arm| CoreMatchArm {
-                    pattern: Spanned::new(
-                        lower_pattern(&arm.pattern.node),
-                        arm.pattern.span.clone(),
-                    ),
+                    // T-1750: pattern is now Arc<SurfaceNode>, pass through directly (clone the Arc)
+                    pattern: Arc::clone(&arm.pattern),
                     guard: arm
                         .guard
                         .as_ref()

@@ -9,7 +9,7 @@
   err-val: [Result.Error msg: "fail"]
   ok-matched: [match [Result.Ok value: 1]
     [case [let v] [Result.Ok v]    v.value]
-    [Result.Error _]:              0]
+    ...:                           0]
 ]
 === out
 Dict({"Result": Dict({"Ok": Function(value), "Error": Function(msg)}), "ok-val": Variant(Result.Ok, Dict({"value": Int(42)})), "err-val": Variant(Result.Error, Dict({"msg": String("fail")})), "ok-matched": Int(1)})

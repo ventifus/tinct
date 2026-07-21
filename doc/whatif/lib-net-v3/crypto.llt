@@ -42,8 +42,8 @@
              subject:   [get tbs-items [if [= [tag-of [get tbs-items 0]] "asnValue.AsnSeq"] 5 4]]
              spki:      [get tbs-items [if [= [tag-of [get tbs-items 0]] "asnValue.AsnSeq"] 6 5]]
              extensions: Absent.Absent]   # parse extensions if present
-          _: [error "extract-tbs: TBSCertificate not an AsnSeq"]]
-      _: [error "extract-tbs: Certificate not an AsnSeq"]]]
+          ...: [error "extract-tbs: TBSCertificate not an AsnSeq"]]
+      ...: [error "extract-tbs: Certificate not an AsnSeq"]]]
 
   # asn-time-to-unix is defined in asn1.llt (public) — available here via include.
 
@@ -96,12 +96,12 @@
       [asnValue.AsnSeq items]:
         [nb: [match [get items 0]
           [asnValue.AsnTime s]: [asn-time-to-unix s]
-          _: 0]]
+          ...: 0]]
         [na: [match [get items 1]
           [asnValue.AsnTime s]: [asn-time-to-unix s]
-          _: 0]]
+          ...: 0]]
         [and [>= now-secs nb] [<= now-secs na]]
-      _: false]]
+      ...: false]]
     [if [not validity-ok?]
       false
       # 2. Identity matching per RFC 9525 — SAN only, no CN fallback
@@ -131,10 +131,10 @@
     [tbs: [extract-tbs cert-asn]]
     [issuer-tbs: [extract-tbs issuer-asn]]
     # Public key bytes from issuer's subjectPublicKeyInfo.publicKey BIT STRING
-    [pub-key: [match issuer-tbs.spki [asnValue.AsnSeq items]: [match [get items 1] [asnValue.AsnBitStr b]: b  _: [bytes 0]]  _: [bytes 0]]]
+    [pub-key: [match issuer-tbs.spki [asnValue.AsnSeq items]: [match [get items 1] [asnValue.AsnBitStr b]: b  ...: [bytes 0]]  ...: [bytes 0]]]
     # Signature is BIT STRING (skip leading 0x00 padding byte)
-    [sig-asn: [match cert-asn [asnValue.AsnSeq items]: [get items 2]  _: [asnValue.AsnBitStr [bytes 0]]]]
-    [sig: [match sig-asn [asnValue.AsnBitStr b]: [slice b 1 [length b]]  _: [bytes 0]]]
+    [sig-asn: [match cert-asn [asnValue.AsnSeq items]: [get items 2]  ...: [asnValue.AsnBitStr [bytes 0]]]]
+    [sig: [match sig-asn [asnValue.AsnBitStr b]: [slice b 1 [length b]]  ...: [bytes 0]]]
     # TBS bytes: in DER the tbsCertificate starts after the outer SEQUENCE header
     # For now dispatch verify-sig with the cert tbs and sig
     # Extract raw TBS DER bytes from cert-der for signature verification.
@@ -200,11 +200,11 @@
                 [asnValue.AsnOid oid]: [if [= oid [2 5 29 17]]
                   [match [last items]
                     [asnValue.AsnOctetStr b]: [list b]   # found SAN bytes
-                    _: []]
+                    ...: []]
                   []]
-                _: []]
-            _: []]]
-          [match ext-seq [asnValue.AsnSeq items]: items  _: []]]]
+                ...: []]
+            ...: []]]
+          [match ext-seq [asnValue.AsnSeq items]: items  ...: []]]]
         [match [head san-bytes-list]
           [Absent.Absent]: [dns: []  ips: []]   # head of [] is Absent
           [let b]:
@@ -216,7 +216,7 @@
             [dns: [flat-map [fn [let asn]
               [match asn
                 [asnValue.AsnStr s]: [list s]   # dNSName (tag 0x82)
-                _: []]]
+                ...: []]]
              general-names]]
             [ips: [flat-map [fn [let asn]
               [match asn
@@ -224,7 +224,7 @@
                   [if [= [length b] 4]   [list [IpAddress.Ipv4 b]]
                     [if [= [length b] 16] [list [IpAddress.Ipv6 b]]
                       []]]               # invalid length — skip
-                _: []]]
+                ...: []]]
              general-names]]
             [dns: dns  ips: ips]]]
 
@@ -236,8 +236,8 @@
       [asnValue.AsnSeq items]:
         [match [get items 1]
           [asnValue.AsnBitStr b]: [slice b 1 [length b]]  # strip leading 0x00 padding byte
-          _: [bytes 0]]
-      _: [bytes 0]]]
+          ...: [bytes 0]]
+      ...: [bytes 0]]]
 
   verify-cert-chain: [fn [let chain@[Seq Bytes] trust-roots@[or [Seq Bytes] Symbol] sni@String]
     [if [empty? chain]

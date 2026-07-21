@@ -4,6 +4,6 @@
 # The _ arm catches all values until the elaboration pass qualifies variant tags.
 [match "x"
     Color.Red: "matched"
-    _:         "other"]
+    ...:       "other"]
 === out
 String("other")

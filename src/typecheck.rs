@@ -5,8 +5,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-#[cfg(test)]
-use crate::ast::Pattern;
+// Pattern import deleted (T-1750)
 use crate::ast::{
     Span, Spanned, SurfaceDeclaration, SurfaceDocument, SurfaceExpression, SurfaceItem,
     SurfaceNode, SurfaceProgram, TypeAnnotationTable,
@@ -23,7 +22,7 @@ pub(crate) mod typecheck_annot;
 #[path = "typecheck_dict.rs"]
 mod typecheck_dict;
 // Special-case type refinement dispatchers for polymorphic builtins
-// Path-sensitive narrowing, pattern binding extraction, overlap checking
+// Path-sensitive narrowing and overlap checking
 #[path = "typecheck_narrow.rs"]
 pub(crate) mod typecheck_narrow;
 // Case arm and function literal type inference

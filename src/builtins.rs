@@ -2699,8 +2699,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_type_of_variant() {
-        // type-of on a Variant returns "Variant" (the generic kind).
-        // Use builtin_tag_of to get the specific qualified tag.
+        // type-of on a Variant returns the tycon name — the tinct-level type.
+        // Color.Red has tinct type Color, not "Variant" (a Rust impl detail).
         let ctx = test_ctx();
         let variant = alloc(
             Value::Variant {
@@ -2718,7 +2718,7 @@ mod tests {
             caller_env_id: 0,
         }))
         .await;
-        assert_eq!(result, string_val("Variant".into()));
+        assert_eq!(result, string_val("Color".into()));
     }
 
     #[tokio::test]

@@ -1,6 +1,6 @@
 [match f
     [Net.Transport.Tcp payload]: payload
     Net.Transport.Udp: "udp"
-    _: "unknown"]
+    ...: "unknown"]
 === out
-[match f [Net.Transport.Tcp payload] payload Net.Transport.Udp "udp" _ "unknown"]
+[match f [Net.Transport.Tcp payload] payload Net.Transport.Udp "udp" ... "unknown"]

@@ -3,6 +3,6 @@
 # Use [case [let p] [Seq.Cons p] p.head] to bind the payload dict and access head.
 [match [seq 1 [seq 2 [seq 3 []]]]
   [case [let p] [Seq.Cons p] p.head]
-  _:                         0]
+  ...:                       0]
 === out
 Int(1)

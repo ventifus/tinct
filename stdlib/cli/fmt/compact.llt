@@ -55,7 +55,7 @@ format-pattern: [fn@[return: String  doc: """Format a match pattern to source te
     "dict":        [format-pattern-dict pat]
     "seq":         [str "[" [format-pattern [get "head" pat]] " | " [format-pattern [get "tail" pat]] "]"]
     "or":          [join-strings " | " [map-list format-pattern [get "patterns" pat]]]
-    _:             [error [str "unknown pattern type: " [get "type" pat]]]]]
+    ...:           [error [str "unknown pattern type: " [get "type" pat]]]]]
 
 format-pattern-dict: [fn@[return: String  doc: """Format a dict pattern: [key: pat ...]."""] [let pat@Dict]
   [if [empty? [get "fields" pat]]
@@ -70,7 +70,7 @@ format-pattern-dict: [fn@[return: String  doc: """Format a dict pattern: [key: p
 # ---- Node formatters ----
 
 format-node: [fn@[return: String  doc: """Main dispatch: format any AST node to compact source text."""] [let node]
-  [match [tag-of node]
+  [match [get "type" node]
     "Literal":        [format-literal node]
     "VarRef":         [get "name" node]
     "DotAccess":      [format-dot-access node]
@@ -93,7 +93,7 @@ format-node: [fn@[return: String  doc: """Main dispatch: format any AST node to 
     "ClassDecl":      [format-class node]
     "InstanceDecl":   [format-instance node]
     "AstError":       "<error>"
-    _:                [error [str "unknown node type: " [tag-of node]]]]]
+    ...:              [error [str "unknown node type: " [get "type" node]]]]]
 
 format-literal: [fn@[return: String  doc: """Format a literal node (int, float, bool, str)."""] [let node]
   [match [get "kind" node]
@@ -103,7 +103,7 @@ format-literal: [fn@[return: String  doc: """Format a literal node (int, float, 
     "str":   [if [get "bare" node]
                [get "value" node]
                [str "\"" [get "value" node] "\""]]
-    _:       [error [str "unknown literal kind: " [get "kind" node]]]]]
+    ...:     [error [str "unknown literal kind: " [get "kind" node]]]]]
 
 format-dot-access: [fn@[return: String  doc: """Format dot access: target.field"""] [let node]
   [str
@@ -189,7 +189,7 @@ format-annotation: [fn@[return: String  doc: """Format a type annotation."""] [l
                     [fn [let e] [str [get "key" e] ": " [format-annotation-value [get "value" e]]]]
                     [get "entries" ann]]]
                 "]"]
-    _:        [error [str "unknown annotation kind: " [get "kind" ann]]]]]
+    ...:      [error [str "unknown annotation kind: " [get "kind" ann]]]]]
 
 format-annotation-value: [fn@[return: String  doc: """Format an annotation value (string, int, or nested AST node)."""] [let v]
   [if [str? v]

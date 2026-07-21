@@ -1,7 +1,7 @@
 # Test unnamed parameter support in function type expressions (no regression)
 # Unnamed parameters: [String Bool] should work as before
-[@[Fn@Integer [String Bool]] [fn [let a b]
+[@[Fn@Integer [String Bool]] [fn [let _ b]
   [if $b 1 0]
 ]]
 === out
-Function(a, b)
+Function(_, b)

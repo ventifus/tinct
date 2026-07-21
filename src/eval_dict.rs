@@ -221,7 +221,7 @@ pub(crate) fn core_expr_is_static_key(k: &CoreExpr) -> bool {
 /// Semantics: letrec scoping with FlatEnv display chain (see arena.rs).
 /// - String-keyed entries allocated in child FlatEnv (letrec: forward references allowed)
 /// - Keys evaluated in parent scope (Key Isolation Invariant)
-/// - Literal values (Int/Float/Bool/Str) get Materialized thunks directly (fast path)
+/// - Literal values are pre-materialized at dict construction time — no environment lookup needed since literals are scope-independent
 /// - Non-literal values become CoreExpr thunks in `dict_env` (UnevaluatedState::CoreExpr)
 ///   — no CoreExpr→Expr round-trip for dict values.
 ///
@@ -289,7 +289,7 @@ pub(crate) async fn eval_dict_core(
             entry.node.value.span.clone()
         };
 
-        // Fast path for literal values: Materialized thunks directly (Nix maybeThunk pattern).
+        // Literals are pre-materialized — scope-independent values need no CoreExpr deferral.
         // Non-literal values become CoreExpr thunks pointing to dict_env.
         let value_thunk = match &entry.node.value.node {
             CoreExpr::Int(n) => Arc::new(Thunk::value(Value::Int(*n), entry_span)),

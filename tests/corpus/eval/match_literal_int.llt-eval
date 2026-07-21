@@ -2,6 +2,6 @@
     0:    "zero"
     1:    "one"
     2:    "two"
-    _:    "many"]
+    ...:  "many"]
 === out
 String("one")

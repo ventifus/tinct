@@ -119,7 +119,7 @@ A resolver is a function in a `--- stage: type` section that receives determinin
       [[kind: "named" name: "Int"]    [kind: "named" name: "Float"]]: [kind: "named" name: "Float"]
       [[kind: "named" name: "Float"]  [kind: "named" name: "Int"]]:   [kind: "named" name: "Float"]
       [[kind: "named" name: "Float"]  [kind: "named" name: "Float"]]: [kind: "named" name: "Float"]
-      _:                                                               [kind: "named" name: "Unknown"]]]
+      ...:                                                             [kind: "named" name: "Unknown"]]]
 ]
 ---
 Addable: [class [a b c]  [determines: [[[a b] c]]  resolver: AddResult]
@@ -200,7 +200,7 @@ FDs are not limited to arithmetic. A `Merge` class with FD `(a, b) → c` expres
                                    port:    [kind: "named" name: "Int"]
                                    timeout: [kind: "named" name: "Int"]
                                    retries: [kind: "named" name: "Int"]]]
-      _: [kind: "named" name: "Unknown"]]]
+      ...: [kind: "named" name: "Unknown"]]]
 ]
 ---
 Merge: [class [a b c]  [determines: [[[a b] c]]  resolver: MergeResult]

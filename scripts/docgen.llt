@@ -84,15 +84,12 @@ try-str: [fn@String [let f@[Fn@String []]]
 #   PropertyDict without return: → use ann.text (the full display, e.g. "[return: X]")
 #   null/absent → "Any"
 return-type-text: [fn@String [let return-ann]
-  [tag: [try-str [fn [let] [tag-of return-ann]]]]
-  [if [= tag ""]
-    "Any"
-    [if [= tag "PropertyDict"]
-      [call [fn@String [let ret@String]
-        [if [= ret ""] [ann-text return-ann] ret]]
-       [ann-return-prop return-ann]]
-      # Simple or Annotated — use display text directly
-      [ann-text return-ann]]]]
+  [match return-ann
+    []:                   "Any"
+    [Expr.PropertyDict _]: [call [fn@String [let ret@String]
+                              [if [= ret ""] [ann-text return-ann] ret]]
+                            [ann-return-prop return-ann]]
+    ...:                  [ann-text return-ann]]]
 
 # ── Parameter signature ───────────────────────────────────────────────────
 
@@ -136,12 +133,10 @@ key-ann-doc: [fn@String [let key-expr]
 # Extract the binding name from a dict entry key Expression.
 # Key can be Var{name} or Annotated{name, annotation}. Returns "" for anything else.
 entry-name: [fn@String [let key-expr]
-  [tag: [try-str [fn [let] [tag-of key-expr]]]]
-  [if [= tag "Var"]
-    [try-str [fn [let] key-expr.name]]
-    [if [= tag "Annotated"]
-      [try-str [fn [let] key-expr.name]]
-      ""]]]
+  [match key-expr
+    [Expr.Var _]:       [try-str [fn [let] key-expr.name]]
+    [Expr.Annotated _]: [try-str [fn [let] key-expr.name]]
+    ...:                ""]]
 
 # Parse one dict Entry Variant into a doc record [name: String sig: String doc: String],
 # or [] if the entry has no doc annotation or is not a documented function.
@@ -152,30 +147,23 @@ parse-entry: [fn@Dict [let entry]
   [name:  [entry-name key]]
   [if [= name ""]
     []
-    [call [fn@Dict [let value-tag@String]
-      [if [= value-tag "Fn"]
-        # value is a Fn expression. Check for new-style doc (fn@[doc: "..."]).
+    [match value
+      [Expr.Fn _]:
         [call [fn@Dict [let doc@String]
           [if [= doc ""]
-            # No new-style doc — fall back to old-style key annotation: name@[doc: "..."]
-            [call [fn@Dict [let key-tag@String]
-              [if [= key-tag "Annotated"]
+            [match key
+              [Expr.Annotated _]:
                 [call [fn@Dict [let kdoc@String]
                   [if [= kdoc ""]
-                    []  # no doc found anywhere — skip this entry
-                    # Use fn to break letrec circularity ([name: name] would be circular).
+                    []
                     [call [fn@Dict [let n d s] [name: n  doc: d  sig: s]]
                      name kdoc [build-sig value]]]]
                  [key-ann-doc key]]
-                []]]  # plain Var key with no fn doc — not a documented entry
-             [try-str [fn [let] [tag-of key]]]]
-            # Found new-style doc
-            # Use fn to break letrec circularity ([name: name  doc: doc] would be circular).
+              ...: []]
             [call [fn@Dict [let n d s] [name: n  doc: d  sig: s]]
              name doc [build-sig value]]]]
          [fn-ann-doc value]]
-        []]]  # not a Fn — skip
-     [try-str [fn [let] [tag-of value]]]]]]
+      ...: []]]]
 
 # Extract all documented entries from one document's last Dict expression.
 extract-from-doc: [fn [let doc]
@@ -183,8 +171,7 @@ extract-from-doc: [fn [let doc]
   # Find the last Dict expression — that is the public API dict.
   [last-dict: [reduce
     [fn [let acc expr]
-      [t: [try-str [fn [let] [tag-of expr]]]]
-      [if [= t "Dict"] expr acc]]
+      [match expr [Expr.Dict ...]: expr ...: acc]]
     []
     exprs]]
   [if [null? last-dict]

@@ -1,6 +1,6 @@
 ## Architecture
 
-Tinct is a structured-data-first general purpose programming language with lazy evaluation and type inference. 
+Tinct is a structured-data-first general purpose programming language with lazy evaluation and type inference. Since it's pervasively lazy, always think in terms of data flow.
 
 Axioms:
 - **Prelude speaks the Rust protocol**: Rust defines the protocol; prelude implements it. Rust never embeds prelude-specific behavior. Prelude works because it is correct tinct, not because Rust accommodates it.

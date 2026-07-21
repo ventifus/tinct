@@ -1,5 +1,5 @@
 [match x
     Color.Red: "red"
-    _: "other"]
+    ...: "other"]
 === out
-[match x Color.Red "red" _ "other"]
+[match x Color.Red "red" ... "other"]

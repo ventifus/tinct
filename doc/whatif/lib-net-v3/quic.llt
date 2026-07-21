@@ -221,7 +221,7 @@
     [reduce [fn [let acc f]
       [match f
         [QuicFrame.Crypto p]: [concat acc p.data]
-        _:                    acc]]
+        ...:                    acc]]
      [] frames]]
 
   decode-quic-varint: [fn [let b@Bytes offset@Integer]
@@ -232,7 +232,7 @@
       1: [value: [band [uint16 ByteOrder.Network [slice b offset [+ offset 2]]] 0x3FFF]           next: [+ offset 2]]
       2: [value: [band [uint32 ByteOrder.Network [slice b offset [+ offset 4]]] 0x3FFFFFFF]      next: [+ offset 4]]
       3: [value: [band [uint64 ByteOrder.Network [slice b offset [+ offset 8]]] 0x3FFFFFFFFFFFFFFF] next: [+ offset 8]]
-      _: [error "unreachable"]]]
+      ...: [error "unreachable"]]]
 
   # Initialization for QUIC loss state
   quic-init-loss-state: [fn []
@@ -423,7 +423,7 @@
         [UdpSocket _]:     [error "QUIC: UdpSocket requires explicit SNI"]]
         [SocketAddress sa]: [match sa.addr
           [IpAddress.Hostname h]: h
-          _: [error "QUIC: non-hostname address requires explicit SNI"]]]
+          ...: [error "QUIC: non-hostname address requires explicit SNI"]]]
       [let s]: s]]
 
     # Step 2: build TLS ClientHello as CRYPTO frame payload
@@ -520,7 +520,7 @@
       0x1301: CipherSuite.Aes128GcmSha256
       0x1302: CipherSuite.Aes256GcmSha384
       0x1303: CipherSuite.Chacha20Poly1305Sha256
-      _: [raise "QUIC: version negotiation failed — no supported cipher suite"]]]
+      ...: [raise "QUIC: version negotiation failed — no supported cipher suite"]]]
     [ks: [tls13-key-schedule dh-shared ch-bytes sh-bytes cipher]]
 
     # Step 6: receive Handshake packets (EncryptedExtensions, Certificate, CertificateVerify, Finished)
@@ -759,7 +759,7 @@
         [value: [QuicFrame.ConnectionClose error: err-res.value  frame-type: ft-res.value  reason: reason]
          next:  [+ rl-res.next rl-res.value]]
       0x1e: [value: QuicFrame.HandshakeDone  next: p]
-      _: # STREAM frames 0x08..0x0f
+      ...: # STREAM frames 0x08..0x0f
         [if [and [>= type-res.value 0x08] [<= type-res.value 0x0f]]
           [block
             [off-bit: [= [band type-res.value 0x04] 0x04]]

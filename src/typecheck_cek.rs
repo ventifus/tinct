@@ -19,9 +19,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use crate::ast::{
-    node_id, Annotation, Pattern, Span, Spanned, SurfaceDeclaration, SurfaceEntry,
-    SurfaceExpression, SurfaceMatchArm, SurfaceNamedArg, SurfaceNode, SurfaceParam,
-    STANDARD_ANN_KEYS,
+    node_id, Annotation, Span, Spanned, SurfaceDeclaration, SurfaceEntry, SurfaceExpression,
+    SurfaceMatchArm, SurfaceNamedArg, SurfaceNode, SurfaceParam, STANDARD_ANN_KEYS,
 };
 use crate::coverage;
 use crate::env::Env;
@@ -697,6 +696,10 @@ async fn infer_step(
             }
         }
 
+        // Parse-error node: the error was already recorded during parsing;
+        // silently return Unknown here to avoid spurious secondary diagnostics.
+        SurfaceExpression::Error(_) => TypeCheckAction::Done(Type::Unknown),
+
         _ => {
             let msg = format!(
                 "unexpected {} in this context",
@@ -972,7 +975,6 @@ async fn apply_cont(
             let remaining_scrutinee = scrutinee_ty.clone();
             match setup_match_arm_env(
                 &arms[0],
-                &scrutinee_ty,
                 &remaining_scrutinee,
                 &env,
                 state,
@@ -1023,7 +1025,6 @@ async fn apply_cont(
                 // Set up environment for the next arm and push another AfterMatchArm.
                 match setup_match_arm_env(
                     &remaining_arms[0],
-                    &scrutinee_ty,
                     &remaining_scrutinee,
                     &env,
                     state,
@@ -1453,6 +1454,17 @@ async fn infer_var_ref(
 
         result_type
     } else {
+        // If the resolver successfully resolved this variable (OnceLock = Some(Some(level, slot))),
+        // the variable genuinely exists in scope — the type checker simply doesn't have its type
+        // scheme (e.g., it's a prelude function whose scheme wasn't propagated). The resolver is
+        // the authority on variable existence. Return Unknown (gradual typing) rather than a false
+        // "undefined variable" diagnostic that would mask real type errors.
+        if let crate::ast::SurfaceExpression::VarRef { resolution, .. } = &node.expr {
+            if let Some(Some(_)) = resolution.get() {
+                return Type::Unknown;
+            }
+        }
+
         let mut err = TypeDiagnostic::error(
             "type-error",
             format!("undefined variable: {}", name),
@@ -2972,59 +2984,23 @@ async fn infer_fn_push_cont(
 
 // ===== Inline helper: Match arm environment setup =====
 //
-// Sets up pattern bindings, infers guard (for side effects), applies guard narrowing,
-// and returns the arm environment ready for body evaluation.
-// Also returns the updated `remaining_scrutinee` after applying I-Case3 negation for this arm.
+// Sets up the arm environment for guard inference, applies guard narrowing to the env,
+// and computes `next_remaining_scrutinee` by accumulating I-Case3 negation for this arm.
+// Returns the narrowed arm env and updated remaining scrutinee ready for body evaluation.
 // Returns `None` only if called with no arms (should not happen in practice).
 
 async fn setup_match_arm_env(
     arm: &SurfaceMatchArm,
-    scrutinee_ty: &Type,
     remaining_scrutinee: &Type,
     env: &Arc<RwLock<Env>>,
     state: &mut InferState,
     errors: &mut Vec<TypeDiagnostic>,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Option<(Arc<RwLock<Env>>, Type)> {
-    // Compute arm-local scrutinee type (I-Case3 narrowing)
-    let arm_scrutinee_ty = match &arm.pattern.node {
-        Pattern::Constructor { tag, .. } => {
-            let (tycon, ctor) = tag.split_once('.').unwrap_or(("", tag.as_str()));
-            if matches!(remaining_scrutinee, Type::NominalVariant { tycon: t, ctor: c, .. } if t == tycon && c == ctor)
-            {
-                remaining_scrutinee.clone()
-            } else {
-                let tag_ty = Type::NominalVariant {
-                    tycon: tycon.to_string(),
-                    ctor: ctor.to_string(),
-                    fields: crate::type_def::Row {
-                        fields: indexmap::IndexMap::new(),
-                        tail: crate::type_def::RowTail::Empty,
-                    },
-                };
-                let members = vec![remaining_scrutinee.clone(), tag_ty];
-                Type::normalize_intersection(members)
-            }
-        }
-        Pattern::Wildcard | Pattern::Pin(..) => remaining_scrutinee.clone(),
-        _ => scrutinee_ty.clone(),
-    };
-
-    let mut pat_bindings: Vec<(String, Type)> = Vec::new();
-    typecheck_narrow::collect_pattern_bindings(
-        &arm.pattern.node,
-        &arm_scrutinee_ty,
-        &mut pat_bindings,
-    );
-    let arm_env: Arc<RwLock<Env>> = if pat_bindings.is_empty() {
-        Arc::clone(env)
-    } else {
-        let mut child_inner = Env::with_parent(Arc::clone(env));
-        for (name, ty) in pat_bindings {
-            child_inner.insert(name, ty);
-        }
-        Arc::new(RwLock::new(child_inner))
-    };
+    // Non-CaseArm match arm patterns introduce no bindings into the arm environment.
+    // Only [case [let ...]] arms introduce bindings, handled by the CaseArm branch of
+    // run_typecheck. The arm env starts as a clone of the outer env.
+    let arm_env: Arc<RwLock<Env>> = Arc::clone(env);
 
     // Guard inference and narrowing (guard is inferred for its type-map side effects only)
     let arm_env = if let Some(guard) = &arm.guard {
@@ -3052,8 +3028,10 @@ async fn setup_match_arm_env(
 
     // Compute updated remaining_scrutinee (I-Case3 negation accumulation) for next arm.
     let next_remaining_scrutinee = if arm.guard.is_none() {
-        match &arm.pattern.node {
-            Pattern::Constructor { tag, .. } => {
+        match &arm.pattern.expr {
+            crate::ast::SurfaceExpression::Field { .. } => {
+                let tag =
+                    crate::ast::flatten_dot_access_to_tag_node(&arm.pattern).unwrap_or_default();
                 let (tycon, ctor) = tag.split_once('.').unwrap_or(("", tag.as_str()));
                 let neg_tag = Type::Negation(Box::new(Type::NominalVariant {
                     tycon: tycon.to_string(),
@@ -3065,7 +3043,24 @@ async fn setup_match_arm_env(
                 }));
                 Type::normalize_intersection(vec![remaining_scrutinee.clone(), neg_tag])
             }
-            Pattern::Wildcard | Pattern::Pin(..) => Type::Never,
+            crate::ast::SurfaceExpression::Call { func, .. }
+                if matches!(&func.expr, crate::ast::SurfaceExpression::Field { .. }) =>
+            {
+                let tag = crate::ast::flatten_dot_access_to_tag_node(func).unwrap_or_default();
+                let (tycon, ctor) = tag.split_once('.').unwrap_or(("", tag.as_str()));
+                let neg_tag = Type::Negation(Box::new(Type::NominalVariant {
+                    tycon: tycon.to_string(),
+                    ctor: ctor.to_string(),
+                    fields: crate::type_def::Row {
+                        fields: indexmap::IndexMap::new(),
+                        tail: crate::type_def::RowTail::Empty,
+                    },
+                }));
+                Type::normalize_intersection(vec![remaining_scrutinee.clone(), neg_tag])
+            }
+            // Wildcard forms: VarRef, Placeholder
+            crate::ast::SurfaceExpression::VarRef { .. }
+            | crate::ast::SurfaceExpression::Placeholder(..) => Type::Never,
             _ => remaining_scrutinee.clone(),
         }
     } else {
@@ -3117,7 +3112,7 @@ fn run_match_exhaustiveness_check(
     if let Some(sig) = sig {
         let coverage_patterns: Vec<coverage::CoveragePattern> = arms
             .iter()
-            .map(|arm| coverage::ast_pattern_to_coverage(&arm.pattern.node, Some(tycon_env_ref)))
+            .map(|arm| coverage::ast_pattern_to_coverage(&arm.pattern, Some(tycon_env_ref)))
             .collect();
         let has_guards: Vec<bool> = arms.iter().map(|arm| arm.guard.is_some()).collect();
         let result = coverage::check_coverage(&coverage_patterns, &sig, &has_guards);
@@ -4103,10 +4098,6 @@ pub(crate) async fn run_typecheck_dict(
                             ..
                         } = decl_box.as_ref()
                         {
-                            // Build annotation map from class params to themselves
-                            let mut ann_map: std::collections::HashMap<String, String> =
-                                params.iter().map(|p| (p.clone(), p.clone())).collect();
-
                             // Look up the registered ClassDecl
                             let class_arc_opt = {
                                 let env_guard = state.env.read().unwrap();
@@ -4140,7 +4131,14 @@ pub(crate) async fn run_typecheck_dict(
                                         // The value IS the type expression (e.g., [Fn@c [a b]]).
                                         let stub_env = crate::types::TypeEnv::new();
                                         let mut constraints = Vec::new();
-                                        let mut ann_map_mut = Some(&mut ann_map);
+                                        // Fresh ann_map per method: prevents TypeVars from one method's
+                                        // resolution leaking into the next (which would panic if those
+                                        // TypeVars aren't in state.type_vars).
+                                        let mut method_ann_map: std::collections::HashMap<
+                                            String,
+                                            String,
+                                        > = std::collections::HashMap::new();
+                                        let mut ann_map_mut = Some(&mut method_ann_map);
                                         let mut row_ann_mapping = None;
                                         let method_type_result =
                                             Box::pin(super::typecheck_annot::resolve_type_expr(

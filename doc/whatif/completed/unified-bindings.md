@@ -379,7 +379,7 @@ Expr::Placeholder    // the ... expression; source span carried by Spanned<>
 - `StackFrame::ClassDecl`: first expression must be `Expr::LetDecl`
 - `StackFrame::TypeAlias`: if first expression is `Expr::LetDecl`, it is the param list; otherwise it is the body (no-param alias)
 - `StackFrame::InstanceDecl`: `Expr::LetDecl` followed by `:` = arm key
-- `StackFrame::Match`: `Expr::CaseArm` = 3-arg case arm; existing `pending_pattern_expr` path = shorthand keyed arms (`[Tag v]:`, `n@Integer:`, `_:`) which remain valid for non-binding arms
+- `StackFrame::Match`: `Expr::CaseArm` = 3-arg case arm; existing `pending_pattern_expr` path = shorthand keyed arms (`[Tag v]:`, `n@Integer:`, `...`:) which remain valid for non-binding arms
 
 **`Expr::Placeholder` parsing**: `Token::Spread` not followed by `Token::Identifier` in value expression position → `Expr::Placeholder`. This is a content-based dispatch rule (same as other expression classifiers); no new StackFrame needed.
 

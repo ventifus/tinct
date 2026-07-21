@@ -233,7 +233,7 @@ The following feature docs correspond to design documents or grouping docs that 
 The macro-rewrite proposal was superseded before implementation. Its features were delivered via direct Rust AST variants instead of macros:
 
 - `let` binding → `Expr::Sequential` (see [let-binding.md](let-binding.md))
-- `match` → `Expr::Match` + `Pattern::*` (see [pattern-matching.md](pattern-matching.md))
+- `match` → `Expr::Match` + `SurfaceMatchArm.pattern: Arc<SurfaceNode>` (see [pattern-matching.md](pattern-matching.md))
 - `i"..."` → `[defmacro tmpl]` via `tmpl-transformer` (see [string-interpolation.md](string-interpolation.md))
 
 The feature doc was deleted as fully superseded.

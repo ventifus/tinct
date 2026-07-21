@@ -1,5 +1,7 @@
-# Laziness proof: unused function argument containing $error is never forced
-[first: [fn [let a b] a]]
+# Laziness proof: unused function argument containing $error is never forced.
+# The second parameter is named _ (conventional wildcard) since it is intentionally
+# never referenced — this also suppresses the lost-binding lint.
+[first: [fn [let a _] a]]
 
 [first 42 [raise "should not fire"]]
 === out

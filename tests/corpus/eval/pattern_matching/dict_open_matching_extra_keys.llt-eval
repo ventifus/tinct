@@ -3,6 +3,6 @@
 # This test verifies that extra keys ("extra") do NOT prevent a match.
 [match [ok: 42  extra: "data"]
   [case [let v] [ok: v] v]
-  _:            99]
+  ...:          99]
 === out
 Int(42)

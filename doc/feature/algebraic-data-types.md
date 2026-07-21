@@ -99,7 +99,7 @@ current-status: "ok"
     "ok":      [handle-ok]
     "err":     [handle-err]
     "pending": [handle-pending]
-    _:         [error "unknown status"]]
+    ...:       [error "unknown status"]]
 ```
 
 This follows tinct's dicts-are-fundamental principle — a tag-only enum is a

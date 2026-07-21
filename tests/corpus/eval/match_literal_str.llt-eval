@@ -1,6 +1,6 @@
 [match "hello"
     "world":   "greeting-world"
     "hello":   "greeting-hello"
-    _:         "unknown"]
+    ...:       "unknown"]
 === out
 String("greeting-hello")

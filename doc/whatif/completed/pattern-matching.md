@@ -118,7 +118,7 @@ value:
 [match expr
     pattern1-key: body1
     pattern2-key: body2
-    _:            default]
+    ...:            default]
 ```
 
 **Context-sensitive key identity:** Inside `[match]`, the parser enters a dedicated
@@ -134,7 +134,7 @@ dicts are unchanged: `[n@Integer: 1  n@String: "2"]` remains a duplicate-key err
 [match x
     Int:  [+ x 1]       # matches if x is an Int; x still in scope
     Str:  i"got: $x"    # matches if x is a Str
-    _:    x]            # wildcard — always matches
+    ...:    x]            # wildcard — always matches
 
 # Variable binding — lowercase bare word binds the scrutinee
 [match x
@@ -144,43 +144,43 @@ dicts are unchanged: `[n@Integer: 1  n@String: "2"]` remains a duplicate-key err
 [match x
     n@Integer:  [+ n 1]
     n@String:  i"got: $n"
-    _:      x]
+    ...:      x]
 
 # Literal patterns — literals match by equality
 [match x
     42:      the-answer
     true:    yes
     "hello": greeting
-    _:       other]
+    ...:       other]
 
 # Guards via `is:` annotation — predicate must return true
 [match x
     n@[is: [> _ 0]]:   "positive"
     n@[is: [< _ 0]]:   "negative"
-    _:                  "zero"]
+    ...:                  "zero"]
 
 # Type + guard combined
 [match x
     n@[type: Int  is: [> _ 0]]:   i"positive int: $n"
     n@Integer:                         i"non-positive int: $n"
-    _:                             "not an int"]
+    ...:                             "not an int"]
 
 # Dict patterns — dict literal as key, destructures by key
 [match result
     [ok: v]:    v
     [err: msg]: [error msg]
-    _:          [error "unexpected"]]
+    ...:          [error "unexpected"]]
 
 # Nested patterns
 [match event
     [type: "click"  target: [id: id]]:  [handle-click id]
     [type: "hover"  target: [id: id]]:  [handle-hover id]
-    _:                                   "ignored"]
+    ...:                                   "ignored"]
 
 # Seq patterns — [seq h t] in key position
 [match xs
     [seq h t]:  [process h t]
-    _:          "empty"]
+    ...:          "empty"]
 
 # Or-patterns — `|` pipe node as key; both sub-patterns must bind same vars
 [match result
@@ -384,7 +384,7 @@ form becomes a single-argument function that `|` flatMaps over a Seq:
 $events | [each] | [match _
     [type: "click"  target: t]:  [handle-click t]
     [type: "hover"  target: t]:  [handle-hover t]
-    _:                           "ignored"]
+    ...:                           "ignored"]
 | [collect]
 ```
 
@@ -422,7 +422,7 @@ This enables matching on lists (integer-keyed dicts) by position:
 ```tinct
 [match pair
     [0: a  1: b]:  [use a b]
-    _:             [error "expected pair"]]
+    ...:             [error "expected pair"]]
 ```
 
 **Implementation note:** wait for `access-pipeline` to land first (it adds
@@ -453,18 +453,18 @@ levels of granularity that are all equivalent:
 # Fully spelled out — all three levels of nesting explicit
 [match config
     [cluster: [primary: [tls: [cert: cert  key: key]]]]:  [connect-tls cert key]
-    _:                                                     [error "no tls"]]
+    ...:                                                     [error "no tls"]]
 
 # Path-key to the subtree node — DRY when the subtree has multiple fields
 [match config
     [cluster.primary.tls: [cert: cert  key: key]]:  [connect-tls cert key]
-    _:                                               [error "no tls"]]
+    ...:                                               [error "no tls"]]
 
 # Mixed: path-to-node + path-to-leaf in the same pattern arm
 [match config
     [cluster.primary.tls: [cert: cert  key: key]
      cluster.primary.host: h]:                      [connect-tls cert key h]
-    _:                                               [error "no tls"]]
+    ...:                                               [error "no tls"]]
 ```
 
 **Shared-prefix merging:** When two path-keys share a prefix, they merge

@@ -29,7 +29,7 @@
                                       [if [> [length payload] 2] [bytes-str [slice payload 2 [length payload]]] ""]]
       WsFrame.Ping.opcode:         [WsFrame.Ping   payload]
       WsFrame.Pong.opcode:         [WsFrame.Pong   payload]
-      _:                           [error [str "WebSocket: unknown opcode: " opcode]]]]
+      ...:                           [error [str "WebSocket: unknown opcode: " opcode]]]]
 
   # Extract opcode and payload bytes from a WsFrame for wire encoding.
   # frame.opcode accesses the compile-time constant on whichever variant frame is — no match needed.
@@ -62,7 +62,7 @@
      [range 0 n-groups]]]]
     # Replace trailing chars with = padding per RFC 4648 §4
     [replace-end: [fn [let s n] [str [slice-str s 0 [- [length s] n]] [str-repeat "=" n]]]]
-    [match pad 0: chars  1: [replace-end chars 1]  _: [replace-end chars 2]]]
+    [match pad 0: chars  1: [replace-end chars 1]  ...: [replace-end chars 2]]]
 
   # ws-recv-message-impl: accumulator-based reassembly loop. Used by ws-recv-message.
   # fragments: [Seq Bytes] — accumulated payloads from continuation frames
@@ -83,7 +83,7 @@
         [payload-len: [match len1
           126: [let lb: [read h 2]  [+ [* [get lb 0] 256] [get lb 1]]]
           127: [error "WebSocket: 64-bit frame lengths not supported"]
-          _:   len1]]
+          ...:   len1]]
         [mask-key: [if masked [read h 4] []]]
         [raw:      [read h payload-len]]
         [payload:  [if masked [bytes-xor-mask raw mask-key] raw]]
@@ -96,7 +96,7 @@
                 [match msg-type
                   0x01: [WsFrame.Text [bytes-str full-payload]]
                   0x02: [WsFrame.Binary full-payload]
-                  _:    [error "WebSocket: invalid msg-type in reassembly"]]
+                  ...:    [error "WebSocket: invalid msg-type in reassembly"]]
                 [ws-recv-message-impl conn [append fragments [list payload]] msg-type]]]
           0x01:
             [if [null? msg-type]
@@ -116,7 +116,7 @@
               [if [> [length payload] 2] [bytes-str [slice payload 2 [length payload]]] ""]]
           0x09: [WsFrame.Ping payload]
           0x0A: [WsFrame.Pong payload]
-          _: [error [str "WebSocket: unknown opcode: " opcode]]]]]
+          ...: [error [str "WebSocket: unknown opcode: " opcode]]]]]
 ]
 
 # ── Public API. ───────────────────────────────────────────────────────────────────────────────────
@@ -198,7 +198,7 @@
         [payload-len: [match len1
           126: [let lb: [read h 2]  [+ [* [get lb 0] 256] [get lb 1]]]   # one 2-byte read
           127: [error "WebSocket: 64-bit frame lengths not supported (max 65535 bytes)"]
-          _:   len1]]
+          ...:   len1]]
         [mask-key: [if masked [read h 4] []]]
         [raw:      [read h payload-len]]
         [payload:  [if masked [bytes-xor-mask raw mask-key] raw]]
@@ -261,7 +261,7 @@
     [payload-len: [match len1
       126: [+ [* [get data [+ offset 2]] 256] [get data [+ offset 3]]]
       127: [error "WsFrameCodec: 64-bit frame lengths not supported"]
-      _:   len1]]
+      ...:   len1]]
     [mask-key: [if masked [slice data hdr-end [+ hdr-end 4]] []]]
     [data-off: [if masked [+ hdr-end 4] hdr-end]]
     [raw:      [slice data data-off [+ data-off payload-len]]]

@@ -539,7 +539,7 @@ text?: [fn@Boolean [let v]
        [list? v]
        [match [head v]
          [Grapheme.Cluster _]: True
-         _:                   False]]]
+         ...:                 False]]]
 ```
 
 Returns `True` if `v` is a non-null list whose first element is a `Grapheme.Cluster` variant. `""` evaluates to `[]` (null — zero grapheme clusters, empty dict), so `text?` correctly returns `False` for it. The `[not [null? v]]` guard makes the `[empty? v]` check unnecessary: anything that passes null-check and list-check has at least one element. Any non-null `[List Grapheme]` is text by definition.

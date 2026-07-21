@@ -25,7 +25,7 @@ Or consider a dispatch macro with annotated keys:
 [dispatch result
   n@Integer:    i"int: $n"
   n@String: i"str: $n"   # PARSE ERROR — duplicate key "n" before any macro runs
-  _:        "other"]
+  ...:        "other"]
 ```
 
 Both problems have the same root: the parser's fixed rules transform bracket content before the macro gets a chance to see it differently.

@@ -6,6 +6,6 @@
 [result: [try [fn [] 42]]
  value: [match result
    [case [let p] [Result.Ok p]    p.value]
-   [Result.Error _]:              0]]
+   ...:                           0]]
 === out
 Dict({"result": Variant(Result.Ok, Dict({"value": Int(42)})), "value": Int(42)})

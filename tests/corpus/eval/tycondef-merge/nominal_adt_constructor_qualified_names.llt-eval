@@ -20,7 +20,7 @@
       Color.Red:   "red"
       Color.Green: "green"
       Color.Blue:  "blue"
-      _:           "unknown"]]
+      ...:         "unknown"]]
 
   r: [label Color.Red]
   g: [label Color.Green]

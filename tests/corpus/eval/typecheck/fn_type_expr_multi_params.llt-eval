@@ -3,8 +3,8 @@
 # The lambda takes two params and returns the second (String-typed).
 [
   Mapper: [type [let a b] [Fn@b [a b]]]
-  f: [@[Mapper Integer String] [fn [let p q] q]]
+  f: [@[Mapper Integer String] [fn [let _ q] q]]
   result: [f 42 "hello"]
 ]
 === out
-Dict({"Mapper": Dict({}), "f": Function(p, q), "result": String("hello")})
+Dict({"Mapper": Dict({}), "f": Function(_, q), "result": String("hello")})

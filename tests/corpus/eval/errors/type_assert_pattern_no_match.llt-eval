@@ -1,0 +1,8 @@
+# [@Integer x] in direct match arm key position is not a supported pattern form.
+# SurfaceExpression::TypeAssert hits match_pattern's _ => Err("not a valid pattern: @Type").
+# The @[is: ...] guard form is only supported in CaseArm position via eval_structural_pattern_inner.
+[match "hello"
+  [@Integer x]: x
+  ...: "not-int"]
+=== error
+not a valid pattern: @Type
