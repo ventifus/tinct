@@ -55,6 +55,11 @@ pub struct Env {
     pub(crate) instances: IndexMap<String, InstanceDecl>,
     /// Type alias declarations.
     pub(crate) type_aliases: HashMap<String, TypeAlias>,
+    /// Type constructor definitions registered in this scope frame.
+    /// Populated alongside `InferState.tycon_env` during type-checking Pass 2.
+    /// Enables scoped TyConDef lookup via the Env parent chain, complementing
+    /// the flat `InferState.tycon_env` store.
+    pub(crate) tycon_defs: HashMap<String, Arc<crate::type_def::TyConDef>>,
     /// Parent scope frame.
     pub parent: Option<Arc<RwLock<Env>>>,
 }
@@ -72,6 +77,7 @@ impl Env {
             classes: IndexMap::new(),
             instances: IndexMap::new(),
             type_aliases: HashMap::new(),
+            tycon_defs: HashMap::new(),
             parent: None,
         }
     }
@@ -104,6 +110,7 @@ impl Env {
             classes: IndexMap::new(),
             instances: IndexMap::new(),
             type_aliases: HashMap::new(),
+            tycon_defs: HashMap::new(),
             parent: Some(parent),
         }
     }
@@ -455,6 +462,34 @@ impl Env {
     }
 
     // -----------------------------------------------------------------------
+    // TYCON DEFS
+    // -----------------------------------------------------------------------
+
+    /// Insert a type constructor definition into this frame.
+    pub fn insert_tycon_def(&mut self, name: String, def: Arc<crate::type_def::TyConDef>) {
+        self.tycon_defs.insert(name, def);
+    }
+
+    /// Look up a type constructor definition by name, walking the parent chain.
+    ///
+    /// Returns a cloned `Arc<TyConDef>` because the parent chain is behind
+    /// `Arc<RwLock<Env>>`.
+    pub fn lookup_tycon_def(&self, name: &str) -> Option<Arc<crate::type_def::TyConDef>> {
+        if let Some(def) = self.tycon_defs.get(name) {
+            return Some(Arc::clone(def));
+        }
+        let mut current = self.parent.as_ref().map(Arc::clone);
+        while let Some(env_arc) = current {
+            let env = env_arc.read().unwrap();
+            if let Some(def) = env.tycon_defs.get(name) {
+                return Some(Arc::clone(def));
+            }
+            current = env.parent.as_ref().map(Arc::clone);
+        }
+        None
+    }
+
+    // -----------------------------------------------------------------------
     // UTILITIES
     // -----------------------------------------------------------------------
 
@@ -538,6 +573,9 @@ impl Env {
         }
         for (mangled, decl) in other.instances {
             self.instances.insert(mangled, decl);
+        }
+        for (name, def) in other.tycon_defs {
+            self.tycon_defs.insert(name, def);
         }
     }
 
@@ -689,6 +727,73 @@ impl Default for Env {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, RwLock};
+
+    use crate::type_def::{TyConDef, Type};
+
+    use super::Env;
+
+    fn make_def(name: &str) -> Arc<TyConDef> {
+        Arc::new(TyConDef::new_with_body(name, Type::Unknown))
+    }
+
+    #[test]
+    fn test_lookup_tycon_def_local() {
+        let mut env = Env::new();
+        let def = make_def("Color");
+        env.insert_tycon_def("Color".to_string(), Arc::clone(&def));
+
+        let found = env.lookup_tycon_def("Color");
+        assert!(found.is_some(), "should find TyConDef in local frame");
+        assert!(Arc::ptr_eq(&found.unwrap(), &def));
+    }
+
+    #[test]
+    fn test_lookup_tycon_def_not_found() {
+        let env = Env::new();
+        assert!(
+            env.lookup_tycon_def("Missing").is_none(),
+            "should return None when name is not in any frame"
+        );
+    }
+
+    #[test]
+    fn test_lookup_tycon_def_parent_chain() {
+        // TyConDef inserted in parent is visible from child.
+        let mut parent = Env::new();
+        let def = make_def("Shape");
+        parent.insert_tycon_def("Shape".to_string(), Arc::clone(&def));
+
+        let child = Env::with_parent(Arc::new(RwLock::new(parent)));
+
+        let found = child.lookup_tycon_def("Shape");
+        assert!(found.is_some(), "should find TyConDef from parent chain");
+        assert!(Arc::ptr_eq(&found.unwrap(), &def));
+    }
+
+    #[test]
+    fn test_lookup_tycon_def_inner_shadows_outer() {
+        // TyConDef with same name in child shadows parent's definition.
+        let mut parent = Env::new();
+        let outer_def = make_def("Result");
+        parent.insert_tycon_def("Result".to_string(), Arc::clone(&outer_def));
+
+        let mut child = Env::with_parent(Arc::new(RwLock::new(parent)));
+        let inner_def = make_def("Result");
+        child.insert_tycon_def("Result".to_string(), Arc::clone(&inner_def));
+
+        let found = child.lookup_tycon_def("Result");
+        assert!(found.is_some(), "should find TyConDef in child frame");
+        // The inner def is returned, not the outer.
+        assert!(
+            Arc::ptr_eq(&found.unwrap(), &inner_def),
+            "inner frame TyConDef should shadow outer frame"
+        );
+    }
+}
+
 impl std::fmt::Debug for Env {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Env")
@@ -697,6 +802,7 @@ impl std::fmt::Debug for Env {
             .field("classes", &self.classes.len())
             .field("instances", &self.instances.len())
             .field("type_aliases", &self.type_aliases.len())
+            .field("tycon_defs", &self.tycon_defs.len())
             .field("has_parent", &self.parent.is_some())
             .finish()
     }

@@ -1,0 +1,7 @@
+# Unknown type names fall through to the conservative `_ => true` wildcard arm.
+# "Boolean" was previously a named arm; it was removed, leaving it to fall through.
+# On pass, builtin-check-type returns the value unchanged (not Int(1)).
+# Mutation guard: adding `"Boolean" => false` would raise instead of returning 42.
+[result: [builtin-check-type "Boolean" 42]]
+=== out
+Dict({"result": Int(42)})

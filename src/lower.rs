@@ -198,7 +198,10 @@ pub(crate) fn lower_inner(
 /// Resolve an annotation name to a Type for TypeAssert pattern coverage.
 ///
 /// Used by coverage.rs when the resolved_type OnceLock has no entry (--no-typecheck,
-/// macros). Unknown is the accept-all fallback for unrecognized names.
+/// macros). Only Rust-level primitive types are recognized here. Prelude-defined types
+/// (Boolean, Seq, etc.) are NOT hardcoded -- they go through the type checker's TyCon
+/// registry when available, and fall through to Unknown otherwise.
+/// Unknown is the accept-all fallback for unrecognized names.
 pub(crate) fn annotation_name_to_type(name: &str) -> crate::type_def::Type {
     use crate::type_def::Type;
     match name {
@@ -215,9 +218,9 @@ pub(crate) fn annotation_name_to_type(name: &str) -> crate::type_def::Type {
             rest: Some(Box::new(("rest".to_string(), Type::Unknown))),
             required_count: 0,
         },
-        // Named types: look up via TyCon for Boolean, Seq, etc.
-        "Bool" | "Boolean" => Type::TyCon("Boolean".to_string()),
-        "Seq" => Type::TyCon("Seq".to_string()),
+        // All other names (Boolean, Seq, user types, type variables, etc.)
+        // fall through to Unknown — prelude-defined types are resolved by the
+        // type checker, not hardcoded here.
         _ => Type::Unknown,
     }
 }

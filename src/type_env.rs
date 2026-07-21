@@ -4,7 +4,6 @@
 use std::collections::{HashMap, HashSet};
 
 use indexmap::IndexMap;
-use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::ast::Span;
@@ -1108,7 +1107,7 @@ pub struct TypeEnv {
     /// information during Pass 2, narrowing overrides, etc.).  Looked up by name only.
     extras: HashMap<String, TypeScheme>,
     type_aliases: HashMap<String, TypeAlias>,
-    parent: Option<Rc<TypeEnv>>,
+    parent: Option<Arc<TypeEnv>>,
     /// Class declarations registered in this scope frame.
     /// Populated by `insert_class` during type-checking; walked by `get_class` and
     /// `build_class_env`. Classes in parent frames are visible to children (inner wins).
@@ -1137,12 +1136,12 @@ impl TypeEnv {
         }
     }
 
-    pub fn with_parent(parent: &Rc<TypeEnv>) -> Self {
+    pub fn with_parent(parent: &Arc<TypeEnv>) -> Self {
         Self {
             slotted: IndexMap::new(),
             extras: HashMap::new(),
             type_aliases: HashMap::new(),
-            parent: Some(Rc::clone(parent)),
+            parent: Some(Arc::clone(parent)),
             classes: IndexMap::new(),
             instances: IndexMap::new(),
             tycon_defs: HashMap::new(),
@@ -1389,7 +1388,7 @@ impl TypeEnv {
     ///
     /// Used by `imports::collect_names_above_baseline` to walk the frame chain up to
     /// the builtin baseline boundary.
-    pub fn parent(&self) -> Option<&Rc<TypeEnv>> {
+    pub fn parent(&self) -> Option<&Arc<TypeEnv>> {
         self.parent.as_ref()
     }
 
@@ -2030,7 +2029,12 @@ mod help_suggestion_tests {
         });
 
         // Constraint WITHOUT origin info (annotation-driven, as in existing tests)
-        let constraint_no_origin = Constraint::new(class, "_t7");
+        let constraint_no_origin = Constraint::Class {
+            class,
+            vars: vec![crate::type_class::ConstraintArg::Var("_t7".to_string())],
+            origin_name: None,
+            origin_span: None,
+        };
 
         let subst_snapshot: HashMap<String, Type> = HashMap::new();
         let source_names: HashMap<String, String> = HashMap::new();

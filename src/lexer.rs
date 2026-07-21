@@ -1480,7 +1480,7 @@ mod tests {
 
     #[test]
     fn test_booleans() {
-        // true/false are now plain identifiers — Boolean is a user-defined type (Boolean: [type True False])
+        // true/false are plain identifiers — boolean branching uses match on Int(0)/non-zero
         assert_eq!(tok("true"), vec![Token::Identifier("true".into())]);
         assert_eq!(tok("false"), vec![Token::Identifier("false".into())]);
         assert_eq!(

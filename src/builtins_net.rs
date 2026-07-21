@@ -3016,7 +3016,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                     ("issuer".to_string(), Type::Str),
                     (
                         "sans".to_string(),
-                        Type::App(Box::new(Type::TyCon("Seq".into())), Box::new(Type::Str)),
+                        Type::Unknown, // T-1761: Seq is a prelude-defined type; Rust must not hardcode its name
                     ),
                     ("not-before".to_string(), Type::Int),
                     ("not-after".to_string(), Type::Int),

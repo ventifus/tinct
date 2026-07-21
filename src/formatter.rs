@@ -108,66 +108,29 @@ pub async fn format_source_tinct_with_dir(
             .await
             .map_err(|e| format!("formatter eval error: {e}"))?;
 
-    // Materialize the result — should be [Result.Ok String] or [Result.Error msg].
+    // Materialize the result — the formatter script must return a bare String.
+    // If it raises (calls `raise`), the error propagates as an EvalError here.
     let result_val = eval::materialize(&formatter_thunk, None, &ctx)
         .await
-        .map_err(|e| format!("formatter materialize error: {e}"))?;
+        .map_err(|e| format!("formatter error: {e}"))?;
 
-    // Unwrap [Result.Ok s] / surface [Result.Error msg].
-    // The formatters return `[try [fn [] [format-file %]]]` which produces
-    // Value::Variant { tycon: "Result", ctor: "Ok", payload: Some(string_thunk) } on success
-    // or Value::Variant { tycon: "Result", ctor: "Error", payload: Some(msg_thunk) } on failure.
+    // Protocol: the formatter script returns a bare String on success.
+    // Any other value is a protocol violation — the script should have returned
+    // the string directly. If it needs to signal failure it should call `raise`.
     match result_val {
-        Value::Variant {
-            tycon,
-            ctor,
-            payload,
-        } if tycon == "Result" && ctor == "Ok" => {
-            let payload_id = payload.ok_or_else(|| "formatter Ok has no payload".to_string())?;
-            let payload_thunk = ctx.get_thunk(payload_id);
-            let ok_val = eval::materialize(&payload_thunk, None, &ctx)
-                .await
-                .map_err(|e| format!("formatter Ok materialize error: {e}"))?;
-            match ok_val {
-                Value::String {
-                    ref source,
-                    start,
-                    end,
-                } => Ok(source[start..end].to_string()),
-                _ => {
-                    let display_str =
-                        crate::value_to_display_string(&ok_val, &ctx, payload_thunk.span.clone())
-                            .await
-                            .unwrap_or_else(|_| "<error displaying value>".to_string());
-                    Err(format!("formatter Ok value is not a string: {display_str}"))
-                }
-            }
-        }
-        Value::Variant {
-            tycon,
-            ctor,
-            payload,
-        } if tycon == "Result" && ctor == "Error" => {
-            let msg = if let Some(err_id) = payload {
-                let err_thunk = ctx.get_thunk(err_id);
-                let err_val = eval::materialize(&err_thunk, None, &ctx)
-                    .await
-                    .map_err(|e| format!("formatter Error materialize error: {e}"))?;
-                crate::value_to_display_string(&err_val, &ctx, err_thunk.span.clone())
-                    .await
-                    .unwrap_or_else(|_| "<error displaying value>".to_string())
-            } else {
-                "(no message)".to_string()
-            };
-            Err(format!("formatter error: {msg}"))
-        }
+        Value::String {
+            ref source,
+            start,
+            end,
+        } => Ok(source[start..end].to_string()),
+
         _ => {
             let display_str =
                 crate::value_to_display_string(&result_val, &ctx, formatter_thunk.span.clone())
                     .await
                     .unwrap_or_else(|_| "<error displaying value>".to_string());
             Err(format!(
-                "formatter returned non-Result value: {display_str}"
+                "formatter returned non-string value: {display_str}"
             ))
         }
     }
@@ -175,8 +138,9 @@ pub async fn format_source_tinct_with_dir(
 
 /// Format source using the tinct-hosted formatter script at `script_path`.
 ///
-/// The script receives the AST dict as `%` and must return `[Result.Ok String]` on success
-/// or `[Result.Error msg]` on failure (both formatters use `[try [fn [] [format-file %]]]`).
+/// The script receives the AST dict as `%` and must return a bare `String` on success.
+/// To signal failure the script should call `raise`, which propagates as an EvalError.
+/// Any non-String return value is a protocol error.
 ///
 /// `script_path` is the path to a `.llt` formatter script (e.g. `stdlib/cli/fmt/pretty.llt`).
 /// Whether to pass source/comment information is inferred from the script name:

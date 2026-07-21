@@ -326,6 +326,7 @@ format-param: [fn@[return: String  doc: """Format a function parameter with opti
 format-annotation: [fn@[return: String  doc: """Format a type annotation."""] [let ann@Dict]
   [match [get "kind" ann]
     "simple": [get "value" ann]
+    "quote":  "Expr"
     "dict":   [str "["
                 [join-strings " "
                   [map-list
@@ -498,4 +499,4 @@ format-doc-header: [fn@[return: String  doc: """Format document section header (
 
 ]
 
-[try [fn [let] [format-file %]]]
+[format-file %]

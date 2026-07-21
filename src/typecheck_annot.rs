@@ -1337,6 +1337,13 @@ async fn resolve_annotation_as_type(
             )
             .await
         }
+        Annotation::Quote => {
+            // The quoting annotation constrains the value to be an AST node — a
+            // runtime-determined type. The type checker cannot statically determine
+            // which concrete type is produced, so produce a fresh type variable
+            // (consistent with typecheck_narrow.rs:368).
+            Ok(state.fresh_type_var(&span))
+        }
         Annotation::PropertyDict(surface_entries) => {
             // Check for the @[type: T] shorthand — user-written annotations like
             // `x@[type: Int  default: 0]` where "type:" specifies the type alongside metadata.
@@ -1344,8 +1351,8 @@ async fn resolve_annotation_as_type(
             // the type: value as the type expression rather than as a structural record.
             //
             // This mirrors the same shorthand detection in resolve_annotation (line ~1599)
-            // so that `Fn@Boolean [params]` resolves the Fn's return type as TyCon("Boolean")
-            // rather than Dict({type: TyCon("Boolean")}).
+            // so that `Fn@SomeType [params]` resolves the Fn's return type as TyCon("SomeType")
+            // rather than Dict({type: TyCon("SomeType")}).
             //
             // Metadata keys: "type", "default", "repr", "doc", "is"
             // Non-metadata key (e.g. "id", "name") means @[type: T  id: X] is a structural
@@ -1443,6 +1450,13 @@ pub(crate) async fn resolve_annotation(
                 type_params_scope,
             )
             .await
+        }
+        Annotation::Quote => {
+            // The quoting annotation constrains the value to be an AST node — a
+            // runtime-determined type. The type checker cannot statically determine
+            // which concrete type is produced, so produce a fresh type variable
+            // (consistent with typecheck_narrow.rs:368).
+            Ok(state.fresh_type_var(&span))
         }
         Annotation::Annotated(name, inner) => {
             // @Name@Inner means: apply type constructor `name` to type argument `inner`.
@@ -4269,7 +4283,9 @@ fn typenode_value_to_type<'a>(
                     "TypeNode.Int" => Some(Type::Int),
                     "TypeNode.Float" => Some(Type::Float),
                     "TypeNode.String" => Some(Type::Str),
-                    "TypeNode.Bool" => Some(Type::TyCon("Boolean".to_string())),
+                    // T-1761: Boolean is a prelude-defined type; Rust must not hardcode its name.
+                    // The principled fix is a lookup via the type stage protocol.
+                    "TypeNode.Bool" => Some(Type::Unknown),
                     "TypeNode.Unknown" => Some(Type::Unknown),
                     // TypeNode.Top is the sound lattice top (τ <: Top for all τ).
                     // Rust represents this as Type::Any (which IS the top type in the lattice).
@@ -4525,8 +4541,8 @@ fn typenode_value_to_type<'a>(
                 }
             }
 
-            // Constructor dict — a tinct ADT declaration like `Boolean: [type True False]`
-            // evaluates to `{ True: Variant("Boolean.True"), False: Variant("Boolean.False") }`.
+            // Constructor dict — a tinct ADT declaration like `Color: [type Red Green Blue]`
+            // evaluates to `{ Red: Variant("Color.Red"), Green: Variant("Color.Green"), ... }`.
             // Detect the pattern: all values are Variants sharing the same qualified prefix.
             // If so, return Type::TyCon(prefix) — the name of the declared type.
             Value::Dict(entries) if !entries.is_empty() => {
@@ -5121,14 +5137,14 @@ pub(crate) fn expand_named(
     state: &mut InferState,
 ) -> Option<Type> {
     // Step 1: look up the TyConDef.
-    // Primary lookup: state.tycon_env is the canonical store (populated by infer_dict Pass 2
-    // and builtins registration). TypeEnv::lookup_tycon_def is a no-op stub; state.tycon_env
-    // is the real store for all registered type constructors.
-    let def_arc = state
-        .tycon_env
-        .get(name)
-        .cloned()
-        .or_else(|| env.lookup_tycon_def(name))?;
+    // Primary lookup: env.lookup_tycon_def — local-only lookup within the TypeEnv (does not
+    // walk the parent chain; TypeEnv.lookup_tycon_def is a flat hashmap get).
+    // Fallback: state.tycon_env — global flat store, populated by typecheck_cek.rs Pass 2 and
+    // builtins registration. The fallback provides global scope for TyConDefs registered
+    // outside the local TypeEnv (e.g. from outer scopes or builtins).
+    let def_arc = env
+        .lookup_tycon_def(name)
+        .or_else(|| state.tycon_env.get(name).cloned())?;
     let def = Arc::clone(&def_arc);
 
     // Arity check: number of args must match declared params.
@@ -5148,9 +5164,9 @@ pub(crate) fn expand_named(
 
     // Step 2a: nominal ADT guard — do NOT expand the body of a declared nominal type.
     // Nominal ADTs (those with declared constructors) must stay as TyCon so that nominal
-    // identity is preserved. Expanding @Boolean to Union([Boolean.True, Boolean.False])
-    // collapses it into structural equivalence with any union that happens to match the
-    // body — which is wrong for nominal typing. UNIFY-TYCON-EXPAND handles the TyCon ~
+    // identity is preserved. Expanding a TyCon to its Union of constructors collapses
+    // it into structural equivalence with any union that happens to match the body —
+    // which is wrong for nominal typing. UNIFY-TYCON-EXPAND handles the TyCon ~
     // NominalVariant and TyCon ~ Union cases correctly without body expansion.
     if !def.constructors.is_empty() {
         let base = Type::TyCon(name.to_string());

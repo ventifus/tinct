@@ -2,7 +2,7 @@
 //!
 //! Provides `get_builtin_core_type_env()` which parses and type-checks
 //! `stdlib/builtin_core.llt` to build the initial type environment seeded
-//! with core type definitions (`Boolean`, `Handle`, `DirCap`, etc.).
+//! with core type definitions (`Handle`, `DirCap`, and other prelude-defined types).
 //!
 //! Include resolution for user programs is handled by the prelude's `include`
 //! function, which runs the full pipeline (parse → desugar → resolve →
@@ -32,7 +32,7 @@ pub fn get_builtin_core_tycon_env() -> Option<crate::type_def::TyConEnv> {
 }
 
 /// T-1366 Rust step 2 bootstrap: type-check `stdlib/builtin_core.llt` and return the
-/// resulting `TypeEnv` so that `Boolean`, `Handle`, `builtin-raise`, etc.
+/// resulting `TypeEnv` so that prelude-defined types, `Handle`, `builtin-raise`, etc.
 /// are visible to the prelude type-checker by their bare names.
 ///
 /// Uses `include_str!` so the file is embedded at compile time — no runtime libdir access

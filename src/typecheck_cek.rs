@@ -3990,6 +3990,10 @@ pub(crate) async fn run_typecheck_dict(
                                 body: alias_ty.clone(),
                             },
                         );
+                        dict_env
+                            .write()
+                            .unwrap()
+                            .insert_tycon_def(name.clone(), std::sync::Arc::clone(&tycon_def));
                         state.tycon_env.entry(name.clone()).or_insert(tycon_def);
                         if params.is_empty() {
                             let value_scheme_ty = adt_value_type(&alias_ty);

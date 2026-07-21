@@ -1574,6 +1574,10 @@ pub(crate) fn builtin_annotation_of(
                     // evaluated at definition time), so it is derived from `return_ann` here.
                     let return_str: Option<String> = match &ann.return_ann {
                         Some(crate::ast::Annotation::Simple(name)) => Some(name.clone()),
+                        // Returns "Expr" because that is the user-visible source-level text
+                        // for the @Expr annotation — not a semantic coupling to the prelude
+                        // type name. The string "Expr" is what the user wrote in source.
+                        Some(crate::ast::Annotation::Quote) => Some("Expr".to_string()),
                         Some(ann_node) => ann_node.get_property("return").map(|n| n.to_string()),
                         None => None,
                     };
@@ -4582,23 +4586,19 @@ fn validate_value(
 
 /// `builtin-is-contractive`: check whether a TypeNode value is contractive.
 ///
-/// A TypeNode is contractive iff every path from the root to a `TypeNode.RecursiveRef`
-/// node passes through at least one *guarding* constructor. Guarding constructors are
-/// those with `guarding: true` in their `@[...]` constructor annotation. In practice:
-/// `Record`, `Arrow`, `TypeApplication`, `TypeConstructor`, and the leaf primitives
-/// (`Int`, `Float`, `String`, `Bool`, `Absent`, `Unknown`, `Never`) are all guarding.
-/// `Union` and `Intersect` are **not** guarding — they are logical combinators that do
-/// not structurally interpose between a binder and its reference.
-/// `Recursive` itself IS guarding — an inner `μb.T` shields the outer var from any
-/// `RecursiveRef` nodes inside `T`.
+/// A type node is contractive iff every path from the root to a `RecursiveRef`
+/// constructor passes through at least one *guarding* constructor.
+/// `Union` and `Intersect` are **not** guarding — they are logical combinators.
+/// All other constructors are guarding.
 ///
 /// Three-case algorithm (from `doc/whatif/equirecursive-types.md §Contractiveness`):
 ///
-/// 1. If the node is `TypeNode.RecursiveRef` → **not contractive** (bare self-reference).
-/// 2. If the node's tag is guarding (see list above) → **contractive** (any RecursiveRef
-///    underneath is safely separated by a structural layer).
-/// 3. Otherwise (Union, Intersect) → recurse into the `types` child Seq; all children
-///    must be contractive.
+/// 1. If the ctor is `RecursiveRef` → **not contractive** (bare self-reference).
+/// 2. If the ctor is guarding (not Union/Intersect) → **contractive**.
+/// 3. If the ctor is `Union` or `Intersect` → recurse into the `types` child;
+///    all children must be contractive.
+///
+/// Prelude-agnostic: matches on constructor names only, not the tycon name.
 ///
 /// This builtin takes a single positional arg (the TypeNode value) and returns a `Bool`.
 /// Named args are rejected. Pre-materialized by `pos_strictness = [Strictness::Seq]`.
@@ -4639,22 +4639,16 @@ pub(crate) fn builtin_is_contractive(
     })
 }
 
-/// Recursively check contractiveness of a TypeNode value.
+/// Recursively check contractiveness of a type node Variant value.
 ///
 /// Returns `true` iff the node is contractive — i.e., every path to a
-/// `TypeNode.RecursiveRef` passes through at least one guarding constructor.
+/// `RecursiveRef` ctor passes through at least one guarding constructor.
 ///
-/// The three-case rule from `equirecursive-types.md §Contractiveness`:
-///
-/// - `TypeNode.RecursiveRef` → false (bare self-reference at this position)
-/// - Guarding tag → true (any RecursiveRef below is safely guarded)
-/// - `TypeNode.Union` / `TypeNode.Intersect` → recurse into `types` child Seq
-///
-/// New TypeNode constructors declare `guarding: true` or `guarding: false` in their
-/// `@[...]` constructor annotation. This Rust implementation hard-codes the canonical
-/// split: Union and Intersect are non-guarding; all others (including Recursive itself)
-/// are guarding. S-861 should replace the hard-coded list with annotation-of lookup
-/// once the annotation resolver is wired.
+/// Prelude-agnostic: matches on constructor names only, not the tycon name.
+/// The ctor names "RecursiveRef", "Union", and "Intersect" are the Rust-level protocol
+/// that the prelude's TypeNode type must implement. These names are effectively reserved:
+/// any TypeNode variant whose constructor is named "RecursiveRef", "Union", or "Intersect"
+/// will be treated as non-contractive, regardless of the surrounding tycon name.
 fn is_contractive_value<'a>(
     val: &'a Value,
     ctx: &'a Arc<crate::eval::EvalContext>,
@@ -4668,16 +4662,10 @@ fn is_contractive_value<'a>(
 
         match val {
             // Case 1: bare RecursiveRef — non-contractive.
-            Value::Variant { tycon, ctor, .. } if tycon == "TypeNode" && ctor == "RecursiveRef" => {
-                false
-            }
+            Value::Variant { ctor, .. } if ctor == "RecursiveRef" => false,
 
             // Case 3: Union and Intersect are non-guarding — recurse into all children.
-            Value::Variant {
-                tycon,
-                ctor,
-                payload,
-            } if tycon == "TypeNode" && (ctor == "Union" || ctor == "Intersect") => {
+            Value::Variant { ctor, payload, .. } if ctor == "Union" || ctor == "Intersect" => {
                 let payload_id = match payload {
                     Some(id) => *id,
                     None => return true,
@@ -4699,7 +4687,7 @@ fn is_contractive_value<'a>(
                 is_contractive_seq(types_thunk_id, ctx).await
             }
 
-            // Case 2: all other TypeNode constructors are guarding.
+            // Case 2: all other constructors are guarding.
             _ => true,
         }
     })
@@ -4707,7 +4695,7 @@ fn is_contractive_value<'a>(
 
 /// Check that every element in the `types` Dict is contractive.
 ///
-/// TypeNode.Union/Intersect.types is now `[Map Int TypeNode]` — integer-keyed Dict.
+/// Union/Intersect.types is an integer-keyed Dict of type node variants.
 /// Returns `true` iff all values are contractive. Empty or malformed input returns `true`
 /// (conservative: no self-references = trivially contractive).
 async fn is_contractive_seq(types_thunk_id: ThunkId, ctx: &Arc<crate::eval::EvalContext>) -> bool {
@@ -4993,10 +4981,6 @@ pub(crate) fn builtin_check_type(
             "String" | "Str" => matches!(value, Value::String { .. }),
             "Int" => matches!(value, Value::Int(_)),
             "Float" => matches!(value, Value::Float(_)),
-            "Bool" | "Boolean" => matches!(
-                value,
-                Value::Variant { ref tycon, .. } if tycon == "Boolean"
-            ),
             "Dict" => matches!(value, Value::Dict(_) | Value::Overlay(_, _)),
             "Null" => matches!(value, Value::Dict(ref d) if d.is_empty()),
             // Seq is not a distinct Value variant — sequences are Dict-like at runtime.
@@ -5027,8 +5011,9 @@ pub(crate) fn builtin_check_type(
 ///
 /// - arg 0: String — the name to look up (e.g. `"%myfs"`)
 /// - arg 1: Int — scope-id to search (walks parent chain via ScopeArena)
-/// - Returns: `Boolean.True` if the name is bound in the environment chain,
-///   `Boolean.False` otherwise
+/// - Returns: `Int(1)` if the name is bound in the environment chain,
+///   `Int(0)` otherwise. Callers match on `Int(0)` for absent, non-zero for present
+///   (no prelude conversion wrapper — loader.llt and test-loader.llt match directly).
 ///
 /// Walks the full parent chain of the environment. Used by tinct-side caps enforcement
 /// (T-1507) as the primitive that tinct code calls to validate declared caps.
@@ -5075,19 +5060,9 @@ pub(crate) fn builtin_cap_env_has(
             _ => false,
         };
 
-        let (tycon, ctor) = if found {
-            ("Boolean", "True")
-        } else {
-            ("Boolean", "False")
-        };
-        ok_val(
-            Value::Variant {
-                tycon: tycon.to_string(),
-                ctor: ctor.to_string(),
-                payload: None,
-            },
-            call_span,
-        )
+        // Return Int: 1 = found, 0 = not found.
+        // The prelude wrapper converts Int → Boolean (prelude-agnostic protocol).
+        ok_val(Value::Int(if found { 1 } else { 0 }), call_span)
     })
 }
 

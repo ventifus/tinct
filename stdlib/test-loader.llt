@@ -652,7 +652,7 @@
                         [caps-validated: [reduce
                           [fn [let result cap-name]
                             [match [builtin-cap-env-has? cap-name scope]
-                              Boolean.False: [builtin-raise [builtin-string-concat "missing required capability: " cap-name]]
+                              0: [builtin-raise [builtin-string-concat "missing required capability: " cap-name]]
                               ...: result]]
                           ev.result
                           [builtin-keys caps-list]]]

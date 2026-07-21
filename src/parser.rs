@@ -257,6 +257,12 @@ fn parse_annotation_direct(
                 ));
             }
 
+            // `@Expr` is the quoting sentinel — convert to Annotation::Quote immediately
+            // so the quoting mechanism is independent of the prelude's Expr type name.
+            if name == "Expr" {
+                return Ok((Spanned::new(Annotation::Quote, name_span), i));
+            }
+
             Ok((Spanned::new(Annotation::Simple(name), name_span), i))
         }
         Token::OpenBracket => {
@@ -5988,7 +5994,15 @@ fn expression_to_annotation(node: &SurfaceNode) -> Annotation {
             name,
             annotation: None,
             ..
-        } => Annotation::Simple(name.clone()),
+        } => {
+            // `@Expr` is the quoting sentinel — convert to Annotation::Quote immediately
+            // so the quoting mechanism is independent of the prelude's Expr type name.
+            if name == "Expr" {
+                Annotation::Quote
+            } else {
+                Annotation::Simple(name.clone())
+            }
+        }
         SurfaceExpression::VarRef {
             name,
             annotation: Some(ann),

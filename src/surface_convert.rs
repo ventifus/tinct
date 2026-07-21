@@ -740,6 +740,7 @@ fn dict_to_annotation(
             .try_get_materialized()
             .unwrap_or_else(|| Value::Dict(indexmap::IndexMap::new()));
         let ann = match ctor.as_str() {
+            "Quote" => Annotation::Quote,
             "Simple" => match &payload_val {
                 Value::Dict(d) => {
                     let name = get_string_field(d, "name", path, ctx).unwrap_or_else(|_| {
@@ -785,6 +786,7 @@ fn dict_to_annotation(
     let kind = get_string_field(dict, "kind", path, ctx)?;
 
     let ann = match kind.as_str() {
+        "quote" => Annotation::Quote,
         "simple" => {
             let value = get_string_field(dict, "value", path, ctx)?;
             Annotation::Simple(value)
@@ -2037,6 +2039,15 @@ pub(crate) fn annotation_to_thunk_id(
             dict.insert(
                 HashableValue::Str("value".into()),
                 ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(name), span.clone()))),
+            );
+        }
+        Annotation::Quote => {
+            // Quoting sentinel — serialised as kind:"quote" to avoid re-coupling the wire
+            // format to the prelude's "Expr" type name. No value field; the kind alone
+            // identifies this as the quoting annotation.
+            dict.insert(
+                HashableValue::Str("kind".into()),
+                ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val("quote"), span.clone()))),
             );
         }
         Annotation::Annotated(name, inner) => {

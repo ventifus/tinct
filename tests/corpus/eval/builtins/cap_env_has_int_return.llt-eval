@@ -1,0 +1,6 @@
+# Verifies builtin-cap-env-has? returns Int(0) for an absent cap name.
+# Tests the Rust-level protocol: returns Int (not Boolean.True/False Variant).
+# Scope 0 is the empty base scope and never contains user-defined caps.
+[result: [builtin-cap-env-has? "%definitely-absent-cap" 0]]
+=== out
+Dict({"result": Int(0)})

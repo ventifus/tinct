@@ -1885,8 +1885,8 @@ async fn test_tycondef_partialeq_different_variance() {
 /// should report the value type param as Covariant (positive position).
 #[tokio::test]
 async fn test_infer_variance_uniform_tail_covariant() {
-    use std::rc::Rc;
-    let env = Rc::new(TypeEnv::new());
+    use std::sync::Arc;
+    let env = Arc::new(TypeEnv::new());
 
     // Type alias body: {x: a, _: a} — both named field and Uniform tail use param "a"
     // in positive position, so inferred variance should be Covariant.

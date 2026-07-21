@@ -248,7 +248,9 @@ pub(crate) fn annotation_has_structural_fields(annotation: &crate::ast::Annotati
                 _ => true,
             }
         }),
-        crate::ast::Annotation::Simple(_) | crate::ast::Annotation::Annotated(_, _) => false,
+        crate::ast::Annotation::Simple(_)
+        | crate::ast::Annotation::Quote
+        | crate::ast::Annotation::Annotated(_, _) => false,
     }
 }
 
@@ -1333,7 +1335,7 @@ pub async fn call_to_match(
 /// This is the direct-dispatch variant of `call_to_match`. Where `call_to_match` calls the
 /// top-level `to-match` dispatch function (which then resolves the correct instance at runtime),
 /// this function skips that indirection and calls the specific Matchable instance binding
-/// (e.g., `"ɪɴꜱᴛᴀɴᴄᴇ⧼Matchable∷to-match⟨Boolean⟩⧽"`) directly.
+/// (e.g., `"ɪɴꜱᴛᴀɴᴄᴇ⧼Matchable∷to-match⟨SomeType⟩⧽"`) directly.
 ///
 /// The type checker resolves the Matchable instance at type-checking time and stores the
 /// binding name on the pattern or call site. The evaluator uses this pre-resolved name
@@ -1362,7 +1364,7 @@ pub async fn call_to_match_resolved(
 /// call: `call_to_match` -> dispatch function -> specific instance).
 ///
 /// This function extracts the return type name from the predicate's `return_ann` annotation
-/// (e.g., `fn@Boolean` -> "Boolean") and pre-computes the specific instance binding name
+/// (e.g., `fn@SomeType` -> "SomeType") and pre-computes the specific instance binding name
 /// ONCE before the loop. The builtin then passes this to `call_to_match_resolved` on each
 /// iteration, bypassing the dispatch indirection and calling the instance binding directly
 /// (one-hop call).
@@ -1386,7 +1388,7 @@ pub fn resolve_matchable_binding_from_fn(pred: &Value) -> Option<String> {
         _ => return None,
     };
     // Extract a simple type name from the annotation.
-    // `fn@Boolean` -> Annotation::Simple("Boolean") -> "Boolean"
+    // `fn@SomeType` -> Annotation::Simple("SomeType") -> "SomeType"
     let type_name = match return_ann {
         crate::ast::Annotation::Simple(name) => name.as_str(),
         _ => return None,

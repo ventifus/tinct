@@ -198,6 +198,18 @@ pub enum Annotation {
     Simple(String),
     PropertyDict(Vec<Spanned<SurfaceEntry>>),
     Annotated(String, Box<Annotation>), // e.g., Seq@Int = Annotated("Seq", Simple("Int"))
+    /// Quoting sentinel — produced by the parser when it sees `@Expr` and used exclusively
+    /// to mark macro parameters that receive raw quoted AST instead of evaluated values.
+    ///
+    /// This is a Rust-level sentinel: the parser converts `@Expr` text to `Quote` immediately,
+    /// so the quoting mechanism is agnostic to the prelude's `Expr` type name. Renaming the
+    /// prelude type would not break quoting as long as users still write `@Expr` in source.
+    ///
+    /// Note: the source-level name `Expr` is effectively reserved — any user-defined type
+    /// named `Expr` will be shadowed by this sentinel in annotation position. The parser
+    /// converts `@Expr` to `Quote` before type resolution, so `@Expr` can never refer to
+    /// a user-defined `Expr` type.
+    Quote,
 }
 
 impl Annotation {
@@ -216,6 +228,7 @@ impl Annotation {
             }),
             Annotation::Simple(_) => None,
             Annotation::Annotated(_, _) => None,
+            Annotation::Quote => None,
         }
     }
 }
@@ -239,6 +252,9 @@ impl fmt::Display for Annotation {
                 write!(f, "]")
             }
             Annotation::Annotated(name, inner) => write!(f, "{name}@{inner}"),
+            // Display intentionally renders as "Expr" — this is the user-visible text they
+            // wrote in source (@Expr), not a semantic dependency on the prelude's Expr type.
+            Annotation::Quote => write!(f, "Expr"),
         }
     }
 }
@@ -519,12 +535,16 @@ impl SurfaceExpression {
     }
 }
 
-/// Returns true if `ann` is an `@Expr` annotation — `Simple("Expr")`.
+/// Returns true if `ann` is an `@Expr` annotation — i.e., the `Annotation::Quote` sentinel.
 ///
-/// Used by the evaluator (eval_materialize.rs) and type checker (typecheck_match.rs) to
-/// identify params that receive raw quoted AST instead of evaluated values.
+/// The parser converts `@Expr` text to `Annotation::Quote` immediately, so this check
+/// is agnostic to the prelude's `Expr` type name. Any source-level `@Expr` annotation
+/// becomes the sentinel regardless of what the prelude calls its AST node type.
+///
+/// Used by the evaluator (eval_materialize.rs) to identify params that receive raw
+/// quoted AST instead of evaluated values.
 pub fn is_expr_annotation(ann: &Annotation) -> bool {
-    matches!(ann, Annotation::Simple(s) if s == "Expr")
+    matches!(ann, Annotation::Quote)
 }
 
 /// Default function for `Annotated.inner` when deserializing via `ExprConvert`.
@@ -1415,5 +1435,25 @@ mod tests {
             }),
         ]);
         assert_eq!(format!("{ann}"), "[\"type\": \"Number\"  \"default\": 42]");
+    }
+
+    #[test]
+    fn test_display_annotation_quote() {
+        // Annotation::Quote must render as "Expr" — this is the user-visible source text.
+        let ann = Annotation::Quote;
+        assert_eq!(format!("{ann}"), "Expr");
+    }
+
+    #[test]
+    fn test_is_expr_annotation_quote_returns_true() {
+        // The quoting sentinel variant must be recognized as the expr annotation.
+        assert!(is_expr_annotation(&Annotation::Quote));
+    }
+
+    #[test]
+    fn test_is_expr_annotation_simple_expr_returns_false() {
+        // Simple("Expr") must NOT trigger quoting — the parser converts @Expr to Quote
+        // immediately. If it ever produces Simple("Expr") instead, quoting silently breaks.
+        assert!(!is_expr_annotation(&Annotation::Simple("Expr".to_string())));
     }
 }

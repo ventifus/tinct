@@ -1,0 +1,6 @@
+# Verifies builtin-encode accepts an Int discriminant (not a ByteOrder.* Variant).
+# Discriminant 1 = UInt8: encodes a single byte.
+# This tests the Rust-level Int protocol introduced in S-933 (B-499 fix).
+[result: [builtin-encode 1 42]]
+=== out
+Dict({"result": Bytes(1 bytes)})

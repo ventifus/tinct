@@ -399,8 +399,8 @@ pub enum Type {
     },
     /// Nominal variant — a union member that carries its declared constructor name.
     /// Used for nominal variants like `[Some a]`, `[IntLiteral value: Int span: AstSpan]`, and `None`.
-    /// The `tycon` is the type constructor name (e.g., "Option", "IntLiteral", "Boolean") and `ctor` is
-    /// the variant constructor name (e.g., "Some", "None", "True"). `fields` are the named or positional
+    /// The `tycon` is the type constructor name (e.g., "Option", "IntLiteral") and `ctor` is
+    /// the variant constructor name (e.g., "Some", "None"). `fields` are the named or positional
     /// payload fields.
     /// Distinct from structural `Record` types — nominal variants are never subtypes of records.
     NominalVariant {

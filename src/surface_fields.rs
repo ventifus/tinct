@@ -631,6 +631,12 @@ fn annotation_inner_to_value(
             );
             ("Annotation", "Annotated")
         }
+        Annotation::Quote => {
+            // Quoting sentinel — serialised as a distinct "Quote" constructor with an
+            // empty payload dict. Does not mention "Expr" so the wire format is
+            // agnostic to the prelude's type name.
+            ("Annotation", "Quote")
+        }
     };
 
     let payload_tid = ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(payload_map), span)));

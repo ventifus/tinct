@@ -90,16 +90,6 @@ pub enum Constraint {
 }
 
 impl Constraint {
-    /// Create a single-parameter Class constraint (backward compatibility helper)
-    pub fn new(class: Arc<ClassDecl>, var: impl Into<String>) -> Self {
-        Self::Class {
-            class,
-            vars: vec![ConstraintArg::Var(var.into())],
-            origin_name: None,
-            origin_span: None,
-        }
-    }
-
     /// Create a single-parameter Class constraint from a class name string.
     /// Constructs a minimal `ClassDecl` with just the name (no params, superclasses, or FDs).
     ///

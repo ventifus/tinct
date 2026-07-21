@@ -5,6 +5,20 @@
 //! - Applying those constraints to fork the type environment for true/false branches
 //! - Instance pattern type extraction and functional-dependency parameter index resolution
 //! - Pattern overlap / type unification probes (side-effect-free)
+//!
+//! ## Prelude coupling (B-507)
+//!
+//! `extract_narrowings` recognizes specific predicate function names (`int?`, `str?`,
+//! `bool?`, `seq?`, etc.) by string match. This couples the narrower to the prelude's
+//! naming conventions. The principled fix is annotation-based narrowing: predicate
+//! functions would declare their narrowing behavior via annotations (e.g.,
+//! `@[narrows: [type: Int]]`), and the type checker would read these annotations at
+//! call sites. This requires design work tracked separately.
+//!
+//! The primitive types narrowed to (`Type::Int`, `Type::Float`, `Type::Str`) are Rust-level
+//! and prelude-agnostic. Predicates for prelude-defined types (`bool?`, `seq?`) currently
+//! narrow to `Type::Unknown` — the principled fix (annotation-based narrowing) is tracked
+//! as T-1761, which would allow predicates to declare their narrowing behavior via annotations.
 
 use std::sync::{Arc, RwLock};
 
@@ -107,9 +121,11 @@ pub(crate) fn extract_narrowings(cond: &Arc<SurfaceNode>) -> Vec<Narrowing> {
                     }
                     "bool?" if args.len() == 1 => {
                         if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
+                            // T-1761: principled annotation-based narrowing needed.
+                            // Boolean is a prelude-defined type; Rust must not hardcode its name.
                             return vec![Narrowing::TypeOf {
                                 var: var_name.clone(),
-                                ty: Type::TyCon("Boolean".to_string()),
+                                ty: Type::Unknown,
                             }];
                         }
                     }
@@ -149,13 +165,11 @@ pub(crate) fn extract_narrowings(cond: &Arc<SurfaceNode>) -> Vec<Narrowing> {
                     }
                     "seq?" if args.len() == 1 => {
                         if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
-                            // seq? narrows to App(TyCon("Seq"), Unknown)
+                            // T-1761: principled annotation-based narrowing needed.
+                            // Seq is a prelude-defined type; Rust must not hardcode its name.
                             return vec![Narrowing::TypeOf {
                                 var: var_name.clone(),
-                                ty: Type::App(
-                                    Box::new(Type::TyCon("Seq".to_string())),
-                                    Box::new(Type::Unknown),
-                                ),
+                                ty: Type::Unknown,
                             }];
                         }
                     }
@@ -192,12 +206,12 @@ pub(crate) fn try_eq_literal(
                 var: name.clone(),
                 ty: Type::StringLiteral(s.clone()),
             }),
-            // Bool: no native boolean type — literals are booleans via TyCon
-            // Skip bool literal narrowing for now
+            // true/false are plain identifiers in tinct — no native boolean type.
+            // T-1761: annotation-based narrowing needed for principled bool narrowing.
             SurfaceExpression::VarRef { name: ref n, .. } if n == "true" || n == "false" => {
                 Some(Narrowing::EqLiteral {
                     var: name.clone(),
-                    ty: Type::TyCon("Boolean".to_string()),
+                    ty: Type::Unknown,
                 })
             }
             _ => None,
@@ -233,11 +247,10 @@ pub(crate) fn try_type_of(left: &Arc<SurfaceNode>, right: &Arc<SurfaceNode>) -> 
                                 "Int" => Some(Type::Int),
                                 "Float" => Some(Type::Float),
                                 "String" => Some(Type::Str),
-                                "Bool" => Some(Type::TyCon("Boolean".to_string())),
-                                "Seq" => Some(Type::App(
-                                    Box::new(Type::TyCon("Seq".to_string())),
-                                    Box::new(Type::Unknown),
-                                )),
+                                // T-1761: "Bool" and "Seq" are prelude-defined types;
+                                // Rust must not hardcode their TyCon names. Use Unknown
+                                // until annotation-based narrowing is implemented.
+                                "Bool" | "Seq" => Some(Type::Unknown),
                                 "Number" => {
                                     Some(Type::normalize_union(vec![Type::Int, Type::Float]))
                                 }
@@ -347,6 +360,11 @@ fn resolve_annotation_sync(ann: &crate::ast::Spanned<Annotation>, state: &mut In
 
     match &ann.node {
         Annotation::Simple(name) => resolve_name(name),
+        Annotation::Quote => {
+            // The quoting annotation does not constrain to a statically-known type;
+            // no narrowing can be derived from it.
+            return state.fresh_type_var(&ann.span);
+        }
         Annotation::PropertyDict(entries) => {
             // User-written @[type: T  default: ...] form — extract the type from the `type:` key.
             for entry in entries {
@@ -507,7 +525,7 @@ pub(crate) fn patterns_overlap(
             return false; // non-overlapping at this position — Unknown is not concrete
         }
         // unify is async; use structural equality as conservative approximation
-        ty_a == ty_b || matches!(ty_a, Type::Unknown) || matches!(ty_b, Type::Unknown)
+        ty_a == ty_b
     });
 
     // Restore all mutated fields.

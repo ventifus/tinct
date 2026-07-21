@@ -706,6 +706,7 @@ fn desugar_surface_entry(entry: &mut SurfaceEntry, depth: usize) {
 fn desugar_surface_annotation(ann: &mut Annotation, depth: usize) {
     match ann {
         Annotation::Simple(_) => {}
+        Annotation::Quote => {}
         Annotation::PropertyDict(_entries) => {
             // PropertyDict entries use the old Entry/Expr AST types. $_ inside type
             // annotations is a user error (type expressions don't evaluate), so we

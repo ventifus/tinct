@@ -512,12 +512,12 @@
            [_caps-forced: [match _drop-forced
              0: [reduce [fn [let _ cap-name]
                    [match [builtin-cap-env-has? cap-name full-scope-r3]
-                     Boolean.False: [builtin-raise [builtin-string-concat "missing required capability: " cap-name]]
+                     0: [builtin-raise [builtin-string-concat "missing required capability: " cap-name]]
                      ...: 0]]
                    0 [builtin-keys caps-list]]
              ...: [reduce [fn [let _ cap-name]
                    [match [builtin-cap-env-has? cap-name full-scope-r3]
-                     Boolean.False: [builtin-raise [builtin-string-concat "missing required capability: " cap-name]]
+                     0: [builtin-raise [builtin-string-concat "missing required capability: " cap-name]]
                      ...: 0]]
                    0 [builtin-keys caps-list]]]]
            [_result-unforced: [merge state

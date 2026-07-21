@@ -995,6 +995,7 @@ impl SurfaceResolver {
         self.suppress_depth += 1;
         match &ann.node {
             crate::ast::Annotation::Simple(_) => {}
+            crate::ast::Annotation::Quote => {}
             crate::ast::Annotation::PropertyDict(entries) => {
                 for entry in entries {
                     if let Some(key) = &entry.node.key {
@@ -1410,7 +1411,7 @@ fn collect_percent_accesses_node(
 fn surface_dict_static_keys(entries: &[Spanned<SurfaceEntry>]) -> Vec<String> {
     // Pass 1: Collect all explicitly-named keys from non-ClassDecl entries.
     // This lets us avoid injecting a class method name that shadows an explicit
-    // user binding (e.g. `=: [fn [let x y] Boolean.False]` in the same dict).
+    // user binding (e.g. `=: [fn [let x y] false]` in the same dict).
     let explicit_keys: std::collections::HashSet<String> = entries
         .iter()
         .filter_map(|entry| {

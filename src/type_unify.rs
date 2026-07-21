@@ -2736,9 +2736,9 @@ pub async fn unify(
 
         // UNIFY-TYCON-UNION: TyCon unified with a Union of NominalVariants.
         //
-        // `@Boolean ~ Union([Boolean.True, Boolean.False])`: succeeds when every union member
-        // is a subtype of the TyCon's declared body. This is the subset direction — the union
-        // must be covered entirely by the TyCon's constructor family.
+        // Succeeds when every union member is a subtype of the TyCon's declared body.
+        // This is the subset direction — the union must be covered entirely by the
+        // TyCon's constructor family.
         //
         // Symmetric: both (TyCon, Union) and (Union, TyCon) are handled here.
         // Guard: only fire when the union has no TypeVars. If it has TypeVars, fall through

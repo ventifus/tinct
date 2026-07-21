@@ -743,7 +743,7 @@ pub(crate) fn register_type_aliases_env(
 ///
 /// This mapping must match `extract_dispatch_tags` in `lower.rs`, which reads `@Annotation`
 /// names from instance arm patterns.  Annotations are written as `@Integer`, `@Float`,
-/// `@String`, `@Boolean`, `@Bytes`, `@TyConName` — the strings that appear in
+/// `@String`, `@Bytes`, `@SomeType` — the strings that appear in
 /// `instance_binding_name` calls.
 ///
 /// Returns `None` for:
@@ -761,7 +761,7 @@ pub(crate) fn type_to_dispatch_tag(ty: &Type) -> Option<String> {
         // Bytes is a direct variant (not TyCon("Bytes")).
         Type::Bytes => Some("Bytes".to_string()),
         // TyCon: map to the type name directly. Instance arm annotations must match the declared
-        // type name exactly (e.g., @Boolean not @Bool) for dispatch tags to align.
+        // type name exactly (e.g., @SomeType not a shortened alias) for dispatch tags to align.
         Type::TyCon(name) => Some(name.clone()),
         // Unresolved inference variables and gradual types cannot be dispatched.
         Type::TypeVar(_, _) | Type::Unknown | Type::Any | Type::Error(_) => None,

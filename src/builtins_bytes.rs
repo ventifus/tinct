@@ -501,21 +501,13 @@ pub(crate) fn builtin_ct_equal(
 /// `builtin-encode`: Encode a numeric value as Bytes in the specified byte order/format.
 ///
 /// Takes 2 args:
-/// - `format`: a Variant tag from the `ByteOrder` type (e.g., `ByteOrder.Int64BE`,
-///   `ByteOrder.Float32LE`, `ByteOrder.UInt8`)
+/// - `format`: Int discriminant identifying the encoding format.
+///   The prelude wrapper converts from the nominal ByteOrder type to Int before calling.
+///   Discriminant values:
+///     0=Int8, 1=UInt8, 2=Int16LE, 3=Int16BE, 4=UInt16LE, 5=UInt16BE,
+///     6=Int32LE, 7=Int32BE, 8=UInt32LE, 9=UInt32BE, 10=Int64LE, 11=Int64BE,
+///     12=UInt64LE, 13=UInt64BE, 14=Float32LE, 15=Float32BE, 16=Float64LE, 17=Float64BE
 /// - `value`: Int or Float to encode
-///
-/// The tag name (from `tag-of format`) determines the encoding:
-/// - `ByteOrder.Int8`      — 1 byte signed
-/// - `ByteOrder.UInt8`     — 1 byte unsigned
-/// - `ByteOrder.Int16LE` / `ByteOrder.Int16BE`   — 2 bytes signed
-/// - `ByteOrder.UInt16LE` / `ByteOrder.UInt16BE`  — 2 bytes unsigned
-/// - `ByteOrder.Int32LE` / `ByteOrder.Int32BE`   — 4 bytes signed
-/// - `ByteOrder.UInt32LE` / `ByteOrder.UInt32BE`  — 4 bytes unsigned
-/// - `ByteOrder.Int64LE` / `ByteOrder.Int64BE`   — 8 bytes signed
-/// - `ByteOrder.UInt64LE` / `ByteOrder.UInt64BE`  — 8 bytes unsigned
-/// - `ByteOrder.Float32LE` / `ByteOrder.Float32BE` — 4 bytes IEEE 754
-/// - `ByteOrder.Float64LE` / `ByteOrder.Float64BE` — 8 bytes IEEE 754
 ///
 /// Returns Bytes of the appropriate length.
 pub(crate) fn builtin_encode(
@@ -560,13 +552,14 @@ pub(crate) fn builtin_encode(
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness");
 
-        // Extract the tag from the format variant
-        let tag = match &fmt_val {
-            Value::Variant { tycon, ctor, .. } => format!("{}.{}", tycon, ctor),
+        // Extract the Int discriminant from the format argument.
+        // The prelude wrapper converts from the nominal ByteOrder type to Int before calling.
+        let fmt_int = match &fmt_val {
+            Value::Int(n) => *n,
             _ => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-encode".to_string(),
-                    "ByteOrder variant",
+                    "Int (format discriminant)",
                     fmt_val.type_name(),
                     thunk0.span.clone(),
                 )
@@ -585,214 +578,59 @@ pub(crate) fn builtin_encode(
             _ => None,
         };
 
-        let bytes: Vec<u8> = match tag.as_str() {
-            "ByteOrder.Int8" => {
-                let n = as_i64.ok_or_else(|| {
-                    EvalError::type_mismatch_ctx(
-                        "builtin-encode".to_string(),
-                        "Int",
-                        num_val.type_name(),
-                        thunk1.span.clone(),
-                    )
-                })?;
-                vec![n as i8 as u8]
-            }
-            "ByteOrder.UInt8" => {
-                let n = as_i64.ok_or_else(|| {
-                    EvalError::type_mismatch_ctx(
-                        "builtin-encode".to_string(),
-                        "Int",
-                        num_val.type_name(),
-                        thunk1.span.clone(),
-                    )
-                })?;
-                vec![n as u8]
-            }
-            "ByteOrder.Int16LE" => {
-                let n = as_i64.ok_or_else(|| {
-                    EvalError::type_mismatch_ctx(
-                        "builtin-encode".to_string(),
-                        "Int",
-                        num_val.type_name(),
-                        thunk1.span.clone(),
-                    )
-                })?;
-                (n as i16).to_le_bytes().to_vec()
-            }
-            "ByteOrder.Int16BE" => {
-                let n = as_i64.ok_or_else(|| {
-                    EvalError::type_mismatch_ctx(
-                        "builtin-encode".to_string(),
-                        "Int",
-                        num_val.type_name(),
-                        thunk1.span.clone(),
-                    )
-                })?;
-                (n as i16).to_be_bytes().to_vec()
-            }
-            "ByteOrder.UInt16LE" => {
-                let n = as_i64.ok_or_else(|| {
-                    EvalError::type_mismatch_ctx(
-                        "builtin-encode".to_string(),
-                        "Int",
-                        num_val.type_name(),
-                        thunk1.span.clone(),
-                    )
-                })?;
-                (n as u16).to_le_bytes().to_vec()
-            }
-            "ByteOrder.UInt16BE" => {
-                let n = as_i64.ok_or_else(|| {
-                    EvalError::type_mismatch_ctx(
-                        "builtin-encode".to_string(),
-                        "Int",
-                        num_val.type_name(),
-                        thunk1.span.clone(),
-                    )
-                })?;
-                (n as u16).to_be_bytes().to_vec()
-            }
-            "ByteOrder.Int32LE" => {
-                let n = as_i64.ok_or_else(|| {
-                    EvalError::type_mismatch_ctx(
-                        "builtin-encode".to_string(),
-                        "Int",
-                        num_val.type_name(),
-                        thunk1.span.clone(),
-                    )
-                })?;
-                (n as i32).to_le_bytes().to_vec()
-            }
-            "ByteOrder.Int32BE" => {
-                let n = as_i64.ok_or_else(|| {
-                    EvalError::type_mismatch_ctx(
-                        "builtin-encode".to_string(),
-                        "Int",
-                        num_val.type_name(),
-                        thunk1.span.clone(),
-                    )
-                })?;
-                (n as i32).to_be_bytes().to_vec()
-            }
-            "ByteOrder.UInt32LE" => {
-                let n = as_i64.ok_or_else(|| {
-                    EvalError::type_mismatch_ctx(
-                        "builtin-encode".to_string(),
-                        "Int",
-                        num_val.type_name(),
-                        thunk1.span.clone(),
-                    )
-                })?;
-                (n as u32).to_le_bytes().to_vec()
-            }
-            "ByteOrder.UInt32BE" => {
-                let n = as_i64.ok_or_else(|| {
-                    EvalError::type_mismatch_ctx(
-                        "builtin-encode".to_string(),
-                        "Int",
-                        num_val.type_name(),
-                        thunk1.span.clone(),
-                    )
-                })?;
-                (n as u32).to_be_bytes().to_vec()
-            }
-            "ByteOrder.Int64LE" => {
-                let n = as_i64.ok_or_else(|| {
-                    EvalError::type_mismatch_ctx(
-                        "builtin-encode".to_string(),
-                        "Int",
-                        num_val.type_name(),
-                        thunk1.span.clone(),
-                    )
-                })?;
-                n.to_le_bytes().to_vec()
-            }
-            "ByteOrder.Int64BE" => {
-                let n = as_i64.ok_or_else(|| {
-                    EvalError::type_mismatch_ctx(
-                        "builtin-encode".to_string(),
-                        "Int",
-                        num_val.type_name(),
-                        thunk1.span.clone(),
-                    )
-                })?;
-                n.to_be_bytes().to_vec()
-            }
-            "ByteOrder.UInt64LE" => {
-                let n = as_i64.ok_or_else(|| {
-                    EvalError::type_mismatch_ctx(
-                        "builtin-encode".to_string(),
-                        "Int",
-                        num_val.type_name(),
-                        thunk1.span.clone(),
-                    )
-                })?;
-                (n as u64).to_le_bytes().to_vec()
-            }
-            "ByteOrder.UInt64BE" => {
-                let n = as_i64.ok_or_else(|| {
-                    EvalError::type_mismatch_ctx(
-                        "builtin-encode".to_string(),
-                        "Int",
-                        num_val.type_name(),
-                        thunk1.span.clone(),
-                    )
-                })?;
-                (n as u64).to_be_bytes().to_vec()
-            }
-            "ByteOrder.Float32LE" => {
-                let f = as_f64.ok_or_else(|| {
-                    EvalError::type_mismatch_ctx(
-                        "builtin-encode".to_string(),
-                        "Float or Int",
-                        num_val.type_name(),
-                        thunk1.span.clone(),
-                    )
-                })?;
-                (f as f32).to_le_bytes().to_vec()
-            }
-            "ByteOrder.Float32BE" => {
-                let f = as_f64.ok_or_else(|| {
-                    EvalError::type_mismatch_ctx(
-                        "builtin-encode".to_string(),
-                        "Float or Int",
-                        num_val.type_name(),
-                        thunk1.span.clone(),
-                    )
-                })?;
-                (f as f32).to_be_bytes().to_vec()
-            }
-            "ByteOrder.Float64LE" => {
-                let f = as_f64.ok_or_else(|| {
-                    EvalError::type_mismatch_ctx(
-                        "builtin-encode".to_string(),
-                        "Float or Int",
-                        num_val.type_name(),
-                        thunk1.span.clone(),
-                    )
-                })?;
-                f.to_le_bytes().to_vec()
-            }
-            "ByteOrder.Float64BE" => {
-                let f = as_f64.ok_or_else(|| {
-                    EvalError::type_mismatch_ctx(
-                        "builtin-encode".to_string(),
-                        "Float or Int",
-                        num_val.type_name(),
-                        thunk1.span.clone(),
-                    )
-                })?;
-                f.to_be_bytes().to_vec()
-            }
+        // Helper closures for error messages
+        let require_int = || {
+            as_i64.ok_or_else(|| {
+                EvalError::type_mismatch_ctx(
+                    "builtin-encode".to_string(),
+                    "Int",
+                    num_val.type_name(),
+                    thunk1.span.clone(),
+                )
+            })
+        };
+        let require_float = || {
+            as_f64.ok_or_else(|| {
+                EvalError::type_mismatch_ctx(
+                    "builtin-encode".to_string(),
+                    "Float or Int",
+                    num_val.type_name(),
+                    thunk1.span.clone(),
+                )
+            })
+        };
+
+        // Discriminant mapping:
+        //   0=Int8, 1=UInt8, 2=Int16LE, 3=Int16BE, 4=UInt16LE, 5=UInt16BE,
+        //   6=Int32LE, 7=Int32BE, 8=UInt32LE, 9=UInt32BE, 10=Int64LE, 11=Int64BE,
+        //   12=UInt64LE, 13=UInt64BE, 14=Float32LE, 15=Float32BE, 16=Float64LE, 17=Float64BE
+        let bytes: Vec<u8> = match fmt_int {
+            0 => vec![require_int()? as i8 as u8],                  // Int8
+            1 => vec![require_int()? as u8],                        // UInt8
+            2 => (require_int()? as i16).to_le_bytes().to_vec(),    // Int16LE
+            3 => (require_int()? as i16).to_be_bytes().to_vec(),    // Int16BE
+            4 => (require_int()? as u16).to_le_bytes().to_vec(),    // UInt16LE
+            5 => (require_int()? as u16).to_be_bytes().to_vec(),    // UInt16BE
+            6 => (require_int()? as i32).to_le_bytes().to_vec(),    // Int32LE
+            7 => (require_int()? as i32).to_be_bytes().to_vec(),    // Int32BE
+            8 => (require_int()? as u32).to_le_bytes().to_vec(),    // UInt32LE
+            9 => (require_int()? as u32).to_be_bytes().to_vec(),    // UInt32BE
+            10 => require_int()?.to_le_bytes().to_vec(),            // Int64LE
+            11 => require_int()?.to_be_bytes().to_vec(),            // Int64BE
+            12 => (require_int()? as u64).to_le_bytes().to_vec(),   // UInt64LE
+            13 => (require_int()? as u64).to_be_bytes().to_vec(),   // UInt64BE
+            14 => (require_float()? as f32).to_le_bytes().to_vec(), // Float32LE
+            15 => (require_float()? as f32).to_be_bytes().to_vec(), // Float32BE
+            16 => require_float()?.to_le_bytes().to_vec(),          // Float64LE
+            17 => require_float()?.to_be_bytes().to_vec(),          // Float64BE
             other => {
                 return Err(EvalError::user_error(
                     format!(
-                        "builtin-encode: unknown ByteOrder tag '{}'. Expected one of: \
-                         ByteOrder.Int8, ByteOrder.UInt8, ByteOrder.Int16LE, ByteOrder.Int16BE, \
-                         ByteOrder.UInt16LE, ByteOrder.UInt16BE, ByteOrder.Int32LE, ByteOrder.Int32BE, \
-                         ByteOrder.UInt32LE, ByteOrder.UInt32BE, ByteOrder.Int64LE, ByteOrder.Int64BE, \
-                         ByteOrder.UInt64LE, ByteOrder.UInt64BE, ByteOrder.Float32LE, ByteOrder.Float32BE, \
-                         ByteOrder.Float64LE, ByteOrder.Float64BE",
+                        "builtin-encode: unknown format discriminant {}. Expected 0..17 \
+                         (0=Int8, 1=UInt8, 2=Int16LE, 3=Int16BE, 4=UInt16LE, 5=UInt16BE, \
+                         6=Int32LE, 7=Int32BE, 8=UInt32LE, 9=UInt32BE, 10=Int64LE, 11=Int64BE, \
+                         12=UInt64LE, 13=UInt64BE, 14=Float32LE, 15=Float32BE, \
+                         16=Float64LE, 17=Float64BE)",
                         other
                     ),
                     call_span,

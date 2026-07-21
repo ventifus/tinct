@@ -528,7 +528,7 @@ pub enum Value {
         start: usize,
         end: usize,
     },
-    /// Boolean (`true` or `false`)
+    /// Internal boolean value — used by Rust-level boolean predicates returning true/false
     Bool(bool),
     /// Ordered key-value map with lazy (thunked) values
     Dict(IndexMap<HashableValue, ThunkId>),

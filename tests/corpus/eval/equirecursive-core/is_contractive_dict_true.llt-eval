@@ -7,4 +7,4 @@
 # μa.{head: Int, tail: a} — the Record wrapper shields the RecursiveRef.
 [result: [builtin-is-contractive [head: "Int"  tail: "RecursiveRef"]]]
 === out
-Dict({"result": Variant(Boolean.True, Null)})
+Dict({"result": Int(1)})

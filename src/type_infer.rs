@@ -425,7 +425,12 @@ impl InferState {
         let env_arc = Arc::clone(&self.env);
         let env_guard = env_arc.read().unwrap();
         if let Some(class_decl) = env_guard.get_class(&class_name) {
-            constraints.push(Constraint::new(Arc::new(class_decl.clone()), var));
+            constraints.push(Constraint::Class {
+                class: Arc::new(class_decl.clone()),
+                vars: vec![crate::type_class::ConstraintArg::Var(var.into())],
+                origin_name: None,
+                origin_span: None,
+            });
         }
         // Unknown classes are deferred — instance resolution will report an error.
     }
@@ -446,8 +451,12 @@ impl InferState {
             )
         });
         drop(env_guard);
-        self.constraints
-            .push(Constraint::new(Arc::new(class_decl.clone()), var));
+        self.constraints.push(Constraint::Class {
+            class: Arc::new(class_decl.clone()),
+            vars: vec![crate::type_class::ConstraintArg::Var(var.into())],
+            origin_name: None,
+            origin_span: None,
+        });
     }
 
     // ── TypeVar name generation ──────────────────────────────────────────────────
