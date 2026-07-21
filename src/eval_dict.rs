@@ -31,6 +31,16 @@ fn value_to_key(value: &Value, span: &Span) -> EvalResult<HashableValue> {
     }
 }
 
+fn extract_property_dict_from_annotation(
+    ann: &Annotation,
+) -> Option<&Vec<Spanned<crate::ast::SurfaceEntry>>> {
+    match ann {
+        Annotation::PropertyDict(entries) => Some(entries),
+        Annotation::Annotated(outer, _) => extract_property_dict_from_annotation(outer),
+        _ => None,
+    }
+}
+
 /// Evaluate a PropertyDict annotation to a materialized Value::Dict.
 ///
 /// The annotation PropertyDict contains SurfaceExpression nodes that need to be evaluated
@@ -126,21 +136,14 @@ async fn eval_annotation_property_dict(
             SurfaceExpression::Int(n) => Value::Int(*n),
             SurfaceExpression::U64(n) => Value::U64(*n),
             SurfaceExpression::Float(f) => Value::Float(*f),
+            // Type-level VarRef with resolution Some(None) → produce string identity.
+            // This handles @[return: String], @[return: a], @[is: Int], etc.
+            SurfaceExpression::VarRef {
+                name, resolution, ..
+            } if resolution.get() == Some(None) => string_val(name),
             _ => {
                 // T-1620: Non-literal annotation values are lowered to CoreExpr and evaluated.
                 // This handles VarRefs (type names like Dict, String), fn expressions, and calls.
-                // Annotation keys in ANNOTATION_EVAL_EXCLUDED_KEYS (return, constraint, bind, kinds)
-                // contain type-level VarRefs with no runtime resolution slots — skip them.
-                let key_str = match &key {
-                    HashableValue::Str(s) => Some(s.as_ref()),
-                    _ => None,
-                };
-                if key_str
-                    .map(|k| crate::ast::ANNOTATION_EVAL_EXCLUDED_KEYS.contains(&k))
-                    .unwrap_or(false)
-                {
-                    continue;
-                }
                 let mut lower_diags = Vec::new();
                 let core_expr = crate::lower::lower_inner(
                     &entry.node.value,
@@ -151,8 +154,14 @@ async fn eval_annotation_property_dict(
                 {
                     return Err(err);
                 }
-                let thunk = eval_core_expr(&core_expr, parent_env_id, ctx).await?;
-                materialize(&thunk, Some(&entry.node.value.span), ctx).await?
+                match eval_core_expr(&core_expr, parent_env_id, ctx).await {
+                    Ok(thunk) => materialize(&thunk, Some(&entry.node.value.span), ctx).await?,
+                    Err(e) if matches!(&e.kind, crate::error::ErrorKind::Unimplemented { .. }) => {
+                        // Placeholder from nested type expressions → skip this key.
+                        continue;
+                    }
+                    Err(e) => return Err(e),
+                }
             }
         };
         let value_thunk = Arc::new(Thunk::value(value, entry.node.value.span.clone()));
@@ -326,9 +335,10 @@ pub(crate) async fn eval_dict_core(
                 ..
             } = &key_expr.node
             {
-                // Only PropertyDict annotations produce Value::Annotated at runtime.
-                // Simple annotations (e.g., Pi@Number) are type-level metadata, not runtime values.
-                if let Annotation::PropertyDict(ann_entries) = &annotation.node {
+                // PropertyDict annotations (including those wrapped in Annotated) produce
+                // Value::Annotated at runtime. Simple annotations (e.g., Pi@Number) are
+                // type-level metadata, not runtime values.
+                if let Some(ann_entries) = extract_property_dict_from_annotation(&annotation.node) {
                     // Evaluate the annotation PropertyDict to a Value::Dict
                     let annotation_value =
                         eval_annotation_property_dict(ann_entries, parent_env_id, ctx).await?;
@@ -359,7 +369,6 @@ pub(crate) async fn eval_dict_core(
                         ))
                     }
                 } else {
-                    // Simple/Annotated annotations are type-level only — use unannotated value
                     value_thunk
                 }
             } else {

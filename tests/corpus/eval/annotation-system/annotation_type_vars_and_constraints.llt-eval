@@ -1,0 +1,23 @@
+# annotation-of handles type variables and constraint keys (B-547).
+# Type variables like `a` produce their string identity.
+# constraint: with nested type expressions skips when they contain Placeholders.
+[
+  # Simple type variable
+  identity: [fn@[return: a] [let x@a] x]
+  id-ann: [annotation-of identity]
+
+  # Function with constraint (nested type expressions may become Placeholder)
+  compare: [fn@[return: Boolean  constraint: [a: Comparable]] [let x@a y@a] [= x y]]
+  cmp-ann: [annotation-of compare]
+
+  result: [
+    id-has-return: [has? "return" id-ann]
+    id-return-val: [get "return" id-ann]
+    cmp-has-return: [has? "return" cmp-ann]
+    cmp-return-val: [get "return" cmp-ann]
+    # constraint: may or may not appear depending on whether nested type expressions evaluate
+    cmp-has-constraint: [has? "constraint" cmp-ann]
+  ]
+]
+=== out
+Dict({"result": Dict({"id-has-return": Variant(Boolean.True, Null), "id-return-val": String("a"), "cmp-has-return": Variant(Boolean.True, Null), "cmp-return-val": String("Boolean"), "cmp-has-constraint": Variant(Boolean.False, Null)})})

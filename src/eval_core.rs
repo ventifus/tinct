@@ -579,18 +579,17 @@ pub(crate) async fn extract_fn_annotation_extra(
             continue;
         };
 
-        // Skip annotation keys that cannot be safely evaluated as runtime values.
-        // See ast::ANNOTATION_EVAL_EXCLUDED_KEYS for the rationale.
-        if crate::ast::ANNOTATION_EVAL_EXCLUDED_KEYS.contains(&key_str.as_str()) {
-            continue;
-        }
-
-        // Evaluate the annotation value: literals fast-path, expressions via eval
+        // Evaluate the annotation value: literals directly, type-level VarRefs as string identity, expressions via eval
         let val = match &e.node.value.expr {
-            // Fast path: literals extract directly without evaluation
+            // Literals extract directly without evaluation
             crate::ast::SurfaceExpression::StringLiteral { content: s, .. } => string_val(s),
             crate::ast::SurfaceExpression::Int(n) => Value::Int(*n),
             crate::ast::SurfaceExpression::Float(f) => Value::Float(*f),
+            // Type-level VarRef with resolution Some(None) → produce string identity.
+            // This handles @[return: String], @[return: a], @[is: Int], etc.
+            crate::ast::SurfaceExpression::VarRef {
+                name, resolution, ..
+            } if resolution.get() == Some(None) => string_val(name),
             // Expression-valued fields: lower to CoreExpr, evaluate, materialize to Value.
             // This is the T-1124 fix: annotations like `as-type: [fn [let u] u]` are now evaluable.
             _ => {
@@ -602,8 +601,14 @@ pub(crate) async fn extract_fn_annotation_extra(
                 );
 
                 // Evaluate the CoreExpr to a thunk, then materialize to a Value.
-                let thunk = eval_core_expr(&core_expr, env_id, ctx).await?;
-                materialize(&thunk, Some(&e.node.value.span), ctx).await?
+                match eval_core_expr(&core_expr, env_id, ctx).await {
+                    Ok(thunk) => materialize(&thunk, Some(&e.node.value.span), ctx).await?,
+                    Err(e) if matches!(&e.kind, crate::error::ErrorKind::Unimplemented { .. }) => {
+                        // Placeholder from nested type expressions → skip this key.
+                        continue;
+                    }
+                    Err(e) => return Err(e),
+                }
             }
         };
 

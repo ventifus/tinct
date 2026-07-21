@@ -9,23 +9,7 @@ use tinct_derive::ExprConvert;
 
 /// Standard annotation keys processed by the type system.
 /// Handled by the type checker (typecheck_annot.rs, typecheck_match.rs).
-/// Note: `"doc"` IS evaluated at runtime by eval_core.rs (extract_fn_annotation_extra),
-/// because doc strings are string-valued expressions that evaluate safely.
-/// The keys that must be EXCLUDED from runtime evaluation are in
-/// `ANNOTATION_EVAL_EXCLUDED_KEYS` below — do not duplicate either list.
 pub const STANDARD_ANN_KEYS: &[&str] = &["return", "constraint", "doc", "bind", "kinds"];
-
-/// Annotation keys excluded from runtime evaluation in `extract_fn_annotation_extra`.
-///
-/// `"return"`, `"constraint"`, `"bind"`, `"kinds"` contain type expressions whose
-/// VarRefs may have no runtime resolution slots (e.g. type variables `a`, `b`), so
-/// evaluating them at function-definition time would produce lowering diagnostics.
-///
-/// `"doc"` is intentionally NOT in this list — it is a string-valued expression
-/// (including triple-quoted strings desugared to `[unindent "..."]`) that evaluates
-/// correctly in the definition-site environment and is exposed via `annotation-of`.
-pub(crate) const ANNOTATION_EVAL_EXCLUDED_KEYS: &[&str] =
-    &["return", "constraint", "bind", "kinds"];
 
 /// Create a `Span` carrying the Rust source location of the call site.
 ///

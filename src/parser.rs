@@ -197,11 +197,248 @@ fn skip_whitespace_tokens(
 ///
 /// The `@Name` and `@[...]` cases build a `SurfaceNode` (VarRef or Dict) and delegate to
 /// `expression_to_annotation` for the actual annotation conversion — the same function used
-/// in the main body annotation path. The token-scanning loop for `@[...]` is necessary because
-/// header parsing occurs outside the main iterative parser's bracket-nesting stack machine;
-/// there is no mechanism to invoke the main Dict frame as a sub-routine from header context.
-/// Full structural unification with the main AnnotationCollect path would require extracting
-/// a standalone sub-parser for bracket expressions (tracked as T-1778).
+/// in the main body annotation path. Bracket parsing for `@[...]` delegates to the extracted
+/// `parse_bracket_annotation_dict` helper (T-1778) to avoid duplication. This function is
+/// necessary because header parsing occurs outside the main iterative parser's bracket-nesting
+/// stack machine; there is no mechanism to invoke the main Dict frame as a sub-routine from
+/// header context.
+
+/// Parse a bracket annotation dict `[key: val ...]` starting from the `[` token.
+///
+/// Extracted from `parse_annotation_direct` to eliminate token-scanning loop duplication (T-1778).
+/// This function parses the contents of `@[...]` annotations, handling a restricted subset of
+/// tokens suitable for property dict annotations (Identifier, StringLiteral, Int, Float, Colon).
+///
+/// Returns `(entries, annotation_span, final_token_index)` on success, where `final_token_index`
+/// points to the token immediately after the closing `]`.
+///
+/// # Parameters
+/// - `tokens`: full token slice
+/// - `start_index`: index of the `OpenBracket` token
+/// - `leading_comments`, `blank_before`: comment maps for whitespace token skipping
+///
+/// # Behavior
+/// - Consumes the opening `[` at `start_index`
+/// - Parses `key: value` pairs and positional entries
+/// - Tracks nesting depth for nested brackets (treated as opaque in values)
+/// - Returns error on unclosed brackets or malformed entries (e.g., trailing `:`)
+fn parse_bracket_annotation_dict(
+    tokens: &[Spanned<Token>],
+    start_index: usize,
+    leading_comments: &mut BTreeMap<u32, Vec<String>>,
+    blank_before: &mut BTreeMap<u32, bool>,
+) -> Result<(Vec<Spanned<SurfaceEntry>>, Span, usize), ParseError> {
+    let bracket_start_span = tokens[start_index].span.clone();
+    let mut i = start_index + 1; // consume [
+
+    let mut entries: Vec<Spanned<SurfaceEntry>> = Vec::new();
+    let mut depth: usize = 1;
+    // True after a key identifier and its `:` have been consumed — the next
+    // value token should update the last entry's value, not push a new entry.
+    let mut waiting_for_value = false;
+
+    while i < tokens.len() {
+        i += skip_whitespace_tokens(tokens, i, leading_comments, blank_before);
+        if i >= tokens.len() {
+            break;
+        }
+
+        match &tokens[i].node {
+            Token::CloseBracket => {
+                depth -= 1;
+                if depth == 0 {
+                    // If we were waiting for a value after a colon, the annotation is
+                    // malformed (e.g. `@[type:]`). The last entry has a stale value node.
+                    // Treat as a parse error — a trailing colon in a property dict
+                    // annotation is not valid syntax.
+                    if waiting_for_value {
+                        return Err(ParseError {
+                            message: "missing value after `:` in property dict annotation"
+                                .to_string(),
+                            span: Some(tokens[i].span.clone()),
+                        });
+                    }
+
+                    let ann_span = Span {
+                        start: bracket_start_span.start,
+                        end: tokens[i].span.end,
+                        file: bracket_start_span.file.clone(),
+                        name: None,
+                    };
+                    let final_i = i + 1; // consume ]
+                    return Ok((entries, ann_span, final_i));
+                }
+                // Nested bracket close inside a value — this shouldn't happen in the
+                // simple key: value annotation dict, but handle gracefully.
+                i += 1;
+            }
+            Token::OpenBracket => {
+                // Nested bracket in annotation value — skip (treat as opaque).
+                depth += 1;
+                i += 1;
+            }
+            Token::Colon => {
+                // Key separator: promote the last entry's value node to a key.
+                // The key node must be StringLiteral so that get_property() can find it
+                // (get_property matches SurfaceExpression::StringLiteral { content }).
+                if let Some(last_entry) = entries.last_mut() {
+                    if last_entry.node.key.is_none() {
+                        // Extract the identifier name from the VarRef value node.
+                        let key_str = match &last_entry.node.value.expr {
+                            SurfaceExpression::VarRef { name, .. } => name.clone(),
+                            SurfaceExpression::StringLiteral { content, .. } => content.clone(),
+                            _ => String::new(),
+                        };
+                        let key_span = last_entry.node.value.span.clone();
+                        let key_node = Arc::new(SurfaceNode::new(
+                            SurfaceExpression::StringLiteral {
+                                prefix: String::new(),
+                                delimiter: "\"".to_string(),
+                                content: key_str,
+                            },
+                            key_span.clone(),
+                        ));
+                        // Temporarily put a placeholder value; will be replaced when the
+                        // next value token is consumed.
+                        last_entry.node.key = Some(key_node);
+                        waiting_for_value = true;
+                        i += 1;
+                        continue;
+                    }
+                }
+                i += 1; // skip stray colon
+            }
+            Token::Identifier(name) => {
+                let name = name.clone();
+                let tok_span = tokens[i].span.clone();
+                let node = Arc::new(SurfaceNode::new(
+                    SurfaceExpression::VarRef {
+                        name,
+                        escaped: false,
+                        resolution: crate::ast::Resolution::new(),
+                        call_dispatch: crate::ast::CallDispatch::new(),
+                        annotation: None,
+                    },
+                    tok_span.clone(),
+                ));
+                if waiting_for_value {
+                    // Update the last entry's value in-place.
+                    if let Some(last_entry) = entries.last_mut() {
+                        last_entry.node.value = node;
+                        last_entry.span.end = tok_span.end;
+                    }
+                    waiting_for_value = false;
+                } else {
+                    entries.push(Spanned::new(
+                        SurfaceEntry {
+                            key: None,
+                            value: node,
+                        },
+                        tok_span,
+                    ));
+                }
+                i += 1;
+            }
+            Token::StringLiteral {
+                prefix,
+                delimiter,
+                content,
+            } => {
+                let (p, d, c) = (prefix.clone(), delimiter.clone(), content.clone());
+                let tok_span = tokens[i].span.clone();
+                let node = Arc::new(SurfaceNode::new(
+                    SurfaceExpression::StringLiteral {
+                        prefix: p,
+                        delimiter: d,
+                        content: c,
+                    },
+                    tok_span.clone(),
+                ));
+                if waiting_for_value {
+                    if let Some(last_entry) = entries.last_mut() {
+                        last_entry.node.value = node;
+                        last_entry.span.end = tok_span.end;
+                    }
+                    waiting_for_value = false;
+                } else {
+                    entries.push(Spanned::new(
+                        SurfaceEntry {
+                            key: None,
+                            value: node,
+                        },
+                        tok_span,
+                    ));
+                }
+                i += 1;
+            }
+            Token::Int(n) => {
+                let n = *n;
+                let tok_span = tokens[i].span.clone();
+                let node = Arc::new(SurfaceNode::new(
+                    SurfaceExpression::Int(n),
+                    tok_span.clone(),
+                ));
+                if waiting_for_value {
+                    if let Some(last_entry) = entries.last_mut() {
+                        last_entry.node.value = node;
+                        last_entry.span.end = tok_span.end;
+                    }
+                    waiting_for_value = false;
+                } else {
+                    entries.push(Spanned::new(
+                        SurfaceEntry {
+                            key: None,
+                            value: node,
+                        },
+                        tok_span,
+                    ));
+                }
+                i += 1;
+            }
+            Token::Float(f) => {
+                let f = *f;
+                let tok_span = tokens[i].span.clone();
+                let node = Arc::new(SurfaceNode::new(
+                    SurfaceExpression::Float(f),
+                    tok_span.clone(),
+                ));
+                if waiting_for_value {
+                    if let Some(last_entry) = entries.last_mut() {
+                        last_entry.node.value = node;
+                        last_entry.span.end = tok_span.end;
+                    }
+                    waiting_for_value = false;
+                } else {
+                    entries.push(Spanned::new(
+                        SurfaceEntry {
+                            key: None,
+                            value: node,
+                        },
+                        tok_span,
+                    ));
+                }
+                i += 1;
+            }
+            _ => {
+                // Unexpected token inside annotation brackets.
+                // If we were waiting for a value after `:`, the annotation is malformed.
+                if waiting_for_value {
+                    return Err(ParseError {
+                        message: "missing value after `:` in property dict annotation".to_string(),
+                        span: Some(tokens[i].span.clone()),
+                    });
+                }
+                i += 1;
+            }
+        }
+    }
+
+    Err(ParseError {
+        message: "unclosed bracket in property dict annotation".to_string(),
+        span: Some(bracket_start_span),
+    })
+}
+
 fn parse_annotation_direct(
     tokens: &[Spanned<Token>],
     start_index: usize,
@@ -289,263 +526,49 @@ fn parse_annotation_direct(
             ))
         }
         Token::OpenBracket => {
-            // @[key: val ...] property dict annotation — read tokens directly.
+            // @[key: val ...] property dict annotation — delegate to extracted bracket parser.
+            // T-1778: Extracted token-scanning loop to eliminate duplication.
             let bracket_start_span = tokens[i].span.clone();
-            i += 1; // consume [
+            let (entries, ann_span, final_i) =
+                parse_bracket_annotation_dict(tokens, i, leading_comments, blank_before)?;
 
-            let mut entries: Vec<Spanned<SurfaceEntry>> = Vec::new();
-            let mut depth: usize = 1;
-            // True after a key identifier and its `:` have been consumed — the next
-            // value token should update the last entry's value, not push a new entry.
-            let mut waiting_for_value = false;
-
-            while i < tokens.len() {
-                i += skip_whitespace_tokens(tokens, i, leading_comments, blank_before);
-                if i >= tokens.len() {
-                    break;
-                }
-
-                match &tokens[i].node {
-                    Token::CloseBracket => {
-                        depth -= 1;
-                        if depth == 0 {
-                            // If we were waiting for a value after a colon, the annotation is
-                            // malformed (e.g. `@[type:]`). The last entry has a stale value node.
-                            // Treat as a parse error — a trailing colon in a property dict
-                            // annotation is not valid syntax.
-                            if waiting_for_value {
-                                return Err(ParseError {
-                                    message: "missing value after `:` in property dict annotation"
-                                        .to_string(),
-                                    span: Some(tokens[i].span.clone()),
-                                });
-                            }
-
-                            let ann_span = Span {
-                                start: bracket_start_span.start,
-                                end: tokens[i].span.end,
-                                file: bracket_start_span.file.clone(),
-                                name: None,
-                            };
-                            i += 1; // consume ]
-
-                            // T-1617: Route through expression_to_annotation for unification
-                            // with the main body AnnotationCollect path.
-                            // T-1618: Annotation::Annotated now takes Box<Annotation> as outer,
-                            // so @[...]@Next is representable. Check for a chained annotation.
-                            if i < tokens.len() && matches!(&tokens[i].node, Token::ImmediateAt) {
-                                let (inner_ann, final_i) = parse_annotation_direct(
-                                    tokens,
-                                    i,
-                                    leading_comments,
-                                    blank_before,
-                                )?;
-                                let chained_span = Span {
-                                    start: bracket_start_span.start,
-                                    end: inner_ann.span.end,
-                                    file: bracket_start_span.file.clone(),
-                                    name: None,
-                                };
-                                // Build outer Dict annotation, then chain via Annotated.
-                                // T-1617: outer uses expression_to_annotation for consistency.
-                                let outer_dict_node = Arc::new(SurfaceNode::new(
-                                    SurfaceExpression::Dict(entries),
-                                    ann_span.clone(),
-                                ));
-                                let outer_ann = expression_to_annotation(&outer_dict_node);
-                                return Ok((
-                                    Spanned::new(
-                                        Annotation::Annotated(
-                                            Box::new(outer_ann),
-                                            Box::new(inner_ann.node),
-                                        ),
-                                        chained_span,
-                                    ),
-                                    final_i,
-                                ));
-                            }
-                            // T-1617: Build a Dict SurfaceNode and convert via expression_to_annotation.
-                            let dict_node = Arc::new(SurfaceNode::new(
-                                SurfaceExpression::Dict(entries),
-                                ann_span.clone(),
-                            ));
-                            return Ok((
-                                Spanned::new(expression_to_annotation(&dict_node), ann_span),
-                                i,
-                            ));
-                        }
-                        // Nested bracket close inside a value — this shouldn't happen in the
-                        // simple key: value annotation dict, but handle gracefully.
-                        i += 1;
-                    }
-                    Token::OpenBracket => {
-                        // Nested bracket in annotation value — skip (treat as opaque).
-                        depth += 1;
-                        i += 1;
-                    }
-                    Token::Colon => {
-                        // Key separator: promote the last entry's value node to a key.
-                        // The key node must be StringLiteral so that get_property() can find it
-                        // (get_property matches SurfaceExpression::StringLiteral { content }).
-                        if let Some(last_entry) = entries.last_mut() {
-                            if last_entry.node.key.is_none() {
-                                // Extract the identifier name from the VarRef value node.
-                                let key_str = match &last_entry.node.value.expr {
-                                    SurfaceExpression::VarRef { name, .. } => name.clone(),
-                                    SurfaceExpression::StringLiteral { content, .. } => {
-                                        content.clone()
-                                    }
-                                    _ => String::new(),
-                                };
-                                let key_span = last_entry.node.value.span.clone();
-                                let key_node = Arc::new(SurfaceNode::new(
-                                    SurfaceExpression::StringLiteral {
-                                        prefix: String::new(),
-                                        delimiter: "\"".to_string(),
-                                        content: key_str,
-                                    },
-                                    key_span.clone(),
-                                ));
-                                // Temporarily put a placeholder value; will be replaced when the
-                                // next value token is consumed.
-                                last_entry.node.key = Some(key_node);
-                                waiting_for_value = true;
-                                i += 1;
-                                continue;
-                            }
-                        }
-                        i += 1; // skip stray colon
-                    }
-                    Token::Identifier(name) => {
-                        let name = name.clone();
-                        let tok_span = tokens[i].span.clone();
-                        let node = Arc::new(SurfaceNode::new(
-                            SurfaceExpression::VarRef {
-                                name,
-                                escaped: false,
-                                resolution: crate::ast::Resolution::new(),
-                                call_dispatch: crate::ast::CallDispatch::new(),
-                                annotation: None,
-                            },
-                            tok_span.clone(),
-                        ));
-                        if waiting_for_value {
-                            // Update the last entry's value in-place.
-                            if let Some(last_entry) = entries.last_mut() {
-                                last_entry.node.value = node;
-                                last_entry.span.end = tok_span.end;
-                            }
-                            waiting_for_value = false;
-                        } else {
-                            entries.push(Spanned::new(
-                                SurfaceEntry {
-                                    key: None,
-                                    value: node,
-                                },
-                                tok_span,
-                            ));
-                        }
-                        i += 1;
-                    }
-                    Token::StringLiteral {
-                        prefix,
-                        delimiter,
-                        content,
-                    } => {
-                        let (p, d, c) = (prefix.clone(), delimiter.clone(), content.clone());
-                        let tok_span = tokens[i].span.clone();
-                        let node = Arc::new(SurfaceNode::new(
-                            SurfaceExpression::StringLiteral {
-                                prefix: p,
-                                delimiter: d,
-                                content: c,
-                            },
-                            tok_span.clone(),
-                        ));
-                        if waiting_for_value {
-                            if let Some(last_entry) = entries.last_mut() {
-                                last_entry.node.value = node;
-                                last_entry.span.end = tok_span.end;
-                            }
-                            waiting_for_value = false;
-                        } else {
-                            entries.push(Spanned::new(
-                                SurfaceEntry {
-                                    key: None,
-                                    value: node,
-                                },
-                                tok_span,
-                            ));
-                        }
-                        i += 1;
-                    }
-                    Token::Int(n) => {
-                        let n = *n;
-                        let tok_span = tokens[i].span.clone();
-                        let node = Arc::new(SurfaceNode::new(
-                            SurfaceExpression::Int(n),
-                            tok_span.clone(),
-                        ));
-                        if waiting_for_value {
-                            if let Some(last_entry) = entries.last_mut() {
-                                last_entry.node.value = node;
-                                last_entry.span.end = tok_span.end;
-                            }
-                            waiting_for_value = false;
-                        } else {
-                            entries.push(Spanned::new(
-                                SurfaceEntry {
-                                    key: None,
-                                    value: node,
-                                },
-                                tok_span,
-                            ));
-                        }
-                        i += 1;
-                    }
-                    Token::Float(f) => {
-                        let f = *f;
-                        let tok_span = tokens[i].span.clone();
-                        let node = Arc::new(SurfaceNode::new(
-                            SurfaceExpression::Float(f),
-                            tok_span.clone(),
-                        ));
-                        if waiting_for_value {
-                            if let Some(last_entry) = entries.last_mut() {
-                                last_entry.node.value = node;
-                                last_entry.span.end = tok_span.end;
-                            }
-                            waiting_for_value = false;
-                        } else {
-                            entries.push(Spanned::new(
-                                SurfaceEntry {
-                                    key: None,
-                                    value: node,
-                                },
-                                tok_span,
-                            ));
-                        }
-                        i += 1;
-                    }
-                    _ => {
-                        // Unexpected token inside annotation brackets.
-                        // If we were waiting for a value after `:`, the annotation is malformed.
-                        if waiting_for_value {
-                            return Err(ParseError {
-                                message: "missing value after `:` in property dict annotation"
-                                    .to_string(),
-                                span: Some(tokens[i].span.clone()),
-                            });
-                        }
-                        i += 1;
-                    }
-                }
+            // T-1617: Route through expression_to_annotation for unification
+            // with the main body AnnotationCollect path.
+            // T-1618: Annotation::Annotated now takes Box<Annotation> as outer,
+            // so @[...]@Next is representable. Check for a chained annotation.
+            if final_i < tokens.len() && matches!(&tokens[final_i].node, Token::ImmediateAt) {
+                let (inner_ann, final_i) =
+                    parse_annotation_direct(tokens, final_i, leading_comments, blank_before)?;
+                let chained_span = Span {
+                    start: bracket_start_span.start,
+                    end: inner_ann.span.end,
+                    file: bracket_start_span.file.clone(),
+                    name: None,
+                };
+                // Build outer Dict annotation, then chain via Annotated.
+                // T-1617: outer uses expression_to_annotation for consistency.
+                let outer_dict_node = Arc::new(SurfaceNode::new(
+                    SurfaceExpression::Dict(entries),
+                    ann_span.clone(),
+                ));
+                let outer_ann = expression_to_annotation(&outer_dict_node);
+                return Ok((
+                    Spanned::new(
+                        Annotation::Annotated(Box::new(outer_ann), Box::new(inner_ann.node)),
+                        chained_span,
+                    ),
+                    final_i,
+                ));
             }
-
-            Err(ParseError {
-                message: "unclosed bracket in property dict annotation".to_string(),
-                span: Some(bracket_start_span),
-            })
+            // T-1617: Build a Dict SurfaceNode and convert via expression_to_annotation.
+            let dict_node = Arc::new(SurfaceNode::new(
+                SurfaceExpression::Dict(entries),
+                ann_span.clone(),
+            ));
+            Ok((
+                Spanned::new(expression_to_annotation(&dict_node), ann_span),
+                final_i,
+            ))
         }
         _ => Err(ParseError {
             message: format!(
@@ -9582,5 +9605,43 @@ mod tests {
             }
             other => panic!("expected Dict, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_expression_to_annotation_expr_produces_quote() {
+        let node = SurfaceNode::new(
+            SurfaceExpression::VarRef {
+                name: "Expr".to_string(),
+                escaped: false,
+                resolution: crate::ast::Resolution::new(),
+                call_dispatch: crate::ast::CallDispatch::new(),
+                annotation: None,
+            },
+            crate::ast::Span::rust_source(file!(), line!()),
+        );
+        let ann = expression_to_annotation(&node);
+        assert!(
+            matches!(ann, Annotation::Quote),
+            "expected Annotation::Quote for @Expr, got {ann:?}"
+        );
+    }
+
+    #[test]
+    fn test_expression_to_annotation_non_expr_produces_simple() {
+        let node = SurfaceNode::new(
+            SurfaceExpression::VarRef {
+                name: "Integer".to_string(),
+                escaped: false,
+                resolution: crate::ast::Resolution::new(),
+                call_dispatch: crate::ast::CallDispatch::new(),
+                annotation: None,
+            },
+            crate::ast::Span::rust_source(file!(), line!()),
+        );
+        let ann = expression_to_annotation(&node);
+        assert!(
+            matches!(ann, Annotation::Simple(ref s) if s == "Integer"),
+            "expected Annotation::Simple(\"Integer\") for @Integer, got {ann:?}"
+        );
     }
 }

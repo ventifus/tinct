@@ -1,0 +1,24 @@
+# annotation-of includes return: and other type-level keys (B-547).
+# Previously, return/constraint/bind/kinds were hardcoded for exclusion.
+# Now, type-level VarRefs (resolution Some(None)) produce their string identity.
+[
+  f: [fn@[return: String  doc: "Example function"] [let x] x]
+  ann: [annotation-of f]
+
+  # Both keys should be present
+  has-return: [has? "return" ann]
+  has-doc: [has? "doc" ann]
+
+  # return: produces string identity of the type name
+  return-val: [get "return" ann]
+  doc-val: [get "doc" ann]
+
+  result: [
+    has-return: has-return
+    has-doc: has-doc
+    return-is-string: [= return-val "String"]
+    doc-is-string: [= doc-val "Example function"]
+  ]
+]
+=== out
+Dict({"result": Dict({"has-return": Variant(Boolean.True, Null), "has-doc": Variant(Boolean.True, Null), "return-is-string": Variant(Boolean.True, Null), "doc-is-string": Variant(Boolean.True, Null)})})

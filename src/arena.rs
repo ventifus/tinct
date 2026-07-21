@@ -700,25 +700,18 @@ fn translate_unevaluated_state(
         UnevaluatedState::AstField { node, field, ctx } => {
             UnevaluatedState::AstField { node, field, ctx }
         }
-        // AnnotatedWrap must never be migrated in unevaluated form.
-        //
-        // Precondition: all AnnotatedWrap thunks are materialized before arena migration is
-        // called — the migration caller (builtin_arena_migrate / deep-materialize path) must
-        // force AnnotatedWrap thunks to materialized before invoking migrate_thunk_id.
-        //
-        // If this arm is reached, the caller violated the precondition: an AnnotatedWrap
-        // thunk was present in the arena without being forced first. The `ctx` field would
-        // reference the source EvalContext while `inner` (after translation) would point to
-        // the destination arena — a use-after-free class bug (same pattern as B-514 for
-        // BuiltinCall/FnCall). See Finding 4 of sprint S-934.
-        UnevaluatedState::AnnotatedWrap { inner, .. } => {
-            unreachable!(
-                "AnnotatedWrap thunk (inner={:?}) reached translate_unevaluated_state — \
-                 AnnotatedWrap thunks must be fully materialized before arena migration. \
-                 This is a precondition violation: the caller must force all AnnotatedWrap \
-                 thunks before calling migrate_thunk_id.",
-                inner,
-            )
+        UnevaluatedState::AnnotatedWrap {
+            inner,
+            annotation,
+            ctx,
+        } => {
+            let new_inner =
+                migrate_thunk_id(inner, src_range, dst_env_id, thunk_map, env_map, arena);
+            UnevaluatedState::AnnotatedWrap {
+                inner: new_inner,
+                annotation,
+                ctx,
+            }
         }
     }
 }
@@ -1553,7 +1546,10 @@ mod tests {
         // truncate the whole range starting at child1.
         arena.drop_scope(child2);
         assert_eq!(arena.free_list.len(), 1, "child2 should be on free_list");
-        assert_eq!(arena.free_list[0].0, child2.0, "free_list entry must be child2");
+        assert_eq!(
+            arena.free_list[0].0, child2.0,
+            "free_list entry must be child2"
+        );
 
         // Now truncate starting at child1 — this must remove child2's stale entry from
         // free_list before truncating, otherwise alloc_root/alloc_child would index

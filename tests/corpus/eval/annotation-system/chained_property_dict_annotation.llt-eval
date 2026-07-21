@@ -1,11 +1,12 @@
 # T-1618: Annotation::Annotated with a PropertyDict as outer — chained annotation.
 # x@[doc: "help"]@Inner in dict key position uses
 # Annotated(Box<Annotation>, Box<Annotation>) with a non-Simple outer.
-# This test verifies that the chained annotation evaluates without error and
-# the enclosed value is accessible normally.
+# The PropertyDict in the outer position produces Value::Annotated wrapping,
+# so annotation-of returns the annotation dict.
 [
   x@[doc: "help"]@Inner: 42
-  result: [= x 42]
+  ann: [annotation-of x]
+  result: [= ann.doc "help"]
 ]
 === out
-Dict({"x": Int(42), "result": Variant(Boolean.True, Null)})
+Dict({"x": Annotated(Int(42), {"doc": String("help")}), "ann": Dict({"doc": String("help")}), "result": Variant(Boolean.True, Null)})
