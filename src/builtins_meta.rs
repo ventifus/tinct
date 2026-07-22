@@ -2585,20 +2585,31 @@ pub(crate) fn builtin_fork_type_ctx(
     })
 }
 
-/// `builtin-tc-with-scope`: Registers the scope-id of type-stage function thunks in the TypeContext.
+/// `builtin-tc-with-scope`: Registers the type-stage env in the TypeContext.
 ///
 /// Takes 2 positional args (both forced):
 ///   - arg 0: `Value::TypeContext` — the TypeContext to update
-///   - arg 1: `Value::Int` — the scope-id produced by evaluating type-stage documents
+///   - arg 1: `Value::Dict` (T-1775 env-dict protocol) or `Value::Int` (legacy scope-id,
+///     accepted for backwards compatibility)
 ///
-/// Locks the TypeContext mutex and records the scope-id for type-stage scope-chain lookup.
-/// Returns the **same** `Value::TypeContext` value (the mutation is in-place).
+/// T-1775: The second argument is now an env-dict (`Dict<String, Any>`) produced by
+/// evaluating type-stage documents with the env-dict protocol.  The env-dict is not
+/// stored in TypeContextData (ScopeArena and type_stage_scope_id are no longer used
+/// by `builtin-typecheck-doc`).  This builtin is therefore a no-op for the env field —
+/// it returns the same TypeContext unchanged regardless of the env value.
 ///
-/// Used by loader.llt and test-loader.llt to wire the type-stage scope into the TypeContext
-/// before type-checking.
+/// The no-op behavior is correct: `builtin-typecheck-doc` already ignores
+/// `type_stage_scope_id` (line `let _ = guard.type_stage_scope_id;`), so wiring the
+/// type-stage scope into the TypeContext via scope-id had no effect.  Under the env-dict
+/// protocol the type-stage types are resolved through the env passed to `builtin-resolve`
+/// and `builtin-eval`, not through the TypeContext.
 ///
-/// Signature: `[builtin-tc-with-scope type-ctx ts-scope-id]`
-/// where `ts-scope-id` is the Int returned by the final scope-id from type-stage evaluation.
+/// Returns the same `Value::TypeContext` value unchanged.
+///
+/// Used by loader.llt and test-loader.llt after evaluating type-stage documents.
+///
+/// Signature: `[builtin-tc-with-scope type-ctx ts-env]`
+/// where `ts-env` is the accumulated env dict from type-stage document evaluation.
 pub(crate) fn builtin_tc_with_scope(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -2618,7 +2629,7 @@ pub(crate) fn builtin_tc_with_scope(
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
-        let scope_id_val = args[1]
+        let ts_env_val = args[1]
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
@@ -2636,26 +2647,27 @@ pub(crate) fn builtin_tc_with_scope(
             }
         };
 
-        // arg 1: scope-id as Int
-        let scope_id = match scope_id_val {
-            Value::Int(n) => n as u32,
+        // arg 1: env-dict (T-1775 protocol) or legacy scope-id Int.
+        // Accept both for backwards compatibility.  The value is not stored —
+        // type_stage_scope_id is already ignored by builtin-typecheck-doc
+        // (`let _ = guard.type_stage_scope_id` in builtins_meta.rs:2335).
+        // Under the env-dict protocol, type-stage resolution is done by the resolver
+        // through the name-set passed to builtin-resolve, not through the TypeContext.
+        match &ts_env_val {
+            Value::Dict(_) | Value::Int(_) => {}
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-tc-with-scope".to_string(),
-                    "Int (scope-id from type-stage evaluation)",
+                    "Dict or Int",
                     other.type_name(),
                     call_span,
                 )
                 .into())
             }
-        };
-
-        // Update TypeContext: record scope-id for type-stage scope-chain lookup.
-        {
-            let mut guard = tc_arc.lock().unwrap();
-            guard.type_stage_scope_id = Some(scope_id);
         }
 
+        // No-op: type_stage_scope_id is a bridge placeholder that builtin-typecheck-doc
+        // already ignores.  Return the TypeContext unchanged.
         ok_val(Value::TypeContext(tc_arc), call_span)
     })
 }
@@ -2924,9 +2936,17 @@ pub(crate) fn builtin_doc_expressions(
 
 /// `builtin-doc-meta`: Evaluate document header metadata.
 ///
-/// Evaluates the header values of a document in the given scope. Takes 2 args:
+/// Evaluates the header values of a document. Takes 2 args:
 /// - arg0: Value::Document
-/// - arg1: Int (scope-id for evaluating header values)
+/// - arg1: Dict (env-dict for evaluating header values) or Int (legacy scope-id, accepted for
+///   backwards compatibility but the scope-id value is unused — header expressions are literals)
+///
+/// T-1775 protocol: arg1 is now an env-dict (Dict<String, Any>).  Header values are
+/// almost always literals (stage: "type", pragma: ["no-prelude"]), so the env is not
+/// needed for evaluation.  The argument is accepted and type-checked but the env dict
+/// is not injected into the evaluation context — header evaluation always runs with an
+/// empty accumulated_group so that non-literal header expressions still evaluate in an
+/// isolated scope without accidentally resolving runtime names from the caller's env.
 ///
 /// Returns Dict {key: evaluated-value, ...}.
 /// Returns empty Dict if header is empty.
@@ -2963,42 +2983,36 @@ pub(crate) fn builtin_doc_meta(
             }
         };
 
-        let scope_id_val = args[1]
+        // arg1: env-dict (T-1775 protocol) or legacy scope-id Int.
+        // The value is accepted but not used for header evaluation — doc headers contain
+        // literal values (strings, lists of strings) that do not require name resolution.
+        // Accepting both Dict and Int here ensures backwards compatibility with callers
+        // that still pass scope-ids from the old scope-arena protocol.
+        let env_val = args[1]
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
-        let scope_id = match scope_id_val {
-            Value::Int(n) => {
-                if n < 0 {
-                    return Err(EvalError::type_mismatch_ctx(
-                        "builtin-doc-meta scope-id must be non-negative Int".to_string(),
-                        "non-negative Int",
-                        &format!("{}", n),
-                        call_span,
-                    )
-                    .into());
-                }
-                let u = n as u32;
-                // ScopeArena deleted — skip range validation
-                Some(u)
-            }
+        // Reject types that are clearly wrong (not Dict, Int, or empty dict []).
+        match &env_val {
+            Value::Dict(_) | Value::Int(_) => {}
             other => {
                 return Err(EvalError::type_mismatch_ctx(
-                    "builtin-doc-meta scope-id".to_string(),
-                    "Int",
+                    "builtin-doc-meta".to_string(),
+                    "Dict or Int",
                     other.type_name(),
                     call_span,
                 )
                 .into());
             }
-        };
+        }
 
-        // Evaluate each header SurfaceNode value in the given scope and collect results.
+        // Evaluate each header SurfaceNode value with an empty accumulated group.
+        // Header values are literals — no env injection needed.
         let mut result: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         for (key, node_arc) in &doc_arc.header {
             let nodes = vec![Arc::clone(node_arc)];
             let eval_result =
-                crate::eval::eval_document_exprs_with_env(&nodes, &ctx, scope_id, None).await;
+                crate::eval::eval_document_exprs_with_env(&nodes, &ctx, None, None).await;
             match eval_result {
                 Ok((thunk, _)) => {
                     result.insert(HashableValue::Str(key.clone().into()), thunk);

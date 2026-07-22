@@ -308,8 +308,10 @@
                  [merge env exports]]
                decl-env
                split.ts]]
-             # Wire the type-stage env into the TypeContext.
-             [ts-tc: [builtin-tc-with-scope seed-tc ts-env]]
+             # Type-stage env wire: in the env-dict protocol there is no scope-id,
+             # so ts-tc is just the seed TypeContext (type_stage_scope_id is a no-op
+             # in builtin-typecheck-doc when ScopeArena is absent).
+             [ts-tc: seed-tc]
              # Pass 2: typecheck all docs with the enriched TypeContext.
              [resolve-diagnostics: [reduce
                [fn [let acc doc]
@@ -474,8 +476,10 @@
     [_tc0: tc]
     # Pass 1: evaluate type-stage documents. Accumulator threads env dict.
     [ts-acc: [reduce eval-doc [env: seed-env  tc: _tc0  last-result: []  stderr: state.stderr  diagnostics: []] split.ts]]
-    # Wire ts env into the TypeContext.
-    [_tc: [builtin-tc-with-scope ts-acc.tc ts-acc.env]]
+    # Type-stage env wire: in the env-dict protocol there is no scope-id,
+    # so _tc is ts-acc.tc directly (type_stage_scope_id is a no-op in
+    # builtin-typecheck-doc when ScopeArena is absent).
+    [_tc: ts-acc.tc]
     # Pass 2: evaluate runtime documents. Seed diagnostics from ts-acc so pass-1 errors
     # short-circuit pass-2 docs immediately.
     [final-acc: [reduce eval-doc [env: ts-acc.env  tc: _tc  last-result: []  stderr: ts-acc.stderr  diagnostics: ts-acc.diagnostics] split.rt]]
