@@ -143,9 +143,13 @@ pub(crate) async fn eval_document_exprs_with_env(
 /// function accepts CoreExprs that are already lowered and evaluates them directly via
 /// `eval_core_expr`.
 ///
-/// `initial_group`: the env-dict thunks in insertion order, seeding the accumulated group
-/// so that `CoreExpr::Var { addr: VarAddr::LetrecGroupMember(i) }` references into the env
-/// resolve correctly.
+/// `initial_group`: the env-dict thunks in insertion order, seeding the accumulated group.
+/// `builtin-resolve` seeds the resolver with the env-dict name list and assigns each name
+/// `VarAddr::LetrecGroupMember(i)` (i = 0..n-1, via
+/// `resolve_surface_document_with_env_dict`).  At runtime, `CoreExpr::Var { addr:
+/// LetrecGroupMember(i) }` resolves to `frame.group[i]` = `initial_group[i]` = the i-th
+/// env-dict thunk.  The document's own dict entries accumulate on top of `initial_group`
+/// as `eval_dict_core` produces them, extending the group with higher indices.
 ///
 /// Returns the last expression's thunk. The caller is responsible for materializing
 /// to a Dict (exports). Intermediate dict expressions are materialized to extract their
@@ -219,11 +223,13 @@ pub(crate) async fn eval_core_document_exprs(
 /// it writes de Bruijn coordinates inline to the AST nodes.
 /// If type checking was skipped, `TypeAssert` nodes will use Type::Unknown (accepts all values).
 ///
-/// # Scope
+/// # Document sequencing
 ///
-/// Documents are evaluated sequentially; the tinct-side `builtin-eval` call (inside
-/// `loader.llt`) is responsible for threading the per-document scope-id forward via
-/// `builtin-scope-new`, making each document's scope a child of the previous.
+/// Documents are evaluated sequentially via the EvalFrame accumulated-group protocol.
+/// `eval_core_document_exprs` receives an `initial_group` env dict seeded with exported
+/// bindings from all prior documents; each document's exported names are merged into the
+/// accumulated env dict by `builtin-eval` in `loader.llt` after each document completes,
+/// and that updated dict is passed as `initial_group` for the next document.
 pub async fn eval_surface_file(
     program: &SurfaceProgram,
     ctx: &Arc<EvalContext>,

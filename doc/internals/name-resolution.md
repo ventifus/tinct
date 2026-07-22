@@ -325,8 +325,8 @@ The type checker also writes `CallDispatch` OnceLocks on call-site VarRef nodes 
 
 Key behaviors:
 - Only accepts `Value::Document`, not `Value::Program` — one document at a time.
-- Returns `{doc: Document, errors: Dict<Int, ErrorDict>}`. **Does not return `new_frames`** — callers use `builtin-scopes` / scope-to-frames introspection to rebuild frames from the `ScopeArena` chain after `builtin-eval` has processed the document.
-- `_new_frames` from `resolve_surface_document_inplace` is intentionally discarded in `builtin-resolve`. The rationale: `builtin-eval` writes bindings into the `ScopeArena`; tinct callers reconstruct frames from the resulting scope chain rather than from the resolver's output.
+- Returns `{doc: Document, errors: Dict<Int, ErrorDict>}`. **Does not return `new_frames`** — callers accumulate bindings via the exports Dict returned by `builtin-eval`, not by querying resolver frames.
+- `_new_frames` from `resolve_surface_document_inplace` is intentionally discarded in `builtin-resolve`. The rationale: `builtin-eval` returns the exports Dict directly; tinct callers accumulate env by merging exports into their running env dict.
 
 ### Macro expansion (`src/builtins_meta.rs`)
 

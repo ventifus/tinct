@@ -517,7 +517,7 @@ Binds positional and named arguments to function parameters, then wraps the body
 
 Multiple `---`-separated documents are evaluated in sequence by `eval_surface_file_from_env`. The last thunk of each document is passed as the `%` input for the next document, lazily — no materialization at `---` boundaries.
 
-The tinct-side `builtin-eval` (inside `loader.llt`) is responsible for threading the per-document scope-id forward via `builtin-scope-new`, making each document's scope a child of the previous.
+The tinct-side `builtin-eval` (inside `loader.llt`) returns the exports Dict directly. The loader accumulates env by merging each document's exports into the running env dict, making prior documents' exports visible to subsequent documents.
 
 ### run_loader_pipeline
 

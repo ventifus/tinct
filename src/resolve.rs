@@ -1267,6 +1267,20 @@ impl SurfaceResolver {
         &mut self,
         doc: &SurfaceDocument,
     ) -> Vec<indexmap::IndexMap<String, u32>> {
+        self.walk_surface_document_with_offset(doc, 0)
+    }
+
+    /// Walk a document with a given initial cumulative LGM offset.
+    ///
+    /// `initial_sequential_offset` is the starting offset for the first dict expression's
+    /// LGM slots. Pass 0 for standalone documents; pass `env_names.len()` when the
+    /// document is resolved in the context of an env-dict (so that the document's own
+    /// dict entries start above the env-dict's LGM slots, avoiding collision).
+    fn walk_surface_document_with_offset(
+        &mut self,
+        doc: &SurfaceDocument,
+        initial_sequential_offset: u32,
+    ) -> Vec<indexmap::IndexMap<String, u32>> {
         let mut injected = 0usize;
         let items: Vec<&SurfaceItem> = doc.items.iter().collect();
         let expr_count = items
@@ -1279,7 +1293,10 @@ impl SurfaceResolver {
         // this offset so that later expressions can distinguish "Dict 1's LGM(j)" from
         // "Dict 2's LGM(j)" — the offsets make each dict's slots non-overlapping in the
         // accumulated EvalFrame group built by eval_document_exprs_with_env.
-        let mut sequential_offset: u32 = 0;
+        // When initial_sequential_offset > 0 (env-dict protocol), the env-dict names
+        // occupy LGM slots 0..initial_sequential_offset, so the document's own dicts
+        // start above that range.
+        let mut sequential_offset: u32 = initial_sequential_offset;
 
         for item in &items {
             match item {
@@ -1413,6 +1430,82 @@ pub fn resolve_surface_document_inplace(
 
     let (table, diagnostics) = resolver.finish_with_errors();
     (table, diagnostics, new_frames)
+}
+
+/// Resolve a SurfaceDocument seeded with an env-dict name list.
+///
+/// This is the resolver entry point for the env-dict protocol (`builtin-eval` / T-1775).
+/// Unlike `resolve_surface_document_inplace`, which uses `enter_scope_from_frame` and
+/// assigns `ClosureCapture(BUILTIN_CLOSURE_OFFSET + slot)` to external names, this
+/// function seeds the initial scope with `LetrecGroupMember(i)` addresses (insertion
+/// order, i=0..n-1).
+///
+/// At runtime, `eval_core_document_exprs` keeps env-dict thunks in `frame.group`
+/// (the accumulated group), so `LetrecGroupMember(i)` resolves to `group[i]` = the
+/// i-th env-dict thunk.  This is the correct addressing scheme for env-dict names.
+///
+/// `env_names`: ordered list of in-scope names from the env-dict (insertion order from
+/// the name-set passed to `builtin-resolve`).  The i-th name gets `LetrecGroupMember(i)`.
+///
+/// Returns `(ResolutionTable, diagnostics)`.  New frames (produced by the document's
+/// own declarations) are discarded — callers accumulate bindings via the exports dict
+/// returned by `builtin-eval`, not by querying resolver frames.
+pub fn resolve_surface_document_with_env_dict(
+    doc: &crate::ast::SurfaceDocument,
+    env_names: &[String],
+) -> (ResolutionTable, Vec<TypeDiagnostic>) {
+    let mut resolver = SurfaceResolver::new();
+
+    // Seed with LetrecGroupMember(i) for the i-th env-dict name.
+    //
+    // ScopeKind::Other is intentional here (not ScopeKind::Dict).
+    //
+    // Leading-dot (`.name`) skips the nearest Dict scope to access names from the
+    // enclosing parent scope — it is used to deliberately bypass the current letrec
+    // frame and reach an outer binding. The skip rule only applies to `ScopeKind::Dict`
+    // frames; `ScopeKind::Other` frames are NOT skipped.
+    //
+    // For env-dict names (the caller's accumulated environment — prelude bindings,
+    // prior document exports, capability names, etc.), we want leading-dot to search
+    // THROUGH these names rather than skip over them. If env-dict names were registered
+    // as `ScopeKind::Dict`, a leading-dot inside a user document would skip the entire
+    // env-dict layer, making env-dict names invisible to leading-dot lookups. That
+    // would break access to any env-dict binding that a user tries to reach via `.name`.
+    //
+    // With `ScopeKind::Other`, leading-dot inside a user document skips only the user
+    // document's own innermost Dict scope (as intended), then searches upward through
+    // the env-dict names without skipping them — the correct behavior.
+    resolver.enter_scope_with_offset(env_names, 0, ScopeKind::Other);
+
+    // Walk the document starting the sequential_offset at env_names.len() so the
+    // document's own dict entries get LGM slots starting ABOVE the env-dict's slots
+    // (0..env_names.len()), avoiding collision.
+    let _new_frames = resolver.walk_surface_document_with_offset(doc, env_names.len() as u32);
+
+    // T-1741: Abandoned pipeline input % detection.
+    if !resolver.percent_referenced {
+        let percent_in_env = env_names.contains(&"%".to_string());
+        if percent_in_env {
+            let span = doc
+                .items
+                .first()
+                .map(|item| item.span())
+                .unwrap_or_else(|| crate::rust_span!());
+            resolver.diagnostics.push(TypeDiagnostic {
+                level: DiagnosticLevel::Warn,
+                kind: "abandoned-input",
+                message: "document does not reference pipeline input %".to_string(),
+                spans: vec![(span, String::new())],
+                notes: vec![],
+            });
+        }
+    }
+
+    // Exit the seeded scope.
+    resolver.exit_scope();
+
+    let (table, diagnostics) = resolver.finish_with_errors();
+    (table, diagnostics)
 }
 
 /// Resolve all VarRef nodes in a SurfaceProgram and return a ResolutionTable.

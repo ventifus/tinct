@@ -448,48 +448,23 @@
     [typed: [builtin-typecheck-doc doc-resolved.doc tc]]
     # Lower to CoreDocument, then evaluate with env-dict protocol.
     [lowered: [builtin-lower typed.doc]]
-    # Per-document arena: allocate, evaluate, migrate result to root arena, then drop.
+    # builtin-eval returns exports Dict directly; raises on error — no try/match needed.
+    [evaled: [builtin-eval lowered full-env]]
+    # Extract document metadata for caps validation and named-section bookkeeping.
     [meta: [builtin-doc-meta doc full-env]]
-    [doc-arena-name: [get-or "doc" "name" meta]]
-    [doc-arena: [builtin-arena-new doc-arena-name]]
-    # builtin-eval returns exports Dict directly; raises on error.
-    [try-eval: [builtin-try [call [fn [] [builtin-eval lowered full-env]]]]]
-    [match [builtin-has-key? "ok" try-eval]
-      0: # Error path: drop per-doc arena, then raise error.
-         [call [fn [let]
-           [_drop: [builtin-arena-drop doc-arena]]
-           [match [builtin-int-gte [builtin-dict-length [builtin-type-of _drop]] 0]
-             0: [builtin-raise [builtin-get "error" try-eval]]
-             ...: [builtin-raise [builtin-get "error" try-eval]]]]]
-      ...: # Success path: migrate result to root arena, drop per-doc arena, then validate.
-         [call [fn [let]
-           [exports: [builtin-get "ok" try-eval]]
-           [migrated-result: [builtin-arena-migrate exports doc-arena %arena]]
-           # _migrated-forced ensures migrate completes before drop — data dependency via type-of.
-           [_migrated-forced: [builtin-int-gte [builtin-dict-length [builtin-type-of migrated-result]] 0]]
-           [_drop: [match _migrated-forced
-             0: [builtin-arena-drop doc-arena]
-             ...: [builtin-arena-drop doc-arena]]]
-           # Validate --- caps: declarations. Each declared cap must be present in env.
-           [caps-list: [get-or [] "caps" meta]]
-           [_drop-forced: [builtin-int-gte [builtin-dict-length [builtin-type-of _drop]] 0]]
-           [_caps-forced: [match _drop-forced
-             0: [reduce [fn [let _ cap-name]
-                   [match [builtin-cap-env-has? cap-name full-env]
-                     0: [builtin-raise [builtin-string-concat "missing required capability: " cap-name]]
-                     ...: 0]]
-                   0 [builtin-keys caps-list]]
-             ...: [reduce [fn [let _ cap-name]
-                   [match [builtin-cap-env-has? cap-name full-env]
-                     0: [builtin-raise [builtin-string-concat "missing required capability: " cap-name]]
-                     ...: 0]]
-                   0 [builtin-keys caps-list]]]]
-           [_result-unforced: [merge state
-             [percent: migrated-result
-              named:   [update-named state migrated-result meta]]]]
-           [match [builtin-int-gte _caps-forced 0]
-             0: _result-unforced
-             ...: _result-unforced]]]]]
+    # Validate --- caps: declarations. Each declared cap must be present in full-env.
+    [caps-list: [get-or [] "caps" meta]]
+    [_caps: [reduce [fn [let _ cap-name]
+               [match [builtin-cap-env-has? cap-name full-env]
+                 0: [builtin-raise [builtin-string-concat "missing required capability: " cap-name]]
+                 ...: 0]]
+               0 [builtin-keys caps-list]]]
+    [_result: [merge state
+      [percent: evaled
+       named:   [update-named state evaled meta]]]]
+    [match [builtin-int-gte _caps 0]
+      0: _result
+      ...: _result]]
 
   # ── Pipeline item dispatch ────────────────────────────────────────────────
 

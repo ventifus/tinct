@@ -234,7 +234,7 @@ json-declaration: [fn [let d@Declaration]
 
 json-document: [fn [let d@Document]
   # stage, name, and declarations were removed from SurfaceDocument in T-1600.
-  # Header metadata requires builtin-doc-meta with a scope-id, which is not
+  # Header metadata requires builtin-doc-meta with an env-dict, which is not
   # available in the generic serializer context.
   # builtin-doc-expressions returns an auto-indexed dict of Expr-variant values,
   # one per SurfaceItem::Expr in the document (Decl items are skipped).

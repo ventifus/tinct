@@ -478,35 +478,57 @@ Thin Rust primitives that implement the self-hosted `include` pipeline. These ar
 - `include-cache-get`: Type mismatch if arg is not String
 - `include-cache-put`: Type mismatch if args are not String and a valid `IncludeCacheEntry` variant
 
-## Scope Arena Primitives
+## Loader Pipeline Primitives
 
-Low-level primitives for inspecting and extending the runtime scope arena. Used by loaders to thread scope state between documents in the eval pipeline. User code typically calls `scope-to-frames` (prelude) rather than these primitives directly.
+Low-level Rust builtins used by `loader.llt` to implement the document evaluation pipeline. User code does not call these directly — they are called by the loader and (for the include pipeline) by `prelude.llt`. See [Loader Design](16a-loader-env-chain.md) for the full bootstrapping description.
 
 | Builtin | Type | Description |
 |---------|------|-------------|
-| `builtin-scopes` | `[Fn@Dict []]` | Return all scopes in the arena as `{scope-id: parent-id-or-null, ...}`; 0-arg |
-| `builtin-scope-new` | `[Fn@Integer [Any Dict]]` | Create a new scope; arg0 is parent scope-id (Int) or `[]` (null = root); arg1 is a string-keyed Dict of bindings to install; returns the new scope-id |
-| `builtin-scope-parent` | `[Fn@Any [Int]]` | Return the parent scope-id of a scope (Int), or `[]` if the scope is a root |
-| `builtin-scope-frame` | `[Fn@Dict [Int]]` | Return the resolver frame for a single scope level as `{name: slot-index, ...}`; only slots whose thunk carries a span name are included |
+| `builtin-parse` | `[Fn@Dict [Bytes String]]` | Parse source bytes to a raw SurfaceProgram; second arg is the file path (used in error spans); returns `{program: Program, diagnostics: Dict}` |
+| `builtin-desugar` | `[Fn@Program [Program]]` | Run desugaring on a SurfaceProgram (`$_` expansion, pipe lowering, etc.); returns desugared SurfaceProgram |
+| `builtin-program-docs` | `[Fn@Dict [Program]]` | Extract the list of SurfaceDocuments from a SurfaceProgram; returns an auto-indexed Dict of Documents |
+| `builtin-resolve` | `[Fn@Dict [Document Dict]]` | Resolve name references in a SurfaceDocument; second arg is a `Dict<String,1>` name-set (all visible names, values ignored); returns `{doc: Document, diagnostics: Dict}`. The name-set is built from the accumulated env dict via `env-to-name-set`. |
+| `builtin-lower` | `[Fn@CoreDocument [Document]]` | Lower a resolved, type-checked SurfaceDocument to a CoreDocument; reads inline OnceLocks set by the resolver and type checker; returns a CoreDocument ready for `builtin-eval` |
+| `builtin-eval` | `[Fn@Dict [CoreDocument Dict]]` | Evaluate a lowered CoreDocument against an env dict; returns the exports Dict directly (the last expression's value, or the merged sequential dict exports); raises on evaluation error — no `{result, scope-id, errors}` wrapper |
+| `builtin-typecheck-doc` | `[Fn@Dict [Document TypeContext]]` | Type-check a resolved SurfaceDocument against a TypeContext; updates the TypeContext in-place with new type schemes; returns `{doc: Document, diagnostics: Dict}` |
+| `builtin-doc-meta` | `[Fn@Dict [Document Dict]]` | Extract document header metadata (`--- stage:`, `--- uses:`, `--- name:`, `--- caps:`, etc.) from a SurfaceDocument; second arg is the env dict used to resolve `--- uses:` module names; returns a Dict of header values |
 
-**`scope-to-frames`** (prelude function, not a Rust builtin) converts a scope-id into the frames dict that `builtin-resolve` expects as its second argument. It recursively walks the parent chain via `builtin-scope-parent` and collects each level's frame via `builtin-scope-frame`, producing `{0: outermost-frame, ..., N: innermost-frame}` (outermost scope first, integer-keyed).
+**`builtin-resolve` name-set interface:**
 
-**Signature:** `[Fn@Dict [Int]]` — takes a scope-id, returns an auto-indexed Dict of name-to-slot dicts.
-
-**Relationship to `builtin-resolve`:** After `builtin-eval` processes a document and returns a scope-id, loaders call `[scope-to-frames scope-id]` to rebuild the resolver frames for the next document in the pipeline. These frames are passed as `builtin-resolve`'s second positional argument, providing the name resolution context (de Bruijn coordinates) for the next stage.
-
-**Usage pattern in loaders:**
+`builtin-resolve` takes a flat `Dict<String,1>` where every key is a name visible in scope and every value is `1` (values are ignored — only keys matter). The loader builds this via `env-to-name-set`:
 
 ```tinct
-[resolved: [builtin-resolve doc [scope-to-frames scope-id]]]
+[name-set:     [env-to-name-set full-env]]
+[doc-resolved: [builtin-resolve doc name-set]]
+```
+
+**`builtin-eval` env-dict interface:**
+
+`builtin-eval` takes the lowered CoreDocument and the full env dict. It returns the exports Dict directly — the accumulated sequential bindings visible after the document finishes evaluating. On error it raises; there is no result wrapper.
+
+```tinct
+[lowered: [builtin-lower typed.doc]]
+[evaled:  [builtin-eval lowered full-env]]
+```
+
+**Accumulation pattern in loaders:**
+
+Each document's exports are merged into the accumulated env for the next document:
+
+```tinct
+[next-env: [merge doc-env [merge [%: exports] named-section-entry]]]
 ```
 
 **Error cases:**
 
-- `builtin-scopes`: None (returns empty dict if arena is empty)
-- `builtin-scope-new`: Type mismatch if arg0 is not Int or null, or arg1 is not a string-keyed Dict; non-string keys in the bindings dict produce a type error
-- `builtin-scope-parent`: Type mismatch if arg is not Int; negative scope-id; scope-id out of range
-- `builtin-scope-frame`: Type mismatch if arg is not Int; negative scope-id; scope-id out of range
+- `builtin-parse`: Type mismatch if first arg is not Bytes or second arg is not String; returns parse errors in `diagnostics` dict rather than raising
+- `builtin-desugar`: Type mismatch if arg is not a SurfaceProgram
+- `builtin-program-docs`: Type mismatch if arg is not a SurfaceProgram
+- `builtin-resolve`: Type mismatch if first arg is not Document or second arg is not Dict; resolution errors returned in `diagnostics` dict rather than raising
+- `builtin-lower`: Type mismatch if arg is not a resolved, type-checked Document; lowering errors recorded as `CoreExpr::Placeholder` sentinels in the output
+- `builtin-eval`: Type mismatch if first arg is not a CoreDocument or second arg is not a string-keyed Dict; raises on any evaluation error (no wrapping)
+- `builtin-typecheck-doc`: Type mismatch if first arg is not Document or second arg is not TypeContext; type errors returned in `diagnostics` dict rather than raising
+- `builtin-doc-meta`: Type mismatch if first arg is not Document or second arg is not Dict
 
 ## Sequences
 

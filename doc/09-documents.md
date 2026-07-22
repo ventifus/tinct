@@ -419,7 +419,7 @@ The formal rules map directly to the implementation:
 | SEQ-SCOPE | `eval_document_exprs()` (canonical loop) | `eval.rs` |
 | SEQ-SCOPE (document) | `eval_surface_document()` (delegates to `eval_document_exprs`) | `eval.rs` |
 | SEQ-SCOPE (eval builtin) | `builtin_eval()` (extracts nodes from Document, delegates to `eval_document_exprs_with_env`) | `builtins_meta.rs` |
-| DOC-PIPELINE | tinct-side `eval-doc` reduce loop in `loader.llt` via `builtin-eval` + `builtin-scope-new` (returns `{result, scope-id, errors}`) | `stdlib/loader.llt` |
+| DOC-PIPELINE | tinct-side `eval-doc` reduce loop in `loader.llt` via `builtin-eval` (returns exports Dict directly; env accumulated by `merge`) | `stdlib/loader.llt` |
 | DOC-PIPELINE caps enforcement | tinct-side `builtin-cap-env-has?` reduce loop in `eval-document-runtime` | `stdlib/loader.llt` |
 | DOC-PIPELINE expects validation | tinct-side `builtin-check-type` in `eval-docs`; not enforced in the CLI `eval-document-runtime` path | `stdlib/test-loader.llt` |
 | LOOKUP | `Environment::get()` | `value.rs:1858-1871` |
@@ -1003,7 +1003,7 @@ This matches the document isolation property of DOC-PIPELINE (§Scope Chain Sema
 | Guard push | `builtins.rs:1300-1303` (`include_guard.insert`) |
 | Guard pop + base_dir restore | `builtins.rs:1323` (`cleanup` closure) |
 | Cache store | `builtins.rs:1345-1348` |
-| DOC-PIPELINE (cross-ref) | tinct-side `eval-doc` reduce loop in `stdlib/loader.llt` via `builtin-eval` + `builtin-scope-new` (returns `{result, scope-id, errors}`) |
+| DOC-PIPELINE (cross-ref) | tinct-side `eval-doc` reduce loop in `stdlib/loader.llt` via `builtin-eval` (returns exports Dict directly; env accumulated by `merge`) |
 | SEQ-SCOPE (cross-ref) | `eval_document_exprs` (canonical loop, `eval.rs`); `eval_surface_document` delegates to it |
 
 ## Side Effects and I/O

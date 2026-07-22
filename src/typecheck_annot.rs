@@ -2116,8 +2116,8 @@ pub(crate) async fn resolve_type_name_with_guard(
 /// Lookup order (applied identically for bare names and type applications):
 ///   1. Operator/Label kind annotations (kind constraints, not types)
 ///   2. class_env (BEFORE tycon_env) — `[Iterable a]` creates constrained TypeVar
-///   3. tycon_env → `expand_named` or `instantiate_tycon_def` for structural aliases
-///   4. tycon_env → expand_named or instantiate_tycon_def (bootstrap fallback)
+///   3. type_stage_map — type-stage evaluated types from the init program's type-stage docs
+///   4. tycon_env → `expand_named` or `instantiate_tycon_def` for structural aliases
 ///   5. Undefined → TypeDiagnostic
 ///
 /// The lowercase path (ann_mapping, type_params_scope, cross-kind collision) is handled
@@ -2241,6 +2241,45 @@ async fn resolve_type_head(
                 }
             }
         }
+    }
+
+    // Step 4: tycon_env — user-defined nominal types ([type ...] declarations) and
+    // opaque Rust types (DirCap, File, etc. registered by imports.rs).
+    // These are NOT type-stage types; they are registered during typechecking.
+    if let Some(def) = state.tycon_env.get(name).cloned() {
+        if !def.constructors.is_empty() {
+            let base = Type::TyCon(name.to_string());
+            if args.is_empty() {
+                return Ok(base);
+            }
+            let mut result = base;
+            for arg in args {
+                result = Type::App(Box::new(result), Box::new(arg.clone()));
+            }
+            return Ok(result);
+        }
+        if !def.params.is_empty() && !args.is_empty() {
+            if args.len() != def.params.len() {
+                return Err(TypeDiagnostic::error(
+                    "type-error",
+                    format!(
+                        "type alias '{}' expects {} type parameter(s), got {}",
+                        name,
+                        def.params.len(),
+                        args.len()
+                    ),
+                    span,
+                ));
+            }
+            return Box::pin(instantiate_tycon_def(def.as_ref(), args, state)).await;
+        }
+        return Ok(expand_named(name, args, _env, state).unwrap_or_else(|| {
+            let mut result = Type::TyCon(name.to_string());
+            for arg in args {
+                result = Type::App(Box::new(result), Box::new(arg.clone()));
+            }
+            result
+        }));
     }
 
     // Undefined type name.

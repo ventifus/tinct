@@ -1,4 +1,0 @@
-# builtin-arena-stats: type error when argument is not an Arena
-[builtin-arena-stats "not-an-arena"]
-=== error
-arena-stats: expected Arena, got String

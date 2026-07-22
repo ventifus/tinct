@@ -44,7 +44,7 @@ use indexmap::IndexMap;
 
 use crate::ast::Span;
 use crate::builtins::{builtin, ok_val, reject_named, require_string, synthetic_call_expr};
-use crate::error::{ArityBound, EvalError, EvalResult};
+use crate::error::{EvalError, EvalResult};
 use crate::eval::{materialize, TypeContextData};
 use crate::eval_call::{invoke_function, CallContext};
 use crate::eval_materialize::make_span_dict;
@@ -1920,15 +1920,15 @@ pub(crate) fn builtin_parse(
 /// **Arguments:**
 /// - arg0: `Value::Document` (only Document, not Program — error if Program)
 /// - arg1: Dict — name-set: `{name-a: 1, name-b: 1, ...}` (keys are in-scope names; values ignored)
-///   A single resolver frame is built from the name-set keys, with all slot values set to 0.
-///   The slot value does not matter for resolution — only the name presence matters for producing
-///   resolve errors on unbound references.
+///   Names are extracted in insertion order and seeded as `LetrecGroupMember(i)` (i = 0..n-1)
+///   so that at runtime, `CoreExpr::Var { addr: LetrecGroupMember(i) }` resolves to
+///   `frame.group[i]` = the i-th env-dict thunk in `eval_core_document_exprs`.
 ///
 /// **Returns** `{doc: Document, diagnostics: Dict<Int, DiagnosticDict>}`.
 ///
-/// Writes De Bruijn coordinates into the inline `Resolution` OnceLocks on each `VarRef`/`DotAccess`
-/// node of the document's AST. After this call, `builtin-lower` and `builtin-eval` process the
-/// resolved nodes.
+/// Writes closure-converted `VarAddr` values into the inline `Resolution` OnceLocks on each
+/// `VarRef`/`DotAccess` node of the document's AST. After this call, `builtin-lower` and
+/// `builtin-eval` process the resolved nodes.
 ///
 /// This is Stage 2 of the 4-stage pipeline (Stage 1 is parse from loader.llt).
 pub(crate) fn builtin_resolve(
@@ -1963,9 +1963,9 @@ pub(crate) fn builtin_resolve(
         };
 
         // arg1: Dict<String, Any> — name-set: keys are the in-scope names; values are ignored.
-        // Build a single resolver frame with all names mapped to slot 0.
-        // The slot value is irrelevant for the resolver — it only needs the name to determine
-        // whether a VarRef is in scope. Slot 0 is used as a placeholder.
+        // Extract names in insertion order — the i-th name gets LetrecGroupMember(i) from the
+        // resolver, matching the position of that env-dict thunk in the initial_group passed to
+        // eval_core_document_exprs.
         let name_set_val = args[1]
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
@@ -1981,8 +1981,10 @@ pub(crate) fn builtin_resolve(
             }
         };
 
-        // Build one frame from the name-set keys (insertion order), slot=0 for all.
-        let mut frame: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
+        // Build the ordered name list from the name-set's string keys (insertion order).
+        // The i-th name gets LetrecGroupMember(i) in the resolver, corresponding to the
+        // i-th env-dict thunk in the accumulated_group of eval_core_document_exprs.
+        let mut env_names: Vec<String> = Vec::with_capacity(name_set_dict.len());
         for (k, _v_thunk) in &name_set_dict {
             let name = match k {
                 HashableValue::Str(s) => s,
@@ -1994,23 +1996,19 @@ pub(crate) fn builtin_resolve(
                     .into())
                 }
             };
-            // Slot value 0 is a placeholder — the resolver only needs the name for
-            // binding/reference checking. De Bruijn coordinates are written to VarRef
-            // nodes by the resolver walk itself, not read from this frame.
-            frame.insert(name.to_string(), 0u32);
+            env_names.push(name.to_string());
         }
-        let initial_frames: Vec<indexmap::IndexMap<String, u32>> = vec![frame];
 
-        // Resolve the document in-place.
-        // _resolve_table: the full ResolutionTable mapping spans to de Bruijn coords. Intentionally
+        // Resolve the document in-place using the env-dict protocol.
+        // Env-dict names get LetrecGroupMember(i) addresses so that at runtime
+        // CoreExpr::Var { addr: LetrecGroupMember(i) } resolves to frame.group[i] =
+        // initial_group[i] = the i-th env-dict thunk.
+        // _resolve_table: the full ResolutionTable mapping spans to VarAddrs. Intentionally
         //   discarded — the evaluator uses inline OnceLock resolutions written directly onto each
         //   SurfaceNode::VarRef during the resolve walk (see lower.rs: resolution.get()). The
         //   ResolutionTable is not read by the evaluator.
-        // _new_frames: the frames produced by this document's own declarations. Intentionally
-        //   discarded — callers accumulate bindings by inspecting the exports dict returned by
-        //   builtin-eval (env-dict protocol), not by querying scope chains.
-        let (_resolve_table, resolve_diagnostics, _new_frames) =
-            crate::resolve::resolve_surface_document_inplace(&doc_arc, &initial_frames);
+        let (_resolve_table, resolve_diagnostics) =
+            crate::resolve::resolve_surface_document_with_env_dict(&doc_arc, &env_names);
 
         // Build unified diagnostics dict from TypeDiagnostics (errors + warnings).
         // Callers distinguish severity by reading d.level on each entry.
@@ -2217,10 +2215,9 @@ pub(crate) fn builtin_lint_pipeline_docs(
 
 /// `builtin-typecheck-doc`: Type-check a single resolved `Value::Document`.
 ///
-/// Takes 2 or 3 args:
+/// Takes exactly 2 args:
 /// - arg0: Value::Document (already resolved)
 /// - arg1: Value::TypeContext
-/// - arg2 (optional): parent_scope_id (Int) — used to derive scope_frames for typeclass dispatch
 ///
 /// Returns Value::Document (same Arc — type annotations written inline).
 pub(crate) fn builtin_typecheck_doc(
@@ -2235,13 +2232,8 @@ pub(crate) fn builtin_typecheck_doc(
             ..
         } = ctx_arg;
         crate::builtins::reject_named("builtin-typecheck-doc", named.as_ref(), call_span.clone())?;
-        if args.len() != 2 && args.len() != 3 {
-            return Err(EvalError::arity_mismatch_bound(
-                ArityBound::Range(2, 3),
-                args.len(),
-                call_span,
-            )
-            .into());
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
 
         // arg0: Value::Document
@@ -2280,39 +2272,6 @@ pub(crate) fn builtin_typecheck_doc(
             }
         };
 
-        // arg2 (optional): parent_scope_id for deriving scope_frames
-        let parent_scope_id_opt: Option<u32> = if args.len() == 3 {
-            let scope_id_val =
-                crate::eval::materialize(&Arc::clone(&args[2]), Some(&call_span), &ctx).await?;
-            match scope_id_val {
-                Value::Int(n) => {
-                    if n < 0 {
-                        return Err(EvalError::type_mismatch_ctx(
-                            "builtin-typecheck-doc".to_string(),
-                            "non-negative Int (parent_scope_id)",
-                            &format!("{}", n),
-                            call_span,
-                        )
-                        .into());
-                    }
-                    let scope_id = n as u32;
-                    // ScopeArena deleted — skip range validation
-                    Some(scope_id)
-                }
-                other => {
-                    return Err(EvalError::type_mismatch_ctx(
-                        "builtin-typecheck-doc".to_string(),
-                        "Int (parent_scope_id)",
-                        other.type_name(),
-                        call_span,
-                    )
-                    .into());
-                }
-            }
-        } else {
-            None
-        };
-
         // Extract TypeContext state
         let (mut state, mut type_map, parent_env) = {
             let guard = tc_arc.lock().unwrap();
@@ -2333,7 +2292,6 @@ pub(crate) fn builtin_typecheck_doc(
             );
             // ScopeArena deleted — type_stage_map and scope_frames not populated from arena.
             let _ = guard.type_stage_scope_id;
-            let _ = parent_scope_id_opt;
             state.type_stage_map = Some(ts_map);
 
             let type_map = crate::ast::TypeAnnotationTable::new();
@@ -2589,10 +2547,10 @@ pub(crate) fn builtin_fork_type_ctx(
 ///
 /// Takes 2 positional args (both forced):
 ///   - arg 0: `Value::TypeContext` — the TypeContext to update
-///   - arg 1: `Value::Dict` (T-1775 env-dict protocol) or `Value::Int` (legacy scope-id,
-///     accepted for backwards compatibility)
+///   - arg 1: `Value::Dict` — the accumulated env dict from type-stage document evaluation
+///     (env-dict protocol, T-1775)
 ///
-/// T-1775: The second argument is now an env-dict (`Dict<String, Any>`) produced by
+/// T-1775: The second argument is an env-dict (`Dict<String, Any>`) produced by
 /// evaluating type-stage documents with the env-dict protocol.  The env-dict is not
 /// stored in TypeContextData (ScopeArena and type_stage_scope_id are no longer used
 /// by `builtin-typecheck-doc`).  This builtin is therefore a no-op for the env field —
@@ -2647,18 +2605,17 @@ pub(crate) fn builtin_tc_with_scope(
             }
         };
 
-        // arg 1: env-dict (T-1775 protocol) or legacy scope-id Int.
-        // Accept both for backwards compatibility.  The value is not stored —
-        // type_stage_scope_id is already ignored by builtin-typecheck-doc
-        // (`let _ = guard.type_stage_scope_id` in builtins_meta.rs:2335).
+        // arg 1: env-dict (T-1775 protocol) — must be Dict.
+        // The value is not stored — type_stage_scope_id is already ignored by
+        // builtin-typecheck-doc (`let _ = guard.type_stage_scope_id` in builtins_meta.rs).
         // Under the env-dict protocol, type-stage resolution is done by the resolver
         // through the name-set passed to builtin-resolve, not through the TypeContext.
         match &ts_env_val {
-            Value::Dict(_) | Value::Int(_) => {}
+            Value::Dict(_) => {}
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-tc-with-scope".to_string(),
-                    "Dict or Int",
+                    "Dict",
                     other.type_name(),
                     call_span,
                 )
@@ -2938,15 +2895,14 @@ pub(crate) fn builtin_doc_expressions(
 ///
 /// Evaluates the header values of a document. Takes 2 args:
 /// - arg0: Value::Document
-/// - arg1: Dict (env-dict for evaluating header values) or Int (legacy scope-id, accepted for
-///   backwards compatibility but the scope-id value is unused — header expressions are literals)
+/// - arg1: Dict — the accumulated env dict (env-dict protocol, T-1775)
 ///
-/// T-1775 protocol: arg1 is now an env-dict (Dict<String, Any>).  Header values are
-/// almost always literals (stage: "type", pragma: ["no-prelude"]), so the env is not
-/// needed for evaluation.  The argument is accepted and type-checked but the env dict
-/// is not injected into the evaluation context — header evaluation always runs with an
-/// empty accumulated_group so that non-literal header expressions still evaluate in an
-/// isolated scope without accidentally resolving runtime names from the caller's env.
+/// Header values are almost always literals (stage: "type", pragma: ["no-prelude"]),
+/// so the env is not needed for evaluation.  The argument is accepted and type-checked
+/// but the env dict is not injected into the evaluation context — header evaluation
+/// always runs with an empty accumulated_group so that non-literal header expressions
+/// still evaluate in an isolated scope without accidentally resolving runtime names
+/// from the caller's env.
 ///
 /// Returns Dict {key: evaluated-value, ...}.
 /// Returns empty Dict if header is empty.
@@ -2983,22 +2939,19 @@ pub(crate) fn builtin_doc_meta(
             }
         };
 
-        // arg1: env-dict (T-1775 protocol) or legacy scope-id Int.
+        // arg1: env-dict (T-1775 protocol) — must be Dict.
         // The value is accepted but not used for header evaluation — doc headers contain
         // literal values (strings, lists of strings) that do not require name resolution.
-        // Accepting both Dict and Int here ensures backwards compatibility with callers
-        // that still pass scope-ids from the old scope-arena protocol.
         let env_val = args[1]
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
-        // Reject types that are clearly wrong (not Dict, Int, or empty dict []).
         match &env_val {
-            Value::Dict(_) | Value::Int(_) => {}
+            Value::Dict(_) => {}
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-doc-meta".to_string(),
-                    "Dict or Int",
+                    "Dict",
                     other.type_name(),
                     call_span,
                 )
@@ -3240,205 +3193,6 @@ pub(crate) fn builtin_variant_payload(
             )
             .into()),
         }
-    })
-}
-
-/// `builtin-eval-expr`: evaluate a single quoted AST expression node in a given scope.
-///
-/// Positional arg[0]: `Value::Expression` — a single quoted AST node (from `@Expr`-typed
-///   macro call or `builtin-ast-of`). Holds an `Arc<SurfaceNode>` directly.
-/// Positional arg[1]: `Value::Int` — the scope-id to evaluate in.
-///
-/// Returns: the evaluated value (any Value).
-///
-/// Evaluation pipeline:
-///   1. Extract `Arc<SurfaceNode>` from `Value::Expression`
-///   2. Wrap in a single-expression `SurfaceDocument`
-///   3. Desugar + resolve using the parent chain of `scope-id`
-///   4. Evaluate via `eval_document_exprs_with_env`
-///   5. Return the result value directly (not wrapped in a result dict)
-pub(crate) fn builtin_eval_expr(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-            ..
-        } = ctx_arg;
-        crate::builtins::reject_named("builtin-eval-expr", named.as_ref(), call_span.clone())?;
-        if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
-        }
-
-        // arg0: Value::Expression
-        let expr_val = args[0]
-            .try_get_value()
-            .expect("pre-materialized by Strictness::Seq")
-            .clone();
-        let expr_node: Arc<crate::ast::SurfaceNode> = match expr_val {
-            Value::Expression(node) => node,
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "builtin-eval-expr".to_string(),
-                    "Expression",
-                    other.type_name(),
-                    call_span,
-                )
-                .into());
-            }
-        };
-
-        // arg1: Int (scope-id)
-        let scope_id_val = args[1]
-            .try_get_value()
-            .expect("pre-materialized by Strictness::Seq")
-            .clone();
-        let scope_id: u32 = match scope_id_val {
-            Value::Int(n) => {
-                // ScopeArena deleted — skip range validation
-                n as u32
-            }
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "builtin-eval-expr scope-id".to_string(),
-                    "Int",
-                    other.type_name(),
-                    call_span,
-                )
-                .into());
-            }
-        };
-
-        // Wrap in a single-expression SurfaceDocument.
-        let document = crate::ast::SurfaceDocument {
-            header: indexmap::IndexMap::new(),
-            items: vec![crate::ast::SurfaceItem::Expr(expr_node)],
-        };
-        let program = crate::desugar::desugar_program_full(&crate::ast::SurfaceProgram {
-            documents: vec![crate::ast::Spanned::new(
-                std::sync::Arc::new(document),
-                call_span.clone(),
-            )],
-        });
-
-        // ScopeArena deleted — resolve with empty frames (names resolved via scope_frames on ctx).
-        let initial_frames: Vec<indexmap::IndexMap<String, u32>> = vec![];
-        let (_resolve_table, _new_frames) =
-            crate::resolve::resolve_surface_program(&program, &initial_frames);
-
-        // Extract the single expression node.
-        let expression_nodes: Vec<Arc<crate::ast::SurfaceNode>> = program
-            .documents
-            .into_iter()
-            .flat_map(|d| d.node.items.clone())
-            .filter_map(|item| {
-                if let crate::ast::SurfaceItem::Expr(node) = item {
-                    Some(node)
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        // Evaluate and return the result thunk directly.
-        let (result_thunk, _root_env_id) = crate::eval::eval_document_exprs_with_env(
-            &expression_nodes,
-            &ctx,
-            Some(scope_id),
-            None,
-        )
-        .await?;
-
-        Ok(result_thunk)
-    })
-}
-
-/// `builtin-eval-repr`: evaluate a document in a scope and return `builtin-llt-repr` of the
-/// last expression's result. Combines `builtin-eval` + `builtin-llt-repr` atomically.
-///
-/// Positional arg[0]: Value::Document — the typed document to evaluate.
-/// Positional arg[1]: Value::Int — the scope-id to evaluate in (same as builtin-eval).
-/// Returns: String (the llt-repr of the last expression's value).
-pub(crate) fn builtin_eval_repr(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-            ..
-        } = ctx_arg;
-
-        crate::builtins::reject_named("eval-repr", named.as_ref(), call_span.clone())?;
-
-        if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
-        }
-
-        let input_val = args[0]
-            .try_get_value()
-            .expect("pre-materialized by Strictness::Seq")
-            .clone();
-
-        let expression_nodes: Vec<std::sync::Arc<crate::ast::SurfaceNode>> = match input_val {
-            Value::Document(doc) => doc
-                .items
-                .iter()
-                .filter_map(|item| {
-                    if let crate::ast::SurfaceItem::Expr(node) = item {
-                        Some(std::sync::Arc::clone(node))
-                    } else {
-                        None
-                    }
-                })
-                .collect(),
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "eval-repr".to_string(),
-                    "Document",
-                    other.type_name(),
-                    call_span,
-                )
-                .into())
-            }
-        };
-
-        let scope_id_val = args[1]
-            .try_get_value()
-            .expect("pre-materialized by Strictness::Seq")
-            .clone();
-        let scope_id: Option<u32> = match scope_id_val {
-            Value::Int(n) => {
-                // ScopeArena deleted — skip range validation
-                Some(n as u32)
-            }
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "eval-repr scope-id".to_string(),
-                    "Int",
-                    other.type_name(),
-                    call_span,
-                )
-                .into())
-            }
-        };
-
-        let (result_thunk, _root_env_id) =
-            crate::eval::eval_document_exprs_with_env(&expression_nodes, &ctx, scope_id, None)
-                .await?;
-
-        let result_val = materialize(&result_thunk, Some(&call_span), &ctx).await?;
-        let repr = crate::value_to_display_string(&result_val, &ctx, call_span.clone())
-            .await
-            .map_err(|e| {
-                EvalError::internal(format!("eval-repr: {}", e.kind), call_span.clone())
-            })?;
-        ok_val(string_val(&repr), call_span)
     })
 }
 
@@ -4507,13 +4261,13 @@ pub(crate) fn builtin_check_type(
 /// tinct runtime environment.
 ///
 /// - arg 0: String — the name to look up (e.g. `"%myfs"`)
-/// - arg 1: Int — scope-id to search (walks parent chain via ScopeArena)
-/// - Returns: `Int(1)` if the name is bound in the environment chain,
+/// - arg 1: Dict — the accumulated env dict to check (env-dict protocol, T-1775)
+/// - Returns: `Int(1)` if the name is a key in the env dict,
 ///   `Int(0)` otherwise. Callers match on `Int(0)` for absent, non-zero for present
 ///   (no prelude conversion wrapper — loader.llt and test-loader.llt match directly).
 ///
-/// Walks the full parent chain of the environment. Used by tinct-side caps enforcement
-/// (T-1507) as the primitive that tinct code calls to validate declared caps.
+/// Used by tinct-side caps enforcement (T-1507) as the primitive that tinct code calls
+/// to validate declared caps against the accumulated env dict.
 pub(crate) fn builtin_cap_env_has(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -4536,10 +4290,19 @@ pub(crate) fn builtin_cap_env_has(
         let name = require_string("cap-env-has?", name_val, arg0_thunk.span.clone())?;
 
         let env_val = materialize(&arg1_thunk, Some(&call_span), &ctx).await?;
-        // ScopeArena deleted — cap-env-has? always returns false.
-        let found = false;
-        let _ = env_val;
-        let _ = name;
+        // Check whether name is a key in the env-dict (env-dict protocol, T-1775).
+        let found = match &env_val {
+            Value::Dict(d) => d.contains_key(&HashableValue::Str(Arc::from(name.as_str()))),
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-cap-env-has?".to_string(),
+                    "Dict",
+                    other.type_name(),
+                    call_span,
+                )
+                .into())
+            }
+        };
 
         // Return Int: 1 = found, 0 = not found.
         // The prelude wrapper converts Int → Boolean (prelude-agnostic protocol).
@@ -4648,8 +4411,7 @@ pub(crate) fn builtin_lower(
 /// builtin-typecheck-doc, builtin-eval, builtin-module, builtin-get-type-context,
 /// builtin-make-type-ctx, builtin-tc-with-scope, builtin-variant-payload,
 /// builtin-tag-of, builtin-llt-repr, builtin-type-of, builtin-cap-env-has?,
-/// builtin-check-type, builtin-scopes, builtin-scope-new, builtin-scope-names,
-/// builtin-scope-parent, builtin-desugar, builtin-program-docs, builtin-doc-meta)
+/// builtin-check-type, builtin-desugar, builtin-program-docs, builtin-doc-meta)
 /// stay in core_builtins() for loader.llt.
 ///
 /// Consumed exclusively by `builtin_module("meta")` in `src/builtins.rs`.
@@ -4682,13 +4444,6 @@ pub fn meta_builtins() -> Vec<crate::value::BuiltinDef> {
             [Strictness::Seq],
             1,
             ["program"]
-        ),
-        builtin!(
-            "builtin-eval-repr",
-            builtin_eval_repr,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["doc", "scope-id"]
         ),
         builtin!(
             "builtin-ast-to-program",

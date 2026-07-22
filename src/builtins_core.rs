@@ -554,13 +554,6 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             ["doc", "env-dict"]
         ),
         builtin!(
-            "builtin-eval-expr",
-            crate::builtins_meta::builtin_eval_expr,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["expr", "scope-id"]
-        ),
-        builtin!(
             "builtin-variant-payload",
             builtin_variant_payload,
             [Strictness::Seq],

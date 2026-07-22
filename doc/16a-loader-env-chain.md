@@ -2,7 +2,7 @@
 
 ## Overview
 
-The tinct runtime bootstraps through a layered environment chain.
+The tinct runtime bootstraps through an accumulated environment dict.
 `stdlib/loader.llt` is the first tinct code evaluated at startup — the
 "main function" that loads prelude, constructs the type context, and
 runs the user pipeline. `stdlib/test-loader.llt` is an alternative init
@@ -26,9 +26,9 @@ No tinct standard library is available here. Helpers defined:
 - `reduce`, `join` — collection primitives
 - `make-entry`, `null?`, `get-or` — dict utilities
 - `merge` — right-biased dict union
-- `scope-to-frames`, `_scope-to-frames-inner` — scope chain → resolver
-  frames conversion (walks `builtin-scope-parent` chain)
-- `object-map` — dict value transformation
+- `env-to-name-set` — build a `Dict<String,1>` name-set from an env dict
+  for passing to `builtin-resolve` (replaces the old `scope-to-frames`
+  walk — env is already a flat dict of all visible bindings)
 
 ### Dict 2 — Core types and pipeline infrastructure
 
@@ -39,13 +39,14 @@ injected capabilities). It defines:
   available throughout the init program before prelude loads
 - `DocName`, `ProgramItem` — ADTs for pipeline metadata
 - `uses-scope` — loads and type-checks `builtin_NAME.llt` declaration
-  files for `--- uses:` module headers
+  files for `--- uses:` module headers; uses `env-to-name-set` to build
+  the name-set and `builtin-resolve` + `builtin-typecheck-doc` per doc
 - `fundamental-tc` — a TypeContext seeded from `builtin_core.llt` type
   declarations (DirCap, Int, Bytes, etc.); no implicit Rust back-channel
 - `include` — the bootstrap file loader (no prelude awareness):
-  parse → desugar → scope-new → resolve → typecheck → eval → thread
-  scope-id. Used only for loading prelude itself.
-- `eval-document-runtime` — per-document evaluation with full scope
+  parse → desugar → resolve → typecheck → eval → return `{env: Dict}`.
+  Used only for loading prelude itself.
+- `eval-document-runtime` — per-document evaluation with full env-dict
   construction (see Environment Chain below)
 - `eval-pipeline-item`, `eval-file`, `eval-expr` — pipeline dispatch
 - `cli-pipeline` — the top-level pipeline reducer
@@ -54,15 +55,15 @@ injected capabilities). It defines:
 
 The third dict body sees Dicts 1 and 2. It:
 
-1. Calls `include %libdir "prelude.llt"` with `[%prelude:
-   prelude-result.scope-id Boolean: Boolean True: True False: False]`
-   in the `extras` dict — giving prelude access to its own scope via
-   `%prelude` (for mutually-recursive includes) and Boolean/True/False
-   before prelude declares them.
-2. Extracts `prelude-scope-id` from the result.
-3. Creates the runtime TypeContext: `[builtin-tc-with-scope
-   fundamental-tc prelude-scope-id]` — wires the prelude scope into the
-   type checker so prelude's type schemes are available.
+1. Calls `include %libdir "prelude.llt"` with
+   `[%prelude: prelude-env  Boolean: Boolean  True: True  False: False]`
+   as the `extras` dict — giving prelude access to its own accumulated
+   env via `%prelude` (for mutually-recursive includes) and
+   Boolean/True/False before prelude declares them.
+2. Extracts `prelude-env` (a Dict) from the result: `prelude-result.env`.
+3. Creates the runtime TypeContext: `[builtin-tc-with-scope fundamental-tc
+   prelude-env]` — wires the prelude env dict into the type checker so
+   prelude's type schemes are available.
 4. Allocates the emit channel and formatter.
 
 ### Final Expression
@@ -93,14 +94,13 @@ shadows all below):
                     module builtins (--- uses: headers)
 ```
 
-Each level is a `builtin-scope-new` layer. Higher layers shadow lower
-ones by name. The `builtin-scope-parent` chain is the canonical record
-of this structure at runtime.
+Each level is a flat Dict merged into the accumulated `env` dict. Higher
+levels shadow lower ones via right-biased `merge`.
 
 ### Why Closures Handle %cwd, %libdir, etc.
 
 `eval-document-runtime` does NOT pass `%cwd` and `%libdir` as
-parameters to each document. Instead, it captures them from the
+parameters to each document. Instead, it references them from the
 loader's lexical scope (Dict 2/3 closure). This means:
 
 - `%cwd` is always the CLI working directory — fixed for the session.
@@ -109,31 +109,42 @@ loader's lexical scope (Dict 2/3 closure). This means:
   (set to the containing directory of each file being processed by
   `builtin-path-dir`).
 
-### The Per-Document Scope
+### The Per-Document Env Dict
 
-`eval-document-runtime` builds the scope in three `builtin-scope-new`
-calls:
+`eval-document-runtime` builds the env dict via flat Dict merges:
 
-```
-full-scope    = builtin-scope-new prelude-scope-id {
-                  %: state.percent,       # pipeline input from previous doc
-                  %include-dir: ...,
-                  emit: emit-fn,
-                  %emit-channel: emit-ch,
-                  %cwd: %cwd,             # from closure
-                  %libdir: %libdir,       # from closure
-                  %stdout: %stdout,
-                  %stderr: %stderr,
-                  %args: %args,
-                  include: ctx-include,   # prelude-aware include
-                }
-full-scope-r2 = builtin-scope-new full-scope state.named    # named sections
-full-scope-r3 = builtin-scope-new full-scope-r2 mod-scope   # module builtins
+```tinct
+[base-env:  [merge prelude-env state.named]]
+[caps-env:  [merge base-env
+              [%:            state.percent
+               %include-dir:  include-dir
+               emit:          emit-fn
+               %emit-channel: emit-ch
+               %cwd:          %cwd
+               %libdir:       %libdir
+               %stdout:       %stdout
+               %stderr:       %stderr
+               %args:         %args
+               include:       ctx-include]]]
+[full-env:  [merge caps-env mod-scope]]
 ```
 
-Resolution and evaluation both use `full-scope-r3` so the de Bruijn
+Resolution and evaluation both use `full-env` so the de Bruijn
 coordinates computed by `builtin-resolve` match the slots visible during
-evaluation.
+evaluation. `builtin-resolve` receives the name-set:
+
+```tinct
+[name-set:     [env-to-name-set full-env]]
+[doc-resolved: [builtin-resolve doc name-set]]
+```
+
+`builtin-eval` takes the lowered CoreDocument and the full env dict,
+and returns the exports Dict directly (raises on error):
+
+```tinct
+[lowered: [builtin-lower typed.doc]]
+[evaled:  [builtin-eval lowered full-env]]
+```
 
 ---
 
@@ -147,18 +158,18 @@ Defined in Dict 2 of the init program. Has NO prelude in its closure —
 it was defined before prelude loaded. Used only for bootstrapping:
 loading prelude.llt itself. When called:
 
-- Uses `root-scope-id` as the seed scope.
-- Accepts an `extras` dict: `[%prelude: prelude-result.scope-id
-  Boolean: Boolean True: True False: False]` for the prelude case.
-- Returns `{scope-id: Int}`.
+- Uses an empty seed env plus the `extras` dict (e.g., `[%prelude:
+  prelude-env  Boolean: Boolean  True: True  False: False]` for the
+  prelude case).
+- Returns `{env: Dict}` — the accumulated env from all documents.
 
 ### `ctx-include` (per-document, inside `eval-document-runtime`)
 
 A closure defined inside `eval-document-runtime`. Captures
-`prelude-scope-id` from its outer scope. When user code calls
+`prelude-env` from its outer scope. When user code calls
 `[include cap path]`, they get this closure. It calls the loader
-`include` with `[%prelude: prelude-scope-id]` in extras so the included
-file has prelude in scope. Returns the scope-id (`.scope-id` field).
+`include` with `[%prelude: prelude-env]` in extras so the included
+file has prelude in scope. Returns `.env` — the accumulated env dict.
 
 This is how include is defined ONCE in the loader (in
 `eval-document-runtime`) and never needs to be redefined: the
@@ -171,39 +182,39 @@ define `include`.
 ## How test-loader Mirrors the CLI Chain
 
 `stdlib/test-loader.llt` runs corpus tests instead of the user pipeline.
-It replicates the same three-level init structure:
+It replicates the same three-level init structure with the same env-dict
+protocol.
 
 ### Same structure
 
-- Dict 1: private helpers (identical `scope-to-frames`, `merge`, etc.)
-- Dict 2 (test-loader's "Dict 1 private"): adds `make-string-handle`,
-  `emit-diagnostics`, `count-errors`, `uses-scope`, `if-ok`, and
-  pipeline stage functions (`load-bytes`, `parse-source`, `eval-program`,
-  `typecheck-program`, `export`)
-- Dict 2 (test-loader's "Dict 2 runner"): test-specific functions
-  (`eval-docs`, `typecheck-docs`, `run-test-pipeline`, `run-test-file`,
-  `run-test`, `find-corpus-files`)
+- Dict 1: private helpers (identical `env-to-name-set`, `merge`, etc.)
+- Test-specific Dict 1: adds `make-string-handle`, `emit-diagnostics`,
+  `count-errors`, `uses-scope`, `if-ok`, and pipeline stage functions
+  (`load-bytes`, `parse-source`, `eval-program`, `typecheck-program`,
+  `export`)
+- Test-specific Dict 2: test-specific functions (`eval-docs`,
+  `typecheck-docs`, `run-test-pipeline`, `run-test-file`, `run-test`,
+  `find-corpus-files`)
 - Dict 3: loads prelude, builds TypeContext, runs all tests
 
 ### Key difference: no `ctx-include` injection
 
-test-loader does not inject `include` into the per-document scope.
-Test programs run with `include` accessible only if prelude defines it —
-but prelude does NOT define `include` (see above). Tests needing
-`[include ...]` must use `--- pragma: ["no-prelude"]` and manage their
-own scope, or the test program must be self-contained.
+test-loader does not inject `include` into the per-document env. Test
+programs run with `include` accessible only if prelude defines it —
+but prelude does NOT define `include`. Tests needing `[include ...]`
+must be self-contained or use `--- pragma: ["no-prelude"]`.
 
-The test-loader's `eval-docs` passes `base-scope-id` (prelude scope +
-caps) as the base; user code in tests does not have access to an
+The test-loader's `eval-docs` passes `base-env` (prelude env + caps)
+as the seed env; user code in tests does not have access to an
 `include` that carries prelude awareness. This is by design: corpus
 tests exercise isolated features.
 
-### per-test prelude injection
+### Per-test prelude injection
 
-`run-test-pipeline` passes `prelude-scope-id` and `prelude-tc` (from
-the pre-loaded `_prelude-result`) as explicit parameters rather than
-via closure. This allows tests to opt out of prelude via `pragma:
-["no-prelude"]` by substituting `root-scope-id` and `fundamental-tc`
+`run-test-pipeline` passes `prelude-env` and `prelude-tc` (from the
+pre-loaded `_prelude-result`) as explicit parameters rather than via
+closure. This allows tests to opt out of prelude via `pragma:
+["no-prelude"]` by substituting an empty env and `fundamental-tc`
 instead.
 
 ---
@@ -227,14 +238,15 @@ for the type checker. It flows explicitly:
 
 1. `fundamental-tc` is built once from `builtin_core.llt` — contains
    `DirCap`, `Int`, `Bytes`, etc.
-2. `[builtin-tc-with-scope fundamental-tc prelude-scope-id]` wires the
-   prelude scope into the TypeContext so prelude's type schemes are
-   visible during type-checking of user documents.
+2. `[builtin-tc-with-scope fundamental-tc prelude-env]` wires the
+   prelude env dict into the TypeContext so prelude's type schemes are
+   visible during type-checking of user documents. The argument is now
+   a Dict (env dict), not a scope-id.
 3. Per-document: `builtin-typecheck-doc` receives `tc` and the resolved
    document. It updates `tc`'s internal `inference_env` (merging the
    document's new type schemes) so subsequent documents see them.
 4. Type-stage documents (`--- stage: "type"`) are evaluated first; their
-   scope is wired into `tc` via `builtin-tc-with-scope` before
+   env is wired into `tc` via `builtin-tc-with-scope` before
    runtime-stage documents are type-checked. This lets `@Integer`,
    `@Float`, etc. annotations resolve correctly in the runtime stage.
 
@@ -251,9 +263,13 @@ self-loading.
 The only Rust primitives used by the loader are the irreducible
 builtins listed in the loader's header comment:
 `builtin-file-read`, `builtin-parse`, `builtin-resolve`,
-`builtin-typecheck-doc`, `builtin-eval`, `builtin-scope-new`,
-`builtin-scope-frame`, `builtin-scope-parent`, `builtin-module`,
+`builtin-typecheck-doc`, `builtin-lower`, `builtin-eval`,
 `builtin-tc-with-scope`, `builtin-make-type-ctx`, `builtin-channel`,
 `builtin-send`, `builtin-str`, `builtin-get`, `builtin-keys`,
 `builtin-dict-length`, `builtin-build-dict`, `builtin-tag-of`,
 `builtin-path-dir`, and `builtin-string-concat`.
+
+`builtin-resolve` takes a `Dict<String,1>` name-set (not scope frames).
+`builtin-eval` takes `(CoreDocument, env Dict)` and returns the exports
+Dict directly (raises on error — no `{result, scope-id, errors}`
+wrapper). There are no `builtin-scope-*` or `builtin-arena-*` builtins.

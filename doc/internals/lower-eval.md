@@ -239,7 +239,7 @@ pub async fn eval_surface_file(
 ) -> EvalResult<Arc<Thunk>>
 ```
 
-The primary entry point for evaluating a complete `SurfaceProgram`. Iterates over documents and returns the last document's output thunk. **It does not thread `%` between documents** — that is the loader.llt's responsibility via `builtin-eval` and `builtin-scope-new`.
+The primary entry point for evaluating a complete `SurfaceProgram`. Iterates over documents and returns the last document's output thunk. **It does not thread `%` between documents** — that is the loader.llt's responsibility via `builtin-eval` (which returns the exports Dict) and the loader's `merge`-based env accumulation.
 
 ```rust
 pub async fn eval_surface_file_with_input(
@@ -328,7 +328,7 @@ This two-phase protocol allows entries to reference each other by slot before an
 4. **`Quote` suppresses diagnostics.** Lowering inside `Quote` uses a fresh diagnostic vec that is discarded. `VarRef` nodes inside a quote are symbols, not variable references, so undefined-variable errors must not be reported.
 5. **`eval_surface_file` precondition.** Desugaring and resolution must run before evaluation. The evaluator does not check or re-run them.
 6. **Letrec correctness.** The FlatEnv for a dict scope is allocated before any entry value thunks are created. Each value thunk captures the dict's `env_id`. When any value thunk is forced, it can look up sibling entries by slot — the slots are already allocated, even if not yet evaluated.
-7. **`%` threading is loader.llt's responsibility.** `eval_surface_file` does not thread `%` between documents. The loader (via `builtin-eval` and `builtin-scope-new`) is responsible for making the prior document's output available as `%` in the next document's scope.
+7. **`%` threading is loader.llt's responsibility.** `eval_surface_file` does not thread `%` between documents. The loader (via `builtin-eval` returning the exports Dict, and the `merge`-based env accumulation in `eval-document-runtime`) is responsible for making the prior document's output available as `%` in the next document's env.
 8. **Eval stack is per-async-task.** `TASK_EVAL_STACK` (in `eval_materialize.rs`) is a `tokio::task_local!` — it exists per Tokio task, not per `EvalContext`. It is used for cycle path reconstruction when a `Var` lookup encounters an in-progress thunk.
 9. **Spread `merge` Var uses sentinel coordinates.** `level: u32::MAX, slot: u32::MAX` is the name-based fallback sentinel for `"merge"` in spread-dict lowering. This is the only approved exception to strict de Bruijn coordinates in lowering.
 
