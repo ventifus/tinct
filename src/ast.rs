@@ -147,8 +147,7 @@ pub struct Param {
     pub name: String,
     pub annotation: Option<Spanned<Annotation>>,
     pub variadic: bool,
-    /// Declaration-order slot index assigned by the lowerer.
-    /// Matches the de Bruijn slot coordinate used by the resolver and scope arena.
+    /// Declaration-order index for VarAddr::Parameter(slot) lookup in EvalFrame.params.
     pub slot: u32,
     /// Type resolved by the type checker from the parameter annotation.
     /// `None` means unknown/unannotated — accept all values at runtime (gradual typing).
@@ -318,6 +317,7 @@ impl fmt::Display for SurfaceExpression {
                 params,
                 body,
                 desugared: _,
+                resolved_captures: _,
             } => {
                 write!(f, "[fn")?;
                 if let Some(ann) = return_ann {
@@ -702,6 +702,12 @@ pub enum SurfaceExpression {
         body: Arc<SurfaceNode>,
         #[expr(key = "desugared")]
         desugared: bool,
+        /// Ordered list of free-variable names captured from outer scopes.
+        /// Written once by the resolver after processing this Fn's body.
+        /// The index of each name in this list is the ClosureCapture index assigned to
+        /// VarRef nodes inside this function that reference the corresponding outer binding.
+        #[expr(skip, default_fn = "crate::ast::CapturesCell::new")]
+        resolved_captures: CapturesCell,
     },
 
     // Type assertion — resolved_type is set inline by the type checker, read by the lowerer.
@@ -1121,21 +1127,21 @@ impl std::fmt::Debug for Provenance {
     }
 }
 
-/// Inline de Bruijn coordinates for a VarRef or leading-dot Field node.
+/// Inline VarAddr for a VarRef or leading-dot Field node.
 /// Written once by the resolver; read by the lowerer.
 /// Clone resets to empty — cloned nodes are in new scopes and must be re-resolved.
-pub struct Resolution(std::sync::OnceLock<Option<(u32, u32)>>);
+pub struct Resolution(std::sync::OnceLock<Option<VarAddr>>);
 
 impl Resolution {
     pub fn new() -> Self {
         Self(std::sync::OnceLock::new())
     }
-    /// `Some(Some((level, slot)))` = resolved; `Some(None)` = unresolvable; `None` = not yet resolved.
-    pub fn get(&self) -> Option<Option<(u32, u32)>> {
-        self.0.get().copied()
+    /// `Some(Some(addr))` = resolved; `Some(None)` = unresolvable; `None` = not yet resolved.
+    pub fn get(&self) -> Option<Option<&VarAddr>> {
+        self.0.get().map(|o| o.as_ref())
     }
     /// Called by the resolver exactly once per node instance.
-    pub fn set(&self, val: Option<(u32, u32)>) {
+    pub fn set(&self, val: Option<VarAddr>) {
         let _ = self.0.set(val);
     }
 }
@@ -1156,13 +1162,56 @@ impl Default for Resolution {
 }
 impl std::fmt::Debug for Resolution {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Resolution({:?})", self.0.get())
+        write!(f, "Resolution({:?})", self.0.get().map(|o| o.is_some()))
     }
 }
 
-/// Table mapping each VarRef's NodeId to its resolved (level, slot) de Bruijn coordinates.
+/// Table mapping each VarRef's NodeId to its resolved VarAddr.
 /// Produced by the resolver pass; consumed by the lowerer and type checker.
-pub type ResolutionTable = std::collections::HashMap<NodeId, (u32, u32)>;
+pub type ResolutionTable = std::collections::HashMap<NodeId, VarAddr>;
+
+/// Capture list for a function node — the ordered list of (name, original_addr) pairs
+/// captured from outer scopes, in first-occurrence order as seen during resolver traversal.
+/// `original_addr` is the VarAddr the captured variable held in the enclosing frame
+/// (LetrecGroupMember, ClosureCapture, or Parameter), BEFORE the resolver converts it to
+/// ClosureCapture for references inside the function body.
+/// Written once by the resolver after processing each Fn body; read by the lowerer.
+/// Clone resets to empty — cloned Fn nodes are in new scopes and must be re-resolved.
+pub struct CapturesCell(std::sync::OnceLock<Arc<Vec<(String, VarAddr)>>>);
+
+impl CapturesCell {
+    pub fn new() -> Self {
+        Self(std::sync::OnceLock::new())
+    }
+    /// Returns the capture list if the resolver has set it, or `None` if not yet resolved.
+    pub fn get(&self) -> Option<&Arc<Vec<(String, VarAddr)>>> {
+        self.0.get()
+    }
+    /// Called by the resolver exactly once per Fn node instance.
+    pub fn set(&self, captures: Arc<Vec<(String, VarAddr)>>) {
+        let _ = self.0.set(captures);
+    }
+}
+impl Clone for CapturesCell {
+    fn clone(&self) -> Self {
+        Self::new()
+    }
+}
+impl PartialEq for CapturesCell {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+impl Default for CapturesCell {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl std::fmt::Debug for CapturesCell {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "CapturesCell({:?})", self.0.get().map(|v| v.len()))
+    }
+}
 
 /// Table mapping each TypeAssert SurfaceNode's NodeId to its resolved Type.
 /// Produced by the type checker; consumed by the lowerer to generate CoreExpr::TypeAssert.
@@ -1216,6 +1265,18 @@ impl std::fmt::Debug for MatchableBinding {
     }
 }
 
+/// Variable addressing after closure conversion.
+/// Replaces (level, slot) de Bruijn coordinates.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum VarAddr {
+    /// Index into EvalFrame.group (current letrec group thunks)
+    LetrecGroupMember(u32),
+    /// Index into EvalFrame.closure_env (captured outer scope thunks)
+    ClosureCapture(u32),
+    /// Index into EvalFrame.params (function call arguments)
+    Parameter(u32),
+}
+
 /// Evaluator-internal expression — produced by lowering a SurfaceExpression.
 /// De Bruijn coordinates are plain fields (no RefCell, no Option).
 /// Never exposed to tinct code. Can be changed freely without affecting the tinct API.
@@ -1234,11 +1295,10 @@ pub enum CoreExpr {
     Float(f64),
     Str(String),
 
-    // VarRef with resolved de Bruijn coordinates
+    // VarRef with closure-converted addressing
     Var {
         name: String,
-        level: u32,
-        slot: u32,
+        addr: VarAddr,
         /// Annotation from `name@annotation` syntax. Simple("T") for bare type names,
         /// PropertyDict for user-written @[type: T  ...] forms.
         /// None for plain variable references.
@@ -1273,6 +1333,14 @@ pub enum CoreExpr {
         params: Vec<Spanned<CoreParam>>,
         body: Arc<Spanned<CoreExpr>>,
         desugared: bool,
+        /// Ordered list of (name, original_addr) pairs for variables captured from outer scopes.
+        /// `original_addr` is the VarAddr the binding held in the enclosing EvalFrame
+        /// (LetrecGroupMember(i), ClosureCapture(i), or Parameter(i)) — i.e. the address BEFORE
+        /// the resolver converted it to ClosureCapture for references inside this function.
+        /// At function-definition time the evaluator uses these original addresses to look up
+        /// each captured thunk in the current EvalFrame and build `closure_env`.
+        /// Written by the lowerer from `SurfaceExpression::Fn::resolved_captures`.
+        captures: std::sync::Arc<Vec<(String, VarAddr)>>,
     },
     // Statically type-checked TypeAssert — resolved_type read from the inline TypeAnnotation
     // on the SurfaceExpression::TypeAssert node during lowering.
@@ -1331,8 +1399,7 @@ pub struct CoreParam {
     pub name: String,
     pub annotation: Option<Spanned<Annotation>>,
     pub variadic: bool,
-    /// Declaration-order slot index assigned by the lowerer.
-    /// Matches the de Bruijn slot coordinate used by the resolver and scope arena.
+    /// Declaration-order index for VarAddr::Parameter(slot) lookup in EvalFrame.params.
     pub slot: u32,
     /// Type resolved by the type checker from the parameter annotation.
     /// `None` means unknown/unannotated — accept all values at runtime (gradual typing).

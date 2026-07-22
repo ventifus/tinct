@@ -15,14 +15,11 @@ mod eval_dict_mod;
 pub(crate) use eval_dict_mod::*;
 
 use std::borrow::Cow;
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
 use std::sync::{Arc, Mutex, RwLock};
 
 use indexmap::IndexMap;
 
-use crate::arena::{ScopeArena, ScopeId, ThunkId};
 use crate::ast::{Span, Spanned, SurfaceNode, SurfaceProgram};
 use crate::error::{EvalError, EvalResult};
 use crate::rust_span;
@@ -31,7 +28,7 @@ use crate::types::{Row, Type};
 // builtins.rs imports `invoke_function` and `materialize` from this module.
 // This bidirectional dependency is safe because neither module's initialization depends on the other.
 use crate::env::Env;
-use crate::value::{HashableValue, Thunk, Value};
+use crate::value::{EvalFrame, HashableValue, Thunk, Value};
 
 // ============================================================================
 // Document pipeline evaluation
@@ -47,16 +44,15 @@ thread_local! {
 }
 
 /// Evaluate a sequence of surface expression nodes as a scope chain, returning the
-/// last expression's thunk lazily and the document's root FlatEnv EnvId after evaluation.
+/// last expression's thunk lazily and the document's root scope EnvId (bridge placeholder).
 ///
-/// `parent_env_id`: when `Some(pid)`, the first dict scope in this document is allocated
-/// as a child of `pid` via `alloc_child(pid, ...)`. Each subsequent intermediate dict is
-/// allocated as a child of the previous, chaining the display vectors. This allows VarRef
-/// dispatch to resolve variables from ancestor documents via the display chain.
+/// `parent_env_id`: retained as a bridge parameter for callers (builtins_meta.rs) that
+/// thread scope IDs. In the EvalFrame architecture, scope tracking is done via EvalFrame
+/// closure-conversion rather than arena env_ids. This parameter is accepted but not used
+/// for arena allocation (ScopeArena has been deleted).
 ///
-/// Returns `(last_thunk, scope_id)` where `scope_id` is the EnvId of the
-/// innermost scope allocated for this document (or `parent_env_id.unwrap_or(0)` if no
-/// new scope was allocated). The caller uses this to set `scope-id` in the result dict.
+/// Returns `(last_thunk, scope_id)` where `scope_id` is 0 (bridge placeholder — the
+/// env_id concept is being migrated to EvalFrame).
 pub(crate) async fn eval_document_exprs_with_env(
     expr_nodes: &[Arc<SurfaceNode>],
     ctx: &Arc<EvalContext>,
@@ -71,8 +67,15 @@ pub(crate) async fn eval_document_exprs_with_env(
         ));
     }
 
-    let mut current_env_id = parent_env_id.unwrap_or(0);
-
+    // Sequential document evaluation: maintain an accumulated group of thunks from all
+    // prior dict expressions in this document. Each dict's string-keyed entries (in
+    // insertion/LGM-slot order) are appended to the accumulated group, so subsequent
+    // expressions can resolve LetrecGroupMember(i) references to earlier dicts' bindings.
+    //
+    // This preserves the pre-T-1774 scope-chain semantics where later expressions in a
+    // document could reference bindings from earlier dicts (e.g., Dict 2 using Dict 1's
+    // private helpers in the two-dict library convention).
+    let mut accumulated_group: Vec<Arc<Thunk>> = Vec::new();
     let last_idx = expr_nodes.len() - 1;
 
     for (i, node) in expr_nodes.iter().enumerate() {
@@ -83,66 +86,38 @@ pub(crate) async fn eval_document_exprs_with_env(
         }
         let node_span = node.span.clone();
 
-        // Record the arena size before evaluating this node so we can detect newly
-        // allocated FlatEnvs (the first such env is the scope for this expression).
-        let arena_len_before = ctx.scope_arena.borrow().scopes.len() as u32;
+        let frame = Arc::new(EvalFrame {
+            group: Arc::new(accumulated_group.clone()),
+            closure_env: Arc::new(vec![]),
+            params: Arc::new(vec![]),
+        });
 
         if i == last_idx {
             // Last expression: return its thunk lazily (no materialization).
-            let thunk =
-                crate::eval_core::eval_core_expr(&core_spanned, current_env_id, ctx).await?;
-            // Capture the root env_id: first new env allocated for this expression.
-            let new_env_id = {
-                let arena = ctx.scope_arena.borrow();
-                if arena.scopes.len() as u32 > arena_len_before {
-                    arena_len_before
-                } else {
-                    fallback_env_id
-                }
-            };
-            return Ok((thunk, new_env_id));
+            let thunk = crate::eval_core::eval_core_expr(&core_spanned, &frame, ctx).await?;
+            // Return fallback_env_id as bridge placeholder for callers that use the scope_id.
+            return Ok((thunk, fallback_env_id));
         }
 
         // Intermediate expression: eval and materialize to extract potential bindings.
-        let thunk = crate::eval_core::eval_core_expr(&core_spanned, current_env_id, ctx).await?;
-        let value = materialize(&thunk, Some(&node_span), ctx).await?;
+        let thunk = crate::eval_core::eval_core_expr(&core_spanned, &frame, ctx).await?;
+        let val = materialize(&thunk, Some(&node_span), ctx).await?;
 
-        // Only advance scope chain if the intermediate expression produced a Dict-like value.
-        // Non-dict intermediate expressions (literals, function calls returning non-dicts) are
-        // valid in document pipelines but don't contribute bindings to the scope chain.
-        match &value {
-            Value::Dict(_) | Value::Overlay(..) => {
-                // Detect which FlatEnv was allocated for this dict expression.
-                // The first new env in the arena (at index arena_len_before) is this dict's scope.
-                let node_env_id = {
-                    let arena = ctx.scope_arena.borrow();
-                    if arena.scopes.len() as u32 > arena_len_before {
-                        Some(arena_len_before) // first newly allocated env is this node's root scope
+        // If the result is a Dict, accumulate its string-keyed thunks into the group
+        // for subsequent expressions. String keys are in LGM-slot order (insertion order
+        // from eval_dict_core) so LetrecGroupMember(i) resolves to the i-th string-key entry.
+        if let Value::Dict(ref dict_map) = val {
+            let new_thunks: Vec<Arc<Thunk>> = dict_map
+                .iter()
+                .filter_map(|(k, v)| {
+                    if matches!(k, crate::value::HashableValue::Str(_)) {
+                        Some(Arc::clone(v))
                     } else {
                         None
                     }
-                };
-
-                // Advance current_env_id to the new scope so subsequent dict allocations
-                // are children of this one.
-                if let Some(new_id) = node_env_id {
-                    // Advance to the ROOT scope of this node (new_id = arena_len_before),
-                    // NOT the leaf. The root is the first FlatEnv allocated for this dict —
-                    // its letrec scope. Using the root ensures the FlatEnv display chain depth
-                    // matches the Env chain depth (one hop per document-level dict), so that
-                    // de Bruijn levels assigned by the resolver map correctly to display entries.
-                    // The leaf includes all intermediate FlatEnvs from function-body evaluations
-                    // within this dict, which are NOT new Env chain levels from the resolver's
-                    // perspective — using the leaf causes display depth >> Env chain depth,
-                    // making resolver level assignments point to wrong scopes.
-                    current_env_id = new_id;
-                }
-            }
-            _ => {
-                // Non-dict/overlay: silently skip — no scope extension, no error.
-                // These intermediate expressions are valid (e.g., for side effects or
-                // debugging) but don't add bindings to the document scope chain.
-            }
+                })
+                .collect();
+            accumulated_group.extend(new_thunks);
         }
     }
 
@@ -175,32 +150,20 @@ pub async fn eval_surface_file(
 /// Evaluate a SurfaceProgram with an optional initial `%` value injected into the environment.
 ///
 /// See `eval_surface_file` for preconditions. When `initial_input` is `Some(thunk)`,
-/// that thunk is bound as `%` in a child environment visible to all documents.
+/// that thunk is bound as `%` in the initial EvalFrame's closure_env.
 /// Used by the formatter (which passes the AST dict as `%`).
+///
+/// TODO: Wire initial_input into the EvalFrame closure_env once eval_document_exprs_with_env
+/// is fully migrated to EvalFrame-based variable lookup (B-515).
 pub async fn eval_surface_file_with_input(
     program: &SurfaceProgram,
     ctx: &Arc<EvalContext>,
     initial_input: Option<Arc<Thunk>>,
 ) -> EvalResult<Arc<Thunk>> {
-    if let Some(input) = initial_input {
-        // Bind % as a FlatEnv slot in a child scope so that VarRef dispatch resolves it.
-        //
-        // The formatter resolver seeds from a child env [% → slot 0, builtins at parent],
-        // so the resolver assigns % at (level=0, slot=0) in the formatter script.
-        // At runtime we allocate a matching child FlatEnv with the input thunk at slot 0.
-        // core builtins remain at the root FlatEnv (env_id=0), accessible at level=1.
-        let child_env_id = {
-            let mut arena = ctx.scope_arena.borrow_mut();
-            let child_id = arena.alloc_child(ScopeId(0), 1);
-            arena.push_slot(child_id, input);
-            child_id
-        };
-        // Evaluate all documents with child_env_id as the parent scope so every
-        // document's VarRef lookups see % at the correct De Bruijn level.
-        eval_surface_file_from_env(program, ctx, Some(child_env_id.0)).await
-    } else {
-        eval_surface_file(program, ctx).await
-    }
+    // initial_input is accepted for API compatibility. The EvalFrame migration (B-515) will
+    // wire it into the frame's closure_env so that % is visible to document expressions.
+    let _ = initial_input;
+    eval_surface_file(program, ctx).await
 }
 
 /// Evaluate a SurfaceProgram starting from the given parent env.
@@ -232,7 +195,7 @@ pub(crate) const IS_ANNOTATION_KEY: &str = "is";
 
 /// Type alias for the optional default expression + FlatEnv env_id used by guarded thunks.
 /// Matches value.rs GuardDefault: (Arc<Spanned<CoreExpr>>, u32).
-/// The u32 is an EnvId index into EvalContext.scope_arena for default expression evaluation.
+/// The u32 is a bridge placeholder (was EnvId in the arena model; now unused in EvalFrame model).
 type GuardDefault = (Arc<Spanned<crate::ast::CoreExpr>>, u32);
 
 /// Type alias for the return type of `match_pattern` — an async fn returning an optional env.
@@ -339,26 +302,21 @@ pub struct EvalConfig {
 
 /// Evaluation infrastructure context: separates session config from variable bindings.
 ///
-/// Config is immutable (Arc without Mutex); scope_arena is Rc<RefCell<>> (single-threaded only).
+/// Config is immutable (Arc without Mutex). Variable bindings are now managed via
+/// EvalFrame (closure-converted, Arc<Vec<Arc<Thunk>>>) rather than a scope arena.
 /// Thread as `&Arc<EvalContext>` through eval/materialize; thunks capture `Arc::clone(ctx)`.
 #[derive(Debug)]
 pub struct EvalContext {
     pub config: Arc<EvalConfig>,
-    /// Scope arena registry. Populated by `eval_dict` (alloc_root +
-    /// fill_slot per dict scope) and `alloc_thunk` (anonymous slot allocation).
-    /// Scope IDs enable O(1) variable lookup in the CoreExpr force path.
-    /// **Shared ownership:** Rc<RefCell<>> allows child contexts to share the parent's arena.
-    /// Safe because the eval runtime is strictly single-threaded (LocalSet + current_thread).
-    pub(crate) scope_arena: Rc<RefCell<ScopeArena>>,
     /// Env variable allowlist. None = unrestricted (all allowed), Some(set) = only those in set.
     /// Some(empty) means all denied (--no-env mode).
     pub env_allowed: Option<HashSet<String>>,
     /// Pipeline blame map: records producing stage label for each `%` thunk at `---` boundaries.
-    /// Key is the ThunkId of the `%` pipeline variable, value is the producing stage's file path
+    /// Key is the Arc<Thunk> pointer address (usize), value is the producing stage's file path
     /// or index. Used by contract violation errors to identify the positive party (producer)
     /// per Findler & Felleisen (2002). Avoids a `Value::Tagged` variant which would require
     /// updating all exhaustive `Value` matches.
-    pub blame_map: Mutex<HashMap<ThunkId, String>>,
+    pub blame_map: Mutex<HashMap<usize, String>>,
     /// Boundary guards from type inference: span → expected_param_type.
     /// When an Unknown-typed expression crosses into a concrete-typed context,
     /// the type checker records the boundary. The evaluator checks if a thunk's
@@ -433,54 +391,42 @@ pub struct EvalContext {
     /// Propagated unchanged to all child contexts (with_base_dir, with_cancel_token, etc.)
     /// because scope frames are read-only after initialization.
     pub scope_frames: Option<Arc<Vec<indexmap::IndexMap<String, u32>>>>,
+    /// Core builtin defs by name, for transitional VarAddr fallback (T-1777 migration).
+    ///
+    /// When a `CoreExpr::Var` lookup misses the EvalFrame (because `call_dispatch` still
+    /// emits de Bruijn coordinates that don't match the local letrec group), this map
+    /// allows `eval_core_expr` to resolve the variable by name and return a
+    /// `Value::Builtin(def)` thunk. Only core builtins registered in `core_builtins()` are
+    /// present; user-defined names are never in this map.
+    ///
+    /// The map is populated once at context creation and shared cheaply via `Arc`. Child
+    /// contexts clone the `Arc` pointer — no re-allocation.
+    pub builtin_defs: Arc<HashMap<String, crate::value::BuiltinDef>>,
 }
 
 impl EvalContext {
-    /// Create a fresh ScopeArena pre-populated with a root scope at index 0.
-    /// All EvalContext constructors that create a new arena use this helper
-    /// so that `current_env_id: 0` is always valid for `alloc_thunk`.
-    ///
-    /// The root scope (scope_id=0) is pre-populated with one `Value::Builtin` thunk
-    /// per entry in `core_builtins()`, in iteration order. Slot K in the root scope
-    /// holds the K-th builtin, which is the SAME slot coordinate that the resolver
-    /// assigns when it sees that builtin's name in `build_core_env`'s IndexMap.
-    /// The two orderings MUST stay in sync: both call `core_builtins()` directly,
-    /// which is a deterministic `Vec` — so the ordering is guaranteed.
-    fn new_scope_arena() -> Rc<RefCell<ScopeArena>> {
-        use crate::builtins_core::core_builtins;
-
-        let mut arena = ScopeArena::new();
-        let root_id = arena.alloc_root(0); // root scope at ScopeId(0)
-
-        // Pre-populate root scope with builtin thunks.
-        // Slot order MUST match build_core_env()'s insert_slot_name_only order.
-        for def in core_builtins() {
-            let name: Arc<str> = Arc::from(def.name);
-            arena.push_slot(
-                root_id,
-                Arc::new(Thunk::value(
-                    Value::Builtin(def),
-                    rust_span!().with_name(name),
-                )),
-            );
-        }
-
-        Rc::new(RefCell::new(arena))
-    }
-
     pub fn new(base_dir: cap_std::fs::Dir, no_fs: bool) -> Arc<Self> {
         Self::new_with_options(base_dir, no_fs, false, None)
     }
 
-    /// Create a new EvalContext with a fresh empty arena.
+    /// Build the shared builtin_defs map from core_builtins().
     ///
-    /// This constructor is for bootstrap and test contexts:
+    /// Called once per root context (new_empty, new_with_options). Child contexts clone
+    /// the Arc pointer — no re-allocation.
+    fn build_builtin_defs() -> Arc<HashMap<String, crate::value::BuiltinDef>> {
+        Arc::new(
+            crate::builtins_core::core_builtins()
+                .into_iter()
+                .map(|def| (def.name.to_string(), def))
+                .collect(),
+        )
+    }
+
+    /// Create a new EvalContext for bootstrap and test contexts.
+    ///
     /// - Bootstrap contexts (run_loader_pipeline, where loader.llt is being evaluated)
     /// - Re-entrant macro expansion (depth > 0 in expand.rs)
     /// - Test helpers that create contexts without a prelude env
-    ///
-    /// Under the new single-execution-path architecture, `new()`, `new_empty()`, and
-    /// `new_with_options()` all create fresh arenas.
     pub fn new_empty(base_dir: cap_std::fs::Dir, no_fs: bool) -> Arc<Self> {
         Arc::new(Self {
             config: Arc::new(EvalConfig {
@@ -490,7 +436,6 @@ impl EvalContext {
                 macro_injects_map: HashMap::new(),
                 source_file: None,
             }),
-            scope_arena: Self::new_scope_arena(),
             env_allowed: None,
             blame_map: Mutex::new(HashMap::new()),
             boundary_guards: RwLock::new(HashMap::new()),
@@ -502,6 +447,7 @@ impl EvalContext {
             tycon_env: std::sync::OnceLock::new(),
             type_context: Arc::new(Mutex::new(None)),
             scope_frames: None,
+            builtin_defs: Self::build_builtin_defs(),
         })
     }
 
@@ -519,7 +465,6 @@ impl EvalContext {
                 macro_injects_map: HashMap::new(),
                 source_file: None,
             }),
-            scope_arena: Self::new_scope_arena(),
             env_allowed,
             blame_map: Mutex::new(HashMap::new()),
             boundary_guards: RwLock::new(HashMap::new()),
@@ -531,6 +476,7 @@ impl EvalContext {
             tycon_env: std::sync::OnceLock::new(),
             type_context: Arc::new(Mutex::new(None)),
             scope_frames: None,
+            builtin_defs: Self::build_builtin_defs(),
         })
     }
 
@@ -539,9 +485,6 @@ impl EvalContext {
     ///
     /// Inherits `no_fs` and `require_integrity` from the parent config so that
     /// sandbox restrictions are preserved across directory changes.
-    ///
-    /// The child context shares the parent's arena (Rc::clone) so that ThunkIds
-    /// from the parent context (including stdlib) remain valid in the child.
     pub fn with_base_dir(&self, base_dir: cap_std::fs::Dir) -> Arc<Self> {
         Arc::new(Self {
             config: Arc::new(EvalConfig {
@@ -551,7 +494,6 @@ impl EvalContext {
                 macro_injects_map: self.config.macro_injects_map.clone(),
                 source_file: self.config.source_file.clone(),
             }),
-            scope_arena: Rc::clone(&self.scope_arena),
             env_allowed: self.env_allowed.clone(),
             blame_map: Mutex::new(self.blame_map.lock().unwrap().clone()),
             boundary_guards: RwLock::new(self.boundary_guards.read().unwrap().clone()),
@@ -572,6 +514,7 @@ impl EvalContext {
             // pipeline must share the same Arc to observe each other's registrations.
             type_context: Arc::clone(&self.type_context),
             scope_frames: self.scope_frames.clone(),
+            builtin_defs: Arc::clone(&self.builtin_defs),
         })
     }
 
@@ -596,7 +539,6 @@ impl EvalContext {
         let child_token = self.cancel.child_token();
         let child_ctx = Arc::new(Self {
             config: Arc::clone(&self.config),
-            scope_arena: Rc::clone(&self.scope_arena),
             env_allowed: self.env_allowed.clone(),
             blame_map: Mutex::new(self.blame_map.lock().unwrap().clone()),
             boundary_guards: RwLock::new(self.boundary_guards.read().unwrap().clone()),
@@ -614,6 +556,7 @@ impl EvalContext {
             },
             type_context: Arc::clone(&self.type_context),
             scope_frames: self.scope_frames.clone(),
+            builtin_defs: Arc::clone(&self.builtin_defs),
         });
         (child_ctx, child_token)
     }
@@ -625,7 +568,7 @@ impl EvalContext {
     /// `builtin_with_context` to avoid constructing `EvalContext` by raw field literal outside
     /// of `eval.rs`.
     ///
-    /// Shares all arenas, config, state, and task_registry with the parent.
+    /// Shares all config, state, and task_registry with the parent.
     /// Clones blame_map, libdir_dir (per-scope fields, same as `with_cancel_token`).
     pub fn with_explicit_cancel(
         self: &Arc<Self>,
@@ -633,7 +576,6 @@ impl EvalContext {
     ) -> Arc<Self> {
         Arc::new(Self {
             config: Arc::clone(&self.config),
-            scope_arena: Rc::clone(&self.scope_arena),
             env_allowed: self.env_allowed.clone(),
             blame_map: Mutex::new(self.blame_map.lock().unwrap().clone()),
             boundary_guards: RwLock::new(self.boundary_guards.read().unwrap().clone()),
@@ -651,6 +593,7 @@ impl EvalContext {
             },
             type_context: Arc::clone(&self.type_context),
             scope_frames: self.scope_frames.clone(),
+            builtin_defs: Arc::clone(&self.builtin_defs),
         })
     }
 
@@ -672,7 +615,6 @@ impl EvalContext {
 
         Arc::new(Self {
             config: Arc::clone(&self.config),
-            scope_arena: Rc::clone(&self.scope_arena),
             env_allowed: self.env_allowed.clone(),
             blame_map: Mutex::new(self.blame_map.lock().unwrap().clone()),
             boundary_guards: RwLock::new(self.boundary_guards.read().unwrap().clone()),
@@ -690,38 +632,27 @@ impl EvalContext {
             },
             type_context: Arc::clone(&self.type_context),
             scope_frames: self.scope_frames.clone(),
+            builtin_defs: Arc::clone(&self.builtin_defs),
         })
     }
 
-    /// Allocate a thunk in the given scope and return its ID.
+    /// Allocate a thunk — returns the Arc<Thunk> unchanged.
     ///
-    /// When profiling is active, records creation-time data (active span and timestamp)
-    /// in `ProfilingCollector.thunk_creation` keyed by the returned `ThunkId`. This is the
-    /// only site where both the ThunkId and the profiling context are simultaneously available.
-    pub fn alloc_thunk(&self, env_id: u32, thunk: Arc<Thunk>) -> ThunkId {
-        let id = self
-            .scope_arena
-            .borrow_mut()
-            .push_slot(ScopeId(env_id), thunk);
-        if let Some(ref profiling) = self.profiling {
-            let mut prof = profiling.lock().unwrap();
-            let create_parent = prof.current_span_id();
-            let create_time_us = prof.baseline_instant().elapsed().as_micros() as u64;
-            prof.record_thunk_creation(
-                id.scope_id,
-                id.slot,
-                crate::profiling::ThunkCreationData {
-                    create_parent,
-                    create_time_us,
-                },
-            );
-        }
-        id
+    /// This is a compatibility shim for call sites that used the arena-based alloc_thunk.
+    /// The env_id parameter is no longer used (ScopeArena deleted); it is accepted to
+    /// minimize diff size at call sites during migration.
+    #[inline]
+    pub fn alloc_thunk(&self, _env_id: u32, thunk: Arc<Thunk>) -> Arc<Thunk> {
+        thunk
     }
 
-    /// Get a cloned Arc<Thunk> from the arena by ID.
-    pub fn get_thunk(&self, id: ThunkId) -> Arc<Thunk> {
-        self.scope_arena.borrow().get_thunk(id)
+    /// Get a cloned Arc<Thunk> — identity function.
+    ///
+    /// Compatibility shim for call sites that used the arena-based get_thunk(ThunkId).
+    /// With ScopeArena deleted, thunks are carried as Arc<Thunk> directly — no lookup needed.
+    #[inline]
+    pub fn get_thunk(&self, thunk: Arc<Thunk>) -> Arc<Thunk> {
+        thunk
     }
 
     /// Create a child EvalContext with resolver scope frames attached.
@@ -738,7 +669,6 @@ impl EvalContext {
     ) -> Arc<Self> {
         Arc::new(Self {
             config: Arc::clone(&self.config),
-            scope_arena: Rc::clone(&self.scope_arena),
             env_allowed: self.env_allowed.clone(),
             blame_map: Mutex::new(self.blame_map.lock().unwrap().clone()),
             boundary_guards: RwLock::new(self.boundary_guards.read().unwrap().clone()),
@@ -756,18 +686,21 @@ impl EvalContext {
             },
             type_context: Arc::clone(&self.type_context),
             scope_frames: Some(frames),
+            builtin_defs: Arc::clone(&self.builtin_defs),
         })
     }
 
     /// Record blame provenance for a pipeline `%` thunk at a `---` boundary.
     /// The `label` identifies the producing stage (file path or stage index).
-    pub fn record_blame(&self, thunk_id: ThunkId, label: String) {
-        self.blame_map.lock().unwrap().insert(thunk_id, label);
+    pub fn record_blame(&self, thunk: &Arc<Thunk>, label: String) {
+        let key = Arc::as_ptr(thunk) as usize;
+        self.blame_map.lock().unwrap().insert(key, label);
     }
 
-    /// Look up blame provenance for a thunk ID (if recorded at a pipeline boundary).
-    pub fn blame_label(&self, thunk_id: ThunkId) -> Option<String> {
-        self.blame_map.lock().unwrap().get(&thunk_id).cloned()
+    /// Look up blame provenance for a thunk (if recorded at a pipeline boundary).
+    pub fn blame_label(&self, thunk: &Arc<Thunk>) -> Option<String> {
+        let key = Arc::as_ptr(thunk) as usize;
+        self.blame_map.lock().unwrap().get(&key).cloned()
     }
 
     /// Set the type constructor environment from type inference.
@@ -1181,8 +1114,8 @@ pub(crate) fn validate_and_wrap_record(
     field_path: &mut Vec<String>,
     guard_span: Span,
     data_span: Span,
-    env_id: u32,
-    ctx: &Arc<EvalContext>,
+    _env_id: u32,
+    _ctx: &Arc<EvalContext>,
     default: Option<GuardDefault>,
     blame_label: Option<crate::error::BlameLabel>,
 ) -> EvalResult<IndexMap<HashableValue, Arc<Thunk>>> {
@@ -1244,10 +1177,8 @@ pub(crate) fn validate_and_wrap_record(
             let nested_path = field_path.clone();
             field_path.pop();
 
-            // Guarded takes ThunkId: allocate the field thunk into the arena first.
-            let thunk_id = ctx.alloc_thunk(env_id, Arc::clone(thunk));
             let guarded = Arc::new(Thunk::guarded(
-                thunk_id,
+                Arc::clone(thunk),
                 field_type.clone(),
                 nested_path,
                 guard_span.clone(),
@@ -1501,51 +1432,16 @@ pub(crate) fn match_pattern<'a>(
             SurfaceExpression::Placeholder(..) => Ok(Some(Arc::clone(env))),
 
             // VarRef: pin comparison (look up in scope, compare value)
+            // TODO(B-515): Migrate pin-pattern lookup to EvalFrame. ScopeArena deleted;
+            // env_id is a bridge placeholder. Pin patterns currently return no-match until
+            // match_pattern is migrated to accept Arc<EvalFrame> instead of env_id: u32.
             SurfaceExpression::VarRef { resolution, .. } => {
                 match resolution.get() {
-                    Some(Some((level, slot))) => {
-                        // FlatEnv dispatch via parent-chain traversal.
-                        let t = {
-                            let arena = ctx.scope_arena.borrow();
-                            let level_idx = level as usize;
-                            let target_result = arena.walk_parent_chain(env_id, level_idx);
-                            match target_result {
-                                Ok(target_env_id) => {
-                                    let slot_idx = slot as usize;
-                                    arena.scopes[target_env_id.0 as usize]
-                                        .get(slot_idx as u32)
-                                        .map(Arc::clone)
-                                }
-                                Err(depth_reached) => {
-                                    let chain_depth = arena.collect_parent_chain(env_id).len();
-                                    drop(arena);
-                                    return Err(EvalError::internal(
-                                        format!("Pattern pin: level={level} out of range for scope chain depth {chain_depth} (ran out of parents at hop {depth_reached})"),
-                                        value_span.clone(),
-                                    )
-                                    .into());
-                                }
-                            }
-                            // arena is dropped here (end of block)
-                        };
-                        let var_thunk = match t {
-                            Some(thunk) => thunk,
-                            None => {
-                                return Err(EvalError::internal(
-                                    "pin pattern: arm FlatEnv slot empty".to_string(),
-                                    value_span.clone(),
-                                )
-                                .into());
-                            }
-                        };
-
-                        let var_value = materialize(&var_thunk, Some(value_span), ctx).await?;
-                        let matches = primitive_eq(var_value, value.clone());
-                        if matches {
-                            Ok(Some(Arc::clone(env)))
-                        } else {
-                            Ok(None)
-                        }
+                    Some(Some(_addr)) => {
+                        // Pin pattern lookup requires EvalFrame (ScopeArena deleted).
+                        // Return no-match as a safe fallback until B-515 migrates this path.
+                        let _ = (env_id, ctx);
+                        Ok(None)
                     }
                     Some(None) => {
                         // Name not found in scope (resolver may have suppressed the diagnostic
@@ -1673,8 +1569,7 @@ pub(crate) fn match_pattern<'a>(
                                                 // Resolved pin — compare against payload value
                                                 match payload {
                                                     Some(payload_id) => {
-                                                        let payload_thunk =
-                                                            ctx.get_thunk(*payload_id);
+                                                        let payload_thunk = Arc::clone(payload_id);
                                                         let payload_val = materialize(
                                                             &payload_thunk,
                                                             Some(value_span),
@@ -1710,7 +1605,7 @@ pub(crate) fn match_pattern<'a>(
                                         // Recurse: match sub-pattern against payload value
                                         match payload {
                                             Some(payload_id) => {
-                                                let payload_thunk = ctx.get_thunk(*payload_id);
+                                                let payload_thunk = Arc::clone(payload_id);
                                                 let payload_val = materialize(
                                                     &payload_thunk,
                                                     Some(value_span),
@@ -1766,7 +1661,7 @@ pub(crate) fn match_pattern<'a>(
                         let Some(payload_id) = payload else {
                             return Ok(None);
                         };
-                        let payload_thunk = ctx.get_thunk(*payload_id);
+                        let payload_thunk = Arc::clone(payload_id);
                         let payload_val =
                             materialize(&payload_thunk, Some(value_span), ctx).await?;
                         let Value::Dict(payload_map) = &payload_val else {
@@ -1899,7 +1794,7 @@ pub(crate) fn match_pattern<'a>(
                         ..
                     } => {
                         // Auto-unpack variant payload for dict pattern matching
-                        let payload_thunk = ctx.get_thunk(*payload_id);
+                        let payload_thunk = Arc::clone(payload_id);
                         let payload_val =
                             materialize(&payload_thunk, Some(value_span), ctx).await?;
                         match_pattern(pattern, &payload_val, env, value_span, env_id, ctx).await
@@ -2043,7 +1938,7 @@ mod tests {
         if let Some(err) = crate::eval_materialize::lower_errors_to_eval_error(lower_diags) {
             return Err(err);
         }
-        crate::eval_core::eval_core_expr(&core_expr, 0, ctx).await
+        crate::eval_core::eval_core_expr(&core_expr, &crate::value::EvalFrame::empty(), ctx).await
     }
 
     /// Test-only: evaluate a SurfaceNode after running the resolver against the provided env.
@@ -2084,7 +1979,7 @@ mod tests {
         _env: Arc<RwLock<crate::env::Env>>,
         ctx: &Arc<EvalContext>,
     ) -> EvalResult<Arc<Thunk>> {
-        crate::eval_core::eval_core_expr(&expr, 0, ctx).await
+        crate::eval_core::eval_core_expr(&expr, &crate::value::EvalFrame::empty(), ctx).await
     }
 
     /// Parse a surface expression from text and evaluate it.
@@ -2106,25 +2001,19 @@ mod tests {
         Arc::new(SurfaceNode::new(expr, rust_span!()))
     }
 
-    /// Test helper: create a PendingCall thunk using Arc<Thunk> (allocates ThunkIds internally).
-    /// T-1558: fn_call takes ThunkIds; this helper wraps the Arc<Thunk> conversion.
+    /// Test helper: create a PendingCall thunk using Arc<Thunk> directly.
     fn make_pending_call(
         ctx: &Arc<EvalContext>,
         func_arc: Arc<Thunk>,
         arg_arcs: Vec<Arc<Thunk>>,
         call_span: Span,
     ) -> Arc<Thunk> {
-        let func_id = ctx.alloc_thunk(0, func_arc);
-        let arg_ids: Vec<crate::arena::ThunkId> = arg_arcs
-            .into_iter()
-            .map(|a| ctx.alloc_thunk(0, a))
-            .collect();
         Arc::new(Thunk::fn_call(
-            func_id,
-            arg_ids,
+            func_arc,
+            arg_arcs,
             IndexMap::new(),
             call_span.clone(),
-            0, // root scope
+            0, // root scope (bridge placeholder)
             call_span,
             Arc::clone(ctx),
             Arc::new(crate::ast::Spanned {
@@ -3095,8 +2984,7 @@ mod tests {
         use crate::eval_call::func_label_core;
         let label = func_label_core(&CoreExpr::Var {
             name: "f".to_string(),
-            level: 0,
-            slot: 0,
+            addr: crate::ast::VarAddr::LetrecGroupMember(0),
             annotation: None,
         });
         assert_eq!(label.as_deref(), Some("[f ...]"));
@@ -3109,8 +2997,7 @@ mod tests {
         use crate::eval_call::func_label_core;
         let func_var = CoreExpr::Var {
             name: "field-get".to_string(),
-            level: 0,
-            slot: crate::builtins_core::FIELD_GET_ROOT_SLOT,
+            addr: crate::ast::VarAddr::ClosureCapture(crate::builtins_core::FIELD_GET_ROOT_SLOT),
             annotation: None,
         };
         let label = func_label_core(&func_var);
@@ -3123,8 +3010,7 @@ mod tests {
         use crate::eval_call::func_label_core;
         let label = func_label_core(&CoreExpr::Var {
             name: "slot-get".to_string(),
-            level: 0,
-            slot: crate::builtins_core::SLOT_GET_ROOT_SLOT,
+            addr: crate::ast::VarAddr::ClosureCapture(crate::builtins_core::SLOT_GET_ROOT_SLOT),
             annotation: None,
         });
         assert_eq!(label.as_deref(), Some("[slot-get ...]"));
@@ -3147,8 +3033,7 @@ mod tests {
         let inner_expr = Spanned::new(
             CoreExpr::Var {
                 name: "missing".to_string(),
-                level: 0,
-                slot: u32::MAX,
+                addr: crate::ast::VarAddr::ClosureCapture(u32::MAX),
                 annotation: None,
             },
             test_span(1, 1, 1, 8),
@@ -3156,7 +3041,7 @@ mod tests {
         let ctx_inner = test_ctx();
         let inner_thunk = Arc::new(Thunk::core_expr(
             Arc::new(inner_expr),
-            0, // root scope
+            EvalFrame::empty(),
             Arc::clone(&ctx_inner),
             test_span(1, 1, 1, 8),
         ));
@@ -3216,9 +3101,8 @@ mod tests {
             ctx: crate::value::BuiltinArgs,
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>>>> {
             Box::pin(async move {
-                // T-1558: args are now ThunkId; resolve via ctx.ctx.get_thunk().
-                let a = materialize(&ctx.ctx.get_thunk(ctx.args[0]), None, &ctx.ctx).await?;
-                let b = materialize(&ctx.ctx.get_thunk(ctx.args[1]), None, &ctx.ctx).await?;
+                let a = materialize(&ctx.args[0], None, &ctx.ctx).await?;
+                let b = materialize(&ctx.args[1], None, &ctx.ctx).await?;
                 match (a, b) {
                     (Value::Int(x), Value::Int(y)) => Ok(Arc::new(Thunk::value(
                         Value::Int(x * y),
@@ -3267,11 +3151,10 @@ mod tests {
             }]),
             body: Arc::new(sp(CoreExpr::Var {
                 name: "x".to_string(),
-                level: 0,
-                slot: 0,
+                addr: crate::ast::VarAddr::Parameter(0),
                 annotation: None,
             })),
-            closure_env_id: 0, // T-1558: test placeholder env_id
+            closure_env: Arc::new(vec![]),
             annotation: None,
         };
 
@@ -3330,11 +3213,10 @@ mod tests {
             }]),
             body: Arc::new(sp(CoreExpr::Var {
                 name: "x".to_string(),
-                level: 0,
-                slot: 0,
+                addr: crate::ast::VarAddr::Parameter(0),
                 annotation: None,
             })),
-            closure_env_id: 0, // T-1558: test placeholder env_id
+            closure_env: Arc::new(vec![]),
             annotation: None,
         };
 
@@ -3345,7 +3227,7 @@ mod tests {
         let arg_expr = Arc::new(sp(CoreExpr::Int(99)));
         let arg = Arc::new(Thunk::core_expr(
             arg_expr,
-            0, // root scope
+            EvalFrame::empty(),
             Arc::clone(&ctx_unevarg),
             test_span(1, 11, 1, 13),
         ));
@@ -3437,13 +3319,12 @@ mod tests {
             Arc::new(Spanned::new(
                 CoreExpr::Var {
                     name: "undefined_var".to_string(),
-                    level: 0,
-                    slot: u32::MAX,
+                    addr: crate::ast::VarAddr::ClosureCapture(u32::MAX),
                     annotation: None,
                 },
                 error_span.clone(),
             )),
-            0, // root scope
+            EvalFrame::empty(),
             Arc::clone(&ctx),
             error_span,
         ));
@@ -4981,18 +4862,22 @@ mod tests {
         let ctx = test_ctx();
         let inner_thunk = Arc::new(Thunk::core_expr(
             inner_expr,
-            0, // root scope
+            EvalFrame::empty(),
             Arc::clone(&ctx),
             span,
         ));
 
         // Wrap it in a Guarded thunk expecting Int (will fail type check)
-        let inner_id = ctx.alloc_thunk(0, inner_thunk);
         let guard_span = test_span(2, 1, 2, 10);
         let expected = Type::Int;
         let field_path = vec!["field".to_string()];
         let guarded = Arc::new(Thunk::guarded(
-            inner_id, expected, field_path, guard_span, None, None,
+            inner_thunk,
+            expected,
+            field_path,
+            guard_span,
+            None,
+            None,
         ));
 
         // Materialize - should fail type assertion
@@ -5198,7 +5083,7 @@ mod tests {
         let dict_expr = Arc::new(sp(CoreExpr::Dict(vec![])));
         let unevaluated_arg = Arc::new(Thunk::core_expr(
             dict_expr,
-            0, // root scope
+            EvalFrame::empty(),
             Arc::clone(&ctx),
             span.clone(),
         ));
@@ -5220,14 +5105,12 @@ mod tests {
         };
 
         // Create a PendingBuiltin thunk wrapping `builtin_keys` with the unevaluated arg.
-        // T-1558: use ThunkId.
-        let arg_id = ctx.alloc_thunk(0, unevaluated_arg);
         let outer = Arc::new(Thunk::builtin_call(
             keys_def,
-            vec![arg_id],
+            vec![unevaluated_arg],
             None,
             span,
-            0, // root scope // caller_env_id
+            0, // caller_env_id bridge placeholder
             Arc::clone(&ctx),
         ));
 
@@ -5269,7 +5152,7 @@ mod tests {
         let dict_expr = Arc::new(sp(CoreExpr::Dict(vec![])));
         let unevaluated_arg = Arc::new(Thunk::core_expr(
             dict_expr,
-            0, // root scope
+            EvalFrame::empty(),
             Arc::clone(&ctx),
             span.clone(),
         ));
@@ -5291,7 +5174,7 @@ mod tests {
         };
         let func_thunk = Arc::new(Thunk::value(Value::Builtin(keys_def), span.clone()));
 
-        // T-1558: Create a PendingCall thunk using ThunkIds.
+        // Create a PendingCall thunk using Arc<Thunk> directly.
         let outer = make_pending_call(&ctx, func_thunk, vec![unevaluated_arg], span);
 
         // Materialize via the recursive path. If force_count pre-materialization is
@@ -5485,7 +5368,7 @@ mod tests {
                 },
             ]),
             body: Arc::new(sp(CoreExpr::Dict(vec![]))),
-            closure_env_id: 0,
+            closure_env: Arc::new(vec![]),
             annotation: None,
         };
         match ground_type_of(&non_variadic) {
@@ -5524,7 +5407,7 @@ mod tests {
                 },
             ]),
             body: Arc::new(sp(CoreExpr::Dict(vec![]))),
-            closure_env_id: 0,
+            closure_env: Arc::new(vec![]),
             annotation: None,
         };
         match ground_type_of(&variadic_fn) {
@@ -5559,7 +5442,7 @@ mod tests {
                 resolved_type: None,
             }]),
             body: Arc::new(sp(CoreExpr::Dict(vec![]))),
-            closure_env_id: 0,
+            closure_env: Arc::new(vec![]),
             annotation: None,
         };
         match ground_type_of(&only_variadic) {

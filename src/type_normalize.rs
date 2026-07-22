@@ -28,7 +28,7 @@ pub struct NormCtxt {
     pub call_stack: Vec<String>,
     /// EvalContext for accessing the scope arena (ScopeArena) and type-stage function thunks.
     pub eval_ctx: Option<Arc<crate::eval::EvalContext>>,
-    /// Pre-built map from type-stage name → ThunkId for O(1) resolver lookup.
+    /// Pre-built map from type-stage name → resolver entry for O(1) resolver lookup.
     /// Populated from `InferState.type_stage_map` by production callers in type_unify.rs.
     /// `None` in test/bootstrap contexts — TypeStageApp nodes remain stuck.
     pub type_stage_map:
@@ -137,9 +137,9 @@ pub fn normalize<'a>(
                             // require eval_ctx to materialize the thunk.
                             let resolved = if let Some(entry) = map.get(fn_name) {
                                 match entry {
-                                    crate::type_infer::TypeStageEntry::Function(thunk_id) => {
+                                    crate::type_infer::TypeStageEntry::Function(thunk) => {
                                         evaluate_resolver_with_thunk(
-                                            *thunk_id,
+                                            Arc::clone(thunk),
                                             &normalized_args,
                                             &eval_ctx,
                                         )
@@ -254,13 +254,13 @@ pub(crate) async fn call_strict_resolver(
     }
 
     // Must be a parameterized type constructor (Function).
-    let (params, body, closure_env_id) = match resolver_val {
+    let (params, body, closure_env) = match resolver_val {
         Value::Function {
             params,
             body,
-            closure_env_id,
+            closure_env,
             ..
-        } => (params, body, closure_env_id),
+        } => (params, body, closure_env),
         _ => return None,
     };
 
@@ -274,24 +274,22 @@ pub(crate) async fn call_strict_resolver(
         return None;
     }
 
-    // Allocate a call frame as a child of the closure scope.
-    // Arg thunks go directly into this frame under the param names — no scope 0 mutation.
-    // Function arguments are rebindings: we push each arg value into the slot the resolver
-    // assigned to each param.
-    let call_frame = {
-        let mut arena = eval_ctx.scope_arena.borrow_mut();
-        let frame_id = arena.alloc_child(crate::arena::ScopeId(closure_env_id), params.len());
-        for (param, val) in params.iter().zip(type_args) {
+    // Build an EvalFrame for the function call: params become the params vector.
+    // ScopeArena has been deleted — use EvalFrame-based call setup.
+    let param_thunks: Vec<Arc<crate::value::Thunk>> = type_args
+        .into_iter()
+        .zip(params.iter())
+        .map(|(val, param)| {
             let span = crate::rust_span!().with_name(std::sync::Arc::from(param.name.as_str()));
-            arena.push_slot(frame_id, Arc::new(crate::value::Thunk::value(val, span)));
-        }
-        frame_id
-    }; // borrow_mut dropped here
+            Arc::new(crate::value::Thunk::value(val, span))
+        })
+        .collect();
+    let call_frame = crate::value::EvalFrame::for_function_call(closure_env, param_thunks);
 
     // Evaluate the function body in the call frame and force the result.
     let body_thunk = Arc::new(crate::value::Thunk::core_expr(
         Arc::clone(&body),
-        call_frame.0,
+        call_frame,
         Arc::clone(eval_ctx),
         crate::rust_span!(),
     ));
@@ -299,21 +297,17 @@ pub(crate) async fn call_strict_resolver(
         .await
         .ok();
 
-    // Drop the call frame: release the arg thunks now that the result is obtained.
-    eval_ctx.scope_arena.borrow_mut().drop_scope(call_frame);
-
     typenode_leaf_to_type(&result_val?)
 }
 
-/// Evaluate a resolver by ThunkId — materializes the thunk then delegates to `call_strict_resolver`.
-/// Used by the `type_stage_map` Function path (Step 3 in `resolve_type_head`) which has a pre-located ThunkId.
+/// Evaluate a resolver by Arc<Thunk> — materializes the thunk then delegates to `call_strict_resolver`.
+/// Used by the `type_stage_map` Function path (Step 3 in `resolve_type_head`) which has a pre-located thunk.
 pub(crate) async fn evaluate_resolver_with_thunk(
-    thunk_id: crate::arena::ThunkId,
+    thunk: Arc<crate::value::Thunk>,
     args: &[crate::type_def::Type],
     eval_ctx: &Arc<crate::eval::EvalContext>,
 ) -> Option<crate::type_def::Type> {
-    let resolver_thunk = eval_ctx.scope_arena.borrow().get_thunk(thunk_id);
-    let resolver_val = crate::eval::materialize(&resolver_thunk, None, eval_ctx)
+    let resolver_val = crate::eval::materialize(&thunk, None, eval_ctx)
         .await
         .ok()?;
     call_strict_resolver(resolver_val, args, eval_ctx).await

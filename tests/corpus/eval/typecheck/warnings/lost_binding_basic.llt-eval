@@ -7,4 +7,4 @@
 Int(1)
 
 === warn
-intermediate binding 'b' is defined but never referenced
+variable 'b' is never referenced

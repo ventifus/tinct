@@ -18,7 +18,6 @@ use crate::ast::{CoreExpr, Span, Spanned};
 use crate::error::{EvalError, EvalResult};
 #[allow(unused_imports)] // used in test modules via `use super::*`
 use crate::value::Strictness;
-use crate::value::ThunkId;
 // Circular module dependency: this module imports `invoke_function` and `materialize` from eval.rs.
 // eval.rs calls builtins via function pointers stored in `Value::Builtin`.
 // This bidirectional dependency is safe because neither module's initialization depends on the other.
@@ -167,19 +166,19 @@ pub(crate) fn synthetic_call_expr(span: Span) -> Arc<Spanned<CoreExpr>> {
 /// and rejecting named arguments. Used by many single-arg builtins with force_count=1.
 pub(crate) fn expect_one_arg(
     name: &str,
-    args: &[ThunkId],
-    named: Option<&IndexMap<String, ThunkId>>,
+    args: &[Arc<Thunk>],
+    named: Option<&IndexMap<String, Arc<Thunk>>>,
     ctx: &Arc<crate::eval::EvalContext>,
     call_span: Span,
 ) -> EvalResult<Value> {
+    let _ = ctx;
     if args.len() != 1 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
     if named.map(|n| !n.is_empty()).unwrap_or(false) {
         return Err(EvalError::named_arg_rejected(name.to_string(), call_span).into());
     }
-    let thunk0 = ctx.get_thunk(args[0]);
-    Ok(thunk0
+    Ok(args[0]
         .try_get_value()
         .expect("pre-materialized by force_count/pos_strictness")
         .clone())
@@ -226,8 +225,8 @@ pub(crate) fn check_float_result(val: f64, op: &str, span: Span) -> EvalResult<A
 /// `name` is the builtin name for error messages. `ctx` is for
 /// materialization. `call_span` is used as the materialization span.
 pub(crate) async fn flatten_overlay(
-    left: &ThunkId,
-    right: &ThunkId,
+    left: &Arc<Thunk>,
+    right: &Arc<Thunk>,
     name: &str,
     ctx: &Arc<crate::eval::EvalContext>,
     call_span: Span,
@@ -254,8 +253,8 @@ pub(crate) async fn flatten_overlay(
 
     let mut work_stack: Vec<Arc<crate::value::Thunk>> = Vec::new();
     // Push in reverse order: left first (processed last = base layer), right second (processed first = override).
-    work_stack.push(ctx.get_thunk(*left));
-    work_stack.push(ctx.get_thunk(*right));
+    work_stack.push(Arc::clone(left));
+    work_stack.push(Arc::clone(right));
 
     // Collect flat layers in processing order (right to left).
     let mut layers: Vec<IndexMap<HashableValue, Arc<crate::value::Thunk>>> = Vec::new();
@@ -268,18 +267,18 @@ pub(crate) async fn flatten_overlay(
             }
             Value::Overlay(l, r) => {
                 // Unwind: push L first (base, processed later), R second (override, processed sooner).
-                work_stack.push(ctx.get_thunk(l));
-                work_stack.push(ctx.get_thunk(r));
+                work_stack.push(l);
+                work_stack.push(r);
             }
             Value::Variant { payload, .. } => {
                 // Auto-unpack variant payload. This intentionally diverges from require_dict
                 // which errors on unit variants: flatten_overlay accepts unit variants as
                 // empty dict layers to support the [payload-of [unit-variant]] => [] idiom.
                 match payload {
-                    Some(payload_id) => {
+                    Some(payload_thunk) => {
                         // Re-push the payload thunk for processing in the next iteration.
                         // This handles recursive cases (payload is itself an Overlay).
-                        work_stack.push(ctx.get_thunk(payload_id));
+                        work_stack.push(payload_thunk);
                     }
                     None => {
                         // Unit variant: contribute an empty dict layer.
@@ -333,8 +332,7 @@ pub(crate) async fn require_dict(
         Value::Variant { payload, .. } => {
             // Auto-unpack variant payload — consistent with DotAccess behavior
             match payload {
-                Some(payload_id) => {
-                    let payload_thunk = ctx.get_thunk(payload_id);
+                Some(payload_thunk) => {
                     let payload_val = materialize(&payload_thunk, Some(&call_span), ctx).await?;
                     // Recursively try to extract dict from payload
                     Box::pin(require_dict(name, payload_val, def_span, ctx, call_span)).await
@@ -385,7 +383,7 @@ pub(crate) fn require_string(name: &str, value: Value, def_span: Span) -> EvalRe
 /// Helper: reject named arguments for multi-arg builtins that don't accept them.
 pub(crate) fn reject_named(
     name: &str,
-    named: Option<&IndexMap<String, ThunkId>>,
+    named: Option<&IndexMap<String, Arc<Thunk>>>,
     call_span: Span,
 ) -> EvalResult<()> {
     if named.map(|n| !n.is_empty()).unwrap_or(false) {
@@ -501,13 +499,13 @@ pub(crate) use crate::builtins_bytes::{
 fn float_to_int_builtin(
     name: &str,
     op: fn(f64) -> f64,
-    args: &[ThunkId],
-    named: Option<&IndexMap<String, ThunkId>>,
+    args: &[Arc<Thunk>],
+    named: Option<&IndexMap<String, Arc<Thunk>>>,
     ctx: &Arc<crate::eval::EvalContext>,
     call_span: Span,
 ) -> EvalResult<Arc<Thunk>> {
     let val = expect_one_arg(name, args, named, ctx, call_span.clone())?;
-    let arg0_span = ctx.get_thunk(args[0]).span.clone();
+    let arg0_span = args[0].span.clone();
     match val {
         Value::Int(n) => ok_val(Value::Int(n), call_span),
         Value::Float(f) => {
@@ -595,7 +593,7 @@ pub(crate) fn builtin_to_int(
     }
     Box::pin(async move {
         let val = expect_one_arg("to-int", &args, named.as_ref(), &ctx, call_span.clone())?;
-        let arg0_span = ctx.get_thunk(args[0]).span.clone();
+        let arg0_span = args[0].span.clone();
         let s = require_string("to-int", val, arg0_span)?;
         match s.parse::<i64>() {
             Ok(n) => ok_val(Value::Int(n), call_span),
@@ -629,7 +627,7 @@ pub(crate) fn builtin_to_float(
     }
     Box::pin(async move {
         let val = expect_one_arg("to-float", &args, named.as_ref(), &ctx, call_span.clone())?;
-        let arg0_span = ctx.get_thunk(args[0]).span.clone();
+        let arg0_span = args[0].span.clone();
         let s = require_string("to-float", val, arg0_span)?;
         match s.parse::<f64>() {
             Ok(f) if f.is_finite() => ok_val(Value::Float(f), call_span),
@@ -665,7 +663,9 @@ pub(crate) fn builtin_proxy(
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
         Ok(Arc::new(Thunk::value(
-            Value::Proxy { handler: args[0] },
+            Value::Proxy {
+                handler: Arc::clone(&args[0]),
+            },
             call_span,
         )))
     })
@@ -745,12 +745,12 @@ mod tests {
         Arc::new(Thunk::value(val, test_span(1, 1, 1, 5)))
     }
 
-    /// Helper: allocate a Value as a ThunkId in the given ctx's arena.
-    fn alloc(val: Value, ctx: &Arc<crate::eval::EvalContext>) -> ThunkId {
-        ctx.alloc_thunk(0, thunk(val))
+    /// Helper: wrap a Value in a materialized Thunk (Arc) for use in BuiltinArgs.
+    fn alloc(val: Value, _ctx: &Arc<crate::eval::EvalContext>) -> Arc<Thunk> {
+        thunk(val)
     }
 
-    fn no_named() -> Option<IndexMap<String, ThunkId>> {
+    fn no_named() -> Option<IndexMap<String, Arc<Thunk>>> {
         None
     }
 
@@ -832,19 +832,21 @@ mod tests {
             crate::ast::CoreExpr::Placeholder,
             span.clone(),
         ));
-        Arc::new(Thunk::core_expr(expr, 0, Arc::clone(ctx), span))
+        Arc::new(Thunk::core_expr(
+            expr,
+            crate::value::EvalFrame::empty(),
+            Arc::clone(ctx),
+            span,
+        ))
     }
 
     /// Build a materialized dict thunk from an `IndexMap<HashableValue, Arc<Thunk>>`.
-    /// Returns a `ThunkId` so the result can be used directly in `BuiltinArgs.args`.
+    /// Returns an `Arc<Thunk>` for use directly in `BuiltinArgs.args`.
     fn thunk_dict(
         map: IndexMap<HashableValue, Arc<Thunk>>,
-        ctx: &Arc<crate::eval::EvalContext>,
-    ) -> ThunkId {
-        ctx.alloc_thunk(
-            0,
-            Arc::new(Thunk::value(Value::Dict(map), test_span(1, 1, 1, 5))),
-        )
+        _ctx: &Arc<crate::eval::EvalContext>,
+    ) -> Arc<Thunk> {
+        Arc::new(Thunk::value(Value::Dict(map), test_span(1, 1, 1, 5)))
     }
 
     /// Helper: materialize an `Arc<Thunk>` — used by tests inspecting dict entry values after T-1772.
@@ -2257,19 +2259,16 @@ mod tests {
         }
         let ctx = test_ctx();
         let ok_def = builtin!("ok", ok_builtin, [], 0);
-        let pending_id = ctx.alloc_thunk(
+        let pending_thunk = Arc::new(Thunk::builtin_call(
+            ok_def,
+            vec![],
+            None,
+            call_span(),
             0,
-            Arc::new(Thunk::builtin_call(
-                ok_def,
-                vec![],
-                None,
-                call_span(),
-                0,
-                Arc::clone(&ctx),
-            )),
-        );
+            Arc::clone(&ctx),
+        ));
         let result = mat(builtin_try(BuiltinArgs {
-            args: vec![pending_id],
+            args: vec![pending_thunk],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -2302,19 +2301,16 @@ mod tests {
         }
         let ctx = test_ctx();
         let err_def = builtin!("fail", err_builtin, [], 0);
-        let pending_id = ctx.alloc_thunk(
+        let pending_thunk = Arc::new(Thunk::builtin_call(
+            err_def,
+            vec![],
+            None,
+            call_span(),
             0,
-            Arc::new(Thunk::builtin_call(
-                err_def,
-                vec![],
-                None,
-                call_span(),
-                0,
-                Arc::clone(&ctx),
-            )),
-        );
+            Arc::clone(&ctx),
+        ));
         let result = mat(builtin_try(BuiltinArgs {
-            args: vec![pending_id],
+            args: vec![pending_thunk],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -2355,19 +2351,16 @@ mod tests {
         }
         let ctx = test_ctx();
         let rl_def = builtin!("resource_fail", resource_limit_builtin, [], 0);
-        let pending_id = ctx.alloc_thunk(
+        let pending_thunk = Arc::new(Thunk::builtin_call(
+            rl_def,
+            vec![],
+            None,
+            call_span(),
             0,
-            Arc::new(Thunk::builtin_call(
-                rl_def,
-                vec![],
-                None,
-                call_span(),
-                0,
-                Arc::clone(&ctx),
-            )),
-        );
+            Arc::clone(&ctx),
+        ));
         let err = run(builtin_try(BuiltinArgs {
-            args: vec![pending_id],
+            args: vec![pending_thunk],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -2472,10 +2465,8 @@ mod tests {
                     ..
                 } = builtin_ctx;
                 // TEST: test-only add_builtin with force_count=0 deliberately uses materialize directly
-                let thunk0 = ctx.get_thunk(args[0]);
-                let thunk1 = ctx.get_thunk(args[1]);
-                let a = materialize(&thunk0, None, &ctx).await?; // TEST: test-only inline builtin
-                let b = materialize(&thunk1, None, &ctx).await?; // TEST: test-only inline builtin
+                let a = materialize(&args[0], None, &ctx).await?; // TEST: test-only inline builtin
+                let b = materialize(&args[1], None, &ctx).await?; // TEST: test-only inline builtin
                 match (a, b) {
                     (Value::Int(x), Value::Int(y)) => ok_val(Value::Int(x + y), call_span),
                     _ => Err(EvalError::type_mismatch("Int", "non-Int", call_span).into()),
@@ -3009,7 +3000,7 @@ mod tests {
         let ctx = test_ctx();
         let d = thunk_dict(IndexMap::new(), &ctx);
         let err = run(builtin_keys(BuiltinArgs {
-            args: vec![d, d],
+            args: vec![d.clone(), d],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -3048,7 +3039,7 @@ mod tests {
         let ctx = test_ctx();
         let d = thunk_dict(IndexMap::new(), &ctx);
         let err = run(builtin_length(BuiltinArgs {
-            args: vec![d, d],
+            args: vec![d.clone(), d],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -5430,7 +5421,7 @@ mod tests {
         match val {
             Value::Proxy { handler: h } => {
                 // Verify the handler thunk contains the expected value.
-                let handler_val = mat_id(ctx.get_thunk(h), &ctx).await;
+                let handler_val = mat_id(h, &ctx).await;
                 assert_eq!(handler_val, Value::Int(42));
             }
             other => panic!("expected Proxy, got {:?}", other),

@@ -286,6 +286,7 @@ fn desugar_instance_decls_expr(expr: &SurfaceExpression, _span: Span) -> Surface
             params,
             body,
             desugared,
+            resolved_captures: _,
         } => {
             let new_body = desugar_instance_decls_node(Arc::clone(body));
             if Arc::ptr_eq(&new_body, body) {
@@ -296,6 +297,7 @@ fn desugar_instance_decls_expr(expr: &SurfaceExpression, _span: Span) -> Surface
                     params: params.clone(),
                     body: new_body,
                     desugared: *desugared,
+                    resolved_captures: crate::ast::CapturesCell::new(),
                 }
             }
         }
@@ -528,6 +530,7 @@ fn wrap_surface_in_lambda(node: &mut Arc<SurfaceNode>) {
             )],
             body,
             desugared: true,
+            resolved_captures: crate::ast::CapturesCell::new(),
         },
         span,
     ));

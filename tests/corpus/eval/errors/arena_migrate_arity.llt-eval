@@ -1,4 +1,0 @@
-# builtin-arena-migrate: arity mismatch when called with wrong number of arguments
-[builtin-arena-migrate 42]
-=== error
-arity mismatch: expected 3 arguments, got 1

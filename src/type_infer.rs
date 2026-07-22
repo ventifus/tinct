@@ -238,7 +238,7 @@ pub enum TypeStageEntry {
     /// Function thunk that must be called to produce a type — used for parameterized
     /// type constructors (e.g., Seq, Result) where the type-stage function takes type
     /// parameters and returns a TypeNode.
-    Function(crate::arena::ThunkId),
+    Function(std::sync::Arc<crate::value::Thunk>),
 }
 
 /// Inference state for levels-based let-generalization

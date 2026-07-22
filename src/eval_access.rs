@@ -29,16 +29,16 @@ pub(crate) async fn invoke_proxy_handler(
         Value::Function {
             params,
             body,
-            closure_env_id,
+            closure_env,
             ..
         } => {
             invoke_function(&CallContext {
                 params: &params,
                 body: &body,
-                closure_env_id,
+                closure_env,
                 positional: &[key_arg_id],
                 named: None,
-                default_env_id: closure_env_id,
+                default_env_id: 0,
                 call_span: access_span
                     .clone()
                     .with_name(Arc::from("proxy field access")),

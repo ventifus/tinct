@@ -50,8 +50,7 @@ pub(crate) fn builtin_bytes(
         // Directly concatenate bytes without intermediate storage
         let mut result = Vec::new();
 
-        for &tid in &args {
-            let arg_thunk = ctx.get_thunk(tid);
+        for arg_thunk in &args {
             let val = materialize(&arg_thunk, Some(&call_span), &ctx).await?; // H3: loop materialize (iterating bytes args)
             match val.as_bytes() {
                 Some(bytes) => {
@@ -91,7 +90,7 @@ pub(crate) fn builtin_bytes_find(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
 
@@ -116,8 +115,8 @@ pub(crate) fn builtin_bytes_find(
             .into());
         }
 
-        let thunk0 = ctx.get_thunk(args[0]);
-        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk0 = Arc::clone(&args[0]);
+        let thunk1 = Arc::clone(&args[1]);
         let haystack_val = thunk0
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
@@ -260,7 +259,7 @@ pub(crate) fn builtin_bytes_concat(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
 
@@ -285,8 +284,8 @@ pub(crate) fn builtin_bytes_concat(
             .into());
         }
 
-        let thunk0 = ctx.get_thunk(args[0]);
-        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk0 = Arc::clone(&args[0]);
+        let thunk1 = Arc::clone(&args[1]);
         let val1 = thunk0
             .try_get_value()
             .expect("pre-materialized by pos_strictness")
@@ -348,7 +347,7 @@ pub(crate) fn builtin_bytes_equal(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
 
@@ -373,8 +372,8 @@ pub(crate) fn builtin_bytes_equal(
             .into());
         }
 
-        let thunk0 = ctx.get_thunk(args[0]);
-        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk0 = Arc::clone(&args[0]);
+        let thunk1 = Arc::clone(&args[1]);
         let val1 = thunk0
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
@@ -435,7 +434,7 @@ pub(crate) fn builtin_ct_equal(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
 
@@ -457,8 +456,8 @@ pub(crate) fn builtin_ct_equal(
             .into());
         }
 
-        let thunk0 = ctx.get_thunk(args[0]);
-        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk0 = Arc::clone(&args[0]);
+        let thunk1 = Arc::clone(&args[1]);
         let val1 = thunk0
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
@@ -525,7 +524,7 @@ pub(crate) fn builtin_encode(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
 
@@ -550,8 +549,8 @@ pub(crate) fn builtin_encode(
             .into());
         }
 
-        let thunk0 = ctx.get_thunk(args[0]);
-        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk0 = Arc::clone(&args[0]);
+        let thunk1 = Arc::clone(&args[1]);
         let fmt_val = thunk0
             .try_get_value()
             .expect("pre-materialized by pos_strictness")
@@ -668,7 +667,7 @@ pub(crate) fn builtin_bytes_get(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
 
@@ -693,8 +692,8 @@ pub(crate) fn builtin_bytes_get(
             .into());
         }
 
-        let thunk0 = ctx.get_thunk(args[0]);
-        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk0 = Arc::clone(&args[0]);
+        let thunk1 = Arc::clone(&args[1]);
         let i_val = thunk0
             .try_get_value()
             .expect("pre-materialized by pos_strictness")
@@ -765,7 +764,7 @@ pub(crate) fn builtin_bytes_slice(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
 
@@ -790,9 +789,9 @@ pub(crate) fn builtin_bytes_slice(
             .into());
         }
 
-        let thunk0 = ctx.get_thunk(args[0]);
-        let thunk1 = ctx.get_thunk(args[1]);
-        let thunk2 = ctx.get_thunk(args[2]);
+        let thunk0 = Arc::clone(&args[0]);
+        let thunk1 = Arc::clone(&args[1]);
+        let thunk2 = Arc::clone(&args[2]);
         let b_val = thunk0
             .try_get_value()
             .expect("pre-materialized by pos_strictness")

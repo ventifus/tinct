@@ -98,8 +98,8 @@ use std::sync::Arc;
 pub use ast::{Annotation, Param, Span, Spanned};
 /// Surface AST types for the runtime-v2 pipeline.
 pub use ast::{
-    CallDispatch, MacroProvenance, Provenance, Resolution, SlotAnnotation, SurfaceEntry,
-    SurfaceExpression, SurfaceNode, SurfaceProgram, TypeAnnotation,
+    CallDispatch, CapturesCell, MacroProvenance, Provenance, Resolution, SlotAnnotation,
+    SurfaceEntry, SurfaceExpression, SurfaceNode, SurfaceProgram, TypeAnnotation, VarAddr,
 };
 /// Parser entry points.
 pub use parser::{format_parse_error, parse, parse_surface_expression, ParseOutput};
@@ -131,8 +131,8 @@ pub use formatter::{format_source_tinct, format_source_tinct_with_dir};
 pub use env::Env;
 /// Runtime value types: values, thunks, environments, and dict keys.
 pub use value::{
-    string_val, ChannelInner, ClockCapInner, DirPerms, HashableValue, NetCapEntry, Thunk, ThunkId,
-    Value,
+    string_val, ChannelInner, ClockCapInner, DirPerms, EvalFrame, HashableValue, NetCapEntry,
+    Thunk, Value,
 };
 
 /// Run the loader.llt bootstrap pipeline with a pre-configured environment.
@@ -194,17 +194,14 @@ pub async fn run_loader_pipeline(
         // the host has placed there. Each named thunk carries its name via span.name.
         // Reading the actual scope 0 gives the resolver the complete picture so
         // every injected name resolves to a correct de Bruijn coordinate.
-        let root_frame: indexmap::IndexMap<String, u32> = {
-            let arena = eval_ctx.scope_arena.borrow();
-            arena.scopes[0]
-                .slots
-                .iter()
-                .enumerate()
-                .filter_map(|(slot, t)| {
-                    Some((t.as_ref()?.span.name.as_deref()?.to_string(), slot as u32))
-                })
-                .collect()
-        };
+        // ScopeArena has been deleted — build root_frame from core_builtins() statically.
+        // Previously this read scope_arena.scopes[0] to include host-injected capabilities;
+        // with the EvalFrame migration, root_frame uses the static builtin list.
+        let root_frame: indexmap::IndexMap<String, u32> = crate::builtins_core::core_builtins()
+            .iter()
+            .enumerate()
+            .map(|(i, def)| (def.name.to_string(), i as u32))
+            .collect();
         let (_table, new_frames) =
             resolve::resolve_surface_program(&loader_program, std::slice::from_ref(&root_frame));
         // Combine: root_frame (outermost) followed by frames introduced by the program.
@@ -589,7 +586,7 @@ pub fn visit_value<'a, V: ValueVisitor + 'a>(
             } => {
                 let payload_output = match payload {
                     Some(thunk_id) => {
-                        let thunk = ctx.get_thunk(*thunk_id);
+                        let thunk = Arc::clone(thunk_id);
                         let v = eval::materialize(&thunk, None, ctx).await?;
                         let payload_span = thunk.span.clone();
                         visit_value(&v, ctx, depth + 1, visitor, payload_span).await?

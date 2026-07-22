@@ -20,7 +20,7 @@ use indexmap::IndexMap;
 
 use crate::builtins::{check_float_result, ok_val, reject_named};
 use crate::error::{EvalError, EvalResult};
-use crate::value::{BuiltinArgs, Thunk, ThunkId, Value};
+use crate::value::{BuiltinArgs, Thunk, Value};
 
 /// Maximum safe integer for Int→Float promotion (2^53).
 /// Integers with |n| > MAX_SAFE_INT lose precision when cast to f64.
@@ -51,7 +51,7 @@ pub(crate) fn builtin_mul(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -60,8 +60,8 @@ pub(crate) fn builtin_mul(
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
 
-        let thunk0 = ctx.get_thunk(args[0]);
-        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk0 = args[0].clone();
+        let thunk1 = args[1].clone();
         let left = thunk0
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
@@ -104,7 +104,7 @@ pub(crate) fn builtin_div_float(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -113,8 +113,8 @@ pub(crate) fn builtin_div_float(
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
 
-        let thunk0 = ctx.get_thunk(args[0]);
-        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk0 = args[0].clone();
+        let thunk1 = args[1].clone();
         let left = thunk0
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
@@ -163,7 +163,7 @@ pub(crate) fn builtin_eq_int(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -171,13 +171,11 @@ pub(crate) fn builtin_eq_int(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let left = ctx
-            .get_thunk(args[0])
+        let left = args[0]
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
-        let right = ctx
-            .get_thunk(args[1])
+        let right = args[1]
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
@@ -206,7 +204,7 @@ pub(crate) fn builtin_eq_float(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -214,13 +212,11 @@ pub(crate) fn builtin_eq_float(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let left = ctx
-            .get_thunk(args[0])
+        let left = args[0]
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
-        let right = ctx
-            .get_thunk(args[1])
+        let right = args[1]
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
@@ -249,7 +245,7 @@ pub(crate) fn builtin_eq_string(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -257,13 +253,11 @@ pub(crate) fn builtin_eq_string(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let left = ctx
-            .get_thunk(args[0])
+        let left = args[0]
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
-        let right = ctx
-            .get_thunk(args[1])
+        let right = args[1]
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
@@ -305,7 +299,7 @@ pub(crate) fn builtin_lt(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -317,8 +311,8 @@ pub(crate) fn builtin_lt(
         // Int/Float/String fast paths are handled directly. Other types fall through
         // to Comparable instance dispatch. ComparableInt.lt calls [builtin-lt a b] which hits
         // the (Int,Int) fast path — no infinite recursion.
-        let thunk0 = ctx.get_thunk(args[0]);
-        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk0 = args[0].clone();
+        let thunk1 = args[1].clone();
         let left = thunk0
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
@@ -377,7 +371,7 @@ pub(crate) fn builtin_float_lt(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -385,16 +379,8 @@ pub(crate) fn builtin_float_lt(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let a = ctx
-            .get_thunk(args[0])
-            .try_get_value()
-            .expect("pre-materialized")
-            .clone();
-        let b = ctx
-            .get_thunk(args[1])
-            .try_get_value()
-            .expect("pre-materialized")
-            .clone();
+        let a = args[0].try_get_value().expect("pre-materialized").clone();
+        let b = args[1].try_get_value().expect("pre-materialized").clone();
         match (&a, &b) {
             (Value::Float(x), Value::Float(y)) => {
                 ok_val(Value::Int(if x < y { 1 } else { 0 }), call_span)
@@ -417,7 +403,7 @@ pub(crate) fn builtin_str_lt(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -425,16 +411,8 @@ pub(crate) fn builtin_str_lt(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let a = ctx
-            .get_thunk(args[0])
-            .try_get_value()
-            .expect("pre-materialized")
-            .clone();
-        let b = ctx
-            .get_thunk(args[1])
-            .try_get_value()
-            .expect("pre-materialized")
-            .clone();
+        let a = args[0].try_get_value().expect("pre-materialized").clone();
+        let b = args[1].try_get_value().expect("pre-materialized").clone();
         match (&a, &b) {
             (
                 Value::String {
@@ -482,7 +460,7 @@ pub(crate) fn builtin_lte(
         }
 
         // a <= b ≡ !(b < a)
-        let swapped_args = vec![args[1], args[0]];
+        let swapped_args = vec![args[1].clone(), args[0].clone()];
         let gt_result = builtin_lt(BuiltinArgs {
             args: swapped_args,
             named,
@@ -511,16 +489,17 @@ pub(crate) fn builtin_lte(
 /// Helper to extract one numeric operand and convert to f64.
 fn extract_single_float(
     name: &str,
-    args: &[ThunkId],
-    named: Option<&IndexMap<String, ThunkId>>,
+    args: &[Arc<Thunk>],
+    named: Option<&IndexMap<String, Arc<Thunk>>>,
     ctx: &Arc<crate::eval::EvalContext>,
     call_span: crate::ast::Span,
 ) -> EvalResult<f64> {
+    let _ = ctx;
     if args.len() != 1 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
     reject_named(name, named, call_span)?;
-    let thunk0 = ctx.get_thunk(args[0]);
+    let thunk0 = &args[0];
     let val = thunk0
         .try_get_value()
         .expect("pre-materialized by force_count/pos_strictness")
@@ -541,17 +520,18 @@ fn extract_single_float(
 /// Helper to extract two numeric operands and convert to f64.
 fn extract_two_floats(
     name: &str,
-    args: &[ThunkId],
-    named: Option<&IndexMap<String, ThunkId>>,
+    args: &[Arc<Thunk>],
+    named: Option<&IndexMap<String, Arc<Thunk>>>,
     ctx: &Arc<crate::eval::EvalContext>,
     call_span: crate::ast::Span,
 ) -> EvalResult<(f64, f64)> {
+    let _ = ctx;
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
     reject_named(name, named, call_span)?;
-    let thunk0 = ctx.get_thunk(args[0]);
-    let thunk1 = ctx.get_thunk(args[1]);
+    let thunk0 = &args[0];
+    let thunk1 = &args[1];
     let left = thunk0
         .try_get_value()
         .expect("pre-materialized by force_count/pos_strictness")
@@ -886,17 +866,18 @@ pub(crate) fn builtin_finite_check(
 /// Helper to extract two Int operands, enforcing arity == 2 and type Int.
 fn extract_int_pair(
     name: &str,
-    args: &[ThunkId],
-    named: Option<&IndexMap<String, ThunkId>>,
+    args: &[Arc<Thunk>],
+    named: Option<&IndexMap<String, Arc<Thunk>>>,
     ctx: &Arc<crate::eval::EvalContext>,
     call_span: crate::ast::Span,
 ) -> EvalResult<(i64, i64)> {
+    let _ = ctx;
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
     reject_named(name, named, call_span)?;
-    let thunk0 = ctx.get_thunk(args[0]);
-    let thunk1 = ctx.get_thunk(args[1]);
+    let thunk0 = &args[0];
+    let thunk1 = &args[1];
     let left = thunk0
         .try_get_value()
         .expect("pre-materialized by force_count/pos_strictness")
@@ -1070,7 +1051,7 @@ pub(crate) fn builtin_float(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -1078,7 +1059,7 @@ pub(crate) fn builtin_float(
         if args.len() != 1 {
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
-        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk0 = args[0].clone();
         let val = thunk0
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
@@ -1108,7 +1089,7 @@ pub(crate) fn builtin_int_add(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -1116,16 +1097,8 @@ pub(crate) fn builtin_int_add(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let a = ctx
-            .get_thunk(args[0])
-            .try_get_value()
-            .expect("pre-materialized")
-            .clone();
-        let b = ctx
-            .get_thunk(args[1])
-            .try_get_value()
-            .expect("pre-materialized")
-            .clone();
+        let a = args[0].try_get_value().expect("pre-materialized").clone();
+        let b = args[1].try_get_value().expect("pre-materialized").clone();
         match (&a, &b) {
             (Value::Int(x), Value::Int(y)) => x
                 .checked_add(*y)
@@ -1150,7 +1123,7 @@ pub(crate) fn builtin_float_add(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -1158,16 +1131,8 @@ pub(crate) fn builtin_float_add(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let a = ctx
-            .get_thunk(args[0])
-            .try_get_value()
-            .expect("pre-materialized")
-            .clone();
-        let b = ctx
-            .get_thunk(args[1])
-            .try_get_value()
-            .expect("pre-materialized")
-            .clone();
+        let a = args[0].try_get_value().expect("pre-materialized").clone();
+        let b = args[1].try_get_value().expect("pre-materialized").clone();
         match (&a, &b) {
             (Value::Float(x), Value::Float(y)) => {
                 check_float_result(x + y, "builtin-float-add", call_span)
@@ -1189,7 +1154,7 @@ pub(crate) fn builtin_int_to_float(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -1197,7 +1162,7 @@ pub(crate) fn builtin_int_to_float(
         if args.len() != 1 {
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
-        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk0 = args[0].clone();
         let v = thunk0.try_get_value().expect("pre-materialized").clone();
         match v {
             Value::Int(n) => {
@@ -1217,7 +1182,7 @@ pub(crate) fn builtin_int_sub(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -1225,16 +1190,8 @@ pub(crate) fn builtin_int_sub(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let a = ctx
-            .get_thunk(args[0])
-            .try_get_value()
-            .expect("pre-materialized")
-            .clone();
-        let b = ctx
-            .get_thunk(args[1])
-            .try_get_value()
-            .expect("pre-materialized")
-            .clone();
+        let a = args[0].try_get_value().expect("pre-materialized").clone();
+        let b = args[1].try_get_value().expect("pre-materialized").clone();
         match (&a, &b) {
             (Value::Int(x), Value::Int(y)) => x
                 .checked_sub(*y)
@@ -1259,7 +1216,7 @@ pub(crate) fn builtin_float_sub(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -1267,16 +1224,8 @@ pub(crate) fn builtin_float_sub(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let a = ctx
-            .get_thunk(args[0])
-            .try_get_value()
-            .expect("pre-materialized")
-            .clone();
-        let b = ctx
-            .get_thunk(args[1])
-            .try_get_value()
-            .expect("pre-materialized")
-            .clone();
+        let a = args[0].try_get_value().expect("pre-materialized").clone();
+        let b = args[1].try_get_value().expect("pre-materialized").clone();
         match (&a, &b) {
             (Value::Float(x), Value::Float(y)) => {
                 check_float_result(x - y, "builtin-float-sub", call_span)
@@ -1298,7 +1247,7 @@ pub(crate) fn builtin_int_mul(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -1306,16 +1255,8 @@ pub(crate) fn builtin_int_mul(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let a = ctx
-            .get_thunk(args[0])
-            .try_get_value()
-            .expect("pre-materialized")
-            .clone();
-        let b = ctx
-            .get_thunk(args[1])
-            .try_get_value()
-            .expect("pre-materialized")
-            .clone();
+        let a = args[0].try_get_value().expect("pre-materialized").clone();
+        let b = args[1].try_get_value().expect("pre-materialized").clone();
         match (&a, &b) {
             (Value::Int(x), Value::Int(y)) => x
                 .checked_mul(*y)
@@ -1340,7 +1281,7 @@ pub(crate) fn builtin_float_mul(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -1348,16 +1289,8 @@ pub(crate) fn builtin_float_mul(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let a = ctx
-            .get_thunk(args[0])
-            .try_get_value()
-            .expect("pre-materialized")
-            .clone();
-        let b = ctx
-            .get_thunk(args[1])
-            .try_get_value()
-            .expect("pre-materialized")
-            .clone();
+        let a = args[0].try_get_value().expect("pre-materialized").clone();
+        let b = args[1].try_get_value().expect("pre-materialized").clone();
         match (&a, &b) {
             (Value::Float(x), Value::Float(y)) => {
                 check_float_result(x * y, "builtin-float-mul", call_span)
@@ -1382,7 +1315,7 @@ pub(crate) fn builtin_int_gt(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -1390,16 +1323,8 @@ pub(crate) fn builtin_int_gt(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let a = ctx
-            .get_thunk(args[0])
-            .try_get_value()
-            .expect("pre-materialized")
-            .clone();
-        let b = ctx
-            .get_thunk(args[1])
-            .try_get_value()
-            .expect("pre-materialized")
-            .clone();
+        let a = args[0].try_get_value().expect("pre-materialized").clone();
+        let b = args[1].try_get_value().expect("pre-materialized").clone();
         match (&a, &b) {
             (Value::Int(x), Value::Int(y)) => {
                 ok_val(Value::Int(if x > y { 1 } else { 0 }), call_span)
@@ -1421,7 +1346,7 @@ pub(crate) fn builtin_float_gt(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -1429,16 +1354,8 @@ pub(crate) fn builtin_float_gt(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let a = ctx
-            .get_thunk(args[0])
-            .try_get_value()
-            .expect("pre-materialized")
-            .clone();
-        let b = ctx
-            .get_thunk(args[1])
-            .try_get_value()
-            .expect("pre-materialized")
-            .clone();
+        let a = args[0].try_get_value().expect("pre-materialized").clone();
+        let b = args[1].try_get_value().expect("pre-materialized").clone();
         match (&a, &b) {
             (Value::Float(x), Value::Float(y)) => {
                 ok_val(Value::Int(if x > y { 1 } else { 0 }), call_span)
@@ -1460,7 +1377,7 @@ pub(crate) fn builtin_str_gt(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -1468,16 +1385,8 @@ pub(crate) fn builtin_str_gt(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let a = ctx
-            .get_thunk(args[0])
-            .try_get_value()
-            .expect("pre-materialized")
-            .clone();
-        let b = ctx
-            .get_thunk(args[1])
-            .try_get_value()
-            .expect("pre-materialized")
-            .clone();
+        let a = args[0].try_get_value().expect("pre-materialized").clone();
+        let b = args[1].try_get_value().expect("pre-materialized").clone();
         match (&a, &b) {
             (
                 Value::String {
@@ -1511,7 +1420,7 @@ pub(crate) fn builtin_int_gte(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -1519,16 +1428,8 @@ pub(crate) fn builtin_int_gte(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let a = ctx
-            .get_thunk(args[0])
-            .try_get_value()
-            .expect("pre-materialized")
-            .clone();
-        let b = ctx
-            .get_thunk(args[1])
-            .try_get_value()
-            .expect("pre-materialized")
-            .clone();
+        let a = args[0].try_get_value().expect("pre-materialized").clone();
+        let b = args[1].try_get_value().expect("pre-materialized").clone();
         match (&a, &b) {
             (Value::Int(x), Value::Int(y)) => {
                 ok_val(Value::Int(if x >= y { 1 } else { 0 }), call_span)
@@ -1550,7 +1451,7 @@ pub(crate) fn builtin_float_gte(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -1558,16 +1459,8 @@ pub(crate) fn builtin_float_gte(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let a = ctx
-            .get_thunk(args[0])
-            .try_get_value()
-            .expect("pre-materialized")
-            .clone();
-        let b = ctx
-            .get_thunk(args[1])
-            .try_get_value()
-            .expect("pre-materialized")
-            .clone();
+        let a = args[0].try_get_value().expect("pre-materialized").clone();
+        let b = args[1].try_get_value().expect("pre-materialized").clone();
         match (&a, &b) {
             (Value::Float(x), Value::Float(y)) => {
                 ok_val(Value::Int(if x >= y { 1 } else { 0 }), call_span)
@@ -1589,7 +1482,7 @@ pub(crate) fn builtin_str_gte(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -1597,16 +1490,8 @@ pub(crate) fn builtin_str_gte(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let a = ctx
-            .get_thunk(args[0])
-            .try_get_value()
-            .expect("pre-materialized")
-            .clone();
-        let b = ctx
-            .get_thunk(args[1])
-            .try_get_value()
-            .expect("pre-materialized")
-            .clone();
+        let a = args[0].try_get_value().expect("pre-materialized").clone();
+        let b = args[1].try_get_value().expect("pre-materialized").clone();
         match (&a, &b) {
             (
                 Value::String {
@@ -1807,12 +1692,12 @@ mod tests {
     use crate::ast::Span;
     use crate::error::ErrorKind;
     use crate::test_util::test_span;
-    use crate::value::{BuiltinArgs, Thunk, ThunkId, Value};
+    use crate::value::{BuiltinArgs, Thunk, Value};
     fn call_span() -> Span {
         test_span(1, 1, 1, 5)
     }
 
-    fn no_named() -> Option<indexmap::IndexMap<String, ThunkId>> {
+    fn no_named() -> Option<indexmap::IndexMap<String, Arc<Thunk>>> {
         None
     }
 
@@ -1821,8 +1706,8 @@ mod tests {
         crate::eval::EvalContext::new_empty(base_dir, false)
     }
 
-    fn alloc(ctx: &Arc<crate::eval::EvalContext>, val: Value) -> ThunkId {
-        ctx.alloc_thunk(0, Arc::new(Thunk::value(val, test_span(1, 1, 1, 5))))
+    fn alloc(_ctx: &Arc<crate::eval::EvalContext>, val: Value) -> Arc<Thunk> {
+        Arc::new(Thunk::value(val, test_span(1, 1, 1, 5)))
     }
 
     /// Drive an async builtin to completion synchronously in tests.

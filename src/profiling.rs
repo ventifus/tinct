@@ -254,7 +254,7 @@ impl SpanRecord {
 
 /// Per-thunk creation-time data stored in the profiling side table.
 ///
-/// Keyed by `(scope_id, slot)` (= `ThunkId` fields). Populated when profiling is active
+/// Keyed by `(scope_id, slot)`. Populated when profiling is active
 /// at thunk construction time; consumed (and removed) by `ProfilingSpanGuard` when the
 /// thunk is forced. Storing this data here instead of on every `Thunk` saves 16 bytes per
 /// thunk in the common (profiling-disabled) case.
@@ -304,7 +304,7 @@ impl ProfilingCollector {
 
     /// Record creation-time profiling data for a thunk identified by `(scope_id, slot)`.
     ///
-    /// Called immediately after a thunk's `ThunkId` is known (i.e., after `push_slot` returns).
+    /// Called immediately after a thunk's slot is known (i.e., after `push_slot` returns).
     /// No-ops if profiling is disabled (the caller must hold a lock on the collector before
     /// calling, so this is only reached when profiling is active).
     pub fn record_thunk_creation(&mut self, scope_id: u32, slot: u32, data: ThunkCreationData) {

@@ -2156,6 +2156,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                 params,
                                 body: body_expr,
                                 desugared: false,
+                                resolved_captures: crate::ast::CapturesCell::new(),
                             },
                             dict_span(span_start),
                         );
@@ -6796,6 +6797,7 @@ mod tests {
                 body,
                 return_ann,
                 desugared,
+                resolved_captures: _,
             } => {
                 assert_eq!(params.len(), 0);
                 assert!(matches!(&body.expr, SurfaceExpression::Int(42)));
@@ -7766,6 +7768,7 @@ mod tests {
                 body,
                 return_ann,
                 desugared,
+                resolved_captures: _,
             } => {
                 assert_eq!(params.len(), 2);
                 assert_eq!(params[0].node.name, "x");
@@ -8370,6 +8373,7 @@ mod tests {
                 body,
                 return_ann,
                 desugared,
+                resolved_captures: _,
             } => {
                 assert_eq!(params.len(), 0, "expected empty param list");
                 assert!(matches!(&body.expr, SurfaceExpression::Int(42)));
@@ -9245,6 +9249,7 @@ mod tests {
                 body,
                 return_ann,
                 desugared,
+                resolved_captures: _,
             } => {
                 assert_eq!(params.len(), 2);
                 assert_eq!(params[0].node.name, "x");

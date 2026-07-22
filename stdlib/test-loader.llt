@@ -130,7 +130,7 @@
   # _shift-keys: shift all integer keys in dict d by +1.
   # {0: v} → {1: v}, {0: a, 1: b} → {1: a, 2: b}
   # Used by _scope-to-frames-inner to make room for new outermost frame at key 0.
-  _shift-keys: [fn [let d@Dict n@Integer i@Integer builder@BuilderHandle]
+  _shift-keys: [fn [let d@Dict n@Integer i@Integer builder]
     [match [builtin-eq-int i n]
       0: [_shift-keys d n [builtin-int-add i 1]
             [builtin-builder-set [builtin-int-add [builtin-dict-key-nth d i] 1]
@@ -154,7 +154,7 @@
 
   # object-map: map over dict values, preserving keys. Used by scope-to-frames
   # to shift frame indices when prepending a new outermost frame.
-  _object-map-step: [fn [let obj@Dict f keys@Dict i@Integer n@Integer builder@BuilderHandle]
+  _object-map-step: [fn [let obj@Dict f keys@Dict i@Integer n@Integer builder]
     [match [builtin-eq-int i n]
       0: [call [fn [let]
             [k: [builtin-get i keys]]
@@ -166,7 +166,7 @@
     [_object-map-step obj f keys 0 [builtin-dict-length keys] [builtin-make-builder]]]
 
   merge: [fn [let a b]
-    [_copy: [fn [let builder@BuilderHandle d@Dict n@Integer i@Integer]
+    [_copy: [fn [let builder d@Dict n@Integer i@Integer]
       [match [builtin-int-gte i n]
         0: [_copy
               [builtin-builder-set [builtin-dict-key-nth d i] [builtin-dict-nth d i] builder]
@@ -225,6 +225,20 @@
             base-line
             d.notes]
       ...: base-line]]
+    # Render secondary-spans (e.g. "previously defined here") as note: lines.
+    [secondary-spans: [get-or [] "secondary-spans" d]]
+    [with-secondary: [match [builtin-eq-int [builtin-dict-length secondary-spans] 0]
+      0: [reduce
+            [fn [let acc ss]
+              [sf: ss.span]
+              [ss-file: [match [builtin-eq-int [builtin-dict-length sf.file] 0]
+                0: [builtin-string-concat sf.file ":"]
+                ...: ""]]
+              [ss-loc: [builtin-string-concat ss-file [builtin-string-concat [builtin-int->string sf.start-line] [builtin-string-concat ":" [builtin-int->string sf.start-col]]]]]
+              [builtin-string-concat acc [builtin-string-concat "  note: " [builtin-string-concat ss.label [builtin-string-concat " at " [builtin-string-concat ss-loc "\n"]]]]]]
+            with-notes
+            secondary-spans]
+      ...: with-notes]]
     [match stack-empty
       0: [reduce
             [fn [let acc frame]
@@ -232,9 +246,9 @@
                 0: [builtin-string-concat frame.span.file ":"]
                 ...: ""]]
               [builtin-string-concat acc [builtin-string-concat "  in " [builtin-string-concat frame.label [builtin-string-concat " at " [builtin-string-concat frame-file [builtin-string-concat [builtin-int->string frame.span.start-line] [builtin-string-concat ":" [builtin-string-concat [builtin-int->string frame.span.start-col] "\n"]]]]]]]]]
-            with-notes
+            with-secondary
             d.call-stack]
-      ...: with-notes]]
+      ...: with-secondary]]
 
   # _emit-loop: writes each diagnostic to handle h, returns the updated handle.
   # h threads through each write, cascading writes so the caller's consumer of the
@@ -281,13 +295,21 @@
   # catches the error. Typecheck is forced via typed.diagnostics data dependency (no >>).
   # seed-tc: the TypeContext to use for all module type-checks.
   # seed-scope-id: the parent scope to use for declaration file scopes.
+  # ts-seed-scope-id: the type-stage scope-id to use as parent for declaration file scopes
+  #   so that @Integer/@Float/@String etc. resolve correctly. Pass 0 when no type-stage
+  #   scope is available yet (bootstrap). When non-zero, decl-scope-id is parented to
+  #   this scope (which has Integer=TypeNode.Int etc.) rather than the runtime scope,
+  #   so type annotations resolve without pulling in runtime functions.
   # Caller builds it explicitly — no implicit global fallback. This is the same
   # pattern as the init program controlling what environments downstream sees.
   # uses-scope: load and typecheck builtin_NAME.llt declaration modules.
   # Two-pass: evaluate type-stage docs first to enrich the TypeContext, then
   # typecheck all docs with the enriched TypeContext so that annotations like
   # @Integer/@String/@Never resolve correctly from the type-stage values.
-  uses-scope: [fn [let module-names seed-tc seed-scope-id starting-h]
+  uses-scope: [fn [let module-names seed-tc seed-scope-id ts-seed-scope-id starting-h]
+    [decl-parent: [match [builtin-eq-int ts-seed-scope-id 0]
+      0: ts-seed-scope-id
+      ...: seed-scope-id]]
     [reduce
       [fn [let acc name]
         [decl-path:     [builtin-string-concat "builtin_" [builtin-string-concat name ".llt"]]
@@ -297,8 +319,9 @@
              [parse-result:  [builtin-parse decl-bytes decl-path]]
              [desugared:     [builtin-desugar parse-result.program]]
              [decl-docs:     [builtin-program-docs desugared]]
-             # Base scope for this module
-             [decl-scope-id: [builtin-scope-new seed-scope-id [field-get: .field-get  slot-get: .slot-get]]]
+             # Base scope: parented to the type-stage scope when available so annotations
+             # like @Integer resolve via the scope chain without including runtime functions.
+             [decl-scope-id: [builtin-scope-new decl-parent [field-get: .field-get  slot-get: .slot-get]]]
              # Split docs by stage so type-stage docs are processed first
              [split: [reduce
                [fn [let acc doc]
@@ -382,7 +405,7 @@
   # implicit Rust back-channel. Core types (DirCap, Int, Bytes, etc.) are
   # available to all downstream builtin-typecheck calls via this explicit seed.
   _fundamental-base-tc: [builtin-make-type-ctx]
-  fundamental-tc: [match [builtin-int-gte [builtin-dict-length [uses-scope ["core"] _fundamental-base-tc root-scope-id %stderr]] 0]
+  fundamental-tc: [match [builtin-int-gte [builtin-dict-length [uses-scope ["core"] _fundamental-base-tc root-scope-id 0 %stderr]] 0]
     0: _fundamental-base-tc
     ...: _fundamental-base-tc]
 
@@ -459,29 +482,34 @@
     [ts-seed: [builtin-scope-new seed-scope-id
       [Boolean: Boolean  True: Boolean.True  False: Boolean.False]]]
     [eval-doc: [fn [let acc doc]
-      [meta:    [builtin-doc-meta doc acc.scope-id]]
-      [uses-result: [uses-scope [get-or [] "uses" meta] acc.tc acc.scope-id acc.stderr]]
-      [scope:       [builtin-scope-new acc.scope-id uses-result.impls]]
-      [frames:      [scope-to-frames scope]]
-      [res:         [builtin-resolve doc frames]]
-      [n-re:        [count-errors res.diagnostics]]
-      [new-stderr:  [emit-diagnostics res.diagnostics uses-result.stderr]]
-      [match [builtin-eq-int n-re 0]
-        0: [builtin-raise [reduce [fn [let acc d] [builtin-string-concat acc [format-diagnostic d]]]
-                                  "" res.diagnostics]]
+      # Short-circuit: if a previous doc in this pass already has errors, skip remaining docs.
+      [match [builtin-eq-int [count-errors acc.diagnostics] 0]
+        0: acc
         ...: [call [fn [let]
-             [tc-result: [builtin-typecheck-doc res.doc acc.tc]]
-             [typed:     tc-result.doc]
-             [ev:        [builtin-eval typed scope]]
-             [match [null? ev.diagnostics]
-               0: [builtin-raise ev.diagnostics.0.message]
-               ...: [call [fn [let]
-                    [doc-name: [get-or "" "name" meta]]
-                    [next-scope: [builtin-scope-new ev.scope-id
-                                   [match [builtin-eq-string doc-name ""]
-                                     0: [%: ev.result]
-                                     ...: [make-entry doc-name ev.result]]]]
-                    [merge acc [scope-id: next-scope  tc: acc.tc  last-result: ev.result  stderr: new-stderr]]]]]]]]]]
+          [meta:    [builtin-doc-meta doc acc.scope-id]]
+          [uses-result: [uses-scope [get-or [] "uses" meta] acc.tc acc.scope-id acc.ts-scope-id acc.stderr]]
+          [scope:       [builtin-scope-new acc.scope-id uses-result.impls]]
+          [frames:      [scope-to-frames scope]]
+          [res:         [builtin-resolve doc frames]]
+          [n-re:        [count-errors res.diagnostics]]
+          [new-stderr:  [emit-diagnostics res.diagnostics uses-result.stderr]]
+          [match [builtin-eq-int n-re 0]
+            0: [merge acc [diagnostics: [append-diags acc.diagnostics res.diagnostics]  stderr: new-stderr]]
+            ...: [call [fn [let]
+                 [tc-result: [builtin-typecheck-doc res.doc acc.tc]]
+                 [typed:     tc-result.doc]
+                 [ev:        [builtin-eval typed scope]]
+                 [match [null? ev.diagnostics]
+                   0: [call [fn [let]
+                        [eval-stderr: [emit-diagnostics ev.diagnostics new-stderr]]
+                        [merge acc [diagnostics: [append-diags acc.diagnostics ev.diagnostics]  stderr: eval-stderr]]]]
+                   ...: [call [fn [let]
+                        [doc-name: [get-or "" "name" meta]]
+                        [next-scope: [builtin-scope-new ev.scope-id
+                                       [match [builtin-eq-string doc-name ""]
+                                         0: [%: ev.result]
+                                         ...: [make-entry doc-name ev.result]]]]
+                        [merge acc [scope-id: next-scope  tc: acc.tc  last-result: ev.result  stderr: new-stderr  ts-scope-id: acc.ts-scope-id]]]]]]]]]]]]]
     # Split documents by stage: check meta.stage string (not doc.stage tag)
     [split: [reduce
       [fn [let acc doc]
@@ -496,20 +524,22 @@
     # [tc: _tc0  ...] can reference it without letrec self-reference (tc: tc would be
     # circular because the inner dict's own "tc" key shadows the outer "tc" parameter).
     [_tc0: tc]
-    # Pass 1: evaluate type-stage documents. stderr threads through the accumulator.
-    [ts-acc: [reduce eval-doc [scope-id: ts-seed  tc: _tc0  last-result: []  stderr: state.stderr] split.ts]]
+    # Pass 1: evaluate type-stage documents. No type-stage scope yet — uses-scope gets ts-scope-id=0.
+    [ts-acc: [reduce eval-doc [scope-id: ts-seed  tc: _tc0  last-result: []  stderr: state.stderr  diagnostics: []  ts-scope-id: 0] split.ts]]
     # Wire ts scope-id into the TypeContext
     [_tc: [builtin-tc-with-scope ts-acc.tc ts-acc.scope-id]]
-    # Pass 2: evaluate runtime documents
-    [final-acc: [reduce eval-doc [scope-id: ts-acc.scope-id  tc: _tc  last-result: []  stderr: ts-acc.stderr] split.rt]]
-    # final-acc tracks last-result and stderr from the most recent eval-doc call.
-    # stderr: final-acc.stderr threads out the updated handle so callers can continue
-    # the chain — accessing state.stderr next forces all emits from eval-program.
+    # Pass 2: evaluate runtime documents. Seed diagnostics from ts-acc so pass-1 errors
+    # short-circuit pass-2 docs immediately (eval-doc checks acc.diagnostics at entry).
+    # ts-scope-id is ts-acc.scope-id — the type-stage scope with Integer/Float/String etc.
+    # uses-scope uses it as parent for decl-scope-id so @Type annotations resolve correctly.
+    [final-acc: [reduce eval-doc [scope-id: ts-acc.scope-id  tc: _tc  last-result: []  stderr: ts-acc.stderr  diagnostics: ts-acc.diagnostics  ts-scope-id: ts-acc.scope-id] split.rt]]
+    # Merge accumulated diagnostics into state so if-ok sees them in subsequent stages.
     [merge state
       [scope-id:    final-acc.scope-id
        last-result: final-acc.last-result
        _tc:         _tc
-       stderr:      final-acc.stderr]]]
+       stderr:      final-acc.stderr
+       diagnostics: [append-diags state.diagnostics final-acc.diagnostics]]]]
 
   # ── Stage: export ─────────────────────────────────────────────────────────────
   # Promotes the last document's exported dict entries into the env.
@@ -625,7 +655,7 @@
       [test-state: [reduce
         [fn [let st doc]
           [meta:        [builtin-doc-meta doc st.scope-id]]
-          [uses-result: [uses-scope [get-or [] "uses" meta] fundamental-tc st.scope-id st.stderr]]
+          [uses-result: [uses-scope [get-or [] "uses" meta] fundamental-tc st.scope-id 0 st.stderr]]
           # Inject %: st.last-result into scope for non-first documents (T-1741/T-1742).
           # The first document (doc-index == 0) has no upstream %; later documents receive
           # the previous document's result as %, mirroring how prelude.llt threads % through
@@ -1103,5 +1133,4 @@
       0: [join "" [", " [builtin-int->string n-failed] " failed\n" final-state.first-fail "\n"]]
       ...: "\n"]]]
   final-state.stdout]]
-[call [fn [let]
-  [stdout: [%stdout.flush summary-stdout]  stderr: [%stderr.flush final-state.stderr]]]]
+[merge [%stdout.flush summary-stdout] [%stderr.flush final-state.stderr]]

@@ -1,12 +1,22 @@
-//! Variable resolution pass: assigns (level, slot) de Bruijn coordinates to VarRef nodes.
+//! Variable resolution pass: assigns VarAddr closure-converted addresses to VarRef nodes.
 //!
-//! This is Phase 1 of the arena allocation strategy. The resolver walks the AST and
-//! assigns compile-time slot indices to static variable references before evaluation begins.
+//! This is Phase 1 of the closure-conversion strategy. The resolver walks the AST and
+//! assigns VarAddr values to static variable references before evaluation begins:
+//!
+//! - `LetrecGroupMember(i)` — reference to the i-th binding in the current letrec group.
+//! - `Parameter(i)` — reference to the i-th parameter of the enclosing function.
+//! - `ClosureCapture(i)` — reference to a free variable captured from an outer scope;
+//!   `i` is the index into the function's capture list (`resolved_captures`).
+//!
+//! For each `SurfaceExpression::Fn` node, the resolver also sets `resolved_captures`:
+//! an ordered list of `(name, original_addr)` pairs in first-occurrence order, where
+//! `original_addr` is the VarAddr the captured binding held in the ENCLOSING frame
+//! (before the resolver converted it to `ClosureCapture` for uses inside the function).
+//! The evaluator uses `original_addr` at function-definition time to look up each
+//! captured thunk in the current EvalFrame and build the function's `closure_env`.
 //!
 //! **Invariants:**
-//! - Must run exactly once per AST (write-once RefCell cache).
-//!   Enforced by: panic in walk_expr (line ~106) if a VarRef's resolved cache is already populated.
-//!   This catches both double-resolution and AST cloning bugs.
+//! - Must run exactly once per AST (write-once OnceLock).
 //! - Must run after desugaring (sees $_ as Fn nodes, not VarRef("_")).
 //! - Must run before typechecking and evaluation (both consumers of resolved coords).
 //!
@@ -14,20 +24,14 @@
 
 use crate::ast::{
     node_id, ResolutionTable, Spanned, SurfaceDeclaration, SurfaceDocument, SurfaceEntry,
-    SurfaceExpression, SurfaceItem, SurfaceNode, SurfaceProgram,
+    SurfaceExpression, SurfaceItem, SurfaceNode, SurfaceProgram, VarAddr,
 };
 use crate::error::{DiagnosticLevel, TypeDiagnostic};
 use std::sync::Arc;
 
 // ============================================================================
 // runtime-v2: SurfaceProgram resolver — produces ResolutionTable
-/// Variable resolution pass for the Surface AST.
-///
-/// Walks a `SurfaceProgram` and produces a `ResolutionTable` mapping each
-/// `VarRef` node's `NodeId` to its de Bruijn `(level, slot)` coordinates.
-///
-/// This replaces the old `resolve_file()` mutation of `VarRef.resolved: RefCell<...>`.
-/// The SurfaceExpression tree is immutable; all resolution data lives in the table.
+
 /// Whether a scope frame is a letrec dict scope or not.
 ///
 /// Used by `resolve_name_parent` to implement leading-dot (`.name`) parent-scope lookup:
@@ -79,10 +83,10 @@ struct IntermediateBodyInfo {
 }
 
 struct SurfaceResolver {
-    /// Each scope frame is an (IndexMap<String, u32>, ScopeKind) pair.
-    /// The IndexMap maps name → actual slot index; ScopeKind marks whether this is
+    /// Each scope frame is an (IndexMap<String, VarAddr>, ScopeKind) pair.
+    /// The IndexMap maps name → VarAddr; ScopeKind marks whether this is
     /// a letrec dict scope (for leading-dot parent-scope resolution).
-    scopes: Vec<(indexmap::IndexMap<String, u32>, ScopeKind)>,
+    scopes: Vec<(indexmap::IndexMap<String, VarAddr>, ScopeKind)>,
     table: ResolutionTable,
     /// Diagnostics accumulated during the walk (errors and warnings unified).
     /// - `kind = "resolve-error"`, `level = Err`: undefined variable in expression position.
@@ -114,6 +118,27 @@ struct SurfaceResolver {
     /// reference list rather than a shared body-level accumulator.
     /// None when not inside a per-binding value walk.
     current_binding_context: Option<(usize, String)>,
+    /// Stack of function boundaries, one entry per enclosing `Fn` node.
+    /// Each entry is the value of `self.scopes.len()` at the moment the Fn was entered —
+    /// i.e., the number of scope frames that belong to outer functions or document scope.
+    /// Scopes at index < boundary are "outer" (free variables → ClosureCapture);
+    /// scopes at index >= boundary are "local" (params, letrec members within this fn).
+    fn_scope_boundaries: Vec<usize>,
+    /// Per-function capture lists, parallel to `fn_scope_boundaries`.
+    /// Each entry is the accumulating list of (name, original_addr) pairs for the corresponding Fn.
+    /// Pairs are appended in first-occurrence order; the index within the list is the
+    /// ClosureCapture index assigned to that name's VarRef nodes inside the function.
+    /// `original_addr` is the VarAddr the binding held in the enclosing frame BEFORE the
+    /// resolver converted it to ClosureCapture — the evaluator uses it to look up the thunk
+    /// in the enclosing EvalFrame when building the function's closure_env at definition time.
+    fn_capture_lists: Vec<Vec<(String, VarAddr)>>,
+    /// Stack of dict letrec group boundaries, one entry per enclosing Dict scope.
+    /// Each entry is the value of `self.scopes.len()` BEFORE `enter_scope` for that dict —
+    /// scopes at index < boundary belong to outer dicts or the document root.
+    /// When a name found at match_depth < dict_boundary is a LetrecGroupMember(slot),
+    /// it is converted to ClosureCapture(slot) so the runtime EvalFrame can look it up
+    /// in closure_env (which is built from the outer dict's group Vec).
+    dict_scope_boundaries: Vec<usize>,
 }
 
 impl SurfaceResolver {
@@ -127,22 +152,67 @@ impl SurfaceResolver {
             current_body_index: usize::MAX,
             percent_referenced: false,
             current_binding_context: None,
+            fn_scope_boundaries: Vec::new(),
+            fn_capture_lists: Vec::new(),
+            dict_scope_boundaries: Vec::new(),
         }
     }
 
+    /// Enter a letrec dict scope: each key gets `LetrecGroupMember(i)` as its VarAddr.
     fn enter_scope(&mut self, keys: &[String], kind: ScopeKind) {
-        let mut scope: indexmap::IndexMap<String, u32> =
+        self.enter_scope_with_offset(keys, 0, kind);
+    }
+
+    /// Enter a letrec dict scope with a slot offset.
+    /// Each key gets `LetrecGroupMember(offset + i)` as its VarAddr.
+    /// Used by walk_surface_document to assign cumulative LGM indices to sequential
+    /// dict scopes so that cross-document references don't collide with prior dicts.
+    fn enter_scope_with_offset(&mut self, keys: &[String], offset: u32, kind: ScopeKind) {
+        let mut scope: indexmap::IndexMap<String, VarAddr> =
             indexmap::IndexMap::with_capacity(keys.len());
-        for (slot, key) in keys.iter().enumerate() {
-            scope.insert(key.clone(), slot as u32);
+        for (i, key) in keys.iter().enumerate() {
+            scope.insert(key.clone(), VarAddr::LetrecGroupMember(offset + i as u32));
         }
         self.scopes.push((scope, kind));
     }
 
+    /// Enter a function parameter scope: each param gets `Parameter(i)` as its VarAddr.
+    fn enter_param_scope(&mut self, params: &[String]) {
+        let mut scope: indexmap::IndexMap<String, VarAddr> =
+            indexmap::IndexMap::with_capacity(params.len());
+        for (i, name) in params.iter().enumerate() {
+            scope.insert(name.clone(), VarAddr::Parameter(i as u32));
+        }
+        self.scopes.push((scope, ScopeKind::Other));
+    }
+
+    /// Sentinel offset added to root-frame slot indices to avoid collision with
+    /// cross-dict ClosureCapture indices (which start at 0, one per outer group slot).
+    /// Must be large enough that no realistic outer group size reaches it, and small
+    /// enough that adding the max builtin count does not overflow u32.
+    /// 0x8000_0000 (2^31) satisfies both: outer groups stay in [0, tens-of-thousands),
+    /// and the lowerer's slot-get = field-get + 1 adds at most a handful to this base.
+    const BUILTIN_CLOSURE_OFFSET: u32 = 0x8000_0000;
+
+    /// Seed scope from an external frame (initial_frames from the loader).
+    /// External frames carry u32 slot indices; convert to
+    /// ClosureCapture(BUILTIN_CLOSURE_OFFSET + slot) so they occupy a distinct VarAddr
+    /// namespace far above cross-dict ClosureCapture indices (0..outer_group.len).
+    /// At runtime, ClosureCapture(BUILTIN_CLOSURE_OFFSET + slot) always misses in any
+    /// realistic closure_env vec, triggering the builtin_defs name-based fallback.
+    /// Initial frames (root builtins, capabilities, external frames) are Other —
+    /// they are not letrec dict scopes and leading-dot does not skip them.
     fn enter_scope_from_frame(&mut self, frame: &indexmap::IndexMap<String, u32>) {
-        // Initial frames (root builtins, capabilities, external frames) are Other —
-        // they are not letrec dict scopes and leading-dot does not skip them.
-        self.scopes.push((frame.clone(), ScopeKind::Other));
+        let converted: indexmap::IndexMap<String, VarAddr> = frame
+            .iter()
+            .map(|(k, &slot)| {
+                (
+                    k.clone(),
+                    VarAddr::ClosureCapture(Self::BUILTIN_CLOSURE_OFFSET + slot),
+                )
+            })
+            .collect();
+        self.scopes.push((converted, ScopeKind::Other));
     }
 
     fn exit_scope(&mut self) {
@@ -151,86 +221,131 @@ impl SurfaceResolver {
             .expect("exit_scope called with empty stack");
     }
 
-    fn resolve_name(&mut self, name: &str) -> Option<(u32, u32)> {
-        for (offset, (scope, _)) in self.scopes.iter().rev().enumerate() {
-            if let Some(&slot) = scope.get(name) {
-                let level = u32::try_from(offset).expect("scope depth overflow");
-                // Track pipeline input % reference for abandoned-input detection.
-                if name == "%" {
-                    self.percent_referenced = true;
-                }
-                // Lost-binding detection: if this name resolves to an intermediate body's
-                // scope AND we are currently walking a later body (or the final expression),
-                // mark that binding as consumed.
-                //
-                // `match_depth` is the absolute forward index of the matched scope frame
-                // in `self.scopes`.  It equals `self.scopes.len() - 1 - offset` and is
-                // invariant even as more scopes are pushed on top later.
-                let match_depth = self.scopes.len().saturating_sub(1 + offset);
-                for info in &mut self.intermediate_bodies {
-                    if info.scope_depth == match_depth {
-                        // The match is in this intermediate body's scope.
-                        // For parameter scopes (is_param=true): any reference from within
-                        // the function body counts, so mark consumed unconditionally.
-                        // For intermediate dict scopes (is_param=false): mark consumed only
-                        // when the current walk position is AFTER the introducing body.
-                        let should_consume =
-                            info.is_param || self.current_body_index > info.body_index;
-                        if should_consume {
-                            let is_final = self.current_body_index == usize::MAX;
-                            for (bname, _, consumed, ref_by_final, _) in &mut info.bindings {
-                                if bname == name {
-                                    *consumed = true;
-                                    if is_final {
-                                        *ref_by_final = true;
-                                    }
-                                }
+    /// Resolve `name` in the current scope stack, returning its `VarAddr`.
+    ///
+    /// If we are inside one or more functions (fn_scope_boundaries is non-empty) and the
+    /// name is found in a scope frame that belongs to an outer function or document scope
+    /// (i.e., the frame's absolute index < the innermost fn boundary), the name is a free
+    /// variable. It is added to the current function's capture list (if not already present)
+    /// and assigned `ClosureCapture(i)`.
+    ///
+    /// If the name is found in a local scope (within the current function), the stored
+    /// VarAddr (Parameter(i) or LetrecGroupMember(i)) is returned directly.
+    fn resolve_name(&mut self, name: &str) -> Option<VarAddr> {
+        // Search from innermost scope outward.
+        let scopes_len = self.scopes.len();
+        let found = self
+            .scopes
+            .iter()
+            .rev()
+            .enumerate()
+            .find_map(|(offset, (scope, _))| {
+                scope.get(name).map(|addr| {
+                    let frame_abs_idx = scopes_len.saturating_sub(1 + offset);
+                    (frame_abs_idx, addr.clone())
+                })
+            });
+
+        let (match_depth, addr) = found?;
+
+        // Track pipeline input % reference for abandoned-input detection.
+        if name == "%" {
+            self.percent_referenced = true;
+        }
+
+        // Lost-binding detection: mark the binding consumed if it belongs to an
+        // intermediate body scope and we are walking a later body or the final expression.
+        for info in &mut self.intermediate_bodies {
+            if info.scope_depth == match_depth {
+                let should_consume = info.is_param || self.current_body_index > info.body_index;
+                if should_consume {
+                    let is_final = self.current_body_index == usize::MAX;
+                    for (bname, _, consumed, ref_by_final, _) in &mut info.bindings {
+                        if bname == name {
+                            *consumed = true;
+                            if is_final {
+                                *ref_by_final = true;
                             }
                         }
                     }
                 }
-                // T-1743: Track cross-body references at binding granularity.
-                // If we are currently walking a non-final body AND walking a specific
-                // binding's value (current_binding_context is set), record the referenced
-                // name into THAT binding's per-binding reference list. This ensures
-                // only the binding that actually uses an earlier-body name is linked,
-                // not every binding in the same body.
-                if self.current_body_index != usize::MAX {
-                    if let Some((info_idx, cur_binding)) = self.current_binding_context.clone() {
-                        // Find the earlier-body binding's (body_index, name) pair so the
-                        // BFS key is precise. Two bodies may both define a binding named `x`;
-                        // using (body_index, name) avoids expanding refs from the wrong `x`.
-                        let ref_key: Option<(usize, String)> = self
-                            .intermediate_bodies
-                            .iter()
-                            .find(|info| {
-                                info.scope_depth == match_depth
-                                    && !info.is_param
-                                    && info.body_index < self.current_body_index
-                                    && info
-                                        .bindings
-                                        .iter()
-                                        .any(|(bname, _, _, _, _)| bname == name)
-                            })
-                            .map(|info| (info.body_index, name.to_string()));
-                        if let Some(key) = ref_key {
-                            // Use info_idx directly (no search by body_index) to avoid
-                            // ambiguity with nested Sequentials at the same body index.
-                            if let Some(info) = self.intermediate_bodies.get_mut(info_idx) {
-                                for (bname, _, _, _, refs) in &mut info.bindings {
-                                    if bname == &cur_binding {
-                                        refs.push(key);
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                return Some((level, slot));
             }
         }
-        None
+
+        // T-1743: Track cross-body references at binding granularity.
+        if self.current_body_index != usize::MAX {
+            if let Some((info_idx, cur_binding)) = self.current_binding_context.clone() {
+                let ref_key: Option<(usize, String)> = self
+                    .intermediate_bodies
+                    .iter()
+                    .find(|info| {
+                        info.scope_depth == match_depth
+                            && !info.is_param
+                            && info.body_index < self.current_body_index
+                            && info
+                                .bindings
+                                .iter()
+                                .any(|(bname, _, _, _, _)| bname == name)
+                    })
+                    .map(|info| (info.body_index, name.to_string()));
+                if let Some(key) = ref_key {
+                    if let Some(info) = self.intermediate_bodies.get_mut(info_idx) {
+                        for (bname, _, _, _, refs) in &mut info.bindings {
+                            if bname == &cur_binding {
+                                refs.push(key);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Closure conversion: if we are inside at least one function AND the resolved
+        // scope frame belongs to an outer function or document scope, this is a free
+        // variable → add to the innermost function's capture list.
+        if let Some(&fn_boundary) = self.fn_scope_boundaries.last() {
+            if match_depth < fn_boundary {
+                // Free variable: found in a scope outside the current function boundary.
+                // Store (name, original_addr) — `addr` is the VarAddr the binding holds in
+                // the enclosing frame (LetrecGroupMember/ClosureCapture/Parameter), before we
+                // convert it to ClosureCapture for references inside this function.
+                let capture_list = self
+                    .fn_capture_lists
+                    .last_mut()
+                    .expect("fn_capture_lists must parallel fn_scope_boundaries");
+                let capture_idx =
+                    if let Some(pos) = capture_list.iter().position(|(n, _)| n == name) {
+                        pos as u32
+                    } else {
+                        let idx = capture_list.len() as u32;
+                        capture_list.push((name.to_string(), addr.clone()));
+                        idx
+                    };
+                return Some(VarAddr::ClosureCapture(capture_idx));
+            }
+        }
+
+        // Cross-dict closure conversion: if we are inside a dict scope AND the resolved
+        // scope frame belongs to an immediately-outer dict scope, convert LetrecGroupMember
+        // to ClosureCapture(slot). At runtime the inner dict's EvalFrame has closure_env
+        // built from the outer dict's group Vec, so ClosureCapture(slot) finds the outer
+        // binding at the same slot index.
+        //
+        // Only applies when the fn check above did NOT fire (no fn boundary, or found
+        // inside the fn). Root-frame builtins use ClosureCapture(u32::MAX - slot) and
+        // will miss (out-of-bounds) in any realistic closure_env, triggering the
+        // builtin_defs fallback.
+        if let Some(&dict_boundary) = self.dict_scope_boundaries.last() {
+            if match_depth < dict_boundary {
+                if let VarAddr::LetrecGroupMember(slot) = &addr {
+                    return Some(VarAddr::ClosureCapture(*slot));
+                }
+                // Other VarAddr types (ClosureCapture for root builtins, Parameter): pass through.
+            }
+        }
+
+        Some(addr)
     }
 
     /// Resolve `name` starting from the parent scope — skipping the nearest Dict scope
@@ -244,72 +359,105 @@ impl SurfaceResolver {
     /// - `[dict_scope, fn_params]`: skip dict_scope → search fn_params ✓
     /// - `[fn_scope, dict_scope, outer]`: skip fn_scope (Other), skip dict_scope (Dict) → search outer ✓
     /// - `[inner_dict, outer_dict, fn_params]`: skip inner_dict (Dict) → search outer_dict ✓
-    fn resolve_name_parent(&mut self, name: &str) -> Option<(u32, u32)> {
+    ///
+    /// Capture detection is performed the same way as `resolve_name`: if the found scope
+    /// frame is outside the current function boundary, the name becomes a ClosureCapture.
+    fn resolve_name_parent(&mut self, name: &str) -> Option<VarAddr> {
         let mut passed_dict = false;
-        for (offset, (scope, kind)) in self.scopes.iter().rev().enumerate() {
-            if !passed_dict {
-                if *kind == ScopeKind::Dict {
-                    passed_dict = true;
+        let scopes_len = self.scopes.len();
+        let found = self
+            .scopes
+            .iter()
+            .rev()
+            .enumerate()
+            .find_map(|(offset, (scope, kind))| {
+                if !passed_dict {
+                    if *kind == ScopeKind::Dict {
+                        passed_dict = true;
+                    }
+                    return None; // skip everything up to and including the nearest Dict scope
                 }
-                continue; // skip everything up to and including the nearest Dict scope
-            }
-            if let Some(&slot) = scope.get(name) {
-                let level = u32::try_from(offset).expect("scope depth overflow");
-                // Track pipeline input % reference for abandoned-input detection.
-                if name == "%" {
-                    self.percent_referenced = true;
-                }
-                // Also track consumption for leading-dot resolved names.
-                let match_depth = self.scopes.len().saturating_sub(1 + offset);
-                for info in &mut self.intermediate_bodies {
-                    if info.scope_depth == match_depth {
-                        let should_consume =
-                            info.is_param || self.current_body_index > info.body_index;
-                        if should_consume {
-                            let is_final = self.current_body_index == usize::MAX;
-                            for (bname, _, consumed, ref_by_final, _) in &mut info.bindings {
-                                if bname == name {
-                                    *consumed = true;
-                                    if is_final {
-                                        *ref_by_final = true;
-                                    }
-                                }
+                scope.get(name).map(|addr| {
+                    let frame_abs_idx = scopes_len.saturating_sub(1 + offset);
+                    (frame_abs_idx, addr.clone())
+                })
+            });
+
+        let (match_depth, addr) = found?;
+
+        // Track pipeline input % reference for abandoned-input detection.
+        if name == "%" {
+            self.percent_referenced = true;
+        }
+        // Also track consumption for leading-dot resolved names.
+        for info in &mut self.intermediate_bodies {
+            if info.scope_depth == match_depth {
+                let should_consume = info.is_param || self.current_body_index > info.body_index;
+                if should_consume {
+                    let is_final = self.current_body_index == usize::MAX;
+                    for (bname, _, consumed, ref_by_final, _) in &mut info.bindings {
+                        if bname == name {
+                            *consumed = true;
+                            if is_final {
+                                *ref_by_final = true;
                             }
                         }
                     }
                 }
-                // T-1743: Track cross-body references at binding granularity (leading-dot path).
-                if self.current_body_index != usize::MAX {
-                    if let Some((info_idx, cur_binding)) = self.current_binding_context.clone() {
-                        let ref_key: Option<(usize, String)> = self
-                            .intermediate_bodies
-                            .iter()
-                            .find(|info| {
-                                info.scope_depth == match_depth
-                                    && !info.is_param
-                                    && info.body_index < self.current_body_index
-                                    && info
-                                        .bindings
-                                        .iter()
-                                        .any(|(bname, _, _, _, _)| bname == name)
-                            })
-                            .map(|info| (info.body_index, name.to_string()));
-                        if let Some(key) = ref_key {
-                            if let Some(info) = self.intermediate_bodies.get_mut(info_idx) {
-                                for (bname, _, _, _, refs) in &mut info.bindings {
-                                    if bname == &cur_binding {
-                                        refs.push(key);
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                return Some((level, slot));
             }
         }
-        None
+        // T-1743: Track cross-body references at binding granularity (leading-dot path).
+        if self.current_body_index != usize::MAX {
+            if let Some((info_idx, cur_binding)) = self.current_binding_context.clone() {
+                let ref_key: Option<(usize, String)> = self
+                    .intermediate_bodies
+                    .iter()
+                    .find(|info| {
+                        info.scope_depth == match_depth
+                            && !info.is_param
+                            && info.body_index < self.current_body_index
+                            && info
+                                .bindings
+                                .iter()
+                                .any(|(bname, _, _, _, _)| bname == name)
+                    })
+                    .map(|info| (info.body_index, name.to_string()));
+                if let Some(key) = ref_key {
+                    if let Some(info) = self.intermediate_bodies.get_mut(info_idx) {
+                        for (bname, _, _, _, refs) in &mut info.bindings {
+                            if bname == &cur_binding {
+                                refs.push(key);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Closure conversion: same as resolve_name — if the found scope frame is outside
+        // the current function boundary, this is a free variable → ClosureCapture.
+        // Store (name, original_addr) so the evaluator can look up the thunk in the
+        // enclosing EvalFrame at function-definition time.
+        if let Some(&fn_boundary) = self.fn_scope_boundaries.last() {
+            if match_depth < fn_boundary {
+                let capture_list = self
+                    .fn_capture_lists
+                    .last_mut()
+                    .expect("fn_capture_lists must parallel fn_scope_boundaries");
+                let capture_idx =
+                    if let Some(pos) = capture_list.iter().position(|(n, _)| n == name) {
+                        pos as u32
+                    } else {
+                        let idx = capture_list.len() as u32;
+                        capture_list.push((name.to_string(), addr.clone()));
+                        idx
+                    };
+                return Some(VarAddr::ClosureCapture(capture_idx));
+            }
+        }
+
+        Some(addr)
     }
 
     fn walk_surface_node(&mut self, arc: &Arc<SurfaceNode>) {
@@ -321,9 +469,9 @@ impl SurfaceResolver {
             SurfaceExpression::VarRef {
                 name, resolution, ..
             } => {
-                if let Some(coords) = self.resolve_name(name) {
-                    resolution.set(Some(coords));
-                    self.table.insert(node_id(arc), coords);
+                if let Some(addr) = self.resolve_name(name) {
+                    resolution.set(Some(addr.clone()));
+                    self.table.insert(node_id(arc), addr);
                 } else {
                     // Name not in scope. Always set Some(None) so consumers can
                     // distinguish "not found" from "resolver never ran" (None = bug).
@@ -362,6 +510,10 @@ impl SurfaceResolver {
                     }
                 }
 
+                // Push dict boundary BEFORE entering the dict scope so that any names
+                // found in scopes below (index < boundary) are from outer dicts.
+                let dict_boundary = self.scopes.len();
+                self.dict_scope_boundaries.push(dict_boundary);
                 self.enter_scope(&static_keys, ScopeKind::Dict);
                 // Walk key annotations INSIDE the letrec scope so that annotation
                 // values can reference the dict's own entries (forward letrec refs).
@@ -385,26 +537,37 @@ impl SurfaceResolver {
                     self.walk_surface_node(&entry.node.value);
                 }
                 self.exit_scope();
+                self.dict_scope_boundaries.pop();
             }
 
             SurfaceExpression::Fn {
                 return_ann: _,
                 params,
                 body,
+                resolved_captures,
                 ..
             } => {
-                // Walk param annotations in outer scope
+                // Walk param annotations in outer scope (before entering fn boundary)
                 for param in params {
                     if let Some(ann) = &param.node.annotation {
                         self.walk_surface_annotation(ann);
                     }
                 }
+
+                // Push fn boundary BEFORE entering the param scope so that the param scope
+                // is considered "local" (scopes.len() after push > boundary).
+                // The boundary is the number of scope frames that are "outer" — i.e., the
+                // count of frames already on the stack when we enter this function.
+                let fn_boundary = self.scopes.len();
+                self.fn_scope_boundaries.push(fn_boundary);
+                self.fn_capture_lists.push(Vec::new());
+
                 let param_names: Vec<String> = params.iter().map(|p| p.node.name.clone()).collect();
-                self.enter_scope(&param_names, ScopeKind::Other);
+                self.enter_param_scope(&param_names);
 
                 // Lost-binding detection: track each parameter as a binding that must be
                 // consumed somewhere in the function body.  The scope_depth is recorded
-                // AFTER enter_scope so it is the absolute forward index of the param scope.
+                // AFTER enter_param_scope so it is the absolute forward index of the param scope.
                 let param_scope_depth = self.scopes.len() - 1;
                 let param_bindings: Vec<BindingEntry> = params
                     .iter()
@@ -446,12 +609,12 @@ impl SurfaceResolver {
                     .intermediate_bodies
                     .pop()
                     .expect("param info must still be on stack");
-                for (name, span, consumed, _, _) in info.bindings {
+                for (bname, span, consumed, _, _) in info.bindings {
                     if !consumed {
                         self.diagnostics.push(TypeDiagnostic {
                             level: DiagnosticLevel::Warn,
                             kind: "lost-binding",
-                            message: format!("function parameter '{}' is never referenced", name),
+                            message: format!("function parameter '{}' is never referenced", bname),
                             spans: vec![(span, String::new())],
                             notes: vec![],
                         });
@@ -460,6 +623,14 @@ impl SurfaceResolver {
                 self.current_body_index = prev_body_index;
 
                 self.exit_scope();
+
+                // Pop the fn boundary and capture list; set resolved_captures on the Fn node.
+                self.fn_scope_boundaries.pop();
+                let captures = self
+                    .fn_capture_lists
+                    .pop()
+                    .expect("fn_capture_lists must parallel fn_scope_boundaries");
+                resolved_captures.set(Arc::new(captures));
             }
 
             SurfaceExpression::Sequential(exprs) => {
@@ -737,15 +908,12 @@ impl SurfaceResolver {
             } => {
                 if let Some(target) = expr {
                     self.walk_surface_node(target);
-                    // Resolve field-get to get its de Bruijn level at the current scope depth.
-                    // slot-get lives in the same root env and therefore has the same level.
-                    // The lowerer reads this level and uses it with the hardcoded root slot
-                    // constants (FIELD_GET_ROOT_SLOT / SLOT_GET_ROOT_SLOT), so only the level
-                    // matters here — the slot from resolve_name is intentionally discarded.
+                    // Resolve field-get to get its VarAddr at the current scope depth.
+                    // The lowerer reads this VarAddr to locate the field-get function.
                     // If field-get is not in scope (resolver not seeded with env), leave
-                    // the OnceLock unset — the lowerer falls back to (MAX, MAX).
-                    if let Some(coords) = self.resolve_name("field-get") {
-                        resolution.set(Some(coords));
+                    // the OnceLock unset — the lowerer will emit a diagnostic.
+                    if let Some(addr) = self.resolve_name("field-get") {
+                        resolution.set(Some(addr));
                     }
                 } else if let crate::ast::DotKey::Ident(name) = field {
                     // Leading-dot `.name`: look up in the PARENT scope, skipping the
@@ -1062,6 +1230,12 @@ impl SurfaceResolver {
             .filter(|i| matches!(i, SurfaceItem::Expr(_)))
             .count();
         let mut expr_idx = 0usize;
+        // Cumulative LGM slot offset for sequential scope injection.
+        // Each dict expression's sequential scope is injected with slots starting at
+        // this offset so that later expressions can distinguish "Dict 1's LGM(j)" from
+        // "Dict 2's LGM(j)" — the offsets make each dict's slots non-overlapping in the
+        // accumulated EvalFrame group built by eval_document_exprs_with_env.
+        let mut sequential_offset: u32 = 0;
 
         for item in &items {
             match item {
@@ -1071,7 +1245,12 @@ impl SurfaceResolver {
                     if !is_last_expr {
                         if let Some(keys) = surface_node_static_keys(node) {
                             if !keys.is_empty() {
-                                self.enter_scope(&keys, ScopeKind::Dict);
+                                self.enter_scope_with_offset(
+                                    &keys,
+                                    sequential_offset,
+                                    ScopeKind::Dict,
+                                );
+                                sequential_offset += keys.len() as u32;
                                 injected += 1;
                             }
                         }
@@ -1084,11 +1263,24 @@ impl SurfaceResolver {
             }
         }
 
-        // Capture injected frames (strip ScopeKind — callers only need name→slot maps)
+        // Capture injected frames, converting VarAddr back to u32 slot indices for the
+        // public API (callers pass/receive IndexMap<String, u32> frames).
+        // Document-level frames only contain LetrecGroupMember(slot) values — Parameter
+        // and ClosureCapture are only produced inside function bodies and never exported.
         let start = self.scopes.len() - injected;
-        let frames: Vec<_> = self.scopes[start..]
+        let frames: Vec<indexmap::IndexMap<String, u32>> = self.scopes[start..]
             .iter()
-            .map(|(m, _)| m.clone())
+            .map(|(m, _)| {
+                m.iter()
+                    .filter_map(|(k, addr)| {
+                        if let VarAddr::LetrecGroupMember(slot) = addr {
+                            Some((k.clone(), *slot))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            })
             .collect();
 
         for _ in 0..injected {
@@ -1721,34 +1913,39 @@ mod tests {
     }
 
     /// A Dict's values can see sibling keys: `[x: 1  y: $x]` — the VarRef `$x` in `y`'s
-    /// value should resolve to (level=0, slot=0) since `x` is the first key in scope.
+    /// value should resolve to LetrecGroupMember(0) since `x` is the first key in scope.
     #[test]
     fn dict_sibling_key_scoping() {
         let (program, table) = parse_and_resolve("[x: 1  y: $x]");
         let refs = find_varref_nodes(&program, "x");
         assert!(!refs.is_empty(), "expected at least one VarRef for $x");
-        // $x inside the dict value for y resolves to slot 0 (first key in dict scope)
+        // $x inside the dict value for y resolves to LetrecGroupMember(0) — first key
         let (id, _) = &refs[0];
-        let coords = table
+        let addr = table
             .get(id)
             .expect("$x should be resolved (it's a sibling key)");
-        assert_eq!(coords.1, 0, "x should be slot 0 (first key in dict scope)");
+        assert_eq!(
+            addr,
+            &VarAddr::LetrecGroupMember(0),
+            "x should be LetrecGroupMember(0) (first key in dict scope)"
+        );
     }
 
-    /// In a Fn body, VarRef to the param resolves to (level=0, slot=0).
+    /// In a Fn body, VarRef to the param resolves to Parameter(0).
     #[test]
     fn fn_param_scoping_in_body() {
         let (program, table) = parse_and_resolve("[fn [let myarg] $myarg]");
         let refs = find_varref_nodes(&program, "myarg");
         assert!(!refs.is_empty(), "expected at least one VarRef for $myarg");
         let (id, _) = &refs[0];
-        let coords = table
+        let addr = table
             .get(id)
             .expect("$myarg should be resolved to fn param scope");
-        // level=0: the param scope is at depth 0 from the VarRef's perspective
-        // (the fn param scope is the innermost scope when walking the body)
-        assert_eq!(coords.0, 0, "fn param should be at level 0");
-        assert_eq!(coords.1, 0, "first fn param should be at slot 0");
+        assert_eq!(
+            addr,
+            &VarAddr::Parameter(0),
+            "first fn param should be Parameter(0)"
+        );
     }
 
     /// A multi-param fn resolves each param to its correct slot.
@@ -1758,19 +1955,20 @@ mod tests {
         let refs = find_varref_nodes(&program, "b");
         assert!(!refs.is_empty(), "expected VarRef for $b");
         let (id, _) = &refs[0];
-        let coords = table.get(id).expect("$b should be resolved");
-        assert_eq!(coords.0, 0, "param scope is level 0");
-        assert_eq!(coords.1, 1, "b is the second param, slot 1");
+        let addr = table.get(id).expect("$b should be resolved");
+        assert_eq!(
+            addr,
+            &VarAddr::Parameter(1),
+            "b is the second param, should be Parameter(1)"
+        );
     }
 
     /// A VarRef inside a fn body that refers to an outer dict key (closure capture)
-    /// resolves to level > 0 (one scope up from the fn param scope).
+    /// resolves to ClosureCapture(0) — the first free variable captured by this fn.
     #[test]
     fn fn_body_captures_outer_dict_key() {
         // outer: 42  inner: [fn [] $outer]
-        // When resolving $outer inside fn body:
-        //   scopes (innermost first): [fn-params={}] → [dict-keys={outer=0, inner=1}] → [runtime=%]
-        //   so $outer is at level=1, slot=0
+        // $outer is a free variable in the fn body — first capture → ClosureCapture(0)
         let (program, table) = parse_and_resolve("[outer: 42  inner: [fn [let] $outer]]");
         let refs = find_varref_nodes(&program, "outer");
         assert!(
@@ -1778,22 +1976,19 @@ mod tests {
             "expected VarRef for $outer inside fn body"
         );
         let (id, _) = &refs[0];
-        let coords = table
+        let addr = table
             .get(id)
             .expect("$outer should be resolved (captured from dict scope)");
         assert_eq!(
-            coords.0, 1,
-            "outer dict key is one level up from fn param scope"
-        );
-        assert_eq!(
-            coords.1, 0,
-            "outer is the first key in the dict scope, slot 0"
+            addr,
+            &VarAddr::ClosureCapture(0),
+            "$outer is the first capture in the fn, should be ClosureCapture(0)"
         );
     }
 
     /// Match arm pattern bindings should be resolved in the arm body.
     /// Uses [case [let n] _ $n] form: [let n] declares the binding, _ matches anything,
-    /// and $n in the body resolves to the case arm's scope (level=0, slot=0).
+    /// and $n in the body resolves to the case arm's scope as LetrecGroupMember(0).
     #[test]
     fn match_arm_pattern_binding() {
         // T-1154: bare lowercase names in match arm patterns are now Pin (not Variable).
@@ -1803,11 +1998,14 @@ mod tests {
         let refs = find_varref_nodes(&program, "n");
         assert!(!refs.is_empty(), "expected VarRef for $n in case arm body");
         let (id, _) = &refs[0];
-        let coords = table
+        let addr = table
             .get(id)
             .expect("$n should be resolved (case arm binding in arm scope)");
-        assert_eq!(coords.0, 0, "pattern binding should be at level 0");
-        assert_eq!(coords.1, 0, "n is the first (and only) binding");
+        assert_eq!(
+            addr,
+            &VarAddr::LetrecGroupMember(0),
+            "n is the first (and only) binding, LetrecGroupMember(0)"
+        );
     }
 
     /// Case arm bodies see the bindings declared in [let ...].
@@ -1828,11 +2026,15 @@ mod tests {
             "expected exactly 1 VarRef for $n (body reference)"
         );
         for (id, _) in &refs {
-            let coords = table
+            let addr = table
                 .get(id)
                 .expect("$n should be resolved via case arm [let n]");
-            // The case arm scope introduces n as slot 0
-            assert_eq!(coords.1, 0, "n is slot 0");
+            // The case arm scope introduces n as LetrecGroupMember(0)
+            assert_eq!(
+                addr,
+                &VarAddr::LetrecGroupMember(0),
+                "n is LetrecGroupMember(0)"
+            );
         }
     }
 
@@ -1851,10 +2053,14 @@ mod tests {
             "expected at least 2 VarRefs for $x, got {}",
             x_refs.len()
         );
-        // All $x refs should resolve to the dict-level binding
+        // All $x refs should resolve to the dict-level binding LetrecGroupMember(0)
         for (id, _) in &x_refs {
-            let coords = table.get(id).expect("$x should be resolved (dict binding)");
-            assert_eq!(coords.1, 0, "$x is first binding, slot 0");
+            let addr = table.get(id).expect("$x should be resolved (dict binding)");
+            assert_eq!(
+                addr,
+                &VarAddr::LetrecGroupMember(0),
+                "$x is first binding, LetrecGroupMember(0)"
+            );
         }
     }
 
@@ -1893,11 +2099,15 @@ mod tests {
         assert!(!refs.is_empty(), "expected VarRef for $a in second expr");
         // $a should resolve to the dict key from the first expression
         let (id, _) = &refs[0];
-        let coords = table
+        let addr = table
             .get(id)
             .expect("$a should be resolved (key from prior expr in document)");
-        // The first dict creates a scope with `a` as slot 0
-        assert_eq!(coords.1, 0, "a is first key from prior expr, slot 0");
+        // The first dict creates a scope with `a` as LetrecGroupMember(0)
+        assert_eq!(
+            addr,
+            &VarAddr::LetrecGroupMember(0),
+            "a is first key from prior expr, LetrecGroupMember(0)"
+        );
     }
 
     /// Helper: parse a single document and resolve with given initial frames.

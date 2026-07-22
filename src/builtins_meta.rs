@@ -49,7 +49,6 @@ use crate::eval::{materialize, TypeContextData};
 use crate::eval_call::{invoke_function, CallContext};
 use crate::eval_materialize::make_span_dict;
 use crate::rust_span;
-use crate::value::ThunkId;
 use crate::value::{string_val, BuiltinArgs, HashableValue, Strictness, Thunk, Value};
 
 // ── Unified error dict helpers ────────────────────────────────────────────────
@@ -67,13 +66,11 @@ fn eval_error_to_dict(
     err: &crate::error::EvalError,
     ctx: &Arc<crate::eval::EvalContext>,
     call_span: &crate::ast::Span,
-) -> ThunkId {
+) -> Arc<Thunk> {
     let mk = |v: Value| -> Arc<Thunk> { Arc::new(Thunk::value(v, call_span.clone())) };
     let alloc_arc = |v: Value| -> Arc<Thunk> { mk(v) };
-    let alloc = |v: Value| -> ThunkId { ctx.alloc_thunk(0, mk(v)) };
-    let span_arc = |span: &crate::ast::Span| -> Arc<Thunk> {
-        ctx.get_thunk(make_span_dict(span, ctx, call_span))
-    };
+    let alloc = |v: Value| -> Arc<Thunk> { ctx.alloc_thunk(0, mk(v)) };
+    let span_arc = |span: &crate::ast::Span| -> Arc<Thunk> { make_span_dict(span, ctx, call_span) };
 
     // spans[0] is the primary (definition-site) span.
     let primary_span = err.spans.first().map(|(s, _)| s).unwrap_or(call_span);
@@ -277,7 +274,7 @@ pub(crate) fn builtin_raise(
             &ctx,
             call_span.clone(),
         )?;
-        let msg = require_string("raise", val, ctx.get_thunk(args[0]).span.clone())?;
+        let msg = require_string("raise", val, Arc::clone(&args[0]).span.clone())?;
         Err(EvalError::user_error(msg.to_string(), call_span).into())
     })
 }
@@ -295,7 +292,7 @@ pub(crate) fn builtin_macro_error(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
 
@@ -313,7 +310,7 @@ pub(crate) fn builtin_macro_error(
         }
 
         // Extract message (first argument) - materialized by Strictness::Seq
-        let arg0_thunk = ctx.get_thunk(args[0]);
+        let arg0_thunk = Arc::clone(&args[0]);
         let msg_val = arg0_thunk
             .try_get_value()
             .expect("pre-materialized by Strictness::Seq")
@@ -355,7 +352,7 @@ pub(crate) fn builtin_try(
         if args.len() != 1 {
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
-        let arg_thunk = ctx.get_thunk(args[0]);
+        let arg_thunk = Arc::clone(&args[0]);
         let call_result = materialize(&arg_thunk, Some(&call_span), &ctx).await;
 
         match call_result {
@@ -413,9 +410,9 @@ pub(crate) fn builtin_until(
             return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
         }
 
-        let pred_thunk = ctx.get_thunk(args[0]);
-        let f_thunk = ctx.get_thunk(args[1]);
-        let mut val_thunk = ctx.get_thunk(args[2]);
+        let pred_thunk = Arc::clone(&args[0]);
+        let f_thunk = Arc::clone(&args[1]);
+        let mut val_thunk = Arc::clone(&args[2]);
 
         // Pre-materialize the predicate function to extract its return type annotation.
         // This lets us pre-resolve the Matchable binding name once before the loop,
@@ -500,8 +497,8 @@ pub(crate) fn builtin_apply_impl(
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
         // Both args[0] and args[1] have been pre-materialized by force_count.
-        let arg0_thunk = ctx.get_thunk(args[0]);
-        let arg1_thunk = ctx.get_thunk(args[1]);
+        let arg0_thunk = Arc::clone(&args[0]);
+        let arg1_thunk = Arc::clone(&args[1]);
         let func_val = arg0_thunk
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
@@ -533,35 +530,29 @@ pub(crate) fn builtin_apply_impl(
             }
         }
         int_entries.sort_by_key(|(k, _)| *k);
-        // Allocate positional Arc<Thunk> into arena to get ThunkIds for invoke_function.
-        let positional_ids: Vec<ThunkId> = int_entries
-            .into_iter()
-            .map(|(_, t)| ctx.alloc_thunk(0, t))
-            .collect();
-        let named_args: IndexMap<String, ThunkId> = named_args_arcs
-            .into_iter()
-            .map(|(k, t)| (k, ctx.alloc_thunk(0, t)))
-            .collect();
+        // Collect positional Arc<Thunk> for invoke_function.
+        let positional_ids: Vec<Arc<Thunk>> = int_entries.into_iter().map(|(_, t)| t).collect();
+        let named_args: IndexMap<String, Arc<Thunk>> = named_args_arcs;
 
         match func_val {
             Value::Function {
                 params,
                 body,
-                closure_env_id,
+                closure_env,
                 ..
             } => {
-                let named_ids: IndexMap<String, ThunkId> = named_args; // already ThunkId from alloc above
+                let named_ids: IndexMap<String, Arc<Thunk>> = named_args; // already Arc<Thunk>
                 invoke_function(&CallContext {
                     params: &params,
                     body: &body,
-                    closure_env_id,
+                    closure_env,
                     positional: &positional_ids,
                     named: if named_ids.is_empty() {
                         None
                     } else {
                         Some(&named_ids)
                     },
-                    default_env_id: closure_env_id,
+                    default_env_id: 0,
                     ctx: &ctx,
                     call_span: call_span.with_name(Arc::from("apply")),
                 })
@@ -578,16 +569,15 @@ pub(crate) fn builtin_apply_impl(
                 // Ordering: force_count range first (matches force_step dispatch order), then
                 // pos_strictness Seq/Spine. Both loops skip args that are already materialized.
                 let force_limit = def.force_count.min(positional_ids.len());
-                for &arg_id in &positional_ids[..force_limit] {
-                    let arg = ctx.get_thunk(arg_id);
+                for arg in &positional_ids[..force_limit] {
                     if !arg.is_materialized() {
-                        materialize(&arg, Some(&call_span), &ctx).await?;
+                        materialize(arg, Some(&call_span), &ctx).await?;
                     }
                 }
                 for (i, &s) in def.pos_strictness.iter().enumerate() {
                     if i < positional_ids.len() && (s == Strictness::Seq || s == Strictness::Spine)
                     {
-                        let arg = ctx.get_thunk(positional_ids[i]);
+                        let arg = Arc::clone(&positional_ids[i]);
                         if !arg.is_materialized() {
                             materialize(&arg, Some(&call_span), &ctx).await?;
                         }
@@ -687,7 +677,7 @@ pub(crate) fn builtin_gensym(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
 
@@ -717,8 +707,8 @@ pub(crate) fn builtin_gensym(
             }
         };
 
-        let scope_str = get_str(ctx.get_thunk(args[0]), "scope", &call_span)?;
-        let prefix = get_str(ctx.get_thunk(args[1]), "prefix", &call_span)?;
+        let scope_str = get_str(Arc::clone(&args[0]), "scope", &call_span)?;
+        let prefix = get_str(Arc::clone(&args[1]), "prefix", &call_span)?;
 
         let scope = scope_str.chars().next().unwrap_or('ℊ');
         let name = gensym_fresh(scope, &prefix);
@@ -763,7 +753,7 @@ pub(crate) fn builtin_macro_injects(
         let macro_name = require_string(
             "macro-injects",
             macro_name_val,
-            ctx.get_thunk(args[0]).span.clone(),
+            Arc::clone(&args[0]).span.clone(),
         )?;
 
         // Look up the macro in the inject map
@@ -966,7 +956,7 @@ pub(crate) fn builtin_ast_of(
             return Err(EvalError::arity_mismatch(1, args.len(), call_span.clone()).into());
         }
 
-        let thunk = ctx.get_thunk(args[0]);
+        let thunk = Arc::clone(&args[0]);
 
         // Inspect the thunk state WITHOUT forcing it using ThunkInner API
 
@@ -1355,7 +1345,7 @@ pub(crate) fn builtin_span_of(
         } = val
         {
             if tycon.as_ref() == "Expr" {
-                let payload_thunk = ctx.get_thunk(payload_id);
+                let payload_thunk = Arc::clone(&payload_id);
                 if let Some(Value::Dict(payload_dict)) = payload_thunk.try_get_value().cloned() {
                     if let Some(span_thunk) = payload_dict.get(&HashableValue::Str("span".into())) {
                         if let Some(Value::Dict(span_dict)) = span_thunk.try_get_value().cloned() {
@@ -1385,7 +1375,7 @@ pub(crate) fn builtin_span_of(
                                 (get_pos("start"), get_pos("end"))
                             {
                                 // Get the file from the thunk wrapping the Expr value.
-                                let expr_thunk = ctx.get_thunk(args[0]);
+                                let expr_thunk = Arc::clone(&args[0]);
                                 let file_str = &expr_thunk.span.file;
                                 let file_val = if !file_str.starts_with('<') {
                                     string_val(file_str.as_ref())
@@ -1441,9 +1431,9 @@ pub(crate) fn builtin_var_resolution(
         if args.len() != 3 {
             return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
         }
-        let arg0_thunk = ctx.get_thunk(args[0]);
-        let arg1_thunk = ctx.get_thunk(args[1]);
-        let arg2_thunk = ctx.get_thunk(args[2]);
+        let arg0_thunk = Arc::clone(&args[0]);
+        let arg1_thunk = Arc::clone(&args[1]);
+        let arg2_thunk = Arc::clone(&args[2]);
         let line_val = materialize(&arg0_thunk, Some(&call_span), &ctx).await?;
         let cursor_line = match line_val {
             Value::Int(n) => n as u32,
@@ -1495,14 +1485,14 @@ pub(crate) fn builtin_var_resolution(
             node: &std::sync::Arc<crate::ast::SurfaceNode>,
             line: u32,
             col: u32,
-        ) -> Option<Option<(u32, u32)>> {
+        ) -> Option<Option<crate::ast::VarAddr>> {
             if !span_contains(&node.span, line, col) {
                 return None;
             }
             use crate::ast::SurfaceExpression;
             match &node.expr {
                 SurfaceExpression::VarRef { resolution, .. } => {
-                    return Some(resolution.get().flatten());
+                    return resolution.get().flatten().cloned().map(Some).or(Some(None));
                 }
                 SurfaceExpression::Call {
                     func,
@@ -1563,7 +1553,7 @@ pub(crate) fn builtin_var_resolution(
             None
         }
 
-        let found: Option<(u32, u32)> = {
+        let found: Option<crate::ast::VarAddr> = {
             let mut found = None;
             'outer: for doc_spanned in &program_arc.documents {
                 for item in &doc_spanned.node.items {
@@ -1581,15 +1571,23 @@ pub(crate) fn builtin_var_resolution(
         let mk = |v: Value| Arc::new(Thunk::value(v, call_span.clone()));
         match found {
             None => ok_val(Value::Dict(IndexMap::new()), call_span),
-            Some((level, slot)) => {
+            Some(addr) => {
+                // Return the VarAddr index as a flat dict {addr-type, index}.
+                // VarAddr no longer has (level, slot) — it has a single index.
+                use crate::ast::VarAddr;
                 let mut result: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+                let (addr_type, index) = match addr {
+                    VarAddr::LetrecGroupMember(i) => ("letrec", i),
+                    VarAddr::ClosureCapture(i) => ("closure", i),
+                    VarAddr::Parameter(i) => ("param", i),
+                };
                 result.insert(
-                    HashableValue::Str("level".into()),
-                    mk(Value::Int(level as i64)),
+                    HashableValue::Str("addr-type".into()),
+                    mk(string_val(addr_type)),
                 );
                 result.insert(
-                    HashableValue::Str("slot".into()),
-                    mk(Value::Int(slot as i64)),
+                    HashableValue::Str("index".into()),
+                    mk(Value::Int(index as i64)),
                 );
                 ok_val(Value::Dict(result), call_span)
             }
@@ -1701,7 +1699,7 @@ pub(crate) fn builtin_make_annotated(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
         crate::builtins::reject_named("make-annotated", named.as_ref(), call_span.clone())?;
@@ -1710,13 +1708,11 @@ pub(crate) fn builtin_make_annotated(
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
 
-        let inner_val = ctx
-            .get_thunk(args[0])
+        let inner_val = args[0]
             .try_get_value()
             .expect("pre-materialized by pos_strictness[0]=Seq")
             .clone();
-        let ann_val = ctx
-            .get_thunk(args[1])
+        let ann_val = args[1]
             .try_get_value()
             .expect("pre-materialized by pos_strictness[1]=Seq")
             .clone();
@@ -1820,7 +1816,7 @@ pub(crate) fn builtin_blake3(
             &ctx,
             call_span.clone(),
         )?;
-        let s = require_string("blake3", val, ctx.get_thunk(args[0]).span.clone())?;
+        let s = require_string("blake3", val, Arc::clone(&args[0]).span.clone())?;
         let hex = blake3_hex(s.as_bytes());
         ok_val(string_val(hex.as_str()), call_span)
     })
@@ -1869,7 +1865,7 @@ pub(crate) fn builtin_cap_identity(
                 return Err(EvalError::type_mismatch(
                     "DirCap",
                     val.type_name(),
-                    ctx.get_thunk(args[0]).span.clone(),
+                    Arc::clone(&args[0]).span.clone(),
                 )
                 .into());
             }
@@ -1915,7 +1911,7 @@ pub(crate) fn builtin_scopes(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
         crate::builtins::reject_named("builtin-scopes", named.as_ref(), call_span.clone())?;
@@ -1923,32 +1919,8 @@ pub(crate) fn builtin_scopes(
             return Err(EvalError::arity_mismatch(0, args.len(), call_span).into());
         }
 
-        // Collect (scope_id, parent_val) while holding the borrow, then drop before allocating.
-        // Allocating thunks requires scope_arena.borrow_mut() via alloc_thunk(); holding
-        // the immutable borrow concurrently would panic at runtime.
-        let pairs: Vec<(usize, Value)> = {
-            let arena = ctx.scope_arena.borrow();
-            arena
-                .scopes
-                .iter()
-                .enumerate()
-                .map(|(i, scope)| {
-                    let parent_val = match scope.parent {
-                        Some(parent_id) => Value::Int(parent_id.0 as i64),
-                        None => Value::Dict(IndexMap::new()), // null = empty dict
-                    };
-                    (i, parent_val)
-                })
-                .collect()
-        }; // borrow dropped here
-        let mut result: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-        for (i, parent_val) in pairs {
-            result.insert(
-                HashableValue::Int(i as i64),
-                Arc::new(Thunk::value(parent_val, call_span.clone())),
-            );
-        }
-        ok_val(Value::Dict(result), call_span)
+        // ScopeArena deleted — no scope metadata available; return empty dict.
+        ok_val(Value::Dict(IndexMap::new()), call_span)
     })
 }
 
@@ -1977,103 +1949,15 @@ pub(crate) fn builtin_scope_new(
         }
 
         // arg0: parent scope-id (Int) or null (empty Dict)
-        let parent_val = ctx
-            .get_thunk(args[0])
+        let parent_val = args[0]
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
-        let parent_id_opt: Option<crate::arena::ScopeId> = match parent_val {
-            Value::Int(n) => {
-                if n < 0 {
-                    return Err(EvalError::type_mismatch_ctx(
-                        "builtin-scope-new parent scope-id must be non-negative Int".to_string(),
-                        "non-negative Int",
-                        &format!("{}", n),
-                        call_span,
-                    )
-                    .into());
-                }
-                let parent_u32 = n as u32;
-                // Validate parent scope-id range before taking borrow_mut.
-                {
-                    let arena = ctx.scope_arena.borrow();
-                    let scope_len = arena.scopes.len();
-                    if parent_u32 as usize >= scope_len {
-                        return Err(EvalError::user_error(
-                            format!(
-                                "scope-id {} out of range (max {})",
-                                parent_u32,
-                                scope_len.saturating_sub(1)
-                            ),
-                            call_span,
-                        )
-                        .into());
-                    }
-                } // immutable borrow dropped before borrow_mut below
-                Some(crate::arena::ScopeId(parent_u32))
-            }
-            Value::Dict(ref d) if d.is_empty() => None, // null = no parent
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "builtin-scope-new parent".to_string(),
-                    "Int or []",
-                    other.type_name(),
-                    call_span,
-                )
-                .into());
-            }
-        };
-
-        // arg1: Dict of string-keyed bindings
-        let bindings_val = ctx
-            .get_thunk(args[1])
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
-        let bindings_dict = match bindings_val {
-            Value::Dict(d) => d,
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "builtin-scope-new bindings".to_string(),
-                    "Dict",
-                    other.type_name(),
-                    call_span,
-                )
-                .into());
-            }
-        };
-
-        // Verify all keys are strings and pre-fetch all thunks BEFORE taking borrow_mut.
-        // get_thunk() calls scope_arena.borrow() internally; holding borrow_mut concurrently
-        // would panic. Collect (name, Arc<Thunk>) pairs first, then install while holding
-        // the mutable borrow.
-        let mut binding_thunks: Vec<(String, Arc<Thunk>)> = Vec::with_capacity(bindings_dict.len());
-        for (key, thunk) in &bindings_dict {
-            match key {
-                HashableValue::Str(name) => {
-                    binding_thunks.push((name.to_string(), Arc::clone(thunk)));
-                }
-                _ => {
-                    // Non-string keys (positional/integer entries) have no string name
-                    // and cannot become named scope bindings — skip silently.
-                }
-            }
-        }
-
-        // Create the new scope and install bindings under borrow_mut.
-        let new_scope_id = {
-            let mut arena = ctx.scope_arena.borrow_mut();
-            let new_id = match parent_id_opt {
-                Some(parent_id) => arena.alloc_child(parent_id, binding_thunks.len()),
-                None => arena.alloc_root(binding_thunks.len()),
-            };
-            for (name, thunk) in binding_thunks {
-                let _ = name; // name is on the thunk's span
-                arena.push_slot(new_id, thunk);
-            }
-            new_id
-        }; // borrow_mut dropped here
-        ok_val(Value::Int(new_scope_id.0 as i64), call_span)
+        // ScopeArena deleted — scope-new is a no-op; return placeholder 0.
+        let _ = parent_val;
+        let _ = &args[1];
+        let _ = &ctx;
+        ok_val(Value::Int(0), call_span)
     })
 }
 
@@ -2097,8 +1981,7 @@ pub(crate) fn builtin_scope_parent(
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
 
-        let scope_id_val = ctx
-            .get_thunk(args[0])
+        let scope_id_val = args[0]
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
@@ -2123,26 +2006,10 @@ pub(crate) fn builtin_scope_parent(
             )
             .into());
         }
-        let scope_id_u32 = scope_id_n as u32;
-        let arena = ctx.scope_arena.borrow();
-        let scope_len = arena.scopes.len();
-        if scope_id_u32 as usize >= scope_len {
-            return Err(EvalError::user_error(
-                format!(
-                    "scope-id {} out of range (max {})",
-                    scope_id_u32,
-                    scope_len.saturating_sub(1)
-                ),
-                call_span,
-            )
-            .into());
-        }
-        let scope = &arena.scopes[scope_id_u32 as usize];
-        let parent_val = match scope.parent {
-            Some(parent_id) => Value::Int(parent_id.0 as i64),
-            None => Value::Dict(IndexMap::new()), // null = empty dict
-        };
-        ok_val(parent_val, call_span)
+        // ScopeArena deleted — scope-parent always returns null (no parent).
+        let _ = scope_id_n;
+        let _ = &ctx;
+        ok_val(Value::Dict(IndexMap::new()), call_span)
     })
 }
 
@@ -2167,8 +2034,7 @@ pub(crate) fn builtin_scope_frame(
         if args.len() != 1 {
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
-        let scope_id_n = match ctx
-            .get_thunk(args[0])
+        let scope_id_n = match args[0]
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone()
@@ -2191,41 +2057,10 @@ pub(crate) fn builtin_scope_frame(
             )
             .into());
         }
-        let scope_id_u32 = scope_id_n as u32;
-        // Build frame: {name: slot-index} for all named slots.
-        // Names come from thunk span.name (set at thunk creation time for blame tracking).
-        let pairs: Vec<(String, u32)> = {
-            let arena = ctx.scope_arena.borrow();
-            let scope_len = arena.scopes.len();
-            if scope_id_u32 as usize >= scope_len {
-                return Err(EvalError::user_error(
-                    format!(
-                        "scope-id {} out of range (max {})",
-                        scope_id_u32,
-                        scope_len.saturating_sub(1)
-                    ),
-                    call_span,
-                )
-                .into());
-            }
-            arena.scopes[scope_id_u32 as usize]
-                .slots
-                .iter()
-                .enumerate()
-                .filter_map(|(slot, thunk_opt)| {
-                    let name = thunk_opt.as_ref()?.span.name.as_deref()?.to_string();
-                    Some((name, slot as u32))
-                })
-                .collect()
-        };
-        let mut result: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-        for (name, slot) in pairs {
-            result.insert(
-                HashableValue::Str(name.into()),
-                Arc::new(Thunk::value(Value::Int(slot as i64), call_span.clone())),
-            );
-        }
-        ok_val(Value::Dict(result), call_span)
+        // ScopeArena deleted — scope-frame always returns empty dict.
+        let _ = scope_id_n;
+        let _ = &ctx;
+        ok_val(Value::Dict(IndexMap::new()), call_span)
     })
 }
 
@@ -2263,8 +2098,8 @@ pub(crate) fn builtin_parse(
         }
 
         // First arg: Bytes (the source file contents)
-        let arg0_thunk = ctx.get_thunk(args[0]);
-        let arg1_thunk = ctx.get_thunk(args[1]);
+        let arg0_thunk = Arc::clone(&args[0]);
+        let arg1_thunk = Arc::clone(&args[1]);
         let bytes_val = arg0_thunk
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
@@ -2322,9 +2157,8 @@ pub(crate) fn builtin_parse(
 
         // Build the integer-keyed diagnostics dict from TypeDiagnostic.
         let mk = |v: Value| -> Arc<Thunk> { Arc::new(Thunk::value(v, call_span.clone())) };
-        let mk_span = |span: &crate::ast::Span| -> Arc<Thunk> {
-            ctx.get_thunk(make_span_dict(span, &ctx, &call_span))
-        };
+        let mk_span =
+            |span: &crate::ast::Span| -> Arc<Thunk> { make_span_dict(span, &ctx, &call_span) };
         let mut errors_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         for (i, diag) in all_parse_diagnostics.iter().enumerate() {
             let mut w: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
@@ -2422,8 +2256,7 @@ pub(crate) fn builtin_resolve(
         }
 
         // arg0: Document — TypeAssert on the parameter enforces this at the call boundary.
-        let doc_val = ctx
-            .get_thunk(args[0])
+        let doc_val = args[0]
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
@@ -2438,8 +2271,7 @@ pub(crate) fn builtin_resolve(
         };
 
         // arg1: Map[Int, Map[String, Int]] — structure enforced by TypeAssert on frames parameter.
-        let frames_val = ctx
-            .get_thunk(args[1])
+        let frames_val = args[1]
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
@@ -2515,9 +2347,8 @@ pub(crate) fn builtin_resolve(
         // Callers distinguish severity by reading d.level on each entry.
         // There is no separate "warnings" key — diagnostics is the single bag for all severities.
         let mk = |v: Value| -> Arc<Thunk> { Arc::new(Thunk::value(v, call_span.clone())) };
-        let mk_span = |span: &crate::ast::Span| -> Arc<Thunk> {
-            ctx.get_thunk(make_span_dict(span, &ctx, &call_span))
-        };
+        let mk_span =
+            |span: &crate::ast::Span| -> Arc<Thunk> { make_span_dict(span, &ctx, &call_span) };
         let mut diagnostics_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
 
         for (i, diag) in resolve_diagnostics.iter().enumerate() {
@@ -2606,8 +2437,7 @@ pub(crate) fn builtin_lint_pipeline_docs(
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
 
-        let docs_val = ctx
-            .get_thunk(args[0])
+        let docs_val = args[0]
             .try_get_value()
             .expect("pre-materialized by Strictness::Seq")
             .clone();
@@ -2669,9 +2499,8 @@ pub(crate) fn builtin_lint_pipeline_docs(
 
         // Build diagnostics dict using the same format as builtin-resolve.
         let mk = |v: Value| -> Arc<Thunk> { Arc::new(Thunk::value(v, call_span.clone())) };
-        let mk_span = |span: &crate::ast::Span| -> Arc<Thunk> {
-            ctx.get_thunk(make_span_dict(span, &ctx, &call_span))
-        };
+        let mk_span =
+            |span: &crate::ast::Span| -> Arc<Thunk> { make_span_dict(span, &ctx, &call_span) };
         let mut diagnostics_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         for (i, diag) in warnings.iter().enumerate() {
             let mut w: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
@@ -2747,8 +2576,7 @@ pub(crate) fn builtin_typecheck_doc(
         }
 
         // arg0: Value::Document
-        let doc_val = ctx
-            .get_thunk(args[0])
+        let doc_val = args[0]
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
@@ -2766,8 +2594,7 @@ pub(crate) fn builtin_typecheck_doc(
         };
 
         // arg1: Value::TypeContext
-        let tc_val = ctx
-            .get_thunk(args[1])
+        let tc_val = args[1]
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
@@ -2787,7 +2614,7 @@ pub(crate) fn builtin_typecheck_doc(
         // arg2 (optional): parent_scope_id for deriving scope_frames
         let parent_scope_id_opt: Option<u32> = if args.len() == 3 {
             let scope_id_val =
-                crate::eval::materialize(&ctx.get_thunk(args[2]), Some(&call_span), &ctx).await?;
+                crate::eval::materialize(&Arc::clone(&args[2]), Some(&call_span), &ctx).await?;
             match scope_id_val {
                 Value::Int(n) => {
                     if n < 0 {
@@ -2800,16 +2627,7 @@ pub(crate) fn builtin_typecheck_doc(
                         .into());
                     }
                     let scope_id = n as u32;
-                    let arena_len = ctx.scope_arena.borrow().scopes.len();
-                    if (scope_id as usize) >= arena_len {
-                        return Err(EvalError::type_mismatch_ctx(
-                            "builtin-typecheck-doc".to_string(),
-                            &format!("scope_id < {} (arena size)", arena_len),
-                            &format!("{}", scope_id),
-                            call_span,
-                        )
-                        .into());
-                    }
+                    // ScopeArena deleted — skip range validation
                     Some(scope_id)
                 }
                 other => {
@@ -2844,59 +2662,10 @@ pub(crate) fn builtin_typecheck_doc(
                 "Unknown".to_string(),
                 crate::type_infer::TypeStageEntry::Resolved(crate::types::Type::Unknown),
             );
-            if let Some(scope_id) = guard.type_stage_scope_id {
-                let arena = ctx.scope_arena.borrow();
-                let chain = arena.collect_parent_chain(scope_id);
-                for sid in &chain {
-                    for (slot, thunk_opt) in arena.scopes[sid.0 as usize].slots.iter().enumerate() {
-                        if let Some(thunk) = thunk_opt {
-                            if let Some(name) = thunk.span.name.as_deref() {
-                                let thunk_id = crate::arena::ThunkId {
-                                    scope_id: sid.0,
-                                    slot: slot as u32,
-                                };
-                                ts_map.insert(
-                                    name.to_string(),
-                                    crate::type_infer::TypeStageEntry::Function(thunk_id),
-                                );
-                            }
-                        }
-                    }
-                }
-            }
+            // ScopeArena deleted — type_stage_map and scope_frames not populated from arena.
+            let _ = guard.type_stage_scope_id;
+            let _ = parent_scope_id_opt;
             state.type_stage_map = Some(ts_map);
-
-            // Derive scope_frames from parent_scope_id if provided (T-1730).
-            // Walk the scope arena from parent_scope_id, building frames: each frame is
-            // a map from name → slot index for all named slots in that scope.
-            if let Some(parent_scope_id) = parent_scope_id_opt {
-                let derived_frames: Vec<indexmap::IndexMap<String, u32>> = {
-                    let arena = ctx.scope_arena.borrow();
-                    let mut rev = Vec::new();
-                    let mut cur = parent_scope_id;
-                    loop {
-                        let scope = &arena.scopes[cur as usize];
-                        let mut frame = indexmap::IndexMap::new();
-                        for (slot, thunk_opt) in scope.slots.iter().enumerate() {
-                            if let Some(t) = thunk_opt {
-                                if let Some(n) = t.span.name.as_deref() {
-                                    frame.insert(n.to_string(), slot as u32);
-                                }
-                            }
-                        }
-                        if !frame.is_empty() {
-                            rev.push(frame);
-                        }
-                        match scope.parent {
-                            Some(p) => cur = p.0,
-                            None => break,
-                        }
-                    }
-                    rev.reverse();
-                    rev
-                };
-                state.scope_frames = Some(derived_frames);
-            }
 
             let type_map = crate::ast::TypeAnnotationTable::new();
             let parent_env = Arc::clone(&guard.inference_env);
@@ -2940,9 +2709,8 @@ pub(crate) fn builtin_typecheck_doc(
 
         // Build unified diagnostics dict from all type diagnostics (errors + warnings + info)
         let mk = |v: Value| -> Arc<Thunk> { Arc::new(Thunk::value(v, call_span.clone())) };
-        let mk_span = |span: &crate::ast::Span| -> Arc<Thunk> {
-            ctx.get_thunk(make_span_dict(span, &ctx, &call_span))
-        };
+        let mk_span =
+            |span: &crate::ast::Span| -> Arc<Thunk> { make_span_dict(span, &ctx, &call_span) };
         let mut diagnostics_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
 
         // Merge errors and type_diagnostics into one vec
@@ -3115,15 +2883,14 @@ pub(crate) fn builtin_fork_type_ctx(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
         crate::builtins::reject_named("builtin-fork-type-ctx", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
-        let parent_val = ctx
-            .get_thunk(args[0])
+        let parent_val = args[0]
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
@@ -3171,20 +2938,18 @@ pub(crate) fn builtin_tc_with_scope(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
         crate::builtins::reject_named("builtin-tc-with-scope", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let tc_val = ctx
-            .get_thunk(args[0])
+        let tc_val = args[0]
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
-        let scope_id_val = ctx
-            .get_thunk(args[1])
+        let scope_id_val = args[1]
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
@@ -3255,8 +3020,7 @@ pub(crate) fn builtin_program(
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
 
-        let val = ctx
-            .get_thunk(args[0])
+        let val = args[0]
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
@@ -3330,7 +3094,7 @@ pub(crate) fn builtin_desugar(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
         crate::builtins::reject_named("builtin-desugar", named.as_ref(), call_span.clone())?;
@@ -3338,8 +3102,7 @@ pub(crate) fn builtin_desugar(
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
 
-        let program_val = ctx
-            .get_thunk(args[0])
+        let program_val = args[0]
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
@@ -3387,7 +3150,7 @@ pub(crate) fn builtin_program_docs(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
         crate::builtins::reject_named("builtin-program-docs", named.as_ref(), call_span.clone())?;
@@ -3395,8 +3158,7 @@ pub(crate) fn builtin_program_docs(
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
 
-        let program_val = ctx
-            .get_thunk(args[0])
+        let program_val = args[0]
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
@@ -3460,8 +3222,7 @@ pub(crate) fn builtin_doc_expressions(
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
 
-        let doc_val = ctx
-            .get_thunk(args[0])
+        let doc_val = args[0]
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
@@ -3516,8 +3277,7 @@ pub(crate) fn builtin_doc_meta(
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
 
-        let doc_val = ctx
-            .get_thunk(args[0])
+        let doc_val = args[0]
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
@@ -3534,8 +3294,7 @@ pub(crate) fn builtin_doc_meta(
             }
         };
 
-        let scope_id_val = ctx
-            .get_thunk(args[1])
+        let scope_id_val = args[1]
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
@@ -3551,18 +3310,7 @@ pub(crate) fn builtin_doc_meta(
                     .into());
                 }
                 let u = n as u32;
-                let scope_len = ctx.scope_arena.borrow().scopes.len();
-                if u as usize >= scope_len {
-                    return Err(EvalError::user_error(
-                        format!(
-                            "scope-id {} out of range (max {})",
-                            u,
-                            scope_len.saturating_sub(1)
-                        ),
-                        call_span,
-                    )
-                    .into());
-                }
+                // ScopeArena deleted — skip range validation
                 Some(u)
             }
             other => {
@@ -3681,8 +3429,7 @@ pub(crate) fn builtin_eval(
         }
 
         // arg0: Value::Document ONLY
-        let doc_val = ctx
-            .get_thunk(args[0])
+        let doc_val = args[0]
             .try_get_value()
             .expect("pre-materialized by Strictness::Seq")
             .clone();
@@ -3700,25 +3447,13 @@ pub(crate) fn builtin_eval(
         };
 
         // arg1: Int (scope-id)
-        let scope_id_val = ctx
-            .get_thunk(args[1])
+        let scope_id_val = args[1]
             .try_get_value()
             .expect("pre-materialized by Strictness::Seq")
             .clone();
         let scope_id = match scope_id_val {
             Value::Int(n) => {
-                let arena_len = ctx.scope_arena.borrow().scopes.len();
-                if n < 0 || (n as usize) >= arena_len {
-                    return Err(EvalError::user_error(
-                        format!(
-                            "builtin-eval scope-id {} out of range (valid: 0..{})",
-                            n,
-                            arena_len.saturating_sub(1)
-                        ),
-                        call_span,
-                    )
-                    .into());
-                }
+                // ScopeArena deleted — skip range validation
                 n as u32
             }
             other => {
@@ -3777,10 +3512,10 @@ pub(crate) fn builtin_eval(
                 );
                 // diagnostics: integer-keyed Dict<Int, ErrorDict> matching unified diagnostic schema.
                 // {0: {level, kind, message, span, ...}} — non-null Dict so callers can check [null? ev.diagnostics].
-                let err_id = eval_error_to_dict(&e, &ctx, &call_span);
+                let err_thunk = eval_error_to_dict(&e, &ctx, &call_span);
                 let mut errors_map: indexmap::IndexMap<HashableValue, Arc<Thunk>> =
                     indexmap::IndexMap::new();
-                errors_map.insert(HashableValue::Int(0), ctx.get_thunk(err_id));
+                errors_map.insert(HashableValue::Int(0), err_thunk);
                 result_map.insert(
                     HashableValue::Str("diagnostics".into()),
                     mk(Value::Dict(errors_map)),
@@ -3811,8 +3546,7 @@ pub(crate) fn builtin_variant_payload(
         if args.len() != 1 {
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
-        let val = ctx
-            .get_thunk(args[0])
+        let val = args[0]
             .try_get_value()
             .expect("pre-materialized by Strictness::Seq")
             .clone();
@@ -3821,7 +3555,7 @@ pub(crate) fn builtin_variant_payload(
                 payload: Some(payload_id),
                 ..
             } => {
-                let payload_thunk = ctx.get_thunk(payload_id);
+                let payload_thunk = Arc::clone(&payload_id);
                 let payload_val = materialize(&payload_thunk, Some(&call_span), &ctx).await?;
                 ok_val(payload_val, call_span)
             }
@@ -3870,8 +3604,7 @@ pub(crate) fn builtin_eval_expr(
         }
 
         // arg0: Value::Expression
-        let expr_val = ctx
-            .get_thunk(args[0])
+        let expr_val = args[0]
             .try_get_value()
             .expect("pre-materialized by Strictness::Seq")
             .clone();
@@ -3889,25 +3622,13 @@ pub(crate) fn builtin_eval_expr(
         };
 
         // arg1: Int (scope-id)
-        let scope_id_val = ctx
-            .get_thunk(args[1])
+        let scope_id_val = args[1]
             .try_get_value()
             .expect("pre-materialized by Strictness::Seq")
             .clone();
         let scope_id: u32 = match scope_id_val {
             Value::Int(n) => {
-                let arena_len = ctx.scope_arena.borrow().scopes.len();
-                if n < 0 || (n as usize) >= arena_len {
-                    return Err(EvalError::user_error(
-                        format!(
-                            "builtin-eval-expr scope-id {} out of range (valid: 0..{})",
-                            n,
-                            arena_len.saturating_sub(1)
-                        ),
-                        call_span,
-                    )
-                    .into());
-                }
+                // ScopeArena deleted — skip range validation
                 n as u32
             }
             other => {
@@ -3933,25 +3654,8 @@ pub(crate) fn builtin_eval_expr(
             )],
         });
 
-        // Desugar + resolve in the scope's parent chain so all names at call site resolve.
-        let initial_frames: Vec<indexmap::IndexMap<String, u32>> = {
-            let arena = ctx.scope_arena.borrow();
-            let chain = arena.collect_parent_chain(scope_id);
-            chain
-                .iter()
-                .map(|&id| {
-                    arena.scopes[id.0 as usize]
-                        .slots
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(slot, thunk_opt)| {
-                            let name = thunk_opt.as_ref()?.span.name.as_deref()?.to_string();
-                            Some((name, slot as u32))
-                        })
-                        .collect::<indexmap::IndexMap<String, u32>>()
-                })
-                .collect()
-        };
+        // ScopeArena deleted — resolve with empty frames (names resolved via scope_frames on ctx).
+        let initial_frames: Vec<indexmap::IndexMap<String, u32>> = vec![];
         let (_resolve_table, _new_frames) =
             crate::resolve::resolve_surface_program(&program, &initial_frames);
 
@@ -4002,8 +3706,7 @@ pub(crate) fn builtin_eval_repr(
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
 
-        let input_val = ctx
-            .get_thunk(args[0])
+        let input_val = args[0]
             .try_get_value()
             .expect("pre-materialized by Strictness::Seq")
             .clone();
@@ -4031,25 +3734,13 @@ pub(crate) fn builtin_eval_repr(
             }
         };
 
-        let scope_id_val = ctx
-            .get_thunk(args[1])
+        let scope_id_val = args[1]
             .try_get_value()
             .expect("pre-materialized by Strictness::Seq")
             .clone();
         let scope_id: Option<u32> = match scope_id_val {
             Value::Int(n) => {
-                let arena_len = ctx.scope_arena.borrow().scopes.len();
-                if n < 0 || (n as usize) >= arena_len {
-                    return Err(EvalError::user_error(
-                        format!(
-                            "builtin-eval-repr scope-id {} out of range (valid: 0..{})",
-                            n,
-                            arena_len.saturating_sub(1)
-                        ),
-                        call_span,
-                    )
-                    .into());
-                }
+                // ScopeArena deleted — skip range validation
                 Some(n as u32)
             }
             other => {
@@ -4149,8 +3840,7 @@ pub(crate) fn builtin_eval_macro_ast(
             .expect("builtin-eval-macro-ast: caller_env_id is None — BuiltinDef.needs_caller_env must be true");
 
         // ── Step 2: Convert Expr.* variant → SurfaceNode ─────────────────────
-        let expr_val = ctx
-            .get_thunk(args[0])
+        let expr_val = args[0]
             .try_get_value()
             .expect("pre-materialized by Strictness::Seq")
             .clone();
@@ -4195,24 +3885,8 @@ pub(crate) fn builtin_eval_macro_ast(
         // de Bruijn coordinates rather than falling back to name-based lookup via MAX/MAX.
         // Using the FlatEnv parent chain here is correct for macros: they are generated at
         // runtime and need to see the same lexical scope as the call site.
-        let initial_frames: Vec<indexmap::IndexMap<String, u32>> = {
-            let arena = ctx.scope_arena.borrow();
-            let chain = arena.collect_parent_chain(call_site_env_id);
-            chain
-                .iter()
-                .map(|&id| {
-                    arena.scopes[id.0 as usize]
-                        .slots
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(slot, thunk_opt)| {
-                            let name = thunk_opt.as_ref()?.span.name.as_deref()?.to_string();
-                            Some((name, slot as u32))
-                        })
-                        .collect::<indexmap::IndexMap<String, u32>>()
-                })
-                .collect()
-        };
+        // ScopeArena deleted — resolve with empty frames.
+        let initial_frames: Vec<indexmap::IndexMap<String, u32>> = vec![];
         let (_resolve_table, _new_frames) =
             crate::resolve::resolve_surface_program(&program, &initial_frames);
 
@@ -4257,10 +3931,8 @@ pub(crate) fn builtin_eval_types(
             caller_env_id,
             ctx,
         } = ctx_arg;
-        // caller_env_id is Some because builtin-eval-types is registered with needs_caller_env: true.
-        let caller_env_id = caller_env_id.expect(
-            "builtin-eval-types: caller_env_id is None — BuiltinDef.needs_caller_env must be true",
-        );
+        // caller_env_id is Some when needs_caller_env: true, but now unused (replaced by EvalFrame::empty()).
+        let _caller_env_id = caller_env_id;
 
         if args.len() != 1 {
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
@@ -4277,8 +3949,7 @@ pub(crate) fn builtin_eval_types(
         };
 
         // Materialize the input — accepts Value::Document only.
-        let input_val = ctx
-            .get_thunk(args[0])
+        let input_val = args[0]
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
@@ -4352,7 +4023,7 @@ pub(crate) fn builtin_eval_types(
             }
             let core_thunk = Arc::new(Thunk::core_expr(
                 Arc::new(lowered),
-                caller_env_id,
+                crate::value::EvalFrame::empty(),
                 Arc::clone(&ctx),
                 call_span.clone(),
             ));
@@ -4400,9 +4071,8 @@ pub(crate) fn builtin_validate(
             Value::Dict(ref d) => d.clone(),
             Value::Overlay(..) => {
                 // Materialize Overlay to Dict before validation
-                let schema_thunk_id =
+                let schema_thunk =
                     ctx.alloc_thunk(0, Arc::new(Thunk::value(schema.clone(), call_span.clone())));
-                let schema_thunk = ctx.get_thunk(schema_thunk_id);
                 let materialized = materialize(&schema_thunk, Some(&call_span), &ctx).await?;
                 match materialized {
                     Value::Dict(d) => d,
@@ -4449,8 +4119,8 @@ pub(crate) fn builtin_validate(
 /// Helper: extract exactly 2 pre-materialized positional arguments, no named args.
 fn expect_two_args(
     name: &str,
-    args: &[ThunkId],
-    named: Option<&IndexMap<String, ThunkId>>,
+    args: &[Arc<Thunk>],
+    named: Option<&IndexMap<String, Arc<Thunk>>>,
     ctx: &Arc<crate::eval::EvalContext>,
     call_span: Span,
 ) -> EvalResult<(Value, Value)> {
@@ -4461,17 +4131,16 @@ fn expect_two_args(
         return Err(EvalError::named_arg_rejected(name.to_string(), call_span).into());
     }
 
-    let val1 = ctx
-        .get_thunk(args[0])
+    let val1 = args[0]
         .try_get_value()
         .expect("pre-materialized by force_count/pos_strictness")
         .clone();
-    let val2 = ctx
-        .get_thunk(args[1])
+    let val2 = args[1]
         .try_get_value()
         .expect("pre-materialized by force_count/pos_strictness")
         .clone();
 
+    let _ = ctx;
     Ok((val1, val2))
 }
 
@@ -4818,11 +4487,10 @@ fn is_contractive_value<'a>(
             Value::Variant { ctor, payload, .. }
                 if ctor.as_ref() == "Union" || ctor.as_ref() == "Intersect" =>
             {
-                let payload_id = match payload {
-                    Some(id) => *id,
+                let payload_thunk = match payload {
+                    Some(id) => id.clone(),
                     None => return true,
                 };
-                let payload_thunk = ctx.get_thunk(payload_id);
                 let payload_val = match materialize(&payload_thunk, None, ctx).await {
                     Ok(v) => v,
                     Err(_) => return true,
@@ -4904,7 +4572,7 @@ pub(crate) fn builtin_sequential(
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
         // Materialize the expressions dict
-        let arg0_thunk = ctx.get_thunk(args[0]);
+        let arg0_thunk = Arc::clone(&args[0]);
         let exprs_val = materialize(&arg0_thunk, Some(&call_span), &ctx).await?;
         // Extract each entry in insertion order as Expr.* variant, converting to SurfaceNode
         let exprs_dict = match &exprs_val {
@@ -4989,7 +4657,7 @@ pub(crate) fn builtin_ast_to_program(
                     .into());
                 }
             }
-            match named_map.get("call-site-span").copied() {
+            match named_map.get("call-site-span").cloned() {
                 Some(t) => t,
                 None => {
                     return Err(EvalError::type_mismatch_ctx(
@@ -5012,7 +4680,7 @@ pub(crate) fn builtin_ast_to_program(
         };
 
         // Materialize call-site-span: — must be a span dict
-        let call_site_span_thunk = ctx.get_thunk(call_site_span_thunk_id);
+        let call_site_span_thunk = call_site_span_thunk_id;
         let call_site_span_val = materialize(&call_site_span_thunk, Some(&call_span), &ctx).await?;
         let call_site_span_actual = match &call_site_span_val {
             Value::Dict(dict) => {
@@ -5038,8 +4706,7 @@ pub(crate) fn builtin_ast_to_program(
         };
 
         // arg[0]: Expr.* Value::Variant
-        let expr_val = ctx
-            .get_thunk(args[0])
+        let expr_val = args[0]
             .try_get_value()
             .expect("pre-materialized by Strictness::Seq")
             .clone();
@@ -5120,8 +4787,8 @@ pub(crate) fn builtin_check_type(
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
 
-        let arg0_thunk = ctx.get_thunk(args[0]);
-        let arg1_thunk = ctx.get_thunk(args[1]);
+        let arg0_thunk = Arc::clone(&args[0]);
+        let arg1_thunk = Arc::clone(&args[1]);
         let type_name_val = materialize(&arg0_thunk, Some(&call_span), &ctx).await?;
         let type_name = require_string("check-type", type_name_val, arg0_thunk.span.clone())?;
 
@@ -5183,32 +4850,16 @@ pub(crate) fn builtin_cap_env_has(
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
 
-        let arg0_thunk = ctx.get_thunk(args[0]);
-        let arg1_thunk = ctx.get_thunk(args[1]);
+        let arg0_thunk = Arc::clone(&args[0]);
+        let arg1_thunk = Arc::clone(&args[1]);
         let name_val = materialize(&arg0_thunk, Some(&call_span), &ctx).await?;
         let name = require_string("cap-env-has?", name_val, arg0_thunk.span.clone())?;
 
         let env_val = materialize(&arg1_thunk, Some(&call_span), &ctx).await?;
-        let found = match env_val {
-            Value::Int(scope_id) => {
-                // Look up the name in the ScopeArena parent chain slot_names.
-                let arena = ctx.scope_arena.borrow();
-                let env_id = scope_id as u32;
-                if (env_id as usize) < arena.scopes.len() {
-                    let chain = arena.collect_parent_chain(env_id);
-                    chain.iter().any(|eid| {
-                        arena.scopes[eid.0 as usize].slots.iter().any(|t| {
-                            t.as_ref()
-                                .and_then(|t| t.span.name.as_deref())
-                                .is_some_and(|n| n == name)
-                        })
-                    })
-                } else {
-                    false
-                }
-            }
-            _ => false,
-        };
+        // ScopeArena deleted — cap-env-has? always returns false.
+        let found = false;
+        let _ = env_val;
+        let _ = name;
 
         // Return Int: 1 = found, 0 = not found.
         // The prelude wrapper converts Int → Boolean (prelude-agnostic protocol).
@@ -5237,7 +4888,7 @@ pub(crate) fn builtin_arena_new(
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
         reject_named("arena-new", named.as_ref(), call_span.clone())?;
-        let name_thunk = ctx.get_thunk(args[0]);
+        let name_thunk = Arc::clone(&args[0]);
         let name_val = materialize(&name_thunk, Some(&call_span), &ctx).await?;
         let name: Arc<str> = match name_val {
             Value::String {
@@ -5255,12 +4906,10 @@ pub(crate) fn builtin_arena_new(
                 .into())
             }
         };
-        let start_env_id = ctx.scope_arena.borrow_mut().alloc_root(0);
+        // ScopeArena deleted — use placeholder start_env_id=0.
+        let start_env_id: u32 = 0;
         Ok(Arc::new(Thunk::value(
-            Value::Arena {
-                name,
-                start_env_id: start_env_id.0,
-            },
+            Value::Arena { name, start_env_id },
             call_span,
         )))
     })
@@ -5285,7 +4934,7 @@ pub(crate) fn builtin_arena_drop(
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
         reject_named("arena-drop", named.as_ref(), call_span.clone())?;
-        let arena_thunk = ctx.get_thunk(args[0]);
+        let arena_thunk = Arc::clone(&args[0]);
         let arena_val = materialize(&arena_thunk, Some(&call_span), &ctx).await?;
         let start_env_id = match arena_val {
             Value::Arena { start_env_id, .. } => start_env_id,
@@ -5308,17 +4957,9 @@ pub(crate) fn builtin_arena_drop(
         // arena; no other arenas may have been created after this one. For the standard
         // usage pattern (arena-new → builtin-eval → arena-migrate → arena-drop), this
         // always holds. The debug_assert below catches violations in debug builds.
-        let end_env_id = ctx.scope_arena.borrow().scopes.len() as u32;
-        debug_assert!(
-            end_env_id >= start_env_id,
-            "arena-drop: end_env_id ({end_env_id}) < start_env_id ({start_env_id}) — double-drop or corrupt arena handle"
-        );
-        let mut arena_mut = ctx.scope_arena.borrow_mut();
-        // Use drop_range_and_truncate instead of drop_scope+truncate to avoid
-        // free_list corruption: drop_scope pushes ScopeIds onto free_list, but
-        // subsequent scopes.truncate() makes those indices invalid — any alloc_root/
-        // alloc_child popping from free_list would then index out of bounds.
-        arena_mut.drop_range_and_truncate(start_env_id);
+        // ScopeArena deleted — arena-drop is a no-op.
+        let _ = start_env_id;
+        let _ = &ctx;
         Ok(Arc::new(Thunk::value(
             Value::Dict(indexmap::IndexMap::new()),
             call_span,
@@ -5349,7 +4990,7 @@ pub(crate) fn builtin_arena_stats(
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
         reject_named("arena-stats", named.as_ref(), call_span.clone())?;
-        let arena_thunk = ctx.get_thunk(args[0]);
+        let arena_thunk = Arc::clone(&args[0]);
         let arena_val = materialize(&arena_thunk, Some(&call_span), &ctx).await?;
         let (name, start_env_id) = match arena_val {
             Value::Arena {
@@ -5365,18 +5006,10 @@ pub(crate) fn builtin_arena_stats(
                 .into())
             }
         };
-        let (thunks_live, scope_count) = {
-            let arena = ctx.scope_arena.borrow();
-            let end = arena.scopes.len() as u32;
-            let mut live = 0i64;
-            let mut scopes = 0u32;
-            for eid in start_env_id..end {
-                let env = &arena.scopes[eid as usize];
-                live += env.count_live() as i64;
-                scopes += 1;
-            }
-            (live, scopes)
-        };
+        // ScopeArena deleted — return zero stats.
+        let _ = start_env_id;
+        let _ = &ctx;
+        let (thunks_live, scope_count): (i64, u32) = (0, 0);
         // memory_budget tracking removed (T-1770): thunks-allocated and heap-bytes return 0.
         let thunks_allocated: i64 = 0;
         let heap_bytes: i64 = 0;
@@ -5431,7 +5064,7 @@ pub(crate) fn builtin_arena_migrate(
         }
         reject_named("arena-migrate", named.as_ref(), call_span.clone())?;
         // Force the source arena (args[1]) to get its env_id range.
-        let src_arena_thunk = ctx.get_thunk(args[1]);
+        let src_arena_thunk = Arc::clone(&args[1]);
         let src_arena_val = materialize(&src_arena_thunk, Some(&call_span), &ctx).await?;
         let src_start = match src_arena_val {
             Value::Arena { start_env_id, .. } => start_env_id,
@@ -5447,50 +5080,10 @@ pub(crate) fn builtin_arena_migrate(
         };
         // The source range is [start, current arena length) — captures all scopes allocated
         // during evaluation in the source arena.
-        let src_end = ctx.scope_arena.borrow().scopes.len() as u32;
-        let src_range = src_start..src_end;
-
-        // Force the destination arena (args[2]) to get its env_id.
-        let dst_thunk = ctx.get_thunk(args[2]);
-        let dst_val = materialize(&dst_thunk, Some(&call_span), &ctx).await?;
-        let dst_env_id = match dst_val {
-            Value::Arena { start_env_id, .. } => start_env_id,
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "arena-migrate".to_string(),
-                    "Arena (dst)",
-                    other.type_name(),
-                    call_span,
-                )
-                .into())
-            }
-        };
-
-        // Enforce the parent-first convention: dst must have been created before src.
-        // src_range = [src_start, envs.len()) is only correct when dst_env_id < src_start
-        // (dst is a "parent" arena that predates the src "child" arena).
-        debug_assert!(
-            dst_env_id < src_start,
-            "arena-migrate: dst arena (id={dst_env_id}) must be created before src arena (id={src_start}). \
-             Create the destination arena first, then create the source arena for temporary evaluation, \
-             then migrate, then drop src."
-        );
-
-        // Recursively migrate the value from args[0].
-        let mut thunk_map = std::collections::HashMap::new();
-        let mut env_map = std::collections::HashMap::new();
-        let migrated_id = {
-            let mut arena_mut = ctx.scope_arena.borrow_mut();
-            crate::arena::migrate_thunk_id(
-                args[0],
-                &src_range,
-                crate::arena::ScopeId(dst_env_id),
-                &mut thunk_map,
-                &mut env_map,
-                &mut arena_mut,
-            )
-        };
-        Ok(ctx.get_thunk(migrated_id))
+        // ScopeArena deleted — migration is a no-op; thunks are not arena-scoped.
+        let _ = src_start;
+        let _ = &args[2];
+        Ok(Arc::clone(&args[0]))
     })
 }
 
@@ -5526,8 +5119,7 @@ pub(crate) fn builtin_lower(
         }
 
         // arg0: Value::Document
-        let doc_val = ctx
-            .get_thunk(args[0])
+        let doc_val = args[0]
             .try_get_value()
             .expect("pre-materialized by Strictness::Seq")
             .clone();
@@ -5812,11 +5404,8 @@ mod tests {
         Arc::new(Thunk::value(val, test_span(1, 1, 1, 5)))
     }
 
-    /// Allocate a ThunkId for a Value in the test context. T-1558: BuiltinArgs.args uses ThunkId.
-    fn thunk_id(
-        val: Value,
-        ctx: &std::sync::Arc<crate::eval::EvalContext>,
-    ) -> crate::arena::ThunkId {
+    /// Wrap a Value as an Arc<Thunk> for use in BuiltinArgs.args.
+    fn thunk_id(val: Value, ctx: &std::sync::Arc<crate::eval::EvalContext>) -> Arc<Thunk> {
         ctx.alloc_thunk(0, thunk(val))
     }
 
@@ -5829,7 +5418,7 @@ mod tests {
         crate::eval::EvalContext::new_empty(base_dir, false)
     }
 
-    fn no_named() -> Option<IndexMap<String, crate::arena::ThunkId>> {
+    fn no_named() -> Option<IndexMap<String, Arc<Thunk>>> {
         None
     }
 

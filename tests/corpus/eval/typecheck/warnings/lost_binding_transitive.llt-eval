@@ -8,4 +8,4 @@
 Int(42)
 
 === warn
-intermediate binding 'a' is defined but never referenced
+variable 'a' is never referenced

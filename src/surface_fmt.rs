@@ -16,8 +16,7 @@ use crate::env::Env;
 use crate::eval::core_expr_is_static_key;
 use crate::eval::EvalContext;
 use crate::lexer::{fmt_float, fmt_int, fmt_string};
-use crate::value::ThunkId;
-use crate::value::{HashableValue, Value};
+use crate::value::{HashableValue, Thunk, Value};
 
 /// Format a dict as a tinct literal `[k: v  ...]`.
 ///
@@ -74,7 +73,7 @@ pub fn fmt_dict(
 /// Unary constructors: `[Tag payload]`
 pub fn fmt_variant(
     tag: &str,
-    payload: Option<ThunkId>,
+    payload: Option<Arc<Thunk>>,
     ctx: Option<&Arc<EvalContext>>,
 ) -> Result<String, String> {
     match payload {
@@ -82,10 +81,8 @@ pub fn fmt_variant(
             // Nullary constructor — just the tag
             Ok(tag.to_string())
         }
-        Some(thunk_id) => {
+        Some(thunk) => {
             // Unary constructor — [Tag payload]
-            let ctx_ref = ctx.ok_or("variant serialization requires EvalContext")?;
-            let thunk = ctx_ref.get_thunk(thunk_id);
             let value = thunk
                 .try_get_value()
                 .cloned()
@@ -1351,12 +1348,12 @@ impl Value {
                 tycon,
                 ctor,
                 payload,
-            } => fmt_variant(&format!("{}.{}", tycon, ctor), *payload, ctx),
+            } => fmt_variant(&format!("{}.{}", tycon, ctor), payload.clone(), ctx),
             Value::Builtin(b) => Ok(b.name.to_string()),
             Value::Function {
                 params,
                 body,
-                closure_env_id: _,
+                closure_env: _,
                 annotation: _,
             } => match ctx {
                 Some(ctx) => {
@@ -1377,11 +1374,9 @@ impl Value {
             Value::Overlay(left, right) => {
                 // Flatten overlay to Dict before serialization.
                 // Right wins on conflicts (overlay semantics: right overlays left).
-                let ctx_ref = ctx.ok_or("Overlay serialization requires EvalContext")?;
 
                 // Materialize left side
-                let left_thunk = ctx_ref.get_thunk(*left);
-                let left_value = left_thunk
+                let left_value = left
                     .try_get_value()
                     .cloned()
                     .ok_or("overlay left not materialized")?;
@@ -1391,8 +1386,7 @@ impl Value {
                 };
 
                 // Materialize right side
-                let right_thunk = ctx_ref.get_thunk(*right);
-                let right_value = right_thunk
+                let right_value = right
                     .try_get_value()
                     .cloned()
                     .ok_or("overlay right not materialized")?;

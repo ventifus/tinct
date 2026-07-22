@@ -14,7 +14,9 @@
   # ── Comparison — math module only ────────────────────────────────────────
   # Monomorphic typed variants for lt/gt/gte are in builtin_core.llt.
   builtin-lte:             [fn@Integer [let a@Integer b@Integer] ...]
+  builtin-float-lt:        [fn@Integer [let a@Float   b@Float  ] ...]
   builtin-float-lte:       [fn@Integer [let a@Float   b@Float  ] ...]
+  builtin-str-lt:          [fn@Integer [let a@String  b@String ] ...]
   builtin-str-lte:         [fn@Integer [let a@String  b@String ] ...]
   builtin-eq-float:        [fn@Integer [let a@Float   b@Float  ] ...]
 

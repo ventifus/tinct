@@ -16,7 +16,6 @@ use crate::ast::{
 };
 use crate::error::EvalResult;
 use crate::rust_span;
-use crate::value::ThunkId;
 use crate::value::{string_val, HashableValue, Thunk, Value};
 
 /// Error type for AST dict validation failures during dict-to-AST conversion.
@@ -68,7 +67,7 @@ pub fn surface_node_to_expr_variant(
 fn inject_span_into_expr_variant(
     val: Value,
     span: &Span,
-    ctx: &Arc<crate::eval::EvalContext>,
+    _ctx: &Arc<crate::eval::EvalContext>,
 ) -> Value {
     use crate::value::{HashableValue, Thunk, Value};
 
@@ -99,26 +98,22 @@ fn inject_span_into_expr_variant(
         Value::Variant {
             tycon,
             ctor,
-            payload: Some(payload_id),
+            payload: Some(payload_thunk),
         } => {
-            let payload_thunk = ctx.get_thunk(payload_id);
             if let Some(Value::Dict(mut payload_dict)) = payload_thunk.try_get_value().cloned() {
                 let span_thunk = Arc::new(Thunk::value(span_val, synth.clone()));
                 payload_dict.insert(HashableValue::Str("span".into()), span_thunk);
-                let new_payload_id = ctx.alloc_thunk(
-                    0,
-                    Arc::new(Thunk::value(Value::Dict(payload_dict), span.clone())),
-                );
+                let new_payload = Arc::new(Thunk::value(Value::Dict(payload_dict), span.clone()));
                 Value::Variant {
                     tycon,
                     ctor,
-                    payload: Some(new_payload_id),
+                    payload: Some(new_payload),
                 }
             } else {
                 Value::Variant {
                     tycon,
                     ctor,
-                    payload: Some(payload_id),
+                    payload: Some(payload_thunk),
                 }
             }
         }
@@ -173,11 +168,10 @@ fn dict_to_surface_node_inner(
     // Extract the span from the Expr.* payload (injected by surface_node_to_expr_variant).
     // If present, use it — it encodes the original user source position for round-trips.
     if let Value::Variant {
-        payload: Some(payload_id),
+        payload: Some(ref payload_thunk),
         ..
     } = val
     {
-        let payload_thunk = ctx.get_thunk(*payload_id);
         if let Some(Value::Dict(dict)) = payload_thunk.try_get_value().cloned() {
             if let Some(span) = extract_span(&dict, ctx) {
                 return Ok(Arc::new(SurfaceNode::new(node.expr.clone(), span)));
@@ -596,7 +590,7 @@ fn dict_to_annotation(
     if let Value::Variant {
         tycon,
         ctor,
-        payload: Some(payload_id),
+        payload: Some(payload_thunk),
     } = val
     {
         if tycon.as_ref() != "Annotation" {
@@ -605,7 +599,6 @@ fn dict_to_annotation(
                 field_path: path.iter().map(|s| s.to_string()).collect(),
             });
         }
-        let payload_thunk = ctx.get_thunk(*payload_id);
         let payload_val = payload_thunk
             .try_get_value()
             .cloned()
@@ -987,15 +980,12 @@ pub(crate) fn alloc_entry_list(
         let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         payload.insert(HashableValue::Str("key".into()), key_thunk);
         payload.insert(HashableValue::Str("value".into()), val_thunk);
-        let payload_id = ctx.alloc_thunk(
-            0,
-            Arc::new(Thunk::value(Value::Dict(payload), entry.span.clone())),
-        );
+        let payload_thunk = Arc::new(Thunk::value(Value::Dict(payload), entry.span.clone()));
         // Expr.Entry variant
         let entry_variant = Value::Variant {
             tycon: Arc::from("Expr"),
             ctor: Arc::from("Entry"),
-            payload: Some(payload_id),
+            payload: Some(payload_thunk),
         };
         let entry_thunk = Arc::new(Thunk::value(entry_variant, entry.span.clone()));
         dict.insert(HashableValue::Int(i as i64), entry_thunk);
@@ -1021,15 +1011,12 @@ pub(crate) fn alloc_named_arg_list(
                 na.span.clone(),
             )),
         );
-        let payload_id = ctx.alloc_thunk(
-            0,
-            Arc::new(Thunk::value(Value::Dict(na_payload), na.span.clone())),
-        );
+        let payload_thunk = Arc::new(Thunk::value(Value::Dict(na_payload), na.span.clone()));
         let na_thunk = Arc::new(Thunk::value(
             Value::Variant {
                 tycon: Arc::from("Expr"),
                 ctor: Arc::from("NamedArg"),
-                payload: Some(payload_id),
+                payload: Some(payload_thunk),
             },
             na.span.clone(),
         ));
@@ -1062,15 +1049,12 @@ pub(crate) fn alloc_param_list(
             HashableValue::Str("annotation".into()),
             Arc::new(Thunk::value(ann_val, p.span.clone())),
         );
-        let param_payload_id = ctx.alloc_thunk(
-            0,
-            Arc::new(Thunk::value(Value::Dict(p_payload), p.span.clone())),
-        );
+        let param_payload_thunk = Arc::new(Thunk::value(Value::Dict(p_payload), p.span.clone()));
         let p_thunk = Arc::new(Thunk::value(
             Value::Variant {
                 tycon: Arc::from("Expr"),
                 ctor: Arc::from("Param"),
-                payload: Some(param_payload_id),
+                payload: Some(param_payload_thunk),
             },
             p.span.clone(),
         ));
@@ -1135,15 +1119,15 @@ pub(crate) fn make_variant_with_payload(
     tag: &str,
     payload: IndexMap<HashableValue, Arc<Thunk>>,
     span: &Span,
-    ctx: &Arc<crate::eval::EvalContext>,
+    _ctx: &Arc<crate::eval::EvalContext>,
 ) -> Value {
     let payload_val = Value::Dict(payload);
-    let payload_id = ctx.alloc_thunk(0, Arc::new(Thunk::value(payload_val, span.clone())));
+    let payload_thunk = Arc::new(Thunk::value(payload_val, span.clone()));
     let (tycon, ctor) = tag.split_once('.').unwrap_or(("", tag));
     Value::Variant {
         tycon: Arc::from(tycon),
         ctor: Arc::from(ctor),
-        payload: Some(payload_id),
+        payload: Some(payload_thunk),
     }
 }
 
@@ -1169,7 +1153,7 @@ pub(crate) fn make_surface_node(expr: SurfaceExpression, span: Span) -> Arc<Surf
 /// generated `from_expr_variant` implementations.
 pub(crate) fn extract_tag_and_dict(
     val: &Value,
-    ctx: &Arc<crate::eval::EvalContext>,
+    _ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<(String, IndexMap<HashableValue, Arc<Thunk>>), AstError> {
     match val {
         Value::Variant {
@@ -1177,12 +1161,11 @@ pub(crate) fn extract_tag_and_dict(
             ctor,
             payload,
         } => {
-            let payload_thunk_id = payload.as_ref().ok_or_else(|| AstError {
+            let payload_thunk = payload.as_ref().ok_or_else(|| AstError {
                 message: format!("Expr variant {}.{} has no payload", tycon, ctor),
                 field_path: vec![],
             })?;
-            let payload_val = ctx
-                .get_thunk(*payload_thunk_id)
+            let payload_val = payload_thunk
                 .try_get_value()
                 .cloned()
                 .ok_or_else(|| AstError {
@@ -1692,10 +1675,10 @@ pub struct CommentMaps<'a> {
 }
 
 // ============================================================================
-// Surface AST to Dict conversion functions (AST → ThunkId)
+// Surface AST to Dict conversion functions (AST → Arc<Thunk>)
 // ============================================================================
 //
-// These functions convert Surface AST nodes to their dict representation as ThunkIds.
+// These functions convert Surface AST nodes to their dict representation as Arc<Thunk>.
 // The reverse direction (dict → Surface AST) is handled by the dict_to_* functions above.
 
 /// Convert a SurfaceProgram to a dict representation.
@@ -1730,24 +1713,17 @@ pub fn surface_program_to_dict(
     let doc_arcs: Vec<Arc<Thunk>> = program
         .documents
         .iter()
-        .map(|doc| {
-            Ok(ctx.get_thunk(surface_document_to_thunk_id(
-                &doc.node,
-                doc.span.clone(),
-                opts,
-                ctx,
-            )?))
-        })
+        .map(|doc| surface_document_to_thunk_id(&doc.node, doc.span.clone(), opts, ctx))
         .collect::<EvalResult<Vec<_>>>()?;
 
     root.insert(
         HashableValue::Str("documents".into()),
-        ctx.get_thunk(list_to_thunk_id(doc_arcs.into_iter(), span.clone(), ctx)?),
+        list_to_thunk_id(doc_arcs.into_iter(), span.clone(), ctx)?,
     );
 
     root.insert(
         HashableValue::Str("span".into()),
-        ctx.get_thunk(span_to_thunk_id(span.clone(), ctx)?),
+        span_to_thunk_id(span.clone(), ctx)?,
     );
 
     Ok(Arc::new(Thunk::value(Value::Dict(root), span)))
@@ -1764,7 +1740,7 @@ fn get_char_at(source: &str, line: u32, col: u32) -> Option<char> {
     line_text.chars().nth(target_col.checked_sub(1)?)
 }
 
-fn span_to_thunk_id(span: Span, ctx: &Arc<crate::eval::EvalContext>) -> EvalResult<ThunkId> {
+fn span_to_thunk_id(span: Span, _ctx: &Arc<crate::eval::EvalContext>) -> EvalResult<Arc<Thunk>> {
     let mut dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
 
     // start position
@@ -1804,23 +1780,23 @@ fn span_to_thunk_id(span: Span, ctx: &Arc<crate::eval::EvalContext>) -> EvalResu
         Arc::new(Thunk::value(Value::Dict(end_dict), span.clone())),
     );
 
-    Ok(ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(dict), span))))
+    Ok(Arc::new(Thunk::value(Value::Dict(dict), span)))
 }
 
 /// Convert an iterator of Arc<Thunk> to a dict-based list (auto-indexed dict with integer keys).
 pub(crate) fn list_to_thunk_id(
     items: impl ExactSizeIterator<Item = Arc<Thunk>>,
     span: Span,
-    ctx: &Arc<crate::eval::EvalContext>,
-) -> EvalResult<ThunkId> {
+    _ctx: &Arc<crate::eval::EvalContext>,
+) -> EvalResult<Arc<Thunk>> {
     let mut dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::with_capacity(items.len());
     for (i, item) in items.enumerate() {
         dict.insert(HashableValue::Int(i as i64), item);
     }
-    Ok(ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(dict), span))))
+    Ok(Arc::new(Thunk::value(Value::Dict(dict), span)))
 }
 
-/// Convert a `SurfaceDocument` to a ThunkId containing its dict representation.
+/// Convert a `SurfaceDocument` to an `Arc<Thunk>` containing its dict representation.
 ///
 /// Phase 3 native path: iterates `doc.items` directly (instead of `doc.expressions`),
 /// dispatching on `SurfaceItem::Expr` → `surface_node_to_thunk_id` and
@@ -1831,7 +1807,7 @@ fn surface_document_to_thunk_id(
     span: Span,
     opts: &AstToDictOpts,
     ctx: &Arc<crate::eval::EvalContext>,
-) -> EvalResult<ThunkId> {
+) -> EvalResult<Arc<Thunk>> {
     let mut dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
 
     dict.insert(
@@ -1844,21 +1820,16 @@ fn surface_document_to_thunk_id(
         .items
         .iter()
         .map(|item| match item {
-            SurfaceItem::Expr(node) => {
-                Ok(ctx.get_thunk(surface_node_to_thunk_id(node, opts, ctx)?))
+            SurfaceItem::Expr(node) => surface_node_to_thunk_id(node, opts, ctx),
+            SurfaceItem::Decl(decl) => {
+                surface_decl_to_thunk_id(&decl.node, decl.span.clone(), opts, ctx)
             }
-            SurfaceItem::Decl(decl) => Ok(ctx.get_thunk(surface_decl_to_thunk_id(
-                &decl.node,
-                decl.span.clone(),
-                opts,
-                ctx,
-            )?)),
         })
         .collect::<EvalResult<Vec<_>>>()?;
 
     dict.insert(
         HashableValue::Str("expressions".into()),
-        ctx.get_thunk(list_to_thunk_id(item_arcs.into_iter(), span.clone(), ctx)?),
+        list_to_thunk_id(item_arcs.into_iter(), span.clone(), ctx)?,
     );
 
     // header: dict of header entries (as SurfaceNode values)
@@ -1868,7 +1839,7 @@ fn surface_document_to_thunk_id(
         .map(|(k, v)| {
             Ok((
                 HashableValue::Str(k.clone().into()),
-                ctx.get_thunk(surface_node_to_thunk_id(v, opts, ctx)?),
+                surface_node_to_thunk_id(v, opts, ctx)?,
             ))
         })
         .collect::<EvalResult<_>>()?;
@@ -1890,11 +1861,7 @@ fn surface_document_to_thunk_id(
                     .collect();
                 dict.insert(
                     HashableValue::Str("leading-comments".into()),
-                    ctx.get_thunk(list_to_thunk_id(
-                        comment_arcs.into_iter(),
-                        span.clone(),
-                        ctx,
-                    )?),
+                    list_to_thunk_id(comment_arcs.into_iter(), span.clone(), ctx)?,
                 );
             }
         }
@@ -1902,13 +1869,13 @@ fn surface_document_to_thunk_id(
 
     dict.insert(
         HashableValue::Str("span".into()),
-        ctx.get_thunk(span_to_thunk_id(span.clone(), ctx)?),
+        span_to_thunk_id(span.clone(), ctx)?,
     );
 
-    Ok(ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(dict), span))))
+    Ok(Arc::new(Thunk::value(Value::Dict(dict), span)))
 }
 
-/// Convert a `SurfaceDeclaration` to a ThunkId containing its dict representation.
+/// Convert a `SurfaceDeclaration` to an `Arc<Thunk>` containing its dict representation.
 ///
 /// This is the surface-native handler for Group B variants (compile-time-only declaration
 /// forms that moved from `SurfaceExpression` to `SurfaceDeclaration`). Schema (Variant tags,
@@ -1919,7 +1886,7 @@ fn surface_decl_to_thunk_id(
     span: Span,
     opts: &AstToDictOpts,
     ctx: &Arc<crate::eval::EvalContext>,
-) -> EvalResult<ThunkId> {
+) -> EvalResult<Arc<Thunk>> {
     let mut dict = IndexMap::new();
     let variant_tag: &str;
 
@@ -1933,16 +1900,12 @@ fn surface_decl_to_thunk_id(
                     .collect();
                 dict.insert(
                     HashableValue::Str("params".into()),
-                    ctx.get_thunk(list_to_thunk_id(
-                        params_arcs.into_iter(),
-                        span.clone(),
-                        ctx,
-                    )?),
+                    list_to_thunk_id(params_arcs.into_iter(), span.clone(), ctx)?,
                 );
             }
             dict.insert(
                 HashableValue::Str("expr".into()),
-                ctx.get_thunk(surface_node_to_thunk_id(body, opts, ctx)?),
+                surface_node_to_thunk_id(body, opts, ctx)?,
             );
         }
 
@@ -1999,7 +1962,7 @@ fn surface_decl_to_thunk_id(
                     .collect();
                 dict.insert(
                     HashableValue::Str("superclasses".into()),
-                    ctx.get_thunk(list_to_thunk_id(pair_arcs.into_iter(), span.clone(), ctx)?),
+                    list_to_thunk_id(pair_arcs.into_iter(), span.clone(), ctx)?,
                 );
             }
             // methods: string-keyed dict of method expression dicts
@@ -2014,9 +1977,7 @@ fn surface_decl_to_thunk_id(
                         {
                             Some((
                                 HashableValue::Str(Arc::from(key_str.as_str())),
-                                ctx.get_thunk(
-                                    surface_node_to_thunk_id(&method.node.value, opts, ctx).ok()?,
-                                ),
+                                surface_node_to_thunk_id(&method.node.value, opts, ctx).ok()?,
                             ))
                         } else {
                             None
@@ -2036,7 +1997,7 @@ fn surface_decl_to_thunk_id(
                     .filter_map(|(i, fd_node)| {
                         Some((
                             HashableValue::Int(i as i64),
-                            ctx.get_thunk(surface_node_to_thunk_id(fd_node, opts, ctx).ok()?),
+                            surface_node_to_thunk_id(fd_node, opts, ctx).ok()?,
                         ))
                     })
                     .collect();
@@ -2049,7 +2010,7 @@ fn surface_decl_to_thunk_id(
             if let Some(resolver_node) = resolver {
                 dict.insert(
                     HashableValue::Str("resolver".into()),
-                    ctx.get_thunk(surface_node_to_thunk_id(resolver_node, opts, ctx)?),
+                    surface_node_to_thunk_id(resolver_node, opts, ctx)?,
                 );
             }
             // injective: optional bool (only emitted when true)
@@ -2075,7 +2036,7 @@ fn surface_decl_to_thunk_id(
                     let mut arm_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
                     arm_dict.insert(
                         HashableValue::Str("pattern".into()),
-                        ctx.get_thunk(surface_node_to_thunk_id(pattern_node, opts, ctx).ok()?),
+                        surface_node_to_thunk_id(pattern_node, opts, ctx).ok()?,
                     );
                     // methods: string-keyed dict matching ClassDecl.methods format
                     let methods_dict: IndexMap<HashableValue, Arc<Thunk>> = methods
@@ -2088,10 +2049,8 @@ fn surface_decl_to_thunk_id(
                                 {
                                     Some((
                                         HashableValue::Str(Arc::from(key_str.as_str())),
-                                        ctx.get_thunk(
-                                            surface_node_to_thunk_id(&method.node.value, opts, ctx)
-                                                .ok()?,
-                                        ),
+                                        surface_node_to_thunk_id(&method.node.value, opts, ctx)
+                                            .ok()?,
                                     ))
                                 } else {
                                     None
@@ -2127,7 +2086,7 @@ fn surface_decl_to_thunk_id(
             );
             dict.insert(
                 HashableValue::Str("pattern".into()),
-                ctx.get_thunk(surface_node_to_thunk_id(pattern, opts, ctx)?),
+                surface_node_to_thunk_id(pattern, opts, ctx)?,
             );
             if let Some(msg) = message {
                 dict.insert(
@@ -2141,9 +2100,7 @@ fn surface_decl_to_thunk_id(
             variant_tag = "Splice";
             let form_arcs: Vec<Arc<Thunk>> = forms
                 .iter()
-                .map(|form| -> EvalResult<Arc<Thunk>> {
-                    Ok(ctx.get_thunk(surface_node_to_thunk_id(form, opts, ctx)?))
-                })
+                .map(|form| surface_node_to_thunk_id(form, opts, ctx))
                 .collect::<EvalResult<Vec<_>>>()?;
             dict.insert(
                 HashableValue::Str("forms".into()),
@@ -2163,21 +2120,18 @@ fn surface_decl_to_thunk_id(
 
     dict.insert(
         HashableValue::Str("span".into()),
-        ctx.get_thunk(span_to_thunk_id(span.clone(), ctx)?),
+        span_to_thunk_id(span.clone(), ctx)?,
     );
-    let payload_id = ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(dict), span.clone())));
+    let payload = Arc::new(Thunk::value(Value::Dict(dict), span.clone()));
     let (vt_tycon, vt_ctor) = variant_tag.split_once('.').unwrap_or(("", variant_tag));
-    Ok(ctx.alloc_thunk(
-        0,
-        Arc::new(Thunk::value(
-            Value::Variant {
-                tycon: Arc::from(vt_tycon),
-                ctor: Arc::from(vt_ctor),
-                payload: Some(payload_id),
-            },
-            span,
-        )),
-    ))
+    Ok(Arc::new(Thunk::value(
+        Value::Variant {
+            tycon: Arc::from(vt_tycon),
+            ctor: Arc::from(vt_ctor),
+            payload: Some(payload),
+        },
+        span,
+    )))
 }
 
 /// Override the `bare` field in an `Expr.Literal` (kind: "str") variant's payload.
@@ -2193,28 +2147,26 @@ fn override_bare_in_literal_variant(
     val: Value,
     bare: bool,
     span: &Span,
-    ctx: &Arc<crate::eval::EvalContext>,
+    _ctx: &Arc<crate::eval::EvalContext>,
 ) -> Value {
     if let Value::Variant {
         ref tycon,
         ref ctor,
-        payload: Some(payload_id),
+        payload: Some(ref payload_thunk),
     } = val
     {
         if tycon.as_ref() == "Expr" && ctor.as_ref() == "Literal" {
-            let payload_thunk = ctx.get_thunk(payload_id);
             if let Some(Value::Dict(mut dict)) = payload_thunk.try_get_value().cloned() {
                 let new_bare_thunk = Arc::new(Thunk::value(
                     Value::Int(if bare { 1 } else { 0 }),
                     span.clone(),
                 ));
                 dict.insert(HashableValue::Str("bare".into()), new_bare_thunk);
-                let new_payload_id =
-                    ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(dict), span.clone())));
+                let new_payload = Arc::new(Thunk::value(Value::Dict(dict), span.clone()));
                 return Value::Variant {
                     tycon: tycon.clone(),
                     ctor: ctor.clone(),
-                    payload: Some(new_payload_id),
+                    payload: Some(new_payload),
                 };
             }
         }
@@ -2232,7 +2184,7 @@ fn alloc_entry_list_with_opts(
     entries: &[Spanned<SurfaceEntry>],
     opts: &AstToDictOpts,
     ctx: &Arc<crate::eval::EvalContext>,
-) -> EvalResult<ThunkId> {
+) -> EvalResult<Arc<Thunk>> {
     let mut dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
     for (i, entry) in entries.iter().enumerate() {
         // key: Some(node) → Expr.* variant with corrected bare flag, None → null
@@ -2283,11 +2235,8 @@ fn alloc_entry_list_with_opts(
                         .iter()
                         .map(|c| Arc::new(Thunk::value(string_val(c), entry.span.clone())))
                         .collect();
-                    let comments_thunk = ctx.get_thunk(list_to_thunk_id(
-                        comment_arcs.into_iter(),
-                        entry.span.clone(),
-                        ctx,
-                    )?);
+                    let comments_thunk =
+                        list_to_thunk_id(comment_arcs.into_iter(), entry.span.clone(), ctx)?;
                     payload.insert(
                         HashableValue::Str("leading-comments".into()),
                         comments_thunk,
@@ -2310,23 +2259,20 @@ fn alloc_entry_list_with_opts(
             payload.insert(HashableValue::Str("blank-before".into()), blank_thunk);
         }
 
-        let payload_id = ctx.alloc_thunk(
-            0,
-            Arc::new(Thunk::value(Value::Dict(payload), entry.span.clone())),
-        );
+        let payload_thunk = Arc::new(Thunk::value(Value::Dict(payload), entry.span.clone()));
         // Expr.Entry variant
         let entry_variant = Value::Variant {
             tycon: Arc::from("Expr"),
             ctor: Arc::from("Entry"),
-            payload: Some(payload_id),
+            payload: Some(payload_thunk),
         };
         let entry_thunk = Arc::new(Thunk::value(entry_variant, entry.span.clone()));
         dict.insert(HashableValue::Int(i as i64), entry_thunk);
     }
-    Ok(ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(dict), rust_span!()))))
+    Ok(Arc::new(Thunk::value(Value::Dict(dict), rust_span!())))
 }
 
-/// Convert a SurfaceNode to a ThunkId containing its `Expr.*` variant representation.
+/// Convert a SurfaceNode to an `Arc<Thunk>` containing its `Expr.*` variant representation.
 /// Uses `surface_node_to_expr_variant` — produces `Expr.*` variants consumable by `builtin-eval`.
 ///
 /// For Dict expressions, uses `alloc_entry_list_with_opts` when opts is provided to
@@ -2335,22 +2281,19 @@ fn surface_node_to_thunk_id(
     node: &Arc<SurfaceNode>,
     opts: &AstToDictOpts,
     ctx: &Arc<crate::eval::EvalContext>,
-) -> EvalResult<ThunkId> {
+) -> EvalResult<Arc<Thunk>> {
     // For Dict nodes, build the Expr.Dict variant with opts-aware entry conversion
     // so that bare flags and comment fields are correctly populated.
     let val = if let SurfaceExpression::Dict(entries) = &node.expr {
-        let entries_thunk = ctx.get_thunk(alloc_entry_list_with_opts(entries, opts, ctx)?);
+        let entries_thunk = alloc_entry_list_with_opts(entries, opts, ctx)?;
         let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         payload.insert(HashableValue::Str("entries".into()), entries_thunk);
-        let payload_id = ctx.alloc_thunk(
-            0,
-            Arc::new(Thunk::value(Value::Dict(payload), node.span.clone())),
-        );
+        let payload_thunk = Arc::new(Thunk::value(Value::Dict(payload), node.span.clone()));
         inject_span_into_expr_variant(
             Value::Variant {
                 tycon: Arc::from("Expr"),
                 ctor: Arc::from("Dict"),
-                payload: Some(payload_id),
+                payload: Some(payload_thunk),
             },
             &node.span,
             ctx,
@@ -2358,7 +2301,7 @@ fn surface_node_to_thunk_id(
     } else {
         surface_node_to_expr_variant(node, ctx)
     };
-    Ok(ctx.alloc_thunk(0, Arc::new(Thunk::value(val, node.span.clone()))))
+    Ok(Arc::new(Thunk::value(val, node.span.clone())))
 }
 
 #[cfg(test)]
@@ -2374,20 +2317,17 @@ mod tests {
     /// Panics with a helpful message if the value is not a Variant with a Dict payload.
     fn peel_variant(
         val: Value,
-        ctx: &Arc<crate::eval::EvalContext>,
+        _ctx: &Arc<crate::eval::EvalContext>,
     ) -> (String, IndexMap<HashableValue, Arc<Thunk>>) {
         match val {
             Value::Variant {
                 tycon,
                 ctor,
-                payload: Some(payload_id),
-            } => {
-                let payload_thunk = ctx.get_thunk(payload_id);
-                match payload_thunk.try_get_value().cloned() {
-                    Some(Value::Dict(map)) => (format!("{}.{}", tycon, ctor), map),
-                    other => panic!("expected Dict payload for Variant, got {:?}", other),
-                }
-            }
+                payload: Some(payload_thunk),
+            } => match payload_thunk.try_get_value().cloned() {
+                Some(Value::Dict(map)) => (format!("{}.{}", tycon, ctor), map),
+                other => panic!("expected Dict payload for Variant, got {:?}", other),
+            },
             other => panic!("expected Variant, got {:?}", other),
         }
     }

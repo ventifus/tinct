@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use tinct::{
-    build_core_env, literate, parse, string_val, EvalContext, HashableValue, Thunk, ThunkId, Value,
+    build_core_env, literate, parse, string_val, EvalContext, HashableValue, Thunk, Value,
 };
 // Exit codes for llt eval
 const EXIT_OK: i32 = 0;
@@ -1981,11 +1981,8 @@ async fn run_eval(
     // Used to build Value::Dict entries (which now store Arc<Thunk> directly).
     let mk_thunk = |v: Value| -> Arc<Thunk> { Arc::new(Thunk::value(v, tinct::rust_span!())) };
 
-    // Helper: allocate a value as a materialized thunk in the eval_ctx arena and return its ThunkId.
-    // Used only for Value::Variant payload (which still embeds ThunkId).
-    let alloc_val = |v: Value| -> ThunkId {
-        eval_ctx.alloc_thunk(0, Arc::new(Thunk::value(v, tinct::rust_span!())))
-    };
+    // Helper: create a materialized thunk for a value.
+    let alloc_val = |v: Value| -> Arc<Thunk> { Arc::new(Thunk::value(v, tinct::rust_span!())) };
 
     // Build %programs as an integer-keyed Value::Dict.
     // Each entry is a Value::Variant (ProgramItem.File or ProgramItem.Expr) Arc<Thunk>.

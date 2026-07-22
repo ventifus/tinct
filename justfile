@@ -107,6 +107,11 @@ test-corpus:
 test-corpus-one +FILES:
     {{container}} run {{run_flags}} {{rust_image}} sh -c "cargo build --bin tinct 2>&1 && apt-get update -qq && apt-get install -y -q gdb > /dev/null 2>&1 && rust-gdb -batch -ex run -ex bt --args target/debug/tinct --max-memory {{tinct_max_memory}} run --init stdlib/test-loader.llt {{FILES}}"
 
+# Like test-corpus-one but with a 32GB container memory limit — for diagnosing OOM during prelude loading.
+# Usage: just test-corpus-one-big tests/corpus/eval/simple_dict.llt-eval
+test-corpus-one-big +FILES:
+    {{container}} run --rm --memory 32g {{timeout_flag}} -v .:/workspace:z -v ./target:/workspace/target:z -v {{project_name}}-cargo:/usr/local/cargo/registry -w /workspace -e RUST_BACKTRACE=full {{rust_image}} sh -c "cargo build --bin tinct 2>&1 && apt-get update -qq && apt-get install -y -q gdb > /dev/null 2>&1 && rust-gdb -batch -ex run -ex bt --args target/debug/tinct run --init stdlib/test-loader.llt {{FILES}}"
+
 # Run all lint checks. Always runs every check regardless of failures; exits non-zero if any failed.
 lint:
     #!/usr/bin/env bash

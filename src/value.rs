@@ -1,4 +1,4 @@
-//! Runtime value types: `Value`, `Thunk` (lazy memoization), `Environment` (legacy name chain), `Scope` (runtime scope via `ScopeArena`).
+//! Runtime value types: `Value`, `Thunk` (lazy memoization), `Environment` (legacy name chain), `Scope` (closure-converted EvalFrame-based variable lookup).
 
 use std::collections::HashMap;
 use std::fmt;
@@ -14,12 +14,9 @@ use crate::ast::{CoreExpr, Param, Span, Spanned, SurfaceDocument, SurfaceNode};
 use crate::error::{EvalError, EvalResult};
 use crate::types::Type;
 
-// Re-export ThunkId for use in other modules
-pub use crate::arena::ThunkId;
-
 /// Type alias for the optional default expression + environment pair in guarded thunks.
 /// Reduces type_complexity in UnevaluatedState::Guarded and Thunk constructors.
-/// `env_id` is the u32 index into ScopeArena for the environment in which the default is evaluated.
+/// `env_id` is a bridge placeholder; EvalFrame migration in progress (T-1777).
 type GuardDefault = (Arc<Spanned<CoreExpr>>, u32);
 
 /// Runtime metadata for user-defined functions — stored on `Value::Function`.
@@ -47,8 +44,8 @@ pub struct FnAnnotation {
 /// into `Box<dyn Future>` (which has an implicit `'static` bound). Using owned `Vec`
 /// avoids allocating lifetimes in the async state machine.
 pub struct BuiltinArgs {
-    pub args: Vec<ThunkId>,
-    pub named: Option<IndexMap<String, ThunkId>>,
+    pub args: Vec<std::sync::Arc<Thunk>>,
+    pub named: Option<indexmap::IndexMap<String, std::sync::Arc<Thunk>>>,
     pub call_span: Span,
     pub ctx: Arc<crate::eval::EvalContext>,
     /// Caller's scope id — present only when `BuiltinDef::needs_caller_env` is true.
@@ -114,6 +111,40 @@ impl fmt::Debug for BuiltinDef {
             .field("force_count", &self.force_count)
             .field("needs_caller_env", &self.needs_caller_env)
             .finish_non_exhaustive()
+    }
+}
+
+/// Execution frame for closure-converted variable lookup.
+/// Replaces ScopeArena-based scope chain traversal.
+///
+/// - `closure_env[i]`: thunk for `VarAddr::ClosureCapture(i)` references
+/// - `group[i]`: thunk for `VarAddr::LetrecGroupMember(i)` references
+/// - `params[i]`: thunk for `VarAddr::Parameter(i)` references
+#[derive(Debug, Clone)]
+pub struct EvalFrame {
+    pub closure_env: std::sync::Arc<Vec<std::sync::Arc<Thunk>>>,
+    pub group: std::sync::Arc<Vec<std::sync::Arc<Thunk>>>,
+    pub params: std::sync::Arc<Vec<std::sync::Arc<Thunk>>>,
+}
+
+impl EvalFrame {
+    pub fn empty() -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self {
+            closure_env: std::sync::Arc::new(vec![]),
+            group: std::sync::Arc::new(vec![]),
+            params: std::sync::Arc::new(vec![]),
+        })
+    }
+
+    pub fn for_function_call(
+        closure_env: std::sync::Arc<Vec<std::sync::Arc<Thunk>>>,
+        params: Vec<std::sync::Arc<Thunk>>,
+    ) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self {
+            closure_env,
+            group: std::sync::Arc::new(vec![]),
+            params: std::sync::Arc::new(params),
+        })
     }
 }
 
@@ -546,22 +577,25 @@ pub enum Value {
     Builder(Arc<Builder>),
     /// User-defined function (closure capturing its defining environment).
     /// `body` is stored as `Arc<Spanned<CoreExpr>>` (Parts-E migration: no Expr round-trip).
-    /// `closure_env_id` is the ScopeId index into EvalContext.scope_arena for the closure scope.
+    /// `closure_env` is the captured variable vector for closure-converted lookup.
     Function {
         params: Arc<Vec<Param>>,
         body: Arc<Spanned<CoreExpr>>,
-        closure_env_id: u32,
+        closure_env: std::sync::Arc<Vec<std::sync::Arc<Thunk>>>,
         annotation: Option<Box<FnAnnotation>>,
     },
     /// Rust-native built-in function
     Builtin(BuiltinDef),
     /// Lazy linked-list sequence (head element, tail sequence)
-    Seq { head: ThunkId, tail: ThunkId },
+    Seq {
+        head: std::sync::Arc<Thunk>,
+        tail: std::sync::Arc<Thunk>,
+    },
     /// Proxy object — field access calls the handler function with the field name
-    Proxy { handler: ThunkId },
+    Proxy { handler: std::sync::Arc<Thunk> },
     /// Lazy overlay: R overrides L (right-biased merge). Flattened to Dict on demand.
     /// Construction is O(1) — neither L nor R is materialized at merge time.
-    Overlay(ThunkId, ThunkId),
+    Overlay(std::sync::Arc<Thunk>, std::sync::Arc<Thunk>),
     /// Capability-bound directory handle (object capability model)
     DirCap {
         dir: cap_std::fs::Dir,
@@ -582,7 +616,7 @@ pub enum Value {
     Variant {
         tycon: Arc<str>,
         ctor: Arc<str>,
-        payload: Option<ThunkId>,
+        payload: Option<std::sync::Arc<Thunk>>,
     },
     /// Exact base-10 decimal (rust_decimal::Decimal, 96-bit software decimal).
     Decimal(rust_decimal::Decimal),
@@ -710,21 +744,25 @@ impl Clone for Value {
             Value::Function {
                 params,
                 body,
-                closure_env_id,
+                closure_env,
                 annotation,
             } => Value::Function {
                 params: Arc::clone(params),
                 body: Arc::clone(body),
-                closure_env_id: *closure_env_id,
+                closure_env: std::sync::Arc::clone(closure_env),
                 annotation: annotation.clone(),
             },
             Value::Builtin(def) => Value::Builtin(*def),
             Value::Seq { head, tail } => Value::Seq {
-                head: *head,
-                tail: *tail,
+                head: std::sync::Arc::clone(head),
+                tail: std::sync::Arc::clone(tail),
             },
-            Value::Proxy { handler } => Value::Proxy { handler: *handler },
-            Value::Overlay(l, r) => Value::Overlay(*l, *r),
+            Value::Proxy { handler } => Value::Proxy {
+                handler: std::sync::Arc::clone(handler),
+            },
+            Value::Overlay(l, r) => {
+                Value::Overlay(std::sync::Arc::clone(l), std::sync::Arc::clone(r))
+            }
             Value::DirCap { dir, perms } => Value::DirCap {
                 // SAFETY: DirCap values are always created from valid OS file descriptors
                 // (main.rs and builtins_io.rs construction sites). try_clone() can fail with
@@ -753,7 +791,7 @@ impl Clone for Value {
             } => Value::Variant {
                 tycon: Arc::clone(tycon),
                 ctor: Arc::clone(ctor),
-                payload: *payload,
+                payload: payload.as_ref().map(std::sync::Arc::clone),
             },
             Value::Decimal(d) => Value::Decimal(*d),
             Value::BigInt(n) => Value::BigInt(n.clone()),
@@ -1247,28 +1285,29 @@ pub enum UnevaluatedState {
     },
     /// CoreExpr body thunk — created by invoke_function when body is Arc<Spanned<CoreExpr>>.
     CoreExpr {
-        expr: Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
-        /// Index into EvalContext.scope_arena (ScopeArena) for the evaluation environment.
-        env_id: u32,
+        expr: std::sync::Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
+        frame: std::sync::Arc<EvalFrame>,
         ctx: Arc<crate::eval::EvalContext>,
     },
     /// Deferred builtin call (was PendingBuiltin).
     BuiltinCall {
         def: BuiltinDef,
-        args: Vec<ThunkId>,
-        named: Option<IndexMap<String, ThunkId>>,
+        args: Vec<std::sync::Arc<Thunk>>,
+        named: Option<indexmap::IndexMap<String, std::sync::Arc<Thunk>>>,
         call_span: Span,
-        /// Index into EvalContext.scope_arena (ScopeArena) for the caller's environment.
+        /// Bridge placeholder for caller environment identity; was ScopeArena index.
+        /// Will be removed when T-1777 (EvalFrame migration) is complete.
         caller_env_id: u32,
         ctx: Arc<crate::eval::EvalContext>,
     },
     /// Deferred function call (was PendingCall).
     FnCall {
-        func: ThunkId,
-        args: Vec<ThunkId>,
-        named: Option<Box<IndexMap<String, ThunkId>>>,
+        func: std::sync::Arc<Thunk>,
+        args: Vec<std::sync::Arc<Thunk>>,
+        named: Option<Box<indexmap::IndexMap<String, std::sync::Arc<Thunk>>>>,
         call_span: Span,
-        /// Index into EvalContext.scope_arena (ScopeArena) for the caller's environment.
+        /// Bridge placeholder for caller environment identity; was ScopeArena index.
+        /// Will be removed when T-1777 (EvalFrame migration) is complete.
         caller_env_id: u32,
         ctx: Arc<crate::eval::EvalContext>,
         /// Original CoreExpr::Call node for DepthExceeded retry path.
@@ -1276,7 +1315,7 @@ pub enum UnevaluatedState {
     },
     /// Type guard wrapping an inner thunk (was Guarded).
     Guarded {
-        inner: ThunkId,
+        inner: std::sync::Arc<Thunk>,
         expected: Type,
         field_path: Vec<String>,
         guard_span: Span,
@@ -1289,7 +1328,7 @@ pub enum UnevaluatedState {
     /// thunk. When materialized, forces `inner` and produces
     /// `Value::Annotated { inner: forced_inner, annotation }`.
     AnnotatedWrap {
-        inner: ThunkId,
+        inner: std::sync::Arc<Thunk>,
         annotation: Box<Value>,
         ctx: Arc<crate::eval::EvalContext>,
     },
@@ -1298,7 +1337,7 @@ pub enum UnevaluatedState {
 impl UnevaluatedState {
     pub fn initial_env_id(&self) -> u32 {
         match self {
-            UnevaluatedState::CoreExpr { env_id, .. } => *env_id,
+            UnevaluatedState::CoreExpr { .. } => 0,
             UnevaluatedState::BuiltinCall { caller_env_id, .. } => *caller_env_id,
             UnevaluatedState::FnCall { caller_env_id, .. } => *caller_env_id,
             UnevaluatedState::AstField { .. } => 0,
@@ -1368,15 +1407,15 @@ impl Thunk {
 
     /// Create an unevaluated thunk from a CoreExpr body (no Expr round-trip).
     pub fn core_expr(
-        expr: Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
-        env_id: u32,
+        expr: std::sync::Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
+        frame: std::sync::Arc<EvalFrame>,
         ctx: Arc<crate::eval::EvalContext>,
         span: Span,
     ) -> Self {
         Self {
             inner: ThunkInner {
                 unevaluated: Mutex::new((
-                    Some(UnevaluatedState::CoreExpr { expr, env_id, ctx }),
+                    Some(UnevaluatedState::CoreExpr { expr, frame, ctx }),
                     None,
                 )),
                 result: tokio::sync::OnceCell::new(),
@@ -1421,7 +1460,7 @@ impl Thunk {
     /// When forced, materializes `inner` and produces
     /// `Value::Annotated { inner: forced_inner, annotation }`.
     pub fn annotated_wrap(
-        inner: ThunkId,
+        inner: std::sync::Arc<Thunk>,
         annotation: Value,
         ctx: Arc<crate::eval::EvalContext>,
         span: Span,
@@ -1445,8 +1484,8 @@ impl Thunk {
 
     pub fn builtin_call(
         def: BuiltinDef,
-        args: Vec<ThunkId>,
-        named: Option<IndexMap<String, ThunkId>>,
+        args: Vec<std::sync::Arc<Thunk>>,
+        named: Option<indexmap::IndexMap<String, std::sync::Arc<Thunk>>>,
         span: Span,
         caller_env_id: u32,
         ctx: Arc<crate::eval::EvalContext>,
@@ -1473,9 +1512,9 @@ impl Thunk {
 
     #[allow(clippy::too_many_arguments)]
     pub fn fn_call(
-        func: ThunkId,
-        args: Vec<ThunkId>,
-        named: IndexMap<String, ThunkId>,
+        func: std::sync::Arc<Thunk>,
+        args: Vec<std::sync::Arc<Thunk>>,
+        named: indexmap::IndexMap<String, std::sync::Arc<Thunk>>,
         call_span: Span,
         caller_env_id: u32,
         span: Span,
@@ -1509,7 +1548,7 @@ impl Thunk {
     }
 
     pub fn guarded(
-        inner: ThunkId,
+        inner: std::sync::Arc<Thunk>,
         expected: Type,
         field_path: Vec<String>,
         guard_span: Span,
@@ -1600,11 +1639,11 @@ impl Thunk {
         let new_state = match state {
             UnevaluatedState::CoreExpr {
                 expr,
-                env_id,
+                frame,
                 ctx: _,
             } => UnevaluatedState::CoreExpr {
                 expr,
-                env_id,
+                frame,
                 ctx: new_ctx,
             },
             UnevaluatedState::AstField {
@@ -1910,7 +1949,7 @@ mod tests {
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 10);
         let expr = Arc::new(Spanned::new(CoreExpr::Int(42), span.clone()));
-        let thunk = Thunk::core_expr(expr, 0, ctx, span);
+        let thunk = Thunk::core_expr(expr, EvalFrame::empty(), ctx, span);
 
         assert!(!thunk.is_settled(), "Expected unevaluated (not settled)");
         assert!(
@@ -1981,7 +2020,7 @@ mod tests {
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 10);
         let expr = Arc::new(Spanned::new(CoreExpr::Int(42), span.clone()));
-        let thunk = Thunk::core_expr(expr.clone(), 0, ctx.clone(), span);
+        let thunk = Thunk::core_expr(expr.clone(), EvalFrame::empty(), ctx.clone(), span);
 
         let state = thunk.try_claim();
         assert!(state.is_some(), "try_claim should succeed on unevaluated");
@@ -2007,7 +2046,7 @@ mod tests {
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 10);
         let expr = Arc::new(Spanned::new(CoreExpr::Int(42), span.clone()));
-        let thunk = Thunk::core_expr(expr, 0, ctx, span);
+        let thunk = Thunk::core_expr(expr, EvalFrame::empty(), ctx, span);
 
         let first_claim = thunk.try_claim();
         assert!(first_claim.is_some(), "First claim should succeed");
@@ -2021,7 +2060,7 @@ mod tests {
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 10);
         let expr = Arc::new(Spanned::new(CoreExpr::Int(42), span.clone()));
-        let thunk = Thunk::core_expr(expr, 0, ctx.clone(), span);
+        let thunk = Thunk::core_expr(expr, EvalFrame::empty(), ctx.clone(), span);
 
         let state = thunk.try_claim().expect("try_claim should succeed");
 

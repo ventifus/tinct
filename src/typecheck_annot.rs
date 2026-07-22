@@ -2223,12 +2223,14 @@ async fn resolve_type_head(
                     // This is the common case for primitive types and zero-arg type aliases.
                     return Ok(ty.clone());
                 }
-                crate::type_infer::TypeStageEntry::Function(thunk_id) => {
+                crate::type_infer::TypeStageEntry::Function(thunk) => {
                     // Function thunk — parameterized type constructor (e.g., Seq, Result).
-                    // Use the pre-located ThunkId directly via evaluate_resolver_with_thunk.
+                    // Use the pre-located Arc<Thunk> directly via evaluate_resolver_with_thunk.
                     if let Some(eval_ctx) = &state.eval_ctx {
                         if let Some(ty) = crate::type_normalize::evaluate_resolver_with_thunk(
-                            *thunk_id, args, eval_ctx,
+                            Arc::clone(thunk),
+                            args,
+                            eval_ctx,
                         )
                         .await
                         {
@@ -4153,7 +4155,7 @@ async fn variant_payload_dict(
     let payload_id = match val {
         Value::Variant {
             payload: Some(id), ..
-        } => *id,
+        } => id.clone(),
         _ => return None,
     };
     let payload_thunk = ctx.get_thunk(payload_id);
@@ -4581,10 +4583,8 @@ fn type_to_typenode_value<'a>(
     Box::pin(async move {
         // mk_arc: build an Arc<Thunk> for dict value insertion (T-1772: Value::Dict stores Arc<Thunk>)
         let mk_arc = |v: Value| -> Arc<Thunk> { Arc::new(Thunk::value(v, span.clone())) };
-        // alloc_payload: allocate a Value::Dict as Variant payload ThunkId (arena allocation needed)
-        let alloc_payload = |v: Value| -> crate::value::ThunkId {
-            ctx.alloc_thunk(0, Arc::new(Thunk::value(v, span.clone())))
-        };
+        // alloc_payload: wrap a Value::Dict as Arc<Thunk> for Variant payload
+        let alloc_payload = |v: Value| -> Arc<Thunk> { Arc::new(Thunk::value(v, span.clone())) };
 
         Some(match ty {
             Type::Int => Value::Variant {
@@ -4741,13 +4741,10 @@ pub(crate) async fn eval_type_stage_value(
         }
     };
 
-    // Allocate materialized ThunkIds for each argument.
-    let arg_thunks: Vec<crate::arena::ThunkId> = args
+    // Build materialized Arc<Thunk> for each argument.
+    let arg_thunks: Vec<Arc<Thunk>> = args
         .iter()
-        .map(|v| {
-            let t = std::sync::Arc::new(crate::value::Thunk::value(v.clone(), origin_span.clone()));
-            ctx.alloc_thunk(0, t)
-        })
+        .map(|v| Arc::new(Thunk::value(v.clone(), origin_span.clone())))
         .collect();
 
     // Dispatch: fn_val must be a user-defined function (not a builtin).
@@ -4757,16 +4754,16 @@ pub(crate) async fn eval_type_stage_value(
         Value::Function {
             ref params,
             ref body,
-            closure_env_id,
+            ref closure_env,
             ..
         } => {
             let call_ctx = crate::eval_call::CallContext {
                 params,
                 body,
-                closure_env_id: *closure_env_id,
+                closure_env: Arc::clone(closure_env),
                 positional: &arg_thunks,
                 named: None,
-                default_env_id: *closure_env_id,
+                default_env_id: 0,
                 call_span: origin_span.clone(),
                 ctx: &ctx,
             };
@@ -4863,12 +4860,12 @@ pub(crate) async fn eval_type_stage_value(
 /// Tracked as decision D-7.
 pub(crate) async fn as_type_dispatch(val: &Value, state: &mut InferState) -> Option<Type> {
     // Step 1: locate the `as-typenode` resolver in the type-stage map.
-    let thunk_id = match state
+    let resolver_thunk = match state
         .type_stage_map
         .as_ref()
         .and_then(|m| m.get("as-typenode"))
     {
-        Some(crate::type_infer::TypeStageEntry::Function(tid)) => *tid,
+        Some(crate::type_infer::TypeStageEntry::Function(t)) => Arc::clone(t),
         // Resolved entry is a ground Type, not a function — cannot call it.
         Some(crate::type_infer::TypeStageEntry::Resolved(_)) => return None,
         None => return None,
@@ -4876,7 +4873,6 @@ pub(crate) async fn as_type_dispatch(val: &Value, state: &mut InferState) -> Opt
 
     // Step 2: materialise the thunk to get the resolver function value.
     let eval_ctx = state.eval_ctx.clone()?;
-    let resolver_thunk = eval_ctx.get_thunk(thunk_id);
     let fn_val = crate::eval::materialize(&resolver_thunk, None, &eval_ctx)
         .await
         .ok()?;
@@ -4886,16 +4882,13 @@ pub(crate) async fn as_type_dispatch(val: &Value, state: &mut InferState) -> Opt
     // result conversion uses typenode_value_to_type ONLY (no as_type_dispatch fallback),
     // preventing infinite recursion if the resolver itself returns an unrecognised tag.
     let origin_span = rust_span!();
-    let arg_thunk_id = eval_ctx.alloc_thunk(
-        0,
-        std::sync::Arc::new(crate::value::Thunk::value(val.clone(), origin_span.clone())),
-    );
+    let arg_thunk = Arc::new(Thunk::value(val.clone(), origin_span.clone()));
 
     let result_thunk = match fn_val {
         Value::Function {
             ref params,
             ref body,
-            closure_env_id,
+            ref closure_env,
             ..
         } => {
             if params.len() != 1 {
@@ -4904,10 +4897,10 @@ pub(crate) async fn as_type_dispatch(val: &Value, state: &mut InferState) -> Opt
             let call_ctx = crate::eval_call::CallContext {
                 params,
                 body,
-                closure_env_id,
-                positional: &[arg_thunk_id],
+                closure_env: Arc::clone(closure_env),
+                positional: &[arg_thunk],
                 named: None,
-                default_env_id: closure_env_id,
+                default_env_id: 0,
                 call_span: origin_span.clone(),
                 ctx: &eval_ctx,
             };
@@ -4990,7 +4983,7 @@ pub(crate) async fn eval_type_stage_expr(
     }
     let core_thunk = Arc::new(Thunk::core_expr(
         Arc::new(lowered),
-        0, // root scope
+        crate::value::EvalFrame::empty(), // root scope
         Arc::clone(&ctx),
         node_span.clone(),
     ));

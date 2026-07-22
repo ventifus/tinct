@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use crate::ast::{
     CoreEntry, CoreExpr, CoreMatchArm, CoreNamedArg, CoreParam, Spanned, SurfaceEntry,
-    SurfaceExpression, SurfaceNode,
+    SurfaceExpression, SurfaceNode, VarAddr,
 };
 use crate::rust_span;
 
@@ -120,6 +120,26 @@ pub(crate) fn process_escapes(content: &str, delimiter: &str) -> String {
     }
 
     result
+}
+
+/// Convert de Bruijn (level, slot) coordinates to a `VarAddr`.
+///
+/// Used for sources that still produce (level, slot) pairs rather than VarAddr directly:
+/// - `resolve_name_in_frames` results (scope frame lookups for spread-dict `merge` and call_dispatch)
+/// - `CallDispatch` coordinates written by the type checker
+/// - Synthetic addresses for lowerer-generated nodes (constructor functions, builtin-make-annotated)
+///
+/// Resolver-produced `Resolution` cells now store `VarAddr` directly and do not use this function.
+///
+/// Mapping:
+/// - level=0 → `VarAddr::LetrecGroupMember(slot)` (current letrec group)
+/// - level>0 → `VarAddr::ClosureCapture(slot)` (outer scope)
+fn debruijn_to_var_addr(level: u32, slot: u32) -> VarAddr {
+    if level == 0 {
+        VarAddr::LetrecGroupMember(slot)
+    } else {
+        VarAddr::ClosureCapture(slot)
+    }
 }
 
 /// Lower a single surface node to a CoreExpr, collecting diagnostics.
@@ -271,10 +291,9 @@ fn lower_expr(
                     // owns any error reporting.
                     CoreExpr::Placeholder
                 }
-                Some(Some((level, slot))) => CoreExpr::Var {
+                Some(Some(addr)) => CoreExpr::Var {
                     name: name.clone(),
-                    level,
-                    slot,
+                    addr: addr.clone(),
                     annotation: annotation.clone(),
                 },
                 None => {
@@ -301,13 +320,13 @@ fn lower_expr(
             resolution,
         } => {
             // Build the getter function Var and the key argument.
-            // The resolver writes (level, slot) for field-get into Field.resolution.
+            // The resolver writes a VarAddr for field-get into Field.resolution.
             // field-get and slot-get live in the same env frame; slot-get is always one
             // slot after field-get (by construction in dot-access-env and build_core_env).
             // When resolution is unset, the resolver did not run on this node — emit a
-            // diagnostic so the caller fails loudly rather than silently emitting MAX/MAX.
-            let (field_get_level, field_get_slot) = match resolution.get() {
-                Some(Some((level, slot))) => (level, slot),
+            // diagnostic so the caller fails loudly rather than silently producing a wrong address.
+            let field_get_addr = match resolution.get() {
+                Some(Some(addr)) => addr.clone(),
                 state @ (Some(None) | None) => {
                     let why = if state.is_none() {
                         "resolver did not run on this node"
@@ -326,32 +345,33 @@ fn lower_expr(
                 }
             };
 
-            let (getter_name, getter_level, getter_slot, key_arg) =
-                if let Some(typed_slot) = field_slot.get() {
-                    // Typed: use slot-get (positional O(1) access).
-                    // slot-get is always one slot after field-get in the same env frame.
-                    // field_get_slot is always a real slot here: the Some(None) | None arm
-                    // above already returned CoreExpr::Placeholder for missing coordinates.
-                    (
-                        "slot-get",
-                        field_get_level,
-                        field_get_slot + 1,
-                        CoreExpr::Int(typed_slot as i64),
-                    )
-                } else {
-                    // Untyped: use field-get (key-based lookup).
-                    let key_core = match field {
-                        crate::ast::DotKey::Int(n) => CoreExpr::Int(*n),
-                        crate::ast::DotKey::Ident(s) => CoreExpr::Str(s.clone()),
-                    };
-                    ("field-get", field_get_level, field_get_slot, key_core)
+            // slot-get is always one slot after field-get in the same env frame.
+            // Increment the slot index within the VarAddr variant.
+            let slot_get_addr = match &field_get_addr {
+                VarAddr::LetrecGroupMember(s) => VarAddr::LetrecGroupMember(s + 1),
+                VarAddr::ClosureCapture(s) => VarAddr::ClosureCapture(s + 1),
+                VarAddr::Parameter(_) => VarAddr::Parameter(0), // placeholder for field slot
+            };
+
+            let (getter_name, getter_addr, key_arg) = if let Some(typed_slot) = field_slot.get() {
+                // Typed: use slot-get (positional O(1) access).
+                // slot-get is always one slot after field-get in the same env frame.
+                // field_get_addr is always a real addr here: the Some(None) | None arm
+                // above already returned CoreExpr::Placeholder for missing coordinates.
+                ("slot-get", slot_get_addr, CoreExpr::Int(typed_slot as i64))
+            } else {
+                // Untyped: use field-get (key-based lookup).
+                let key_core = match field {
+                    crate::ast::DotKey::Int(n) => CoreExpr::Int(*n),
+                    crate::ast::DotKey::Ident(s) => CoreExpr::Str(s.clone()),
                 };
+                ("field-get", field_get_addr, key_core)
+            };
 
             let getter_var = Arc::new(crate::ast::Spanned::new(
                 CoreExpr::Var {
                     name: getter_name.to_string(),
-                    level: getter_level,
-                    slot: getter_slot,
+                    addr: getter_addr,
                     annotation: None,
                 },
                 arc.span.clone(),
@@ -376,10 +396,9 @@ fn lower_expr(
             resolution,
             ..
         } => match resolution.get() {
-            Some(Some((level, slot))) => CoreExpr::Var {
+            Some(Some(addr)) => CoreExpr::Var {
                 name: name.clone(),
-                level,
-                slot,
+                addr: addr.clone(),
                 annotation: None,
             },
             Some(None) => {
@@ -513,8 +532,7 @@ fn lower_expr(
                         func: Arc::new(Spanned::new(
                             CoreExpr::Var {
                                 name: "merge".to_string(),
-                                level: merge_level,
-                                slot: merge_slot,
+                                addr: debruijn_to_var_addr(merge_level, merge_slot),
                                 annotation: None,
                             },
                             span.clone(),
@@ -533,8 +551,7 @@ fn lower_expr(
                             func: Arc::new(Spanned::new(
                                 CoreExpr::Var {
                                     name: "merge".to_string(),
-                                    level: merge_level,
-                                    slot: merge_slot,
+                                    addr: debruijn_to_var_addr(merge_level, merge_slot),
                                     annotation: None,
                                 },
                                 span.clone(),
@@ -778,8 +795,7 @@ fn lower_expr(
                     Arc::new(Spanned::new(
                         CoreExpr::Var {
                             name: name.clone(),
-                            level,
-                            slot,
+                            addr: debruijn_to_var_addr(level, slot),
                             annotation: None,
                         },
                         func.span.clone(),
@@ -822,6 +838,7 @@ fn lower_expr(
             params,
             body,
             desugared,
+            resolved_captures,
         } => CoreExpr::Fn {
             return_ann: return_ann.clone(),
             params: params
@@ -848,6 +865,10 @@ fn lower_expr(
                 .collect(),
             body: Arc::new(lower_inner(body, diagnostics, scope_frames)),
             desugared: *desugared,
+            captures: resolved_captures
+                .get()
+                .expect("resolved_captures must be set by resolver")
+                .clone(),
         },
 
         SurfaceExpression::TypeAssert {
@@ -1088,6 +1109,7 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
             params,
             body,
             desugared,
+            ..
         } => SurfaceExpression::Fn {
             return_ann: return_ann.clone(),
             params: params
@@ -1106,6 +1128,7 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
                 .collect(),
             body: core_expr_to_surface_node(body),
             desugared: *desugared,
+            resolved_captures: crate::ast::CapturesCell::new(),
         },
         CoreExpr::TypeAssert {
             annotation, expr, ..
@@ -1384,8 +1407,7 @@ fn lower_type_alias_to_constructor_dict(
                         func: Arc::new(Spanned::new(
                             CoreExpr::Var {
                                 name: "builtin-make-annotated".to_string(),
-                                level: 0,
-                                slot: 0,
+                                addr: debruijn_to_var_addr(0, 0),
                                 annotation: None,
                             },
                             syn_span.clone(),
@@ -1444,8 +1466,7 @@ fn lower_type_alias_to_constructor_dict(
                     let value = Arc::new(Spanned::new(
                         CoreExpr::Var {
                             name: field_name.clone(),
-                            level: 1,
-                            slot: idx as u32,
+                            addr: debruijn_to_var_addr(1, idx as u32),
                             annotation: None,
                         },
                         syn_span.clone(),
@@ -1481,6 +1502,7 @@ fn lower_type_alias_to_constructor_dict(
                     params: fn_params,
                     body: variant_body,
                     desugared: false,
+                    captures: Arc::new(vec![]),
                 },
                 syn_span.clone(),
             ));
@@ -1508,8 +1530,7 @@ fn lower_type_alias_to_constructor_dict(
                         func: Arc::new(Spanned::new(
                             CoreExpr::Var {
                                 name: "builtin-make-annotated".to_string(),
-                                level: 0,
-                                slot: 0,
+                                addr: debruijn_to_var_addr(0, 0),
                                 annotation: None,
                             },
                             syn_span.clone(),
@@ -1838,9 +1859,9 @@ mod tests {
     #[test]
     fn test_lower_varref_with_resolution() {
         let span = rust_span!();
-        // Build a VarRef node with pre-set inline resolution (level=0, slot=3).
+        // Build a VarRef node with pre-set inline resolution (LetrecGroupMember(3)).
         let resolution = Resolution::new();
-        resolution.set(Some((0, 3)));
+        resolution.set(Some(VarAddr::LetrecGroupMember(3)));
         let node = make_node(
             SurfaceExpression::VarRef {
                 name: "x".into(),
@@ -1856,12 +1877,10 @@ mod tests {
 
         assert!(diags.is_empty(), "unexpected diagnostics: {:?}", diags);
         match lowered.node {
-            CoreExpr::Var {
-                name, level, slot, ..
-            } => {
+            CoreExpr::Var { name, addr, .. } => {
                 assert_eq!(name, "x");
-                assert_eq!(level, 0);
-                assert_eq!(slot, 3);
+                // resolution was LetrecGroupMember(3) → addr is LetrecGroupMember(3)
+                assert_eq!(addr, VarAddr::LetrecGroupMember(3));
             }
             _ => panic!("expected CoreExpr::Var, got {:?}", lowered.node),
         }

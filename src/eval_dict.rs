@@ -12,7 +12,7 @@ use indexmap::IndexMap;
 
 use crate::ast::{Annotation, CoreEntry, CoreExpr, Span, Spanned, SurfaceExpression};
 use crate::error::{EvalError, EvalResult};
-use crate::value::{string_val, HashableValue, Thunk, Value};
+use crate::value::{string_val, EvalFrame, HashableValue, Thunk, Value};
 
 use super::{materialize, EvalContext};
 use crate::eval_core::eval_core_expr;
@@ -51,7 +51,7 @@ fn extract_property_dict_from_annotation(
 /// Used by T-1119/T-1620 to evaluate `@[...]` annotations on dict key entries.
 async fn eval_annotation_property_dict(
     entries: &[Spanned<crate::ast::SurfaceEntry>],
-    parent_env_id: u32,
+    _parent_env_id: u32,
     ctx: &Arc<EvalContext>,
 ) -> EvalResult<Value> {
     let mut dict_map: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::with_capacity(entries.len());
@@ -152,7 +152,7 @@ async fn eval_annotation_property_dict(
                 {
                     return Err(err);
                 }
-                match eval_core_expr(&core_expr, parent_env_id, ctx).await {
+                match eval_core_expr(&core_expr, &EvalFrame::empty(), ctx).await {
                     Ok(thunk) => materialize(&thunk, Some(&entry.node.value.span), ctx).await?,
                     Err(e) if matches!(&e.kind, crate::error::ErrorKind::Unimplemented { .. }) => {
                         // Placeholder from nested type expressions → skip this key.
@@ -247,31 +247,25 @@ pub(crate) fn core_expr_is_static_key(k: &CoreExpr) -> bool {
 /// there are no `CoreExpr::TypeDecl` entries in the lowered AST.
 pub(crate) async fn eval_dict_core(
     entries: &[Spanned<CoreEntry>],
-    parent_env_id: u32,
+    outer_frame: &Arc<EvalFrame>,
     ctx: &Arc<EvalContext>,
     dict_span: &Span,
 ) -> EvalResult<Arc<Thunk>> {
-    // dict_env (legacy Arc<RwLock<Env>>) removed — T-1557. FlatEnv env_id used instead.
+    // dict_env (legacy Arc<RwLock<Env>>) removed — T-1557. EvalFrame used instead.
     let mut dict_map: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::with_capacity(entries.len());
     let mut auto_index: i64 = 0;
 
-    // Always allocate a FlatEnv for every dict scope.
-    // The resolver assigns (level, slot) coordinates to ALL entries in ALL dict scopes,
-    // regardless of whether values are literals. Skipping allocation for literal-only dicts
-    // would shorten the display chain, causing VarRefs from nested scopes to resolve to
-    // the wrong level. Use alloc_child so the display vector inherits all ancestor scopes —
-    // this is required for VarRef dispatch at level > 0 (cross-scope variable references).
-    let env_id = ctx
-        .scope_arena
-        .borrow_mut()
-        .alloc_child(crate::arena::ScopeId(parent_env_id), entries.len());
-    let mut slot_idx: u32 = 0;
-    // Collect (slot_idx, arc_thunk) tuples for static-key entries so we can
-    // batch-acquire the arena lock once after the loop instead of once per entry.
-    // The lock cannot be held across the .await in eval_key_core, so we must
-    // collect first and write after. We store Arc<Thunk> here; alloc_thunk is called
-    // during the batch-fill phase below to obtain ThunkIds for fill_slot.
-    let mut letrec_slots: Vec<(u32, Arc<Thunk>)> = Vec::new();
+    // EvalFrame-based letrec: static-key entry thunks are collected into group vector
+    // for LetrecGroupMember variable lookup. The frame is built once after the loop and
+    // patched into each non-literal CoreExpr thunk via try_claim/reset.
+    //
+    // Collect the outer thunk (what goes in the dict map / letrec group) for each static key.
+    // Position in this Vec corresponds to the LetrecGroupMember slot index assigned by the
+    // resolver — the i-th static-key entry goes at index i.
+    let mut letrec_slots: Vec<Arc<Thunk>> = Vec::new();
+    // Collect the inner CoreExpr thunk for each non-literal static-key entry, so we can
+    // patch its frame after the group Vec is assembled. Parallel to letrec_slots.
+    let mut core_expr_thunks: Vec<Option<Arc<Thunk>>> = Vec::new();
 
     for entry in entries {
         // Determine if this entry has a static key (CoreExpr::Str or annotated Var).
@@ -282,8 +276,11 @@ pub(crate) async fn eval_dict_core(
             .as_ref()
             .is_some_and(|k| core_expr_is_static_key(&k.node));
 
+        // Keys are evaluated in the parent frame (Key Isolation Invariant): key expressions
+        // must not see letrec sibling bindings. Pass outer_frame so computed keys can
+        // reference outer-scope ClosureCapture variables.
         let key = match &entry.node.key {
-            Some(key_expr) => eval_key_core(key_expr, parent_env_id, ctx).await?,
+            Some(key_expr) => eval_key_core(key_expr, outer_frame, ctx).await?,
             None => {
                 let k = HashableValue::Int(auto_index);
                 auto_index = auto_index.checked_add(1).ok_or_else(|| {
@@ -308,23 +305,42 @@ pub(crate) async fn eval_dict_core(
         };
 
         // Literals are pre-materialized — scope-independent values need no CoreExpr deferral.
-        // Non-literal values become CoreExpr thunks pointing to dict_env.
-        let value_thunk = match &entry.node.value.node {
-            CoreExpr::Int(n) => Arc::new(Thunk::value(Value::Int(*n), entry_span)),
-            CoreExpr::U64(n) => Arc::new(Thunk::value(
-                Value::BigInt(num_bigint::BigInt::from(*n)),
-                entry_span,
-            )),
-            CoreExpr::Float(f) => Arc::new(Thunk::value(Value::Float(*f), entry_span)),
-            CoreExpr::Str(s) => Arc::new(Thunk::value(string_val(s), entry_span)),
-            // Non-literal: use UnevaluatedState::CoreExpr with the FlatEnv dict scope.
-            _ => Arc::new(Thunk::core_expr(
-                Arc::clone(&entry.node.value),
-                env_id.0,
-                Arc::clone(ctx),
-                entry_span,
-            )),
-        };
+        // Non-literal values become CoreExpr thunks. For static-key entries these thunks are
+        // created with EvalFrame::empty() as a placeholder; the real letrec frame (containing
+        // the group Vec) is patched in after all entries have been processed.
+        //
+        // `core_expr_thunk` tracks the inner CoreExpr thunk for static-key non-literal entries
+        // so we can replace its frame after the group Vec is assembled.
+        let (value_thunk, core_expr_thunk): (Arc<Thunk>, Option<Arc<Thunk>>) =
+            match &entry.node.value.node {
+                CoreExpr::Int(n) => (Arc::new(Thunk::value(Value::Int(*n), entry_span)), None),
+                CoreExpr::U64(n) => (
+                    Arc::new(Thunk::value(
+                        Value::BigInt(num_bigint::BigInt::from(*n)),
+                        entry_span,
+                    )),
+                    None,
+                ),
+                CoreExpr::Float(f) => (Arc::new(Thunk::value(Value::Float(*f), entry_span)), None),
+                CoreExpr::Str(s) => (Arc::new(Thunk::value(string_val(s), entry_span)), None),
+                // Non-literal: create with EvalFrame::empty() as a placeholder.
+                // The real letrec frame is patched in below via try_claim/reset after
+                // the group Vec is assembled from all static-key thunks.
+                _ => {
+                    let t = Arc::new(Thunk::core_expr(
+                        Arc::clone(&entry.node.value),
+                        EvalFrame::empty(),
+                        Arc::clone(ctx),
+                        entry_span,
+                    ));
+                    let t2 = if is_static_key {
+                        Some(Arc::clone(&t))
+                    } else {
+                        None
+                    };
+                    (t, t2)
+                }
+            };
 
         // T-1119: If the key is annotated (e.g., Pi@[doc: "..."]), wrap the value in Value::Annotated.
         // The annotation PropertyDict is evaluated to a Value::Dict at dict construction time.
@@ -340,7 +356,7 @@ pub(crate) async fn eval_dict_core(
                 if let Some(ann_entries) = extract_property_dict_from_annotation(&annotation.node) {
                     // Evaluate the annotation PropertyDict to a Value::Dict
                     let annotation_value =
-                        eval_annotation_property_dict(ann_entries, parent_env_id, ctx).await?;
+                        eval_annotation_property_dict(ann_entries, 0u32, ctx).await?;
 
                     // T-1123/T-1621: Wrap value in Value::Annotated.
                     // For literals (already materialized): wrap immediately in Value::Annotated.
@@ -378,7 +394,6 @@ pub(crate) async fn eval_dict_core(
         };
 
         // Values go into the dict map (T-1772: Dict stores Arc<Thunk> directly).
-        // The letrec scope (ScopeArena) is maintained via reserve_slot + fill_slot_arc below.
         if let Some(old_thunk) = dict_map.insert(key, Arc::clone(&thunk)) {
             let prev_span = old_thunk.span.clone();
             // key was moved; reconstruct string representation from entry for error message
@@ -399,41 +414,69 @@ pub(crate) async fn eval_dict_core(
         }
 
         if is_static_key {
-            letrec_slots.push((slot_idx, thunk));
-            slot_idx += 1;
+            letrec_slots.push(Arc::clone(&thunk));
+            core_expr_thunks.push(core_expr_thunk);
         }
     }
 
-    // Batch-fill letrec slots: acquire the arena borrow once for all static-key entries
-    // instead of once per entry. This avoids repeated borrow overhead for
-    // dicts with many string-keyed fields.
+    // Phase 2: build the shared letrec EvalFrame and patch it into each non-literal
+    // CoreExpr thunk. The group Vec contains the final thunks (one per static-key entry,
+    // in slot order) so that VarAddr::LetrecGroupMember(i) lookups resolve correctly.
     //
-    // Two-phase letrec: first reserve all named slots in the child scope (in order),
-    // then fill each reserved slot from the corresponding Arc<Thunk>.
-    // This ensures child scope slots exist before any are filled, maintaining letrec semantics.
+    // The closure_env comes from the outer frame: ClosureCapture variables in dict values
+    // reference the enclosing function/dict's captured environment.
+    //
+    // Patch is safe here: the thunks were just created in this function and have not been
+    // shared with any other task yet (they are not in the dict map until after patch, and
+    // dict_map is local to this function until the Ok(...) return at the end). try_claim()
+    // atomically takes the UnevaluatedState out of the Mutex; reset() puts the updated
+    // state back in. If try_claim() returns None the thunk is already settled (can only
+    // happen for literals, which have core_expr_thunk=None and are skipped).
     if !letrec_slots.is_empty() {
-        let mut arena_guard = ctx.scope_arena.borrow_mut();
-        for (idx, _thunk) in &letrec_slots {
-            let reserved_idx = arena_guard.reserve_slot(env_id);
-            debug_assert_eq!(
-                reserved_idx, *idx,
-                "letrec slot index must match reservation order"
-            );
-        }
-        for (idx, thunk) in letrec_slots {
-            arena_guard.fill_slot_arc(env_id, idx, thunk);
+        let group: std::sync::Arc<Vec<Arc<Thunk>>> = std::sync::Arc::new(letrec_slots.clone());
+        // Build closure_env from outer frame's group + outer frame's closure_env.
+        // Cross-dict ClosureCapture(slot) references (emitted by the resolver for names found
+        // in an immediately-outer dict scope) resolve to outer_frame.group[slot].
+        // Root-frame builtins use ClosureCapture(u32::MAX - slot) which always misses here
+        // (out of bounds for any realistic vec), falling back to ctx.builtin_defs by name.
+        let closure_env = {
+            let mut env =
+                Vec::with_capacity(outer_frame.group.len() + outer_frame.closure_env.len());
+            env.extend(outer_frame.group.iter().cloned());
+            env.extend(outer_frame.closure_env.iter().cloned());
+            std::sync::Arc::new(env)
+        };
+        let letrec_frame = std::sync::Arc::new(EvalFrame {
+            closure_env,
+            group,
+            params: std::sync::Arc::new(vec![]),
+        });
+
+        for maybe_core_thunk in &core_expr_thunks {
+            let Some(core_thunk) = maybe_core_thunk else {
+                continue; // literal — no frame to patch
+            };
+            // Atomically extract the unevaluated state, swap in the real frame, restore.
+            if let Some(state) = core_thunk.try_claim() {
+                match state {
+                    crate::value::UnevaluatedState::CoreExpr {
+                        expr, ctx: t_ctx, ..
+                    } => {
+                        core_thunk.reset(crate::value::UnevaluatedState::CoreExpr {
+                            expr,
+                            frame: std::sync::Arc::clone(&letrec_frame),
+                            ctx: t_ctx,
+                        });
+                    }
+                    other => {
+                        // Should not happen: we only put CoreExpr thunks in core_expr_thunks.
+                        core_thunk.reset(other);
+                    }
+                }
+            }
+            // If try_claim returns None the thunk is already settled; nothing to patch.
         }
     }
-
-    // Note: a meaningful resolver/runtime drift check would compare slot_idx against
-    // the slot count recorded by the resolver for this dict's env_id. That information
-    // is not currently stored in EvalContext in a queryable form — the resolver writes
-    // slot indices into CoreExpr::Var nodes but does not separately record the total
-    // static-key count per scope. A runtime recount of CoreExpr::Str | CoreExpr::Var(annotated)
-    // entries matches the same predicate used above to compute slot_idx, so any such
-    // assert_eq would be tautological (comparing a value against itself). A proper
-    // resolver/runtime alignment check requires storing the resolver's slot-count per
-    // env_id and comparing here; tracked as a future improvement.
 
     Ok(Arc::new(Thunk::value(
         Value::Dict(dict_map),
@@ -447,7 +490,7 @@ pub(crate) async fn eval_dict_core(
 /// General path materializes the expression via `eval_core_expr`.
 pub(crate) async fn eval_key_core(
     key_expr: &Arc<Spanned<CoreExpr>>,
-    parent_env_id: u32,
+    frame: &Arc<EvalFrame>,
     ctx: &Arc<EvalContext>,
 ) -> EvalResult<HashableValue> {
     // Direct key evaluation for statically-known keys — avoids thunk creation and materialization
@@ -478,8 +521,8 @@ pub(crate) async fn eval_key_core(
         _ => {}
     }
     // General path: must materialize because IndexMap requires concrete HashableValue keys.
-    // Key expressions evaluate in the parent scope (parent_env_id).
-    let thunk = eval_core_expr(key_expr.as_ref(), parent_env_id, ctx).await?;
+    // Key expressions evaluate in the parent frame.
+    let thunk = eval_core_expr(key_expr.as_ref(), frame, ctx).await?;
     let value = materialize(&thunk, Some(&key_expr.span), ctx).await?;
     value_to_key(&value, &key_expr.span)
 }

@@ -4719,6 +4719,7 @@ fn test_cek_compute_sccs_fn_body_sibling_reference_creates_dependency() {
         params: vec![crate::test_util::sp(param)],
         body: fn_body,
         desugared: false,
+        resolved_captures: crate::ast::CapturesCell::new(),
     });
     let f_entry = sp(SurfaceEntry {
         key: None,

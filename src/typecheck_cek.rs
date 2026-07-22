@@ -1429,7 +1429,12 @@ async fn infer_var_ref(
         let mut slot_scheme: Option<TypeScheme> = None;
         if let Some(ref table) = state.resolution_table {
             let id = node_id(node);
-            if let Some(&(level, slot)) = table.get(&id) {
+            if let Some(addr) = table.get(&id) {
+                let (level, slot) = match addr {
+                    crate::ast::VarAddr::LetrecGroupMember(i) => (0u32, *i),
+                    crate::ast::VarAddr::ClosureCapture(i) => (1u32, *i),
+                    crate::ast::VarAddr::Parameter(i) => (0u32, *i),
+                };
                 slot_scheme = env.read().unwrap().get_scheme_at(level, slot);
             }
         }
@@ -4944,6 +4949,7 @@ mod tests {
             params,
             body,
             desugared: false,
+            resolved_captures: crate::ast::CapturesCell::new(),
         })
     }
 

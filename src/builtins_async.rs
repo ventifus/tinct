@@ -38,17 +38,17 @@ use crate::builtins::ok_val;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
 use crate::eval_core::eval_core_expr;
-use crate::value::{BuiltinArgs, ClockCapInner, HashableValue, Thunk, ThunkId, Value};
+use crate::value::{BuiltinArgs, ClockCapInner, HashableValue, Thunk, Value};
 
 /// Helper to check argument count and extract first argument as a thunk.
 /// Returns the thunk without materializing it. Named `take_one_thunk` to
 /// distinguish from `builtins::expect_one_arg` which forces and returns a `Value`.
 fn take_one_thunk(
     name: &str,
-    args: &[ThunkId],
-    named: Option<&IndexMap<String, ThunkId>>,
+    args: &[Arc<Thunk>],
+    named: Option<&IndexMap<String, Arc<Thunk>>>,
     call_span: Span,
-    ctx: &Arc<crate::eval::EvalContext>,
+    _ctx: &Arc<crate::eval::EvalContext>,
 ) -> EvalResult<Arc<Thunk>> {
     if !named.as_ref().is_none_or(|n| n.is_empty()) {
         return Err(EvalError::user_error(
@@ -64,7 +64,7 @@ fn take_one_thunk(
         )
         .into());
     }
-    Ok(ctx.get_thunk(args[0]))
+    Ok(Arc::clone(&args[0]))
 }
 
 /// Helper to check argument count for two arguments and extract them as thunks.
@@ -72,10 +72,10 @@ fn take_one_thunk(
 /// distinguish from `builtins::expect_one_arg` which forces and returns a `Value`.
 fn take_two_thunks(
     name: &str,
-    args: &[ThunkId],
-    named: Option<&IndexMap<String, ThunkId>>,
+    args: &[Arc<Thunk>],
+    named: Option<&IndexMap<String, Arc<Thunk>>>,
     call_span: Span,
-    ctx: &Arc<crate::eval::EvalContext>,
+    _ctx: &Arc<crate::eval::EvalContext>,
 ) -> EvalResult<(Arc<Thunk>, Arc<Thunk>)> {
     if !named.as_ref().is_none_or(|n| n.is_empty()) {
         return Err(EvalError::user_error(
@@ -91,15 +91,15 @@ fn take_two_thunks(
         )
         .into());
     }
-    Ok((ctx.get_thunk(args[0]), ctx.get_thunk(args[1])))
+    Ok((Arc::clone(&args[0]), Arc::clone(&args[1])))
 }
 
 fn take_three_thunks(
     name: &str,
-    args: &[ThunkId],
-    named: Option<&IndexMap<String, ThunkId>>,
+    args: &[Arc<Thunk>],
+    named: Option<&IndexMap<String, Arc<Thunk>>>,
     call_span: Span,
-    ctx: &Arc<crate::eval::EvalContext>,
+    _ctx: &Arc<crate::eval::EvalContext>,
 ) -> EvalResult<(Arc<Thunk>, Arc<Thunk>, Arc<Thunk>)> {
     if !named.as_ref().is_none_or(|n| n.is_empty()) {
         return Err(EvalError::user_error(
@@ -116,9 +116,9 @@ fn take_three_thunks(
         .into());
     }
     Ok((
-        ctx.get_thunk(args[0]),
-        ctx.get_thunk(args[1]),
-        ctx.get_thunk(args[2]),
+        Arc::clone(&args[0]),
+        Arc::clone(&args[1]),
+        Arc::clone(&args[2]),
     ))
 }
 
@@ -141,18 +141,18 @@ async fn collect_dict_to_vec(
 }
 
 /// Helper to build an integer-keyed Dict from a Vec<Arc<Thunk>>.
-/// Returns a ThunkId for the resulting Dict.
+/// Returns an Arc<Thunk> wrapping the resulting Dict value.
 fn build_dict_from_vec(
     items: Vec<Arc<Thunk>>,
-    ctx: &Arc<crate::eval::EvalContext>,
+    _ctx: &Arc<crate::eval::EvalContext>,
     call_span: Span,
-) -> ThunkId {
+) -> Arc<Thunk> {
     let mut dict: indexmap::IndexMap<crate::value::HashableValue, Arc<Thunk>> =
         indexmap::IndexMap::new();
     for (i, thunk) in items.into_iter().enumerate() {
         dict.insert(crate::value::HashableValue::Int(i as i64), thunk);
     }
-    ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(dict), call_span)))
+    Arc::new(Thunk::value(Value::Dict(dict), call_span))
 }
 
 /// `task`: Spawn a concurrent evaluation.
@@ -197,7 +197,7 @@ pub(crate) fn builtin_task(
                 Value::Function {
                     params,
                     body,
-                    closure_env_id,
+                    closure_env,
                     annotation: _,
                 } => {
                     // Check for zero-arg function
@@ -211,7 +211,15 @@ pub(crate) fn builtin_task(
                         )
                         .into());
                     }
-                    let thunk = eval_core_expr(&body, closure_env_id, &ctx_clone).await?;
+                    let thunk = eval_core_expr(
+                        &body,
+                        &crate::value::EvalFrame::for_function_call(
+                            Arc::clone(&closure_env),
+                            vec![],
+                        ),
+                        &ctx_clone,
+                    )
+                    .await?;
                     materialize(&thunk, None, &ctx_clone).await
                 }
                 Value::Builtin(def) => {
@@ -540,12 +548,11 @@ pub(crate) fn builtin_recv(
                         // Subscriber too slow, missed n messages
                         let count_thunk =
                             Arc::new(Thunk::value(Value::Int(n as i64), call_span.clone()));
-                        let count_thunk_id = ctx.alloc_thunk(0, count_thunk);
                         ok_val(
                             Value::Variant {
                                 tycon: Arc::from("Lagged"),
                                 ctor: Arc::from("Lagged"),
-                                payload: Some(count_thunk_id),
+                                payload: Some(count_thunk),
                             },
                             call_span,
                         )
@@ -840,7 +847,7 @@ pub(crate) fn builtin_select_once(
         }
 
         // Materialize and validate the context argument.
-        let user_ctx_thunk = ctx.get_thunk(args[0]);
+        let user_ctx_thunk = Arc::clone(&args[0]);
         let user_ctx_val = materialize(&user_ctx_thunk, Some(&call_span), &ctx).await?;
         let user_token = match user_ctx_val {
             Value::Context(token) => token,
@@ -851,7 +858,7 @@ pub(crate) fn builtin_select_once(
             }
         };
 
-        let sources_thunk = ctx.get_thunk(args[1]);
+        let sources_thunk = Arc::clone(&args[1]);
         let sources_val = materialize(&sources_thunk, Some(&call_span), &ctx).await?;
 
         // Collect the sequence of sources into a vec
@@ -1100,7 +1107,7 @@ pub(crate) fn builtin_select_once(
                         Value::Function {
                             params,
                             body,
-                            closure_env_id,
+                            closure_env,
                             annotation: _,
                         } => {
                             if params.len() != 1 {
@@ -1114,18 +1121,25 @@ pub(crate) fn builtin_select_once(
                                 .into());
                             }
 
-                            // T-1558: Use closure_env_id as call scope.
+                            // T-1558: Use closure_env as call scope.
                             // T-1555 gap: par-map closures skip bind_args_thunks — single-param function body evaluated
-                            // directly in closure_env_id rather than a dedicated call frame. Pattern variables not bound
+                            // directly in closure_env rather than a dedicated call frame. Pattern variables not bound
                             // in FlatEnv. Tracked as T-1555 match-arm-closures gap.
-                            eval_core_expr(&body, closure_env_id, &ctx).await?
+                            eval_core_expr(
+                                &body,
+                                &crate::value::EvalFrame::for_function_call(
+                                    Arc::clone(&closure_env),
+                                    vec![],
+                                ),
+                                &ctx,
+                            )
+                            .await?
                         }
                         Value::Builtin(def) => {
                             // Call builtin with the value — return result thunk directly.
                             let arg_thunk = Arc::new(Thunk::value(value, call_span.clone()));
-                            let arg_id = ctx.alloc_thunk(0, arg_thunk);
                             (def.func)(BuiltinArgs {
-                                args: vec![arg_id],
+                                args: vec![arg_thunk],
                                 named: None,
                                 call_span: call_span.clone(),
                                 caller_env_id: None,
@@ -1226,7 +1240,7 @@ pub(crate) fn builtin_par_map(
                     Value::Function {
                         params,
                         body,
-                        closure_env_id,
+                        closure_env,
                         annotation: _,
                     } => {
                         if params.len() != 1 {
@@ -1240,21 +1254,27 @@ pub(crate) fn builtin_par_map(
                             .into());
                         }
 
-                        // T-1558: Use closure_env_id as call scope.
+                        // T-1558: Use closure_env as call scope.
                         // T-1555 gap: par-map closures skip bind_args_thunks — single-param function body evaluated
-                        // directly in closure_env_id rather than a dedicated call frame. Pattern variables not bound
+                        // directly in closure_env rather than a dedicated call frame. Pattern variables not bound
                         // in FlatEnv. Tracked as T-1555 match-arm-closures gap.
-                        let result_thunk =
-                            eval_core_expr(&body, closure_env_id, &ctx_clone).await?;
+                        let result_thunk = eval_core_expr(
+                            &body,
+                            &crate::value::EvalFrame::for_function_call(
+                                Arc::clone(&closure_env),
+                                vec![],
+                            ),
+                            &ctx_clone,
+                        )
+                        .await?;
                         materialize(&result_thunk, None, &ctx_clone).await
                     }
                     Value::Builtin(def) => {
                         // Call builtin with the item
                         let item_thunk_arg =
                             Arc::new(Thunk::value(item_val, call_span_clone.clone()));
-                        let item_arg_id = ctx_clone.alloc_thunk(0, item_thunk_arg);
                         let result = (def.func)(BuiltinArgs {
-                            args: vec![item_arg_id],
+                            args: vec![item_thunk_arg],
                             named: None,
                             call_span: call_span_clone,
                             caller_env_id: None,
@@ -1301,8 +1321,8 @@ pub(crate) fn builtin_par_map(
         }
 
         // Build the result sequence
-        let result_seq_id = build_dict_from_vec(result_thunks, &ctx, call_span);
-        Ok(ctx.get_thunk(result_seq_id))
+        let result_seq = build_dict_from_vec(result_thunks, &ctx, call_span);
+        Ok(result_seq)
     })
 }
 
@@ -1363,7 +1383,7 @@ pub(crate) fn builtin_par_filter(
                     Value::Function {
                         params,
                         body,
-                        closure_env_id,
+                        closure_env,
                         annotation: _,
                     } => {
                         if params.len() != 1 {
@@ -1376,20 +1396,26 @@ pub(crate) fn builtin_par_filter(
                             )));
                         }
 
-                        // T-1558: Use closure_env_id as call scope.
+                        // T-1558: Use closure_env as call scope.
                         // T-1555 gap: par-filter closures skip bind_args_thunks — single-param function body evaluated
-                        // directly in closure_env_id rather than a dedicated call frame. Pattern variables not bound
+                        // directly in closure_env rather than a dedicated call frame. Pattern variables not bound
                         // in FlatEnv. Tracked as T-1555 match-arm-closures gap.
-                        let result_thunk =
-                            eval_core_expr(&body, closure_env_id, &ctx_clone).await?;
+                        let result_thunk = eval_core_expr(
+                            &body,
+                            &crate::value::EvalFrame::for_function_call(
+                                Arc::clone(&closure_env),
+                                vec![],
+                            ),
+                            &ctx_clone,
+                        )
+                        .await?;
                         materialize(&result_thunk, None, &ctx_clone).await?
                     }
                     Value::Builtin(def) => {
                         let arg_thunk =
                             Arc::new(Thunk::value(item_val.clone(), call_span_clone.clone()));
-                        let arg_id = ctx_clone.alloc_thunk(0, arg_thunk);
                         let result_thunk = (def.func)(BuiltinArgs {
-                            args: vec![arg_id],
+                            args: vec![arg_thunk],
                             named: None,
                             call_span: call_span_clone.clone(),
                             caller_env_id: None,
@@ -1464,8 +1490,8 @@ pub(crate) fn builtin_par_filter(
         let result_thunks: Vec<Arc<Thunk>> = results_with_idx.into_iter().map(|(_, t)| t).collect();
 
         // Build the result sequence
-        let result_seq_id = build_dict_from_vec(result_thunks, &ctx, call_span);
-        Ok(ctx.get_thunk(result_seq_id))
+        let result_seq = build_dict_from_vec(result_thunks, &ctx, call_span);
+        Ok(result_seq)
     })
 }
 
@@ -1974,16 +2000,13 @@ pub(crate) fn builtin_with_cancel(
         );
 
         // Wrap the dict in a Variant with tag "CancelHandle"
-        let payload_thunk_id = ctx.alloc_thunk(
-            0,
-            Arc::new(Thunk::value(Value::Dict(payload_dict), call_span.clone())),
-        );
+        let payload_thunk = Arc::new(Thunk::value(Value::Dict(payload_dict), call_span.clone()));
 
         ok_val(
             Value::Variant {
                 tycon: Arc::from("CancelHandle"),
                 ctor: Arc::from("CancelHandle"),
-                payload: Some(payload_thunk_id),
+                payload: Some(payload_thunk),
             },
             call_span,
         )
@@ -2418,7 +2441,7 @@ pub(crate) fn builtin_exit_now(
             .into());
         }
 
-        let code_thunk = ctx.get_thunk(args[0]);
+        let code_thunk = Arc::clone(&args[0]);
         let code_val = materialize(&code_thunk, Some(&call_span), &ctx).await?; // H1: exit code must be known to terminate process
 
         let exit_code = match code_val {

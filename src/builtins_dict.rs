@@ -45,7 +45,7 @@ use indexmap::IndexMap;
 use crate::builtins::{ok_val, reject_named};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
-use crate::value::{string_val, BuiltinArgs, HashableValue, Thunk, ThunkId, Value};
+use crate::value::{string_val, BuiltinArgs, HashableValue, Thunk, Value};
 
 /// `keys`: Takes 1 arg (a Dict). Returns a Dict with integer keys `0..n`
 /// mapping to the key values (Int keys become Int values, String keys become
@@ -67,7 +67,7 @@ pub(crate) fn builtin_keys(
             return Err(EvalError::arity_mismatch(1, args.len(), call_span.clone()).into());
         }
         // arg[0] is pre-forced by force_count.
-        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk0 = args[0].clone();
         let val = thunk0
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
@@ -119,7 +119,7 @@ pub(crate) fn builtin_length(
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
         // arg[0] is pre-forced by force_count.
-        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk0 = args[0].clone();
         let val = thunk0
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
@@ -196,7 +196,7 @@ pub(crate) fn builtin_field_get(
         }
 
         // arg[0]: key (String or Int) — pre-materialized by Strictness::Seq
-        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk0 = args[0].clone();
         let key_val = thunk0
             .try_get_value()
             .expect("pre-materialized by Strictness::Seq")
@@ -223,7 +223,7 @@ pub(crate) fn builtin_field_get(
         };
 
         // arg[1]: target — pre-materialized by Strictness::Seq
-        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk1 = args[1].clone();
         let target_val = thunk1
             .try_get_value()
             .expect("pre-materialized by Strictness::Seq")
@@ -304,9 +304,8 @@ async fn field_get_on_value(
         }
         Value::Proxy { handler } => {
             // Proxy handler invocation: call handler with the key string.
-            let handler_thunk = ctx.get_thunk(handler);
             crate::eval_access::invoke_proxy_handler(
-                &handler_thunk,
+                &handler,
                 string_val(&key_str),
                 0, // proxy handlers don't need caller scope
                 ctx,
@@ -322,9 +321,8 @@ async fn field_get_on_value(
             // Variant auto-unpacking: dot-access on a variant accesses the payload.
             match payload {
                 Some(payload_id) => {
-                    let payload_thunk = ctx.get_thunk(payload_id);
-                    let payload_span = payload_thunk.span.clone();
-                    let payload_val = materialize(&payload_thunk, Some(&call_span), ctx).await?;
+                    let payload_span = payload_id.span.clone();
+                    let payload_val = materialize(&payload_id, Some(&call_span), ctx).await?;
                     // Recurse with variant_tag set so TyConDef constants can be found.
                     let composite_tag = format!("{}.{}", tycon, ctor);
                     Box::pin(field_get_on_value(
@@ -392,7 +390,7 @@ pub(crate) fn builtin_slot_get(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -402,7 +400,7 @@ pub(crate) fn builtin_slot_get(
         }
 
         // arg[0]: slot (Int) — pre-materialized by Strictness::Seq
-        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk0 = args[0].clone();
         let slot_val = thunk0
             .try_get_value()
             .expect("pre-materialized by Strictness::Seq")
@@ -428,7 +426,7 @@ pub(crate) fn builtin_slot_get(
         };
 
         // arg[1]: target — pre-materialized by Strictness::Seq
-        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk1 = args[1].clone();
         let target_val = thunk1
             .try_get_value()
             .expect("pre-materialized by Strictness::Seq")
@@ -482,7 +480,7 @@ pub(crate) fn builtin_get(
         }
 
         // Materialize the key
-        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk0 = args[0].clone();
         let key_val = thunk0
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
@@ -509,7 +507,7 @@ pub(crate) fn builtin_get(
         };
 
         // Materialize the dict (spine only, not values)
-        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk1 = args[1].clone();
         let dict_val = thunk1
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
@@ -574,7 +572,7 @@ pub(crate) fn builtin_has_key(
         }
 
         // Materialize the key
-        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk0 = args[0].clone();
         let key_val = thunk0
             .try_get_value()
             .expect("pre-materialized by pos_strictness")
@@ -601,7 +599,7 @@ pub(crate) fn builtin_has_key(
         };
 
         // Materialize the dict (spine only, not values)
-        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk1 = args[1].clone();
         let dict_val = thunk1
             .try_get_value()
             .expect("pre-materialized by pos_strictness")
@@ -640,7 +638,7 @@ pub(crate) fn builtin_dict_has_nth(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk0 = args[0].clone();
         let dict_val = thunk0
             .try_get_value()
             .expect("pre-materialized by pos_strictness[0]=Spine")
@@ -653,8 +651,7 @@ pub(crate) fn builtin_dict_has_nth(
             call_span.clone(),
         )
         .await?;
-        let idx = match ctx
-            .get_thunk(args[1])
+        let idx = match args[1]
             .try_get_value()
             .expect("pre-materialized by pos_strictness[1]=Seq")
             .clone()
@@ -698,7 +695,7 @@ pub(crate) fn builtin_dict_nth(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk0 = args[0].clone();
         let dict_val = thunk0
             .try_get_value()
             .expect("pre-materialized by pos_strictness[0]=Spine")
@@ -711,8 +708,7 @@ pub(crate) fn builtin_dict_nth(
             call_span.clone(),
         )
         .await?;
-        let idx = match ctx
-            .get_thunk(args[1])
+        let idx = match args[1]
             .try_get_value()
             .expect("pre-materialized by pos_strictness[1]=Seq")
             .clone()
@@ -760,7 +756,7 @@ pub(crate) fn builtin_dict_has_key_nth(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk0 = args[0].clone();
         let dict_val = thunk0
             .try_get_value()
             .expect("pre-materialized by pos_strictness[0]=Spine")
@@ -773,8 +769,7 @@ pub(crate) fn builtin_dict_has_key_nth(
             call_span.clone(),
         )
         .await?;
-        let idx = match ctx
-            .get_thunk(args[1])
+        let idx = match args[1]
             .try_get_value()
             .expect("pre-materialized by pos_strictness[1]=Seq")
             .clone()
@@ -817,7 +812,7 @@ pub(crate) fn builtin_dict_key_nth(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk0 = args[0].clone();
         let dict_val = thunk0
             .try_get_value()
             .expect("pre-materialized by pos_strictness[0]=Spine")
@@ -830,8 +825,7 @@ pub(crate) fn builtin_dict_key_nth(
             call_span.clone(),
         )
         .await?;
-        let idx = match ctx
-            .get_thunk(args[1])
+        let idx = match args[1]
             .try_get_value()
             .expect("pre-materialized by pos_strictness[1]=Seq")
             .clone()
@@ -885,7 +879,7 @@ pub(crate) fn builtin_dict_has_kv_nth(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk0 = args[0].clone();
         let dict_val = thunk0
             .try_get_value()
             .expect("pre-materialized by pos_strictness[0]=Spine")
@@ -898,8 +892,7 @@ pub(crate) fn builtin_dict_has_kv_nth(
             call_span.clone(),
         )
         .await?;
-        let idx = match ctx
-            .get_thunk(args[1])
+        let idx = match args[1]
             .try_get_value()
             .expect("pre-materialized by pos_strictness[1]=Seq")
             .clone()
@@ -942,7 +935,7 @@ pub(crate) fn builtin_dict_kv_nth(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk0 = args[0].clone();
         let dict_val = thunk0
             .try_get_value()
             .expect("pre-materialized by pos_strictness[0]=Spine")
@@ -955,8 +948,7 @@ pub(crate) fn builtin_dict_kv_nth(
             call_span.clone(),
         )
         .await?;
-        let idx = match ctx
-            .get_thunk(args[1])
+        let idx = match args[1]
             .try_get_value()
             .expect("pre-materialized by pos_strictness[1]=Seq")
             .clone()
@@ -1009,7 +1001,7 @@ pub(crate) fn builtin_builder_get_or(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -1019,7 +1011,7 @@ pub(crate) fn builtin_builder_get_or(
         }
 
         // args[0] (key) is pre-forced by pos_strictness[0]=Seq via W1 scan
-        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk0 = args[0].clone();
         let key_val = thunk0
             .try_get_value()
             .expect("pre-materialized by force_count")
@@ -1046,10 +1038,10 @@ pub(crate) fn builtin_builder_get_or(
         };
 
         // args[1] (default value) is NOT materialized — inserted as Arc<Thunk> if key absent.
-        let default_thunk = ctx.get_thunk(args[1]);
+        let default_thunk = args[1].clone();
 
         // args[2] (builder) is pre-forced by W1 pos_strictness[2]=Seq scan
-        let thunk2 = ctx.get_thunk(args[2]);
+        let thunk2 = args[2].clone();
         let builder_val = thunk2
             .try_get_value()
             .expect("pre-materialized by pos_strictness[2]=Seq via W1 scan")
@@ -1106,7 +1098,7 @@ pub(crate) fn builtin_build_dict(
         }
 
         // args[0] is pre-materialized by force_count=1.
-        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk0 = args[0].clone();
         let val = thunk0
             .try_get_value()
             .expect("pre-materialized by force_count=1")
@@ -1162,10 +1154,10 @@ pub(crate) fn builtin_build_dict(
             }
 
             // Overlay input: flatten to a new IndexMap (eliminates Overlay depth)
-            Value::Overlay(_left_id, _right_id) => {
+            Value::Overlay(left_id, right_id) => {
                 let map = crate::builtins::require_dict(
                     "build-dict",
-                    val,
+                    Value::Overlay(left_id, right_id),
                     thunk0.span.clone(),
                     &ctx,
                     call_span.clone(),
@@ -1205,18 +1197,17 @@ pub(crate) fn builtin_make_builder(
         // Optional named arg: capacity: <Int> — pre-allocates the inner IndexMap.
         // Any other named arg is rejected.
         let capacity: usize = if let Some(ref named_map) = named {
-            let cap_id = named_map.get("capacity").copied();
+            let cap_thunk = named_map.get("capacity").map(Arc::clone);
             // Reject unexpected named args (all except "capacity").
-            let unexpected: IndexMap<String, ThunkId> = named_map
+            let unexpected: IndexMap<String, Arc<Thunk>> = named_map
                 .iter()
                 .filter(|(k, _)| k.as_str() != "capacity")
-                .map(|(k, v)| (k.clone(), *v))
+                .map(|(k, v)| (k.clone(), Arc::clone(v)))
                 .collect();
             if !unexpected.is_empty() {
                 reject_named("make-builder", Some(&unexpected), call_span.clone())?;
             }
-            if let Some(cap_id) = cap_id {
-                let cap_thunk = ctx.get_thunk(cap_id);
+            if let Some(cap_thunk) = cap_thunk {
                 let cap_val = materialize(&cap_thunk, None, &ctx).await?;
                 match cap_val {
                     Value::Int(n) if n >= 0 => n as usize,
@@ -1264,7 +1255,7 @@ pub(crate) fn builtin_builder_set(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -1274,7 +1265,7 @@ pub(crate) fn builtin_builder_set(
         }
 
         // args[0] (key) is pre-forced by pos_strictness[0]=Seq via W1 scan
-        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk0 = args[0].clone();
         let key_val = thunk0
             .try_get_value()
             .expect("pre-materialized by force_count")
@@ -1301,10 +1292,10 @@ pub(crate) fn builtin_builder_set(
         };
 
         // args[1] (value) is NOT materialized — pass the Arc<Thunk> directly to the builder
-        let value_thunk = ctx.get_thunk(args[1]);
+        let value_thunk = args[1].clone();
 
         // args[2] (builder) is pre-forced by W1 pos_strictness[2]=Seq scan
-        let thunk2 = ctx.get_thunk(args[2]);
+        let thunk2 = args[2].clone();
         let builder_val = thunk2
             .try_get_value()
             .expect("pre-materialized by pos_strictness[2]=Seq via W1 scan")
@@ -1328,7 +1319,7 @@ pub(crate) fn builtin_builder_set(
             .map_err(|_| EvalError::builder_already_finished("builder-set", call_span))?;
 
         // Return the builder for chaining
-        Ok(ctx.get_thunk(args[2]))
+        Ok(args[2].clone())
     })
 }
 
@@ -1342,7 +1333,7 @@ pub(crate) fn builtin_builder_delete(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -1352,7 +1343,7 @@ pub(crate) fn builtin_builder_delete(
         }
 
         // args[0] (key) is pre-forced by pos_strictness[0]=Seq via W1 scan
-        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk0 = args[0].clone();
         let key_val = thunk0
             .try_get_value()
             .expect("pre-materialized by force_count")
@@ -1379,7 +1370,7 @@ pub(crate) fn builtin_builder_delete(
         };
 
         // args[1] (builder) is pre-forced by force_count
-        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk1 = args[1].clone();
         let builder_val = thunk1
             .try_get_value()
             .expect("pre-materialized by force_count")
@@ -1403,7 +1394,7 @@ pub(crate) fn builtin_builder_delete(
             .map_err(|_| EvalError::builder_already_finished("builder-delete", call_span))?;
 
         // Return the builder for chaining
-        Ok(ctx.get_thunk(args[1]))
+        Ok(args[1].clone())
     })
 }
 
@@ -1417,7 +1408,7 @@ pub(crate) fn builtin_builder_finish(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -1427,7 +1418,7 @@ pub(crate) fn builtin_builder_finish(
         }
 
         // args[0] (builder) is pre-forced by force_count
-        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk0 = args[0].clone();
         let builder_val = thunk0
             .try_get_value()
             .expect("pre-materialized by force_count")
@@ -1464,7 +1455,7 @@ pub(crate) fn builtin_builder_snapshot(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -1474,7 +1465,7 @@ pub(crate) fn builtin_builder_snapshot(
         }
 
         // args[0] (builder) is pre-forced by force_count
-        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk0 = args[0].clone();
         let builder_val = thunk0
             .try_get_value()
             .expect("pre-materialized by force_count")
@@ -1510,7 +1501,7 @@ pub(crate) fn builtin_builder_has(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -1520,7 +1511,7 @@ pub(crate) fn builtin_builder_has(
         }
 
         // args[0] (key) is pre-forced by pos_strictness[0]=Seq via W1 scan
-        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk0 = args[0].clone();
         let key_val = thunk0
             .try_get_value()
             .expect("pre-materialized by force_count")
@@ -1547,7 +1538,7 @@ pub(crate) fn builtin_builder_has(
         };
 
         // args[1] (builder) is pre-forced by force_count
-        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk1 = args[1].clone();
         let builder_val = thunk1
             .try_get_value()
             .expect("pre-materialized by force_count")
@@ -1587,7 +1578,7 @@ pub(crate) fn builtin_builder_get(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -1597,7 +1588,7 @@ pub(crate) fn builtin_builder_get(
         }
 
         // args[0] (key) is pre-forced by pos_strictness[0]=Seq via W1 scan
-        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk0 = args[0].clone();
         let key_val = thunk0
             .try_get_value()
             .expect("pre-materialized by force_count")
@@ -1624,7 +1615,7 @@ pub(crate) fn builtin_builder_get(
         };
 
         // args[1] (builder) is pre-forced by force_count
-        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk1 = args[1].clone();
         let builder_val = thunk1
             .try_get_value()
             .expect("pre-materialized by force_count")
@@ -1694,7 +1685,7 @@ pub(crate) fn builtin_get_by_field(
         }
 
         // arg[0]: field-name (String) — pre-forced by pos_strictness
-        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk0 = args[0].clone();
         let field_name_val = thunk0
             .try_get_value()
             .expect("pre-materialized by pos_strictness")
@@ -1717,8 +1708,7 @@ pub(crate) fn builtin_get_by_field(
         };
 
         // arg[1]: field-value (Any) — pre-forced by pos_strictness
-        let field_value = ctx
-            .get_thunk(args[1])
+        let field_value = args[1]
             .try_get_value()
             .expect("pre-materialized by pos_strictness")
             .clone();
@@ -1726,7 +1716,7 @@ pub(crate) fn builtin_get_by_field(
         // arg[2]: type-dict (Dict of Variants) — pre-forced to Spine by pos_strictness.
         // Eagerly collect all (unqualified-name → ThunkId) pairs from the dict so we
         // hold no borrow across the upcoming await points.
-        let thunk2 = ctx.get_thunk(args[2]);
+        let thunk2 = args[2].clone();
         let type_dict_val = thunk2
             .try_get_value()
             .expect("pre-materialized by pos_strictness (Spine)")
@@ -1870,8 +1860,7 @@ pub(crate) fn builtin_take(
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
 
-        let n = ctx
-            .get_thunk(args[0])
+        let n = args[0]
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
@@ -1888,8 +1877,7 @@ pub(crate) fn builtin_take(
             }
         };
 
-        let xs = ctx
-            .get_thunk(args[1])
+        let xs = Arc::clone(&args[1])
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
@@ -1948,8 +1936,7 @@ pub(crate) fn builtin_drop(
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
 
-        let n = ctx
-            .get_thunk(args[0])
+        let n = args[0]
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
@@ -1967,11 +1954,10 @@ pub(crate) fn builtin_drop(
         };
 
         if n_int <= 0 {
-            return Ok(ctx.get_thunk(args[1]));
+            return Ok(args[1].clone());
         }
 
-        let xs = ctx
-            .get_thunk(args[1])
+        let xs = args[1]
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
@@ -2031,8 +2017,8 @@ pub(crate) fn builtin_concat(
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
 
-        let thunk0 = ctx.get_thunk(args[0]);
-        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk0 = args[0].clone();
+        let thunk1 = args[1].clone();
         let xs_span = thunk0.span.clone();
         let ys_span = thunk1.span.clone();
         let xs = thunk0

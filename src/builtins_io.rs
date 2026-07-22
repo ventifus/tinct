@@ -122,7 +122,7 @@ pub(crate) fn builtin_emit(
             &ctx,
             call_span.clone(),
         )?;
-        let s = require_string("emit", val, ctx.get_thunk(args[0]).span.clone())?;
+        let s = require_string("emit", val, Arc::clone(&args[0]).span.clone())?;
 
         // Write to stdout
         use std::io::Write;
@@ -155,7 +155,7 @@ pub(crate) fn builtin_env(
     Box::pin(async move {
         let val =
             crate::builtins::expect_one_arg("env", &args, named.as_ref(), &ctx, call_span.clone())?;
-        let name = require_string("env", val, ctx.get_thunk(args[0]).span.clone())?;
+        let name = require_string("env", val, Arc::clone(&args[0]).span.clone())?;
 
         // Check env_allowed
         // None = unrestricted (all allowed), Some(set) = only those in the set
@@ -210,7 +210,7 @@ pub(crate) fn builtin_env_has(
             &ctx,
             call_span.clone(),
         )?;
-        let name = require_string("env-has?", val, ctx.get_thunk(args[0]).span.clone())?;
+        let name = require_string("env-has?", val, Arc::clone(&args[0]).span.clone())?;
 
         // Check env_allowed
         let allowed = match &ctx.env_allowed {
@@ -254,8 +254,8 @@ pub(crate) fn builtin_narrow(
         }
         reject_named("narrow", named.as_ref(), call_span.clone())?;
 
-        let thunk0 = ctx.get_thunk(args[0]);
-        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk0 = Arc::clone(&args[0]);
+        let thunk1 = Arc::clone(&args[1]);
         let dir_val = thunk0
             .try_get_value()
             .expect("pre-materialized by pos_strictness[0]=Seq")
@@ -313,8 +313,7 @@ pub(crate) fn builtin_narrow(
                 extended_attributes: false,
             };
 
-            for &flag_tid in &args[1..] {
-                let flag_thunk = ctx.get_thunk(flag_tid);
+            for flag_thunk in &args[1..] {
                 let flag_val =
                     crate::eval::materialize(&flag_thunk, Some(&call_span), &ctx).await?;
 
@@ -507,7 +506,7 @@ pub(crate) fn builtin_revocable(
                     "revocable".to_string(),
                     "DirCap",
                     other.type_name(),
-                    ctx.get_thunk(args[0]).span.clone(),
+                    Arc::clone(&args[0]).span.clone(),
                 )
                 .into())
             }
@@ -559,7 +558,7 @@ pub(crate) fn builtin_revoke_cap(
                 "revoke-cap".to_string(),
                 "RevocableDirCap",
                 other.type_name(),
-                ctx.get_thunk(args[0]).span.clone(),
+                Arc::clone(&args[0]).span.clone(),
             )
             .into()),
         }
@@ -582,7 +581,7 @@ pub(crate) fn builtin_write(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
 
@@ -592,9 +591,9 @@ pub(crate) fn builtin_write(
         }
         reject_named("write", named.as_ref(), call_span.clone())?;
 
-        let thunk0 = ctx.get_thunk(args[0]);
-        let thunk1 = ctx.get_thunk(args[1]);
-        let thunk2 = ctx.get_thunk(args[2]);
+        let thunk0 = Arc::clone(&args[0]);
+        let thunk1 = Arc::clone(&args[1]);
+        let thunk2 = Arc::clone(&args[2]);
         let dir_val = thunk0
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
@@ -655,7 +654,7 @@ pub(crate) fn builtin_write_atomic(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
 
@@ -665,9 +664,9 @@ pub(crate) fn builtin_write_atomic(
         }
         reject_named("write-atomic", named.as_ref(), call_span.clone())?;
 
-        let thunk0 = ctx.get_thunk(args[0]);
-        let thunk1 = ctx.get_thunk(args[1]);
-        let thunk2 = ctx.get_thunk(args[2]);
+        let thunk0 = Arc::clone(&args[0]);
+        let thunk1 = Arc::clone(&args[1]);
+        let thunk2 = Arc::clone(&args[2]);
         let dir_val = thunk0
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
@@ -775,7 +774,7 @@ pub(crate) fn builtin_list_dir(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
 
@@ -785,8 +784,8 @@ pub(crate) fn builtin_list_dir(
         }
         reject_named("list-dir", named.as_ref(), call_span.clone())?;
 
-        let thunk0 = ctx.get_thunk(args[0]);
-        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk0 = Arc::clone(&args[0]);
+        let thunk1 = Arc::clone(&args[1]);
         let dir_val = thunk0
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
@@ -901,7 +900,7 @@ pub(crate) fn builtin_stat(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
 
@@ -911,8 +910,8 @@ pub(crate) fn builtin_stat(
         }
         reject_named("stat", named.as_ref(), call_span.clone())?;
 
-        let thunk0 = ctx.get_thunk(args[0]);
-        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk0 = Arc::clone(&args[0]);
+        let thunk1 = Arc::clone(&args[1]);
         let dir_val = thunk0
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
@@ -1026,7 +1025,7 @@ pub(crate) fn builtin_exists(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
 
@@ -1036,8 +1035,8 @@ pub(crate) fn builtin_exists(
         }
         reject_named("exists", named.as_ref(), call_span.clone())?;
 
-        let thunk0 = ctx.get_thunk(args[0]);
-        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk0 = Arc::clone(&args[0]);
+        let thunk1 = Arc::clone(&args[1]);
         let dir_val = thunk0
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
@@ -1081,7 +1080,7 @@ pub(crate) fn builtin_stat_symlink(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
 
@@ -1091,8 +1090,8 @@ pub(crate) fn builtin_stat_symlink(
         }
         reject_named("stat-symlink", named.as_ref(), call_span.clone())?;
 
-        let thunk0 = ctx.get_thunk(args[0]);
-        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk0 = Arc::clone(&args[0]);
+        let thunk1 = Arc::clone(&args[1]);
         let dir_val = thunk0
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
@@ -1212,7 +1211,7 @@ pub(crate) fn builtin_copy_file(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
 
@@ -1222,10 +1221,10 @@ pub(crate) fn builtin_copy_file(
         }
         reject_named("copy-file", named.as_ref(), call_span.clone())?;
 
-        let thunk0 = ctx.get_thunk(args[0]);
-        let thunk1 = ctx.get_thunk(args[1]);
-        let thunk2 = ctx.get_thunk(args[2]);
-        let thunk3 = ctx.get_thunk(args[3]);
+        let thunk0 = Arc::clone(&args[0]);
+        let thunk1 = Arc::clone(&args[1]);
+        let thunk2 = Arc::clone(&args[2]);
+        let thunk3 = Arc::clone(&args[3]);
         let src_dir_val = thunk0
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
@@ -1292,7 +1291,7 @@ pub(crate) fn builtin_symlink(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
 
@@ -1302,9 +1301,9 @@ pub(crate) fn builtin_symlink(
         }
         reject_named("symlink", named.as_ref(), call_span.clone())?;
 
-        let thunk0 = ctx.get_thunk(args[0]);
-        let thunk1 = ctx.get_thunk(args[1]);
-        let thunk2 = ctx.get_thunk(args[2]);
+        let thunk0 = Arc::clone(&args[0]);
+        let thunk1 = Arc::clone(&args[1]);
+        let thunk2 = Arc::clone(&args[2]);
         let dir_val = thunk0
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
@@ -1398,7 +1397,7 @@ pub(crate) fn builtin_set_permissions(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
 
@@ -1408,9 +1407,9 @@ pub(crate) fn builtin_set_permissions(
         }
         reject_named("set-permissions", named.as_ref(), call_span.clone())?;
 
-        let thunk0 = ctx.get_thunk(args[0]);
-        let thunk1 = ctx.get_thunk(args[1]);
-        let thunk2 = ctx.get_thunk(args[2]);
+        let thunk0 = Arc::clone(&args[0]);
+        let thunk1 = Arc::clone(&args[1]);
+        let thunk2 = Arc::clone(&args[2]);
         let dir_val = thunk0
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
@@ -1501,7 +1500,7 @@ pub(crate) fn builtin_get_xattr(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
 
@@ -1511,9 +1510,9 @@ pub(crate) fn builtin_get_xattr(
         }
         reject_named("get-xattr", named.as_ref(), call_span.clone())?;
 
-        let thunk0 = ctx.get_thunk(args[0]);
-        let thunk1 = ctx.get_thunk(args[1]);
-        let thunk2 = ctx.get_thunk(args[2]);
+        let thunk0 = Arc::clone(&args[0]);
+        let thunk1 = Arc::clone(&args[1]);
+        let thunk2 = Arc::clone(&args[2]);
         let dir_val = thunk0
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
@@ -1609,7 +1608,7 @@ pub(crate) fn builtin_set_xattr(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
 
@@ -1619,10 +1618,10 @@ pub(crate) fn builtin_set_xattr(
         }
         reject_named("set-xattr", named.as_ref(), call_span.clone())?;
 
-        let thunk0 = ctx.get_thunk(args[0]);
-        let thunk1 = ctx.get_thunk(args[1]);
-        let thunk2 = ctx.get_thunk(args[2]);
-        let thunk3 = ctx.get_thunk(args[3]);
+        let thunk0 = Arc::clone(&args[0]);
+        let thunk1 = Arc::clone(&args[1]);
+        let thunk2 = Arc::clone(&args[2]);
+        let thunk3 = Arc::clone(&args[3]);
         let dir_val = thunk0
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
@@ -1729,7 +1728,7 @@ pub(crate) fn builtin_remove_xattr(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
 
@@ -1739,9 +1738,9 @@ pub(crate) fn builtin_remove_xattr(
         }
         reject_named("remove-xattr", named.as_ref(), call_span.clone())?;
 
-        let thunk0 = ctx.get_thunk(args[0]);
-        let thunk1 = ctx.get_thunk(args[1]);
-        let thunk2 = ctx.get_thunk(args[2]);
+        let thunk0 = Arc::clone(&args[0]);
+        let thunk1 = Arc::clone(&args[1]);
+        let thunk2 = Arc::clone(&args[2]);
         let dir_val = thunk0
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
@@ -1834,7 +1833,7 @@ pub(crate) fn builtin_list_xattrs(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
 
@@ -1844,8 +1843,8 @@ pub(crate) fn builtin_list_xattrs(
         }
         reject_named("list-xattrs", named.as_ref(), call_span.clone())?;
 
-        let thunk0 = ctx.get_thunk(args[0]);
-        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk0 = Arc::clone(&args[0]);
+        let thunk1 = Arc::clone(&args[1]);
         let dir_val = thunk0
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
@@ -1930,7 +1929,7 @@ pub(crate) fn builtin_make_dir(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
 
@@ -1940,8 +1939,8 @@ pub(crate) fn builtin_make_dir(
         }
         reject_named("make-dir", named.as_ref(), call_span.clone())?;
 
-        let thunk0 = ctx.get_thunk(args[0]);
-        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk0 = Arc::clone(&args[0]);
+        let thunk1 = Arc::clone(&args[1]);
         let dir_val = thunk0
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
@@ -1986,7 +1985,7 @@ pub(crate) fn builtin_remove(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
 
@@ -1996,8 +1995,8 @@ pub(crate) fn builtin_remove(
         }
         reject_named("remove", named.as_ref(), call_span.clone())?;
 
-        let thunk0 = ctx.get_thunk(args[0]);
-        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk0 = Arc::clone(&args[0]);
+        let thunk1 = Arc::clone(&args[1]);
         let dir_val = thunk0
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
@@ -2046,7 +2045,7 @@ pub(crate) fn builtin_rename(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
 
@@ -2056,9 +2055,9 @@ pub(crate) fn builtin_rename(
         }
         reject_named("rename", named.as_ref(), call_span.clone())?;
 
-        let thunk0 = ctx.get_thunk(args[0]);
-        let thunk1 = ctx.get_thunk(args[1]);
-        let thunk2 = ctx.get_thunk(args[2]);
+        let thunk0 = Arc::clone(&args[0]);
+        let thunk1 = Arc::clone(&args[1]);
+        let thunk2 = Arc::clone(&args[2]);
         let dir_val = thunk0
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
@@ -2112,7 +2111,7 @@ pub(crate) fn builtin_link(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
 
@@ -2122,9 +2121,9 @@ pub(crate) fn builtin_link(
         }
         reject_named("link", named.as_ref(), call_span.clone())?;
 
-        let thunk0 = ctx.get_thunk(args[0]);
-        let thunk1 = ctx.get_thunk(args[1]);
-        let thunk2 = ctx.get_thunk(args[2]);
+        let thunk0 = Arc::clone(&args[0]);
+        let thunk1 = Arc::clone(&args[1]);
+        let thunk2 = Arc::clone(&args[2]);
         let dir_val = thunk0
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
@@ -2171,7 +2170,7 @@ pub(crate) fn builtin_read_link(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
 
@@ -2181,8 +2180,8 @@ pub(crate) fn builtin_read_link(
         }
         reject_named("read-link", named.as_ref(), call_span.clone())?;
 
-        let thunk0 = ctx.get_thunk(args[0]);
-        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk0 = Arc::clone(&args[0]);
+        let thunk1 = Arc::clone(&args[1]);
         let dir_val = thunk0
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
@@ -2251,8 +2250,7 @@ pub(crate) fn builtin_path_dir(
             call_span.clone(),
         )?;
 
-        let path_str =
-            require_string("builtin-path-dir", val, ctx.get_thunk(args[0]).span.clone())?;
+        let path_str = require_string("builtin-path-dir", val, Arc::clone(&args[0]).span.clone())?;
 
         // Extract parent directory component from the path string.
         let path = std::path::Path::new(&path_str);
@@ -2306,7 +2304,7 @@ pub(crate) fn builtin_file_open(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
 
@@ -2315,9 +2313,9 @@ pub(crate) fn builtin_file_open(
         }
         reject_named("builtin-file-open", named.as_ref(), call_span.clone())?;
 
-        let thunk0 = ctx.get_thunk(args[0]);
-        let thunk1 = ctx.get_thunk(args[1]);
-        let thunk2 = ctx.get_thunk(args[2]);
+        let thunk0 = Arc::clone(&args[0]);
+        let thunk1 = Arc::clone(&args[1]);
+        let thunk2 = Arc::clone(&args[2]);
         let dir_val = thunk0
             .try_get_value()
             .expect("pre-materialized by pos_strictness[0]=Seq")
@@ -2416,7 +2414,7 @@ pub(crate) fn builtin_file_read(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
 
@@ -2425,8 +2423,8 @@ pub(crate) fn builtin_file_read(
         }
         reject_named("builtin-file-read", named.as_ref(), call_span.clone())?;
 
-        let thunk0 = ctx.get_thunk(args[0]);
-        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk0 = Arc::clone(&args[0]);
+        let thunk1 = Arc::clone(&args[1]);
         let file_val = thunk0
             .try_get_value()
             .expect("pre-materialized by pos_strictness[0]=Seq")
@@ -2513,7 +2511,7 @@ pub(crate) fn builtin_file_write(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
 
@@ -2522,8 +2520,8 @@ pub(crate) fn builtin_file_write(
         }
         reject_named("builtin-file-write", named.as_ref(), call_span.clone())?;
 
-        let thunk0 = ctx.get_thunk(args[0]);
-        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk0 = Arc::clone(&args[0]);
+        let thunk1 = Arc::clone(&args[1]);
         let file_val = thunk0
             .try_get_value()
             .expect("pre-materialized by pos_strictness[0]=Seq")
@@ -2594,7 +2592,7 @@ pub(crate) fn builtin_file_flush(
                     "builtin-file-flush".to_string(),
                     "File",
                     other.type_name(),
-                    ctx.get_thunk(args[0]).span.clone(),
+                    Arc::clone(&args[0]).span.clone(),
                 )
                 .into())
             }
@@ -2646,7 +2644,7 @@ pub(crate) fn builtin_file_close(
                 "builtin-file-close".to_string(),
                 "File",
                 other.type_name(),
-                ctx.get_thunk(args[0]).span.clone(),
+                Arc::clone(&args[0]).span.clone(),
             )
             .into()),
         }
@@ -2665,7 +2663,7 @@ pub(crate) fn builtin_file_seek(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
 
@@ -2674,8 +2672,8 @@ pub(crate) fn builtin_file_seek(
         }
         reject_named("builtin-file-seek", named.as_ref(), call_span.clone())?;
 
-        let thunk0 = ctx.get_thunk(args[0]);
-        let thunk1 = ctx.get_thunk(args[1]);
+        let thunk0 = Arc::clone(&args[0]);
+        let thunk1 = Arc::clone(&args[1]);
         let file_val = thunk0
             .try_get_value()
             .expect("pre-materialized by pos_strictness[0]=Seq")
@@ -2749,7 +2747,7 @@ pub(crate) fn builtin_write_stdout(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
 
@@ -2758,7 +2756,7 @@ pub(crate) fn builtin_write_stdout(
         }
         reject_named("builtin-write-stdout", named.as_ref(), call_span.clone())?;
 
-        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk0 = Arc::clone(&args[0]);
         let s_val = thunk0
             .try_get_value()
             .expect("pre-materialized by pos_strictness[0]=Seq")
@@ -2771,7 +2769,7 @@ pub(crate) fn builtin_write_stdout(
             EvalError::user_error(format!("builtin-write-stdout: {e}"), call_span.clone())
         })?;
 
-        Ok(ctx.get_thunk(args[1]))
+        Ok(Arc::clone(&args[1]))
     })
 }
 
@@ -2787,7 +2785,7 @@ pub(crate) fn builtin_write_stderr(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
 
@@ -2796,7 +2794,7 @@ pub(crate) fn builtin_write_stderr(
         }
         reject_named("builtin-write-stderr", named.as_ref(), call_span.clone())?;
 
-        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk0 = Arc::clone(&args[0]);
         let s_val = thunk0
             .try_get_value()
             .expect("pre-materialized by pos_strictness[0]=Seq")
@@ -2812,7 +2810,7 @@ pub(crate) fn builtin_write_stderr(
             )
         })?;
 
-        Ok(ctx.get_thunk(args[1]))
+        Ok(Arc::clone(&args[1]))
     })
 }
 
@@ -2828,7 +2826,7 @@ pub(crate) fn builtin_read_stdin(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
 
@@ -2837,7 +2835,7 @@ pub(crate) fn builtin_read_stdin(
         }
         reject_named("builtin-read-stdin", named.as_ref(), call_span.clone())?;
 
-        let thunk0 = ctx.get_thunk(args[0]);
+        let thunk0 = Arc::clone(&args[0]);
         let n_val = thunk0
             .try_get_value()
             .expect("pre-materialized by pos_strictness[0]=Seq")

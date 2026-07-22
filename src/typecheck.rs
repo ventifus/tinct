@@ -261,34 +261,15 @@ pub async fn typecheck_surface_program_with_env(
     for (name, def) in seed_tycon_env {
         state.tycon_env.entry(name).or_insert(def);
     }
-    // Seed the resolver from scope 0 when an eval_ctx is available — this includes builtins
-    // and any host-injected names (capabilities, CLI variables, etc.). Fall back to
-    // core_builtins() only in bootstrap contexts where no runtime arena exists.
-    let root_frame: indexmap::IndexMap<String, u32> = if let Some(ref ctx) = state.eval_ctx {
-        let arena = ctx.scope_arena.borrow();
-        if !arena.scopes.is_empty() {
-            arena.scopes[0]
-                .slots
-                .iter()
-                .enumerate()
-                .filter_map(|(slot, t)| {
-                    Some((t.as_ref()?.span.name.as_deref()?.to_string(), slot as u32))
-                })
-                .collect()
-        } else {
-            crate::builtins_core::core_builtins()
-                .iter()
-                .enumerate()
-                .map(|(i, def)| (def.name.to_string(), i as u32))
-                .collect()
-        }
-    } else {
-        crate::builtins_core::core_builtins()
-            .iter()
-            .enumerate()
-            .map(|(i, def)| (def.name.to_string(), i as u32))
-            .collect()
-    };
+    // Seed the resolver from core_builtins() — ScopeArena has been deleted.
+    // Previously this read from scope_arena.scopes[0] to include host-injected names;
+    // with the EvalFrame migration, root_frame is built from the static builtin list.
+    let _ = &state.eval_ctx; // retained for future use
+    let root_frame: indexmap::IndexMap<String, u32> = crate::builtins_core::core_builtins()
+        .iter()
+        .enumerate()
+        .map(|(i, def)| (def.name.to_string(), i as u32))
+        .collect();
     let (resolve_table, _frames) = crate::resolve::resolve_surface_program(program, &[root_frame]);
     state.resolution_table = Some(Arc::new(resolve_table));
 
