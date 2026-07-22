@@ -123,9 +123,7 @@ pub fn normalize<'a>(
                         // for any ground args." No evaluation machinery is required.
                         let resolved_no_eval = ctx.type_stage_map.as_ref().and_then(|map| {
                             map.get(fn_name).and_then(|entry| match entry {
-                                crate::type_infer::TypeStageEntry::Resolved(ty) => {
-                                    Some(ty.clone())
-                                }
+                                crate::type_infer::TypeStageEntry::Resolved(ty) => Some(ty.clone()),
                                 _ => None,
                             })
                         });

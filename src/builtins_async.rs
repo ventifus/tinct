@@ -220,7 +220,7 @@ pub(crate) fn builtin_task(
                         args: vec![],
                         named: None,
                         call_span: call_span_clone,
-                        caller_env_id: 0,
+                        caller_env_id: None,
                         ctx: Arc::clone(&ctx_clone),
                     })
                     .await?;
@@ -1128,7 +1128,7 @@ pub(crate) fn builtin_select_once(
                                 args: vec![arg_id],
                                 named: None,
                                 call_span: call_span.clone(),
-                                caller_env_id: 0,
+                                caller_env_id: None,
                                 ctx: Arc::clone(&ctx),
                             })
                             .await?
@@ -1257,7 +1257,7 @@ pub(crate) fn builtin_par_map(
                             args: vec![item_arg_id],
                             named: None,
                             call_span: call_span_clone,
-                            caller_env_id: 0,
+                            caller_env_id: None,
                             ctx: ctx_clone.clone(),
                         })
                         .await?;
@@ -1392,7 +1392,7 @@ pub(crate) fn builtin_par_filter(
                             args: vec![arg_id],
                             named: None,
                             call_span: call_span_clone.clone(),
-                            caller_env_id: 0,
+                            caller_env_id: None,
                             ctx: ctx_clone.clone(),
                         })
                         .await?;

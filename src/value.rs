@@ -51,9 +51,10 @@ pub struct BuiltinArgs {
     pub named: Option<IndexMap<String, ThunkId>>,
     pub call_span: Span,
     pub ctx: Arc<crate::eval::EvalContext>,
-    /// Caller's scope id — enables scope-based variable lookup in builtins.
-    /// Copied from UnevaluatedState::BuiltinCall.caller_env_id at materialization time.
-    pub caller_env_id: u32,
+    /// Caller's scope id — present only when `BuiltinDef::needs_caller_env` is true.
+    /// None for the vast majority of builtins that do not need lexical scope access.
+    /// Panics in `builtin-current-env` if unexpectedly None (indicates a registration bug).
+    pub caller_env_id: Option<u32>,
 }
 
 /// Signature for built-in functions: receives a `BuiltinArgs` struct containing
@@ -89,6 +90,11 @@ pub struct BuiltinDef {
     /// Number of positional args to pre-materialize unconditionally before dispatch.
     /// Independent of pos_strictness W1 scanning. Default 0 (no forced args).
     pub force_count: usize,
+    /// Whether this builtin needs the caller's lexical scope id.
+    /// When false (the default for almost all builtins), `BuiltinArgs.caller_env_id` is None.
+    /// When true, `BuiltinArgs.caller_env_id` is Some(env_id).
+    /// Only `builtin-current-env` (and similar scope-introspecting builtins) set this to true.
+    pub needs_caller_env: bool,
 }
 
 impl PartialEq for BuiltinDef {
@@ -106,6 +112,7 @@ impl fmt::Debug for BuiltinDef {
             .field("name", &self.name)
             .field("pos_strictness", &self.pos_strictness)
             .field("force_count", &self.force_count)
+            .field("needs_caller_env", &self.needs_caller_env)
             .finish_non_exhaustive()
     }
 }

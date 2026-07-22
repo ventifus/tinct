@@ -1,0 +1,7 @@
+# Test named section binding: --- %results makes the doc's output available as %results
+--- %results
+[x: 42]
+---
+%results.x
+=== out
+Int(42)

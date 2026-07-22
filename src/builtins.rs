@@ -49,6 +49,7 @@ macro_rules! builtin {
             name: $name,
             pos_strictness: S,
             force_count: 0,
+            needs_caller_env: false,
         }
     }};
     // 3-arg form: with strictness array (force_count=0)
@@ -59,6 +60,7 @@ macro_rules! builtin {
             name: $name,
             pos_strictness: S,
             force_count: 0,
+            needs_caller_env: false,
         }
     }};
     // 4-arg form: with strictness array and force_count
@@ -69,6 +71,7 @@ macro_rules! builtin {
             name: $name,
             pos_strictness: S,
             force_count: $force_count,
+            needs_caller_env: false,
         }
     }};
     // 5-arg form: with strictness array, force_count, and param names (param names ignored — BuiltinDef no longer stores them)
@@ -79,6 +82,7 @@ macro_rules! builtin {
             name: $name,
             pos_strictness: S,
             force_count: $force_count,
+            needs_caller_env: false,
         }
     }};
     // 6-arg form: with strictness, force_count, param names, and named kwargs (param/named names ignored — BuiltinDef no longer stores them)
@@ -89,6 +93,46 @@ macro_rules! builtin {
             name: $name,
             pos_strictness: S,
             force_count: $force_count,
+            needs_caller_env: false,
+        }
+    }};
+    // needs_caller_env forms: marks the builtin as requiring the caller's lexical scope id.
+    // Used by builtins that either perform scope introspection (builtin-current-env) or
+    // construct child thunks that must execute in the caller's lexical scope (until, apply,
+    // eval-macro-ast, eval-types). When needs_caller_env is false, BuiltinArgs.caller_env_id
+    // is None. When true, it is Some(env_id).
+    //
+    // Usage: builtin!(@needs_caller_env, "name", func)
+    //        builtin!(@needs_caller_env, "name", func, [strictness...], force_count)
+    //        builtin!(@needs_caller_env, "name", func, [strictness...], force_count, [params...])
+    (@needs_caller_env, $name:literal, $func:expr) => {{
+        const S: &[crate::value::Strictness] = &[];
+        crate::value::BuiltinDef {
+            func: $func as crate::value::BuiltinFn,
+            name: $name,
+            pos_strictness: S,
+            force_count: 0,
+            needs_caller_env: true,
+        }
+    }};
+    (@needs_caller_env, $name:literal, $func:expr, [$($strictness:expr),* $(,)?], $force_count:expr) => {{
+        const S: &[crate::value::Strictness] = &[$($strictness),*];
+        crate::value::BuiltinDef {
+            func: $func as crate::value::BuiltinFn,
+            name: $name,
+            pos_strictness: S,
+            force_count: $force_count,
+            needs_caller_env: true,
+        }
+    }};
+    (@needs_caller_env, $name:literal, $func:expr, [$($strictness:expr),* $(,)?], $force_count:expr, [$($param:literal),* $(,)?]) => {{
+        const S: &[crate::value::Strictness] = &[$($strictness),*];
+        crate::value::BuiltinDef {
+            func: $func as crate::value::BuiltinFn,
+            name: $name,
+            pos_strictness: S,
+            force_count: $force_count,
+            needs_caller_env: true,
         }
     }};
 }
@@ -816,7 +860,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, Value::Int(42));
@@ -830,7 +874,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, Value::Int(-7));
@@ -844,7 +888,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, Value::Int(0));
@@ -858,7 +902,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, Value::Int(3));
@@ -873,7 +917,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, Value::Int(-4));
@@ -887,7 +931,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, Value::Int(5));
@@ -901,7 +945,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, Value::Int(2));
@@ -915,7 +959,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -930,7 +974,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -949,7 +993,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -968,7 +1012,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -987,7 +1031,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -1006,7 +1050,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -1025,7 +1069,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -1044,7 +1088,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -1065,7 +1109,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -1084,7 +1128,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -1103,7 +1147,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -1122,7 +1166,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, Value::Int(42));
@@ -1136,7 +1180,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, Value::Int(-7));
@@ -1151,7 +1195,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, Value::Int(1));
@@ -1166,7 +1210,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, Value::Int(-1));
@@ -1180,7 +1224,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, Value::Int(2));
@@ -1194,7 +1238,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, Value::Int(3));
@@ -1209,7 +1253,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, Value::Int(-2));
@@ -1224,7 +1268,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, Value::Int(-3));
@@ -1238,7 +1282,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, Value::Int(2));
@@ -1252,7 +1296,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, Value::Int(-2));
@@ -1266,7 +1310,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, Value::Int(5));
@@ -1280,7 +1324,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -1295,7 +1339,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -1314,7 +1358,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -1333,7 +1377,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -1352,7 +1396,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -1371,7 +1415,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -1390,7 +1434,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -1409,7 +1453,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -1428,7 +1472,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -1447,7 +1491,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, Value::Int(42));
@@ -1461,7 +1505,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, Value::Int(-7));
@@ -1475,7 +1519,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, Value::Int(0));
@@ -1489,7 +1533,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, Value::Int(i64::MAX));
@@ -1503,7 +1547,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -1522,7 +1566,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -1541,7 +1585,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -1560,7 +1604,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -1579,7 +1623,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -1603,7 +1647,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -1622,7 +1666,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -1641,7 +1685,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -1660,7 +1704,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -1679,7 +1723,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -1698,7 +1742,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, Value::Float(3.14));
@@ -1713,7 +1757,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, Value::Float(42.0));
@@ -1727,7 +1771,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, Value::Float(-2.5));
@@ -1741,7 +1785,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, Value::Float(1.5e10));
@@ -1755,7 +1799,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, Value::Float(2.5e-3));
@@ -1769,7 +1813,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, Value::Float(0.0));
@@ -1784,7 +1828,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, Value::Float(0.5));
@@ -1798,7 +1842,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -1817,7 +1861,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -1836,7 +1880,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -1855,7 +1899,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -1874,7 +1918,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -1893,7 +1937,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -1912,7 +1956,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -1931,7 +1975,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -1950,7 +1994,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -1969,7 +2013,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -1991,7 +2035,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -2012,7 +2056,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -2032,7 +2076,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -2051,7 +2095,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -2066,7 +2110,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -2081,7 +2125,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -2101,7 +2145,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -2121,7 +2165,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         match result {
@@ -2145,7 +2189,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         match result {
@@ -2171,7 +2215,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         if let Value::Dict(map) = result {
@@ -2192,7 +2236,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -2229,7 +2273,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         match result {
@@ -2274,7 +2318,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         match result {
@@ -2327,7 +2371,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -2357,7 +2401,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: Some(0),
         }))
         .await;
         assert_eq!(result, Value::Int(42));
@@ -2383,7 +2427,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: Some(0),
         }))
         .await;
         assert_eq!(result, Value::Int(10));
@@ -2409,7 +2453,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: Some(0),
         }))
         .await;
         assert_eq!(result, Value::Int(20));
@@ -2444,6 +2488,7 @@ mod tests {
             name: "add",
             pos_strictness: &[],
             force_count: 0,
+            needs_caller_env: false,
         });
         let args_val = thunk_dict(
             {
@@ -2460,7 +2505,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: Some(0),
         }))
         .await;
         assert_eq!(result, Value::Int(7));
@@ -2484,7 +2529,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: Some(0),
         }))
         .await
         .expect("should return thunk");
@@ -2517,7 +2562,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: Some(0),
         }))
         .await
         .expect("should return thunk");
@@ -2540,7 +2585,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: Some(0),
         }))
         .await
         .expect("should return thunk");
@@ -2562,7 +2607,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: Some(0),
         }))
         .await
         .expect("should return thunk");
@@ -2584,7 +2629,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, string_val("Int".into()));
@@ -2598,7 +2643,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, string_val("Float".into()));
@@ -2612,7 +2657,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, string_val("String".into()));
@@ -2626,7 +2671,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, string_val("Dict".into()));
@@ -2641,7 +2686,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, string_val("Function".into()));
@@ -2659,6 +2704,7 @@ mod tests {
             name: "dummy",
             pos_strictness: &[],
             force_count: 0,
+            needs_caller_env: false,
         });
         let ctx = test_ctx();
         let result = mat(builtin_type_of(BuiltinArgs {
@@ -2666,7 +2712,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, string_val("Function".into()));
@@ -2690,7 +2736,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, string_val("Color".into()));
@@ -2704,7 +2750,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -2724,7 +2770,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         match result {
@@ -2747,7 +2793,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         match result {
@@ -2778,7 +2824,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         match result {
@@ -2810,7 +2856,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         match result {
@@ -2841,7 +2887,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         match result {
@@ -2866,7 +2912,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, Value::Int(0));
@@ -2885,7 +2931,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, Value::Int(3));
@@ -2903,7 +2949,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, Value::Int(2));
@@ -2947,7 +2993,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -2967,7 +3013,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -2986,7 +3032,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -3006,7 +3052,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -3025,7 +3071,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -3050,7 +3096,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -3071,7 +3117,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, Value::Int(5));
@@ -3085,7 +3131,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, Value::Int(0));
@@ -3100,7 +3146,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, Value::Int(2));
@@ -3118,7 +3164,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, string_val("hello Rust".into()));
@@ -3136,7 +3182,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, string_val("bonono".into()));
@@ -3154,7 +3200,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, string_val("hello".into()));
@@ -3172,7 +3218,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, string_val("-a-b-c-".into()));
@@ -3190,7 +3236,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, string_val("heo".into()));
@@ -3212,7 +3258,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert!(result.is_err());
@@ -3234,7 +3280,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         // 1000 'a' replaced with 'bb' -> 2000 'b'
@@ -3249,7 +3295,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, string_val("hello".into()));
@@ -3263,7 +3309,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, string_val("hello".into()));
@@ -3277,7 +3323,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, string_val("hello".into()));
@@ -3291,7 +3337,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, string_val("hello".into()));
@@ -3305,7 +3351,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, string_val("".into()));
@@ -3319,7 +3365,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, string_val("hello".into()));
@@ -3333,7 +3379,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, string_val("".into()));
@@ -3347,7 +3393,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -3371,7 +3417,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -3394,7 +3440,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -3422,7 +3468,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -3445,7 +3491,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -3469,7 +3515,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -3500,7 +3546,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -3521,7 +3567,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -3542,7 +3588,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -3563,7 +3609,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -3588,7 +3634,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -3609,7 +3655,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -3630,7 +3676,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -3651,7 +3697,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -3672,7 +3718,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -3693,7 +3739,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -3714,7 +3760,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -3743,7 +3789,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -3765,7 +3811,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -3787,7 +3833,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -3809,7 +3855,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: Some(0),
         }))
         .await
         .expect("should return thunk");
@@ -3858,7 +3904,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Int(8));
@@ -3877,7 +3923,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Float(5.5));
@@ -3894,7 +3940,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Float(4.0));
@@ -3908,7 +3954,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Int(-7));
@@ -3922,7 +3968,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -3936,7 +3982,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -3956,7 +4002,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -3978,7 +4024,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -4000,7 +4046,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -4019,7 +4065,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Int(7));
@@ -4036,7 +4082,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Float(7.0));
@@ -4050,7 +4096,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Int(-7));
@@ -4064,7 +4110,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -4078,7 +4124,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -4097,7 +4143,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -4116,7 +4162,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -4136,7 +4182,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Int(20));
@@ -4150,7 +4196,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Float(10.0));
@@ -4164,7 +4210,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Float(10.0));
@@ -4181,7 +4227,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Float(7.5));
@@ -4195,7 +4241,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -4209,7 +4255,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Int(-12));
@@ -4223,7 +4269,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Int(-42));
@@ -4240,7 +4286,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -4262,7 +4308,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -4285,7 +4331,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -4307,7 +4353,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -4333,7 +4379,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -4352,7 +4398,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         match r {
@@ -4371,7 +4417,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         match r {
@@ -4388,7 +4434,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         match r {
@@ -4410,7 +4456,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Float(3.0));
@@ -4424,7 +4470,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -4452,7 +4498,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -4472,7 +4518,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -4494,7 +4540,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Float(0.0));
@@ -4508,7 +4554,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Int(1));
@@ -4522,7 +4568,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -4540,7 +4586,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Int(1));
@@ -4557,7 +4603,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -4574,7 +4620,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -4591,7 +4637,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Int(1));
@@ -4609,7 +4655,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Int(1));
@@ -4626,7 +4672,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -4640,7 +4686,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -4659,7 +4705,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Int(1));
@@ -4673,7 +4719,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -4687,7 +4733,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -4704,7 +4750,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Int(1));
@@ -4721,7 +4767,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Int(1));
@@ -4738,7 +4784,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -4755,7 +4801,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -4772,7 +4818,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Int(1));
@@ -4786,7 +4832,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Int(1));
@@ -4800,7 +4846,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Int(1));
@@ -4814,7 +4860,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -4828,7 +4874,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -4844,7 +4890,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Int(1));
@@ -4859,7 +4905,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -4874,7 +4920,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -4889,7 +4935,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -4906,7 +4952,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -4921,7 +4967,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -4940,7 +4986,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Int(1));
@@ -4957,7 +5003,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -4999,7 +5045,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         match result {
@@ -5039,7 +5085,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         match result {
@@ -5061,7 +5107,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         match result {
@@ -5084,7 +5130,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         match result {
@@ -5106,7 +5152,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert!(result.is_err());
@@ -5123,7 +5169,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert!(result.is_err());
@@ -5137,7 +5183,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert!(result.is_err());
@@ -5157,7 +5203,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
 
@@ -5188,7 +5234,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
 
@@ -5227,7 +5273,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
 
@@ -5274,7 +5320,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -5304,7 +5350,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
 
@@ -5348,7 +5394,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
 
@@ -5375,7 +5421,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap();
@@ -5400,7 +5446,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -5416,7 +5462,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -5436,7 +5482,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -5458,7 +5504,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap_err();
@@ -5531,7 +5577,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, Value::Int(20));
@@ -5549,7 +5595,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert!(
@@ -5569,7 +5615,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert!(matches!(result, Value::String { .. }));
@@ -5585,7 +5631,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         match result {
@@ -5609,7 +5655,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert_eq!(result, string_val("second".into()));
@@ -5626,7 +5672,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert!(result.is_err());
@@ -5667,7 +5713,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         let result_thunk = result.unwrap_or_else(|e| {
@@ -5709,7 +5755,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         let result_thunk = result.unwrap_or_else(|e| {

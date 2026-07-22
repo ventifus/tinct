@@ -822,7 +822,11 @@ async fn dispatch_state(
                 args: args.as_ref().expect("args set above").clone(),
                 named: named.as_ref().expect("named set above").clone(),
                 call_span: call_span.clone(),
-                caller_env_id: builtin_caller_env,
+                caller_env_id: if def.needs_caller_env {
+                    Some(builtin_caller_env)
+                } else {
+                    None
+                },
                 ctx: Arc::clone(&thunk_ctx),
             };
 
@@ -1557,7 +1561,11 @@ pub(crate) async fn apply_cont(
                                         .as_deref()
                                         .cloned(),
                                     call_span: call_span.clone(),
-                                    caller_env_id,
+                                    caller_env_id: if def.needs_caller_env {
+                                        Some(caller_env_id)
+                                    } else {
+                                        None
+                                    },
                                     ctx: Arc::clone(&thunk_ctx),
                                 };
                                 (def.func)(builtin_args).await.map_err(|mut e| {
@@ -2029,7 +2037,7 @@ pub(crate) async fn apply_cont(
                         args: args.as_ref().expect("args set above").clone(),
                         named: named.as_ref().expect("named set above").clone(),
                         call_span: call_span.clone(),
-                        caller_env_id: builtin_caller_env,
+                        caller_env_id: Some(builtin_caller_env),
                         ctx: Arc::clone(&thunk_ctx),
                     };
                     match (def.func)(builtin_args)
@@ -4096,6 +4104,7 @@ mod tests {
             name: "keys",
             pos_strictness: KEYS_STRICTNESS,
             force_count: 1,
+            needs_caller_env: false,
         };
 
         // Create a PendingBuiltin thunk for the CEK machine to force.
@@ -4206,6 +4215,7 @@ mod tests {
             name: "dummy-force2",
             pos_strictness: DUMMY_STRICTNESS,
             force_count: 2,
+            needs_caller_env: false,
         };
 
         let outer_thunk = Arc::new(Thunk::builtin_call(

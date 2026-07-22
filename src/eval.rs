@@ -1450,10 +1450,8 @@ pub fn materialize<'a>(
 
                 ThunkState::Unevaluated => {
                     if let Some(state) = thunk.try_claim() {
-                        let guard =
-                            crate::value::ThunkPanicGuard(Some(Arc::clone(thunk)));
-                        let result =
-                            crate::eval_materialize::run_owned(state, thunk, ctx).await;
+                        let guard = crate::value::ThunkPanicGuard(Some(Arc::clone(thunk)));
+                        let result = crate::eval_materialize::run_owned(state, thunk, ctx).await;
                         guard.settle(result.map_err(|e| Arc::new(*e)));
                     } else {
                         thunk.settled().await;
@@ -3227,6 +3225,7 @@ mod tests {
                 name: "*",
                 pos_strictness: &[],
                 force_count: 0,
+                needs_caller_env: false,
             }),
             test_span(1, 1, 1, 5),
         ));
@@ -5206,6 +5205,7 @@ mod tests {
             name: "keys",
             pos_strictness: KEYS_STRICTNESS,
             force_count: 1,
+            needs_caller_env: false,
         };
 
         // Create a PendingBuiltin thunk wrapping `builtin_keys` with the unevaluated arg.
@@ -5276,6 +5276,7 @@ mod tests {
             name: "keys",
             pos_strictness: KEYS_STRICTNESS,
             force_count: 1,
+            needs_caller_env: false,
         };
         let func_thunk = Arc::new(Thunk::value(Value::Builtin(keys_def), span.clone()));
 

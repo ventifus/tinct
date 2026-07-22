@@ -579,7 +579,6 @@ impl Env {
             self.tycon_defs.insert(name, def);
         }
     }
-
 }
 
 impl Default for Env {

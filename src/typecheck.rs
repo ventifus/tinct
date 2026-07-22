@@ -73,9 +73,10 @@ pub use crate::types::SchemeMap;
 ///
 /// # Returns
 ///
-/// Returns `(errors, table)` where:
+/// Returns `(errors, table, tycon_env)` where:
 /// - `errors`: Type errors encountered during inference (advisory — evaluation proceeds)
 /// - `table`: TypeAnnotationTable mapping NodeId → Type for successfully inferred expressions
+/// - `tycon_env`: TyConEnv accumulated during inference (type constructor definitions)
 pub async fn typecheck_surface_program_annotation_table(
     program: &SurfaceProgram,
 ) -> (

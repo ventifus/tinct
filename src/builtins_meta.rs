@@ -403,6 +403,10 @@ pub(crate) fn builtin_until(
             caller_env_id,
             ctx,
         } = ctx_arg;
+        // caller_env_id is Some because builtin-until is registered with needs_caller_env: true.
+        let caller_env_id = caller_env_id.expect(
+            "builtin-until: caller_env_id is None — BuiltinDef.needs_caller_env must be true",
+        );
         reject_named("until", named.as_ref(), call_span.clone())?;
         if args.len() != 3 {
             return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
@@ -594,7 +598,12 @@ pub(crate) fn builtin_apply_impl(
                         Some(named_args)
                     },
                     call_span,
-                    caller_env_id: 0,
+                    // builtin_apply_impl calls the target builtin directly, without going
+                    // through the CEK machine. caller_env_id is not available at this point
+                    // (builtin_apply_impl does not receive it in its own BuiltinArgs — it uses
+                    // `..` to ignore its own caller_env_id). Builtins with needs_caller_env: true
+                    // will panic if called through $apply; this is a known semantic limitation.
+                    caller_env_id: None,
                     ctx: Arc::clone(&ctx),
                 };
                 (def.func)(builtin_args).await
@@ -622,6 +631,10 @@ pub(crate) fn builtin_apply(
             caller_env_id,
             ctx,
         } = ctx_arg;
+        // caller_env_id is Some because builtin-apply is registered with needs_caller_env: true.
+        let caller_env_id = caller_env_id.expect(
+            "builtin-apply: caller_env_id is None — BuiltinDef.needs_caller_env must be true",
+        );
         // Return a PendingBuiltin thunk that wraps builtin_apply_impl.
         // When materialized, the PendingBuiltin handler will use BuiltinForceArg
         // to pre-materialize both args[0] and args[1] iteratively, avoiding
@@ -1341,14 +1354,13 @@ pub(crate) fn builtin_span_of(
             if tycon.as_ref() == "Expr" {
                 let payload_thunk = ctx.get_thunk(payload_id);
                 if let Some(Value::Dict(payload_dict)) = payload_thunk.try_get_materialized() {
-                    if let Some(span_thunk) =
-                        payload_dict.get(&HashableValue::Str("span".into()))
-                    {
+                    if let Some(span_thunk) = payload_dict.get(&HashableValue::Str("span".into())) {
                         if let Some(Value::Dict(span_dict)) = span_thunk.try_get_materialized() {
                             // Extract {start: {line, col}, end: {line, col}}
                             let get_pos = |key: &str| -> Option<(i64, i64)> {
                                 let pos_thunk = span_dict.get(&HashableValue::Str(key.into()))?;
-                                let Value::Dict(pos_dict) = pos_thunk.try_get_materialized()? else {
+                                let Value::Dict(pos_dict) = pos_thunk.try_get_materialized()?
+                                else {
                                     return None;
                                 };
                                 let line = pos_dict
@@ -1376,9 +1388,7 @@ pub(crate) fn builtin_span_of(
                                     Value::Dict(IndexMap::new())
                                 };
 
-                                let mk = |v: Value| {
-                                    Arc::new(Thunk::value(v, call_span.clone()))
-                                };
+                                let mk = |v: Value| Arc::new(Thunk::value(v, call_span.clone()));
                                 let mut w: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
                                 w.insert(HashableValue::Str("file".into()), mk(file_val));
                                 w.insert(
@@ -1389,14 +1399,8 @@ pub(crate) fn builtin_span_of(
                                     HashableValue::Str("start-col".into()),
                                     mk(Value::Int(sc)),
                                 );
-                                w.insert(
-                                    HashableValue::Str("end-line".into()),
-                                    mk(Value::Int(el)),
-                                );
-                                w.insert(
-                                    HashableValue::Str("end-col".into()),
-                                    mk(Value::Int(ec)),
-                                );
+                                w.insert(HashableValue::Str("end-line".into()), mk(Value::Int(el)));
+                                w.insert(HashableValue::Str("end-col".into()), mk(Value::Int(ec)));
                                 return ok_val(Value::Dict(w), call_span);
                             }
                         }
@@ -4085,10 +4089,13 @@ pub(crate) fn builtin_current_env(
         if !args.is_empty() {
             return Err(EvalError::arity_mismatch(0, args.len(), call_span).into());
         }
-        Ok(Arc::new(Thunk::value(
-            Value::Int(caller_env_id as i64),
-            call_span,
-        )))
+        // caller_env_id is Some only when needs_caller_env = true in the BuiltinDef.
+        // Panicking here indicates a registration bug: builtin-current-env was registered
+        // without the @needs_caller_env flag.
+        let env_id = caller_env_id.expect(
+            "builtin-current-env: caller_env_id is None — BuiltinDef.needs_caller_env must be true",
+        );
+        Ok(Arc::new(Thunk::value(Value::Int(env_id as i64), call_span)))
     })
 }
 
@@ -4130,7 +4137,9 @@ pub(crate) fn builtin_eval_macro_ast(
         // call-site env id directly via BuiltinArgs.caller_env_id. bind_args_thunks
         // (eval_call.rs BIND-SYSTEM) skips names containing '∷' — they are never
         // stored in the FlatEnv — so caller_env_id is the sole authoritative source.
-        let call_site_env_id: u32 = caller_env_id;
+        // caller_env_id is Some because builtin-eval-macro-ast is registered with needs_caller_env: true.
+        let call_site_env_id: u32 = caller_env_id
+            .expect("builtin-eval-macro-ast: caller_env_id is None — BuiltinDef.needs_caller_env must be true");
 
         // ── Step 2: Convert Expr.* variant → SurfaceNode ─────────────────────
         let expr_val = ctx
@@ -4241,6 +4250,10 @@ pub(crate) fn builtin_eval_types(
             caller_env_id,
             ctx,
         } = ctx_arg;
+        // caller_env_id is Some because builtin-eval-types is registered with needs_caller_env: true.
+        let caller_env_id = caller_env_id.expect(
+            "builtin-eval-types: caller_env_id is None — BuiltinDef.needs_caller_env must be true",
+        );
 
         if args.len() != 1 {
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
@@ -5591,6 +5604,7 @@ pub fn meta_builtins() -> Vec<crate::value::BuiltinDef> {
         // ── AST construction and evaluation ───────────────────────────────────────────
         builtin!("builtin-ast-of", builtin_ast_of, [Strictness::Id], 0, ["x"]),
         builtin!(
+            @needs_caller_env,
             "builtin-eval-macro-ast",
             builtin_eval_macro_ast,
             [Strictness::Seq],
@@ -5598,6 +5612,7 @@ pub fn meta_builtins() -> Vec<crate::value::BuiltinDef> {
             ["ast"]
         ),
         builtin!(
+            @needs_caller_env,
             "builtin-eval-types",
             builtin_eval_types,
             [Strictness::Seq],
@@ -5678,8 +5693,9 @@ pub fn meta_builtins() -> Vec<crate::value::BuiltinDef> {
             0,
             ["x"]
         ),
-        builtin!("builtin-until", builtin_until),
+        builtin!(@needs_caller_env, "builtin-until", builtin_until),
         builtin!(
+            @needs_caller_env,
             "builtin-apply",
             builtin_apply,
             [Strictness::Seq, Strictness::Seq],
@@ -5764,7 +5780,8 @@ pub fn meta_builtins() -> Vec<crate::value::BuiltinDef> {
         ),
         // ── Environment access ────────────────────────────────────────────────────────
         // builtin-current-env: zero-arg; returns the calling lexical environment.
-        builtin!("builtin-current-env", builtin_current_env, [], 0),
+        // needs_caller_env: true — only builtin that requires BuiltinArgs.caller_env_id to be Some.
+        builtin!(@needs_caller_env, "builtin-current-env", builtin_current_env),
     ]
 }
 
@@ -5830,7 +5847,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: std::sync::Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap();
@@ -5858,7 +5875,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: std::sync::Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap();
@@ -5889,7 +5906,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: std::sync::Arc::clone(&ctx),
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await
         .unwrap();
@@ -5906,7 +5923,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: std::sync::Arc::clone(&ctx),
-            caller_env_id: 42,
+            caller_env_id: Some(42),
         }))
         .await
         .unwrap();
@@ -5925,7 +5942,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: Some(0),
         }))
         .await;
         assert!(
@@ -5953,7 +5970,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }))
         .await;
         assert!(

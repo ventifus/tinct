@@ -1794,7 +1794,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }));
         let t = result.expect("expected Float result at MAX_SAFE_INT boundary");
         assert!(
@@ -1812,7 +1812,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }));
         assert!(
             result.is_err(),
@@ -1831,7 +1831,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }));
         let t = result.expect("expected Int(7)");
         assert_eq!(t.try_get_materialized(), Some(Value::Int(7)));
@@ -1846,7 +1846,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }));
         let t = result.expect("expected Int(42)");
         assert_eq!(t.try_get_materialized(), Some(Value::Int(42)));
@@ -1862,7 +1862,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: 0,
+            caller_env_id: None,
         }));
         // Non-Int/Float operands produce a TypeMismatch error.
         assert!(

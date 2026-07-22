@@ -670,13 +670,15 @@ pub(crate) fn builtin_str_bytes(
     })
 }
 
-/// `str-index-of`: Find the byte index of the first occurrence of needle in haystack.
+/// `str-index-of`: Find the character index of the first occurrence of needle in haystack.
 ///
 /// Takes 2 args: `needle` (String), `haystack` (String) — subject-last for pipeline use.
-/// Returns the byte index of the first occurrence as an Int, or -1 if not found.
-/// Note: returns a *byte* index (not a character index). For ASCII strings, byte
-/// index equals character index. The stdlib `str-find` delegates to this builtin.
-/// This primitive uses Rust's O(n) `str::find` (two-way algorithm).
+/// Returns the character index of the first occurrence as an Int, or -1 if not found.
+/// Returns a *character* index (not a byte index), consistent with `str-length` (char count)
+/// and `str-slice` (char-based slicing). For ASCII strings, char index equals byte index.
+/// The stdlib `str-find` delegates to this builtin.
+/// This primitive uses Rust's O(n) `str::find` for the byte offset, then counts chars before
+/// the match to convert to a character index.
 /// Inherently materializing: must inspect string content to search for substring.
 pub(crate) fn builtin_str_index_of(
     ctx_arg: BuiltinArgs,
@@ -707,12 +709,18 @@ pub(crate) fn builtin_str_index_of(
         let haystack = require_string("str-index-of", haystack_val, thunk1.span.clone())?;
 
         let index: i64 = match haystack.find(needle.as_str()) {
-            Some(byte_idx) => i64::try_from(byte_idx).map_err(|_| {
-                EvalError::resource_limit_exceeded(
-                    "str-index-of: byte index exceeds i64::MAX".to_string(),
-                    call_span.clone(),
-                )
-            })?,
+            Some(byte_idx) => {
+                // Convert the byte offset to a character index so that all string builtins
+                // use the same unit (chars). str-length returns chars, str-slice operates on
+                // chars — str-index-of must return chars to be composable with both.
+                let char_idx = haystack[..byte_idx].chars().count();
+                i64::try_from(char_idx).map_err(|_| {
+                    EvalError::resource_limit_exceeded(
+                        "str-index-of: character index exceeds i64::MAX".to_string(),
+                        call_span.clone(),
+                    )
+                })?
+            }
             None => -1,
         };
 
@@ -957,7 +965,7 @@ pub(crate) fn builtin_str_map_chars(
                         args: vec![char_tid],
                         named: None,
                         call_span: call_span.clone(),
-                        caller_env_id: 0,
+                        caller_env_id: None,
                         ctx: Arc::clone(&ctx),
                     };
                     (def.func)(builtin_args).await?

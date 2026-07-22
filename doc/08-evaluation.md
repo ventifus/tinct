@@ -1146,7 +1146,7 @@ This table documents the laziness behavior of every operation and the rationale 
 | `$from-json` | Materializes JSON string, parses | Must parse entire JSON |
 | `$include` | Evaluates file; returns cached thunk on re-include | Include memoization |
 | **Document Pipeline** | | |
-| `%` (document pipeline) | Bound as `Unevaluated` thunk across `---` boundary | `---` is not a materialization point — laziness is preserved across documents |
+| `%` (document pipeline) | Threaded by `loader.llt` (tinct-side): `eval-program` injects `[%: st.percent]` into each document's scope via `builtin-scope-new`. The Rust evaluator does NOT inject `%` — the loader constructs the `%` binding explicitly and passes it as the initial scope. `---` is not a Rust-side materialization point; laziness is preserved across documents. | `%` is an ordinary binding injected by the loader, not a runtime primitive. Prelude speaks the Rust protocol: Rust defines `builtin-scope-new`; loader.llt uses it to thread `%`. |
 | Document scope chain (`eval_surface_document`) | Intermediate dict is materialized to WHNF to extract keys; entry values inserted as lazy thunks | Lazy SEQ-SCOPE semantics: dead bindings that are never accessed never fire. (`eval.rs`) |
 | **Internal (eval.rs)** | | |
 | `eval_key` (dict construction) | Materializes all dict keys | Keys must be known for dict insertion |

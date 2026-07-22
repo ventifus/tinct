@@ -152,15 +152,18 @@ pub(crate) enum TypeCheckCont {
         current_member_pos: usize,
         entries: Vec<Spanned<SurfaceEntry>>,
         key_entries: Vec<(Option<String>, bool, bool)>,
-        field_types: HashMap<String, Type>,
+        // IndexMap preserves source insertion order for deterministic type diagnostic ordering.
+        field_types: indexmap::IndexMap<String, Type>,
         schemes: indexmap::IndexMap<String, TypeScheme>,
         scc_env: Arc<RwLock<Env>>,
         dict_env: Arc<RwLock<Env>>,
         local_subst: Substitution,
         entry_constraints: HashMap<String, Vec<Constraint>>,
         entry_inner_schemes: HashMap<String, HashMap<String, TypeScheme>>,
-        ctor_schemes: HashMap<String, TypeScheme>,
-        fresh_vars_by_name: HashMap<String, Type>,
+        // IndexMap preserves insertion order for deterministic constructor scheme ordering.
+        ctor_schemes: indexmap::IndexMap<String, TypeScheme>,
+        // IndexMap preserves insertion order for deterministic type variable iteration.
+        fresh_vars_by_name: indexmap::IndexMap<String, Type>,
         saved_level: u32,
         remaining_sccs: Vec<Scc>,
         enclosing_level: u32,
@@ -194,8 +197,10 @@ pub(crate) enum TypeCheckCont {
         entries: Vec<Spanned<SurfaceEntry>>,
         key_entries: Vec<(Option<String>, bool, bool)>,
         dict_env: Arc<RwLock<Env>>,
-        ctor_schemes: HashMap<String, TypeScheme>,
-        fresh_vars_by_name: HashMap<String, Type>,
+        // IndexMap preserves insertion order for deterministic constructor scheme ordering.
+        ctor_schemes: indexmap::IndexMap<String, TypeScheme>,
+        // IndexMap preserves insertion order for deterministic type variable iteration.
+        fresh_vars_by_name: indexmap::IndexMap<String, Type>,
         enclosing_level: u32,
         span: Span,
     },
@@ -206,9 +211,12 @@ pub(crate) enum TypeCheckCont {
         entries: Vec<Spanned<SurfaceEntry>>,
         key_entries: Vec<(Option<String>, bool, bool)>,
         dict_env: Arc<RwLock<Env>>,
-        ctor_schemes: HashMap<String, TypeScheme>,
-        fresh_vars_by_name: HashMap<String, Type>,
-        field_types: HashMap<String, Type>,
+        // IndexMap preserves insertion order for deterministic constructor scheme ordering.
+        ctor_schemes: indexmap::IndexMap<String, TypeScheme>,
+        // IndexMap preserves insertion order for deterministic type variable iteration.
+        fresh_vars_by_name: indexmap::IndexMap<String, Type>,
+        // IndexMap preserves source insertion order for deterministic type diagnostic ordering.
+        field_types: indexmap::IndexMap<String, Type>,
         errors: Vec<TypeDiagnostic>,
         enclosing_level: u32,
         span: Span,
@@ -245,9 +253,16 @@ pub(crate) enum TypeCheckCont {
     },
 
     /// After inferring the base expression of a Field access, look up the field type.
+    ///
+    /// `field_node` is the `SurfaceExpression::Field` node whose `field_slot` OnceLock we write
+    /// after resolving the base type.  When the base is a closed `Dict` row and the field key is
+    /// present at a known index, we call `field_slot.set(slot_index)` so the lowerer can emit
+    /// `slot-get` (O(1) positional access) instead of `field-get` (key-based O(n) lookup).
     AfterFieldBase {
         field: crate::ast::DotKey,
         span: Span,
+        /// The Field node itself — needed to write back the slot annotation.
+        field_node: Arc<SurfaceNode>,
     },
 
     /// After inferring the inner expression of an Unquote, return its type.
@@ -382,6 +397,7 @@ async fn infer_step(
                 stack.push(TypeCheckCont::AfterFieldBase {
                     field: field.clone(),
                     span: node.span.clone(),
+                    field_node: Arc::clone(node),
                 });
                 TypeCheckAction::Eval(Arc::clone(base), Arc::clone(env))
             }
@@ -1320,9 +1336,17 @@ async fn apply_cont(
         }
 
         // ===== AfterFieldBase =====
-        TypeCheckCont::AfterFieldBase { field, span } => {
+        TypeCheckCont::AfterFieldBase { field, span, field_node } => {
             let resolved_base = state.subst.apply(&child_ty);
-            let ty = field_type_from_base(&resolved_base, &field, &span, errors);
+            let (ty, slot_opt) = field_type_from_base(&resolved_base, &field, &span, errors);
+
+            // T-1490: Write back the slot annotation so the lowerer can emit slot-get.
+            // slot_opt is Some only for closed Dict rows with the field at a known IndexMap position.
+            if let Some(slot) = slot_opt {
+                if let SurfaceExpression::Field { field_slot, .. } = &field_node.expr {
+                    field_slot.set(slot);
+                }
+            }
 
             // T-1711: Emit diagnostic for Unknown field access
             if ty == Type::Unknown {
@@ -3255,35 +3279,63 @@ fn compute_type_assert_mismatch(
 
 // ===== Inline helper: Field type lookup =====
 
+/// Look up the type of `field` in `base_ty`, returning `(field_type, slot_index)`.
+///
+/// `slot_index` is `Some(n)` when the base is a **closed** `Dict` row and `field` is found
+/// at a known `IndexMap` position `n`.  The slot is only annotated for closed rows (tail ==
+/// `RowTail::Empty`) because an open row (`RowTail::Uniform`) may have more fields present at
+/// runtime, which would shift the physical slot positions.  The lowerer uses the slot to emit
+/// `slot-get` (O(1)) instead of `field-get` (O(n) key scan).
+///
+/// Returns `(Type::Unknown, None)` for TypeVar / Unknown / open-tail bases — the caller
+/// emits a diagnostic separately.
 fn field_type_from_base(
     base_ty: &Type,
     field: &crate::ast::DotKey,
     span: &Span,
     errors: &mut Vec<TypeDiagnostic>,
-) -> Type {
+) -> (Type, Option<u32>) {
     let key = match field {
         crate::ast::DotKey::Ident(s) => s.clone(),
         crate::ast::DotKey::Int(n) => n.to_string(),
     };
 
     match base_ty {
-        Type::Dict(row) => row.fields.get(&key).cloned().unwrap_or(Type::Unknown),
+        Type::Dict(row) => {
+            match row.fields.get_full(&key) {
+                Some((slot, _, ty)) => {
+                    // Only annotate the slot when the row is closed (Empty tail).
+                    // A Uniform tail means the row is open — additional fields may be
+                    // present at runtime, which would shift physical slot positions.
+                    let slot_opt = match &row.tail {
+                        RowTail::Empty => Some(slot as u32),
+                        RowTail::Uniform { .. } => None,
+                    };
+                    (ty.clone(), slot_opt)
+                }
+                None => (Type::Unknown, None),
+            }
+        }
         Type::Intersection(members) => {
             for m in members {
                 if let Type::Dict(row) = m {
-                    if let Some(ty) = row.fields.get(&key) {
-                        return ty.clone();
+                    if let Some((slot, _, ty)) = row.fields.get_full(&key) {
+                        let slot_opt = match &row.tail {
+                            RowTail::Empty => Some(slot as u32),
+                            RowTail::Uniform { .. } => None,
+                        };
+                        return (ty.clone(), slot_opt);
                     }
                 }
             }
-            Type::Unknown
+            (Type::Unknown, None)
         }
-        Type::Unknown | Type::Any | Type::TypeVar(_, _) => Type::Unknown,
-        Type::Negation(_) => Type::Unknown,
-        Type::Union(_) => Type::Unknown,
-        Type::NominalVariant { .. } => Type::Unknown,
-        Type::TyCon(_) | Type::App(_, _) => Type::Unknown,
-        Type::Error(payload) => Type::Error(payload.clone()),
+        Type::Unknown | Type::Any | Type::TypeVar(_, _) => (Type::Unknown, None),
+        Type::Negation(_) => (Type::Unknown, None),
+        Type::Union(_) => (Type::Unknown, None),
+        Type::NominalVariant { .. } => (Type::Unknown, None),
+        Type::TyCon(_) | Type::TyConResolved(_, _) | Type::App(_, _) => (Type::Unknown, None),
+        Type::Error(payload) => (Type::Error(payload.clone()), None),
         other => {
             let err = TypeDiagnostic::error(
                 "type-error",
@@ -3291,7 +3343,7 @@ fn field_type_from_base(
                 span.clone(),
             );
             errors.push(err.clone());
-            Type::error_with(vec![err])
+            (Type::error_with(vec![err]), None)
         }
     }
 }
@@ -3710,7 +3762,8 @@ pub(crate) async fn run_typecheck_dict(
 
     let dict_env: Arc<RwLock<Env>> = Arc::new(RwLock::new(Env::with_parent(Arc::clone(env))));
     // Extra schemes from ADT constructors — injected in Pass 2, merged into final schemes.
-    let mut ctor_schemes: HashMap<String, TypeScheme> = HashMap::new();
+    // IndexMap preserves insertion order so constructor scheme ordering is deterministic.
+    let mut ctor_schemes: indexmap::IndexMap<String, TypeScheme> = indexmap::IndexMap::new();
     let mut key_entries: Vec<(Option<String>, bool, bool)> = Vec::new();
     let mut auto_index: i64 = 0;
 
@@ -3735,7 +3788,8 @@ pub(crate) async fn run_typecheck_dict(
 
     // Pass 1 (global): Pre-insert fresh TypeVar placeholders for ALL statically-known bindings
     // in SOURCE ORDER (matching resolver slot assignment order from surface_dict_static_keys).
-    let mut fresh_vars_by_name: HashMap<String, Type> = HashMap::new();
+    // IndexMap preserves insertion order for deterministic iteration.
+    let mut fresh_vars_by_name: indexmap::IndexMap<String, Type> = indexmap::IndexMap::new();
     for ((key_name, is_alias, is_static_key), entry) in key_entries.iter().zip(entries.iter()) {
         // (a) Static-key entry.
         if *is_static_key {
@@ -3827,6 +3881,40 @@ pub(crate) async fn run_typecheck_dict(
             }
         }
     }
+
+    // B-477: Inject a synthetic innermost scope frame into state.scope_frames for this dict.
+    //
+    // When the user declares an [instance ...] in this dict, Pass 1 above pre-inserts the
+    // ɪ-prefixed mangled binding name into dict_env.slots with a fresh TypeVar placeholder.
+    // During Pass 3, check_constraints_on_var fires when the TypeVar resolves, and calls
+    // resolve_name_in_frames to convert the mangled name to a (level, slot) pair for
+    // call_dispatch.set().  Without this synthetic frame, resolve_name_in_frames only
+    // searches the parent runtime scope chain (outer evaluated scopes) and misses the current
+    // dict's instance bindings — because the user's document has not been evaluated yet.
+    //
+    // Fix: snapshot dict_env.slots after Pass 1 into a new innermost frame (appended to
+    // frames, since frames[n-1] is innermost and level=0).  This frame mirrors what the
+    // lowerer will generate at runtime via surface_dict_static_keys.  We pop this synthetic
+    // frame at the end of run_typecheck_dict to avoid frame leakage to parent scopes.
+    let pushed_synthetic_frame = if state.scope_frames.is_some() {
+        let synthetic: indexmap::IndexMap<String, u32> = {
+            let env_guard = dict_env.read().unwrap();
+            env_guard
+                .slots
+                .iter()
+                .enumerate()
+                .map(|(i, (name, _))| (name.clone(), i as u32))
+                .collect()
+        };
+        if let Some(ref mut frames) = state.scope_frames {
+            frames.push(synthetic);
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
 
     // Pass 2: Register type aliases (before SCC processing)
     for ((key_name, is_alias, _), entry) in key_entries.iter().zip(entries.iter()) {
@@ -4023,12 +4111,17 @@ pub(crate) async fn run_typecheck_dict(
     }
 
     // Initialize local substitution and field types accumulator.
+    // IndexMap preserves insertion (source) order for field_types so that resolved_field_types
+    // — and thus Type::Dict row fields — are in deterministic source order across runs,
+    // eliminating non-deterministic warning ordering caused by HashMap's random iteration.
     let subst = Substitution {
         type_map: std::cell::RefCell::new(HashMap::new()),
     };
-    let mut field_types: HashMap<String, Type> = HashMap::new();
+    let mut field_types: indexmap::IndexMap<String, Type> = indexmap::IndexMap::new();
     let mut errors = Vec::new();
 
+    // entry_inner_schemes and entry_constraints are only accessed by key lookup (not iterated
+    // for output), so HashMap ordering does not affect diagnostic determinism here.
     let mut entry_inner_schemes: HashMap<String, HashMap<String, TypeScheme>> = HashMap::new();
     let mut entry_constraints: HashMap<String, Vec<Constraint>> = HashMap::new();
 
@@ -4228,9 +4321,10 @@ pub(crate) async fn run_typecheck_dict(
     // Process each SCC in topological order
     for scc in sccs.into_iter() {
         // Pass 1_i (SCC): Collect the fresh TypeVars for this SCC's entries.
+        // IndexMap preserves SCC member order for deterministic type variable lookup.
         enum FreshVars {
             Singleton(String, Type),
-            Multiple(HashMap<String, Type>),
+            Multiple(indexmap::IndexMap<String, Type>),
         }
         let mut fresh_vars_storage: Option<FreshVars> = None;
 
@@ -4245,7 +4339,7 @@ pub(crate) async fn run_typecheck_dict(
                                     Some(FreshVars::Singleton(name.clone(), fresh_var.clone()));
                             }
                             Some(FreshVars::Singleton(first_name, first_var)) => {
-                                let mut map = HashMap::new();
+                                let mut map = indexmap::IndexMap::new();
                                 map.insert(first_name.clone(), first_var.clone());
                                 map.insert(name.clone(), fresh_var.clone());
                                 fresh_vars_storage = Some(FreshVars::Multiple(map));
@@ -4778,6 +4872,13 @@ pub(crate) async fn run_typecheck_dict(
         }
     }
 
+    // B-477: Pop the synthetic scope frame we pushed before Pass 2 (if we pushed one).
+    if pushed_synthetic_frame {
+        if let Some(ref mut frames) = state.scope_frames {
+            frames.pop();
+        }
+    }
+
     (record_type, schemes, errors)
 }
 
@@ -4932,5 +5033,148 @@ mod tests {
             deps.contains(&0),
             "x is free in all scopes, so dep on sibling x must be present: deps = {deps:?}"
         );
+    }
+
+    // ===== T-1490: field_slot annotation tests =====
+
+    /// T-1490: `field_type_from_base` returns the correct slot index for a closed Dict row.
+    ///
+    /// For `{x: Int, y: Str}` (closed, Empty tail), accessing `.x` must return slot 0
+    /// and accessing `.y` must return slot 1.  This verifies that the slot index matches
+    /// IndexMap insertion order, which is what the lowerer reads via `slot-get`.
+    #[test]
+    fn test_field_type_from_base_closed_dict_slot() {
+        use crate::ast::DotKey;
+        use crate::type_def::{Row, RowTail};
+        use indexmap::IndexMap;
+
+        let mut fields: IndexMap<String, Type> = IndexMap::new();
+        fields.insert("x".to_string(), Type::Int);
+        fields.insert("y".to_string(), Type::Str);
+        let row = Row { fields, tail: RowTail::Empty };
+        let base_ty = Type::Dict(row);
+
+        let span = crate::rust_span!();
+        let mut errors = Vec::new();
+
+        // Accessing .x — slot 0
+        let (ty_x, slot_x) = field_type_from_base(&base_ty, &DotKey::Ident("x".to_string()), &span, &mut errors);
+        assert_eq!(ty_x, Type::Int, ".x should resolve to Int");
+        assert_eq!(slot_x, Some(0u32), ".x should have slot index 0");
+        assert!(errors.is_empty(), "No errors expected for .x");
+
+        // Accessing .y — slot 1
+        let (ty_y, slot_y) = field_type_from_base(&base_ty, &DotKey::Ident("y".to_string()), &span, &mut errors);
+        assert_eq!(ty_y, Type::Str, ".y should resolve to Str");
+        assert_eq!(slot_y, Some(1u32), ".y should have slot index 1");
+        assert!(errors.is_empty(), "No errors expected for .y");
+
+        // Accessing an absent field — no slot, Unknown type
+        let (ty_z, slot_z) = field_type_from_base(&base_ty, &DotKey::Ident("z".to_string()), &span, &mut errors);
+        assert_eq!(ty_z, Type::Unknown, ".z absent from row → Unknown");
+        assert_eq!(slot_z, None, ".z absent from row → no slot");
+        assert!(errors.is_empty(), "No errors expected for absent field");
+    }
+
+    /// T-1490: Open Dict rows (Uniform tail) must NOT produce slot annotations.
+    ///
+    /// A Uniform tail means the row is open — additional fields may be present at runtime,
+    /// which shifts physical slot positions.  Emitting a slot annotation on an open row
+    /// would produce an incorrect `slot-get` call in the lowered code.
+    #[test]
+    fn test_field_type_from_base_open_dict_no_slot() {
+        use crate::ast::DotKey;
+        use crate::type_def::{Row, RowTail};
+        use indexmap::IndexMap;
+
+        let mut fields: IndexMap<String, Type> = IndexMap::new();
+        fields.insert("x".to_string(), Type::Int);
+        let row = Row {
+            fields,
+            tail: RowTail::Uniform {
+                key: None,
+                value: Box::new(Type::Any),
+            },
+        };
+        let base_ty = Type::Dict(row);
+
+        let span = crate::rust_span!();
+        let mut errors = Vec::new();
+
+        let (ty, slot) = field_type_from_base(&base_ty, &DotKey::Ident("x".to_string()), &span, &mut errors);
+        assert_eq!(ty, Type::Int, ".x should still resolve to Int in open row");
+        assert_eq!(slot, None, "Open row (Uniform tail) must not produce a slot annotation");
+        assert!(errors.is_empty());
+    }
+
+    /// T-1490: `AfterFieldBase` handler writes `field_slot` on the Field node.
+    ///
+    /// Constructs a `Field` SurfaceNode, wraps the result in `AfterFieldBase`, and directly
+    /// calls `apply_cont` to verify that `field_slot.set()` is invoked when the base type is
+    /// a closed Dict row with a known field.
+    ///
+    /// This test uses `apply_cont` rather than the full `run_typecheck` pipeline to avoid
+    /// requiring the prelude to be loaded.
+    #[tokio::test]
+    async fn test_after_field_base_writes_field_slot() {
+        use crate::ast::{DotKey, Resolution};
+        use crate::type_def::{Row, RowTail};
+        use indexmap::IndexMap;
+
+        // Build a Field node: <expr>.x  — expr is None (absent base, unused here).
+        // The field_slot inside the SurfaceNode is the OnceLock that apply_cont will write to.
+        let field_node = Arc::new(SurfaceNode::new(
+            SurfaceExpression::Field {
+                expr: None,
+                field: DotKey::Ident("x".to_string()),
+                resolution: Resolution::new(),
+                field_slot: crate::ast::SlotAnnotation::new(), // This is the one that will be set
+            },
+            crate::rust_span!(),
+        ));
+
+        // Closed Dict row: {x: Int, y: Str}
+        let mut fields: IndexMap<String, Type> = IndexMap::new();
+        fields.insert("x".to_string(), Type::Int);
+        fields.insert("y".to_string(), Type::Str);
+        let base_ty = Type::Dict(Row { fields, tail: RowTail::Empty });
+
+        // Set up the continuation
+        let cont = TypeCheckCont::AfterFieldBase {
+            field: DotKey::Ident("x".to_string()),
+            span: crate::rust_span!(),
+            field_node: Arc::clone(&field_node),
+        };
+
+        let mut state = InferState::new();
+        let mut errors: Vec<TypeDiagnostic> = Vec::new();
+        let mut type_map: Option<&mut TypeMap> = None;
+        let mut stack: Vec<TypeCheckCont> = Vec::new();
+
+        let action = apply_cont(cont, base_ty, &mut state, &mut errors, &mut type_map, &mut stack).await;
+
+        // apply_cont must return Done(Int) for the .x field
+        match action {
+            TypeCheckAction::Done(ty) => {
+                assert_eq!(ty, Type::Int, "AfterFieldBase must resolve .x to Int");
+            }
+            TypeCheckAction::Eval(_, _) => {
+                panic!("AfterFieldBase must not produce Eval action");
+            }
+        }
+
+        // The field_slot on the field node must now be set to Some(0)
+        if let SurfaceExpression::Field { field_slot, .. } = &field_node.expr {
+            assert_eq!(
+                field_slot.get(),
+                Some(0u32),
+                "AfterFieldBase must write slot index 0 for .x in a closed Dict {{x: Int, y: Str}}"
+            );
+        } else {
+            panic!("field_node must be a Field expression");
+        }
+
+        // No unexpected errors
+        assert!(errors.is_empty(), "No type errors expected: {:?}", errors);
     }
 }

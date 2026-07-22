@@ -1532,7 +1532,6 @@ impl TypeEnv {
             self.instances.insert(mangled, decl);
         }
     }
-
 }
 
 impl Default for TypeEnv {
