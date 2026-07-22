@@ -429,7 +429,7 @@ materialize(θ_inner) ⇒ error(e)               where ¬e.is_cacheable()
 materialize(θ) ⇒ error(e)
 ```
 
-The continuation stack has no depth limit — resource limits come from individual builtins (e.g., `MAX_COLLECT_SIZE` in `$collect`) and OS memory constraints. The backward `InProgress → Guarded` edge handles non-cacheable errors from these sources.
+The continuation stack is bounded by `MAX_CONTINUATION_STACK = 2048` frames (`src/eval_materialize.rs`). Exceeding this limit produces a `ResourceLimitExceeded` error. Resource limits also come from individual builtins (e.g., `MAX_COLLECT_SIZE` in `$collect`) and OS memory constraints. The backward `InProgress → Guarded` edge handles non-cacheable errors from these sources.
 
 [MATERIALIZE-GUARD-NONCACHEABLE] fires when the inner thunk's materialization fails with a non-cacheable error (e.g., ResourceLimitExceeded from a builtin). The Guarded state is restored because non-cacheable errors are transient resource-bound conditions, not semantic errors. (`src/eval_materialize.rs`, in the `Guarded` arm of `force_step()`)
 
@@ -1403,13 +1403,13 @@ Per execution context (deferred per-section model):
 
 ## Iterative Evaluator (CEK Machine)
 
-**Implementation:** The evaluator uses an iterative CEK machine (Control-Environment-Kontinuation) with an unbounded continuation stack in `src/eval_materialize.rs`. The continuation stack has no depth limit — tinct runs as a single-process CLI with no multi-tenant threat model, so the OS enforces memory limits via OOM.
+**Implementation:** The evaluator uses an iterative CEK machine (Control-Environment-Kontinuation) with a bounded continuation stack (`MAX_CONTINUATION_STACK = 2048` frames) in `src/eval_materialize.rs`. Exceeding the limit produces a non-catchable `ResourceLimitExceeded` error.
 
 **Evaluation depth is bounded by:**
 
 - Parser depth limit: `MAX_PARSE_DEPTH = 256` (nested syntax depth)
 - Cycle detection: `InProgress` thunk state sentinel (catches circular references)
-- OS memory: the continuation stack grows on the heap until OOM
+- Continuation stack: `MAX_CONTINUATION_STACK = 2048` frames — exceeding this produces `ResourceLimitExceeded`
 - Rust stack bounds: the CEK machine runs iteratively on the heap, avoiding deep Rust recursion
 
 **Decision:** Replace the recursive `eval()` / `materialize()` call stack with an iterative CEK machine. Continuations are defunctionalized — each closure that CPS would create becomes a variant in a `Cont` enum, stored in a `Vec<Cont>` stack.

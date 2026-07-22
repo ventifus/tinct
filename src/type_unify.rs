@@ -802,8 +802,9 @@ async fn improve_functional_dependency_inner(
                     Some(Type::normalize_union(field_types))
                 }
                 (Type::Dict(_) | Type::Union(_) | Type::Intersection(_) | Type::Any, Type::Str) => {
-                    // Str key (from promoted StringLiteral) — can't resolve statically
-                    Some(Type::Unknown)
+                    // Str key (from promoted StringLiteral) — can't resolve statically.
+                    // Defer to general MPTC lookup instead of producing Unknown.
+                    None
                 }
                 _ => None, // Not a Record/Union/Intersection/Top case — fall through to general logic
             }

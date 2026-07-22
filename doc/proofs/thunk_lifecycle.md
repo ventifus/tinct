@@ -1,105 +1,130 @@
-# Proof Sketch: Thunk Lifecycle Bisimulation
+# Proof Sketch: Thunk Settlement Monotonicity and Sharing
 
 **Status:** Sketch (not mechanized)
 **Proof assistant:** Coq (planned)
-**Property:** Lazy evaluation in Tinct is observationally equivalent to call-by-value
-evaluation — any value that is ultimately forced produces the same result under both
-strategies.
+**Property:** Every thunk is evaluated at most once (Launchbury sharing) and,
+once settled, returns the same result on every subsequent access (monotonicity).
 
 ## Informal Statement
 
-Let `e` be a closed LLT expression and `E` an environment in which `e` is well-typed.
-Let `v` be the value obtained by fully materializing `e` under lazy evaluation (i.e.,
-creating a `Thunk` and then calling `force()`). Let `v'` be the value obtained by
-eagerly evaluating `e` under the same environment.
+Let `t` be a `Thunk` created in the Tinct evaluator. Then:
 
-**Claim:** `v ≅ v'` under observable equality (both are the same LLT value, or both
-diverge, or both raise the same error kind).
+1. **Evaluate-at-most-once (sharing):** The body of `t` is evaluated at most once
+   across all concurrent tasks that demand `t`.
+2. **Monotonicity:** Once `t` is settled with result `r`, every subsequent read of
+   `t` yields `r`. No future operation can change or retract `r`.
+3. **Settlement guarantee:** If any task begins evaluating `t` (wins `try_claim`),
+   then `t` will be settled on all exit paths, including panics.
 
-This is the standard thunk bisimulation / Plotkin adequacy theorem, stated for
-Tinct's `Thunk`-based evaluator.
+## Architecture
 
-## Tinct Thunk Lifecycle
-
-A `Thunk` in Tinct (`src/value.rs`) moves through the following states:
+A `Thunk` (`src/value.rs`) has two fields inside `ThunkInner`:
 
 ```text
-Unevaluated(Expr, Env)
-    │
-    │  force() called
-    ▼
-Evaluating                  ← cycle detection guard (raises E041 if re-entered)
-    │
-    │  eval() completes
-    ▼
-Evaluated(Value)            ← memoized; subsequent force() calls return cached Value
+ThunkInner {
+    unevaluated: Mutex<(Option<UnevaluatedState>, Option<task::Id>)>,
+    result:      tokio::sync::OnceCell<Result<Value, Arc<EvalError>>>,
+    notify:      Arc<tokio::sync::Notify>,
+}
 ```
 
-Key invariant: once a `Thunk` reaches `Evaluated(v)`, all future calls to `force()`
-return the same `v`. This is the **memoization invariant**.
+- `unevaluated` holds the expression to evaluate plus the claiming task's id.
+- `result` is a write-once cell for the terminal value or error.
+- `notify` wakes tasks awaiting settlement.
 
-## Bisimulation Strategy
-
-The proof would proceed as a simulation relation `R` between thunk-based (lazy) and
-direct (eager) evaluation:
+## State Machine
 
 ```text
-R(thunk t, value v)  iff  force(t) ≅ v
+Unevaluated(state)          unevaluated = (Some(state), None)
+    │                       result      = empty
+    │  try_claim() succeeds
+    ▼
+InProgress                  unevaluated = (None, Some(task_id))
+    │                       result      = empty
+    │  settle(r) called
+    ▼
+Settled(r)                  unevaluated = (None, None)
+                            result      = r  (OnceCell set)
 ```
 
-**Base cases:**
+Transitions are strictly forward. There is no path from Settled back to any
+earlier state.
 
-- `R(Thunk(Int n, _), Int n)` — forcing a literal thunk yields the integer directly.
-- `R(Thunk(Bool b, _), Bool b)` — same for booleans.
-- `R(Thunk(Str s, _), Str s)` — same for strings.
+## Property 1: Evaluate-at-Most-Once (Sharing)
 
-**Inductive cases (selection):**
+**Claim:** For any thunk `t`, at most one task executes `t`'s body.
 
-- `R(Thunk(Dict {k: t_i}, env), Dict {k: v_i})` if `∀i. R(t_i, v_i)` — dict thunk
-  bisimulates dict value when all entry thunks bisimulate their values.
-- `R(Thunk(Call(f, args), env), v)` if eager application of `f` to `args` in `env`
-  produces `v` — function call thunk bisimulates the result of the call.
+**Proof sketch:**
 
-**Cycle case:**
+`try_claim` acquires the `unevaluated` mutex and calls `state.take()` on the
+`Option<UnevaluatedState>`. `Option::take` replaces the contents with `None`
+and returns the previous value. If the option was already `None`, `take`
+returns `None` and the caller does not proceed to evaluate.
 
-When `force(t)` re-enters `t` while it is in state `Evaluating`, the evaluator raises
-`E041 CircularDependency`. The eager evaluator would diverge (infinite loop). These
-are bisimilar under an extended relation that equates "detectable cycle → E041" with
-"divergence".
+Since the mutex serializes all `try_claim` calls, exactly one caller observes
+`Some(state)` — the first to acquire the lock while the option is populated.
+All subsequent callers observe `None` and fall through to `settled().await`,
+waiting on the `notify` signal.
 
-## Memoization Correctness Lemma
+Therefore the body is dispatched to exactly one task. QED.
 
-**Lemma (Idempotence):** For any thunk `t` in state `Evaluated(v)`,
-`force(t) = v` for all subsequent calls.
+## Property 2: Monotonicity
 
-**Proof sketch:** By inspection of the `RefCell<ThunkState>` match in `src/value.rs`:
-the `Evaluated` arm returns `Rc::clone(&v)` without modifying state. Since the state
-is never written from `Evaluated`, the result is stable.
+**Claim:** Once `result` contains a value, it never changes.
 
-## Open Questions for Mechanization
+**Proof sketch:**
 
-1. **Environment aliasing:** Tinct environments use `Rc<RefCell<Environment>>` with
-   shared parent chains. The proof must show that environment mutation (binding new
-   keys) is safe under sharing — i.e., that no thunk observes a modified environment
-   after creation. This requires an ownership discipline argument.
+`result` is a `tokio::sync::OnceCell`. Its `set` method succeeds exactly once;
+all subsequent calls to `set` are no-ops (returning `Err`). The `settle`
+method calls `self.inner.result.set(result)` and discards the return value.
+`get` on a populated `OnceCell` always returns the same `&T`.
 
-2. **Letrec dicts:** Dict entries are bound in a mutually recursive environment (letrec
-   semantics). The bisimulation must handle the fixed-point construction for mutually
-   recursive bindings.
+Since `OnceCell` provides no `take`, `swap`, or mutable access to the stored
+value, the result is immutable once written. QED.
 
-3. **Builtins:** Builtin functions (Rust-native) are opaque from the proof's
-   perspective. They must be axiomatized as deterministic total (or error-raising)
-   functions.
+## Property 3: Settlement Guarantee (ThunkPanicGuard)
 
-4. **Depth limit:** The `MAX_EVAL_DEPTH` guard (`src/eval.rs`) means the evaluator
-   is partial — it raises `E043 ResourceLimitExceeded` on deeply nested structures.
-   The bisimulation holds only for evaluation trees shallower than `MAX_EVAL_DEPTH`.
+**Claim:** If `try_claim` succeeds for thunk `t`, then `t` is settled on all
+exit paths.
+
+**Proof sketch:**
+
+After `try_claim` succeeds, the evaluator creates a `ThunkPanicGuard`:
+
+```text
+ThunkPanicGuard(Option<Arc<Thunk>>)
+```
+
+The guard holds `Some(Arc::clone(&thunk))`. Two exit paths exist:
+
+1. **Normal path:** The evaluator calls `guard.settle(result)`, which calls
+   `self.0.take().unwrap()` (disarming the guard) followed by
+   `thunk.settle(result)`. When `Drop` runs, `self.0` is `None` — no-op.
+
+2. **Panic path:** The guard is dropped without `settle` being called.
+   `Drop::drop` observes `Some(thunk)` via `self.0.take()` and calls
+   `thunk.settle(Err(EvalError::internal("thunk evaluation task panicked")))`.
+
+In both cases, `thunk.settle` is called exactly once, which sets the
+`OnceCell` and calls `notify.notify_waiters()`. Therefore all tasks
+awaiting `t` via `settled()` will be unblocked. QED.
+
+**Known limitation:** If the process aborts (stack overflow on platforms that
+abort rather than unwind, allocator OOM, SIGKILL), destructors do not run
+and the guarantee does not hold. These are OS-level exits outside the
+application's control.
+
+## Corollary: Bisimulation with Eager Evaluation
+
+Properties 1 and 2 together establish that Tinct's lazy evaluator is
+observationally equivalent to a call-by-value evaluator for any expression
+whose value is ultimately demanded — the standard Launchbury (1993) adequacy
+result. The thunk's `OnceCell` memoization ensures that sharing does not
+change the observable result.
 
 ## References
 
 - Launchbury, J. (1993). "A natural semantics for lazy evaluation." POPL 1993.
-  (Section 3 gives the standard thunk-based lazy semantics this proof mirrors.)
+  Section 3: thunk-based lazy semantics and the sharing property this proof mirrors.
 - Plotkin, G. (1977). "LCF considered as a programming language." TCS 5(3).
-  (Adequacy theorem for lazy PCF — the template for this bisimulation.)
-- Kiselyov, O. (2013). "Eff Directly in OCaml." (Levels in type inference, cited
-  in `src/typecheck.rs` for `RowTail::RowVar` level semantics.)
+  Adequacy theorem for lazy PCF — the template for the bisimulation corollary.

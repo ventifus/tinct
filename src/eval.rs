@@ -105,35 +105,45 @@ pub(crate) async fn eval_document_exprs_with_env(
 
         // Intermediate expression: eval and materialize to extract potential bindings.
         let thunk = crate::eval_core::eval_core_expr(&core_spanned, current_env_id, ctx).await?;
-        let _value = materialize(&thunk, Some(&node_span), ctx).await?;
+        let value = materialize(&thunk, Some(&node_span), ctx).await?;
 
-        // Detect which FlatEnv was allocated for this dict expression.
-        // The first new env in the arena (at index arena_len_before) is this dict's scope.
-        let node_env_id = {
-            let arena = ctx.scope_arena.borrow();
-            if arena.scopes.len() as u32 > arena_len_before {
-                Some(arena_len_before) // first newly allocated env is this node's root scope
-            } else {
-                None
+        // Only advance scope chain if the intermediate expression produced a Dict-like value.
+        // Non-dict intermediate expressions (literals, function calls returning non-dicts) are
+        // valid in document pipelines but don't contribute bindings to the scope chain.
+        match &value {
+            Value::Dict(_) | Value::Overlay(..) => {
+                // Detect which FlatEnv was allocated for this dict expression.
+                // The first new env in the arena (at index arena_len_before) is this dict's scope.
+                let node_env_id = {
+                    let arena = ctx.scope_arena.borrow();
+                    if arena.scopes.len() as u32 > arena_len_before {
+                        Some(arena_len_before) // first newly allocated env is this node's root scope
+                    } else {
+                        None
+                    }
+                };
+
+                // Advance current_env_id to the new scope so subsequent dict allocations
+                // are children of this one.
+                if let Some(new_id) = node_env_id {
+                    // Advance to the ROOT scope of this node (new_id = arena_len_before),
+                    // NOT the leaf. The root is the first FlatEnv allocated for this dict —
+                    // its letrec scope. Using the root ensures the FlatEnv display chain depth
+                    // matches the Env chain depth (one hop per document-level dict), so that
+                    // de Bruijn levels assigned by the resolver map correctly to display entries.
+                    // The leaf includes all intermediate FlatEnvs from function-body evaluations
+                    // within this dict, which are NOT new Env chain levels from the resolver's
+                    // perspective — using the leaf causes display depth >> Env chain depth,
+                    // making resolver level assignments point to wrong scopes.
+                    current_env_id = new_id;
+                }
             }
-        };
-
-        // Advance current_env_id to the new scope so subsequent dict allocations
-        // are children of this one.
-        if let Some(new_id) = node_env_id {
-            // Advance to the ROOT scope of this node (new_id = arena_len_before),
-            // NOT the leaf. The root is the first FlatEnv allocated for this dict —
-            // its letrec scope. Using the root ensures the FlatEnv display chain depth
-            // matches the Env chain depth (one hop per document-level dict), so that
-            // de Bruijn levels assigned by the resolver map correctly to display entries.
-            // The leaf includes all intermediate FlatEnvs from function-body evaluations
-            // within this dict, which are NOT new Env chain levels from the resolver's
-            // perspective — using the leaf causes display depth >> Env chain depth,
-            // making resolver level assignments point to wrong scopes.
-            current_env_id = new_id;
+            _ => {
+                // Non-dict/overlay: silently skip — no scope extension, no error.
+                // These intermediate expressions are valid (e.g., for side effects or
+                // debugging) but don't add bindings to the document scope chain.
+            }
         }
-        // Non-dict/overlay: silently skip — no scope extension, no error.
-        // Env scope chain is gone; FlatEnv is the authoritative scope.
     }
 
     unreachable!(

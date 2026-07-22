@@ -1772,6 +1772,13 @@ impl Type {
                 for ty in fields.fields.values() {
                     ty.collect_all_vars(type_vars);
                 }
+                // Collect type variables from RowTail::Uniform's key and value types
+                if let RowTail::Uniform { key, value } = &fields.tail {
+                    if let Some(k) = key {
+                        k.collect_all_vars(type_vars);
+                    }
+                    value.collect_all_vars(type_vars);
+                }
             }
             // S-860: equirecursive-types-core — recurse into the body.
             // TypeVars inside a Recursive body must be collected for generalization/instantiation.
@@ -1873,6 +1880,12 @@ impl Type {
                 for ty in fields.fields.values() {
                     found |= ty.collect_all_vars_check_occurs(occurs_name, type_vars);
                 }
+                if let crate::types::RowTail::Uniform { key, value } = &fields.tail {
+                    if let Some(k) = key {
+                        found |= k.collect_all_vars_check_occurs(occurs_name, type_vars);
+                    }
+                    found |= value.collect_all_vars_check_occurs(occurs_name, type_vars);
+                }
                 found
             }
             Type::TyCon(_) => false, // TyCon has no type variables
@@ -1957,6 +1970,13 @@ impl Type {
             } => {
                 for ty in fields.fields.values() {
                     ty.collect_all_vars_vec(type_vars);
+                }
+                // Collect type variables from RowTail::Uniform's key and value types
+                if let RowTail::Uniform { key, value } = &fields.tail {
+                    if let Some(k) = key {
+                        k.collect_all_vars_vec(type_vars);
+                    }
+                    value.collect_all_vars_vec(type_vars);
                 }
             }
             // S-860: equirecursive-types-core — recurse into the body.

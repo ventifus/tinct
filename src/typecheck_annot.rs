@@ -2127,7 +2127,7 @@ pub(crate) async fn resolve_type_name_with_guard(
 async fn resolve_type_head(
     name: &str,
     args: &[Type],
-    env: &TypeEnv,
+    _env: &TypeEnv,
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     span: Span,
@@ -2241,62 +2241,7 @@ async fn resolve_type_head(
         }
     }
 
-    // Step 4: tycon_env — bootstrap fallback for types declared in builtin_core.llt that
-    // were not found in the type-stage (e.g., DirCap, NetCap, TypeContext, and primitive
-    // types when prelude is not yet loaded).
-    if let Some(def) = state
-        .tycon_env
-        .get(name)
-        .cloned()
-        .or_else(|| env.lookup_tycon_def(name))
-    {
-        // Nominal ADT check: parameterized ADTs referenced bare as type constructors (HKT-style).
-        // e.g. `[let f@Result]` — use TyCon(name) so UNIFY-TYCON-EXPAND handles variants.
-        if !def.constructors.is_empty() {
-            let base = Type::TyCon(name.to_string());
-            if args.is_empty() {
-                return Ok(base);
-            }
-            let mut result = base;
-            for arg in args {
-                result = Type::App(Box::new(result), Box::new(arg.clone()));
-            }
-            return Ok(result);
-        }
-
-        // Structural alias: use expand_named for expansion (handles param substitution,
-        // recursive types, builtins). For parameterized structural aliases with args,
-        // use instantiate_tycon_def for constraint checking.
-        if !def.params.is_empty() && !args.is_empty() {
-            if args.len() != def.params.len() {
-                return Err(TypeDiagnostic::error(
-                    "type-error",
-                    format!(
-                        "type alias '{}' expects {} type parameter(s), got {}",
-                        name,
-                        def.params.len(),
-                        args.len()
-                    ),
-                    span,
-                ));
-            }
-            return Box::pin(instantiate_tycon_def(def.as_ref(), args, state)).await;
-        }
-
-        // Zero-arg or arity-matches-zero: expand via expand_named.
-        return Ok(expand_named(name, args, env, state).unwrap_or_else(|| {
-            // expand_named returns None only when the name is not in tycon_env, which
-            // cannot happen here since we already found `def` above. This fallback is
-            // unreachable in practice but satisfies the type system.
-            let mut result = Type::TyCon(name.to_string());
-            for arg in args {
-                result = Type::App(Box::new(result), Box::new(arg.clone()));
-            }
-            result
-        }));
-    }
-
-    // Step 6: Undefined type name.
+    // Undefined type name.
     Err(TypeDiagnostic::error(
         "type-error",
         format!("undefined type: {}", name),
@@ -4306,9 +4251,12 @@ fn typenode_value_to_type<'a>(
                     "TypeNode.Int" => Some(Type::Int),
                     "TypeNode.Float" => Some(Type::Float),
                     "TypeNode.String" => Some(Type::Str),
-                    // T-1761: Boolean is a prelude-defined type; Rust must not hardcode its name.
-                    // The principled fix is a lookup via the type stage protocol.
-                    "TypeNode.Bool" => Some(Type::Unknown),
+                    // TypeNode.Bool: Boolean is a prelude-defined TyCon. Return None here so
+                    // callers fall through to as_type_dispatch. Note: as_type_dispatch currently
+                    // cannot resolve TypeNode.Bool to a concrete Type via the prelude as-type chain,
+                    // so compound TypeNode expressions containing Bool sub-nodes will fail resolution.
+                    // A future fix would look up Boolean via the TyCon env directly.
+                    "TypeNode.Bool" => None,
                     "TypeNode.Unknown" => Some(Type::Unknown),
                     // TypeNode.Top is the sound lattice top (τ <: Top for all τ).
                     // Rust represents this as Type::Any (which IS the top type in the lattice).

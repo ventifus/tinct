@@ -3,4 +3,5 @@
 # shielded by any guarding constructor. This must produce a type error
 # (rejected at construction time by the contractiveness check).
 [@[mu a a] 42]
-=== warn
+=== error
+non-contractive recursive type

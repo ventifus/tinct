@@ -25,10 +25,9 @@ Two proof assistants cover the relevant proof obligations:
 
 | File | Property | Tool | Status |
 |------|----------|------|--------|
-| `thunk_lifecycle.md` | Thunk bisimulation — lazy and eager evaluation produce the same result when the value is forced | Coq | Sketch |
-| `type_soundness.md` | Progress + preservation for the Hindley-Milner core | Coq | Sketch |
-| `row_unification.md` | Row unification terminates and produces the principal unified type | Isabelle | Sketch |
-| `desugar_sound.md` | `$_` desugaring preserves semantics — desugared AST evaluates to the same value | Coq | Sketch |
+| `thunk_lifecycle.md` | Thunk settlement monotonicity and evaluate-at-most-once sharing | Coq | Sketch |
+
+Additional proof sketches will be added as formal properties are identified.
 
 ## Relationship to Tests
 

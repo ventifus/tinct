@@ -5,10 +5,8 @@
 # forced and its division-by-zero error never fires.
 #
 # The evaluator resolves `filtered` correctly via letrec scoping (both entries share scope).
-# The type checker warns "undefined variable: filtered" because its letrec-scope analysis
-# does not yet implement cross-binding forward references for multi-entry dicts. The
-# warning is a known type checker limitation, not an evaluator bug. The === warn section
-# documents and pins this expected diagnostic so unexpected changes are caught.
+# Both dict entries appear in the output, so neither binding is lost — no type warnings
+# are expected.
 [filtered: [filter [fn [let x] [> x 0]] [1 2 [/ 1 0]]]]
 [result: [head filtered]]
 === out

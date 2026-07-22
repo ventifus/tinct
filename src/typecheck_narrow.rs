@@ -340,10 +340,12 @@ pub(crate) fn extract_binding_types<'a>(
                     extract_binding_types(sub_binding, env, state, types).await?;
                 }
             }
-            // Implied call [Int] or [Result String] — treat as Unknown.
-            // Full parametric type resolution from annotation expressions is future work.
+            // Implied call [Int] or [Result String] — use fresh TypeVar for parametric patterns.
+            // Full parametric type resolution from annotation expressions is future work,
+            // but a fresh TypeVar allows unification to find the correct type instead of
+            // degrading type checking with Unknown.
             SurfaceExpression::Call { .. } => {
-                types.push(Type::Unknown);
+                types.push(state.fresh_type_var(&binding.span));
             }
             // a@Type form: VarRef with annotation — resolve via typecheck_annot::resolve_annotation.
             // A fresh TypeVar (not Unknown) is used on failure so T017 is suppressed for annotated
@@ -419,16 +421,12 @@ pub(crate) fn patterns_overlap(
     let saved_subst = state.subst.clone();
 
     // Use a temporary substitution so state.subst is also unaffected.
-    let overlaps = types_a.iter().zip(types_b.iter()).all(|(ty_a, ty_b)| {
-        // Gradual: Unknown is the gradual-typing wildcard for unannotated pattern bindings.
-        // Treat Unknown as distinct from any concrete type: a position with Unknown
-        // cannot be used to establish overlap (it carries no type information).
-        if matches!(ty_a, Type::Unknown) || matches!(ty_b, Type::Unknown) {
-            return false; // non-overlapping at this position — Unknown is not concrete
-        }
-        // unify is async; use structural equality as conservative approximation
-        ty_a == ty_b
-    });
+    // Conservative: structural equality misses polymorphic overlaps. Full unification
+    // probe would require making this function async, which is tracked as T-1801.
+    let overlaps = types_a
+        .iter()
+        .zip(types_b.iter())
+        .all(|(ty_a, ty_b)| ty_a == ty_b);
 
     // Restore all mutated fields.
     state.levels = saved_levels;
@@ -477,9 +475,12 @@ pub(crate) fn types_can_unify(
     // check_constraints_on_var may miss bindings from the probe. This is acceptable
     // for instance consistency checks where types are typically concrete annotations,
     // but would need to be addressed for general-purpose unification probes.
-    let can_unify = types_a.iter().zip(types_b.iter()).all(|(ty_a, ty_b)| {
-        ty_a == ty_b || matches!(ty_a, Type::Unknown) || matches!(ty_b, Type::Unknown)
-    });
+    // Conservative: structural equality misses polymorphic overlaps. Full unification
+    // probe would require making this function async, which is tracked as T-1801.
+    let can_unify = types_a
+        .iter()
+        .zip(types_b.iter())
+        .all(|(ty_a, ty_b)| ty_a == ty_b);
 
     // Restore all mutated fields.
     state.levels = saved_levels;

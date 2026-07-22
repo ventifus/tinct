@@ -225,15 +225,6 @@ async fn test_literal_float() {
 }
 
 #[tokio::test]
-async fn test_literal_bool() {
-    // Boolean is a nominal type (Boolean: [type True False]).
-    // true/false are plain identifiers that resolve to whatever binding is in scope.
-    // The canonical booleans are Boolean.True and Boolean.False (qualified constructor access).
-    // Coverage: Boolean.True/Boolean.False infer as Variant types via the type checker's
-    // nominal constructor path — tested in corpus tests for the Boolean type.
-}
-
-#[tokio::test]
 async fn test_literal_string() {
     // In new syntax, bare words are references (VarRef), not string literals.
     // String literals require quotes.

@@ -48,6 +48,9 @@ use crate::builtins::{ok_val, reject_named, require_string};
 use crate::error::{EvalError, EvalResult};
 use crate::value::{string_val, BuiltinArgs, DirPerms, HashableValue, Thunk, Value};
 
+/// Maximum bytes per single `builtin-file-read` call. Prevents unbounded heap allocation.
+const MAX_FILE_READ_BYTES: usize = 256 * 1024 * 1024; // 256 MB
+
 /// Extract DirCap from a Value, checking revocation and returning (dir, perms).
 /// Used by all DirCap-consuming builtins.
 pub(crate) fn extract_dir_cap<'a>(
@@ -2465,6 +2468,17 @@ pub(crate) fn builtin_file_read(
                 .into())
             }
         };
+
+        if n > MAX_FILE_READ_BYTES {
+            return Err(EvalError::resource_limit_exceeded(
+                format!(
+                    "builtin-file-read: byte count {} exceeds maximum {} bytes",
+                    n, MAX_FILE_READ_BYTES
+                ),
+                call_span,
+            )
+            .into());
+        }
 
         use std::io::Read;
         let mut buf = vec![0u8; n];

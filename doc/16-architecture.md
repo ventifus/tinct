@@ -259,7 +259,7 @@ async fn run(initial: Action, _ctx: &Arc<EvalContext>) -> EvalResult<Value> {
 }
 ```
 
-**Frame size discipline:** The `≤96B` budget keeps `Vec<Cont>` cache-friendly. Large fields (`Vec`, `IndexMap`, `Arc<Spanned<CoreExpr>>`) are heap-allocated via `Box`. The `Action` and `Cont` enums together represent the full CEK machine state; depth tracking becomes `stack.len()` (no separate counter needed). As of T-908, the continuation stack is unbounded — depth is limited only by OS memory.
+**Frame size discipline:** The `≤96B` budget keeps `Vec<Cont>` cache-friendly. Large fields (`Vec`, `IndexMap`, `Arc<Spanned<CoreExpr>>`) are heap-allocated via `Box`. The `Action` and `Cont` enums together represent the full CEK machine state; depth tracking becomes `stack.len()` (no separate counter needed). The continuation stack is bounded by `MAX_CONTINUATION_STACK = 2048` frames; exceeding this produces a `ResourceLimitExceeded` error.
 
 **Relationship to thunk state:** `BuiltinCall` and `FnCall` in `UnevaluatedState` are proto-continuations — defunctionalized call sites captured as data. The CEK machine processes them via `Cont` variants (`Cont::BuiltinForceArg`, `Cont::PendingCallDispatch`). They represent persistent deferred computation (lazy sequence steps, proxy handler dispatch) that cannot be converted to a simpler form because builtin function pointers have no AST representation. The five `UnevaluatedState` variants (`AstField`, `CoreExpr`, `BuiltinCall`, `FnCall`, `Guarded`) are the stable design. Thunk state is observed through borrow-based accessors (`try_get_value()`, `try_get_error()`, `is_materialized()`, `is_settled()`) that read the `OnceCell` directly rather than through a `ThunkState` enum.
 
@@ -654,7 +654,7 @@ LLT source files are **untrusted input**. The parser, type checker, and evaluato
 | **File I/O** | `--no-fs` flag, LSP default | `src/main.rs:39`, `src/lsp/document.rs:109` | Disables `$include` and `$from-json` file reads; LSP enables by default (CWE-22 mitigation) |
 | **Eval timeout** | `--timeout` flag (Unix only) | `src/main.rs:43` | Wall-clock timeout with SIGALRM; exits with code 2 on expiry |
 
-**Note:** As of T-908, the continuation stack depth limit has been removed. Evaluation depth is bounded by cycle detection (`InProgress` sentinel) and parser depth limit (`MAX_PARSE_DEPTH = 256`). The old recursive evaluator with `MAX_EVAL_DEPTH = 256` was replaced by the iterative CEK machine in the runtime-v2 migration.
+**Note:** As of T-908, the old recursive evaluator with `MAX_EVAL_DEPTH = 256` was replaced by the iterative CEK machine. The continuation stack is now bounded by `MAX_CONTINUATION_STACK = 2048` frames (`src/eval_materialize.rs`). Evaluation depth is also bounded by cycle detection (`InProgress` sentinel) and parser depth limit (`MAX_PARSE_DEPTH = 256`).
 
 **What is NOT restricted:**
 

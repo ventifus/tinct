@@ -1,0 +1,4 @@
+# Tests sort with an unsorted input
+[sort [3 1 4 1 5 2]]
+=== out
+Dict({0: Int(1), 1: Int(1), 2: Int(2), 3: Int(3), 4: Int(4), 5: Int(5)})

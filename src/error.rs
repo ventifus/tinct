@@ -840,20 +840,14 @@ impl fmt::Display for ErrorKind {
     }
 }
 
-/// A single frame in an evaluation stack trace (function name + source locations).
+/// A single frame in an evaluation stack trace (function name + source location).
 ///
-/// Carries two spans to support the dual-span error model:
-/// - `definition_span`: where the thunk was defined (the origin of the value being forced)
-/// - `materialization_span`: where the thunk was forced (the call/access site)
-///
-/// Both spans carry a `file: Arc<str>` file path for source location attribution.
+/// The span carries a `file: Arc<str>` file path for source location attribution.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StackFrame {
     pub label: String,
     /// Where the expression being forced was defined.
     pub definition_span: Span,
-    /// Where the expression was forced (call/access site).
-    pub materialization_span: Span,
 }
 
 /// Evaluation error with definition-site span, optional materialization-site span,
@@ -927,8 +921,7 @@ impl EvalError {
     pub fn with_frame(mut self, label: String, span: Span) -> Self {
         self.stack.push(StackFrame {
             label,
-            definition_span: span.clone(),
-            materialization_span: span,
+            definition_span: span,
         });
         self
     }
@@ -937,23 +930,7 @@ impl EvalError {
     pub fn push_frame(&mut self, label: String, span: Span) {
         self.stack.push(StackFrame {
             label,
-            definition_span: span.clone(),
-            materialization_span: span,
-        });
-    }
-
-    /// Mutable stack frame push with separate definition and materialization spans.
-    /// Use this when the thunk's definition site differs from the call/access site.
-    pub fn push_frame_dual(
-        &mut self,
-        label: String,
-        definition_span: Span,
-        materialization_span: Span,
-    ) {
-        self.stack.push(StackFrame {
-            label,
-            definition_span,
-            materialization_span,
+            definition_span: span,
         });
     }
 
@@ -3017,7 +2994,6 @@ bad value (defined at src/test_util.rs:3:5-3:10)
         let impl_frame = StackFrame {
             label: "[map-impl ...]".to_string(),
             definition_span: real_span.clone(),
-            materialization_span: real_span.clone(),
         };
         assert!(
             should_display_frame(&impl_frame),
@@ -3026,7 +3002,6 @@ bad value (defined at src/test_util.rs:3:5-3:10)
         let step_frame = StackFrame {
             label: "[remove-step ...]".to_string(),
             definition_span: real_span.clone(),
-            materialization_span: real_span.clone(),
         };
         assert!(
             should_display_frame(&step_frame),
@@ -3035,7 +3010,6 @@ bad value (defined at src/test_util.rs:3:5-3:10)
         let check_frame = StackFrame {
             label: "[validate-check ...]".to_string(),
             definition_span: real_span.clone(),
-            materialization_span: real_span.clone(),
         };
         assert!(
             should_display_frame(&check_frame),
@@ -3044,7 +3018,6 @@ bad value (defined at src/test_util.rs:3:5-3:10)
         let merge_frame = StackFrame {
             label: "[sort-merge ...]".to_string(),
             definition_span: real_span.clone(),
-            materialization_span: real_span.clone(),
         };
         assert!(
             should_display_frame(&merge_frame),
@@ -3052,8 +3025,7 @@ bad value (defined at src/test_util.rs:3:5-3:10)
         );
         let user_frame = StackFrame {
             label: "[map ...]".to_string(),
-            definition_span: real_span.clone(),
-            materialization_span: real_span,
+            definition_span: real_span,
         };
         assert!(
             should_display_frame(&user_frame),
@@ -3067,7 +3039,6 @@ bad value (defined at src/test_util.rs:3:5-3:10)
         let rust_frame = StackFrame {
             label: "[builtin-fn ...]".to_string(),
             definition_span: rust_span!(),
-            materialization_span: rust_span!(),
         };
         assert!(
             should_display_frame(&rust_frame),
@@ -3076,7 +3047,6 @@ bad value (defined at src/test_util.rs:3:5-3:10)
         let real_frame = StackFrame {
             label: "[user-fn ...]".to_string(),
             definition_span: test_span(3, 1, 3, 10),
-            materialization_span: test_span(3, 1, 3, 10),
         };
         assert!(
             should_display_frame(&real_frame),

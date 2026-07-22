@@ -29,6 +29,10 @@ tokio::task_local! {
     pub(crate) static TASK_EVAL_STACK: std::cell::RefCell<Vec<(std::sync::Arc<str>, crate::ast::Span)>>;
 }
 
+/// Maximum continuation stack depth. Prevents unbounded stack growth in the CEK machine.
+/// Documented in doc/08-evaluation.md §Iterative Evaluator.
+const MAX_CONTINUATION_STACK: usize = 2048;
+
 // Thread-local singleton empty Env for MatchDispatchData. Avoids allocating a new
 // Arc<RwLock<Env>> on every match expression evaluation. This is always empty —
 // MatchDispatch uses env_id (FlatEnv) for scope; the legacy Env field (B-515) is a
@@ -382,6 +386,15 @@ pub(crate) struct PredicateCheckData {
     pub(crate) callable_invoked: bool,
 }
 
+/// Payload for Cont::AnnotatedWrapFinalize. Boxed to keep the Cont enum ≤96 bytes.
+pub(crate) struct AnnotatedWrapFinalizeData {
+    pub(crate) thunk: Arc<Thunk>,
+    pub(crate) annotation: Box<Value>,
+    pub(crate) origin: Option<Arc<str>>,
+    pub(crate) thunk_span: Span,
+    pub(crate) mat_span: Option<Span>,
+}
+
 /// Continuation variants for iterative materialization. Each represents
 /// "what to do after a sub-thunk has been materialized."
 ///
@@ -441,6 +454,10 @@ pub(crate) enum Cont {
     /// After materializing the predicate result, checks truthiness and either returns
     /// the original value (predicate passed) or evaluates the default expression / fails.
     PredicateCheck(Box<PredicateCheckData>),
+    /// Wrap a materialized inner value in Value::Annotated.
+    /// After materializing the inner thunk from AnnotatedWrap, this continuation wraps the result
+    /// in Value::Annotated { inner, annotation } and settles the outer thunk.
+    AnnotatedWrapFinalize(Box<AnnotatedWrapFinalizeData>),
 }
 
 // Compile-time assertion: Cont must be ≤96 bytes to fit in one cache line.
@@ -1172,20 +1189,20 @@ async fn dispatch_state(
             annotation,
             ctx: thunk_ctx,
         } => {
+            stack.push(Cont::AnnotatedWrapFinalize(Box::new(
+                AnnotatedWrapFinalizeData {
+                    thunk: Arc::clone(thunk),
+                    annotation,
+                    origin: thunk.span.name.clone(),
+                    thunk_span: thunk.span.clone(),
+                    mat_span: None,
+                },
+            )));
             let inner_arc = thunk_ctx.get_thunk(inner);
-            match materialize(&inner_arc, Some(&thunk.span), &thunk_ctx).await {
-                Ok(inner_val) => {
-                    let value = Value::Annotated {
-                        inner: Box::new(inner_val),
-                        annotation,
-                    };
-                    thunk.settle(Ok(value.clone()));
-                    Action::Continue(Ok(value))
-                }
-                Err(e) => {
-                    thunk.settle(Err(Arc::new((*e).clone())));
-                    Action::Continue(Err(e))
-                }
+            Action::Materialize {
+                thunk: inner_arc,
+                mat_span: None,
+                thunk_id: None,
             }
         }
     }
@@ -1207,8 +1224,12 @@ pub(crate) async fn run_owned(
         thunk_span: thunk.span.clone(),
         mat_span: None,
     })));
-    let initial = dispatch_state(state, thunk, &mut stack, ctx, env_id).await;
-    run_with_stack(initial, stack, ctx).await
+    TASK_EVAL_STACK
+        .scope(std::cell::RefCell::new(vec![]), async {
+            let initial = dispatch_state(state, thunk, &mut stack, ctx, env_id).await;
+            run_with_stack(initial, stack, ctx).await
+        })
+        .await
 }
 
 /// Apply a continuation to a materialization result.
@@ -1994,7 +2015,11 @@ pub(crate) async fn apply_cont(
                         args: args.as_ref().expect("args set above").clone(),
                         named: named.as_ref().expect("named set above").clone(),
                         call_span: call_span.clone(),
-                        caller_env_id: Some(builtin_caller_env),
+                        caller_env_id: if def.needs_caller_env {
+                            Some(builtin_caller_env)
+                        } else {
+                            None
+                        },
                         ctx: Arc::clone(&thunk_ctx),
                     };
                     match (def.func)(builtin_args)
@@ -2840,6 +2865,38 @@ pub(crate) async fn apply_cont(
                 }
             }
         }
+        Cont::AnnotatedWrapFinalize(data) => {
+            let AnnotatedWrapFinalizeData {
+                thunk,
+                annotation,
+                origin,
+                thunk_span,
+                mat_span,
+            } = *data;
+            let decorate = move |e| {
+                attach_materialization_context(
+                    e,
+                    mat_span.as_ref(),
+                    origin.as_deref(),
+                    thunk_span.clone(),
+                )
+            };
+
+            match result.map_err(&decorate) {
+                Ok(inner_val) => {
+                    let value = Value::Annotated {
+                        inner: Box::new(inner_val),
+                        annotation,
+                    };
+                    thunk.settle(Ok(value.clone()));
+                    Action::Continue(Ok(value))
+                }
+                Err(e) => {
+                    thunk.settle(Err(Arc::new((*e).clone())));
+                    Action::Continue(Err(e))
+                }
+            }
+        }
     }
 }
 
@@ -3463,6 +3520,18 @@ pub(crate) async fn run_with_stack(
                 mat_span,
                 thunk_id,
             } => {
+                // Check continuation stack depth before calling force_step, which may push continuations.
+                // This prevents unbounded stack growth in the CEK machine.
+                if stack.len() >= MAX_CONTINUATION_STACK {
+                    return Err(EvalError::resource_limit_exceeded(
+                        format!(
+                            "continuation stack depth exceeded {} frames",
+                            MAX_CONTINUATION_STACK
+                        ),
+                        mat_span.unwrap_or_else(|| thunk.span.clone()),
+                    )
+                    .into());
+                }
                 action = force_step(&thunk, thunk_id, mat_span, &mut stack, ctx).await;
             }
             Action::Continue(result) => match stack.pop() {

@@ -101,7 +101,7 @@
             [k: [builtin-get i keys]]
             [object-map-step obj f keys [builtin-int-add i 1] n
               [builtin-builder-set k [f k [builtin-get k obj]] builder]]]]
-      _: [builtin-builder-finish builder]]]
+      ...: [builtin-builder-finish builder]]]
   object-map: [fn [let obj f]
     [keys: [builtin-keys obj]]
     [object-map-step obj f keys 0 [builtin-dict-length keys] [builtin-make-builder]]]
@@ -112,7 +112,7 @@
     [_step: [fn [let builder d i n]
       [match [builtin-int-gte i n]
         0: [_step [builtin-builder-set [builtin-dict-key-nth d i] [builtin-dict-nth d i] builder] d [builtin-int-add i 1] n]
-        _: builder]]]
+        ...: builder]]]
     [builtin-builder-finish
       [_step [_step [builtin-make-builder] a 0 [builtin-dict-length a]] b 0 [builtin-dict-length b]]]]
 
@@ -206,7 +206,7 @@
   Bytes: [fn [let ...args]
     [match [builtin-eq-int [builtin-dict-length args] 0]
       0: TypeNode.Bytes
-      _: [TypeNode.SizedBytes n: [builtin-get 0 args]]]]
+      ...: [TypeNode.SizedBytes n: [builtin-get 0 args]]]]
 
   # ============================================================================
   # TypeNode traversal helpers (T-1059, equirecursive-types)
@@ -239,7 +239,7 @@
     [ann: [builtin-annotation-of ctor]]
     [match [builtin-has-key? "field-annotations" ann]
       0: []
-      _: [builtin-keys [builtin-get "field-annotations" ann]]]]
+      ...: [builtin-keys [builtin-get "field-annotations" ann]]]]
 
   # child-role: return the child role string ("One", "Seq", or "MapValues") for a
   # given @Child field of a constructor.
@@ -257,9 +257,9 @@
     [ann: [builtin-annotation-of ctor]]
     [match [builtin-has-key? "field-annotations" ann]
       0: Boolean.False
-      _: [match [builtin-has-key? field [builtin-get "field-annotations" ann]]
+      ...: [match [builtin-has-key? field [builtin-get "field-annotations" ann]]
         0: Boolean.False
-        _: Boolean.True]]]
+        ...: Boolean.True]]]
 
 ]
 
@@ -311,7 +311,7 @@
                   [match [child-role ctor field]
                     "One":       [0: val]
                     "MapValues": val]]]]]
-        _: acc]]
+        ...: acc]]
     children: [fn [let t]
       [ctor:   [TypeNode-ctor t]]
       [fields: [child-fields ctor]]
@@ -353,7 +353,7 @@
           [TypeNode.Recursive
             var:  p.var
             body: [f p.body]]]
-        _: t]]
+        ...: t]]
 
     # as-type: normalize a TypeNode value using its constructor's as-type annotation.
     # The as-type annotation function (set at TypeNode declaration time on each constructor)
@@ -365,7 +365,7 @@
       [ann: [builtin-annotation-of [TypeNode-ctor t]]]
       [match [builtin-has-key? "as-type" ann]
         0: t
-        _: [[builtin-get "as-type" ann] t]]]]]
+        ...: [[builtin-get "as-type" ann] t]]]]]
 
   # ============================================================================
   # TypeNodeResolve: typeclass for as-type dispatch (T-1059)
@@ -418,7 +418,7 @@
     [body: [f [TypeNode.RecursiveRef name: var]]]
     [match [builtin-is-contractive body]
       0: [builtin-raise [builtin-string-concat "non-contractive recursive type: immediate recursion without structural container (binder: " [builtin-string-concat var ")"]]]
-      _: [TypeNode.Recursive var: var  body: body]]]
+      ...: [TypeNode.Recursive var: var  body: body]]]
 
 ]
 
@@ -565,15 +565,15 @@ any?-impl: [fn@[bind: [a]  return: Integer] [let pred@[Fn@Boolean [a]] xs@Dict k
     [match [builtin-int-gte i len]
         0: [match [bool->int-priv [pred [builtin-get [builtin-get i ks] xs]]]
             0: [any?-impl pred xs ks [builtin-int-add i 1] len]
-            _: 1]
-        _: 0]]
+            ...: 1]
+        ...: 0]]
 
 all?-impl: [fn@[bind: [a]  return: Integer] [let pred@[Fn@Boolean [a]] xs@Dict ks i@Integer len@Integer]
     [match [builtin-int-gte i len]
         0: [match [bool->int-priv [pred [builtin-get [builtin-get i ks] xs]]]
             0: 0
-            _: [all?-impl pred xs ks [builtin-int-add i 1] len]]
-        _: 1]]
+            ...: [all?-impl pred xs ks [builtin-int-add i 1] len]]
+        ...: 1]]
 
 # ============================================================================
 # Control flow helpers (only depend on builtins + siblings)
@@ -583,8 +583,8 @@ cond-impl: [fn@[bind: [a]  return: [or a Null]] [let pairs@Dict i@Integer]
     [match [builtin-int-gte i [builtin-dict-length pairs]]
         0: [match [bool->int-priv [builtin-get i pairs].0]
             0: [cond-impl pairs [builtin-int-add i 1]]
-            _: [builtin-get i pairs].1]
-        _: []]]
+            ...: [builtin-get i pairs].1]
+        ...: []]]
 
 # ============================================================================
 # Dict utilities helpers (only depend on builtins + siblings)
@@ -596,21 +596,21 @@ bool->int-priv: [fn [let b]
     [match b
       Boolean.False: 0
       [@Integer _]:  b
-      _:             1]]
+      ...:             1]]
 
 # raw-to-result: convert the {ok: val} / {error: msg} dict returned by builtin-try into
 # a Result.Ok / Result.Error variant for downstream match arms to consume.
 raw-to-result: [fn [let raw]
     [match [builtin-has-key? "ok" raw]
         0: [Result.Error msg:   [builtin-get "error" raw]]
-        _: [Result.Ok   value: [builtin-get "ok"    raw]]]]
+        ...: [Result.Ok   value: [builtin-get "ok"    raw]]]]
 
 # ============================================================================
 # List helpers (only depend on builtins + siblings)
 # ============================================================================
 
 nth-impl: [fn@[bind: [a]  return: a] [let xs@Dict ks n@Integer len@Integer]
-    [builtin-get [builtin-get [match [builtin-lt n 0] 0: n _: [builtin-int-add len n]] ks] xs]]
+    [builtin-get [builtin-get [match [builtin-lt n 0] 0: n ...: [builtin-int-add len n]] ks] xs]]
 
 # ============================================================================
 # Higher-order helpers (only depend on builtins + siblings)
@@ -624,7 +624,7 @@ partition-step: [fn@Dict [let acc e passes]
     [match [bool->int-priv passes]
         0: [pass: [builtin-get "pass" acc]
             fail: [dict-append e [builtin-get "fail" acc]]]
-        _: [pass: [dict-append e [builtin-get "pass" acc]]
+        ...: [pass: [dict-append e [builtin-get "pass" acc]]
             fail: [builtin-get "fail" acc]]]]
 
 # ── Tinct implementations of formerly-Rust derived builtins ──────────────────
@@ -643,7 +643,7 @@ dict-append: [fn [let x xs@Dict]
      [match [builtin-int-gte i n]
        0: [_: [builtin-builder-set i [builtin-dict-nth xs i] b]
               [fill [builtin-int-add i 1]]]
-       _: [builtin-builder-set n x b]]]
+       ...: [builtin-builder-set n x b]]]
    _: [fill 0]
    [builtin-builder-finish b]]]
 
@@ -654,7 +654,7 @@ dict-merge: [fn [let a@Dict b@Dict]
       0: [_copy
             [builtin-builder-set [builtin-dict-key-nth d i] [builtin-dict-nth d i] builder]
             d n [builtin-int-add i 1]]
-      _: builder]]]
+      ...: builder]]]
   [builtin-builder-finish
     [_copy [_copy [builtin-make-builder] a [builtin-dict-length a] 0]
            b [builtin-dict-length b] 0]]]
@@ -667,22 +667,22 @@ sort-asc: [fn [let xs@Dict]
       vj:  [builtin-dict-nth xs j]
       fill: [fn [let k b]
         [match [builtin-int-gte k n]
-          0: [v: [match [builtin-eq-int k i] 0: vj _: [match [builtin-eq-int k j] 0: vi _: [builtin-dict-nth xs k]]]
+          0: [v: [match [builtin-eq-int k i] 0: vj ...: [match [builtin-eq-int k j] 0: vi ...: [builtin-dict-nth xs k]]]
                  [fill [builtin-int-add k 1] [builtin-builder-set k v b]]]
-          _: [builtin-builder-finish b]]]
+          ...: [builtin-builder-finish b]]]
       [fill 0 [builtin-make-builder]]]]
-   find-min: [fn [let from best]
+   find-min: [fn [let xs from best]
      [match [builtin-int-gte from n]
        0: [match [builtin-lt [builtin-dict-nth xs from] [builtin-dict-nth xs best]]
-             0: [find-min [builtin-int-add from 1] best]
-             _: [find-min [builtin-int-add from 1] from]]
-       _: best]]
+             0: [find-min xs [builtin-int-add from 1] best]
+             ...: [find-min xs [builtin-int-add from 1] from]]
+       ...: best]]
    step: [fn [let xs i]
      [match [builtin-int-gte i n]
-       0: [m:   [find-min [builtin-int-add i 1] i]
-           xs2: [match [builtin-eq-int m i] 0: xs _: [swap xs i m]]
+       0: [m:   [find-min xs [builtin-int-add i 1] i]
+           xs2: [match [builtin-eq-int m i] 0: xs ...: [swap xs i m]]
            [step xs2 [builtin-int-add i 1]]]
-       _: xs]]]
+       ...: xs]]]
   [step xs 0]]
 
 # partition-finish: accumulator is already in forward order — return as-is.
@@ -727,7 +727,7 @@ try-or-impl: [fn@[bind: [a]  return: a] [let try-result default@a]
 _scope-null?: [fn [let x]
   [match [builtin-eq-string [builtin-type-of x] "Dict"]
     0: 0
-    _: [builtin-eq-int [builtin-dict-length x] 0]]]
+    ...: [builtin-eq-int [builtin-dict-length x] 0]]]
 
 # _scope-shift-keys: shift all integer keys in dict d by +1.
 # {0: v} → {1: v}, {0: a, 1: b} → {1: a, 2: b}.
@@ -738,7 +738,7 @@ _scope-shift-keys: [fn [let d n i b]
           [builtin-builder-set [builtin-int-add [builtin-dict-key-nth d i] 1]
                                [builtin-dict-nth d i]
                                b]]
-    _: [builtin-builder-finish b]]]
+    ...: [builtin-builder-finish b]]]
 
 # scope-to-frames-inner: recursively walk the parent chain building a Dict accumulator.
 # Each step prepends the current scope's frame at key 0 and shifts existing entries up.
@@ -751,7 +751,7 @@ scope-to-frames-inner: [fn [let scope-id acc]
   [parent: [builtin-scope-parent scope-id]]
   [match [_scope-null? parent]
     0: [scope-to-frames-inner parent acc-next]
-    _: acc-next]]
+    ...: acc-next]]
 
 # scope-to-frames: convert a scope-id to {0: outermost-frame, ..., N: innermost-frame}.
 scope-to-frames: [fn [let scope-id]
@@ -768,7 +768,7 @@ retry-impl: [fn@[bind: [a]  return: a] [let n@Integer thunk@[Fn@a []]]
         [case [let p] [Result.Ok p]    p.value]
         [case [let _] [Result.Error]   [match [builtin-int-gte n 1]
                        0: [builtin-raise "retry limit exceeded"]
-                       _: [retry-impl [builtin-int-sub n 1] thunk]]]]]
+                       ...: [retry-impl [builtin-int-sub n 1] thunk]]]]]
 
 # select-impl: recursive event-loop body.
 # Calls select-once on sources, passes result to handler, then loops.
@@ -785,9 +785,9 @@ select-impl: [fn@Any [let ctx sources@[Seq Dict] handler@[Fn@Any [Any]]]
         0: [match [builtin-select-once ctx sources]
                 Closed.Closed:
                     Closed.Closed
-                [case [let v] _
+                [case [let v] ...
                     [call [fn [let _ignored] [select-impl ctx sources handler]] [handler v]]]]
-        _: []]]
+        ...: []]]
 
 # Indexable declared here (dict 1) so it is in scope when type-checking dict 1 helpers
 # (e.g. cond-impl uses builtin-get which carries an Indexable constraint).
@@ -966,7 +966,7 @@ Expr: [type
 variant?@[doc: "Check if value is a nominal variant (constructed by a type constructor)."]: [fn@Boolean [let v]
   [match [builtin-variant? v]
     0: Boolean.False
-    _: Boolean.True]]
+    ...: Boolean.True]]
 
 payload-of@[return: Dict  doc: """
 Extract the payload dict from a Variant value.
@@ -1017,7 +1017,7 @@ Boolean negation.
 
 Example: [not Boolean.True] => Boolean.False
 Example: [not Boolean.False] => Boolean.True
-"""] [let x] [match [bool->int x] 0: Boolean.True _: Boolean.False]]
+"""] [let x] [match [bool->int x] 0: Boolean.True ...: Boolean.False]]
 
 and: [fn@[bind: [a b]  return: [or a b]  doc: """
 Short-circuit AND.
@@ -1027,7 +1027,7 @@ Example: [and Boolean.False [expensive]] => Boolean.False   (expensive never cal
 
 Note: If x is falsy, y is never evaluated. Returns y when x is truthy, Boolean.False
 otherwise.
-"""] [let x@a y@b] [match [bool->int x] 0: Boolean.False _: y]]
+"""] [let x@a y@b] [match [bool->int x] 0: Boolean.False ...: y]]
 
 or: [fn@[bind: [a b]  return: [or a b]  doc: """
 Short-circuit OR.
@@ -1036,7 +1036,7 @@ Example: [or Boolean.True "x"] => Boolean.True
 Example: [or Boolean.False "default"] => "default"
 
 Note: If x is truthy, returns x; otherwise returns y.
-"""] [let x@a y@b] [match [bool->int x] 0: y _: x]]
+"""] [let x@a y@b] [match [bool->int x] 0: y ...: x]]
 
 any?: [fn@[bind: [a]  return: Boolean  doc: """
 Boolean.True if any element satisfies predicate.
@@ -1159,7 +1159,7 @@ Example: [abs -5] => 5
 Example: [abs 3.14] => 3.14
 
 Note: Returns -x for negative, x otherwise. Inherently materializing: derived from comparison and arithmetic.
-"""] [let x@Number] [match [builtin-lt x 0] 0: x _: [- 0 x]]]
+"""] [let x@Number] [match [builtin-lt x 0] 0: x ...: [- 0 x]]]
 
 sign: [fn@[return: Integer  doc: """
 Sign of number (-1, 0, or 1).
@@ -1173,8 +1173,8 @@ Note: Inherently materializing: derived from comparison and arithmetic.
     [match [builtin-lt x 0]
       0: [match [builtin-int-gt x 0]
            0: 1
-           _: 0]
-      _: -1]]
+           ...: 0]
+      ...: -1]]
 
 clamp: [fn@[return: Number  doc: """
 Clamp value between bounds (inclusive).
@@ -1188,8 +1188,8 @@ Note: Returns lo if x < lo, hi if x > hi, otherwise x. Inherently materializing:
     [match [builtin-lt x lo]
         0: [match [builtin-lt hi x]
             0: x
-            _: hi]
-        _: lo]]
+            ...: hi]
+        ...: lo]]
 
 # ============================================================================
 # Stringing (derived from str, split, builtin-filter, builtin-eq-string)
@@ -1234,7 +1234,7 @@ unindent-last-newline: [fn [let s pos last-pos]
   [found: [builtin-str-index-of "\n" [builtin-str-slice s pos [builtin-str-length s]]]
    [match [builtin-eq-int found -1]
      0: last-pos
-     _: [unindent-last-newline s
+     ...: [unindent-last-newline s
           [builtin-int-add pos [builtin-int-add found 1]]
           [builtin-int-add pos found]]]]]
 
@@ -1249,7 +1249,7 @@ Example: [when 1 "result"] => "result"
 Example: [when 0 "result"] => []
 
 Note: Returns [] (empty dict) if predicate is falsy.
-"""] [let pred body@a] [match [bool->int pred] 0: [] _: body]]
+"""] [let pred body@a] [match [bool->int pred] 0: [] ...: body]]
 
 unless: [fn@[bind: [a]  return: [or a Null]  doc: """
 Evaluate body if predicate is falsy.
@@ -1258,7 +1258,7 @@ Example: [unless 0 "result"] => "result"
 Example: [unless 1 "result"] => []
 
 Note: Returns [] (empty dict) if predicate is truthy.
-"""] [let pred body@a] [match [bool->int pred] 0: body _: []]]
+"""] [let pred body@a] [match [bool->int pred] 0: body ...: []]]
 
 cond: [fn@[bind: [a]  return: [or a Null]  doc: """
 Multi-branch conditional.
@@ -1303,7 +1303,7 @@ Example: [has? "y" [x: 1]] => Boolean.False
 
 Note: Signature is Key -> Dict -> Boolean (key-first for pipeline composition).
 """] [let k xs@Record]
-    [match [builtin-has-key? k xs] 0: Boolean.False _: Boolean.True]]
+    [match [builtin-has-key? k xs] 0: Boolean.False ...: Boolean.True]]
 
 
 get-or: [fn@[bind: [a]  return: a  doc: """
@@ -1494,22 +1494,22 @@ sort-by@[doc: "Sort with custom comparator"]: [fn@[bind: [a]  return: Dict] [let
             vj:   [builtin-dict-nth xs j]
             fill: [fn [let k b]
               [match [builtin-int-gte k n]
-                0: [v: [match [builtin-eq-int k i] 0: vj _: [match [builtin-eq-int k j] 0: vi _: [builtin-dict-nth xs k]]]
+                0: [v: [match [builtin-eq-int k i] 0: vj ...: [match [builtin-eq-int k j] 0: vi ...: [builtin-dict-nth xs k]]]
                        [fill [builtin-int-add k 1] [builtin-builder-set k v b]]]
-                _: [builtin-builder-finish b]]]
+                ...: [builtin-builder-finish b]]]
             [fill 0 [builtin-make-builder]]]]
          find-min: [fn [let xs from best]
            [match [builtin-int-gte from n]
              0: [match [bool->int [cmp [builtin-dict-nth xs from] [builtin-dict-nth xs best]]]
                    0: [find-min xs [builtin-int-add from 1] best]
-                   _: [find-min xs [builtin-int-add from 1] from]]
-             _: best]]
+                   ...: [find-min xs [builtin-int-add from 1] from]]
+             ...: best]]
          step:     [fn [let xs i]
            [match [builtin-int-gte i n]
              0: [m:   [find-min xs [builtin-int-add i 1] i]
-                 xs2: [match [builtin-eq-int m i] 0: xs _: [swap xs i m]]
+                 xs2: [match [builtin-eq-int m i] 0: xs ...: [swap xs i m]]
                  [step xs2 [builtin-int-add i 1]]]
-             _: xs]]
+             ...: xs]]
          [step xs 0]]]]
 
 # Like Python's sorted() — accepts both Seq and Dict; collects a Seq first.
@@ -1631,7 +1631,7 @@ flatten-impl-dict@[doc: "Flatten dict implementation (internal helper)"]: [fn@Di
 find-deep-impl@[doc: "Find-deep implementation (internal helper)"]: [fn@Any [let xs@Dict target ks i@Integer]
     [match [builtin-int-gte i [length ks]]
         0: [find-deep-check xs target ks i [get i ks]]
-        _: [error [join "" ["key not found: " target]]]]]
+        ...: [error [join "" ["key not found: " target]]]]]
 
 find-deep-check@[doc: "Find-deep check (internal helper)"]: [fn@Any [let xs@Dict target ks i@Integer current-key]
     [if [= current-key target]
@@ -1841,7 +1841,7 @@ Example: [min ["c" "a" "b"]] => "a"
 Note: Errors on empty collection (no sensible default for polymorphic min).
 """] [let xs@Dict]
     [reduce
-        [fn [let a b] [match [builtin-lt a b] 0: b _: a]]
+        [fn [let a b] [match [builtin-lt a b] 0: b ...: a]]
         [dict-first [@Dict xs]]
         [@Dict [tail [@Dict xs]]]]]
 
@@ -1854,7 +1854,7 @@ Example: [max ["c" "a" "b"]] => "c"
 Note: Errors on empty collection (no sensible default for polymorphic max).
 """] [let xs@Dict]
     [reduce
-        [fn [let a b] [match [builtin-lt a b] 0: a _: b]]
+        [fn [let a b] [match [builtin-lt a b] 0: a ...: b]]
         [dict-first [@Dict xs]]
         [@Dict [tail [@Dict xs]]]]]
 
@@ -1868,7 +1868,7 @@ count@[doc: "Count elements satisfying predicate"]: [fn@[bind: [a]  return: Inte
 
 # Check if a collection contains val (using structural equality), a string contains a substring,
 # or a Bytes value contains a given byte (val must be an Int 0-255).
-# Handles Dict input (uses any?), Seq input (uses filter then seq? to check non-empty),
+# Handles Dict input (uses any?), Seq input (uses contains-seq?),
 # Stringing input (uses str-contains? for substring search),
 # and Bytes input (uses bytes-find to search for a single-byte needle).
 # Signature is Val -> Collection -> Bool (subject-last for pipeline composition).
@@ -1877,15 +1877,15 @@ contains?@[doc: "Check if collection contains element"]: [fn@Boolean [let val xs
         0: [match [builtin-eq-string [type-of xs] "Bytes"]
             0: [match [seq? xs]
                 0: [any? [fn [let e] [= e val]] xs]
-                _: [seq? [filter [fn [let e] [= e val]] xs]]]
-            _: [if [int? val]
+                ...: [contains-seq? xs val]]
+            ...: [if [int? val]
                 [if [>= val 0]
                     [if [< val 256]
-                        [match [builtin-int-gte [builtin-bytes-find xs [builtin-bytes-of [0: val]]] 0] 0: Boolean.False _: Boolean.True]
+                        [match [builtin-int-gte [builtin-bytes-find xs [builtin-bytes-of [0: val]]] 0] 0: Boolean.False ...: Boolean.True]
                         [error "contains?: byte value must be in range 0-255"]]
                     [error "contains?: byte value must be in range 0-255"]]
                 [error "contains?: needle must be Int (byte value) when haystack is Bytes"]]]
-        _: [str-contains? val xs]]]
+        ...: [str-contains? val xs]]]
 
 uniq@[doc: "Remove duplicates (keep first occurrence). O(n²) due to O(n) contains-seq? per element, but uses reduce (Rust loop) for performance (B-267)."]: [fn@Dict [let xs]
     [uniq-impl xs]]
@@ -1925,16 +1925,16 @@ Note: Threads initial value v through each function in sequence. Each function r
 # Type predicates — tinct functions returning Boolean.
 # No builtins needed: tinct pattern matching covers all cases.
 # null? uses builtin-eq-int on the length — = would go through Equatable which calls null? (cycle).
-int?@[doc: "Check if value is Int"]:   [fn@Boolean [let x@[is: Int]] [match x [@Integer _]:      Boolean.True  _: Boolean.False]]
-float?@[doc: "Check if value is Float"]: [fn@Boolean [let x@[is: Float]] [match x [@Float _]:  Boolean.True  _: Boolean.False]]
-str?@[doc: "Check if value is String"]: [fn@Boolean [let x@[is: String]] [match x [@String _]:     Boolean.True  _: Boolean.False]]
-bool?@[doc: "Check if value is Bool"]:  [fn@Boolean [let x@[is: Boolean]] [match x Boolean.True: Boolean.True  Boolean.False: Boolean.True  _: Boolean.False]]
-null?@[doc: "Check if value is null (empty dict [])"]: [fn@Boolean [let x@[is: Null]] [if [dict? x] [match [builtin-eq-int [builtin-dict-length x] 0] 0: Boolean.False _: Boolean.True] Boolean.False]]
-dict?@[doc: "Check if value is Dict"]:  [fn@Boolean [let x@[is: Dict]] [match x [@Dict _]:    Boolean.True  _: Boolean.False]]
-fn?@[doc: "Check if value is a function (Function or Builtin)"]: [fn@Boolean [let x] [match x [@Fn _]: Boolean.True  _: Boolean.False]]
-proxy?@[doc: "Check if value is a Proxy"]: [fn@Boolean [let x] [match x [@Proxy _]: Boolean.True  _: Boolean.False]]
-seq?@[doc: "Check if value is a Seq"]:  [fn@Boolean [let x] [match x [@Seq _]:     Boolean.True  _: Boolean.False]]
-bytes?@[doc: "Check if value is Bytes"]: [fn@Boolean [let x@[is: Bytes]] [match x [@Bytes _]:  Boolean.True  _: Boolean.False]]
+int?@[doc: "Check if value is Int"]:   [fn@Boolean [let x@[is: Int]] [match x [@Integer _]:      Boolean.True  ...: Boolean.False]]
+float?@[doc: "Check if value is Float"]: [fn@Boolean [let x@[is: Float]] [match x [@Float _]:  Boolean.True  ...: Boolean.False]]
+str?@[doc: "Check if value is String"]: [fn@Boolean [let x@[is: String]] [match x [@String _]:     Boolean.True  ...: Boolean.False]]
+bool?@[doc: "Check if value is Bool"]:  [fn@Boolean [let x@[is: Boolean]] [match x Boolean.True: Boolean.True  Boolean.False: Boolean.True  ...: Boolean.False]]
+null?@[doc: "Check if value is null (empty dict [])"]: [fn@Boolean [let x@[is: Null]] [if [dict? x] [match [builtin-eq-int [builtin-dict-length x] 0] 0: Boolean.False ...: Boolean.True] Boolean.False]]
+dict?@[doc: "Check if value is Dict"]:  [fn@Boolean [let x@[is: Dict]] [match x [@Dict _]:    Boolean.True  ...: Boolean.False]]
+fn?@[doc: "Check if value is a function (Function or Builtin)"]: [fn@Boolean [let x] [match x [@Fn _]: Boolean.True  ...: Boolean.False]]
+proxy?@[doc: "Check if value is a Proxy"]: [fn@Boolean [let x] [match x [@Proxy _]: Boolean.True  ...: Boolean.False]]
+seq?@[doc: "Check if value is a Seq"]:  [fn@Boolean [let x] [match x [@Seq _]:     Boolean.True  ...: Boolean.False]]
+bytes?@[doc: "Check if value is Bytes"]: [fn@Boolean [let x@[is: Bytes]] [match x [@Bytes _]:  Boolean.True  ...: Boolean.False]]
 
 num?@[doc: "Check if value is numeric (Int or Float)"]: [fn@Boolean [let x] [or [int? x] [float? x]]]
 
@@ -2006,13 +2006,13 @@ values-seq-impl: [fn@[bind: [a]  return: [Seq a]] [let xs@Dict ks i@Integer len@
         0: [Seq.Cons
             head: [builtin-get [builtin-get i ks] xs]
             tail: [values-seq-impl xs ks [builtin-int-add i 1] len]]
-        _: Seq.End]]
+        ...: Seq.End]]
 
 # entries-seq-impl: Build a lazy Seq of entry dicts (O(1) per element).
 entries-seq-impl: [fn@[Seq Dict] [let xs@Dict ks i@Integer len@Integer]
     [match [builtin-int-gte i len]
         0: [entries-seq-step xs ks i len [builtin-get i ks]]
-        _: Seq.End]]
+        ...: Seq.End]]
 
 entries-seq-step: [fn@[Seq Dict] [let xs@Dict ks i@Integer len@Integer k]
     [Seq.Cons
@@ -2029,8 +2029,8 @@ zip-seq-impl: [fn@[bind: [a b]  return: [Seq Dict]] [let xs@[Seq a] ys@[Seq b]]
             [case [let py] [Seq.Cons py] [Seq.Cons
                 head: [px.head  py.head]
                 tail: [zip-seq-impl px.tail py.tail]]]
-            _:             Seq.End]]
-        _:             Seq.End]]
+            ...:             Seq.End]]
+        ...:             Seq.End]]
 
 # zip-dict-impl: Build lazy Seq of pairs from two Dicts, then collect.
 zip-dict-impl: [fn@Dict [let xs@Dict ys@Dict]
@@ -2040,8 +2040,8 @@ zip-dict-seq-impl: [fn@[Seq Dict] [let xs@Dict ys@Dict xks yks i@Integer xlen@In
     [match [builtin-int-gte i xlen]
         0: [match [builtin-int-gte i ylen]
             0: [zip-dict-seq-step xs ys xks yks i xlen ylen [builtin-get i xks] [builtin-get i yks]]
-            _: Seq.End]
-        _: Seq.End]]
+            ...: Seq.End]
+        ...: Seq.End]]
 
 zip-dict-seq-step: [fn@[Seq Dict] [let xs@Dict ys@Dict xks yks i@Integer xlen@Integer ylen@Integer xk yk]
     [Seq.Cons
@@ -2052,7 +2052,7 @@ zip-dict-seq-step: [fn@[Seq Dict] [let xs@Dict ys@Dict xks yks i@Integer xlen@In
 contains-seq?: [fn@[bind: [a]  return: Boolean] [let seq@[Seq a] val@a]
     [reduce
         [fn [let found x]
-            [match [bool->int found] 0: [match [bool->int [= x val]] 0: Boolean.False _: Boolean.True] _: found]]
+            [match [bool->int found] 0: [match [bool->int [= x val]] 0: Boolean.False ...: Boolean.True] ...: found]]
         Boolean.False
         seq]]
 
@@ -2095,12 +2095,12 @@ drop-while-seq: [fn@[bind: [a]  return: [Seq Dict]] [let pred@[Fn@Boolean [a]] e
 flatten-seq-impl: [fn@[bind: [a]  return: [Seq a]] [let xs@Dict ks i@Integer len@Integer]
     [match [builtin-int-gte i len]
         0: [flatten-seq-step xs ks i len [builtin-get i ks]]
-        _: Seq.End]]
+        ...: Seq.End]]
 
 flatten-seq-step: [fn@[bind: [a]  return: [Seq a]] [let xs@Dict ks i@Integer len@Integer k]
     [match [builtin-get k xs]
         [@Dict _]: [flatten-seq-append-dict [builtin-get k xs] [flatten-seq-impl xs ks [builtin-int-add i 1] len]]
-        _:         [Seq.Cons
+        ...:         [Seq.Cons
                         head: [builtin-get k xs]
                         tail: [flatten-seq-impl xs ks [builtin-int-add i 1] len]]]]
 
@@ -2115,7 +2115,7 @@ flatten-seq-concat-values: [fn@[bind: [a]  return: [Seq a]] [let d@Dict ks i@Int
         0: [Seq.Cons
             head: [builtin-get [builtin-get i ks] d]
             tail: [flatten-seq-concat-values d ks [builtin-int-add i 1] len rest]]
-        _: rest]]
+        ...: rest]]
 
 # ============================================================================
 # Pure-tinct Seq traversal helpers (T-1320, S-896)
@@ -2450,7 +2450,7 @@ absent?@[doc: "Boolean.True if x is Absent.Absent (a missing value), Boolean.Fal
   [fn@Boolean [let x@Unknown]
     [match x
       [Absent.Absent]: Boolean.True
-      _: Boolean.False]]
+      ...: Boolean.False]]
 
 # ============================================================================
 # Common Constructor Aliases (Convenience Bindings)
@@ -2587,10 +2587,10 @@ Equatable@[doc: "Type class for types that support equality comparison"]:
 # builtin-eq-int/float/string return Int(1/0); use match for branching to produce Boolean.
 # Bool equality: convert to Int via bool->int-priv, then compare with builtin-eq-int.
 [instance Equatable
-  [let a@Integer]:    [=: [fn [let x@Integer    y@Integer]    [match [builtin-eq-int    x y] 0: Boolean.False _: Boolean.True]]]
-  [let a@Float]:  [=: [fn [let x@Float  y@Float]  [match [builtin-eq-float  x y] 0: Boolean.False _: Boolean.True]]]
-  [let a@String]: [=: [fn [let x@String y@String] [match [builtin-eq-string x y] 0: Boolean.False _: Boolean.True]]]
-  [let a@Boolean]:   [=: [fn [let x@Boolean   y@Boolean]   [match [builtin-eq-int [bool->int-priv x] [bool->int-priv y]] 0: Boolean.False _: Boolean.True]]]]
+  [let a@Integer]:    [=: [fn [let x@Integer    y@Integer]    [match [builtin-eq-int    x y] 0: Boolean.False ...: Boolean.True]]]
+  [let a@Float]:  [=: [fn [let x@Float  y@Float]  [match [builtin-eq-float  x y] 0: Boolean.False ...: Boolean.True]]]
+  [let a@String]: [=: [fn [let x@String y@String] [match [builtin-eq-string x y] 0: Boolean.False ...: Boolean.True]]]
+  [let a@Boolean]:   [=: [fn [let x@Boolean   y@Boolean]   [match [builtin-eq-int [bool->int-priv x] [bool->int-priv y]] 0: Boolean.False ...: Boolean.True]]]]
 
 # Cross-type catch-all: comparing values of different types always returns Boolean.False
 [instance Equatable
@@ -2625,7 +2625,7 @@ The Rust pattern matching engine looks up the instance binding directly by type 
 # instance_binding_name keys (ɪɴꜱᴛᴀɴᴄᴇ⧼Matchable∷to-match⟨Boolean⟩⧽, etc.).
 [instance Matchable
   [let a@Boolean]: [to-match: [fn@Integer [let x@Boolean]
-    [match x Boolean.True: 1 _: 0]]]
+    [match x Boolean.True: 1 ...: 0]]]
   [let a@Integer]:     [to-match: [fn@Integer [let x@Integer] x]]]
 
 
@@ -2633,21 +2633,10 @@ The Rust pattern matching engine looks up the instance binding directly by type 
 # Type Class Declarations: Comparable
 # ============================================================================
 
-# Types supporting ordering (< > <= >=)
-Comparable@[doc: "Type class for types that support ordering"]:
-  [class [let a] [superclasses: [[Equatable a]]]
-    <: [Fn@Boolean [a a]]]
-
-# Concrete type Comparable instances — method key is < (operator name for dispatch)
-# Single binding per arm: dispatch checks arg0 position only (n_to_check = min(1, 2) = 1).
-# [< 1 "hello"] dispatches to Int arm (arg0=Int), then builtin-lt produces a type mismatch
-# error for incompatible types — the type checker enforces safety statically via Comparable.
-# builtin-lt returns Int(1/0); use match for branching to produce Boolean.True/Boolean.False.
-[instance Comparable
-  [let a@Integer]:    [<: [fn [let x y] [match [builtin-lt x y] 0: Boolean.False _: Boolean.True]]]
-  [let a@Float]:  [<: [fn [let x y] [match [builtin-lt x y] 0: Boolean.False _: Boolean.True]]]
-  [let a@String]: [<: [fn [let x y] [match [builtin-lt x y] 0: Boolean.False _: Boolean.True]]]
-  [let a@Boolean]:   [<: [fn [let x y] [match [builtin-lt x y] 0: Boolean.False _: Boolean.True]]]]
+# Comparable = Sortable + Equatable. Defines no new methods — < comes from Sortable.
+# Use Sortable directly for types that have ordering but not equality (e.g. Float/NaN).
+Comparable@[doc: "Type class for types that support both ordering and equality. Requires Equatable and Sortable. Use Sortable directly for types like Float that have ordering but not equality."]:
+  [class [let a] [superclasses: [[Equatable a] [Sortable a]]]]
 
 # ============================================================================
 # Type Class Declarations: Castable
@@ -2722,7 +2711,7 @@ PrintableFloat@[doc: "Printable instance for Float: print converts a Float to it
 
 PrintableBool@[doc: "Printable instance for Bool: print converts a Bool to \"True\" or \"False\""]:
   [instance Printable
-    [let a@Boolean]: [print: [fn [let x] [match [bool->int x] 0: "False" _: "True"]]]]
+    [let a@Boolean]: [print: [fn [let x] [match [bool->int x] 0: "False" ...: "True"]]]]
 
 PrintableStr@[doc: "Printable instance for String: print is the identity (strings are already strings)"]:
   [instance Printable
@@ -2833,7 +2822,7 @@ Hashable@[doc: "Type class for types that can be used as dict keys (hash-consist
   [let k@Integer]:     [hash: [fn [let a@Integer]     a]]
   [let k@String]:  [hash: [fn [let a@String]
     [reduce [fn [let acc b] [mod [+ [* acc 31] b] 2147483647]] 0 [str-bytes a]]]]
-  [let k@Boolean]: [hash: [fn [let a@Boolean] [match a Boolean.True: 1 _: 0]]]]
+  [let k@Boolean]: [hash: [fn [let a@Boolean] [match a Boolean.True: 1 ...: 0]]]]
 
 # ============================================================================
 # Type Class Declarations: Sortable
@@ -2843,32 +2832,25 @@ Hashable@[doc: "Type class for types that can be used as dict keys (hash-consist
 # Float is Sortable but NOT Equatable (NaN violates reflexivity of =).
 # Sortable and Equatable are orthogonal — do not combine them into one class.
 #
-# Note: builtin-float-lt and builtin-str-lt do not yet exist as separate builtins;
-# all ordering instances use builtin-lt which dispatches on the concrete type.
-# Type-specific ordering builtins are tracked for a future sprint.
 
 Sortable@[doc: """
 Typeclass for types with a strict total order.
 Float is Sortable but NOT Equatable (NaN violates reflexivity).
 Sortable and Equatable are orthogonal.
+Comparable = Sortable + Equatable.
 """]:
   [class [let k]
     <: [Fn@Boolean [k k]]]
 
-# Sortable instance for Int
-SortableInt@[doc: "Sortable instance for Int: < is integer less-than"]:
-  [instance Sortable
-    [let k@Integer]: [<: [fn [let a b] [builtin-lt a b]]]]
-
-# Sortable instance for Float (Sortable but NOT Equatable due to NaN)
-SortableFloat@[doc: "Sortable instance for Float: < is float less-than (NaN violates Equatable reflexivity; Float is NOT Equatable)"]:
-  [instance Sortable
-    [let k@Float]: [<: [fn [let a b] [builtin-lt a b]]]]
-
-# Sortable instance for String: lexicographic order
-SortableStr@[doc: "Sortable instance for String: < is lexicographic less-than"]:
-  [instance Sortable
-    [let k@String]: [<: [fn [let a b] [builtin-lt a b]]]]
+# Sortable instances — anonymous multi-arm for automatic < dispatch.
+# Each arm uses its dedicated monomorphic builtin.
+# Float is included here (Sortable but not Equatable/Comparable due to NaN).
+# All builtins return Int(1/0); match converts to Boolean.
+[instance Sortable
+  [let k@Integer]: [<: [fn [let a b] [match [builtin-lt a b]       0: Boolean.False ...: Boolean.True]]]
+  [let k@Float]:   [<: [fn [let a b] [match [builtin-float-lt a b] 0: Boolean.False ...: Boolean.True]]]
+  [let k@String]:  [<: [fn [let a b] [match [builtin-str-lt a b]   0: Boolean.False ...: Boolean.True]]]
+  [let k@Boolean]: [<: [fn [let a b] [match [builtin-lt [bool->int a] [bool->int b]] 0: Boolean.False ...: Boolean.True]]]]
 
 # ============================================================================
 # Sequences
@@ -2891,7 +2873,7 @@ Example: [assert True "never fails"] => True
 Example: [assert False "fails"] => error "fails"
 
 Note: Returns True if condition is True; raises an error with the given message if False. Inherently materializing: must materialize condition to check.
-"""] [let cond msg@String] [match [bool->int cond] 0: [error msg] _: Boolean.True]]
+"""] [let cond msg@String] [match [bool->int cond] 0: [error msg] ...: Boolean.True]]
 
 # ============================================================================
 # Shadowable Operator Wrappers
@@ -3010,7 +2992,7 @@ Note: For Seq values, prefer [count identity xs] (length forces a Seq to a Dict 
     [match [builtin-type-of xs]
       "String": [builtin-str-length xs]
       "Bytes":  [builtin-bytes-length xs]
-      _:        [builtin-dict-length xs]]]
+      ...:        [builtin-dict-length xs]]]
 
 # Reconstruct a Dict from a Seq of key-value pair dicts.
 # Takes a Seq of [key: K, value: V] dicts (as produced by each-kv).
@@ -3164,7 +3146,7 @@ get?@[return: [or a Absent]  doc: "Get a value by key; returns Absent.Absent if 
   [fn@[bind: [a]  return: [or a Absent]] [let k d]
     [match [builtin-has-key? k d]
       0: Absent.Absent
-      _: [builtin-get k d]]]
+      ...: [builtin-get k d]]]
 
 # Type introspection
 type-of@[doc: "Return the type name of a value as a String"]: builtin-type-of
@@ -3193,7 +3175,7 @@ annotation-to-str@[doc: "Stringify a full annotation dict to a display string. N
             [join "" ["[" [join " " [map [fn [let e] [annotation-value-str e.value]] positional]] "]"]]
             [ret: [find-first-or [fn [let e] [= "return" e.key]] [] ann.entries]
               [if [= ret []] "" [annotation-value-str ret.value]]]]
-        _: ""]]]
+        ...: ""]]]
 
 sig-from-ast@[doc: "Build a signature string from an ast-of result"]:
   [fn@String [let ast@Dict]
@@ -3294,7 +3276,7 @@ write@[doc: "Write content to a handle (content first, handle last). Returns han
         [h.write s h]
         [match h
           [StringWriter.Writer _]: [StringWriter.Writer cells: [builtin-string-concat h.cells s]]
-          _: [raise [join "" ["write: unsupported handle: " [builtin-type-of h]]]]]]]]
+          ...: [raise [join "" ["write: unsupported handle: " [builtin-type-of h]]]]]]]]
 seek@[doc: "Seek to a position in a seekable file handle."]:
   [fn [let pos h]
     [if [= [builtin-type-of h] "File"]
@@ -3339,7 +3321,7 @@ read-chunk@[doc: "Read up to n bytes from a handle (size first, handle last)."]:
 # Meta primitives: resolve/eval for AST introspection and meta-programming.
 resolve@[doc: "Resolve a Document against scope frames, returning {doc, diagnostics, warnings}. diagnostics: errors only (undefined variables). warnings: lost-binding / unused-param. Args: doc frames."]: builtin-resolve
 program@[doc: "Construct a Program value from a sequence of Document values. Used for program transformation."]: builtin-program
-eval@[doc: "Evaluate a resolved+typed Document in a scope. Args: typed-doc scope-id. Returns {result, scope-id, errors}."]: builtin-eval
+eval@[doc: "Evaluate a resolved+typed Document in a scope. Args: typed-doc scope-id. Returns {result, scope-id, diagnostics}."]: builtin-eval
 eval-types@[doc: "Evaluate expressions in the type-stage environment"]: builtin-eval-types
 blake3@[doc: "Compute the BLAKE3 cryptographic hash of a string, returning a hex-encoded digest."]: builtin-blake3
 cap-identity@[doc: "Return a stable string identity for a DirCap (used for content-addressed caching keys)."]: builtin-cap-identity
@@ -3733,7 +3715,7 @@ Note: Works on Dict (by insertion order), String (first char), or Bytes (first b
 """] [let xs]
   [match [builtin-type-of xs]
     "String": [builtin-str-slice xs 0 1]
-    _:        [dict-first xs]]]
+    ...:        [dict-first xs]]]
 
 last: [fn@[return: Unknown  doc: """
 Last element of a collection.
@@ -3746,7 +3728,7 @@ Note: Works on Dict (by insertion order), String (last char), or Bytes (last byt
 """] [let xs]
   [match [builtin-type-of xs]
     "String": [builtin-str-slice xs [builtin-int-sub [builtin-str-length xs] 1] [builtin-str-length xs]]
-    _:        [dict-last xs]]]
+    ...:        [dict-last xs]]]
 
 rest: [fn@[return: Any  doc: """
 All elements after first (reindexed from 0).
@@ -3768,7 +3750,7 @@ Note: Returns a new Dict with elements in reverse order, keys reindexed from 0.
      [match [builtin-int-gte i n]
        0: [fill [builtin-int-add i 1]
                [builtin-builder-set i [builtin-dict-nth xs [builtin-int-sub [builtin-int-sub n 1] i]] b]]
-       _: [builtin-builder-finish b]]]
+       ...: [builtin-builder-finish b]]]
   [fill 0 [builtin-make-builder]]]]
 
 sort: [fn@[bind: [a]  return: Dict  constraint: [a: Comparable]  doc: """
@@ -4002,7 +3984,7 @@ lines@[doc: "Read all lines from a protocol dict handle (via read-all + split). 
 chunks@[doc: "Lazily read fixed-size byte chunks from a handle. Returns a Seq of Bytes."]:
   [fn@[Seq Bytes] [let h n@Integer]
     [c: [read-chunk n h]]
-    [match [builtin-eq-int [builtin-bytes-length c] 0] 0: [Seq.Cons head: c  tail: [chunks h n]] _: Seq.End]]
+    [match [builtin-eq-int [builtin-bytes-length c] 0] 0: [Seq.Cons head: c  tail: [chunks h n]] ...: Seq.End]]
 
 # Concatenate a Seq or Dict of Bytes values into a single Bytes value.
 # Uses the variadic `bytes` builtin (via builtin-bytes) after collecting the sequence eagerly.
@@ -4143,14 +4125,14 @@ The map drives evaluation; for parallel work, spawn tasks before calling await-a
 # Type: ([Channel T] -> Int -> [Seq T])
 # Example: [recv-all ch 3] => Seq of 3 received values
 recv-all@[doc: """
-Receive exactly n items from a channel, returning them as a Seq.
+Receive exactly n items from a channel, returning them as a Seq in receive order.
 
 Example: [recv-all ch 3]
 
 Note: Blocks until all n items have been received. Uses reduce over [range 0 n]
 to collect results; the accumulator grows by one item per step.
 """]: [fn@[bind: [a]  return: [Seq a]] [let ch n@Integer]
-    [reduce [fn [let acc _] [cons [recv ch] acc]] Seq.End [range 0 n]]]
+    [reduce [fn [let acc _] [concat-seq acc [cons [recv ch] Seq.End]]] Seq.End [range 0 n]]]
 
 # exit: graceful shutdown — cancel all tasks, wait for drain, then exit.
 #
@@ -4432,7 +4414,7 @@ digit-push-right@[doc: "Internal: append one element to the right of a Digit (no
       [case [let s] [Digit.One   s] [Digit.Two   a: s.a  b: x]]
       [case [let s] [Digit.Two   s] [Digit.Three a: s.a  b: s.b  c: x]]
       [case [let s] [Digit.Three s] [Digit.Four  a: s.a  b: s.b  c: s.c  d: x]]
-      _: [raise "digit-push-right: digit is full (Four)"]]]
+      ...: [raise "digit-push-right: digit is full (Four)"]]]
 
 digit-push-left@[doc: "Internal: prepend one element to the left of a Digit (not Four)."]:
   [fn [let x d]
@@ -4440,7 +4422,7 @@ digit-push-left@[doc: "Internal: prepend one element to the left of a Digit (not
       [case [let s] [Digit.One   s] [Digit.Two   a: x  b: s.a]]
       [case [let s] [Digit.Two   s] [Digit.Three a: x  b: s.a  c: s.b]]
       [case [let s] [Digit.Three s] [Digit.Four  a: x  b: s.a  c: s.b  d: s.c]]
-      _: [raise "digit-push-left: digit is full (Four)"]]]
+      ...: [raise "digit-push-left: digit is full (Four)"]]]
 
 digit-first@[doc: "Internal: leftmost element of a Digit."]:
   [fn [let d]
@@ -4485,7 +4467,7 @@ an FNode). Maintains the invariant: FTDeep.size = total leaf count at every leve
               prefix: p.prefix
               spine:  [ft-push-right-sized [FNode.FNode3 size: 3  left: s.a  mid: s.b  right: s.c] 3 p.spine]
               suffix: [Digit.Two a: s.d  b: x]]]
-          _:
+          ...:
             [FingerTree.FTDeep
               size:   [+ p.size x-size]
               prefix: p.prefix
@@ -4515,7 +4497,7 @@ ft-push-left-sized@[doc: "Internal: size-aware left push."]:
               prefix: [Digit.Two a: x  b: s.a]
               spine:  [ft-push-left-sized [FNode.FNode3 size: 3  left: s.b  mid: s.c  right: s.d] 3 p.spine]
               suffix: p.suffix]]
-          _:
+          ...:
             [FingerTree.FTDeep
               size:   [+ p.size x-size]
               prefix: [digit-push-left x p.prefix]
@@ -4538,14 +4520,14 @@ elem-size-at-level@[doc: "Internal: leaf count for an element at any spine depth
     [match x
       [case [let p] [FNode.FNode2 p] p.size]
       [case [let p] [FNode.FNode3 p] p.size]
-      _:               1]]
+      ...:               1]]
 
 fnode-elem-get@[doc: "Internal: self-similar descent into nested FNodes to reach a leaf."]:
   [fn [let node i]
     [match node
       [case [let fn2] [FNode.FNode2 fn2] [fnode2-elem-get fn2.left fn2.right i]]
       [case [let fn3] [FNode.FNode3 fn3] [fnode3-elem-get fn3.left fn3.mid fn3.right i]]
-      _:                  node]]
+      ...:                  node]]
 
 fnode2-elem-get@[doc: "Internal: index into a 2-child FNode."]:
   [fn [let left right i]
@@ -4672,7 +4654,7 @@ Two digits yield 4–8 elements, so chunking always terminates cleanly
                                       mid:   p2.head
                                       right: p3.head]
                               tail: Seq.End]
-                  _:
+                  ...:
                     [Seq.Cons head: [FNode.FNode2
                                       size:  [+ [elem-size p1.head] [elem-size p2.head]]
                                       left:  p1.head
@@ -4691,10 +4673,10 @@ ft-add-nodes@[return: Any  doc: "Internal: fold FNodes into the left spine then 
       Seq.End:
         [match left
           FingerTree.FTEmpty: right
-          _:
+          ...:
             [match right
               FingerTree.FTEmpty: left
-              _: [ft-concat-sized left right fnode-size]]]
+              ...: [ft-concat-sized left right fnode-size]]]
       [case [let p] [Seq.Cons p]
         [ft-add-nodes [ft-push-right-sized p.head [fnode-size p.head] left] p.tail right]]]]
 
@@ -5222,7 +5204,7 @@ do-empty-dict-node: [fn [let]
 # Check if a step AST is a binding step (a dict literal with at least one entry).
 # A binding step was written as [name: expr] in the do-block.
 do-is-binding: [fn [let step]
-  [match step [Dict _]: Boolean.True _: Boolean.False]]
+  [match step [Dict _]: Boolean.True ...: Boolean.False]]
 
 # Check if the first arg looks like an inferred-form step rather than an explicit monad.
 # Explicit monad args are Var or DotAccess.
@@ -5232,7 +5214,7 @@ do-is-inferred-form: [fn [let first-arg]
   [match first-arg
     [Var _]:       Boolean.False
     [DotAccess _]: Boolean.False
-    _:             Boolean.True]]
+    ...:             Boolean.True]]
 
 # Extract the binding name from a binding step.
 # For Value::Expression(Dict): step.entries returns {0: Entry{key, value, span}}.
@@ -5368,7 +5350,7 @@ begin: >>
 task: [fn [let first@Expr ...rest@Expr]
   [ast: [match rest
     Seq.End: [quote [builtin-task [unquote first]]]
-    _:       [quote [builtin-task [>> [unquote first] [unquote-splice rest]]]]]]
+    ...:       [quote [builtin-task [>> [unquote first] [unquote-splice rest]]]]]]
   [eval-macro-ast ast]]
 
 ]

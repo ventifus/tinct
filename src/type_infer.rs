@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use crate::ast::Span;
-use crate::types::{Constraint, Kind, Row, Type};
+use crate::types::{Constraint, Kind, Row, RowTail, Type};
 
 /// A deferred typeclass dispatch: connects a constraint TypeVar to the call-site VarRef.
 /// When check_constraints_on_var resolves the TypeVar to a concrete type, it uses this to
@@ -150,7 +150,13 @@ impl Substitution {
                 .iter()
                 .map(|(k, v)| (k.clone(), Self::apply_inner(v, map)))
                 .collect(),
-            tail: row.tail.clone(),
+            tail: match &row.tail {
+                RowTail::Uniform { key, value } => RowTail::Uniform {
+                    key: key.as_ref().map(|k| Box::new(Self::apply_inner(k, map))),
+                    value: Box::new(Self::apply_inner(value, map)),
+                },
+                other => other.clone(),
+            },
         }
     }
 }
@@ -859,5 +865,46 @@ mod tests {
             count_before, count_after,
             "compact_levels() must not remove unbound TypeVars"
         );
+    }
+
+    /// B-559: Substitution::apply_row must substitute through RowTail::Uniform
+    /// to prevent TypeVars from leaking out of their scope during generalization.
+    #[test]
+    fn test_apply_row_substitutes_uniform_tail() {
+        use crate::type_def::{Row, RowTail};
+        use indexmap::IndexMap;
+        use std::collections::HashMap;
+
+        // Create a substitution: _t7 → Type::Str
+        let mut type_map = HashMap::new();
+        type_map.insert("_t7".to_string(), Type::Str);
+        let subst = Substitution {
+            type_map: std::cell::RefCell::new(type_map),
+        };
+
+        // Create a Row with RowTail::Uniform { key: Type::Str, value: TypeVar("_t7") }
+        let row = Row {
+            fields: IndexMap::new(),
+            tail: RowTail::Uniform {
+                key: None,
+                value: Box::new(Type::TypeVar("_t7".to_string(), 0)),
+            },
+        };
+
+        // Apply the substitution
+        let result_row = Substitution::apply_row(&row, &subst.type_map.borrow());
+
+        // Verify the result has value: Type::Str (substitution applied)
+        match &result_row.tail {
+            RowTail::Uniform { key, value } => {
+                assert_eq!(key, &None, "key should remain None");
+                assert_eq!(
+                    **value,
+                    Type::Str,
+                    "value should be Type::Str after substitution"
+                );
+            }
+            _ => panic!("tail should be RowTail::Uniform after substitution"),
+        }
     }
 }

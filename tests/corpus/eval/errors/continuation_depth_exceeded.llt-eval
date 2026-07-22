@@ -1,0 +1,12 @@
+# Tests that the CEK continuation stack depth limit produces a ResourceLimitExceeded error.
+# Uses a recursive countdown that pushes one continuation frame per step.
+# With MAX_CONTINUATION_STACK = 2048, a depth > 2048 must trigger the error.
+[
+  count-down: [fn [let n]
+    [if [= n 0]
+      "done"
+      [count-down [- n 1]]]]
+  result: [count-down 3000]
+]
+=== error
+continuation stack depth exceeded
