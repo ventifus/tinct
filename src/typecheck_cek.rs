@@ -1336,7 +1336,11 @@ async fn apply_cont(
         }
 
         // ===== AfterFieldBase =====
-        TypeCheckCont::AfterFieldBase { field, span, field_node } => {
+        TypeCheckCont::AfterFieldBase {
+            field,
+            span,
+            field_node,
+        } => {
             let resolved_base = state.subst.apply(&child_ty);
             let (ty, slot_opt) = field_type_from_base(&resolved_base, &field, &span, errors);
 
@@ -5051,26 +5055,44 @@ mod tests {
         let mut fields: IndexMap<String, Type> = IndexMap::new();
         fields.insert("x".to_string(), Type::Int);
         fields.insert("y".to_string(), Type::Str);
-        let row = Row { fields, tail: RowTail::Empty };
+        let row = Row {
+            fields,
+            tail: RowTail::Empty,
+        };
         let base_ty = Type::Dict(row);
 
         let span = crate::rust_span!();
         let mut errors = Vec::new();
 
         // Accessing .x — slot 0
-        let (ty_x, slot_x) = field_type_from_base(&base_ty, &DotKey::Ident("x".to_string()), &span, &mut errors);
+        let (ty_x, slot_x) = field_type_from_base(
+            &base_ty,
+            &DotKey::Ident("x".to_string()),
+            &span,
+            &mut errors,
+        );
         assert_eq!(ty_x, Type::Int, ".x should resolve to Int");
         assert_eq!(slot_x, Some(0u32), ".x should have slot index 0");
         assert!(errors.is_empty(), "No errors expected for .x");
 
         // Accessing .y — slot 1
-        let (ty_y, slot_y) = field_type_from_base(&base_ty, &DotKey::Ident("y".to_string()), &span, &mut errors);
+        let (ty_y, slot_y) = field_type_from_base(
+            &base_ty,
+            &DotKey::Ident("y".to_string()),
+            &span,
+            &mut errors,
+        );
         assert_eq!(ty_y, Type::Str, ".y should resolve to Str");
         assert_eq!(slot_y, Some(1u32), ".y should have slot index 1");
         assert!(errors.is_empty(), "No errors expected for .y");
 
         // Accessing an absent field — no slot, Unknown type
-        let (ty_z, slot_z) = field_type_from_base(&base_ty, &DotKey::Ident("z".to_string()), &span, &mut errors);
+        let (ty_z, slot_z) = field_type_from_base(
+            &base_ty,
+            &DotKey::Ident("z".to_string()),
+            &span,
+            &mut errors,
+        );
         assert_eq!(ty_z, Type::Unknown, ".z absent from row → Unknown");
         assert_eq!(slot_z, None, ".z absent from row → no slot");
         assert!(errors.is_empty(), "No errors expected for absent field");
@@ -5101,9 +5123,17 @@ mod tests {
         let span = crate::rust_span!();
         let mut errors = Vec::new();
 
-        let (ty, slot) = field_type_from_base(&base_ty, &DotKey::Ident("x".to_string()), &span, &mut errors);
+        let (ty, slot) = field_type_from_base(
+            &base_ty,
+            &DotKey::Ident("x".to_string()),
+            &span,
+            &mut errors,
+        );
         assert_eq!(ty, Type::Int, ".x should still resolve to Int in open row");
-        assert_eq!(slot, None, "Open row (Uniform tail) must not produce a slot annotation");
+        assert_eq!(
+            slot, None,
+            "Open row (Uniform tail) must not produce a slot annotation"
+        );
         assert!(errors.is_empty());
     }
 
@@ -5137,7 +5167,10 @@ mod tests {
         let mut fields: IndexMap<String, Type> = IndexMap::new();
         fields.insert("x".to_string(), Type::Int);
         fields.insert("y".to_string(), Type::Str);
-        let base_ty = Type::Dict(Row { fields, tail: RowTail::Empty });
+        let base_ty = Type::Dict(Row {
+            fields,
+            tail: RowTail::Empty,
+        });
 
         // Set up the continuation
         let cont = TypeCheckCont::AfterFieldBase {
@@ -5151,7 +5184,15 @@ mod tests {
         let mut type_map: Option<&mut TypeMap> = None;
         let mut stack: Vec<TypeCheckCont> = Vec::new();
 
-        let action = apply_cont(cont, base_ty, &mut state, &mut errors, &mut type_map, &mut stack).await;
+        let action = apply_cont(
+            cont,
+            base_ty,
+            &mut state,
+            &mut errors,
+            &mut type_map,
+            &mut stack,
+        )
+        .await;
 
         // apply_cont must return Done(Int) for the .x field
         match action {

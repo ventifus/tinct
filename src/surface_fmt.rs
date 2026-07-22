@@ -57,7 +57,8 @@ pub fn fmt_dict(
         // Format value — retrieve the materialized value and recursively serialize.
         // ctx is passed to to_tinct below; it is required for Function serialization.
         let value = thunk
-            .try_get_materialized()
+            .try_get_value()
+            .cloned()
             .ok_or("dict value not materialized")?;
         out.push(' ');
         // ctx is passed to to_tinct; only required if value is a Function.
@@ -86,7 +87,8 @@ pub fn fmt_variant(
             let ctx_ref = ctx.ok_or("variant serialization requires EvalContext")?;
             let thunk = ctx_ref.get_thunk(thunk_id);
             let value = thunk
-                .try_get_materialized()
+                .try_get_value()
+                .cloned()
                 .ok_or("variant payload not materialized")?;
             Ok(format!("[{} {}]", tag, value.to_tinct(ctx)?))
         }
@@ -1380,7 +1382,8 @@ impl Value {
                 // Materialize left side
                 let left_thunk = ctx_ref.get_thunk(*left);
                 let left_value = left_thunk
-                    .try_get_materialized()
+                    .try_get_value()
+                    .cloned()
                     .ok_or("overlay left not materialized")?;
                 let left_dict = match left_value {
                     Value::Dict(map) => map,
@@ -1390,7 +1393,8 @@ impl Value {
                 // Materialize right side
                 let right_thunk = ctx_ref.get_thunk(*right);
                 let right_value = right_thunk
-                    .try_get_materialized()
+                    .try_get_value()
+                    .cloned()
                     .ok_or("overlay right not materialized")?;
                 let right_dict = match right_value {
                     Value::Dict(map) => map,

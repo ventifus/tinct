@@ -49,7 +49,7 @@ pub(crate) fn builtin_to_tinct(
         // Deep-force all nested structures before serialization.
         // The WHNF-materialized value may contain unevaluated thunks in dict entries,
         // collection elements, or variant payloads. force_dict_tree recursively materializes
-        // all nested values so that to_tinct's try_get_materialized calls succeed.
+        // all nested values so that to_tinct's try_get_value calls succeed.
         let deep_val = force_dict_tree(&val, &ctx).await?;
 
         let tinct_str = deep_val

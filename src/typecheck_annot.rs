@@ -4577,7 +4577,7 @@ fn typenode_value_to_type<'a>(
                 let mut prefix: Option<String> = None;
                 let mut all_match = true;
                 for (_key, thunk) in entries {
-                    if let Some(val) = thunk.try_get_materialized() {
+                    if let Some(val) = thunk.try_get_value().cloned() {
                         match val {
                             Value::Variant { tycon, .. } => match &prefix {
                                 None => prefix = Some(tycon.to_string()),

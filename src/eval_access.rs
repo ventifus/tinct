@@ -105,11 +105,9 @@ mod tests {
             header: IndexMap::new(),
             items: vec![SurfaceItem::Expr(Arc::clone(&node))],
         };
-        let program = SurfaceProgram {
+        let program = crate::desugar::desugar_program_full(&SurfaceProgram {
             documents: vec![Spanned::new(Arc::new(doc), span)],
-        };
-        let mut program = program;
-        crate::desugar::desugar_program_full(&mut program);
+        });
         // Seed the resolver from the FlatEnv root scope so $field-get and $slot-get
         // are available for dot-access desugaring (installed by build_core_env).
         let root_frame: IndexMap<String, u32> = crate::builtins_core::core_builtins()

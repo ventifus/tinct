@@ -377,7 +377,7 @@ pub fn migrate_flat_env(
             let placeholder = arena.scopes[new_env_id.0 as usize].slots[slot_idx]
                 .clone()
                 .expect("placeholder must exist after phase 1");
-            if let Some(value) = src_arc.try_get_materialized() {
+            if let Some(value) = src_arc.try_get_value().cloned() {
                 // Materialized: migrate the value recursively.
                 let migrated =
                     migrate_value(&value, src_range, dst_env_id, thunk_map, env_map, arena);
@@ -453,7 +453,7 @@ pub fn migrate_value(
                 // Strategy: push a placeholder to dst, migrate the thunk's content, settle.
                 let placeholder = Arc::new(crate::value::Thunk::placeholder(thunk.span.clone()));
                 let new_tid = arena.push_slot(dst_env_id, Arc::clone(&placeholder));
-                if let Some(val) = thunk.try_get_materialized() {
+                if let Some(val) = thunk.try_get_value().cloned() {
                     let migrated_val =
                         migrate_value(&val, src_range, dst_env_id, thunk_map, env_map, arena);
                     placeholder.settle(Ok(migrated_val));
@@ -715,7 +715,7 @@ pub fn migrate_thunk_id(
     // Get the source thunk
     let src_thunk = arena.get_thunk(thunk_id);
     // Check if materialized
-    if let Some(value) = src_thunk.try_get_materialized() {
+    if let Some(value) = src_thunk.try_get_value().cloned() {
         // Two-phase cycle-safe graph copy:
         //   1. Pre-allocate a placeholder slot in dst and insert into thunk_map BEFORE recursing.
         //      This breaks any cycles: if the value's nested ThunkIds refer back to thunk_id,
@@ -756,7 +756,7 @@ pub fn migrate_thunk_id(
         }
         // If state is None here (concurrent materialization between the two checks),
         // the placeholder stays as a placeholder — harmless because the caller should
-        // re-check try_get_materialized; and in practice arena migration is single-threaded.
+        // re-check try_get_value; and in practice arena migration is single-threaded.
         new_tid
     }
 }
@@ -804,7 +804,7 @@ mod tests {
         assert_eq!(id.slot, 0);
 
         let retrieved = arena.get_thunk(id);
-        assert_eq!(retrieved.try_get_materialized(), Some(Value::Int(42)));
+        assert_eq!(retrieved.try_get_value().cloned(), Some(Value::Int(42)));
     }
 
     #[test]
@@ -825,15 +825,15 @@ mod tests {
         assert_eq!(id3.slot, 2);
 
         assert_eq!(
-            arena.get_thunk(id1).try_get_materialized(),
+            arena.get_thunk(id1).try_get_value().cloned(),
             Some(Value::Int(1))
         );
         assert_eq!(
-            arena.get_thunk(id2).try_get_materialized(),
+            arena.get_thunk(id2).try_get_value().cloned(),
             Some(Value::Int(2))
         );
         assert_eq!(
-            arena.get_thunk(id3).try_get_materialized(),
+            arena.get_thunk(id3).try_get_value().cloned(),
             Some(Value::Int(3))
         );
     }
@@ -858,7 +858,7 @@ mod tests {
             slot: 0,
         };
         let retrieved = arena.get_thunk(tid);
-        assert_eq!(retrieved.try_get_materialized(), Some(Value::Int(99)));
+        assert_eq!(retrieved.try_get_value().cloned(), Some(Value::Int(99)));
     }
 
     #[test]
@@ -901,15 +901,15 @@ mod tests {
         let tid2 = arena.push_slot(id, Arc::clone(&t2));
 
         assert_eq!(
-            arena.get_thunk(tid0).try_get_materialized(),
+            arena.get_thunk(tid0).try_get_value().cloned(),
             Some(Value::Int(10))
         );
         assert_eq!(
-            arena.get_thunk(tid1).try_get_materialized(),
+            arena.get_thunk(tid1).try_get_value().cloned(),
             Some(Value::Int(20))
         );
         assert_eq!(
-            arena.get_thunk(tid2).try_get_materialized(),
+            arena.get_thunk(tid2).try_get_value().cloned(),
             Some(Value::Int(30))
         );
         // Slot 3 is out of bounds (only 3 slots pushed).
@@ -969,7 +969,7 @@ mod tests {
 
         // Verify thunk is present
         assert_eq!(
-            arena.get_thunk(id).try_get_materialized(),
+            arena.get_thunk(id).try_get_value().cloned(),
             Some(Value::Int(42))
         );
 
@@ -1005,11 +1005,11 @@ mod tests {
         assert_eq!(id1.slot, 0);
         assert_eq!(id2.slot, 1);
         assert_eq!(
-            arena.get_thunk(id1).try_get_materialized(),
+            arena.get_thunk(id1).try_get_value().cloned(),
             Some(crate::value::Value::Int(1))
         );
         assert_eq!(
-            arena.get_thunk(id2).try_get_materialized(),
+            arena.get_thunk(id2).try_get_value().cloned(),
             Some(crate::value::Value::Int(2))
         );
     }
@@ -1041,7 +1041,7 @@ mod tests {
         arena.drop_scope(env0);
         // env1 still intact
         assert_eq!(
-            arena.get_thunk(id).try_get_materialized(),
+            arena.get_thunk(id).try_get_value().cloned(),
             Some(crate::value::Value::Int(99))
         );
     }
@@ -1073,15 +1073,15 @@ mod tests {
 
         // All three ThunkIds must be distinct and retrieve the correct values.
         assert_eq!(
-            arena.get_thunk(src_id).try_get_materialized(),
+            arena.get_thunk(src_id).try_get_value().cloned(),
             Some(Value::Int(100))
         );
         assert_eq!(
-            arena.get_thunk(src2_id).try_get_materialized(),
+            arena.get_thunk(src2_id).try_get_value().cloned(),
             Some(Value::Int(200))
         );
         assert_eq!(
-            arena.get_thunk(anon_id).try_get_materialized(),
+            arena.get_thunk(anon_id).try_get_value().cloned(),
             Some(Value::Int(300))
         );
         // env_id slot 1 was filled via fill_slot from env2 slot 0.
@@ -1090,7 +1090,7 @@ mod tests {
             slot: 1,
         };
         assert_eq!(
-            arena.get_thunk(letrec_thunk_id).try_get_materialized(),
+            arena.get_thunk(letrec_thunk_id).try_get_value().cloned(),
             Some(Value::Int(200))
         );
         // anon_id landed in env_id slot 2 (slot 0 = named, slot 1 = reserved+filled, slot 2 = pushed).
@@ -1203,8 +1203,8 @@ mod tests {
             let thunk2 = migrated_map.get(&key2).expect("key 'b' missing");
 
             // Verify values are accessible directly from the Arc<Thunk>
-            let val1 = thunk1.try_get_materialized();
-            let val2 = thunk2.try_get_materialized();
+            let val1 = thunk1.try_get_value().cloned();
+            let val2 = thunk2.try_get_value().cloned();
             assert_eq!(val1, Some(Value::Int(1)), "migrated value 'a' should be 1");
             assert_eq!(val2, Some(Value::Int(2)), "migrated value 'b' should be 2");
         } else {
@@ -1217,7 +1217,7 @@ mod tests {
         // Verify dst dict entries are still accessible after source drop
         if let Value::Dict(migrated_map) = &migrated_value {
             let migrated_thunk1 = migrated_map.get(&key1).expect("key 'a' missing after drop");
-            let val1 = migrated_thunk1.try_get_materialized();
+            let val1 = migrated_thunk1.try_get_value().cloned();
             assert_eq!(
                 val1,
                 Some(Value::Int(1)),
@@ -1387,7 +1387,7 @@ mod tests {
                 // The inner thunk at the translated location must hold the materialized value.
                 let inner_arc = arena.get_thunk(*inner);
                 assert_eq!(
-                    inner_arc.try_get_materialized(),
+                    inner_arc.try_get_value().cloned(),
                     Some(Value::Int(77)),
                     "inner thunk value must survive migration"
                 );
@@ -1411,7 +1411,7 @@ mod tests {
             UnevaluatedState::Guarded { inner, .. } => {
                 let inner_arc2 = arena.get_thunk(inner);
                 assert_eq!(
-                    inner_arc2.try_get_materialized(),
+                    inner_arc2.try_get_value().cloned(),
                     Some(Value::Int(77)),
                     "inner thunk value must be readable after source-drop (no use-after-free)"
                 );

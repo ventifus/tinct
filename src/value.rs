@@ -1309,7 +1309,7 @@ impl UnevaluatedState {
 }
 
 /// New thunk structure for async evaluation (Sprint 2B).
-/// Replaces Mutex<ThunkState> with a two-field pair:
+/// Two-field pair for thunk state:
 /// - unevaluated: taken (set to None) when evaluation starts
 /// - result: set exactly once when evaluation completes
 #[derive(Debug)]
@@ -1325,20 +1325,10 @@ pub struct ThunkInner {
     pub notify: Arc<tokio::sync::Notify>,
 }
 
-#[derive(Debug)]
-pub enum ThunkState {
-    Unevaluated,
-    InProgress {
-        evaluating_task: Option<tokio::task::Id>,
-    },
-    Materialized(Value),
-    Failed(Arc<EvalError>),
-}
-
 /// Lazy evaluation cell: wraps an unevaluated expression, a pending builtin call,
 /// or a materialized value with memoization (evaluate-at-most-once semantics).
 pub struct Thunk {
-    inner: ThunkInner,
+    pub(crate) inner: ThunkInner,
     pub(crate) span: Span,
 }
 
@@ -1550,22 +1540,6 @@ impl Thunk {
         self.span.clone()
     }
 
-    pub fn state(&self) -> ThunkState {
-        if let Some(result) = self.inner.result.get() {
-            return match result {
-                Ok(v) => ThunkState::Materialized(v.clone()),
-                Err(e) => ThunkState::Failed(Arc::clone(e)),
-            };
-        }
-        let guard = self.inner.unevaluated.lock().unwrap();
-        match &guard.0 {
-            Some(_) => ThunkState::Unevaluated,
-            None => ThunkState::InProgress {
-                evaluating_task: guard.1,
-            },
-        }
-    }
-
     pub fn settle(&self, result: Result<Value, Arc<EvalError>>) {
         let _ = self.inner.result.set(result);
         {
@@ -1702,22 +1676,26 @@ impl Thunk {
         }))
     }
 
-    pub fn try_get_materialized(&self) -> Option<Value> {
-        match self.state() {
-            ThunkState::Materialized(v) => Some(v),
-            _ => None,
-        }
+    /// Borrow the materialized value without cloning. Returns `None` if the thunk
+    /// is not yet settled or settled with an error.
+    pub fn try_get_value(&self) -> Option<&Value> {
+        self.inner.result.get()?.as_ref().ok()
     }
 
-    pub fn get_cached_error(&self) -> Option<Box<EvalError>> {
-        match self.state() {
-            ThunkState::Failed(e) => Some(Box::new((*e).clone())),
-            _ => None,
-        }
+    /// Borrow the cached error without cloning. Returns `None` if the thunk
+    /// is not yet settled or settled with a value.
+    pub fn try_get_error(&self) -> Option<&Arc<EvalError>> {
+        self.inner.result.get()?.as_ref().err()
     }
 
+    /// Check whether this thunk has successfully materialized.
     pub fn is_materialized(&self) -> bool {
-        matches!(self.state(), ThunkState::Materialized(_))
+        matches!(self.inner.result.get(), Some(Ok(_)))
+    }
+
+    /// Check whether this thunk has reached a terminal state (materialized or failed).
+    pub fn is_settled(&self) -> bool {
+        self.inner.result.get().is_some()
     }
 
     // ========================================================================
@@ -1927,10 +1905,11 @@ mod tests {
         let expr = Arc::new(Spanned::new(CoreExpr::Int(42), span.clone()));
         let thunk = Thunk::core_expr(expr, 0, ctx, span);
 
-        match thunk.state() {
-            ThunkState::Unevaluated => {}
-            other => panic!("Expected Unevaluated, got {:?}", other),
-        }
+        assert!(!thunk.is_settled(), "Expected unevaluated (not settled)");
+        assert!(
+            thunk.inner.unevaluated.lock().unwrap().0.is_some(),
+            "Expected unevaluated state to be Some"
+        );
     }
 
     #[test]
@@ -1938,10 +1917,11 @@ mod tests {
         let span = test_span(1, 1, 1, 10);
         let thunk = Thunk::value(Value::Int(42), span);
 
-        match thunk.state() {
-            ThunkState::Materialized(Value::Int(42)) => {}
-            other => panic!("Expected Materialized(Int(42)), got {:?}", other),
-        }
+        assert_eq!(
+            thunk.try_get_value(),
+            Some(&Value::Int(42)),
+            "Expected materialized Int(42)"
+        );
     }
 
     #[test]
@@ -1951,10 +1931,11 @@ mod tests {
 
         thunk.settle(Ok(Value::Int(1)));
 
-        match thunk.state() {
-            ThunkState::Materialized(Value::Int(1)) => {}
-            other => panic!("Expected Materialized(Int(1)), got {:?}", other),
-        }
+        assert_eq!(
+            thunk.try_get_value(),
+            Some(&Value::Int(1)),
+            "Expected materialized Int(1)"
+        );
     }
 
     #[test]
@@ -1968,12 +1949,8 @@ mod tests {
         ));
         thunk.settle(Err(Arc::clone(&error)));
 
-        match thunk.state() {
-            ThunkState::Failed(e) => {
-                assert_eq!(Arc::as_ptr(&e), Arc::as_ptr(&error));
-            }
-            other => panic!("Expected Failed, got {:?}", other),
-        }
+        let e = thunk.try_get_error().expect("Expected Failed state");
+        assert_eq!(Arc::as_ptr(e), Arc::as_ptr(&error));
     }
 
     #[test]
@@ -1985,10 +1962,11 @@ mod tests {
         // Second settle should be no-op (OnceCell ignores duplicate set)
         thunk.settle(Ok(Value::Int(999)));
 
-        match thunk.state() {
-            ThunkState::Materialized(Value::Int(1)) => {}
-            other => panic!("Expected Materialized(Int(1)), got {:?}", other),
-        }
+        assert_eq!(
+            thunk.try_get_value(),
+            Some(&Value::Int(1)),
+            "Expected materialized Int(1)"
+        );
     }
 
     #[test]
@@ -2009,11 +1987,12 @@ mod tests {
             other => panic!("Expected CoreExpr state, got {:?}", other),
         }
 
-        // Verify thunk is now InProgress
-        match thunk.state() {
-            ThunkState::InProgress { .. } => {}
-            other => panic!("Expected InProgress, got {:?}", other),
-        }
+        // Verify thunk is now InProgress (not settled, unevaluated is None)
+        assert!(!thunk.is_settled(), "Expected not settled (InProgress)");
+        assert!(
+            thunk.inner.unevaluated.lock().unwrap().0.is_none(),
+            "Expected unevaluated to be None (InProgress)"
+        );
     }
 
     #[test]
@@ -2039,34 +2018,37 @@ mod tests {
 
         let state = thunk.try_claim().expect("try_claim should succeed");
 
-        // Verify InProgress
-        match thunk.state() {
-            ThunkState::InProgress { .. } => {}
-            other => panic!("Expected InProgress after claim, got {:?}", other),
-        }
+        // Verify InProgress (not settled, unevaluated is None)
+        assert!(!thunk.is_settled(), "Expected not settled (InProgress)");
+        assert!(
+            thunk.inner.unevaluated.lock().unwrap().0.is_none(),
+            "Expected unevaluated to be None (InProgress)"
+        );
 
         thunk.reset(state);
 
-        // Verify restored to Unevaluated
-        match thunk.state() {
-            ThunkState::Unevaluated => {}
-            other => panic!("Expected Unevaluated after reset, got {:?}", other),
-        }
+        // Verify restored to Unevaluated (not settled, unevaluated is Some)
+        assert!(!thunk.is_settled(), "Expected not settled (Unevaluated)");
+        assert!(
+            thunk.inner.unevaluated.lock().unwrap().0.is_some(),
+            "Expected unevaluated to be Some (Unevaluated)"
+        );
     }
 
     #[test]
-    fn test_try_get_materialized_convenience() {
+    fn test_try_get_value_convenience() {
         let span = test_span(1, 1, 1, 10);
         let thunk = Thunk::value(Value::Int(42), span);
 
-        match thunk.try_get_materialized() {
-            Some(Value::Int(42)) => {}
-            other => panic!("Expected Some(Int(42)), got {:?}", other),
-        }
+        assert_eq!(
+            thunk.try_get_value(),
+            Some(&Value::Int(42)),
+            "Expected Some(&Int(42))"
+        );
     }
 
     #[test]
-    fn test_get_cached_error_convenience() {
+    fn test_try_get_error_convenience() {
         let span = test_span(1, 1, 1, 10);
         let thunk = Thunk::placeholder(span.clone());
 
@@ -2076,8 +2058,8 @@ mod tests {
         ));
         thunk.settle(Err(Arc::clone(&error)));
 
-        let cached = thunk.get_cached_error();
-        assert!(cached.is_some(), "get_cached_error should return Some");
+        let cached = thunk.try_get_error();
+        assert!(cached.is_some(), "try_get_error should return Some");
         assert_eq!(cached.unwrap().kind.to_string(), error.kind.to_string());
     }
 }

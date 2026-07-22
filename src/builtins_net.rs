@@ -990,20 +990,24 @@ pub(crate) fn builtin_quic_session(
         // All args pre-materialized by force_count
         let cap_val = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let host_val = ctx
             .get_thunk(args[1])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let port_val = ctx
             .get_thunk(args[2])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let opts_val = ctx
             .get_thunk(args[3])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
 
         // Extract NetCap
         let entries = match cap_val {
@@ -1175,8 +1179,9 @@ pub(crate) fn builtin_quic_open_datagram(
 
         let session_val = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let conn = match session_val {
             Value::QuicSession(c) => c,
             other => {
@@ -1236,17 +1241,20 @@ pub(crate) fn builtin_http2_session(
         // All args pre-materialized by force_count
         let cap_val = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let url_val = ctx
             .get_thunk(args[1])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         // opts reserved for future use (ca, client cert, timeouts, etc.)
         let _opts_val = ctx
             .get_thunk(args[2])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
 
         // Validate cap
         let entries = match cap_val {
@@ -1391,8 +1399,9 @@ pub(crate) fn builtin_http3_session(
 
         let session_val = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
 
         let conn = match session_val {
             Value::QuicSession(c) => c,
@@ -1493,24 +1502,29 @@ pub(crate) fn builtin_http_request(
         // All args pre-materialized by force_count
         let session_val = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let method_val = ctx
             .get_thunk(args[1])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let path_val = ctx
             .get_thunk(args[2])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let headers_val = ctx
             .get_thunk(args[3])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let body_val = ctx
             .get_thunk(args[4])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
 
         let method_str = require_string("http-request", method_val, call_span.clone())?;
         let path_str = require_string("http-request", path_val, call_span.clone())?;
@@ -1884,16 +1898,19 @@ pub(crate) fn builtin_icmp_ping(
 
         let cap_val = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let host_val = ctx
             .get_thunk(args[1])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let timeout_val = ctx
             .get_thunk(args[2])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
 
         // Extract NetCap entries
         let entries = match cap_val {
@@ -2227,12 +2244,14 @@ pub(crate) fn builtin_send_datagram(
 
         let data_val = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let handle_val = ctx
             .get_thunk(args[1])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
 
         // Extract bytes to send (String or Bytes) — common to all handle variants.
         let data_bytes: Vec<u8> = match data_val {

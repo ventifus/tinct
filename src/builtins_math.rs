@@ -63,11 +63,13 @@ pub(crate) fn builtin_mul(
         let thunk0 = ctx.get_thunk(args[0]);
         let thunk1 = ctx.get_thunk(args[1]);
         let left = thunk0
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let right = thunk1
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
 
         match (&left, &right) {
             (Value::Int(a), Value::Int(b)) => a
@@ -114,11 +116,13 @@ pub(crate) fn builtin_div_float(
         let thunk0 = ctx.get_thunk(args[0]);
         let thunk1 = ctx.get_thunk(args[1]);
         let left = thunk0
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let right = thunk1
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
 
         match (&left, &right) {
             (Value::Int(a), Value::Int(b)) => {
@@ -169,12 +173,14 @@ pub(crate) fn builtin_eq_int(
         }
         let left = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let right = ctx
             .get_thunk(args[1])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         match (&left, &right) {
             (Value::Int(a), Value::Int(b)) => {
                 ok_val(Value::Int(if a == b { 1 } else { 0 }), call_span)
@@ -210,12 +216,14 @@ pub(crate) fn builtin_eq_float(
         }
         let left = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let right = ctx
             .get_thunk(args[1])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         match (&left, &right) {
             (Value::Float(a), Value::Float(b)) => {
                 ok_val(Value::Int(if a == b { 1 } else { 0 }), call_span)
@@ -251,12 +259,14 @@ pub(crate) fn builtin_eq_string(
         }
         let left = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let right = ctx
             .get_thunk(args[1])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         match (&left, &right) {
             (
                 Value::String {
@@ -310,11 +320,13 @@ pub(crate) fn builtin_lt(
         let thunk0 = ctx.get_thunk(args[0]);
         let thunk1 = ctx.get_thunk(args[1]);
         let left = thunk0
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let right = thunk1
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
 
         let result = match (&left, &right) {
             (Value::Int(a), Value::Int(b)) => a < b,
@@ -375,12 +387,14 @@ pub(crate) fn builtin_float_lt(
         }
         let a = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized");
+            .try_get_value()
+            .expect("pre-materialized")
+            .clone();
         let b = ctx
             .get_thunk(args[1])
-            .try_get_materialized()
-            .expect("pre-materialized");
+            .try_get_value()
+            .expect("pre-materialized")
+            .clone();
         match (&a, &b) {
             (Value::Float(x), Value::Float(y)) => {
                 ok_val(Value::Int(if x < y { 1 } else { 0 }), call_span)
@@ -413,12 +427,14 @@ pub(crate) fn builtin_str_lt(
         }
         let a = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized");
+            .try_get_value()
+            .expect("pre-materialized")
+            .clone();
         let b = ctx
             .get_thunk(args[1])
-            .try_get_materialized()
-            .expect("pre-materialized");
+            .try_get_value()
+            .expect("pre-materialized")
+            .clone();
         match (&a, &b) {
             (
                 Value::String {
@@ -478,8 +494,9 @@ pub(crate) fn builtin_lte(
 
         // Negate the result (builtin_lt always returns Value::Int(0/1))
         let val = gt_result
-            .try_get_materialized()
-            .expect("builtin_lt returns materialized");
+            .try_get_value()
+            .expect("builtin_lt returns materialized")
+            .clone();
         ok_val(
             Value::Int(if matches!(val, Value::Int(n) if n != 0) {
                 0
@@ -505,8 +522,9 @@ fn extract_single_float(
     reject_named(name, named, call_span)?;
     let thunk0 = ctx.get_thunk(args[0]);
     let val = thunk0
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
+        .try_get_value()
+        .expect("pre-materialized by force_count/pos_strictness")
+        .clone();
     match val {
         Value::Int(n) => Ok(n as f64),
         Value::Float(f) => Ok(f),
@@ -535,11 +553,13 @@ fn extract_two_floats(
     let thunk0 = ctx.get_thunk(args[0]);
     let thunk1 = ctx.get_thunk(args[1]);
     let left = thunk0
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
+        .try_get_value()
+        .expect("pre-materialized by force_count/pos_strictness")
+        .clone();
     let right = thunk1
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
+        .try_get_value()
+        .expect("pre-materialized by force_count/pos_strictness")
+        .clone();
 
     let a = match left {
         Value::Int(n) => n as f64,
@@ -878,11 +898,13 @@ fn extract_int_pair(
     let thunk0 = ctx.get_thunk(args[0]);
     let thunk1 = ctx.get_thunk(args[1]);
     let left = thunk0
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
+        .try_get_value()
+        .expect("pre-materialized by force_count/pos_strictness")
+        .clone();
     let right = thunk1
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
+        .try_get_value()
+        .expect("pre-materialized by force_count/pos_strictness")
+        .clone();
 
     let a = match left {
         Value::Int(n) => n,
@@ -1058,8 +1080,9 @@ pub(crate) fn builtin_float(
         }
         let thunk0 = ctx.get_thunk(args[0]);
         let val = thunk0
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         match val {
             Value::Int(n) => ok_val(Value::Float(n as f64), call_span),
             Value::Float(f) => ok_val(Value::Float(f), call_span),
@@ -1095,12 +1118,14 @@ pub(crate) fn builtin_int_add(
         }
         let a = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized");
+            .try_get_value()
+            .expect("pre-materialized")
+            .clone();
         let b = ctx
             .get_thunk(args[1])
-            .try_get_materialized()
-            .expect("pre-materialized");
+            .try_get_value()
+            .expect("pre-materialized")
+            .clone();
         match (&a, &b) {
             (Value::Int(x), Value::Int(y)) => x
                 .checked_add(*y)
@@ -1135,12 +1160,14 @@ pub(crate) fn builtin_float_add(
         }
         let a = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized");
+            .try_get_value()
+            .expect("pre-materialized")
+            .clone();
         let b = ctx
             .get_thunk(args[1])
-            .try_get_materialized()
-            .expect("pre-materialized");
+            .try_get_value()
+            .expect("pre-materialized")
+            .clone();
         match (&a, &b) {
             (Value::Float(x), Value::Float(y)) => {
                 check_float_result(x + y, "builtin-float-add", call_span)
@@ -1171,7 +1198,7 @@ pub(crate) fn builtin_int_to_float(
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
         let thunk0 = ctx.get_thunk(args[0]);
-        let v = thunk0.try_get_materialized().expect("pre-materialized");
+        let v = thunk0.try_get_value().expect("pre-materialized").clone();
         match v {
             Value::Int(n) => {
                 // Precision guard: integers with |n| > 2^53 lose precision as f64.
@@ -1200,12 +1227,14 @@ pub(crate) fn builtin_int_sub(
         }
         let a = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized");
+            .try_get_value()
+            .expect("pre-materialized")
+            .clone();
         let b = ctx
             .get_thunk(args[1])
-            .try_get_materialized()
-            .expect("pre-materialized");
+            .try_get_value()
+            .expect("pre-materialized")
+            .clone();
         match (&a, &b) {
             (Value::Int(x), Value::Int(y)) => x
                 .checked_sub(*y)
@@ -1240,12 +1269,14 @@ pub(crate) fn builtin_float_sub(
         }
         let a = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized");
+            .try_get_value()
+            .expect("pre-materialized")
+            .clone();
         let b = ctx
             .get_thunk(args[1])
-            .try_get_materialized()
-            .expect("pre-materialized");
+            .try_get_value()
+            .expect("pre-materialized")
+            .clone();
         match (&a, &b) {
             (Value::Float(x), Value::Float(y)) => {
                 check_float_result(x - y, "builtin-float-sub", call_span)
@@ -1277,12 +1308,14 @@ pub(crate) fn builtin_int_mul(
         }
         let a = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized");
+            .try_get_value()
+            .expect("pre-materialized")
+            .clone();
         let b = ctx
             .get_thunk(args[1])
-            .try_get_materialized()
-            .expect("pre-materialized");
+            .try_get_value()
+            .expect("pre-materialized")
+            .clone();
         match (&a, &b) {
             (Value::Int(x), Value::Int(y)) => x
                 .checked_mul(*y)
@@ -1317,12 +1350,14 @@ pub(crate) fn builtin_float_mul(
         }
         let a = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized");
+            .try_get_value()
+            .expect("pre-materialized")
+            .clone();
         let b = ctx
             .get_thunk(args[1])
-            .try_get_materialized()
-            .expect("pre-materialized");
+            .try_get_value()
+            .expect("pre-materialized")
+            .clone();
         match (&a, &b) {
             (Value::Float(x), Value::Float(y)) => {
                 check_float_result(x * y, "builtin-float-mul", call_span)
@@ -1357,12 +1392,14 @@ pub(crate) fn builtin_int_gt(
         }
         let a = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized");
+            .try_get_value()
+            .expect("pre-materialized")
+            .clone();
         let b = ctx
             .get_thunk(args[1])
-            .try_get_materialized()
-            .expect("pre-materialized");
+            .try_get_value()
+            .expect("pre-materialized")
+            .clone();
         match (&a, &b) {
             (Value::Int(x), Value::Int(y)) => {
                 ok_val(Value::Int(if x > y { 1 } else { 0 }), call_span)
@@ -1394,12 +1431,14 @@ pub(crate) fn builtin_float_gt(
         }
         let a = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized");
+            .try_get_value()
+            .expect("pre-materialized")
+            .clone();
         let b = ctx
             .get_thunk(args[1])
-            .try_get_materialized()
-            .expect("pre-materialized");
+            .try_get_value()
+            .expect("pre-materialized")
+            .clone();
         match (&a, &b) {
             (Value::Float(x), Value::Float(y)) => {
                 ok_val(Value::Int(if x > y { 1 } else { 0 }), call_span)
@@ -1431,12 +1470,14 @@ pub(crate) fn builtin_str_gt(
         }
         let a = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized");
+            .try_get_value()
+            .expect("pre-materialized")
+            .clone();
         let b = ctx
             .get_thunk(args[1])
-            .try_get_materialized()
-            .expect("pre-materialized");
+            .try_get_value()
+            .expect("pre-materialized")
+            .clone();
         match (&a, &b) {
             (
                 Value::String {
@@ -1480,12 +1521,14 @@ pub(crate) fn builtin_int_gte(
         }
         let a = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized");
+            .try_get_value()
+            .expect("pre-materialized")
+            .clone();
         let b = ctx
             .get_thunk(args[1])
-            .try_get_materialized()
-            .expect("pre-materialized");
+            .try_get_value()
+            .expect("pre-materialized")
+            .clone();
         match (&a, &b) {
             (Value::Int(x), Value::Int(y)) => {
                 ok_val(Value::Int(if x >= y { 1 } else { 0 }), call_span)
@@ -1517,12 +1560,14 @@ pub(crate) fn builtin_float_gte(
         }
         let a = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized");
+            .try_get_value()
+            .expect("pre-materialized")
+            .clone();
         let b = ctx
             .get_thunk(args[1])
-            .try_get_materialized()
-            .expect("pre-materialized");
+            .try_get_value()
+            .expect("pre-materialized")
+            .clone();
         match (&a, &b) {
             (Value::Float(x), Value::Float(y)) => {
                 ok_val(Value::Int(if x >= y { 1 } else { 0 }), call_span)
@@ -1554,12 +1599,14 @@ pub(crate) fn builtin_str_gte(
         }
         let a = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized");
+            .try_get_value()
+            .expect("pre-materialized")
+            .clone();
         let b = ctx
             .get_thunk(args[1])
-            .try_get_materialized()
-            .expect("pre-materialized");
+            .try_get_value()
+            .expect("pre-materialized")
+            .clone();
         match (&a, &b) {
             (
                 Value::String {
@@ -1798,7 +1845,7 @@ mod tests {
         }));
         let t = result.expect("expected Float result at MAX_SAFE_INT boundary");
         assert!(
-            matches!(t.try_get_materialized(), Some(Value::Float(_))),
+            matches!(t.try_get_value(), Some(Value::Float(_))),
             "expected Float at MAX_SAFE_INT boundary"
         );
     }
@@ -1834,7 +1881,7 @@ mod tests {
             caller_env_id: None,
         }));
         let t = result.expect("expected Int(7)");
-        assert_eq!(t.try_get_materialized(), Some(Value::Int(7)));
+        assert_eq!(t.try_get_value().cloned(), Some(Value::Int(7)));
     }
 
     /// Int * Int uses the fast path — returns Int(42) without any instance registered.
@@ -1849,7 +1896,7 @@ mod tests {
             caller_env_id: None,
         }));
         let t = result.expect("expected Int(42)");
-        assert_eq!(t.try_get_materialized(), Some(Value::Int(42)));
+        assert_eq!(t.try_get_value().cloned(), Some(Value::Int(42)));
     }
 
     /// builtin-int-add: non-Integer types produce TypeMismatch error.

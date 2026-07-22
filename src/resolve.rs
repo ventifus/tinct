@@ -1591,8 +1591,7 @@ mod tests {
     /// Parse `src`, desugar, and resolve. Returns (program, table).
     fn parse_and_resolve(src: &str) -> (crate::ast::SurfaceProgram, ResolutionTable) {
         let output = crate::parser::parse(src, test_file(src)).expect("parse failed");
-        let mut program = output.program;
-        crate::desugar::desugar_surface_program(&mut program);
+        let program = crate::desugar::desugar_surface_program(&output.program);
         // No runtime env in unit tests — dict-internal and lexical references still
         // resolve via the resolver's scope tracking; env-provided names (builtins) use None.
         let (table, _frames) = resolve_surface_program(&program, &[]);
@@ -1908,8 +1907,7 @@ mod tests {
         initial_frames: &[indexmap::IndexMap<String, u32>],
     ) -> (crate::ast::SurfaceProgram, Vec<TypeDiagnostic>) {
         let output = crate::parser::parse(src, test_file(src)).expect("parse failed");
-        let mut program = output.program;
-        crate::desugar::desugar_surface_program(&mut program);
+        let program = crate::desugar::desugar_surface_program(&output.program);
         let doc = &program.documents[0].node;
         let (_, diagnostics, _) = resolve_surface_document_inplace(doc, initial_frames);
         (program, diagnostics)
@@ -1972,8 +1970,7 @@ mod tests {
     /// Helper: parse and resolve, returning only the lost-binding diagnostics.
     fn lost_binding_diagnostics(src: &str) -> Vec<TypeDiagnostic> {
         let output = crate::parser::parse(src, test_file(src)).expect("parse failed");
-        let mut program = output.program;
-        crate::desugar::desugar_surface_program(&mut program);
+        let program = crate::desugar::desugar_surface_program(&output.program);
         let (_, _frames) = resolve_surface_program(&program, &[]);
         // resolve_surface_program doesn't return diagnostics, so use per-doc resolve.
         let doc = &program.documents[0].node;

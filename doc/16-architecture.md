@@ -261,7 +261,7 @@ async fn run(initial: Action, _ctx: &Arc<EvalContext>) -> EvalResult<Value> {
 
 **Frame size discipline:** The `≤96B` budget keeps `Vec<Cont>` cache-friendly. Large fields (`Vec`, `IndexMap`, `Arc<Spanned<CoreExpr>>`) are heap-allocated via `Box`. The `Action` and `Cont` enums together represent the full CEK machine state; depth tracking becomes `stack.len()` (no separate counter needed). As of T-908, the continuation stack is unbounded — depth is limited only by OS memory.
 
-**Relationship to current `ThunkState`:** `PendingBuiltin` and `PendingCall` in `ThunkState` are proto-continuations — defunctionalized call sites captured as data. The CEK machine processes them via `Cont` variants (`Cont::BuiltinForceArg`, `Cont::PendingCallDispatch`) but does NOT remove them from ThunkState. PendingBuiltin and PendingCall are **permanent design elements** — they represent persistent deferred computation (lazy sequence steps, proxy handler dispatch) that cannot be converted to Unevaluated because builtin function pointers have no AST representation. The 7-state model (`{Unevaluated, PendingBuiltin, PendingCall, Guarded, InProgress, Materialized, Failed}`) is the stable design, not a transitional artifact.
+**Relationship to thunk state:** `BuiltinCall` and `FnCall` in `UnevaluatedState` are proto-continuations — defunctionalized call sites captured as data. The CEK machine processes them via `Cont` variants (`Cont::BuiltinForceArg`, `Cont::PendingCallDispatch`). They represent persistent deferred computation (lazy sequence steps, proxy handler dispatch) that cannot be converted to a simpler form because builtin function pointers have no AST representation. The five `UnevaluatedState` variants (`AstField`, `CoreExpr`, `BuiltinCall`, `FnCall`, `Guarded`) are the stable design. Thunk state is observed through borrow-based accessors (`try_get_value()`, `try_get_error()`, `is_materialized()`, `is_settled()`) that read the `OnceCell` directly rather than through a `ThunkState` enum.
 
 ### EvalContext — Evaluation Infrastructure Context
 
@@ -351,7 +351,7 @@ enum Value {
 }
 
 struct Thunk {
-    inner: ThunkInner,
+    pub(crate) inner: ThunkInner,   // direct field access from eval_materialize.rs and eval.rs
     span: Span,
 }
 
@@ -369,13 +369,12 @@ enum UnevaluatedState {
     Guarded { inner, expected, field_path, guard_span, blame_label, default },   // TypeAssert proxy contract
 }
 
-// ThunkState is derived by inspecting the two ThunkInner fields:
-enum ThunkState {
-    Unevaluated,                       // state present, no result
-    InProgress { evaluating_task },    // state taken (try_claim), no result yet
-    Materialized(Value),               // result OnceCell contains Ok(v)
-    Failed(Arc<EvalError>),            // result OnceCell contains Err(e)
-}
+// Thunk state is observed through borrow-based accessors on OnceCell:
+//   try_get_value() -> Option<&Value>       — Some(&v) iff result is Ok (zero-clone borrow)
+//   try_get_error() -> Option<&Arc<EvalError>> — Some(&e) iff result is Err (zero-clone borrow)
+//   is_materialized() -> bool               — true iff result is Some(Ok(_))
+//   is_settled() -> bool                    — true iff result is set (Ok or Err)
+// Evaluator internals use direct field access: thunk.inner.result.get()
 
 struct SourceLocation {
     file: String,
@@ -523,7 +522,7 @@ builtin!("seq", builtin_seq)               // all-Id (no third arg, empty slice)
 | Site | Location | Change |
 |------|----------|--------|
 | `Value::Builtin { name, func }` | `src/value.rs` | → `Value::Builtin(BuiltinDef)` |
-| `ThunkState::PendingBuiltin { name, func, ... }` | `src/value.rs` | → `{ def: BuiltinDef, ... }` |
+| `UnevaluatedState::BuiltinCall { name, func, ... }` | `src/value.rs` | → `{ def: BuiltinDef, ... }` |
 | `RestoreState::PendingBuiltin { name, func, ... }` | `src/eval_materialize.rs` | → `{ def: BuiltinDef, ... }` |
 | `BuiltinForceArgData { builtin_name, func, ... }` | `src/eval_materialize.rs` | → `{ def: BuiltinDef, arg_idx: usize, ... }` |
 | `take_pending_builtin()` return tuple | `src/value.rs` | `(&str, BuiltinFn, ...)` → `(BuiltinDef, ...)` |
@@ -591,7 +590,7 @@ S = Seq, I = Id, Sp = Spine
 3. In `apply_cont` for `Cont::BuiltinForceArg`, after the arg at `arg_idx` is materialized, find the next `Seq`/`Spine` position. If one exists, push another `Cont::BuiltinForceArg` with the incremented index. If none remain, construct `BuiltinArgs` and call `def.func`.
 4. The existing `builtin_name == "apply"` string comparison at `eval_materialize.rs:1114` is deleted — it becomes a specific instance of this general mechanism, since `$apply` is annotated `[Seq, Seq]`.
 
-Because `materialize()` updates the thunk's `RefCell<ThunkState>` in place, the builtin's own subsequent `materialize(args[i])` call is a no-op read after W1 has materialized it. This eliminates the per-argument state-machine cost for `Seq` and `Spine` positions.
+Because `materialize()` settles the thunk's result `OnceCell` in place, the builtin's own subsequent `materialize(args[i])` call is a no-op read after W1 has materialized it. This eliminates the per-argument state-machine cost for `Seq` and `Spine` positions.
 
 Error propagation: if pre-materialization of any `Seq`/`Spine` argument fails, the error surfaces before the builtin executes — preserving sequential error semantics and making the error site predictable regardless of the builtin's own argument access order.
 

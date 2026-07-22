@@ -180,8 +180,9 @@ pub(crate) fn expect_one_arg(
     }
     let thunk0 = ctx.get_thunk(args[0]);
     Ok(thunk0
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness"))
+        .try_get_value()
+        .expect("pre-materialized by force_count/pos_strictness")
+        .clone())
 }
 
 /// Helper: check that an f64 value is within the representable range of i64
@@ -800,8 +801,7 @@ mod tests {
     async fn parse_eval(llt_src: &str, ctx: &Arc<crate::eval::EvalContext>) -> Value {
         let parsed = crate::parser::parse(llt_src, test_file(llt_src))
             .unwrap_or_else(|e| panic!("parse_eval: parse failed for {:?}: {}", llt_src, e));
-        let mut program = parsed.program;
-        crate::desugar::desugar_program_full(&mut program);
+        let program = crate::desugar::desugar_program_full(&parsed.program);
         // Seed resolver from FlatEnv so builtin names resolve to de Bruijn coords.
         let root_frame: indexmap::IndexMap<String, u32> = crate::builtins_core::core_builtins()
             .iter()

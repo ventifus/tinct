@@ -10,7 +10,7 @@ A thunk is the runtime unit of lazy evaluation — a computation that executes a
 
 | Concern | File |
 |---|---|
-| `Thunk`, `ThunkInner`, `ThunkState`, `UnevaluatedState` | `src/value.rs` |
+| `Thunk`, `ThunkInner`, `UnevaluatedState` | `src/value.rs` |
 | `ThunkId`, `ScopeArena`, `ScopeId` | `src/arena.rs` |
 | `materialize()`, `run_owned()`, `force_step()`, `dispatch_state()`, `apply_cont()` | `src/eval_materialize.rs` |
 | `eval_core_expr()` | `src/eval_core.rs` |
@@ -55,13 +55,13 @@ Settled with a value. Cached forever via `OnceCell`. All readers receive the cac
 **`Failed(Arc<EvalError>)`** *(terminal)* — `result = Some(Err(e))`.
 Settled with an error. Cached forever. All readers receive this error.
 
-`Materialized` and `Failed` are distinguished from `InProgress` (placeholder) by whether `result.get()` returns `Some`. The `state()` method checks `result` first (no lock needed for OnceCell); the mutex is only acquired when result is empty.
+`Materialized` and `Failed` are distinguished from `InProgress` (placeholder) by whether `result.get()` returns `Some`. The borrow-based accessors (`try_get_value()`, `try_get_error()`, `is_materialized()`, `is_settled()`) check `result` first (no lock needed for OnceCell); the mutex is only acquired when result is empty.
 
 ### Invariants
 
 1. **Monotonicity**: `Materialized` and `Failed` are terminal — no transitions exit them.
 2. **Single ownership**: `try_claim()` is the sole path into `InProgress`. The mutex ensures at most one caller wins.
-3. **Notification ordering**: `settle()` writes `result` via `OnceCell::set()` first, then clears `evaluating_task`, then fires `notify_waiters()`. This ordering is critical: `state()` checks `result.get()` before the mutex, so once `result` is set, readers return a terminal state even if `evaluating_task` has not yet been cleared.
+3. **Notification ordering**: `settle()` writes `result` via `OnceCell::set()` first, then clears `evaluating_task`, then fires `notify_waiters()`. This ordering is critical: `try_get_value()` and `is_settled()` check `result.get()` without the mutex, so once `result` is set, readers see a terminal state even if `evaluating_task` has not yet been cleared.
 4. **Evaluate-at-most-once**: the winner of `try_claim()` MUST settle the thunk. `ThunkPanicGuard` enforces this even on task panic.
 5. **`reset()` is not error recovery**: the backward transition `InProgress → Unevaluated` is used only for CEK machine re-dispatch (e.g., `FnCall` resolves to a builtin requiring arg pre-materialization). Sound in the single-threaded `LocalSet`; never use for error recovery.
 
@@ -93,7 +93,7 @@ State encoding:
 | Materialized | — | — | `Some(Ok(v))` |
 | Failed | — | — | `Some(Err(e))` |
 
-For Materialized and Failed, the mutex fields are irrelevant — `state()` returns early after seeing a non-empty `result`.
+For Materialized and Failed, the mutex fields are irrelevant — `result.get()` returns `Some` and the accessors return immediately without acquiring the mutex.
 
 ---
 
@@ -101,7 +101,7 @@ For Materialized and Failed, the mutex fields are irrelevant — `state()` retur
 
 ```rust
 pub struct Thunk {
-    inner: ThunkInner,
+    pub(crate) inner: ThunkInner,   // direct field access from eval_materialize.rs and eval.rs
     pub(crate) span: Span,         // definition-site span (for error messages)
     pub(crate) create_parent: Option<u64>,  // profiling: parent span id
     pub(crate) create_time_us: u64,         // profiling: creation timestamp
@@ -222,31 +222,36 @@ Thunk::placeholder(span: Span) -> Self
 
 ## State Observation
 
-```rust
-pub fn state(&self) -> ThunkState
-```
+Thunk state is observed through borrow-based accessors that read the `OnceCell` directly — no enum is returned and no cloning occurs. The conceptual states (Unevaluated, InProgress, Materialized, Failed) still exist, but they are deduced from field inspection rather than a `ThunkState` enum.
 
-The only way to observe thunk state. Never reads `result`, `unevaluated`, or `notify` directly. Returns a cloned snapshot — callers receive a `ThunkState` value, not a borrow into the thunk.
+### Borrow-based accessors
 
 ```rust
-pub enum ThunkState {
-    Unevaluated,
-    InProgress { evaluating_task: Option<tokio::task::Id> },
-    Materialized(Value),
-    Failed(Arc<EvalError>),
-}
-```
-
-`state()` checks `result.get()` first (no lock), then acquires the mutex only if result is empty. This makes the common (terminal) case lock-free.
-
-### Convenience accessors
-
-```rust
-pub fn try_get_materialized(&self) -> Option<Value>     // Some(v) iff Materialized
-pub fn get_cached_error(&self) -> Option<Box<EvalError>>// Some(e) iff Failed
-pub fn is_materialized(&self) -> bool                   // true iff Materialized
+pub fn try_get_value(&self) -> Option<&Value>           // Some(&v) iff Materialized (zero-clone borrow)
+pub fn try_get_error(&self) -> Option<&Arc<EvalError>>  // Some(&e) iff Failed (zero-clone borrow)
+pub fn is_materialized(&self) -> bool                   // true iff result is Some(Ok(_)); checks OnceCell::get() directly
+pub fn is_settled(&self) -> bool                        // true iff result is set (Ok or Err)
 pub fn definition_span(&self) -> Span                   // the span field
 ```
+
+`try_get_value()` and `try_get_error()` return borrows into the `OnceCell` — no `Value` clone, no `Arc` clone. `is_materialized()` checks `OnceCell::get()` directly for `Some(Ok(_))`. `is_settled()` returns `true` if the result is set to either `Ok` or `Err`.
+
+### Direct field access for evaluator internals
+
+The `inner` field is `pub(crate)`, allowing `eval_materialize.rs` and `eval.rs` to inspect thunk state directly via `thunk.inner.result.get()`:
+
+```rust
+// Pattern used by the evaluator's force_step/materialize loops:
+if let Some(result) = thunk.inner.result.get() {
+    match result {
+        Ok(v) => /* materialized */,
+        Err(e) => /* failed */,
+    }
+}
+// then check try_claim() for unevaluated vs in-progress
+```
+
+This replaces the previous `state()` method that returned a `ThunkState` enum (cloning the `Value` on every call). The new approach is zero-copy for the common (terminal) case.
 
 ### Non-destructive introspection
 
@@ -275,13 +280,13 @@ The caller that wins `try_claim()` MUST settle the thunk. `ThunkPanicGuard` enfo
 ### `settle(result: Result<Value, Arc<EvalError>>)`
 
 Transitions `InProgress → Materialized` or `InProgress → Failed`. Order:
-1. `OnceCell::set(result)` — makes the terminal state visible to `state()` immediately.
+1. `OnceCell::set(result)` — makes the terminal state visible to `try_get_value()` / `is_settled()` immediately.
 2. Lock mutex, clear `evaluating_task` to `None`.
 3. `notify_waiters()` — unblocks tasks awaiting `settled()`.
 
 `OnceCell::set` is idempotent: concurrent losers' `Memoize` continuations that call `settle` on an already-settled thunk are silently no-ops. The first caller wins.
 
-**Critical ordering**: step 1 must precede step 2. If `evaluating_task` were cleared first, a concurrent `state()` call would see `(None, None)` with an empty `result` — i.e., `InProgress(None)` — triggering false cycle detection.
+**Critical ordering**: step 1 must precede step 2. If `evaluating_task` were cleared first, a concurrent reader inspecting `inner.result.get()` + the mutex would see `(None, None)` with an empty `result` — i.e., `InProgress(None)` — triggering false cycle detection.
 
 ### `reset(state: UnevaluatedState)`
 
@@ -365,17 +370,19 @@ pub fn materialize<'a>(
 
 ```
 loop:
-  Materialized(v)          → return Ok(v)
-  Failed(e)                → attach mat_span, return Err(e)
-  InProgress(same task)    → CircularDependency error, settle(Err), return Err
-  InProgress(other task)   → await settled(), loop
-  Unevaluated              → try_claim(); if won, call run_owned(state, thunk, ctx).await
+  if let Some(result) = thunk.inner.result.get():
+    Ok(v)                  → return Ok(v)
+    Err(e)                 → attach mat_span, return Err(e)
+  else try_claim():
+    Some(state)            → won; call run_owned(state, thunk, ctx).await
                              (run_owned settles the thunk as a side effect); loop
+    None (InProgress, same task)    → CircularDependency error, settle(Err), return Err
+    None (InProgress, other task)   → await settled(), loop
 ```
 
 When `try_claim()` is won, `run_owned` is called inline in the same task — no `spawn_local`. The CEK machine runs until the thunk is settled, then `materialize` loops and reads the now-terminal state.
 
-When `try_claim()` is lost (concurrent race), the loop reads `InProgress(other task)` and awaits `settled()`.
+When `try_claim()` is lost (concurrent race), the loop detects that the thunk is in-progress by another task and awaits `settled()`.
 
 ### `run_owned`
 
@@ -404,12 +411,12 @@ pub(crate) async fn force_step(
 ) -> Action
 ```
 
-The dispatch table:
+The dispatch table (state deduced from `thunk.inner.result.get()` and `try_claim()`):
 
 | Thunk state | Behavior |
 |---|---|
-| `Materialized(v)` | `Continue(Ok(v))` — hot path, no stack mutation |
-| `Failed(e)` | `Continue(Err(e))` — enriches error with `mat_span` if new |
+| Settled `Ok(v)` | `Continue(Ok(v))` — hot path, no stack mutation |
+| Settled `Err(e)` | `Continue(Err(e))` — enriches error with `mat_span` if new |
 | `InProgress(same task or None)` | `Continue(Err(CircularDependency))` — settles thunk with error |
 | `InProgress(different task)` | `await thunk.settled()`, loop |
 | `Unevaluated` | Win `try_claim()` → `dispatch_state()`; lose → loop |
@@ -431,7 +438,7 @@ The dispatch table:
 - calls `thunk.settle(r.map(Ok).unwrap_or_else(Err))` — writes to `OnceCell`
 - returns `Continue(r)`
 
-All other `Arc<Thunk>` handles to the same thunk see the cached result immediately on their next `state()` call.
+All other `Arc<Thunk>` handles to the same thunk see the cached result immediately on their next `try_get_value()` or `is_settled()` call.
 
 ### BuiltinForceArg and Strictness
 
@@ -452,9 +459,13 @@ When `PendingCallDispatch` has `tail_hint = true` (set when `Arc::strong_count(t
 The cycle detection mechanism is the `InProgress` state. The protocol in both `force_step` and `materialize`:
 
 ```rust
-ThunkState::InProgress { evaluating_task } => {
+// result is not set — check the unevaluated lock for InProgress state
+let lock = thunk.inner.unevaluated.lock().await;
+let (ref state, ref evaluating_task) = *lock;
+if state.is_none() {
+    // InProgress — state was taken by try_claim()
     let same = match (evaluating_task, tokio::task::try_id()) {
-        (Some(e), Some(c)) => e == c,
+        (Some(e), Some(c)) => *e == c,
         _                  => true,  // conservative: None = placeholder
     };
     if same {
@@ -464,6 +475,7 @@ ThunkState::InProgress { evaluating_task } => {
         thunk.settle(Err(Arc::new(err.clone())));
         return error;
     }
+    drop(lock);
     thunk.settled().await;   // diamond: a different task owns this thunk, wait
 }
 ```
@@ -556,8 +568,8 @@ The runtime uses `tokio::task::LocalSet` with a `current_thread` runtime. All ev
 
 Multiple concurrent `materialize()` calls on the same thunk are correct:
 - One wins `try_claim()` and drives evaluation via `run_owned`.
-- Others enter the `InProgress(other task)` arm and `await settled()`.
-- When settlement fires, all waiters loop, read `Materialized` or `Failed`, and return.
+- Others find `result.get()` is `None` and `try_claim()` returns `None`, then `await settled()`.
+- When settlement fires, all waiters loop, read the settled result via `inner.result.get()`, and return.
 
 `OnceCell::set()` in `settle()` is idempotent — concurrent `Memoize` continuations that all try to settle the same thunk (diamond pattern in the dependency graph) are handled correctly: the first write wins, subsequent writes are silently discarded.
 
@@ -592,12 +604,12 @@ Intermediate expressions in a document scope chain (all but the last) are eagerl
 ## Test Coverage
 
 `src/value.rs` includes unit tests for:
-- `Thunk::core_expr` → `state()` reports `Unevaluated`
-- `Thunk::value` → `state()` reports `Materialized`
-- `settle(Ok(...))` → `state()` reports `Materialized`
-- `settle(Err(...))` → `state()` reports `Failed`
+- `Thunk::core_expr` → `is_settled()` returns `false`
+- `Thunk::value` → `try_get_value()` returns `Some`, `is_materialized()` returns `true`
+- `settle(Ok(...))` → `try_get_value()` returns `Some`, `is_settled()` returns `true`
+- `settle(Err(...))` → `try_get_error()` returns `Some`, `is_settled()` returns `true`
 - `settle` is idempotent (second call is silent no-op)
 - `try_claim()` succeeds on Unevaluated, transitions to `InProgress`
 - `try_claim()` returns `None` on already-InProgress
 - `reset()` restores `Unevaluated` from `InProgress`
-- `try_get_materialized()` and `get_cached_error()` convenience accessors
+- `try_get_value()` and `try_get_error()` borrow-based accessors

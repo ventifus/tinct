@@ -110,15 +110,14 @@ A `Scope` is one lexical scope frame. Variables are addressed by `(level, slot)`
 
 ## Thunk Lifecycle
 
-### ThunkInner and ThunkState
+### ThunkInner and State Observation
 
 Each `Thunk` is a lazy cell with two-field separation:
 
 ```rust
 pub struct Thunk {
-    inner: ThunkInner,
+    pub(crate) inner: ThunkInner,   // direct field access from eval_materialize.rs and eval.rs
     pub(crate) span: Span,       // definition-site source span
-    pub(crate) origin: Option<Arc<str>>,  // human-readable label (e.g. "builtin-map")
     pub(crate) create_parent: Option<u64>,  // profiling parent span id
     pub(crate) create_time_us: u64,         // profiling creation timestamp
 }
@@ -130,14 +129,15 @@ pub struct ThunkInner {
 }
 ```
 
-`ThunkState` (returned by `thunk.state()`) is derived from these two fields:
+Thunk state is observed through borrow-based accessors on the `OnceCell` — no enum is returned and no cloning occurs:
 
 ```
-result set?   unevaluated state?    ThunkState
-──────────────────────────────────────────────
-No            Some(state)           Unevaluated
-No            None (claimed)        InProgress { evaluating_task }
-Yes           (irrelevant)          Materialized(v) or Failed(e)
+result.get()?   unevaluated state?    Observed via
+──────────────────────────────────────────────────────────────
+None            Some(state)           is_settled() → false
+None            None (claimed)        try_claim() → None (InProgress)
+Some(Ok(v))     (irrelevant)          try_get_value() → Some(&v), is_materialized() → true
+Some(Err(e))    (irrelevant)          try_get_error() → Some(&e), is_settled() → true
 ```
 
 **State transitions:**
@@ -149,9 +149,9 @@ Unevaluated ──try_claim()──► InProgress ──settle(Ok)──► Mate
 
 `try_claim()` atomically takes the `UnevaluatedState` from the mutex and records the current `tokio::task::Id`. This is the "blackholing" step: any re-entry into the same thunk from the same task hits `InProgress` and produces a `CircularDependency` error. Re-entry from a different task causes the task to `await thunk.settled()` and then re-read the result.
 
-**Cycle detection:** `force_step` checks `ThunkState::InProgress { evaluating_task }`. If `evaluating_task == current_task_id`, it is a genuine cycle: the `CircularDependency` error is immediately settled into the thunk (so subsequent accesses see `Failed`) and returned. The `TASK_EVAL_STACK` task-local provides the cycle path for the error message.
+**Cycle detection:** `force_step` checks `thunk.inner.result.get()` first; if the result is not set, it inspects the mutex. If `evaluating_task == current_task_id`, it is a genuine cycle: the `CircularDependency` error is immediately settled into the thunk (so subsequent accesses see `Failed`) and returned. The `TASK_EVAL_STACK` task-local provides the cycle path for the error message.
 
-**Memoization:** `thunk.settle(result)` writes to the `OnceCell` and notifies waiters. All subsequent `state()` calls see `Materialized` or `Failed` directly — no re-evaluation.
+**Memoization:** `thunk.settle(result)` writes to the `OnceCell` and notifies waiters. All subsequent `try_get_value()` / `try_get_error()` / `is_settled()` calls see the terminal result directly — no re-evaluation.
 
 ### UnevaluatedState Variants
 
@@ -291,10 +291,10 @@ Inspects one thunk's current state and produces the next `Action`. Never forces 
 
 **Dispatch table:**
 
-| State | Action produced |
+| State (deduced from `inner.result.get()` + `try_claim()`) | Action produced |
 |---|---|
-| `Materialized(v)` | `Continue(Ok(v))` — hot path, no stack mutation |
-| `Failed(e)` | `Continue(Err(e))` — enriches error with `mat_span` |
+| Settled `Ok(v)` | `Continue(Ok(v))` — hot path, no stack mutation |
+| Settled `Err(e)` | `Continue(Err(e))` — enriches error with `mat_span` |
 | `InProgress { same_task }` | `Continue(Err(CircularDependency))` — cached in thunk |
 | `InProgress { different_task }` | Await `thunk.settled()`, re-read (async cooperative wait) |
 | `Unevaluated` | `try_claim()` → `dispatch_state()` → see below |
@@ -348,7 +348,7 @@ apply_cont(Memoize):
     return Continue(result)
 ```
 
-All `Arc<Thunk>` handles pointing to the same thunk see the result immediately after `settle`. Subsequent `force_step` calls for the same thunk hit `Materialized` directly.
+All `Arc<Thunk>` handles pointing to the same thunk see the result immediately after `settle` via `inner.result.get()`. Subsequent `force_step` calls for the same thunk see the settled result directly.
 
 ### Builtin Strictness
 

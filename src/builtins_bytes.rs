@@ -119,11 +119,13 @@ pub(crate) fn builtin_bytes_find(
         let thunk0 = ctx.get_thunk(args[0]);
         let thunk1 = ctx.get_thunk(args[1]);
         let haystack_val = thunk0
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let needle_val = thunk1
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
 
         let haystack = match haystack_val.as_bytes() {
             Some(bytes) => bytes,
@@ -286,11 +288,13 @@ pub(crate) fn builtin_bytes_concat(
         let thunk0 = ctx.get_thunk(args[0]);
         let thunk1 = ctx.get_thunk(args[1]);
         let val1 = thunk0
-            .try_get_materialized()
-            .expect("pre-materialized by pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by pos_strictness")
+            .clone();
         let val2 = thunk1
-            .try_get_materialized()
-            .expect("pre-materialized by pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by pos_strictness")
+            .clone();
 
         let bytes1 = match val1.as_bytes() {
             Some(bytes) => bytes,
@@ -372,11 +376,13 @@ pub(crate) fn builtin_bytes_equal(
         let thunk0 = ctx.get_thunk(args[0]);
         let thunk1 = ctx.get_thunk(args[1]);
         let val1 = thunk0
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let val2 = thunk1
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
 
         let bytes1 = match val1.as_bytes() {
             Some(bytes) => bytes,
@@ -454,11 +460,13 @@ pub(crate) fn builtin_ct_equal(
         let thunk0 = ctx.get_thunk(args[0]);
         let thunk1 = ctx.get_thunk(args[1]);
         let val1 = thunk0
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let val2 = thunk1
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
 
         let bytes1 = match val1.as_bytes() {
             Some(bytes) => bytes,
@@ -545,11 +553,13 @@ pub(crate) fn builtin_encode(
         let thunk0 = ctx.get_thunk(args[0]);
         let thunk1 = ctx.get_thunk(args[1]);
         let fmt_val = thunk0
-            .try_get_materialized()
-            .expect("pre-materialized by pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by pos_strictness")
+            .clone();
         let num_val = thunk1
-            .try_get_materialized()
-            .expect("pre-materialized by pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by pos_strictness")
+            .clone();
 
         // Extract the Int discriminant from the format argument.
         // The prelude wrapper converts from the nominal ByteOrder type to Int before calling.
@@ -686,11 +696,13 @@ pub(crate) fn builtin_bytes_get(
         let thunk0 = ctx.get_thunk(args[0]);
         let thunk1 = ctx.get_thunk(args[1]);
         let i_val = thunk0
-            .try_get_materialized()
-            .expect("pre-materialized by pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by pos_strictness")
+            .clone();
         let b_val = thunk1
-            .try_get_materialized()
-            .expect("pre-materialized by pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by pos_strictness")
+            .clone();
 
         let i = match i_val {
             Value::Int(n) => n,
@@ -782,14 +794,17 @@ pub(crate) fn builtin_bytes_slice(
         let thunk1 = ctx.get_thunk(args[1]);
         let thunk2 = ctx.get_thunk(args[2]);
         let b_val = thunk0
-            .try_get_materialized()
-            .expect("pre-materialized by pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by pos_strictness")
+            .clone();
         let start_val = thunk1
-            .try_get_materialized()
-            .expect("pre-materialized by pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by pos_strictness")
+            .clone();
         let len_val = thunk2
-            .try_get_materialized()
-            .expect("pre-materialized by pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by pos_strictness")
+            .clone();
 
         let (source, base_start, base_end) = match &b_val {
             Value::Bytes { source, start, end } => (Arc::clone(source), *start, *end),

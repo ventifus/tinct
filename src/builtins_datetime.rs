@@ -42,8 +42,9 @@ pub fn builtin_parse_timestamp(
         let s_val = args
             .ctx
             .get_thunk(*s_thunk)
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=1");
+            .try_get_value()
+            .expect("pre-materialized by force_count=1")
+            .clone();
         let s = s_val
             .as_str()
             .ok_or_else(|| dt_err("parse-timestamp requires a String", call_span.clone()))?;
@@ -79,8 +80,9 @@ pub fn builtin_format_timestamp(
         let t_val = args
             .ctx
             .get_thunk(*t_thunk)
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=1");
+            .try_get_value()
+            .expect("pre-materialized by force_count=1")
+            .clone();
         let nanos = match &t_val {
             Value::Timestamp(n) => *n,
             _ => {
@@ -118,8 +120,9 @@ pub fn builtin_timestamp_to_unix(
         let t_val = args
             .ctx
             .get_thunk(*t_thunk)
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=1");
+            .try_get_value()
+            .expect("pre-materialized by force_count=1")
+            .clone();
         let nanos = match &t_val {
             Value::Timestamp(n) => *n,
             _ => {
@@ -152,8 +155,9 @@ pub fn builtin_unix_to_timestamp(
         let n_val = args
             .ctx
             .get_thunk(*n_thunk)
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=1");
+            .try_get_value()
+            .expect("pre-materialized by force_count=1")
+            .clone();
         let seconds = match &n_val {
             Value::Int(n) => *n,
             _ => return Err(dt_err("unix->timestamp requires an Int", call_span.clone())),
@@ -178,8 +182,9 @@ pub fn builtin_now(args: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<
         let cap_val = args
             .ctx
             .get_thunk(*cap_thunk)
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=1");
+            .try_get_value()
+            .expect("pre-materialized by force_count=1")
+            .clone();
         let clock_cap = match &cap_val {
             Value::ClockCap(inner) => inner,
             _ => return Err(dt_err("now requires a ClockCap", call_span.clone())),
@@ -211,8 +216,9 @@ pub fn builtin_fixed_clock(
         let t_val = args
             .ctx
             .get_thunk(*t_thunk)
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=1");
+            .try_get_value()
+            .expect("pre-materialized by force_count=1")
+            .clone();
         let nanos = match &t_val {
             Value::Timestamp(n) => *n,
             _ => {
@@ -246,13 +252,15 @@ pub fn builtin_timestamp_add(
         let t_val = args
             .ctx
             .get_thunk(*t_thunk)
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=2");
+            .try_get_value()
+            .expect("pre-materialized by force_count=2")
+            .clone();
         let d_val = args
             .ctx
             .get_thunk(*d_thunk)
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=2");
+            .try_get_value()
+            .expect("pre-materialized by force_count=2")
+            .clone();
 
         let t_nanos = match &t_val {
             Value::Timestamp(n) => *n,
@@ -298,13 +306,15 @@ pub fn builtin_timestamp_diff(
         let t1_val = args
             .ctx
             .get_thunk(*t1_thunk)
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=2");
+            .try_get_value()
+            .expect("pre-materialized by force_count=2")
+            .clone();
         let t2_val = args
             .ctx
             .get_thunk(*t2_thunk)
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=2");
+            .try_get_value()
+            .expect("pre-materialized by force_count=2")
+            .clone();
 
         let t1_nanos = match &t1_val {
             Value::Timestamp(n) => *n,
@@ -350,13 +360,15 @@ pub fn builtin_timestamp_lt(
         let t1_val = args
             .ctx
             .get_thunk(*t1_thunk)
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=2");
+            .try_get_value()
+            .expect("pre-materialized by force_count=2")
+            .clone();
         let t2_val = args
             .ctx
             .get_thunk(*t2_thunk)
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=2");
+            .try_get_value()
+            .expect("pre-materialized by force_count=2")
+            .clone();
 
         let t1_nanos = match &t1_val {
             Value::Timestamp(n) => *n,
@@ -401,13 +413,15 @@ pub fn builtin_timestamp_gt(
         let t1_val = args
             .ctx
             .get_thunk(*t1_thunk)
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=2");
+            .try_get_value()
+            .expect("pre-materialized by force_count=2")
+            .clone();
         let t2_val = args
             .ctx
             .get_thunk(*t2_thunk)
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=2");
+            .try_get_value()
+            .expect("pre-materialized by force_count=2")
+            .clone();
 
         let t1_nanos = match &t1_val {
             Value::Timestamp(n) => *n,
@@ -452,13 +466,15 @@ pub fn builtin_timestamp_eq(
         let t1_val = args
             .ctx
             .get_thunk(*t1_thunk)
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=2");
+            .try_get_value()
+            .expect("pre-materialized by force_count=2")
+            .clone();
         let t2_val = args
             .ctx
             .get_thunk(*t2_thunk)
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=2");
+            .try_get_value()
+            .expect("pre-materialized by force_count=2")
+            .clone();
 
         let t1_nanos = match &t1_val {
             Value::Timestamp(n) => *n,
@@ -503,8 +519,9 @@ pub fn builtin_timestamp_year(
         let t_val = args
             .ctx
             .get_thunk(*t_thunk)
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=1");
+            .try_get_value()
+            .expect("pre-materialized by force_count=1")
+            .clone();
         let nanos = match &t_val {
             Value::Timestamp(n) => *n,
             _ => {
@@ -541,8 +558,9 @@ pub fn builtin_timestamp_month(
         let t_val = args
             .ctx
             .get_thunk(*t_thunk)
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=1");
+            .try_get_value()
+            .expect("pre-materialized by force_count=1")
+            .clone();
         let nanos = match &t_val {
             Value::Timestamp(n) => *n,
             _ => {
@@ -579,8 +597,9 @@ pub fn builtin_timestamp_day(
         let t_val = args
             .ctx
             .get_thunk(*t_thunk)
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=1");
+            .try_get_value()
+            .expect("pre-materialized by force_count=1")
+            .clone();
         let nanos = match &t_val {
             Value::Timestamp(n) => *n,
             _ => {
@@ -617,8 +636,9 @@ pub fn builtin_timestamp_hour(
         let t_val = args
             .ctx
             .get_thunk(*t_thunk)
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=1");
+            .try_get_value()
+            .expect("pre-materialized by force_count=1")
+            .clone();
         let nanos = match &t_val {
             Value::Timestamp(n) => *n,
             _ => {
@@ -655,8 +675,9 @@ pub fn builtin_timestamp_minute(
         let t_val = args
             .ctx
             .get_thunk(*t_thunk)
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=1");
+            .try_get_value()
+            .expect("pre-materialized by force_count=1")
+            .clone();
         let nanos = match &t_val {
             Value::Timestamp(n) => *n,
             _ => {
@@ -693,8 +714,9 @@ pub fn builtin_timestamp_second(
         let t_val = args
             .ctx
             .get_thunk(*t_thunk)
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=1");
+            .try_get_value()
+            .expect("pre-materialized by force_count=1")
+            .clone();
         let nanos = match &t_val {
             Value::Timestamp(n) => *n,
             _ => {
@@ -731,8 +753,9 @@ pub fn builtin_timestamp_parts(
         let t_val = args
             .ctx
             .get_thunk(*t_thunk)
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=1");
+            .try_get_value()
+            .expect("pre-materialized by force_count=1")
+            .clone();
         let nanos = match &t_val {
             Value::Timestamp(n) => *n,
             _ => {
@@ -809,8 +832,9 @@ pub fn builtin_duration_nanos(
         let n_val = args
             .ctx
             .get_thunk(*n_thunk)
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=1");
+            .try_get_value()
+            .expect("pre-materialized by force_count=1")
+            .clone();
         let nanos = match &n_val {
             Value::Int(n) => *n,
             _ => return Err(dt_err("duration-nanos requires an Int", call_span.clone())),
@@ -840,8 +864,9 @@ pub fn builtin_timestamp_nanos(
         let n_val = args
             .ctx
             .get_thunk(*n_thunk)
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=1");
+            .try_get_value()
+            .expect("pre-materialized by force_count=1")
+            .clone();
         let nanos = match &n_val {
             Value::Int(n) => *n,
             _ => return Err(dt_err("timestamp-nanos requires an Int", call_span.clone())),
@@ -867,8 +892,9 @@ pub fn builtin_duration_seconds(
         let n_val = args
             .ctx
             .get_thunk(*n_thunk)
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=1");
+            .try_get_value()
+            .expect("pre-materialized by force_count=1")
+            .clone();
         let seconds = match &n_val {
             Value::Int(n) => *n,
             _ => {
@@ -903,8 +929,9 @@ pub fn builtin_duration_minutes(
         let n_val = args
             .ctx
             .get_thunk(*n_thunk)
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=1");
+            .try_get_value()
+            .expect("pre-materialized by force_count=1")
+            .clone();
         let minutes = match &n_val {
             Value::Int(n) => *n,
             _ => {
@@ -940,8 +967,9 @@ pub fn builtin_duration_hours(
         let n_val = args
             .ctx
             .get_thunk(*n_thunk)
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=1");
+            .try_get_value()
+            .expect("pre-materialized by force_count=1")
+            .clone();
         let hours = match &n_val {
             Value::Int(n) => *n,
             _ => return Err(dt_err("duration-hours requires an Int", call_span.clone())),
@@ -972,8 +1000,9 @@ pub fn builtin_duration_days(
         let n_val = args
             .ctx
             .get_thunk(*n_thunk)
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=1");
+            .try_get_value()
+            .expect("pre-materialized by force_count=1")
+            .clone();
         let days = match &n_val {
             Value::Int(n) => *n,
             _ => return Err(dt_err("duration-days requires an Int", call_span.clone())),
@@ -1004,8 +1033,9 @@ pub fn builtin_duration_to_seconds(
         let d_val = args
             .ctx
             .get_thunk(*d_thunk)
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=1");
+            .try_get_value()
+            .expect("pre-materialized by force_count=1")
+            .clone();
         let nanos = match &d_val {
             Value::Duration(n) => *n,
             _ => {
@@ -1038,8 +1068,9 @@ pub fn builtin_duration_to_nanos(
         let d_val = args
             .ctx
             .get_thunk(*d_thunk)
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=1");
+            .try_get_value()
+            .expect("pre-materialized by force_count=1")
+            .clone();
         let nanos = match &d_val {
             Value::Duration(n) => *n,
             _ => {
@@ -1065,13 +1096,15 @@ pub fn builtin_load_tz(args: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalRes
         let dir_val = args
             .ctx
             .get_thunk(*dir_thunk)
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=2");
+            .try_get_value()
+            .expect("pre-materialized by force_count=2")
+            .clone();
         let name_val = args
             .ctx
             .get_thunk(*name_thunk)
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=2");
+            .try_get_value()
+            .expect("pre-materialized by force_count=2")
+            .clone();
 
         let dir = match &dir_val {
             Value::DirCap { dir, .. } => dir,
@@ -1140,13 +1173,15 @@ pub fn builtin_timestamp_in_tz(
         let t_val = args
             .ctx
             .get_thunk(*t_thunk)
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=2");
+            .try_get_value()
+            .expect("pre-materialized by force_count=2")
+            .clone();
         let tz_val = args
             .ctx
             .get_thunk(*tz_thunk)
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=2");
+            .try_get_value()
+            .expect("pre-materialized by force_count=2")
+            .clone();
 
         let nanos = match &t_val {
             Value::Timestamp(n) => *n,
@@ -1248,38 +1283,45 @@ pub fn builtin_local_to_timestamp(
         let year_val = args
             .ctx
             .get_thunk(args.args[0])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let month_val = args
             .ctx
             .get_thunk(args.args[1])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let day_val = args
             .ctx
             .get_thunk(args.args[2])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let hour_val = args
             .ctx
             .get_thunk(args.args[3])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let minute_val = args
             .ctx
             .get_thunk(args.args[4])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let second_val = args
             .ctx
             .get_thunk(args.args[5])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let tz_val = args
             .ctx
             .get_thunk(args.args[6])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
 
         let year = match &year_val {
             Value::Int(n) => *n as i16,
@@ -1384,8 +1426,9 @@ pub fn builtin_local_tz_name(
         let dir_val = args
             .ctx
             .get_thunk(*dir_thunk)
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=1");
+            .try_get_value()
+            .expect("pre-materialized by force_count=1")
+            .clone();
         let _dir = match &dir_val {
             Value::DirCap { dir, .. } => dir,
             _ => return Err(dt_err("local-tz-name requires DirCap", call_span.clone())),

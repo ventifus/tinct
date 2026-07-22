@@ -40,8 +40,10 @@ fn surf_ann_entry_tc(
 }
 
 async fn check(input: &str) -> Result<(), Vec<TypeDiagnostic>> {
-    let mut program = crate::parse(input, test_file(input)).unwrap().program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(input, test_file(input)).unwrap().program,
+    );
+
     let (errors, _table, _tycon_env) = typecheck_surface_program_annotation_table(&program).await;
     if errors.is_empty() {
         Ok(())
@@ -55,8 +57,10 @@ async fn check_err(input: &str) -> Vec<TypeDiagnostic> {
 }
 
 async fn infer(input: &str) -> Type {
-    let mut program = crate::parse(input, test_file(input)).unwrap().program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(input, test_file(input)).unwrap().program,
+    );
+
     // get_builtin_core_type_env returns Arc<RwLock<Env>>; use directly (no bridge needed).
     let arc_env = crate::imports::get_builtin_core_type_env()
         .await
@@ -108,8 +112,10 @@ async fn doc_env_with_prelude(input: &str) -> Arc<RwLock<crate::env::Env>> {
 
 /// Returns (result_env, result_type) for the first document of input, with prelude in scope.
 async fn doc_env_and_type(input: &str) -> (Arc<RwLock<crate::env::Env>>, Type) {
-    let mut program = crate::parse(input, test_file(input)).unwrap().program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(input, test_file(input)).unwrap().program,
+    );
+
     // get_builtin_core_type_env returns Arc<RwLock<Env>>; use directly (no bridge needed).
     let arc_env = crate::imports::get_builtin_core_type_env()
         .await
@@ -152,8 +158,10 @@ async fn result_field(input: &str, field: &str) -> Type {
 async fn doc_tycon_env(
     input: &str,
 ) -> std::collections::HashMap<String, Arc<crate::type_def::TyConDef>> {
-    let mut program = crate::parse(input, test_file(input)).unwrap().program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(input, test_file(input)).unwrap().program,
+    );
+
     let arc_env = crate::imports::get_builtin_core_type_env()
         .await
         .expect("builtin core type env unavailable in test");
@@ -180,8 +188,10 @@ async fn file_env(input: &str) -> Arc<RwLock<crate::env::Env>> {
 }
 
 async fn file_env_impl(input: &str) -> Arc<RwLock<crate::env::Env>> {
-    let mut program = crate::parse(input, test_file(input)).unwrap().program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(input, test_file(input)).unwrap().program,
+    );
+
     let mut env: Arc<RwLock<crate::env::Env>> = Arc::new(RwLock::new(crate::env::Env::new()));
     let mut state = InferState::new();
     for doc_spanned in &program.documents {
@@ -321,13 +331,14 @@ async fn test_dict_multiple_errors() {
     );
 
     // Also verify via direct infer_expr call
-    let mut program = crate::parse(
-        "[a: $undefined1  b: 42  c: $undefined2]",
-        test_file("[a: $undefined1  b: 42  c: $undefined2]"),
-    )
-    .unwrap()
-    .program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(
+            "[a: $undefined1  b: 42  c: $undefined2]",
+            test_file("[a: $undefined1  b: 42  c: $undefined2]"),
+        )
+        .unwrap()
+        .program,
+    );
     let env: Arc<RwLock<crate::env::Env>> = Arc::new(RwLock::new(crate::env::Env::new()));
     let mut state = InferState::new();
     let node = match &program.documents[0].node.items[0] {
@@ -487,13 +498,14 @@ async fn test_dot_access_typevar_generates_constraint_verified() {
     //   generating the constraint.
 
     // In new syntax, string literals require quotes.
-    let mut program = crate::parse(
-        "[result: $data.name  data: [name: \"hello\"]]",
-        test_file("[result: $data.name  data: [name: \"hello\"]]"),
-    )
-    .unwrap()
-    .program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(
+            "[result: $data.name  data: [name: \"hello\"]]",
+            test_file("[result: $data.name  data: [name: \"hello\"]]"),
+        )
+        .unwrap()
+        .program,
+    );
     let env: Arc<RwLock<crate::env::Env>> = Arc::new(RwLock::new(crate::env::Env::new()));
     let mut state = InferState::new();
     // Typecheck the document
@@ -610,8 +622,9 @@ async fn test_check_call_with_scheme_non_function_scheme() {
     // This guards the arm against removal or refactoring that would cause a panic
     // instead of a graceful error on malformed (but internally representable) schemes.
     let input = "[call $f 1]";
-    let mut program = crate::parse(input, test_file(input)).unwrap().program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(input, test_file(input)).unwrap().program,
+    );
 
     // Build env with `f: ∀a. Int` — polymorphic scheme, non-function body.
     // type_vars non-empty causes instantiate_at_level to be applied, revealing
@@ -1165,8 +1178,9 @@ async fn test_call_any_callee_populates_type_map_for_positional_args() {
     // an FFI binding, or a value whose type cannot be statically determined). The call
     // `[call $f 42]` exercises the AfterCallFunc Unknown arm.
     let input = "[call $f 42]";
-    let mut program = crate::parse(input, test_file(input)).unwrap().program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(input, test_file(input)).unwrap().program,
+    );
 
     // Build a parent env with `f: Any` — monomorphic scheme, empty type_vars.
     let mut parent_env_inner = crate::env::Env::new();
@@ -1317,8 +1331,10 @@ async fn test_level_restored_after_non_dict_record_error() {
         "#;
 
     // Parse and desugar
-    let mut program = crate::parse(input, test_file(input)).unwrap().program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(input, test_file(input)).unwrap().program,
+    );
+
     let mut env: Arc<RwLock<crate::env::Env>> = Arc::new(RwLock::new(crate::env::Env::new()));
     let mut state = InferState::new();
     // Process first document (should succeed)
@@ -1606,8 +1622,9 @@ async fn test_double_typecheck_no_panic() {
             [@Integer 99]
         "#;
 
-    let mut program = crate::parse(input, test_file(input)).unwrap().program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(input, test_file(input)).unwrap().program,
+    );
 
     // First typecheck: should succeed
     let (diagnostics1, type_map1, _doc_map1, _scheme_map1) = typecheck_surface_program(
@@ -1664,8 +1681,10 @@ async fn test_error_recorded_in_type_map_on_failure() {
     // Test via typecheck_surface_program: $undefined is a VarRef that fails, so the
     // type_map entry for its span must be Type::Error.
     let input = "$undefined";
-    let mut program = crate::parse(input, test_file(input)).unwrap().program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(input, test_file(input)).unwrap().program,
+    );
+
     let (diagnostics, type_map, _doc_map, _scheme_map) = typecheck_surface_program(
         &program,
         Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
@@ -1732,8 +1751,10 @@ async fn test_calling_error_function_does_not_produce_t003() {
                 result: [call $broken 42]
             ]
         "#;
-    let mut program = crate::parse(input, test_file(input)).unwrap().program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(input, test_file(input)).unwrap().program,
+    );
+
     let (diagnostics, _type_map, _doc_map, _scheme_map) = typecheck_surface_program(
         &program,
         Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
@@ -1785,8 +1806,9 @@ async fn test_check_call_with_scheme_non_function_error() {
 async fn test_typecheck_returns_diagnostics() {
     // Verify that typecheck_surface_program_annotation_table returns no errors for a simple dict
     let input = "[x: 42]";
-    let mut program = crate::parse(input, test_file(input)).unwrap().program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(input, test_file(input)).unwrap().program,
+    );
 
     let (errors, _table, _tycon_env) = typecheck_surface_program_annotation_table(&program).await;
     assert!(
@@ -1799,8 +1821,9 @@ async fn test_typecheck_returns_diagnostics() {
 async fn test_typecheck_with_types_returns_diagnostics() {
     // Verify that typecheck_surface_program returns diagnostics in the tuple
     let input = "[x: 42]";
-    let mut program = crate::parse(input, test_file(input)).unwrap().program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(input, test_file(input)).unwrap().program,
+    );
 
     let env = Arc::new(std::sync::RwLock::new(crate::env::Env::new()));
     let (diagnostics, _type_map, _doc_map, _scheme_map) =
@@ -1883,13 +1906,14 @@ async fn test_union_display_format() {
 #[tokio::test]
 async fn test_narrowing_type_map_hover() {
     // Verify that the type map contains the narrowed type for LSP hover
-    let mut program = crate::parse(
-        "[x: 30]\n[result: [if [= x 42] x 0]]",
-        test_file("[x: 30]\n[result: [if [= x 42] x 0]]"),
-    )
-    .unwrap()
-    .program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(
+            "[x: 30]\n[result: [if [= x 42] x 0]]",
+            test_file("[x: 30]\n[result: [if [= x 42] x 0]]"),
+        )
+        .unwrap()
+        .program,
+    );
     let env: Arc<RwLock<crate::env::Env>> = Arc::new(RwLock::new(crate::env::Env::new())); /* TODO(type-foundations): build_prelude_env() deleted */
     let mut state = InferState::new();
     let mut type_map = TypeMap::new();
@@ -1968,8 +1992,10 @@ async fn test_recursive_type_depth_limit() {
 async fn test_doc_extraction_from_param_annotation() {
     // Test existing functionality: extract doc from parameter annotations
     let input = "[f: [fn [let x@[doc: \"The input value\"]] x]]";
-    let mut program = crate::parse(input, test_file(input)).unwrap().program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(input, test_file(input)).unwrap().program,
+    );
+
     let (_diagnostics, _type_map, doc_map, _scheme_map) = typecheck_surface_program(
         &program,
         Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
@@ -1983,8 +2009,10 @@ async fn test_doc_extraction_from_param_annotation() {
 async fn test_doc_extraction_from_dict_entry_key() {
     // Test Task 1: extract doc from dict entry key annotation
     let input = "[myFunc@[doc: \"My function\"]: [fn [let] 42]]";
-    let mut program = crate::parse(input, test_file(input)).unwrap().program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(input, test_file(input)).unwrap().program,
+    );
+
     let (_diagnostics, _type_map, doc_map, _scheme_map) = typecheck_surface_program(
         &program,
         Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
@@ -1998,8 +2026,10 @@ async fn test_doc_extraction_from_dict_entry_key() {
 async fn test_doc_extraction_from_fn_return_annotation() {
     // Test Task 2: extract doc from function return annotation
     let input = "[count@[]: [fn@[type: Integer  doc: \"Returns the count\"] [] 42]]";
-    let mut program = crate::parse(input, test_file(input)).unwrap().program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(input, test_file(input)).unwrap().program,
+    );
+
     let (_diagnostics, _type_map, doc_map, _scheme_map) = typecheck_surface_program(
         &program,
         Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
@@ -2015,8 +2045,10 @@ async fn test_doc_extraction_combined() {
     let input = r#"
 [helper@[doc: "Helper function"]: [fn@[doc: "Adds two numbers"] [let a@[doc: "First number"] b@[doc: "Second number"]] [+ a b]]]
         "#;
-    let mut program = crate::parse(input, test_file(input)).unwrap().program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(input, test_file(input)).unwrap().program,
+    );
+
     let (_diagnostics, _type_map, doc_map, _scheme_map) = typecheck_surface_program(
         &program,
         Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
@@ -2427,13 +2459,14 @@ async fn test_cek_detects_unknown_field_access() {
     // This example produces 2 diagnostics:
     // 1. The field access r.y has type Unknown
     // 2. The function's return type contains Unknown
-    let mut program = crate::parse(
-        "[f: [fn [let r@[x: Int]] $r.y]]",
-        test_file("[f: [fn [let r@[x: Int]] $r.y]]"),
-    )
-    .unwrap()
-    .program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(
+            "[f: [fn [let r@[x: Int]] $r.y]]",
+            test_file("[f: [fn [let r@[x: Int]] $r.y]]"),
+        )
+        .unwrap()
+        .program,
+    );
     let (diagnostics, _type_map, _doc_map, _scheme_map) = typecheck_surface_program(
         &program,
         Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
@@ -2459,13 +2492,14 @@ async fn test_cek_detects_unknown_field_access() {
 #[tokio::test]
 async fn test_cek_explicit_unknown_annotation() {
     // Test that CEK AfterFnBody/AfterTypeAssertInner emits Info diagnostic for explicit @Unknown (T011), not Warn (T010)
-    let mut program = crate::parse(
-        "[f: [fn@Unknown [let x] $x]]",
-        test_file("[f: [fn@Unknown [let x] $x]]"),
-    )
-    .unwrap()
-    .program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(
+            "[f: [fn@Unknown [let x] $x]]",
+            test_file("[f: [fn@Unknown [let x] $x]]"),
+        )
+        .unwrap()
+        .program,
+    );
     let (diagnostics, _type_map, _doc_map, _scheme_map) = typecheck_surface_program(
         &program,
         Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
@@ -2587,8 +2621,10 @@ async fn test_placeholder_has_type_var() {
     // Expr::Placeholder (the `...` expression) is now a typed hole: infers as a fresh TypeVar.
     // The TypeVar unifies with whatever the context demands (e.g., expected type, usage site).
     // Verify via direct infer call. Since `...` is a Placeholder token, we parse it.
-    let mut program = crate::parse("...", test_file("...")).unwrap().program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse("...", test_file("...")).unwrap().program,
+    );
+
     let env: Arc<RwLock<crate::env::Env>> = Arc::new(RwLock::new(crate::env::Env::new()));
     let mut state = InferState::new();
     let node = match &program.documents[0].node.items[0] {
@@ -3386,8 +3422,10 @@ async fn test_instance_decl_parsed_correctly() {
     // methods dict opens (3), fn opens/closes (net 0), empty opens/closes (net 0),
     // then 3 closes: ] (methods=2), ] (instance=1), ] (outer=0)
     let input = "[AppendableDict: [instance Appendable [let a@Dict]: [append-one: [fn [let a b] a] empty: []]]]";
-    let mut program = crate::parse(input, test_file(input)).unwrap().program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(input, test_file(input)).unwrap().program,
+    );
+
     let doc = &program.documents[0].node;
     // Find the AppendableDict entry and print its value expression type for debugging
     let mut found_expr_type = "not_found".to_string();
@@ -3794,8 +3832,9 @@ async fn test_recursive_fn_no_stack_overflow() {
     // Parse as a two-item sequential: a fn expression followed by a VarRef.
     // We want a fn node in expression position for run_typecheck.
     let src = "[fn [let n] [if [= n 0] 1 [* n [factorial [- n 1]]]]]";
-    let mut program = crate::parse(src, test_file(src)).unwrap().program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(src, test_file(src)).unwrap().program,
+    );
 
     let node = match &program.documents[0].node.items[0] {
         crate::ast::SurfaceItem::Expr(n) => Arc::clone(n),
@@ -3832,8 +3871,9 @@ async fn test_deeply_nested_fn_no_stack_overflow() {
     for _ in 0..100 {
         src = format!("[fn [let x] {}]", src);
     }
-    let mut program = crate::parse(&src, test_file(&src)).unwrap().program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(&src, test_file(&src)).unwrap().program,
+    );
 
     let node = match &program.documents[0].node.items[0] {
         crate::ast::SurfaceItem::Expr(n) => Arc::clone(n),
@@ -3875,8 +3915,9 @@ async fn test_type_stage_resolver_via_cek() {
 
     // [@Int 42] is a TypeAssert node — the CEK machine handles it via AfterTypeAssertInner.
     let src = "[@Int 42]";
-    let mut program = crate::parse(src, test_file(src)).unwrap().program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(src, test_file(src)).unwrap().program,
+    );
 
     let node = match &program.documents[0].node.items[0] {
         crate::ast::SurfaceItem::Expr(n) => Arc::clone(n),
@@ -3926,8 +3967,10 @@ async fn test_match_expr_via_cek_exercises_after_match_arm() {
     // Test that AfterMatchScrutinee and AfterMatchArm continuations are exercised
     // by passing a Match expression directly to run_typecheck.
     let src = "[match 42  42: \"forty-two\"  ...: \"other\"]";
-    let mut program = crate::parse(src, test_file(src)).unwrap().program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(src, test_file(src)).unwrap().program,
+    );
+
     let node = match &program.documents[0].node.items[0] {
         crate::ast::SurfaceItem::Expr(n) => Arc::clone(n),
         _ => panic!("expected expression item"),
@@ -4086,8 +4129,10 @@ async fn test_fn_param_shadow_does_not_create_scc_dep_edge() {
 #[tokio::test]
 async fn test_cek_int_literal_infers_int_literal() {
     let src = "42";
-    let mut program = crate::parse(src, test_file(src)).unwrap().program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(src, test_file(src)).unwrap().program,
+    );
+
     let node = match &program.documents[0].node.items[0] {
         crate::ast::SurfaceItem::Expr(n) => Arc::clone(n),
         _ => panic!("expected expression item"),
@@ -4123,8 +4168,10 @@ async fn test_cek_int_literal_infers_int_literal() {
 #[tokio::test]
 async fn test_cek_string_literal_infers_string_literal() {
     let src = "\"hello\"";
-    let mut program = crate::parse(src, test_file(src)).unwrap().program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(src, test_file(src)).unwrap().program,
+    );
+
     let node = match &program.documents[0].node.items[0] {
         crate::ast::SurfaceItem::Expr(n) => Arc::clone(n),
         _ => panic!("expected expression item"),
@@ -4159,8 +4206,10 @@ async fn test_cek_string_literal_infers_string_literal() {
 #[tokio::test]
 async fn test_cek_float_literal_infers_float() {
     let src = "3.14";
-    let mut program = crate::parse(src, test_file(src)).unwrap().program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(src, test_file(src)).unwrap().program,
+    );
+
     let node = match &program.documents[0].node.items[0] {
         crate::ast::SurfaceItem::Expr(n) => Arc::clone(n),
         _ => panic!("expected expression item"),
@@ -4200,8 +4249,10 @@ async fn test_cek_float_literal_infers_float() {
 #[tokio::test]
 async fn test_cek_fn_expression_infers_function_type() {
     let src = "[fn [let x] $x]";
-    let mut program = crate::parse(src, test_file(src)).unwrap().program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(src, test_file(src)).unwrap().program,
+    );
+
     let node = match &program.documents[0].node.items[0] {
         crate::ast::SurfaceItem::Expr(n) => Arc::clone(n),
         _ => panic!("expected expression item"),
@@ -4239,8 +4290,10 @@ async fn test_cek_after_fn_body_return_annotation_overrides_body_type() {
 
     // Seed Int in type_stage_map so @Int resolves without error.
     let src = "[fn@Int [let x@Int] $x]";
-    let mut program = crate::parse(src, test_file(src)).unwrap().program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(src, test_file(src)).unwrap().program,
+    );
+
     let node = match &program.documents[0].node.items[0] {
         crate::ast::SurfaceItem::Expr(n) => Arc::clone(n),
         _ => panic!("expected expression item"),
@@ -4290,8 +4343,10 @@ async fn test_cek_type_assert_matching_annotation_no_error() {
     use crate::type_infer::TypeStageEntry;
 
     let src = "[@Int 42]";
-    let mut program = crate::parse(src, test_file(src)).unwrap().program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(src, test_file(src)).unwrap().program,
+    );
+
     let node = match &program.documents[0].node.items[0] {
         crate::ast::SurfaceItem::Expr(n) => Arc::clone(n),
         _ => panic!("expected expression item"),
@@ -4339,8 +4394,10 @@ async fn test_cek_type_assert_mismatched_annotation_emits_error() {
     use crate::type_infer::TypeStageEntry;
 
     let src = "[@Int \"hello\"]";
-    let mut program = crate::parse(src, test_file(src)).unwrap().program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(src, test_file(src)).unwrap().program,
+    );
+
     let node = match &program.documents[0].node.items[0] {
         crate::ast::SurfaceItem::Expr(n) => Arc::clone(n),
         _ => panic!("expected expression item"),
@@ -4389,8 +4446,10 @@ async fn test_cek_type_assert_mismatched_annotation_emits_error() {
 async fn test_cek_sequential_expr_returns_last_type() {
     // [fn [let x] [a: 1]  "last"] — multi-body fn: dict intermediate, string last.
     let src = "[fn [let x] [a: 1]  \"last\"]";
-    let mut program = crate::parse(src, test_file(src)).unwrap().program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(src, test_file(src)).unwrap().program,
+    );
+
     let node = match &program.documents[0].node.items[0] {
         crate::ast::SurfaceItem::Expr(n) => Arc::clone(n),
         _ => panic!("expected expression item"),
@@ -4433,8 +4492,10 @@ async fn test_cek_sequential_expr_returns_last_type() {
 async fn test_cek_sequential_env_extends_to_last_body() {
     // [fn [let x] [a: 42]  a] — dict intermediate binds a; last body references a.
     let src = "[fn [let x] [a: 42]  a]";
-    let mut program = crate::parse(src, test_file(src)).unwrap().program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(src, test_file(src)).unwrap().program,
+    );
+
     let node = match &program.documents[0].node.items[0] {
         crate::ast::SurfaceItem::Expr(n) => Arc::clone(n),
         _ => panic!("expected expression item"),
@@ -4483,8 +4544,10 @@ async fn test_cek_sequential_env_extends_to_last_body() {
 #[tokio::test]
 async fn test_cek_match_three_arms_exercises_after_match_arm_self_push() {
     let src = "[match 1  1: \"one\"  2: \"two\"  ...: \"other\"]";
-    let mut program = crate::parse(src, test_file(src)).unwrap().program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(src, test_file(src)).unwrap().program,
+    );
+
     let node = match &program.documents[0].node.items[0] {
         crate::ast::SurfaceItem::Expr(n) => Arc::clone(n),
         _ => panic!("expected expression item"),
@@ -4527,8 +4590,10 @@ async fn test_cek_match_three_arms_exercises_after_match_arm_self_push() {
 #[tokio::test]
 async fn test_cek_match_single_arm_does_not_self_push() {
     let src = "[match 42  ...: \"any\"]";
-    let mut program = crate::parse(src, test_file(src)).unwrap().program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(src, test_file(src)).unwrap().program,
+    );
+
     let node = match &program.documents[0].node.items[0] {
         crate::ast::SurfaceItem::Expr(n) => Arc::clone(n),
         _ => panic!("expected expression item"),
@@ -4800,13 +4865,16 @@ async fn test_b477_user_instance_call_dispatch_set_with_scope_frames() {
   result: [greet 42]
 ]"#;
 
-    let mut program = crate::parse(src, Arc::from(file!())).unwrap().program;
-    crate::desugar::desugar_surface_program(&mut program);
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(src, Arc::from(file!())).unwrap().program,
+    );
 
     let arc_env = crate::imports::get_builtin_core_type_env()
         .await
         .expect("builtin core type env unavailable");
-    let child_env = Arc::new(RwLock::new(crate::env::Env::with_parent(Arc::clone(&arc_env))));
+    let child_env = Arc::new(RwLock::new(crate::env::Env::with_parent(Arc::clone(
+        &arc_env,
+    ))));
     let mut state = InferState::with_env(Arc::clone(&child_env));
 
     // B-477 fix: populate scope_frames with a synthetic outer frame.

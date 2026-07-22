@@ -31,7 +31,7 @@ use crate::types::{Row, Type};
 // builtins.rs imports `invoke_function` and `materialize` from this module.
 // This bidirectional dependency is safe because neither module's initialization depends on the other.
 use crate::env::Env;
-use crate::value::{HashableValue, Thunk, ThunkState, Value};
+use crate::value::{HashableValue, Thunk, Value};
 
 // ============================================================================
 // Document pipeline evaluation
@@ -1410,53 +1410,55 @@ pub fn materialize<'a>(
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Value>> + 'a>> {
     Box::pin(async move {
         loop {
-            match thunk.state() {
-                ThunkState::Materialized(v) => return Ok(v),
-
-                ThunkState::Failed(e) => {
-                    let mut cloned = (*e).clone();
-                    if let Some(span) = mat_span {
-                        let first_note = cloned.spans.get(1).map(|(s, _)| s);
-                        if first_note.is_none() {
-                            cloned = cloned.with_materialization_span(span.clone());
-                        } else if first_note != Some(span)
-                            && !cloned.stack.iter().any(|f| f.definition_span == *span)
-                        {
-                            cloned.push_frame("materialized".to_string(), span.clone());
+            // Check terminal states first (result is set).
+            if let Some(result) = thunk.inner.result.get() {
+                match result {
+                    Ok(v) => return Ok(v.clone()),
+                    Err(e) => {
+                        let mut cloned = (**e).clone();
+                        if let Some(span) = mat_span {
+                            let first_note = cloned.spans.get(1).map(|(s, _)| s);
+                            if first_note.is_none() {
+                                cloned = cloned.with_materialization_span(span.clone());
+                            } else if first_note != Some(span)
+                                && !cloned.stack.iter().any(|f| f.definition_span == *span)
+                            {
+                                cloned.push_frame("materialized".to_string(), span.clone());
+                            }
                         }
+                        return Err(Box::new(cloned));
                     }
-                    return Err(Box::new(cloned));
                 }
+            }
 
-                ThunkState::InProgress { evaluating_task } => {
-                    let same = match (evaluating_task, tokio::task::try_id()) {
-                        (Some(e), Some(c)) => e == c,
-                        _ => true,
-                    };
-                    if same {
-                        let cycle_path = crate::eval_materialize::TASK_EVAL_STACK
-                            .try_with(|s| s.borrow().clone())
-                            .unwrap_or_default();
-                        let err = EvalError::circular_dependency(
-                            thunk.span.name.as_deref().unwrap_or("thunk"),
-                            thunk.span.clone(),
-                            cycle_path,
-                        );
-                        thunk.settle(Err(Arc::new(err.clone())));
-                        return Err(Box::new(err));
-                    }
-                    thunk.settled().await;
+            // Not settled — try to claim (Unevaluated → InProgress).
+            if let Some(state) = thunk.try_claim() {
+                let guard = crate::value::ThunkPanicGuard(Some(Arc::clone(thunk)));
+                let result = crate::eval_materialize::run_owned(state, thunk, ctx).await;
+                guard.settle(result.map_err(|e| Arc::new(*e)));
+            } else if thunk.inner.result.get().is_some() {
+                // Settled between our check and try_claim — loop to read result.
+                continue;
+            } else {
+                // Claim failed, not settled — thunk is InProgress.
+                let evaluating_task = thunk.inner.unevaluated.lock().unwrap().1;
+                let same = match (evaluating_task, tokio::task::try_id()) {
+                    (Some(e), Some(c)) => e == c,
+                    _ => true,
+                };
+                if same {
+                    let cycle_path = crate::eval_materialize::TASK_EVAL_STACK
+                        .try_with(|s| s.borrow().clone())
+                        .unwrap_or_default();
+                    let err = EvalError::circular_dependency(
+                        thunk.span.name.as_deref().unwrap_or("thunk"),
+                        thunk.span.clone(),
+                        cycle_path,
+                    );
+                    thunk.settle(Err(Arc::new(err.clone())));
+                    return Err(Box::new(err));
                 }
-
-                ThunkState::Unevaluated => {
-                    if let Some(state) = thunk.try_claim() {
-                        let guard = crate::value::ThunkPanicGuard(Some(Arc::clone(thunk)));
-                        let result = crate::eval_materialize::run_owned(state, thunk, ctx).await;
-                        guard.settle(result.map_err(|e| Arc::new(*e)));
-                    } else {
-                        thunk.settled().await;
-                    }
-                }
+                thunk.settled().await;
             }
         }
     })
@@ -2047,11 +2049,9 @@ mod tests {
             header: indexmap::IndexMap::new(),
             items: vec![SurfaceItem::Expr(Arc::clone(&node))],
         };
-        let program = SurfaceProgram {
+        let program = crate::desugar::desugar_program_full(&SurfaceProgram {
             documents: vec![Spanned::new(Arc::new(doc), span.clone())],
-        };
-        let mut program = program;
-        crate::desugar::desugar_program_full(&mut program);
+        });
         // Seed resolver from FlatEnv so $name references resolve to de Bruijn coords.
         // Type annotation names (String, Int, etc.) in test expressions are resolved
         // by the type checker, not the runtime resolver — ignore resolve errors here.
@@ -2140,7 +2140,7 @@ mod tests {
     }
 
     /// Clone an `Arc<Thunk>` from a dict entry for tests that need direct thunk access
-    /// (e.g. inspecting `ThunkState` or materializing with a custom mat_span).
+    /// (e.g. inspecting thunk state or materializing with a custom mat_span).
     /// After T-1772, dict values are `Arc<Thunk>` directly — no ThunkId lookup needed.
     fn get_thunk_arc(thunk: &Arc<Thunk>) -> Arc<Thunk> {
         Arc::clone(thunk)
@@ -2325,7 +2325,7 @@ mod tests {
 
         // Check that the thunk is now in Failed state, not stuck in InProgress
         let cached_err = x_thunk
-            .get_cached_error()
+            .try_get_error()
             .expect("thunk should be in Failed state");
         assert!(
             cached_err.to_string().contains("circular dependency"),
@@ -3277,8 +3277,8 @@ mod tests {
 
         // Check that the thunk is now in Materialized state
         assert_eq!(
-            pending.try_get_materialized(),
-            Some(Value::Int(42)),
+            pending.try_get_value(),
+            Some(&Value::Int(42)),
             "expected Materialized after first call"
         );
 
@@ -3396,7 +3396,7 @@ mod tests {
         // Check that the thunk is now in Failed state
         {
             let _cached_err = x_thunk
-                .get_cached_error()
+                .try_get_error()
                 .expect("thunk should be in Failed state");
         }
 
@@ -3501,7 +3501,7 @@ mod tests {
 
         // The thunk SHOULD be in Failed state because Unimplemented is cacheable
         let cached_err = x_thunk
-            .get_cached_error()
+            .try_get_error()
             .expect("expected Failed state with cached error after cacheable error");
         assert!(
             !cached_err.kind.to_string().is_empty(),
@@ -4876,8 +4876,8 @@ mod tests {
 
         // After successful validation, thunk must be in Materialized state (memoized).
         assert_eq!(
-            guarded.try_get_materialized(),
-            Some(Value::Int(42)),
+            guarded.try_get_value(),
+            Some(&Value::Int(42)),
             "after first materialization thunk should be Materialized(Int(42))"
         );
 
@@ -4891,8 +4891,8 @@ mod tests {
 
         // State is still Materialized (not changed by second access).
         assert_eq!(
-            guarded.try_get_materialized(),
-            Some(Value::Int(42)),
+            guarded.try_get_value(),
+            Some(&Value::Int(42)),
             "state should still be Materialized after second access"
         );
     }
@@ -4936,7 +4936,7 @@ mod tests {
 
         // After failure, thunk must be in Failed state (cacheable memoization of error).
         assert!(
-            guarded.get_cached_error().is_some(),
+            guarded.try_get_error().is_some(),
             "after type guard failure thunk should be Failed"
         );
 
@@ -5024,8 +5024,7 @@ mod tests {
 
         let test_file: Arc<str> = Arc::from(file!());
         let parsed = crate::parse(source, Arc::clone(&test_file)).expect("parse should succeed");
-        let mut surface_program = parsed.program;
-        crate::desugar::desugar_program_full(&mut surface_program);
+        let surface_program = crate::desugar::desugar_program_full(&parsed.program);
         // Resolve without env: dict siblings ($a, $b, $c) are resolved by scope tracking.
         let (_table, _frames) = crate::resolve::resolve_surface_program(&surface_program, &[]);
         let _ = env;
@@ -5147,14 +5146,16 @@ mod tests {
                 // Check that the unused thunk is still in an unevaluated state
                 // (it should not be Materialized)
                 assert!(
-                    unused_thunk.try_get_materialized().is_none(),
+                    !unused_thunk.is_materialized(),
                     "unused thunk should not be materialized"
                 );
                 // Check it's not in Failed or InProgress state
-                if let Some(_err) = unused_thunk.get_cached_error() {
+                if unused_thunk.try_get_error().is_some() {
                     panic!("unused thunk should not be in Failed state (error should not have triggered)")
                 }
-                if matches!(unused_thunk.state(), ThunkState::InProgress { .. }) {
+                if !unused_thunk.is_settled()
+                    && unused_thunk.inner.unevaluated.lock().unwrap().0.is_none()
+                {
                     panic!("unused thunk should not be InProgress")
                 }
                 // Unevaluated or other states like PendingCall are acceptable
@@ -5175,7 +5176,7 @@ mod tests {
     /// Setup: create a PendingBuiltin thunk for `builtin_keys` (force_count=1) with
     /// an *unevaluated* dict-expr thunk as args[0]. The unevaluated thunk evaluates
     /// to an empty dict. If the bypass path were to call `builtin_keys` without first
-    /// materializing args[0], `try_get_materialized().expect(...)` inside `builtin_keys`
+    /// materializing args[0], `try_get_value().expect(...)` inside `builtin_keys`
     /// would panic.
     #[tokio::test]
     async fn pending_builtin_bypass_path_pre_materializes_args() {
@@ -5194,7 +5195,7 @@ mod tests {
 
         // Verify the arg is NOT yet materialized (it is unevaluated).
         assert!(
-            unevaluated_arg.try_get_materialized().is_none(),
+            !unevaluated_arg.is_materialized(),
             "arg must be unevaluated before the PendingBuiltin is forced"
         );
 
@@ -5221,7 +5222,7 @@ mod tests {
         ));
 
         // Materialize via the recursive path. If force_count pre-materialization is
-        // missing, this panics at `try_get_materialized().expect(...)` inside `builtin_keys`.
+        // missing, this panics at `try_get_value().expect(...)` inside `builtin_keys`.
         let result = materialize(&outer, None, &ctx).await;
         assert!(
             result.is_ok(),
@@ -5248,7 +5249,7 @@ mod tests {
     /// Setup: create a PendingCall thunk where the func thunk resolves to `Value::Builtin(keys_def)`
     /// and args[0] is an unevaluated dict thunk. If force_count pre-materialization is
     /// missing in the PendingCall→Builtin path, `builtin_keys` panics at
-    /// `try_get_materialized().expect(...)`.
+    /// `try_get_value().expect(...)`.
     #[tokio::test]
     async fn pending_call_builtin_bypass_path_pre_materializes_args() {
         let ctx = test_ctx();
@@ -5265,7 +5266,7 @@ mod tests {
 
         // Verify the arg is NOT yet materialized.
         assert!(
-            unevaluated_arg.try_get_materialized().is_none(),
+            !unevaluated_arg.is_materialized(),
             "arg must be unevaluated before the PendingCall is forced"
         );
 

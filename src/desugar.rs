@@ -33,16 +33,18 @@ use std::sync::Arc;
 /// Desugar a complete SurfaceProgram (all documents).
 ///
 /// Runs the `$_` desugaring transformation on every expression in every document.
-/// Mutates the SurfaceProgram in place by replacing SurfaceItem::Expr nodes.
-pub fn desugar_surface_program(program: &mut SurfaceProgram) {
-    for doc_spanned in &mut program.documents {
-        let count = Arc::strong_count(&doc_spanned.node);
-        desugar_surface_document(
-            Arc::get_mut(&mut doc_spanned.node).unwrap_or_else(|| {
-                panic!("document Arc has {count} strong references, expected 1")
-            }),
-        );
-    }
+/// Returns a new SurfaceProgram with desugared documents. Unchanged documents share
+/// their Arc with the original (zero-copy for unmodified subtrees).
+pub fn desugar_surface_program(program: &SurfaceProgram) -> SurfaceProgram {
+    let documents = program
+        .documents
+        .iter()
+        .map(|doc_spanned| {
+            let new_doc = desugar_surface_document(&doc_spanned.node);
+            Spanned::new(Arc::new(new_doc), doc_spanned.span.clone())
+        })
+        .collect();
+    SurfaceProgram { documents }
 }
 
 /// Transform single-arm InstanceDecl in dict-entry position into runtime method dicts (T-1142,
@@ -62,33 +64,45 @@ pub fn desugar_surface_program(program: &mut SurfaceProgram) {
 /// `arms[0]` would silently discard all subsequent arms.
 ///
 /// Runs BEFORE `desugar_surface_program` (`$_` desugaring and pipe lowering).
-pub fn desugar_instance_decls_surface_program(program: &mut SurfaceProgram) {
-    for doc_spanned in &mut program.documents {
-        let count = Arc::strong_count(&doc_spanned.node);
-        desugar_instance_decls_document(
-            Arc::get_mut(&mut doc_spanned.node).unwrap_or_else(|| {
-                panic!("document Arc has {count} strong references, expected 1")
-            }),
-        );
-    }
+///
+/// Pure functional transformation: takes `&SurfaceProgram`, returns a new `SurfaceProgram`.
+pub fn desugar_instance_decls_surface_program(program: &SurfaceProgram) -> SurfaceProgram {
+    let documents = program
+        .documents
+        .iter()
+        .map(|doc_spanned| {
+            let new_doc = desugar_instance_decls_document(&doc_spanned.node);
+            Spanned::new(Arc::new(new_doc), doc_spanned.span.clone())
+        })
+        .collect();
+    SurfaceProgram { documents }
 }
 
 /// Full desugar pipeline for production code paths.
 ///
+/// Pure functional transformation: takes `&SurfaceProgram`, returns a new `SurfaceProgram`.
 /// Always call this instead of calling the two passes separately. Correct order:
 /// 1. `desugar_instance_decls_surface_program` — expand single-arm InstanceDecl to method dicts
 /// 2. `desugar_surface_program` — `$_` lambda wrapping and Pipe → Call lowering
-pub fn desugar_program_full(program: &mut SurfaceProgram) {
-    desugar_instance_decls_surface_program(program);
-    desugar_surface_program(program);
+pub fn desugar_program_full(program: &SurfaceProgram) -> SurfaceProgram {
+    let after_pass1 = desugar_instance_decls_surface_program(program);
+    desugar_surface_program(&after_pass1)
 }
 
-fn desugar_instance_decls_document(doc: &mut SurfaceDocument) {
-    for item in &mut doc.items {
-        if let SurfaceItem::Expr(node_arc) = item {
-            let new_node = desugar_instance_decls_node(Arc::clone(node_arc));
-            *node_arc = new_node;
-        }
+fn desugar_instance_decls_document(doc: &SurfaceDocument) -> SurfaceDocument {
+    let items = doc
+        .items
+        .iter()
+        .map(|item| match item {
+            SurfaceItem::Expr(node_arc) => {
+                SurfaceItem::Expr(desugar_instance_decls_node(Arc::clone(node_arc)))
+            }
+            other => other.clone(),
+        })
+        .collect();
+    SurfaceDocument {
+        header: doc.header.clone(),
+        items,
     }
 }
 
@@ -351,12 +365,24 @@ fn desugar_instance_decls_expr(expr: &SurfaceExpression, _span: Span) -> Surface
 }
 
 /// Desugar a single SurfaceDocument (all expression items).
-fn desugar_surface_document(doc: &mut SurfaceDocument) {
-    for item in &mut doc.items {
-        if let SurfaceItem::Expr(node_arc) = item {
-            desugar_surface_node(node_arc, 0);
-        }
-        // Skip SurfaceItem::Decl — declarations are handled by the expander, not the evaluator
+/// Returns a new SurfaceDocument with desugared expression items.
+fn desugar_surface_document(doc: &SurfaceDocument) -> SurfaceDocument {
+    let items = doc
+        .items
+        .iter()
+        .map(|item| match item {
+            SurfaceItem::Expr(node_arc) => {
+                let mut new_node = Arc::clone(node_arc);
+                desugar_surface_node(&mut new_node, 0);
+                SurfaceItem::Expr(new_node)
+            }
+            // Skip SurfaceItem::Decl — declarations are handled by the expander, not the evaluator
+            other => other.clone(),
+        })
+        .collect();
+    SurfaceDocument {
+        header: doc.header.clone(),
+        items,
     }
 }
 
@@ -1017,9 +1043,9 @@ mod tests {
     #[test]
     fn test_single_arm_instance_is_transformed() {
         // A single-arm named instance in dict-entry position should be transformed to a plain Dict.
-        let mut program =
+        let program =
             parse_program("[MonadResult: [instance Monad [let m@Result]: [bind: [fn [let x] x]]]]");
-        desugar_instance_decls_surface_program(&mut program);
+        let program = desugar_instance_decls_surface_program(&program);
 
         // Extract the first (and only) document's first expression item.
         let doc = &program.documents[0].node;
@@ -1049,12 +1075,12 @@ mod tests {
     fn test_multi_arm_instance_is_not_transformed() {
         // A multi-arm named instance must NOT be transformed — all arms must be preserved for
         // lower.rs to emit all instance-binding-name-keyed dict entries (B-409).
-        let mut program = parse_program(
+        let program = parse_program(
             r#"[AddableInts: [instance Addable
                 [let a@Integer b@Integer c]:   [+: [fn [let x y] x]]
                 [let a@Integer b@Float c]: [+: [fn [let x y] x]]]]"#,
         );
-        desugar_instance_decls_surface_program(&mut program);
+        let program = desugar_instance_decls_surface_program(&program);
 
         let doc = &program.documents[0].node;
         let node = match doc.items.first().expect("expected one item") {

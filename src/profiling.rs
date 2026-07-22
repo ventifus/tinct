@@ -512,7 +512,8 @@ mod tests {
                     .expect("entry 0 missing")
                     .clone();
                 let span_val = span_thunk
-                    .try_get_materialized()
+                    .try_get_value()
+                    .cloned()
                     .expect("span dict should be materialized");
                 match span_val {
                     Value::Dict(entries) => {

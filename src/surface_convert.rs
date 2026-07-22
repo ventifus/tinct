@@ -102,7 +102,7 @@ fn inject_span_into_expr_variant(
             payload: Some(payload_id),
         } => {
             let payload_thunk = ctx.get_thunk(payload_id);
-            if let Some(Value::Dict(mut payload_dict)) = payload_thunk.try_get_materialized() {
+            if let Some(Value::Dict(mut payload_dict)) = payload_thunk.try_get_value().cloned() {
                 let span_thunk = Arc::new(Thunk::value(span_val, synth.clone()));
                 payload_dict.insert(HashableValue::Str("span".into()), span_thunk);
                 let new_payload_id = ctx.alloc_thunk(
@@ -178,7 +178,7 @@ fn dict_to_surface_node_inner(
     } = val
     {
         let payload_thunk = ctx.get_thunk(*payload_id);
-        if let Some(Value::Dict(dict)) = payload_thunk.try_get_materialized() {
+        if let Some(Value::Dict(dict)) = payload_thunk.try_get_value().cloned() {
             if let Some(span) = extract_span(&dict, ctx) {
                 return Ok(Arc::new(SurfaceNode::new(node.expr.clone(), span)));
             }
@@ -607,7 +607,8 @@ fn dict_to_annotation(
         }
         let payload_thunk = ctx.get_thunk(*payload_id);
         let payload_val = payload_thunk
-            .try_get_materialized()
+            .try_get_value()
+            .cloned()
             .unwrap_or_else(|| Value::Dict(indexmap::IndexMap::new()));
         let ann = match ctor.as_ref() {
             "Quote" => Annotation::Quote,
@@ -734,7 +735,7 @@ fn get_field(
             field_path: path.iter().map(|s| s.to_string()).collect(),
         })?;
 
-    thunk.try_get_materialized().ok_or_else(|| AstError {
+    thunk.try_get_value().cloned().ok_or_else(|| AstError {
         message: format!("field '{}' is not materialized", key),
         field_path: path.iter().map(|s| s.to_string()).collect(),
     })
@@ -810,7 +811,7 @@ fn get_optional_dict_field(
     _ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<Option<Value>, AstError> {
     match dict.get(&HashableValue::Str(key.into())) {
-        Some(thunk) => Ok(thunk.try_get_materialized()),
+        Some(thunk) => Ok(thunk.try_get_value().cloned()),
         None => Ok(None),
     }
 }
@@ -824,15 +825,15 @@ pub(crate) fn extract_span(
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Option<Span> {
     let span_thunk = dict.get(&HashableValue::Str("span".into()))?;
-    let span_val = span_thunk.try_get_materialized()?;
+    let span_val = span_thunk.try_get_value().cloned()?;
 
     match span_val {
         Value::Dict(span_dict) => {
             let start_thunk = span_dict.get(&HashableValue::Str("start".into()))?;
-            let start_val = start_thunk.try_get_materialized()?;
+            let start_val = start_thunk.try_get_value().cloned()?;
 
             let end_thunk = span_dict.get(&HashableValue::Str("end".into()))?;
-            let end_val = end_thunk.try_get_materialized()?;
+            let end_val = end_thunk.try_get_value().cloned()?;
 
             let (start_line, start_col) = extract_position(&start_val, ctx)?;
             let (end_line, end_col) = extract_position(&end_val, ctx)?;
@@ -853,13 +854,13 @@ fn extract_position(val: &Value, _ctx: &Arc<crate::eval::EvalContext>) -> Option
     match val {
         Value::Dict(dict) => {
             let line_thunk = dict.get(&HashableValue::Str("line".into()))?;
-            let line = match line_thunk.try_get_materialized()? {
+            let line = match line_thunk.try_get_value().cloned()? {
                 Value::Int(n) => n as u32,
                 _ => return None,
             };
 
             let col_thunk = dict.get(&HashableValue::Str("col".into()))?;
-            let col = match col_thunk.try_get_materialized()? {
+            let col = match col_thunk.try_get_value().cloned()? {
                 Value::Int(n) => n as u32,
                 _ => return None,
             };
@@ -881,7 +882,7 @@ fn extract_list(
             for i in 0.. {
                 match d.get(&HashableValue::Int(i)) {
                     Some(thunk) => {
-                        let val = thunk.try_get_materialized().ok_or_else(|| AstError {
+                        let val = thunk.try_get_value().cloned().ok_or_else(|| AstError {
                             message: format!("list element {} is not materialized", i),
                             field_path: path.iter().map(|s| s.to_string()).collect(),
                         })?;
@@ -1182,7 +1183,8 @@ pub(crate) fn extract_tag_and_dict(
             })?;
             let payload_val = ctx
                 .get_thunk(*payload_thunk_id)
-                .try_get_materialized()
+                .try_get_value()
+                .cloned()
                 .ok_or_else(|| AstError {
                     message: "variant payload is not materialized".into(),
                     field_path: vec![],
@@ -1214,7 +1216,7 @@ fn get_field_with_aliases(
 ) -> Result<Value, AstError> {
     // Try primary key first
     if let Some(thunk) = dict.get(&HashableValue::Str(key.into())) {
-        return thunk.try_get_materialized().ok_or_else(|| AstError {
+        return thunk.try_get_value().cloned().ok_or_else(|| AstError {
             message: format!("field '{}' is not materialized", key),
             field_path: vec![key.to_string()],
         });
@@ -1222,7 +1224,7 @@ fn get_field_with_aliases(
     // Try aliases
     for alias in aliases {
         if let Some(thunk) = dict.get(&HashableValue::Str((*alias).into())) {
-            return thunk.try_get_materialized().ok_or_else(|| AstError {
+            return thunk.try_get_value().cloned().ok_or_else(|| AstError {
                 message: format!("field '{}' (alias '{}') is not materialized", key, alias),
                 field_path: vec![key.to_string()],
             });
@@ -1395,7 +1397,7 @@ pub(crate) fn get_entry_list_field_with_aliases(
                 message: "Expr.Entry missing key field".into(),
                 field_path: vec![key.to_string(), i_str.clone(), "key".to_string()],
             })?;
-        let key_val = key_thunk.try_get_materialized().ok_or_else(|| AstError {
+        let key_val = key_thunk.try_get_value().cloned().ok_or_else(|| AstError {
             message: "Expr.Entry key not materialized".into(),
             field_path: vec![key.to_string(), i_str.clone(), "key".to_string()],
         })?;
@@ -1417,10 +1419,13 @@ pub(crate) fn get_entry_list_field_with_aliases(
                 message: "Expr.Entry missing value field".into(),
                 field_path: vec![key.to_string(), i_str.clone(), "value".to_string()],
             })?;
-        let value_val = value_thunk.try_get_materialized().ok_or_else(|| AstError {
-            message: "Expr.Entry value not materialized".into(),
-            field_path: vec![key.to_string(), i_str.clone(), "value".to_string()],
-        })?;
+        let value_val = value_thunk
+            .try_get_value()
+            .cloned()
+            .ok_or_else(|| AstError {
+                message: "Expr.Entry value not materialized".into(),
+                field_path: vec![key.to_string(), i_str.clone(), "value".to_string()],
+            })?;
         let value_node =
             dict_to_surface_node(&value_val, &fallback_span, ctx).map_err(|mut e| {
                 e.field_path.insert(0, "value".to_string());
@@ -1470,10 +1475,13 @@ pub(crate) fn get_named_arg_list_field_with_aliases(
                 message: "Expr.NamedArg missing value field".into(),
                 field_path: vec![key.to_string(), i_str.clone(), "value".to_string()],
             })?;
-        let value_val = value_thunk.try_get_materialized().ok_or_else(|| AstError {
-            message: "Expr.NamedArg value not materialized".into(),
-            field_path: vec![key.to_string(), i_str.clone(), "value".to_string()],
-        })?;
+        let value_val = value_thunk
+            .try_get_value()
+            .cloned()
+            .ok_or_else(|| AstError {
+                message: "Expr.NamedArg value not materialized".into(),
+                field_path: vec![key.to_string(), i_str.clone(), "value".to_string()],
+            })?;
         let fallback_span = extract_span(&payload_dict, ctx).unwrap_or_else(|| rust_span!());
         let value_node =
             dict_to_surface_node(&value_val, &fallback_span, ctx).map_err(|mut e| {
@@ -2195,7 +2203,7 @@ fn override_bare_in_literal_variant(
     {
         if tycon.as_ref() == "Expr" && ctor.as_ref() == "Literal" {
             let payload_thunk = ctx.get_thunk(payload_id);
-            if let Some(Value::Dict(mut dict)) = payload_thunk.try_get_materialized() {
+            if let Some(Value::Dict(mut dict)) = payload_thunk.try_get_value().cloned() {
                 let new_bare_thunk = Arc::new(Thunk::value(
                     Value::Int(if bare { 1 } else { 0 }),
                     span.clone(),
@@ -2375,7 +2383,7 @@ mod tests {
                 payload: Some(payload_id),
             } => {
                 let payload_thunk = ctx.get_thunk(payload_id);
-                match payload_thunk.try_get_materialized() {
+                match payload_thunk.try_get_value().cloned() {
                     Some(Value::Dict(map)) => (format!("{}.{}", tycon, ctor), map),
                     other => panic!("expected Dict payload for Variant, got {:?}", other),
                 }
@@ -2398,16 +2406,19 @@ mod tests {
         let ctx = test_ctx();
         let thunk = surface_program_to_dict(&parse_output.program, &opts, &ctx).unwrap();
 
-        match thunk.try_get_materialized() {
+        match thunk.try_get_value().cloned() {
             Some(Value::Dict(map)) => {
                 let type_thunk = map.get(&HashableValue::Str("type".into())).unwrap().clone();
-                assert_eq!(type_thunk.try_get_materialized(), Some(string_val("file")));
+                assert_eq!(
+                    type_thunk.try_get_value().cloned(),
+                    Some(string_val("file"))
+                );
 
                 let version_thunk = map
                     .get(&HashableValue::Str("schema-version".into()))
                     .unwrap()
                     .clone();
-                assert_eq!(version_thunk.try_get_materialized(), Some(Value::Int(1)));
+                assert_eq!(version_thunk.try_get_value().cloned(), Some(Value::Int(1)));
             }
             _ => panic!("expected Dict"),
         }
@@ -2429,27 +2440,28 @@ mod tests {
         let thunk = surface_program_to_dict(&parse_output.program, &opts, &ctx).unwrap();
 
         // Navigate to the first document's first expression (the dict)
-        match thunk.try_get_materialized() {
+        match thunk.try_get_value().cloned() {
             Some(Value::Dict(file_dict)) => {
                 let docs_thunk = file_dict
                     .get(&HashableValue::Str("documents".into()))
                     .unwrap()
                     .clone();
-                match docs_thunk.try_get_materialized() {
+                match docs_thunk.try_get_value().cloned() {
                     Some(Value::Dict(docs_list)) => {
                         let doc_thunk = docs_list.get(&HashableValue::Int(0)).unwrap().clone();
-                        match doc_thunk.try_get_materialized() {
+                        match doc_thunk.try_get_value().cloned() {
                             Some(Value::Dict(doc_dict)) => {
                                 let exprs_thunk = doc_dict
                                     .get(&HashableValue::Str("expressions".into()))
                                     .unwrap()
                                     .clone();
-                                match exprs_thunk.try_get_materialized() {
+                                match exprs_thunk.try_get_value().cloned() {
                                     Some(Value::Dict(exprs_list)) => {
                                         let expr_thunk =
                                             exprs_list.get(&HashableValue::Int(0)).unwrap().clone();
                                         let expr_val = expr_thunk
-                                            .try_get_materialized()
+                                            .try_get_value()
+                                            .cloned()
                                             .expect("expr not materialized");
                                         let (_tag, dict_node) = peel_variant(expr_val, &ctx);
                                         {
@@ -2458,14 +2470,15 @@ mod tests {
                                                 .get(&HashableValue::Str("entries".into()))
                                                 .unwrap()
                                                 .clone();
-                                            match entries_thunk.try_get_materialized() {
+                                            match entries_thunk.try_get_value().cloned() {
                                                 Some(Value::Dict(entries_list)) => {
                                                     let entry_thunk = entries_list
                                                         .get(&HashableValue::Int(0))
                                                         .unwrap()
                                                         .clone();
                                                     let entry_val = entry_thunk
-                                                        .try_get_materialized()
+                                                        .try_get_value()
+                                                        .cloned()
                                                         .expect("entry not materialized");
                                                     let (_entry_tag, entry_dict) =
                                                         peel_variant(entry_val, &ctx);
@@ -2476,7 +2489,8 @@ mod tests {
                                                             .unwrap()
                                                             .clone();
                                                         let key_val = key_thunk
-                                                            .try_get_materialized()
+                                                            .try_get_value()
+                                                            .cloned()
                                                             .expect("key not materialized");
                                                         let (_key_tag, key_dict) =
                                                             peel_variant(key_val, &ctx);
@@ -2487,7 +2501,7 @@ mod tests {
                                                             .clone();
                                                         assert_eq!(
                                                             bare_thunk
-                                                                .try_get_materialized(),
+                                                                .try_get_value().cloned(),
                                                             Some(Value::Int(1)),
                                                             "bare should be true for bare word 'foo'"
                                                         );
@@ -2526,27 +2540,28 @@ mod tests {
         let thunk = surface_program_to_dict(&parse_output.program, &opts, &ctx).unwrap();
 
         // Navigate to the key and check bare: false
-        match thunk.try_get_materialized() {
+        match thunk.try_get_value().cloned() {
             Some(Value::Dict(file_dict)) => {
                 let docs_thunk = file_dict
                     .get(&HashableValue::Str("documents".into()))
                     .unwrap()
                     .clone();
-                match docs_thunk.try_get_materialized() {
+                match docs_thunk.try_get_value().cloned() {
                     Some(Value::Dict(docs_list)) => {
                         let doc_thunk = docs_list.get(&HashableValue::Int(0)).unwrap().clone();
-                        match doc_thunk.try_get_materialized() {
+                        match doc_thunk.try_get_value().cloned() {
                             Some(Value::Dict(doc_dict)) => {
                                 let exprs_thunk = doc_dict
                                     .get(&HashableValue::Str("expressions".into()))
                                     .unwrap()
                                     .clone();
-                                match exprs_thunk.try_get_materialized() {
+                                match exprs_thunk.try_get_value().cloned() {
                                     Some(Value::Dict(exprs_list)) => {
                                         let expr_thunk =
                                             exprs_list.get(&HashableValue::Int(0)).unwrap().clone();
                                         let expr_val = expr_thunk
-                                            .try_get_materialized()
+                                            .try_get_value()
+                                            .cloned()
                                             .expect("expr not materialized");
                                         let (_tag, dict_node) = peel_variant(expr_val, &ctx);
                                         {
@@ -2554,14 +2569,15 @@ mod tests {
                                                 .get(&HashableValue::Str("entries".into()))
                                                 .unwrap()
                                                 .clone();
-                                            match entries_thunk.try_get_materialized() {
+                                            match entries_thunk.try_get_value().cloned() {
                                                 Some(Value::Dict(entries_list)) => {
                                                     let entry_thunk = entries_list
                                                         .get(&HashableValue::Int(0))
                                                         .unwrap()
                                                         .clone();
                                                     let entry_val = entry_thunk
-                                                        .try_get_materialized()
+                                                        .try_get_value()
+                                                        .cloned()
                                                         .expect("entry not materialized");
                                                     let (_entry_tag, entry_dict) =
                                                         peel_variant(entry_val, &ctx);
@@ -2571,7 +2587,8 @@ mod tests {
                                                             .unwrap()
                                                             .clone();
                                                         let key_val = key_thunk
-                                                            .try_get_materialized()
+                                                            .try_get_value()
+                                                            .cloned()
                                                             .expect("key not materialized");
                                                         let (_key_tag, key_dict) =
                                                             peel_variant(key_val, &ctx);
@@ -2581,7 +2598,7 @@ mod tests {
                                                             .clone();
                                                         assert_eq!(
                                                             bare_thunk
-                                                                .try_get_materialized(),
+                                                                .try_get_value().cloned(),
                                                             Some(Value::Int(0)),
                                                             "bare should be false for quoted string \"foo\""
                                                         );
@@ -2625,27 +2642,28 @@ mod tests {
         let thunk = surface_program_to_dict(&parse_output.program, &opts, &ctx).unwrap();
 
         // Navigate to the entry and check for leading-comments
-        match thunk.try_get_materialized() {
+        match thunk.try_get_value().cloned() {
             Some(Value::Dict(file_dict)) => {
                 let docs_thunk = file_dict
                     .get(&HashableValue::Str("documents".into()))
                     .unwrap()
                     .clone();
-                match docs_thunk.try_get_materialized() {
+                match docs_thunk.try_get_value().cloned() {
                     Some(Value::Dict(docs_list)) => {
                         let doc_thunk = docs_list.get(&HashableValue::Int(0)).unwrap().clone();
-                        match doc_thunk.try_get_materialized() {
+                        match doc_thunk.try_get_value().cloned() {
                             Some(Value::Dict(doc_dict)) => {
                                 let exprs_thunk = doc_dict
                                     .get(&HashableValue::Str("expressions".into()))
                                     .unwrap()
                                     .clone();
-                                match exprs_thunk.try_get_materialized() {
+                                match exprs_thunk.try_get_value().cloned() {
                                     Some(Value::Dict(exprs_list)) => {
                                         let expr_thunk =
                                             exprs_list.get(&HashableValue::Int(0)).unwrap().clone();
                                         let expr_val = expr_thunk
-                                            .try_get_materialized()
+                                            .try_get_value()
+                                            .cloned()
                                             .expect("expr not materialized");
                                         let (_tag, dict_node) = peel_variant(expr_val, &ctx);
                                         {
@@ -2653,14 +2671,15 @@ mod tests {
                                                 .get(&HashableValue::Str("entries".into()))
                                                 .unwrap()
                                                 .clone();
-                                            match entries_thunk.try_get_materialized() {
+                                            match entries_thunk.try_get_value().cloned() {
                                                 Some(Value::Dict(entries_list)) => {
                                                     let entry_thunk = entries_list
                                                         .get(&HashableValue::Int(0))
                                                         .unwrap()
                                                         .clone();
                                                     let entry_val = entry_thunk
-                                                        .try_get_materialized()
+                                                        .try_get_value()
+                                                        .cloned()
                                                         .expect("entry not materialized");
                                                     let (_entry_tag, entry_dict) =
                                                         peel_variant(entry_val, &ctx);
@@ -2674,7 +2693,9 @@ mod tests {
                                                                 "leading-comments field missing",
                                                             )
                                                             .clone();
-                                                        match comments_thunk.try_get_materialized()
+                                                        match comments_thunk
+                                                            .try_get_value()
+                                                            .cloned()
                                                         {
                                                             Some(Value::Dict(comments_list)) => {
                                                                 let comment_thunk = comments_list
@@ -2683,7 +2704,7 @@ mod tests {
                                                                     .clone();
                                                                 assert_eq!(
                                                                     comment_thunk
-                                                                        .try_get_materialized(),
+                                                                        .try_get_value().cloned(),
                                                                     Some(string_val(" comment")),
                                                                     "leading comment should be ' comment'"
                                                                 );
@@ -2741,27 +2762,28 @@ mod tests {
         let thunk = surface_program_to_dict(&parse_output.program, &opts, &ctx).unwrap();
 
         // Navigate to the second entry and check blank-before: true
-        match thunk.try_get_materialized() {
+        match thunk.try_get_value().cloned() {
             Some(Value::Dict(file_dict)) => {
                 let docs_thunk = file_dict
                     .get(&HashableValue::Str("documents".into()))
                     .unwrap()
                     .clone();
-                match docs_thunk.try_get_materialized() {
+                match docs_thunk.try_get_value().cloned() {
                     Some(Value::Dict(docs_list)) => {
                         let doc_thunk = docs_list.get(&HashableValue::Int(0)).unwrap().clone();
-                        match doc_thunk.try_get_materialized() {
+                        match doc_thunk.try_get_value().cloned() {
                             Some(Value::Dict(doc_dict)) => {
                                 let exprs_thunk = doc_dict
                                     .get(&HashableValue::Str("expressions".into()))
                                     .unwrap()
                                     .clone();
-                                match exprs_thunk.try_get_materialized() {
+                                match exprs_thunk.try_get_value().cloned() {
                                     Some(Value::Dict(exprs_list)) => {
                                         let expr_thunk =
                                             exprs_list.get(&HashableValue::Int(0)).unwrap().clone();
                                         let expr_val = expr_thunk
-                                            .try_get_materialized()
+                                            .try_get_value()
+                                            .cloned()
                                             .expect("expr not materialized");
                                         let (_tag, dict_node) = peel_variant(expr_val, &ctx);
                                         {
@@ -2769,14 +2791,15 @@ mod tests {
                                                 .get(&HashableValue::Str("entries".into()))
                                                 .unwrap()
                                                 .clone();
-                                            match entries_thunk.try_get_materialized() {
+                                            match entries_thunk.try_get_value().cloned() {
                                                 Some(Value::Dict(entries_list)) => {
                                                     let entry_thunk = entries_list
                                                         .get(&HashableValue::Int(1))
                                                         .unwrap()
                                                         .clone();
                                                     let entry_val = entry_thunk
-                                                        .try_get_materialized()
+                                                        .try_get_value()
+                                                        .cloned()
                                                         .expect("entry not materialized");
                                                     let (_entry_tag, entry_dict) =
                                                         peel_variant(entry_val, &ctx);
@@ -2790,7 +2813,7 @@ mod tests {
                                                             .clone();
                                                         assert_eq!(
                                                             blank_thunk
-                                                                .try_get_materialized(),
+                                                                .try_get_value().cloned(),
                                                             Some(Value::Int(1)),
                                                             "blank-before should be true for second entry"
                                                         );
@@ -2829,27 +2852,28 @@ mod tests {
         let thunk = surface_program_to_dict(&parse_output.program, &opts, &ctx).unwrap();
 
         // Navigate to the key and check bare: false (default when source is None)
-        match thunk.try_get_materialized() {
+        match thunk.try_get_value().cloned() {
             Some(Value::Dict(file_dict)) => {
                 let docs_thunk = file_dict
                     .get(&HashableValue::Str("documents".into()))
                     .unwrap()
                     .clone();
-                match docs_thunk.try_get_materialized() {
+                match docs_thunk.try_get_value().cloned() {
                     Some(Value::Dict(docs_list)) => {
                         let doc_thunk = docs_list.get(&HashableValue::Int(0)).unwrap().clone();
-                        match doc_thunk.try_get_materialized() {
+                        match doc_thunk.try_get_value().cloned() {
                             Some(Value::Dict(doc_dict)) => {
                                 let exprs_thunk = doc_dict
                                     .get(&HashableValue::Str("expressions".into()))
                                     .unwrap()
                                     .clone();
-                                match exprs_thunk.try_get_materialized() {
+                                match exprs_thunk.try_get_value().cloned() {
                                     Some(Value::Dict(exprs_list)) => {
                                         let expr_thunk =
                                             exprs_list.get(&HashableValue::Int(0)).unwrap().clone();
                                         let expr_val = expr_thunk
-                                            .try_get_materialized()
+                                            .try_get_value()
+                                            .cloned()
                                             .expect("expr not materialized");
                                         let (_tag, dict_node) = peel_variant(expr_val, &ctx);
                                         {
@@ -2857,14 +2881,15 @@ mod tests {
                                                 .get(&HashableValue::Str("entries".into()))
                                                 .unwrap()
                                                 .clone();
-                                            match entries_thunk.try_get_materialized() {
+                                            match entries_thunk.try_get_value().cloned() {
                                                 Some(Value::Dict(entries_list)) => {
                                                     let entry_thunk = entries_list
                                                         .get(&HashableValue::Int(0))
                                                         .unwrap()
                                                         .clone();
                                                     let entry_val = entry_thunk
-                                                        .try_get_materialized()
+                                                        .try_get_value()
+                                                        .cloned()
                                                         .expect("entry not materialized");
                                                     let (_entry_tag, entry_dict) =
                                                         peel_variant(entry_val, &ctx);
@@ -2874,7 +2899,8 @@ mod tests {
                                                             .unwrap()
                                                             .clone();
                                                         let key_val = key_thunk
-                                                            .try_get_materialized()
+                                                            .try_get_value()
+                                                            .cloned()
                                                             .expect("key not materialized");
                                                         let (_key_tag, key_dict) =
                                                             peel_variant(key_val, &ctx);
@@ -2884,7 +2910,7 @@ mod tests {
                                                             .clone();
                                                         assert_eq!(
                                                             bare_thunk
-                                                                .try_get_materialized(),
+                                                                .try_get_value().cloned(),
                                                             Some(Value::Int(0)),
                                                             "bare should be false when source is None"
                                                         );
@@ -2898,7 +2924,7 @@ mod tests {
                                                             .clone();
                                                         assert_eq!(
                                                             blank_thunk
-                                                                .try_get_materialized(),
+                                                                .try_get_value().cloned(),
                                                             Some(Value::Int(0)),
                                                             "blank-before should be false when comments is None"
                                                         );

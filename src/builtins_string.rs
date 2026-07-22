@@ -52,14 +52,17 @@ pub(crate) fn builtin_replace(
         let thunk1 = ctx.get_thunk(args[1]);
         let thunk2 = ctx.get_thunk(args[2]);
         let pattern_val = thunk0
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let replacement_val = thunk1
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let input_val = thunk2
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
 
         let pattern = require_string("replace", pattern_val, thunk0.span.clone())?;
         let replacement = require_string("replace", replacement_val, thunk1.span.clone())?;
@@ -203,14 +206,14 @@ pub(crate) fn builtin_str_has_nth_byte(
         )?;
         let thunk0 = ctx.get_thunk(args[0]);
         let thunk1 = ctx.get_thunk(args[1]);
-        let s_val = thunk0.try_get_materialized().expect("pre-materialized");
+        let s_val = thunk0.try_get_value().expect("pre-materialized").clone();
         let (str_start, str_end) = match s_val {
             Value::String { start, end, .. } => (start, end),
             other => {
                 return Err(EvalError::type_mismatch("String", other.type_name(), call_span).into())
             }
         };
-        let idx = match thunk1.try_get_materialized().expect("pre-materialized") {
+        let idx = match thunk1.try_get_value().expect("pre-materialized").clone() {
             Value::Int(n) => n,
             other => {
                 return Err(EvalError::type_mismatch("Int", other.type_name(), call_span).into())
@@ -244,14 +247,14 @@ pub(crate) fn builtin_str_nth_byte(
         reject_named("builtin-str-nth-byte", named.as_ref(), call_span.clone())?;
         let thunk0 = ctx.get_thunk(args[0]);
         let thunk1 = ctx.get_thunk(args[1]);
-        let s_val = thunk0.try_get_materialized().expect("pre-materialized");
+        let s_val = thunk0.try_get_value().expect("pre-materialized").clone();
         let (source, str_start, str_end) = match s_val {
             Value::String { source, start, end } => (source, start, end),
             other => {
                 return Err(EvalError::type_mismatch("String", other.type_name(), call_span).into())
             }
         };
-        let idx = match thunk1.try_get_materialized().expect("pre-materialized") {
+        let idx = match thunk1.try_get_value().expect("pre-materialized").clone() {
             Value::Int(n) => n,
             other => {
                 return Err(EvalError::type_mismatch("Int", other.type_name(), call_span).into())
@@ -295,14 +298,17 @@ pub(crate) fn builtin_str_slice(
         let thunk1 = ctx.get_thunk(args[1]);
         let thunk2 = ctx.get_thunk(args[2]);
         let input_val = thunk0
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let start_val = thunk1
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let end_val = thunk2
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
 
         // Extract the source Arc<str> from the input string
         let (input_source, input_start, input_end) = match input_val {
@@ -430,8 +436,9 @@ pub(crate) fn builtin_str_has_nth(
         let thunk0 = ctx.get_thunk(args[0]);
         let thunk1 = ctx.get_thunk(args[1]);
         let s_val = thunk0
-            .try_get_materialized()
-            .expect("pre-materialized by pos_strictness[0]=Seq");
+            .try_get_value()
+            .expect("pre-materialized by pos_strictness[0]=Seq")
+            .clone();
         let (source, str_start, str_end) = match s_val {
             Value::String { source, start, end } => (source, start, end),
             other => {
@@ -440,8 +447,9 @@ pub(crate) fn builtin_str_has_nth(
         };
 
         let idx = match thunk1
-            .try_get_materialized()
+            .try_get_value()
             .expect("pre-materialized by pos_strictness[1]=Seq")
+            .clone()
         {
             Value::Int(n) => n,
             other => {
@@ -489,8 +497,9 @@ pub(crate) fn builtin_str_nth_char(
         let thunk0 = ctx.get_thunk(args[0]);
         let thunk1 = ctx.get_thunk(args[1]);
         let s_val = thunk0
-            .try_get_materialized()
-            .expect("pre-materialized by pos_strictness[0]=Seq");
+            .try_get_value()
+            .expect("pre-materialized by pos_strictness[0]=Seq")
+            .clone();
         let (source, str_start, str_end) = match s_val {
             Value::String { source, start, end } => (source, start, end),
             other => {
@@ -499,8 +508,9 @@ pub(crate) fn builtin_str_nth_char(
         };
 
         let idx = match thunk1
-            .try_get_materialized()
+            .try_get_value()
             .expect("pre-materialized by pos_strictness[1]=Seq")
+            .clone()
         {
             Value::Int(n) => n,
             other => {
@@ -699,11 +709,13 @@ pub(crate) fn builtin_str_index_of(
         let thunk0 = ctx.get_thunk(args[0]);
         let thunk1 = ctx.get_thunk(args[1]);
         let needle_val = thunk0
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let haystack_val = thunk1
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
 
         let needle = require_string("str-index-of", needle_val, thunk0.span.clone())?;
         let haystack = require_string("str-index-of", haystack_val, thunk1.span.clone())?;
@@ -917,11 +929,13 @@ pub(crate) fn builtin_str_map_chars(
         let thunk0 = ctx.get_thunk(args[0]);
         let thunk1 = ctx.get_thunk(args[1]);
         let func_val = thunk0
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let input_val = thunk1
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
 
         let s = require_string("str-map-chars", input_val, thunk1.span.clone())?;
 
@@ -1016,8 +1030,9 @@ pub(crate) fn builtin_int_to_string(
             .ok_or_else(|| EvalError::arity_mismatch(1, 0, call_span.clone()))?;
         let thunk0 = ctx.get_thunk(tid);
         let materialized = thunk0
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         match materialized {
             Value::Int(n) => ok_val(string_val(&n.to_string()), call_span),
             other => Err(EvalError::type_mismatch_ctx(
@@ -1055,8 +1070,9 @@ pub(crate) fn builtin_float_to_string(
             .ok_or_else(|| EvalError::arity_mismatch(1, 0, call_span.clone()))?;
         let thunk0 = ctx.get_thunk(tid);
         let materialized = thunk0
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         match materialized {
             Value::Float(n) => ok_val(string_val(&n.to_string()), call_span),
             other => Err(EvalError::type_mismatch_ctx(
@@ -1096,11 +1112,13 @@ pub(crate) fn builtin_regex_match(
         let thunk0 = ctx.get_thunk(args[0]);
         let thunk1 = ctx.get_thunk(args[1]);
         let pattern_val = thunk0
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let haystack_val = thunk1
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
 
         let pattern = require_string("regex-match?", pattern_val, thunk0.span.clone())?;
         let haystack = require_string("regex-match?", haystack_val, thunk1.span.clone())?;
@@ -1145,11 +1163,13 @@ pub(crate) fn builtin_string_concat(
         let thunk0 = ctx.get_thunk(args[0]);
         let thunk1 = ctx.get_thunk(args[1]);
         let s1_val = thunk0
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let s2_val = thunk1
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
 
         let s1 = require_string("builtin-string-concat", s1_val, thunk0.span.clone())?;
         let s2 = require_string("builtin-string-concat", s2_val, thunk1.span.clone())?;

@@ -1969,7 +1969,7 @@ async fn run_eval(
         let span = thunk
             .definition_span()
             .with_name(std::sync::Arc::from(name.as_str()));
-        let named_thunk = if let Some(val) = thunk.try_get_materialized() {
+        let named_thunk = if let Some(val) = thunk.try_get_value().cloned() {
             std::sync::Arc::new(tinct::Thunk::value(val, span))
         } else {
             thunk // non-value thunks keep original span (name missing, but capability is injected)
@@ -2286,8 +2286,7 @@ async fn run_fmt(
             .map_err(|e| tinct::format_parse_error(&e, &source, file_path))?;
 
         // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
-        let mut program = output.program;
-        tinct::desugar::desugar_program_full(&mut program);
+        let program = tinct::desugar::desugar_program_full(&output.program);
         let env_arc = tinct::get_builtin_core_type_env()
             .await
             .expect("builtin core type env unavailable");
@@ -2424,8 +2423,7 @@ async fn run_lint(
         .map_err(|e| tinct::format_parse_error(&e, &source, file_path))?;
 
     // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
-    let mut program = output.program;
-    tinct::desugar::desugar_program_full(&mut program);
+    let program = tinct::desugar::desugar_program_full(&output.program);
     let env_arc = tinct::get_builtin_core_type_env()
         .await
         .expect("builtin core type env unavailable");
@@ -2626,8 +2624,7 @@ async fn run_literate_lint(tangled: &str, config: &LiterateConfig<'_>) -> Result
     })?;
 
     // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
-    let mut program = output.program;
-    tinct::desugar::desugar_program_full(&mut program);
+    let program = tinct::desugar::desugar_program_full(&output.program);
     let env_arc = tinct::get_builtin_core_type_env()
         .await
         .expect("builtin core type env unavailable");
@@ -2718,8 +2715,7 @@ async fn run_describe(file_path: &str) -> Result<(), String> {
     let output = parse(&source, Arc::clone(&sf_path)).map_err(|e| format!("{e}"))?;
 
     // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
-    let mut program = output.program;
-    tinct::desugar::desugar_program_full(&mut program);
+    let program = tinct::desugar::desugar_program_full(&output.program);
     // Type check to get DocMap (for doc strings).
     let env_arc = tinct::get_builtin_core_type_env()
         .await

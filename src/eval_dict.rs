@@ -348,7 +348,7 @@ pub(crate) async fn eval_dict_core(
                     // AnnotatedWrap thunk that forces the inner value when accessed and wraps
                     // it in Value::Annotated { annotation, inner: forced_inner }.
                     // This preserves laziness for non-literal annotated entries.
-                    if let Some(inner_val) = value_thunk.try_get_materialized() {
+                    if let Some(inner_val) = value_thunk.try_get_value().cloned() {
                         let span = value_thunk.span.clone();
                         Arc::new(Thunk::value(
                             Value::Annotated {
@@ -512,11 +512,9 @@ mod tests {
             header: IndexMap::new(),
             items: vec![SurfaceItem::Expr(Arc::clone(&node))],
         };
-        let program = SurfaceProgram {
+        let program = crate::desugar::desugar_program_full(&SurfaceProgram {
             documents: vec![Spanned::new(Arc::new(doc), span)],
-        };
-        let mut program = program;
-        crate::desugar::desugar_program_full(&mut program);
+        });
         let root_frame: IndexMap<String, u32> = crate::builtins_core::core_builtins()
             .iter()
             .enumerate()

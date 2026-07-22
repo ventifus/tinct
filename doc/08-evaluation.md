@@ -315,7 +315,7 @@ Extends Launchbury (1993) natural semantics for call-by-need with deferred compu
 - A thunk is **materialized** when first accessed (you used a value; it was computed and cached).
 - A thunk is **failed** when a computation error occurred (the error is cached; re-accessing returns the same error).
 
-The runtime distinguishes five `UnevaluatedState` variants internally: `AstField` (lazy AST field access), `CoreExpr` (lowered expression body), `BuiltinCall` (deferred builtin), `FnCall` (deferred function call), and `Guarded` (type assertion contract). The `ThunkState` enum derived from inspecting the two fields has four logical states: `Unevaluated` (state present, no result), `InProgress` (state taken, no result yet), `Materialized(Value)` (result is `Ok`), `Failed(Arc<EvalError>)` (result is `Err`).
+The runtime distinguishes five `UnevaluatedState` variants internally: `AstField` (lazy AST field access), `CoreExpr` (lowered expression body), `BuiltinCall` (deferred builtin), `FnCall` (deferred function call), and `Guarded` (type assertion contract). The four logical states — Unevaluated (state present, no result), InProgress (state taken, no result yet), Materialized (result is `Ok`), Failed (result is `Err`) — are observed through borrow-based accessors (`try_get_value()`, `try_get_error()`, `is_materialized()`, `is_settled()`) that read the `OnceCell` directly rather than through a `ThunkState` enum.
 
 ### Part 1: State Transition Graph
 
@@ -970,7 +970,7 @@ This compositional guarantee means that making `$if` lazier (see §Laziness Desi
 
 **Branch isolation (fundamental guarantee):**
 
-For any builtin with `Sc` positions, the unchosen arguments are never materialized, never transition state, and never appear in error traces. Formally: if `δ(if, [θ_c, θ_t, θ_e], cs) ⇒ θ_t`, then θ_e's `ThunkState` is unchanged after the call.
+For any builtin with `Sc` positions, the unchosen arguments are never materialized, never transition state, and never appear in error traces. Formally: if `δ(if, [θ_c, θ_t, θ_e], cs) ⇒ θ_t`, then θ_e remains unsettled (`is_settled() == false`) after the call.
 
 **No unnecessary materialization (structural guarantee):**
 
@@ -1463,9 +1463,9 @@ pub(crate) async fn run(initial: Action, ctx: &Arc<EvalContext>) -> EvalResult<V
         match action {
             Action::EvalCore { expr, env, ctx: action_ctx } => {
                 // eval_core_expr_pub() evaluates the CoreExpr to a thunk; if already
-                // materialized, take the fast path; otherwise dispatch to Materialize
+                // materialized, return value directly; otherwise dispatch to Materialize
                 action = match eval_core_expr_pub(&expr, &env, &action_ctx).await {
-                    Ok(thunk) => match thunk.try_get_materialized() {
+                    Ok(thunk) => match thunk.try_get_value().cloned() {
                         Some(value) => Action::Continue(Ok(value)),
                         None => Action::Materialize { thunk, mat_span: Some(expr.span) },
                     },

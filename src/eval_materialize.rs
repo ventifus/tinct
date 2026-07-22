@@ -23,9 +23,7 @@ use crate::eval_call::{invoke_function, invoke_function_tco, CallContext};
 use crate::eval_core::eval_core_expr;
 use crate::rust_span;
 use crate::types::Type;
-use crate::value::{
-    string_val, HashableValue, Thunk, ThunkId, ThunkState, UnevaluatedState, Value,
-};
+use crate::value::{string_val, HashableValue, Thunk, ThunkId, UnevaluatedState, Value};
 
 tokio::task_local! {
     pub(crate) static TASK_EVAL_STACK: std::cell::RefCell<Vec<(std::sync::Arc<str>, crate::ast::Span)>>;
@@ -639,56 +637,63 @@ pub(crate) async fn force_step(
     let _profile_guard = ProfilingSpanGuard::new(ctx, thunk, thunk_id);
 
     loop {
-        match thunk.state() {
-            ThunkState::Materialized(v) => return Action::Continue(Ok(v)),
-
-            ThunkState::Failed(e) => {
-                let mut cloned = Box::new((*e).clone());
-                if let Some(ref span) = mat_span {
-                    let first_note = cloned.spans.get(1).map(|(s, _)| s);
-                    if first_note.is_none() {
-                        cloned = Box::new(cloned.with_materialization_span(span.clone()));
-                    } else if first_note != Some(span)
-                        && !cloned.stack.iter().any(|f| f.definition_span == *span)
-                    {
-                        cloned.push_frame("materialized".to_string(), span.clone());
-                    }
-                }
-                return Action::Continue(Err(cloned));
-            }
-
-            ThunkState::InProgress { evaluating_task } => {
-                let same = match (evaluating_task, tokio::task::try_id()) {
-                    (Some(e), Some(c)) => e == c,
-                    _ => true,
-                };
-                if same {
-                    let cycle_path = TASK_EVAL_STACK
-                        .try_with(|s| s.borrow().clone())
-                        .unwrap_or_default();
-                    let label = thunk.span.name.as_deref().unwrap_or("thunk");
-                    let mut err =
-                        EvalError::circular_dependency(label, thunk.span.clone(), cycle_path);
+        // Check terminal states first (result is set).
+        if let Some(result) = thunk.inner.result.get() {
+            match result {
+                Ok(v) => return Action::Continue(Ok(v.clone())),
+                Err(e) => {
+                    let mut cloned = Box::new((**e).clone());
                     if let Some(ref span) = mat_span {
-                        err = err.with_materialization_span(span.clone());
+                        let first_note = cloned.spans.get(1).map(|(s, _)| s);
+                        if first_note.is_none() {
+                            cloned = Box::new(cloned.with_materialization_span(span.clone()));
+                        } else if first_note != Some(span)
+                            && !cloned.stack.iter().any(|f| f.definition_span == *span)
+                        {
+                            cloned.push_frame("materialized".to_string(), span.clone());
+                        }
                     }
-                    let err_boxed: Box<EvalError> = err.into();
-                    thunk.settle(Err(Arc::new((*err_boxed).clone())));
-                    return Action::Continue(Err(err_boxed));
+                    return Action::Continue(Err(cloned));
                 }
-                thunk.settled().await;
-                // Loop and re-read state
-            }
-
-            ThunkState::Unevaluated => {
-                if let Some(state) = thunk.try_claim() {
-                    // Won the claim — evaluate inline (same task, no spawn)
-                    let env_id = state.initial_env_id();
-                    return dispatch_state(state, thunk, stack, ctx, env_id).await;
-                }
-                // Lost race — loop and re-read state
             }
         }
+
+        // Not settled — try to claim (Unevaluated → InProgress).
+        if let Some(state) = thunk.try_claim() {
+            // Won the claim — evaluate inline (same task, no spawn)
+            let env_id = state.initial_env_id();
+            return dispatch_state(state, thunk, stack, ctx, env_id).await;
+        }
+
+        // Claim failed — could be InProgress or settled between our check and try_claim.
+        // Re-check result before assuming InProgress.
+        if thunk.inner.result.get().is_some() {
+            continue; // Settled — loop to read result.
+        }
+
+        // Thunk is InProgress (another task or same task).
+        {
+            let evaluating_task = thunk.inner.unevaluated.lock().unwrap().1;
+            let same = match (evaluating_task, tokio::task::try_id()) {
+                (Some(e), Some(c)) => e == c,
+                _ => true,
+            };
+            if same {
+                let cycle_path = TASK_EVAL_STACK
+                    .try_with(|s| s.borrow().clone())
+                    .unwrap_or_default();
+                let label = thunk.span.name.as_deref().unwrap_or("thunk");
+                let mut err = EvalError::circular_dependency(label, thunk.span.clone(), cycle_path);
+                if let Some(ref span) = mat_span {
+                    err = err.with_materialization_span(span.clone());
+                }
+                let err_boxed: Box<EvalError> = err.into();
+                thunk.settle(Err(Arc::new((*err_boxed).clone())));
+                return Action::Continue(Err(err_boxed));
+            }
+        }
+        thunk.settled().await;
+        // Loop and re-read state
     }
 }
 
@@ -738,10 +743,9 @@ async fn dispatch_state(
                     .force_count
                     .min(args.as_ref().expect("args set above").len()))
                     .find(|&i| {
-                        thunk_ctx
+                        !thunk_ctx
                             .get_thunk(args.as_ref().expect("args set above")[i])
-                            .try_get_materialized()
-                            .is_none()
+                            .is_materialized()
                     })
                 {
                     let arg_thunk =
@@ -771,7 +775,7 @@ async fn dispatch_state(
 
             // W1 dispatch-time materialization: scan pos_strictness for first Seq/Spine position.
             // Pre-materialize strict args iteratively to prevent Rust stack growth and enable
-            // the builtin to skip redundant materialize() calls (thunk memoization fast-path).
+            // the builtin to skip redundant materialize() calls (settled thunks return cached values).
             // Skip positions [0..force_count) that were already processed above.
             use crate::value::Strictness;
             if let Some((arg_idx, _)) = def
@@ -782,10 +786,9 @@ async fn dispatch_state(
                 .find(|(i, &s)| {
                     *i < args.as_ref().expect("args set above").len()
                         && (s == Strictness::Seq || s == Strictness::Spine)
-                        && thunk_ctx
+                        && !thunk_ctx
                             .get_thunk(args.as_ref().expect("args set above")[*i])
-                            .try_get_materialized()
-                            .is_none()
+                            .is_materialized()
                 })
             {
                 let arg_thunk =
@@ -813,10 +816,7 @@ async fn dispatch_state(
             }
 
             // Clone args/named for the builtin call; keep originals in the Option slots for
-            // state restoration on the slow path (non-pre-materialized result) or on
-            // non-cacheable errors. This defers Vec/IndexMap container
-            // allocs to after the fast-path check — when the builtin returns a pre-materialized
-            // thunk, the originals are simply dropped with no restore clone needed.
+            // state restoration on non-cacheable errors.
 
             let builtin_args = crate::value::BuiltinArgs {
                 args: args.as_ref().expect("args set above").clone(),
@@ -835,27 +835,18 @@ async fn dispatch_state(
                 e
             }) {
                 Ok(result_thunk) => {
-                    // Fast path: if the builtin already materialized its result, skip recursion.
-                    // Originals in args/named are dropped here — no restore clone needed.
-                    if let Some(value) = result_thunk.try_get_materialized() {
-                        // eval_stack_guard pops on drop (armed)
-                        thunk.settle(Ok(value.clone()));
-                        Action::Continue(Ok(value))
-                    } else {
-                        // Slow path: push Memoize continuation.
-                        stack.push(Cont::Memoize(Box::new(MemoizeData {
-                            thunk: Arc::clone(thunk),
-                            origin,
-                            thunk_span: thunk_span.clone(),
-                            mat_span: None,
-                        })));
-                        // Memoize continuation inherits eval_stack pop responsibility
-                        eval_stack_guard.disarm();
-                        Action::Materialize {
-                            thunk: result_thunk,
-                            mat_span: None,
-                            thunk_id: None,
-                        }
+                    stack.push(Cont::Memoize(Box::new(MemoizeData {
+                        thunk: Arc::clone(thunk),
+                        origin,
+                        thunk_span: thunk_span.clone(),
+                        mat_span: None,
+                    })));
+                    // Memoize continuation inherits eval_stack pop responsibility
+                    eval_stack_guard.disarm();
+                    Action::Materialize {
+                        thunk: result_thunk,
+                        mat_span: None,
+                        thunk_id: None,
                     }
                 }
                 Err(e) => {
@@ -1149,12 +1140,6 @@ async fn dispatch_state(
 
             match eval_core_expr(&core_expr, env_id, &thunk_ctx).await {
                 Ok(result_thunk) => {
-                    // Fast path: literal or already-materialized result.
-                    if let Some(value) = result_thunk.try_get_materialized() {
-                        thunk.settle(Ok(value.clone()));
-                        return Action::Continue(Ok(value));
-                    }
-                    // Defer to Memoize continuation.
                     stack.push(Cont::Memoize(Box::new(MemoizeData {
                         thunk: Arc::clone(thunk),
                         origin,
@@ -1515,21 +1500,14 @@ pub(crate) async fn apply_cont(
                             // force_count specifies how many leading positional args must be
                             // fully materialized (Seq) before the builtin is called.
                             let has_force_count_unevaluated = def.force_count > 0
-                                && (0..def.force_count.min(args_ref.len())).any(|i| {
-                                    thunk_ctx
-                                        .get_thunk(args_ref[i])
-                                        .try_get_materialized()
-                                        .is_none()
-                                });
+                                && (0..def.force_count.min(args_ref.len()))
+                                    .any(|i| !thunk_ctx.get_thunk(args_ref[i]).is_materialized());
                             // Check if any W1 Seq/Spine positional args need pre-materialization.
                             let has_strict_unevaluated =
                                 def.pos_strictness.iter().enumerate().any(|(i, &s)| {
                                     i < args_ref.len()
                                         && (s == Strictness::Seq || s == Strictness::Spine)
-                                        && thunk_ctx
-                                            .get_thunk(args_ref[i])
-                                            .try_get_materialized()
-                                            .is_none()
+                                        && !thunk_ctx.get_thunk(args_ref[i]).is_materialized()
                                 });
 
                             if has_force_count_unevaluated || has_strict_unevaluated {
@@ -1575,23 +1553,8 @@ pub(crate) async fn apply_cont(
                             };
                             match builtin_result.map_err(&decorate) {
                                 Ok(result_thunk) => {
-                                    if let Some(value) = result_thunk.try_get_materialized() {
-                                        // Fast path: builtin result is already materialized.
-                                        // args/named are no longer needed; drop them implicitly.
-                                        // eval_stack_guard pops on drop (armed)
-                                        if tail_hint {
-                                            // TCO path: Don't set this thunk — it's being abandoned.
-                                            // Result goes directly to the caller's Memoize (or top-level return).
-                                            Action::Continue(Ok(value))
-                                        } else {
-                                            // Non-TCO path: set this thunk and return.
-                                            thunk.settle(Ok(value.clone()));
-                                            Action::Continue(Ok(value))
-                                        }
-                                    } else if tail_hint {
+                                    if tail_hint {
                                         // TCO path: Skip Memoize push, return Materialize directly.
-                                        // The result_thunk will itself be TCO-eligible on next force_step
-                                        // if its strong_count == 1.
                                         // eval_stack_guard pops on drop (armed)
                                         Action::Materialize {
                                             thunk: result_thunk,
@@ -1599,14 +1562,12 @@ pub(crate) async fn apply_cont(
                                             thunk_id: None,
                                         }
                                     } else {
-                                        // Non-TCO path: push Memoize continuation.
                                         stack.push(Cont::Memoize(Box::new(MemoizeData {
                                             thunk: Arc::clone(&thunk),
                                             origin,
                                             thunk_span: thunk_span.clone(),
                                             mat_span: mat_span.clone(),
                                         })));
-                                        // Memoize continuation inherits eval_stack pop responsibility
                                         eval_stack_guard.disarm();
                                         Action::Materialize {
                                             thunk: result_thunk,
@@ -1641,8 +1602,7 @@ pub(crate) async fn apply_cont(
                                 ctor,
                                 payload: Some(payload_id),
                             };
-                            // Fast path: the result is immediately materialized — no need to
-                            // push a Memoize continuation. eval_stack_guard pops on drop (armed).
+                            // Variant constructor produces a literal Value — no thunk to materialize.
                             if !tail_hint {
                                 thunk.settle(Ok(result_val.clone()));
                             }
@@ -1959,10 +1919,9 @@ pub(crate) async fn apply_cont(
                                 .force_count
                                 .min(args.as_ref().expect("args set above").len()))
                             .find(|&i| {
-                                thunk_ctx
+                                !thunk_ctx
                                     .get_thunk(args.as_ref().expect("args set above")[i])
-                                    .try_get_materialized()
-                                    .is_none()
+                                    .is_materialized()
                             })
                         {
                             let next_arg = thunk_ctx
@@ -1999,10 +1958,9 @@ pub(crate) async fn apply_cont(
                         .find(|(i, &s)| {
                             *i < args.as_ref().expect("args set above").len()
                                 && (s == Strictness::Seq || s == Strictness::Spine)
-                                && thunk_ctx
+                                && !thunk_ctx
                                     .get_thunk(args.as_ref().expect("args set above")[*i])
-                                    .try_get_materialized()
-                                    .is_none()
+                                    .is_materialized()
                         })
                     {
                         let next_arg =
@@ -2031,8 +1989,7 @@ pub(crate) async fn apply_cont(
 
                     // All forced and strict args materialized — call the builtin.
                     // Clone args/named for the builtin call; keep originals in the Option
-                    // slots for restore on the slow path or on non-cacheable errors.
-                    // This defers Vec/IndexMap allocs to after the fast-path check.
+                    // slots for restore on non-cacheable errors.
                     let builtin_args = crate::value::BuiltinArgs {
                         args: args.as_ref().expect("args set above").clone(),
                         named: named.as_ref().expect("named set above").clone(),
@@ -2049,25 +2006,17 @@ pub(crate) async fn apply_cont(
                         .map_err(&decorate)
                     {
                         Ok(result_thunk) => {
-                            if let Some(value) = result_thunk.try_get_materialized() {
-                                // eval_stack_guard pops on drop (armed)
-                                thunk.settle(Ok(value.clone()));
-                                Action::Continue(Ok(value))
-                            } else {
-                                // Slow path: push Memoize continuation.
-                                stack.push(Cont::Memoize(Box::new(MemoizeData {
-                                    thunk: Arc::clone(&thunk),
-                                    origin,
-                                    thunk_span: thunk_span.clone(),
-                                    mat_span: mat_span.clone(),
-                                })));
-                                // Memoize continuation inherits eval_stack pop responsibility
-                                eval_stack_guard.disarm();
-                                Action::Materialize {
-                                    thunk: result_thunk,
-                                    mat_span,
-                                    thunk_id: None,
-                                }
+                            stack.push(Cont::Memoize(Box::new(MemoizeData {
+                                thunk: Arc::clone(&thunk),
+                                origin,
+                                thunk_span: thunk_span.clone(),
+                                mat_span: mat_span.clone(),
+                            })));
+                            eval_stack_guard.disarm();
+                            Action::Materialize {
+                                thunk: result_thunk,
+                                mat_span,
+                                thunk_id: None,
                             }
                         }
                         Err(e) => {
@@ -2403,44 +2352,23 @@ pub(crate) async fn apply_cont(
                                 // require_dict handles Dict, Overlay, and nested Variants recursively.
                                 let payload_thunk = ctx.get_thunk(payload_id);
 
-                                // Fast path: payload already materialized (common after earlier forcing).
-                                // Use the cached value directly — no executor re-entry needed.
-                                if let Some(payload_val) = payload_thunk.try_get_materialized() {
-                                    match crate::builtins::require_dict(
-                                        "sequential expression",
-                                        payload_val,
-                                        current_expr.span.clone(),
-                                        &ctx,
-                                        current_expr.span.clone(),
-                                    )
-                                    .await
-                                    {
-                                        Ok(map) => map,
-                                        Err(e) => return Action::Continue(Err(e)),
-                                    }
-                                } else {
-                                    // Slow path: payload not yet forced. Push a continuation to unpack
-                                    // the payload after materialization, then force it through the CEK
-                                    // machine. This replaces the sync materialization call that bypassed the
-                                    // CEK continuation stack (B-396).
-                                    stack.push(Cont::VariantUnpackForLetrecChain(Box::new(
-                                        VariantUnpackForLetrecChainData {
-                                            static_key_set: static_key_set.clone(),
-                                            next_idx,
-                                            letrec_chain_expr: Arc::clone(&letrec_chain_expr),
-                                            env_id,
-                                            arena_len_before,
-                                            ctx: Arc::clone(&ctx),
-                                            seq_span: seq_span.clone(),
-                                            current_expr_span: current_expr.span.clone(),
-                                        },
-                                    )));
-                                    return Action::Materialize {
-                                        thunk: payload_thunk,
-                                        mat_span: Some(current_expr.span.clone()),
-                                        thunk_id: None,
-                                    };
-                                }
+                                stack.push(Cont::VariantUnpackForLetrecChain(Box::new(
+                                    VariantUnpackForLetrecChainData {
+                                        static_key_set: static_key_set.clone(),
+                                        next_idx,
+                                        letrec_chain_expr: Arc::clone(&letrec_chain_expr),
+                                        env_id,
+                                        arena_len_before,
+                                        ctx: Arc::clone(&ctx),
+                                        seq_span: seq_span.clone(),
+                                        current_expr_span: current_expr.span.clone(),
+                                    },
+                                )));
+                                return Action::Materialize {
+                                    thunk: payload_thunk,
+                                    mat_span: Some(current_expr.span.clone()),
+                                    thunk_id: None,
+                                };
                             }
                             _ => {
                                 return Action::Continue(Err(Box::new(
@@ -3521,17 +3449,11 @@ pub(crate) async fn run_with_stack(
             } => {
                 // Evaluate the CoreExpr to a thunk (without forcing).
                 // Pass stored env_id to eval_core_expr.
-                // If the result is already materialized (e.g., literals), take the
-                // fast path and return Continue(Ok(value)) without pushing to the
-                // continuation stack. Otherwise return Materialize to force iteratively.
                 action = match eval_core_expr(&expr, env_id, &action_ctx).await {
-                    Ok(thunk) => match thunk.try_get_materialized() {
-                        Some(value) => Action::Continue(Ok(value)),
-                        None => Action::Materialize {
-                            thunk,
-                            mat_span: Some(expr.span.clone()),
-                            thunk_id: None,
-                        },
+                    Ok(thunk) => Action::Materialize {
+                        thunk,
+                        mat_span: Some(expr.span.clone()),
+                        thunk_id: None,
                     },
                     Err(e) => Action::Continue(Err(e)),
                 };
@@ -3731,7 +3653,7 @@ mod tests {
 
         // Verify initial state is Unevaluated (not yet materialized)
         assert!(
-            thunk.try_get_materialized().is_none(),
+            !thunk.is_materialized(),
             "Expected Unevaluated state before forcing"
         );
 
@@ -3752,8 +3674,8 @@ mod tests {
 
         // Verify the thunk transitioned to Materialized state
         assert_eq!(
-            thunk.try_get_materialized(),
-            Some(Value::Int(42)),
+            thunk.try_get_value(),
+            Some(&Value::Int(42)),
             "Cached value should be Int(42)"
         );
 
@@ -3797,7 +3719,7 @@ mod tests {
 
         // Verify initial state is Unevaluated (not yet materialized)
         assert!(
-            thunk.try_get_materialized().is_none(),
+            !thunk.is_materialized(),
             "Expected Unevaluated state before forcing"
         );
 
@@ -3822,7 +3744,7 @@ mod tests {
         );
 
         // Verify the thunk transitioned to Failed state
-        let cached_err = thunk.get_cached_error();
+        let cached_err = thunk.try_get_error();
         assert!(cached_err.is_some(), "Expected Failed state");
         assert!(
             cached_err
@@ -3941,8 +3863,8 @@ mod tests {
 
         // After success, thunk must be in Materialized state (memoized).
         assert_eq!(
-            guarded.try_get_materialized(),
-            Some(Value::Int(42)),
+            guarded.try_get_value(),
+            Some(&Value::Int(42)),
             "after successful validation, thunk should be Materialized(Int(42))"
         );
     }
@@ -3995,8 +3917,8 @@ mod tests {
 
         // Thunk should be Materialized with the default value, not Failed.
         assert_eq!(
-            guarded.try_get_materialized(),
-            Some(Value::Int(99)),
+            guarded.try_get_value(),
+            Some(&Value::Int(99)),
             "after default fallback, thunk should be Materialized(Int(99))"
         );
     }
@@ -4041,7 +3963,7 @@ mod tests {
 
         // After failure, thunk must be in Failed state (cacheable error).
         assert!(
-            guarded.get_cached_error().is_some(),
+            guarded.try_get_error().is_some(),
             "after validation failure (no default) thunk should be Failed"
         );
 
@@ -4072,7 +3994,7 @@ mod tests {
     /// to `builtin_keys` with a pre-materialized dict.
     ///
     /// If `Cont::BuiltinForceArg` is not reached or does not properly force the arg,
-    /// `builtin_keys` will panic at `try_get_materialized().expect(...)`.
+    /// `builtin_keys` will panic at `try_get_value().expect(...)`.
     #[tokio::test]
     async fn test_builtin_force_arg_cek_forces_arg_before_dispatch() {
         use crate::value::{BuiltinDef, BuiltinFn, Strictness};
@@ -4093,7 +4015,7 @@ mod tests {
 
         // Verify the arg is NOT yet materialized.
         assert!(
-            unevaluated_arg_ref.try_get_materialized().is_none(),
+            !unevaluated_arg_ref.is_materialized(),
             "arg must be unevaluated before the PendingBuiltin is forced via CEK"
         );
 
@@ -4145,7 +4067,7 @@ mod tests {
 
         // After successful CEK dispatch, outer thunk must be in Materialized state.
         assert!(
-            outer_thunk.try_get_materialized().is_some(),
+            outer_thunk.is_materialized(),
             "outer PendingBuiltin thunk must be Materialized after CEK dispatch"
         );
     }
@@ -4184,11 +4106,11 @@ mod tests {
         let arg1_id = ctx.alloc_thunk(0, unevaluated_arg1);
 
         assert!(
-            ctx.get_thunk(arg0_id).try_get_materialized().is_none(),
+            !ctx.get_thunk(arg0_id).is_materialized(),
             "arg0 must be unevaluated"
         );
         assert!(
-            ctx.get_thunk(arg1_id).try_get_materialized().is_none(),
+            !ctx.get_thunk(arg1_id).is_materialized(),
             "arg1 must be unevaluated"
         );
 
@@ -4198,13 +4120,15 @@ mod tests {
             let _ = args
                 .ctx
                 .get_thunk(args.args[0])
-                .try_get_materialized()
-                .expect("pre-materialized by force_count");
+                .try_get_value()
+                .expect("pre-materialized by force_count")
+                .clone();
             let _ = args
                 .ctx
                 .get_thunk(args.args[1])
-                .try_get_materialized()
-                .expect("pre-materialized by force_count");
+                .try_get_value()
+                .expect("pre-materialized by force_count")
+                .clone();
             let span = args.call_span;
             Box::pin(async move { Ok(Arc::new(Thunk::value(Value::Int(1), span))) })
         };
@@ -4372,8 +4296,8 @@ mod cek_lifecycle_tests {
         let thunk = Arc::new(Thunk::value(Value::Int(99), span.clone()));
 
         assert_eq!(
-            thunk.try_get_materialized(),
-            Some(Value::Int(99)),
+            thunk.try_get_value(),
+            Some(&Value::Int(99)),
             "Thunk::value must start Materialized"
         );
 
@@ -4423,7 +4347,7 @@ mod cek_lifecycle_tests {
 
         // Thunk must now be in Failed state.
         assert!(
-            thunk.get_cached_error().is_some(),
+            thunk.try_get_error().is_some(),
             "thunk must be in Failed state after settle(Err(...))"
         );
 
@@ -4456,7 +4380,7 @@ mod cek_lifecycle_tests {
     /// InProgress thunk from the same task produces a circular_dependency error.
     ///
     /// The cycle detection branch in force_step fires when:
-    /// - ThunkState::InProgress { evaluating_task } is found, AND
+    /// - InProgress state (result not set, unevaluated is None) is found, AND
     /// - the evaluating task matches the current task (same == true).
     ///
     /// We simulate this by claiming the thunk's UnevaluatedState (transition to InProgress)
@@ -4481,7 +4405,7 @@ mod cek_lifecycle_tests {
 
         // Verify InProgress state before calling force_step.
         assert!(
-            matches!(thunk.state(), ThunkState::InProgress { .. }),
+            !thunk.is_settled() && thunk.inner.unevaluated.lock().unwrap().0.is_none(),
             "thunk must be InProgress after try_claim"
         );
 
@@ -4514,9 +4438,8 @@ mod cek_lifecycle_tests {
 
         // Cycle detection calls thunk.settle(Err(...)) — thunk must be in Failed state.
         assert!(
-            matches!(thunk.state(), ThunkState::Failed(_)),
-            "cycle detection must settle thunk to Failed; got {:?}",
-            thunk.state()
+            thunk.try_get_error().is_some(),
+            "cycle detection must settle thunk to Failed"
         );
     }
 
@@ -4570,7 +4493,7 @@ mod cek_lifecycle_tests {
 /// Recursively materialize all structured container values in a value tree.
 /// Used by `to-tinct` serialization and macro expansion to ensure nested values
 /// are pre-materialized before processing (e.g., `dict_to_surface_node` expects
-/// all values reachable via `try_get_materialized`).
+/// all values reachable via `try_get_value`).
 ///
 /// Handles four container types:
 /// - `Value::Dict` — materializes all entry thunks and recurses into each value

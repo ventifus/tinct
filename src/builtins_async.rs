@@ -1648,8 +1648,9 @@ pub(crate) fn builtin_timer_channel(
 
         // Validate ClockCap (force_count=1 in builtin registry pre-materializes it)
         let clock_val = clock_thunk
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=1");
+            .try_get_value()
+            .expect("pre-materialized by force_count=1")
+            .clone();
         let clock_inner: ClockCapInner = match &clock_val {
             Value::ClockCap(inner) => inner.as_ref().clone(),
             _ => {
@@ -2021,8 +2022,9 @@ pub(crate) fn builtin_with_timeout(
 
         // Validate ClockCap (force_count=1 in builtin registry pre-materializes it)
         let clock_val = clock_thunk
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=1");
+            .try_get_value()
+            .expect("pre-materialized by force_count=1")
+            .clone();
         let _clock_inner: ClockCapInner = match &clock_val {
             Value::ClockCap(inner) => inner.as_ref().clone(),
             _ => {
@@ -2126,8 +2128,9 @@ pub(crate) fn builtin_with_deadline(
 
         // Validate ClockCap (force_count=1 in builtin registry pre-materializes it)
         let clock_val = clock_thunk
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=1");
+            .try_get_value()
+            .expect("pre-materialized by force_count=1")
+            .clone();
         let _clock_inner: ClockCapInner = match &clock_val {
             Value::ClockCap(inner) => inner.as_ref().clone(),
             _ => {
@@ -2504,7 +2507,8 @@ pub(crate) fn builtin_with_context(
             &ctx,
         )?;
         let context_val = context_thunk
-            .try_get_materialized()
+            .try_get_value()
+            .cloned()
             // force_count=1 guarantees arg 0 is pre-materialized before this builtin runs
             .ok_or_else(|| EvalError::internal(
                 "with-context: context argument not pre-materialized (force_count=1 invariant violated)".to_string(),

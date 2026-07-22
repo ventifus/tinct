@@ -176,9 +176,7 @@ pub async fn run_loader_pipeline(
             crate::parser::format_parse_error(diag, init_source, init_path)
         );
     }
-    let mut loader_program = loader_parsed.program;
-
-    desugar::desugar_program_full(&mut loader_program);
+    let loader_program = desugar::desugar_program_full(&loader_parsed.program);
 
     // Resolve the loader program. Seeded from FlatEnv so that builtin names
     // (builtin-parse, etc.) resolve to de Bruijn coordinates instead of
@@ -390,8 +388,7 @@ pub async fn typecheck_source(input: &str) -> Result<(), String> {
     let file: Arc<str> = Arc::from("<typecheck>");
     let parsed = parse(input, file).map_err(|e| format!("{e}"))?;
     // PIPELINE INVARIANT: parse -> desugar -> typecheck.
-    let mut program = parsed.program;
-    desugar::desugar_program_full(&mut program);
+    let program = desugar::desugar_program_full(&parsed.program);
     let env_arc = imports::get_builtin_core_type_env()
         .await
         .expect("builtin core type env not available — bootstrap error");
@@ -418,8 +415,7 @@ pub async fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
     let file: Arc<str> = Arc::from("<typecheck>");
     let parsed = parse(input, file).map_err(|e| format!("{e}"))?;
     // PIPELINE INVARIANT: parse -> desugar -> typecheck.
-    let mut program = parsed.program;
-    desugar::desugar_program_full(&mut program);
+    let program = desugar::desugar_program_full(&parsed.program);
     // Type check the surface program.
     let env_arc2 = imports::get_builtin_core_type_env()
         .await
@@ -1217,12 +1213,11 @@ mod tests {
         let source = "$undefined_var";
 
         // Parse the source manually to get a real AST with spans.
-        // Move `program` out of ParseOutput directly — cloning would increase Arc reference
-        // counts and cause `desugar_surface_program`'s `Arc::get_mut` to panic.
-        let mut program = parse(source, test_file(source))
-            .expect("parse should succeed")
-            .program;
-        desugar::desugar_program_full(&mut program);
+        let program = desugar::desugar_program_full(
+            &parse(source, test_file(source))
+                .expect("parse should succeed")
+                .program,
+        );
         // T-1576: test path uses bootstrap mode (no arena yet).
         let (_table, _frames) = resolve::resolve_surface_program(&program, &[]);
         let (_type_errors, _inferred, _tycon_env) =

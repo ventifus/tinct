@@ -315,8 +315,9 @@ pub(crate) fn builtin_macro_error(
         // Extract message (first argument) - materialized by Strictness::Seq
         let arg0_thunk = ctx.get_thunk(args[0]);
         let msg_val = arg0_thunk
-            .try_get_materialized()
-            .expect("pre-materialized by Strictness::Seq");
+            .try_get_value()
+            .expect("pre-materialized by Strictness::Seq")
+            .clone();
         let message = require_string("builtin-macro-error", msg_val, arg0_thunk.span.clone())?;
 
         // Determine the span to use for the error
@@ -502,11 +503,13 @@ pub(crate) fn builtin_apply_impl(
         let arg0_thunk = ctx.get_thunk(args[0]);
         let arg1_thunk = ctx.get_thunk(args[1]);
         let func_val = arg0_thunk
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let args_val = arg1_thunk
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
 
         let arg_dict = crate::builtins::require_dict(
             "apply",
@@ -568,7 +571,7 @@ pub(crate) fn builtin_apply_impl(
                 // Pre-materialize strict args before calling the builtin.
                 // `builtin_apply_impl` calls `def.func` directly (not through the CEK machine),
                 // so `force_count` and `pos_strictness` pre-materialization do NOT happen
-                // automatically. Builtins that use `try_get_materialized().expect(...)` rely
+                // automatically. Builtins that use `try_get_value().expect(...)` rely
                 // on force_count/pos_strictness having been applied; without this, passing a
                 // force_count>0 builtin like `$keys` through `$apply` would panic.
                 //
@@ -577,7 +580,7 @@ pub(crate) fn builtin_apply_impl(
                 let force_limit = def.force_count.min(positional_ids.len());
                 for &arg_id in &positional_ids[..force_limit] {
                     let arg = ctx.get_thunk(arg_id);
-                    if arg.try_get_materialized().is_none() {
+                    if !arg.is_materialized() {
                         materialize(&arg, Some(&call_span), &ctx).await?;
                     }
                 }
@@ -585,7 +588,7 @@ pub(crate) fn builtin_apply_impl(
                     if i < positional_ids.len() && (s == Strictness::Seq || s == Strictness::Spine)
                     {
                         let arg = ctx.get_thunk(positional_ids[i]);
-                        if arg.try_get_materialized().is_none() {
+                        if !arg.is_materialized() {
                             materialize(&arg, Some(&call_span), &ctx).await?;
                         }
                     }
@@ -648,7 +651,7 @@ pub(crate) fn builtin_apply(
         };
         Ok(Arc::new(Thunk::builtin_call(
             // force_count=2: pre-materialize both args[0] (function) and args[1] (args-dict)
-            // before calling builtin_apply_impl, which uses try_get_materialized().expect(...).
+            // before calling builtin_apply_impl, which uses try_get_value().expect(...).
             builtin!("builtin-apply", builtin_apply_impl, [], 2),
             args,
             named_opt,
@@ -702,7 +705,7 @@ pub(crate) fn builtin_gensym(
         }
 
         let get_str = |thunk: Arc<Thunk>, name: &str, span: &Span| -> EvalResult<String> {
-            match thunk.try_get_materialized().expect("pre-materialized") {
+            match thunk.try_get_value().expect("pre-materialized").clone() {
                 Value::String { source, start, end } => Ok(source[start..end].to_string()),
                 v => Err(EvalError::type_mismatch_ctx(
                     format!("builtin-gensym {name}"),
@@ -1029,8 +1032,8 @@ pub(crate) fn builtin_ast_of(
             )));
         }
 
-        // Check for InProgress
-        if matches!(thunk.state(), crate::value::ThunkState::InProgress { .. }) {
+        // Check for InProgress: result not set AND unevaluated state has been claimed
+        if !thunk.is_settled() && thunk.inner.unevaluated.lock().unwrap().0.is_none() {
             let mut entries: IndexMap<crate::value::HashableValue, Arc<Thunk>> = IndexMap::new();
             entries.insert(
                 crate::value::HashableValue::Str("type".into()),
@@ -1053,7 +1056,7 @@ pub(crate) fn builtin_ast_of(
         }
 
         // Check for Failed
-        if let Some(err) = thunk.get_cached_error() {
+        if let Some(err) = thunk.try_get_error() {
             let mut entries: IndexMap<crate::value::HashableValue, Arc<Thunk>> = IndexMap::new();
             entries.insert(
                 crate::value::HashableValue::Str("type".into()),
@@ -1099,7 +1102,7 @@ pub(crate) fn builtin_ast_of(
         // Check for Materialized — construct synthetic SurfaceNode for simple literals
         // For complex values, ast-of should be called on unevaluated expressions, but we
         // provide a fallback for materialized literals to avoid breaking existing code.
-        if let Some(val) = thunk.try_get_materialized() {
+        if let Some(val) = thunk.try_get_value().cloned() {
             use crate::ast::{SurfaceExpression, SurfaceNode};
             let make_node =
                 |expr: SurfaceExpression| Arc::new(SurfaceNode::new(expr, call_span.clone()));
@@ -1353,22 +1356,24 @@ pub(crate) fn builtin_span_of(
         {
             if tycon.as_ref() == "Expr" {
                 let payload_thunk = ctx.get_thunk(payload_id);
-                if let Some(Value::Dict(payload_dict)) = payload_thunk.try_get_materialized() {
+                if let Some(Value::Dict(payload_dict)) = payload_thunk.try_get_value().cloned() {
                     if let Some(span_thunk) = payload_dict.get(&HashableValue::Str("span".into())) {
-                        if let Some(Value::Dict(span_dict)) = span_thunk.try_get_materialized() {
+                        if let Some(Value::Dict(span_dict)) = span_thunk.try_get_value().cloned() {
                             // Extract {start: {line, col}, end: {line, col}}
                             let get_pos = |key: &str| -> Option<(i64, i64)> {
                                 let pos_thunk = span_dict.get(&HashableValue::Str(key.into()))?;
-                                let Value::Dict(pos_dict) = pos_thunk.try_get_materialized()?
+                                let Value::Dict(pos_dict) = pos_thunk.try_get_value()?.clone()
                                 else {
                                     return None;
                                 };
                                 let line = pos_dict
                                     .get(&HashableValue::Str("line".into()))?
-                                    .try_get_materialized()?;
+                                    .try_get_value()?
+                                    .clone();
                                 let col = pos_dict
                                     .get(&HashableValue::Str("col".into()))?
-                                    .try_get_materialized()?;
+                                    .try_get_value()?
+                                    .clone();
                                 if let (Value::Int(l), Value::Int(c)) = (line, col) {
                                     Some((l, c))
                                 } else {
@@ -1707,12 +1712,14 @@ pub(crate) fn builtin_make_annotated(
 
         let inner_val = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized by pos_strictness[0]=Seq");
+            .try_get_value()
+            .expect("pre-materialized by pos_strictness[0]=Seq")
+            .clone();
         let ann_val = ctx
             .get_thunk(args[1])
-            .try_get_materialized()
-            .expect("pre-materialized by pos_strictness[1]=Seq");
+            .try_get_value()
+            .expect("pre-materialized by pos_strictness[1]=Seq")
+            .clone();
 
         // annotation must be a Dict
         if !matches!(ann_val, Value::Dict(_)) {
@@ -1972,8 +1979,9 @@ pub(crate) fn builtin_scope_new(
         // arg0: parent scope-id (Int) or null (empty Dict)
         let parent_val = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let parent_id_opt: Option<crate::arena::ScopeId> = match parent_val {
             Value::Int(n) => {
                 if n < 0 {
@@ -2019,8 +2027,9 @@ pub(crate) fn builtin_scope_new(
         // arg1: Dict of string-keyed bindings
         let bindings_val = ctx
             .get_thunk(args[1])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let bindings_dict = match bindings_val {
             Value::Dict(d) => d,
             other => {
@@ -2090,8 +2099,9 @@ pub(crate) fn builtin_scope_parent(
 
         let scope_id_val = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let scope_id_n = match scope_id_val {
             Value::Int(n) => n,
             other => {
@@ -2159,8 +2169,9 @@ pub(crate) fn builtin_scope_frame(
         }
         let scope_id_n = match ctx
             .get_thunk(args[0])
-            .try_get_materialized()
+            .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
+            .clone()
         {
             Value::Int(n) => n,
             other => {
@@ -2255,8 +2266,9 @@ pub(crate) fn builtin_parse(
         let arg0_thunk = ctx.get_thunk(args[0]);
         let arg1_thunk = ctx.get_thunk(args[1]);
         let bytes_val = arg0_thunk
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let source_bytes = match bytes_val {
             Value::Bytes { source, start, end } => source[start..end].to_vec(),
             other => {
@@ -2272,8 +2284,9 @@ pub(crate) fn builtin_parse(
 
         // Second arg: String (the path hint for error messages)
         let path_val = arg1_thunk
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let path_str = require_string("builtin-parse", path_val, arg1_thunk.span.clone())?;
 
         // Decode bytes as UTF-8 source text
@@ -2411,8 +2424,9 @@ pub(crate) fn builtin_resolve(
         // arg0: Document — TypeAssert on the parameter enforces this at the call boundary.
         let doc_val = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let doc_arc = if let Value::Document(d) = doc_val {
             d
         } else {
@@ -2426,8 +2440,9 @@ pub(crate) fn builtin_resolve(
         // arg1: Map[Int, Map[String, Int]] — structure enforced by TypeAssert on frames parameter.
         let frames_val = ctx
             .get_thunk(args[1])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let frames_dict = match frames_val {
             Value::Dict(d) => d,
             other => {
@@ -2593,8 +2608,9 @@ pub(crate) fn builtin_lint_pipeline_docs(
 
         let docs_val = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized by Strictness::Seq");
+            .try_get_value()
+            .expect("pre-materialized by Strictness::Seq")
+            .clone();
         let docs_dict = match docs_val {
             Value::Dict(d) => d,
             other => {
@@ -2733,8 +2749,9 @@ pub(crate) fn builtin_typecheck_doc(
         // arg0: Value::Document
         let doc_val = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let doc_arc = match doc_val {
             Value::Document(d) => d,
             other => {
@@ -2751,8 +2768,9 @@ pub(crate) fn builtin_typecheck_doc(
         // arg1: Value::TypeContext
         let tc_val = ctx
             .get_thunk(args[1])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let tc_arc = match tc_val {
             Value::TypeContext(arc) => arc,
             other => {
@@ -3106,8 +3124,9 @@ pub(crate) fn builtin_fork_type_ctx(
         }
         let parent_val = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         match parent_val {
             Value::TypeContext(parent_arc) => {
                 // Clone the parent's TypeContextData into an independent child.
@@ -3161,12 +3180,14 @@ pub(crate) fn builtin_tc_with_scope(
         }
         let tc_val = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let scope_id_val = ctx
             .get_thunk(args[1])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
 
         let tc_arc = match tc_val {
             Value::TypeContext(arc) => arc,
@@ -3236,8 +3257,9 @@ pub(crate) fn builtin_program(
 
         let val = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
 
         // Extract documents from the input collection (Seq or Dict)
         let mut documents = Vec::new();
@@ -3296,10 +3318,10 @@ pub(crate) fn builtin_program(
     })
 }
 
-/// `builtin-desugar`: Desugar a `Value::Program` in-place.
+/// `builtin-desugar`: Desugar a `Value::Program`.
 ///
-/// Thin wrapper around `desugar_program_full`. Takes 1 arg: Value::Program
-/// Returns Value::Program with desugaring applied.
+/// Pure functional wrapper around `desugar_program_full`. Takes 1 arg: Value::Program.
+/// Returns a new Value::Program with desugaring applied.
 pub(crate) fn builtin_desugar(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -3318,8 +3340,9 @@ pub(crate) fn builtin_desugar(
 
         let program_val = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let (program, resolutions, types, expects_resolved) = match program_val {
             Value::Program {
                 program,
@@ -3338,37 +3361,11 @@ pub(crate) fn builtin_desugar(
             }
         };
 
-        // Desugar requires exclusive Arc ownership of each document node (for in-place mutation).
-        let shared: Vec<usize> = program
-            .documents
-            .iter()
-            .map(|doc| std::sync::Arc::strong_count(&doc.node))
-            .filter(|&c| c != 1)
-            .collect();
-        if !shared.is_empty() {
-            return Err(EvalError::user_error(
-                format!(
-                    "builtin-desugar: {} document(s) have shared Arc references {:?}, expected 1 each",
-                    shared.len(),
-                    shared
-                ),
-                call_span,
-            )
-            .into());
-        }
-        let count = std::sync::Arc::strong_count(&program);
-        let mut owned: crate::ast::SurfaceProgram =
-            std::sync::Arc::try_unwrap(program).map_err(|_| {
-                EvalError::user_error(
-                    format!("builtin-desugar: Arc<SurfaceProgram> has {count} strong references, expected 1"),
-                    call_span.clone(),
-                )
-            })?;
-        crate::desugar::desugar_program_full(&mut owned);
+        let desugared = crate::desugar::desugar_program_full(&program);
 
         ok_val(
             Value::Program {
-                program: std::sync::Arc::new(owned),
+                program: std::sync::Arc::new(desugared),
                 resolutions,
                 types,
                 expects_resolved,
@@ -3400,8 +3397,9 @@ pub(crate) fn builtin_program_docs(
 
         let program_val = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let program_arc = match program_val {
             Value::Program { program, .. } => program,
             other => {
@@ -3464,8 +3462,9 @@ pub(crate) fn builtin_doc_expressions(
 
         let doc_val = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let doc_arc = match doc_val {
             Value::Document(d) => d,
             other => {
@@ -3519,8 +3518,9 @@ pub(crate) fn builtin_doc_meta(
 
         let doc_val = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let doc_arc = match doc_val {
             Value::Document(d) => d,
             other => {
@@ -3536,8 +3536,9 @@ pub(crate) fn builtin_doc_meta(
 
         let scope_id_val = ctx
             .get_thunk(args[1])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
         let scope_id = match scope_id_val {
             Value::Int(n) => {
                 if n < 0 {
@@ -3682,8 +3683,9 @@ pub(crate) fn builtin_eval(
         // arg0: Value::Document ONLY
         let doc_val = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized by Strictness::Seq");
+            .try_get_value()
+            .expect("pre-materialized by Strictness::Seq")
+            .clone();
         let doc_arc = match doc_val {
             Value::Document(d) => d,
             other => {
@@ -3700,8 +3702,9 @@ pub(crate) fn builtin_eval(
         // arg1: Int (scope-id)
         let scope_id_val = ctx
             .get_thunk(args[1])
-            .try_get_materialized()
-            .expect("pre-materialized by Strictness::Seq");
+            .try_get_value()
+            .expect("pre-materialized by Strictness::Seq")
+            .clone();
         let scope_id = match scope_id_val {
             Value::Int(n) => {
                 let arena_len = ctx.scope_arena.borrow().scopes.len();
@@ -3810,8 +3813,9 @@ pub(crate) fn builtin_variant_payload(
         }
         let val = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized by Strictness::Seq");
+            .try_get_value()
+            .expect("pre-materialized by Strictness::Seq")
+            .clone();
         match val {
             Value::Variant {
                 payload: Some(payload_id),
@@ -3868,8 +3872,9 @@ pub(crate) fn builtin_eval_expr(
         // arg0: Value::Expression
         let expr_val = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized by Strictness::Seq");
+            .try_get_value()
+            .expect("pre-materialized by Strictness::Seq")
+            .clone();
         let expr_node: Arc<crate::ast::SurfaceNode> = match expr_val {
             Value::Expression(node) => node,
             other => {
@@ -3886,8 +3891,9 @@ pub(crate) fn builtin_eval_expr(
         // arg1: Int (scope-id)
         let scope_id_val = ctx
             .get_thunk(args[1])
-            .try_get_materialized()
-            .expect("pre-materialized by Strictness::Seq");
+            .try_get_value()
+            .expect("pre-materialized by Strictness::Seq")
+            .clone();
         let scope_id: u32 = match scope_id_val {
             Value::Int(n) => {
                 let arena_len = ctx.scope_arena.borrow().scopes.len();
@@ -3920,15 +3926,14 @@ pub(crate) fn builtin_eval_expr(
             header: indexmap::IndexMap::new(),
             items: vec![crate::ast::SurfaceItem::Expr(expr_node)],
         };
-        let mut program = crate::ast::SurfaceProgram {
+        let program = crate::desugar::desugar_program_full(&crate::ast::SurfaceProgram {
             documents: vec![crate::ast::Spanned::new(
                 std::sync::Arc::new(document),
                 call_span.clone(),
             )],
-        };
+        });
 
         // Desugar + resolve in the scope's parent chain so all names at call site resolve.
-        crate::desugar::desugar_program_full(&mut program);
         let initial_frames: Vec<indexmap::IndexMap<String, u32>> = {
             let arena = ctx.scope_arena.borrow();
             let chain = arena.collect_parent_chain(scope_id);
@@ -3999,8 +4004,9 @@ pub(crate) fn builtin_eval_repr(
 
         let input_val = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized by Strictness::Seq");
+            .try_get_value()
+            .expect("pre-materialized by Strictness::Seq")
+            .clone();
 
         let expression_nodes: Vec<std::sync::Arc<crate::ast::SurfaceNode>> = match input_val {
             Value::Document(doc) => doc
@@ -4027,8 +4033,9 @@ pub(crate) fn builtin_eval_repr(
 
         let scope_id_val = ctx
             .get_thunk(args[1])
-            .try_get_materialized()
-            .expect("pre-materialized by Strictness::Seq");
+            .try_get_value()
+            .expect("pre-materialized by Strictness::Seq")
+            .clone();
         let scope_id: Option<u32> = match scope_id_val {
             Value::Int(n) => {
                 let arena_len = ctx.scope_arena.borrow().scopes.len();
@@ -4144,8 +4151,9 @@ pub(crate) fn builtin_eval_macro_ast(
         // ── Step 2: Convert Expr.* variant → SurfaceNode ─────────────────────
         let expr_val = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized by Strictness::Seq");
+            .try_get_value()
+            .expect("pre-materialized by Strictness::Seq")
+            .clone();
 
         let expr_node = match expr_val {
             Value::Variant { ref tycon, .. } if tycon.as_ref() == "Expr" => {
@@ -4174,15 +4182,14 @@ pub(crate) fn builtin_eval_macro_ast(
             header: indexmap::IndexMap::new(),
             items: vec![crate::ast::SurfaceItem::Expr(expr_node)],
         };
-        let mut program = crate::ast::SurfaceProgram {
+        let program = crate::desugar::desugar_program_full(&crate::ast::SurfaceProgram {
             documents: vec![crate::ast::Spanned::new(
                 std::sync::Arc::new(document),
                 call_span.clone(),
             )],
-        };
+        });
 
         // ── Step 4: Desugar + resolve in the call-site environment ────────────
-        crate::desugar::desugar_program_full(&mut program);
         // Seed resolver from the full parent chain of call_site_env_id so that all names
         // visible at the macro call site (builtins, prelude, user-defined) resolve to
         // de Bruijn coordinates rather than falling back to name-based lookup via MAX/MAX.
@@ -4272,8 +4279,9 @@ pub(crate) fn builtin_eval_types(
         // Materialize the input — accepts Value::Document only.
         let input_val = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .try_get_value()
+            .expect("pre-materialized by force_count/pos_strictness")
+            .clone();
 
         // Document path: extract SurfaceNodes directly (same as builtin-eval Document path).
         if let Value::Document(doc) = &input_val {
@@ -4455,12 +4463,14 @@ fn expect_two_args(
 
     let val1 = ctx
         .get_thunk(args[0])
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
+        .try_get_value()
+        .expect("pre-materialized by force_count/pos_strictness")
+        .clone();
     let val2 = ctx
         .get_thunk(args[1])
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
+        .try_get_value()
+        .expect("pre-materialized by force_count/pos_strictness")
+        .clone();
 
     Ok((val1, val2))
 }
@@ -5030,8 +5040,9 @@ pub(crate) fn builtin_ast_to_program(
         // arg[0]: Expr.* Value::Variant
         let expr_val = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized by Strictness::Seq");
+            .try_get_value()
+            .expect("pre-materialized by Strictness::Seq")
+            .clone();
 
         // Convert Expr.* Variant to SurfaceNode
         let expr_node = match expr_val {
@@ -5517,8 +5528,9 @@ pub(crate) fn builtin_lower(
         // arg0: Value::Document
         let doc_val = ctx
             .get_thunk(args[0])
-            .try_get_materialized()
-            .expect("pre-materialized by Strictness::Seq");
+            .try_get_value()
+            .expect("pre-materialized by Strictness::Seq")
+            .clone();
         let doc_arc = match doc_val {
             Value::Document(d) => d,
             other => {
