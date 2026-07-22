@@ -162,12 +162,15 @@ pub enum UnevaluatedState {
     BuiltinCall { def, args, named, call_span, caller_env_id, ctx },
     FnCall { func, args, named, call_span, caller_env_id, ctx, original_call },
     Guarded { inner, expected, field_path, guard_span, blame_label, default },
+    AnnotatedWrap { inner, annotation, ctx },         // deferred Value::Annotated wrapping
 }
 ```
 
 `AstField` thunks perform a single synchronous field extraction from a `SurfaceNode` (for `ast-of` / `quote` field lazy access). They never recurse into the CEK machine.
 
 `Guarded` thunks wrap an inner thunk with a runtime type check. When forced, `force_step` materializes the inner thunk and then validates the result against the `expected` type via `GuardedValidate`. If the type check fails and a `default` expression is present, the default is evaluated as a fallback.
+
+`AnnotatedWrap` thunks wrap an inner thunk's materialized value in `Value::Annotated`. When forced, the inner thunk is materialized on demand via `Cont::AnnotatedWrapFinalize`. This variant was added in S-952 to replace a direct `materialize()` call in `eval_dict_core` that bypassed the CEK stack. It is created when a dict-key annotation's value is a non-literal thunk (e.g., `f@[doc: "adds one"]: [fn [let x] [+ x 1]]`) — the annotation dict is already materialized, but the inner value thunk has not yet been forced, so wrapping must be deferred until first access.
 
 ### Thunk Constructors
 
@@ -308,6 +311,7 @@ Inspects one thunk's current state and produces the next `Action`. Never forces 
 | `Guarded` | `GuardedValidate` | `Materialize(inner_thunk)` |
 | `CoreExpr` | if TypeAssert: `Memoize + TypeAssertCheck`; if Sequential: `Memoize + LetrecChainStep`; if Match: `Memoize + MatchDispatch`; else `Memoize` | `Materialize(result_thunk)` or `EvalCore` |
 | `AstField` | (none) | `Continue(Ok(value))` — synchronous |
+| `AnnotatedWrap` | `AnnotatedWrapFinalize` | `Materialize(inner_thunk)` |
 
 **TypeAssert and Sequential/Match are handled inline** in `dispatch_state` (not via eval_core_expr round-trip) to avoid creating redundant CoreExpr thunks that would loop back into the same branch.
 
@@ -333,6 +337,7 @@ All large payloads are boxed so `Cont` fits in 96 bytes (one cache line). The st
 | `MatchGuardCheck` | `MatchDispatch` | Check guard expression truthiness; advance arm or fall through |
 | `MatchPredicateCheck` | `MatchDispatch` | Invoke predicate on scrutinee; check `Bool(true)` |
 | `PredicateCheck` | `TypeAssertCheck` for `is:` predicates | Check predicate result; return value or evaluate default |
+| `AnnotatedWrapFinalize` | `AnnotatedWrap` dispatch | Wrap materialized inner value in `Value::Annotated { inner, annotation }`; settle outer thunk |
 
 ### Memoize
 

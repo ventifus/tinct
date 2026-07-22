@@ -69,8 +69,8 @@ config.database.host            # chained dot access
 [call % data]                       # pipeline value used as function
 
 # Implicit lambda (_ shorthand — same as $_ before)
-[+ _ 1]                         # desugars to [fn [_] [+ _ 1]]
-[> _.age 30]                    # desugars to [fn [_] [> _.age 30]]
+[+ _ 1]                         # desugars to [fn [let _] [+ _ 1]]
+[> _.age 30]                    # desugars to [fn [let _] [> _.age 30]]
 
 # Apply (spread list into function args)
 [apply f arg-list]              # Spreads list entries as positional args
@@ -143,7 +143,7 @@ utils: [include "lib/utils.llt"]   # Namespaced
 ```tinct
 [key: "value"]           # Dict
 [f x y]                  # Function call (bare identifier in head position)
-[fn [x] x]               # Function definition
+[fn [let x] x]           # Function definition
 [1 2 3]                  # Sequence
 []                        # Empty dict / empty list
 ```
@@ -328,7 +328,7 @@ Any bare identifier in head position (first slot inside `[]`) is a function call
 
 ```tinct
 [call [get-handler request] data]   # Mandatory — [[get-handler request] data] is a data sequence
-[call [fn [x] [+ x 1]] 42]         # Mandatory — [[fn [x] [+ x 1]] 42] is a data sequence
+[call [fn [let x] [+ x 1]] 42]     # Mandatory — [[fn [let x] [+ x 1]] 42] is a data sequence
 ```
 
 `call` is **optional** when the function is a bare identifier — it produces the same AST as the implied call:
@@ -416,9 +416,9 @@ Pipeline is desugared at parse time — no runtime overhead.
 `_` inside a bracket call desugars to a single-argument lambda — the `_` parameter stands for an implied argument, placed explicitly wherever it appears in the expression:
 
 ```tinct
-[* _ 2]          # → [fn [_] [* _ 2]]
-[> _.age 30]     # → [fn [_] [> _.age 30]]
-[>= _ 0]         # → [fn [_] [>= _ 0]]   # explicit position control
+[* _ 2]          # → [fn [let _] [* _ 2]]
+[> _.age 30]     # → [fn [let _] [> _.age 30]]
+[>= _ 0]         # → [fn [let _] [>= _ 0]]   # explicit position control
 ```
 
 Because `_` desugars to a single-arg lambda, combining it with the pipeline or `is:` produces a natural subject-last call: the lambda's single parameter is filled by the subject.
@@ -433,7 +433,7 @@ UInt64: [type Int@[is: [>= _ 0]         repr: u64]]   # [>= subject 0]
 Port:   [type Int@[is: [between 1 65535] repr: u16]]
 ```
 
-**Why `[>= _ 0]` and not `[>= 0]`:** `[>= 0]` partially applied subject-last gives `[>= 0 subject]` = "0 >= subject" (backwards). The `_` shorthand positions the subject correctly: `[>= _ 0]` → `[fn [_] [>= _ 0]]` → `[>= subject 0]` = "subject >= 0". Use `_` whenever the natural partial-application order would give the wrong operand arrangement.
+**Why `[>= _ 0]` and not `[>= 0]`:** `[>= 0]` partially applied subject-last gives `[>= 0 subject]` = "0 >= subject" (backwards). The `_` shorthand positions the subject correctly: `[>= _ 0]` → `[fn [let _] [>= _ 0]]` → `[>= subject 0]` = "subject >= 0". Use `_` whenever the natural partial-application order would give the wrong operand arrangement.
 
 ### Unified Rule
 
@@ -502,7 +502,7 @@ An optional untyped fallback `...rest` (no annotation) must appear last and catc
 Any `fn` body with multiple expressions forms a sequential scope — each `[name: val]` step extends the environment for all subsequent steps:
 
 ```tinct
-[transform: [fn [input]
+[transform: [fn [let input]
   [cleaned:  [trim input]]
   [parts:    [split ":" cleaned]]
   [str [get 0 parts] "@" [get 1 parts]]]]
@@ -895,10 +895,10 @@ Type class instance:
 
 ```tinct
 [instance [Eq Int]
-  eq: [fn [x y] [= x y]]]
+  eq: [fn [let x y] [= x y]]]
 
 [instance [Eq [name: String age: Int]]
-  eq: [fn [a b] [and [= a.name b.name] [= a.age b.age]]]]
+  eq: [fn [let a b] [and [= a.name b.name] [= a.age b.age]]]]
 ```
 
 ---
@@ -1218,7 +1218,7 @@ The parser determines how to interpret a `[]` by examining its first entry:
 | 1 | Empty `[]` | Empty dict | `[]` |
 | 2 | `@` first | Type assertion | `[@Type expr]` |
 | 2b | Identifier + `@` immediately (annotated identifier), not followed by `:` | Dict | `[Fn@Number [Int]]` |
-| 3 | Keyword in head (`call`, `fn`, `type`), not followed by `:` (horizontal) | Special form | `[fn [x] x]` |
+| 3 | Keyword in head (`call`, `fn`, `type`, `quote`, `unquote`, `unquote-splice`, `syntax-class`, `match`, `class`, `instance`, `pattern`, `let`, `case`), not followed by `:` (horizontal) | Special form | `[fn [let x] x]` |
 | 4 | First entry is keyed (head followed by `:` with no intervening newline) | Dict | `[name: "Alice"]` |
 | 5 | Identifier in head (not keyword) | Implied call | `[f x y]` → `f(x, y)` |
 | 6 | `$`-prefixed head (`escaped_ref`) | Data sequence | `[$f x y]` |
@@ -1236,7 +1236,7 @@ The parser determines how to interpret a `[]` by examining its first entry:
 [f x]                 # Call — implied call: bare identifier "f" in head
 [f x y]              # Call — call f(x, y)
 [call f x]           # Call — explicit call (identical AST to implied)
-[fn [x] x]           # Fn
+[fn [let x] x]       # Fn
 [type [Fn@b [a]]]    # TypeAlias
 
 [call: something]    # Dict — "call" followed by ":" is a key, not a keyword

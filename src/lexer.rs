@@ -693,6 +693,20 @@ impl<'a> Lexer<'a> {
         let word = self.input[word_start..word_end].to_string();
         let end = self.current_position();
 
+        // If access field produced an empty word, fall back to regular identifier lexing.
+        // This happens when the character(s) after '.' don't form a valid access field.
+        // Example: `$a.--` where '-' was consumed by negative number check, but next '-'
+        // is not valid as the first character of an access field per grammar.
+        if in_access_field && word.is_empty() {
+            // Reset position to word_start and re-lex as a regular identifier.
+            if word_start < self.input.len() {
+                let ch = self.input[word_start..].chars().next().unwrap();
+                self.current = Some((word_start, ch));
+            }
+            // Recursive call will have in_access_field=false (after_access_dot already reset)
+            return self.lex_bare_word_or_number();
+        }
+
         // Check for reserved keywords
         if word == "let" {
             self.tokens
@@ -716,11 +730,17 @@ impl<'a> Lexer<'a> {
         Ok(())
     }
 
-    fn is_access_field_char(&self, c: char, _is_first: bool) -> bool {
-        // Access field names use the same expansive identifier rules as general identifiers.
-        // Tinct identifiers allow nearly any character — the denylist is very short.
-        // Using a restrictive allowlist here would reject valid identifiers like `%`, `!`, etc.
-        self.is_var_ident_char(c)
+    fn is_access_field_char(&self, c: char, is_first: bool) -> bool {
+        if is_first {
+            // Grammar: access_field = (ASCII_ALPHA | "_") ~ ...
+            // First character must be alphabetic or underscore.
+            c.is_ascii_alphabetic() || c == '_'
+        } else {
+            // Subsequent characters use the same expansive identifier rules as general identifiers.
+            // Tinct identifiers allow nearly any character — the denylist is very short.
+            // This allows '-', '?', '%', '!', etc. in field names after the first character.
+            self.is_var_ident_char(c)
+        }
     }
 
     fn lex_number(

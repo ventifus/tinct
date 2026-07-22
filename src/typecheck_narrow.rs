@@ -397,16 +397,19 @@ pub(crate) fn extract_binding_types<'a>(
     })
 }
 
-/// Check if two pattern type lists could overlap (unify).
+/// Shared probe helper: attempt to unify each pair of types from `types_a` and `types_b`.
 ///
-/// This is a pure probe: it saves and restores all mutable fields of `state`
-/// that `unify` touches (levels, constraints, kind_env) so that overlap testing
-/// never leaks side-effects into the global inference state.
-pub(crate) fn patterns_overlap(
+/// Saves all 8 mutable InferState fields that `unify` may touch, runs the probe, then
+/// restores them unconditionally — so this function is always side-effect-free.
+///
+/// Returns `Ok(true)` if every pair unified, `Ok(false)` if any pair failed to unify or
+/// the slices have different lengths, and `Err` only on an internal diagnostic that cannot
+/// be represented as a simple bool result (currently unreachable in practice).
+async fn try_unify_probe(
     types_a: &[Type],
     types_b: &[Type],
     state: &mut InferState,
-) -> Result<bool, Vec<TypeDiagnostic>> {
+) -> Result<bool, TypeDiagnostic> {
     if types_a.len() != types_b.len() {
         return Ok(false);
     }
@@ -416,80 +419,70 @@ pub(crate) fn patterns_overlap(
     let saved_constraints = state.constraints.clone();
     let saved_kind_env = state.kind_env.clone();
     let saved_deferred = state.deferred_equalities.clone();
-    // Also save subst: improve_functional_dependency writes directly to
-    // state.subst (via std::mem::take/replace) rather than through temp_subst.
     let saved_subst = state.subst.clone();
+    let saved_type_vars = state.type_vars.clone();
+    let saved_bounds = state.bounds.clone();
+    let saved_dispatch_obligations = state.dispatch_obligations.clone();
+    let saved_diagnostics = state.diagnostics.clone();
 
-    // Use a temporary substitution so state.subst is also unaffected.
-    // Conservative: structural equality misses polymorphic overlaps. Full unification
-    // probe would require making this function async, which is tracked as T-1801.
-    let overlaps = types_a
-        .iter()
-        .zip(types_b.iter())
-        .all(|(ty_a, ty_b)| ty_a == ty_b);
+    // Attempt actual unification for each type pair.
+    let mut unified = true;
+    let span = crate::rust_span!();
+    for (ty_a, ty_b) in types_a.iter().zip(types_b.iter()) {
+        let mut temp_constraints = Vec::new();
+        match crate::types::unify(ty_a, ty_b, state, &mut temp_constraints, span.clone(), 0).await {
+            Ok(()) => {
+                // This pair can unify — continue.
+            }
+            Err(_) => {
+                // Unification failed — no overlap.
+                unified = false;
+                break;
+            }
+        }
+    }
 
-    // Restore all mutated fields.
+    // Restore all mutated fields unconditionally.
     state.levels = saved_levels;
     state.constraints = saved_constraints;
     state.kind_env = saved_kind_env;
     state.deferred_equalities = saved_deferred;
     state.subst = saved_subst;
+    state.type_vars = saved_type_vars;
+    state.bounds = saved_bounds;
+    state.dispatch_obligations = saved_dispatch_obligations;
+    state.diagnostics = saved_diagnostics;
 
-    Ok(overlaps)
+    Ok(unified)
+}
+
+/// Check if two pattern type lists could overlap (unify).
+///
+/// Delegates to `try_unify_probe`, which is always side-effect-free: it saves and
+/// restores all mutable InferState fields that `unify` touches so overlap testing
+/// never leaks side-effects into the global inference state.
+pub(crate) async fn patterns_overlap(
+    types_a: &[Type],
+    types_b: &[Type],
+    state: &mut InferState,
+) -> Result<bool, Vec<TypeDiagnostic>> {
+    try_unify_probe(types_a, types_b, state)
+        .await
+        .map_err(|e| vec![e])
 }
 
 /// Probe whether two type slices can unify (for consistency checks).
 /// Returns true if all pairs successfully unify. Side-effect-free — restores state after probe.
-pub(crate) fn types_can_unify(
+///
+/// Delegates to `try_unify_probe`, which is always side-effect-free.
+pub(crate) async fn types_can_unify(
     types_a: &[Type],
     types_b: &[Type],
     state: &mut InferState,
 ) -> Result<bool, Vec<TypeDiagnostic>> {
-    if types_a.len() != types_b.len() {
-        return Ok(false);
-    }
-
-    // Early bailout: if top-level constructors clearly differ, skip expensive unification.
-    for (ty_a, ty_b) in types_a.iter().zip(types_b.iter()) {
-        match (ty_a, ty_b) {
-            // Clearly disjoint constructors
-            (Type::Int, Type::Str)
-            | (Type::Int, Type::Float)
-            | (Type::Str, Type::Float)
-            | (Type::Str, Type::Int)
-            | (Type::Float, Type::Int)
-            | (Type::Float, Type::Str) => return Ok(false),
-            _ => {}
-        }
-    }
-
-    // Save every field that unify() may touch so this probe is side-effect-free.
-    let saved_levels = state.levels.clone();
-    let saved_constraints = state.constraints.clone();
-    let saved_kind_env = state.kind_env.clone();
-    let saved_deferred = state.deferred_equalities.clone();
-    let saved_subst = state.subst.clone();
-
-    // Use a temporary substitution for the probe.
-    // Note: this probe uses a separate temp_subst; constraint checking via
-    // check_constraints_on_var may miss bindings from the probe. This is acceptable
-    // for instance consistency checks where types are typically concrete annotations,
-    // but would need to be addressed for general-purpose unification probes.
-    // Conservative: structural equality misses polymorphic overlaps. Full unification
-    // probe would require making this function async, which is tracked as T-1801.
-    let can_unify = types_a
-        .iter()
-        .zip(types_b.iter())
-        .all(|(ty_a, ty_b)| ty_a == ty_b);
-
-    // Restore all mutated fields.
-    state.levels = saved_levels;
-    state.constraints = saved_constraints;
-    state.kind_env = saved_kind_env;
-    state.deferred_equalities = saved_deferred;
-    state.subst = saved_subst;
-
-    Ok(can_unify)
+    try_unify_probe(types_a, types_b, state)
+        .await
+        .map_err(|e| vec![e])
 }
 
 /// Extract parameter indices from a functional dependency variable list.

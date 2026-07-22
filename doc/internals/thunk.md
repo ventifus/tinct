@@ -170,6 +170,11 @@ pub enum UnevaluatedState {
         blame_label: Option<BlameLabel>,
         default: Option<GuardDefault>,         // (expr, env_id) for default: fallback
     },
+    AnnotatedWrap {
+        inner: ThunkId,
+        annotation: Box<Value>,
+        ctx: Arc<EvalContext>,                 // deferred Value::Annotated wrapping
+    },
 }
 ```
 
@@ -205,6 +210,9 @@ Thunk::fn_call(func: ThunkId, args: Vec<ThunkId>, named: IndexMap<String, ThunkI
 Thunk::guarded(inner: ThunkId, expected: Type, field_path: Vec<String>, guard_span: Span,
                blame_label: Option<BlameLabel>, default: Option<GuardDefault>) -> Self
 
+// Defer Value::Annotated wrapping for non-literal annotated dict entries (T-1621, S-952)
+Thunk::annotated_wrap(inner: ThunkId, annotation: Value, ctx: Arc<EvalContext>, span: Span) -> Self
+
 // Produce a Materialized thunk directly (for already-known values)
 Thunk::value(v: Value, span: Span) -> Self
 
@@ -215,6 +223,8 @@ Thunk::placeholder(span: Span) -> Self
 `Thunk::value` is the only approved fast path. It skips the `Unevaluated` state entirely and places the value directly into `result` via `OnceCell::set`. This is correct because the value is already fully evaluated — no computation needs deferring.
 
 `Thunk::placeholder` starts in `InProgress(None)` state. Its purpose is letrec: dict entries pre-allocate placeholder slots. These are filled in before any thunk that references them is forced, so a correctly constructed dict never actually encounters a live placeholder. Encountering a placeholder during evaluation (cycle detection conservative arm) produces a `CircularDependency` error.
+
+`Thunk::annotated_wrap` creates an `AnnotatedWrap` thunk that defers wrapping a value in `Value::Annotated`. When forced, the CEK machine materializes the inner thunk via `Cont::AnnotatedWrapFinalize` and produces `Value::Annotated { inner: materialized_value, annotation }`. This was added in S-952 to replace a direct `materialize()` call in `eval_dict_core` that bypassed the CEK stack. It is used when a dict-key annotation has a non-literal value expression (e.g., a function definition) — the annotation dict is already materialized, but the inner value must be forced lazily through the standard CEK path.
 
 **Profiling fields**: `core_expr`, `ast_field`, `builtin_call`, and `fn_call` record `create_parent` and `create_time_us` from `ctx.profiling` at construction time. `value`, `placeholder`, and `guarded` set both to zero/None — they don't represent user-visible computation that needs profiling attribution.
 
@@ -431,6 +441,7 @@ The dispatch table (state deduced from `thunk.inner.result.get()` and `try_claim
 | `Guarded` | `GuardedValidate` | `Materialize(inner_thunk)` |
 | `CoreExpr` | `Memoize` | `Materialize(result_thunk)` |
 | `AstField` | none | `Continue(Ok(field_value))` (synchronous) |
+| `AnnotatedWrap` | `AnnotatedWrapFinalize` | `Materialize(inner_thunk)` |
 
 ### Memoize
 

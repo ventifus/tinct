@@ -459,11 +459,11 @@ fn eval_parse_error() {
         !output.status.success(),
         "expected non-zero exit for parse error"
     );
+    assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    // The error message should be non-empty
     assert!(
-        !stderr.trim().is_empty(),
-        "expected error message on stderr"
+        stderr.contains("unclosed bracket"),
+        "expected 'unclosed bracket' error message, got: {stderr}"
     );
 }
 
@@ -477,10 +477,50 @@ fn eval_error_undefined_var() {
         .expect("failed to run tinct");
 
     assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        !stderr.trim().is_empty(),
-        "expected error message for undefined var"
+        stderr.contains("undefined variable"),
+        "expected 'undefined variable' error message, got: {stderr}"
+    );
+}
+
+#[test]
+fn eval_strict_warning_exits_1() {
+    // A program that produces a type warning should exit 1 with --strict
+    // Use a lost-binding warning: intermediate binding never referenced in final expression
+    let (path, _dir) = write_temp_llt(
+        "eval_strict_warning",
+        "[call [fn [let a b] [b: [+ b 2]] [if a 1 0]] 1 2]",
+    );
+    let output = Command::new(tinct_bin())
+        .args(["run", "--strict", "-o", "json", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected exit code 1 with --strict on type warning"
+    );
+}
+
+#[test]
+fn eval_no_strict_warning_exits_0() {
+    // Same program without --strict should exit 0 (warnings are non-fatal)
+    let (path, _dir) = write_temp_llt(
+        "eval_no_strict_warning",
+        "[call [fn [let a b] [b: [+ b 2]] [if a 1 0]] 1 2]",
+    );
+    let output = Command::new(tinct_bin())
+        .args(["run", "-o", "json", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "expected exit code 0 without --strict on type warning"
     );
 }
 

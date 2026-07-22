@@ -976,7 +976,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
             let (types_i, span_i, _) = &arm_data[i];
             let (types_j, span_j, _) = &arm_data[j];
 
-            if patterns_overlap(types_i, types_j, state)? {
+            if patterns_overlap(types_i, types_j, state).await? {
                 let error = TypeDiagnostic::error("type-error",
                     format!(
                         "overlapping instance patterns for class '{}': arm at line {} and arm at line {} could both match the same types",
@@ -1033,7 +1033,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
                         .map(|&idx| types_j[idx].clone())
                         .collect();
 
-                    if types_can_unify(&determining_i, &determining_j, state)? {
+                    if types_can_unify(&determining_i, &determining_j, state).await? {
                         let determined_i: Vec<Type> = determined_indices
                             .iter()
                             .map(|&idx| types_i[idx].clone())
@@ -1043,7 +1043,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
                             .map(|&idx| types_j[idx].clone())
                             .collect();
 
-                        if !types_can_unify(&determined_i, &determined_j, state)? {
+                        if !types_can_unify(&determined_i, &determined_j, state).await? {
                             let error = TypeDiagnostic::error("type-error",
                                 format!(
                                     "consistency violation for class '{}': arm at line {} and arm at line {} have overlapping determining positions but incompatible determined types",

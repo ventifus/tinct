@@ -475,6 +475,7 @@ impl InstanceEnv {
                     state,
                     &mut probe_constraints,
                     rust_span!(),
+                    0,
                 ))
                 .await
                 .is_ok();
@@ -585,6 +586,7 @@ impl InstanceEnv {
                     state,
                     &mut probe_constraints,
                     rust_span!(),
+                    0,
                 ))
                 .await
                 .is_err()
@@ -701,6 +703,7 @@ impl InstanceEnv {
                     state,
                     &mut rl_probe_constraints,
                     rust_span!(),
+                    0,
                 ))
                 .await
                 .is_err()
@@ -879,6 +882,7 @@ impl InstanceEnv {
                 state,
                 &mut probe_constraints,
                 rust_span!(),
+                0,
             ))
             .await
             .is_ok();
@@ -950,6 +954,7 @@ impl InstanceEnv {
             state,
             &mut winner_constraints,
             rust_span!(),
+            0,
         ))
         .await;
 

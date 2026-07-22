@@ -641,7 +641,7 @@ These functions are always available — no `include` needed.
 
 **Control:** `try`, `raise`, `try-or`, `and-then`, `identity`, `compose`, `->` (pipe), `begin` / `>>` (forced sequential)
 
-**I/O:** `emit`, `lines`, `open`, `write`, `flush`, `close`, `stat`, `exists`, `make-dir`, `rename`, `env`, `list-dir`, `narrow`, `string-handle`, `read-chunk`
+**I/O:** `emit`, `lines`, `open`, `write`, `flush`, `close`, `stat`, `exists`, `make-dir`, `rename`, `env`, `list-dir`, `narrow`, `make-string-writer`, `read-chunk`
 
 **Async:** `task`, `await`, `channel`, `send`, `recv`, `select-once`, `context`, `with-timeout`, `with-cancel`, `select`, `retry`, `finally`, `exit`, `graceful-exit`, `await-all`, `recv-all`, `par-map`, `par-filter`
 

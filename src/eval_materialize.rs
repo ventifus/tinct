@@ -213,7 +213,7 @@ pub(crate) struct MemoizeData {
 
 /// Payload for Cont::PendingCallDispatch. Boxed to keep the Cont enum ≤96 bytes.
 ///
-/// After T-1557: args/named use ThunkId; caller_env_id is u32 into EvalContext.scope_arena.
+/// args/named use ThunkId; caller_env_id is u32 into EvalContext.scope_arena.
 pub(crate) struct PendingCallDispatchData {
     pub(crate) thunk: Arc<Thunk>,
     pub(crate) args: Vec<ThunkId>,
@@ -271,7 +271,7 @@ pub(crate) struct TypeAssertCheckData {
 
 /// Payload for Cont::BuiltinForceArg. Boxed to keep the Cont enum ≤96 bytes.
 ///
-/// After T-1557: args/named use ThunkId; caller_env_id is u32 into EvalContext.scope_arena.
+/// args/named use ThunkId; caller_env_id is u32 into EvalContext.scope_arena.
 pub(crate) struct BuiltinForceArgData {
     pub(crate) thunk: Arc<Thunk>,
     pub(crate) def: crate::value::BuiltinDef,
@@ -832,12 +832,12 @@ async fn dispatch_state(
                 };
             }
 
-            // Clone args/named for the builtin call; keep originals in the Option slots for
-            // state restoration on non-cacheable errors.
+            // Move args/named out of their Option slots for the builtin call.
+            // Neither is used after the call (error branch settles the thunk directly).
 
             let builtin_args = crate::value::BuiltinArgs {
-                args: args.as_ref().expect("args set above").clone(),
-                named: named.as_ref().expect("named set above").clone(),
+                args: args.take().expect("args set above"),
+                named: named.take().expect("named set above"),
                 call_span: call_span.clone(),
                 caller_env_id: if def.needs_caller_env {
                     Some(builtin_caller_env)
@@ -2009,11 +2009,11 @@ pub(crate) async fn apply_cont(
                     }
 
                     // All forced and strict args materialized — call the builtin.
-                    // Clone args/named for the builtin call; keep originals in the Option
-                    // slots for restore on non-cacheable errors.
+                    // Move args/named out of their Option slots for the builtin call.
+                    // Neither is used after the call (error branch settles the thunk directly).
                     let builtin_args = crate::value::BuiltinArgs {
-                        args: args.as_ref().expect("args set above").clone(),
-                        named: named.as_ref().expect("named set above").clone(),
+                        args: args.take().expect("args set above"),
+                        named: named.take().expect("named set above"),
                         call_span: call_span.clone(),
                         caller_env_id: if def.needs_caller_env {
                             Some(builtin_caller_env)

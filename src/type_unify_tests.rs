@@ -13,7 +13,7 @@ async fn unify_sync<'a>(
     constraints: &'a mut Vec<crate::types::Constraint>,
     span: crate::ast::Span,
 ) -> Result<(), crate::error::TypeDiagnostic> {
-    unify(a, b, state, constraints, span).await
+    unify(a, b, state, constraints, span, 0).await
 }
 use crate::rust_span;
 use crate::type_class::ConstraintArg;

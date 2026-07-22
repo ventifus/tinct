@@ -1818,7 +1818,7 @@ async fn instantiate_tycon_def(
                     // conflict: resolve_instance takes &self on InstanceEnv AND &mut state
                     // simultaneously, which Rust's borrow checker would reject if both were
                     // fields of InferState. The snapshot is built once per constraint check.
-                    let instance_env = state.build_instance_env_snapshot().clone();
+                    let instance_env = state.get_working_instance_env();
                     let error_span = origin_span.clone().unwrap_or_else(|| rust_span!());
                     match Box::pin(instance_env.resolve_instance(&class.name, arg_type, state))
                         .await

@@ -1,0 +1,12 @@
+# Smoke tests for datetime wrapper functions.
+# Verifies now and local-tz-name are callable without error.
+# now requires %clock (ClockCap); local-tz-name requires %cwd (DirCap).
+# now returns a Timestamp — value varies, so we verify it evaluates without error
+# by forcing it via >> and returning a constant "ok".
+# local-tz-name returns a String — verified via str?.
+[call [fn [let]
+  [now-ok:    [>> [now %clock] "ok"]]
+  [tz-is-str: [str? [local-tz-name %cwd]]]
+  [now-ok: now-ok  tz-is-str: tz-is-str]]]
+=== out
+Dict({"now-ok": String("ok"), "tz-is-str": Variant(Boolean.True, Null)})

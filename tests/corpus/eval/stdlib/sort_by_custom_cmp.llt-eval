@@ -1,0 +1,11 @@
+# sort-by with a custom comparator: descending order, edge cases.
+# Covers: descending on 3 elements, empty input, single element, two elements.
+# cmp = [fn [let a b] [> a b]] means "a comes before b when a > b" → descending.
+[call [fn [let]
+  [desc3:  [sort-by [fn [let a b] [> a b]] [3 1 2]]]
+  [empty:  [sort-by [fn [let a b] [> a b]] []]]
+  [single: [sort-by [fn [let a b] [> a b]] [42]]]
+  [two:    [sort-by [fn [let a b] [> a b]] [3 1]]]
+  [desc3: desc3  empty: empty  single: single  two: two]]]
+=== out
+Dict({"desc3": Dict({0: Int(3), 1: Int(2), 2: Int(1)}), "empty": Dict({}), "single": Dict({0: Int(42)}), "two": Dict({0: Int(3), 1: Int(1)})})

@@ -45,7 +45,7 @@ Everything is a thunk until materialized. Compute only what's needed, when it's 
 
 **Why parent scope for keys:** The two-environment pattern (`parent_env` for keys, `dict_env` for values) ensures that computed keys are pure with respect to the dict's own bindings. A key expression like `[$a]` in `[x: 1 $a: 2]` resolves `a` in the *enclosing* scope, not the dict scope — users might expect `a` to reference the sibling binding `x: 1`, but this would create ordering dependence (does `x` exist when the key is evaluated?) and break the letrec invariant that all entries are mutually visible *as thunks* before any are materialized.
 
-Implementation: keys are evaluated via `eval_key(key_expr, parent_env, ctx, depth)` (in `eval_dict` in `src/eval.rs`) before the shared `dict_env` is populated with value thunks. This sequencing is critical: all keys must be known before string-keyed entries can be inserted into `dict_env` as bindings (in the dict environment binding loop in `eval_dict`).
+Implementation: keys are evaluated via `eval_key_core(key_expr, parent_env_id, ctx)` (in `src/eval_dict.rs`) before the shared dict scope is populated with value thunks. This sequencing is critical: all keys must be known before string-keyed entries can be inserted as bindings in the dict's `FlatEnv` (in the letrec slot loop in `eval_dict_core`).
 
 **All non-literal key expressions force eagerly.** While literal keys (`Int`, `Float`, `Bool`, `Str`) use the `Materialized` fast-path without creating thunks, ALL non-literal key expressions (including pure computations like `[+ 1 2]` or effectful operations like `$include`) are forced to concrete `Key` values at dict construction time. This is necessary because `IndexMap<Key, ThunkId>` requires concrete keys before letrec scoping can proceed. The evaluator cannot defer key computation — it must produce a `Key::Int(n)` or `Key::String(s)` value immediately to insert the entry into the dict.
 
@@ -75,7 +75,7 @@ The type checker emits a T002 warning for bare `[k: k]` entries. To reference an
 
 **Nested dicts create new scopes.** Each `[]` dict introduces a new lexical scope. Inner scopes see all bindings from outer scopes, and inner bindings shadow outer bindings of the same name within that inner dict. Scoping is lexical, not dynamic — closures capture their defining environment, not the calling environment. This matches Haskell's `let`/`where` and Nix's attribute sets.
 
-The `Environment` struct's `parent` field implements this: each nested dict gets a new `Environment` whose `parent` points to the enclosing dict's environment. Variable lookup walks the parent chain outward.
+`ScopeArena` with `FlatEnv` implements this. Each nested dict gets a new scope allocated via `alloc_child(parent_env_id, entries.len())`, where `parent_env_id` is the enclosing scope's id. Variables are addressed by de Bruijn coordinates `(level, slot)` where `level` counts parent-chain hops and `slot` is the ordinal position within that scope. Key evaluation uses `eval_key_core` (in `src/eval_dict.rs`), and value entries are constructed in a two-phase letrec protocol: first, `reserve_slot` pre-allocates placeholder slots for all static-key entries; then `fill_slot` fills each slot with a `Thunk::core_expr` pointing into the shared dict scope, enabling mutual recursion between sibling entries.
 
 ```tinct
 [
@@ -319,7 +319,7 @@ The runtime distinguishes five `UnevaluatedState` variants internally: `AstField
 
 ### Part 1: State Transition Graph
 
-The valid state transitions form an almost-acyclic directed graph — nearly all transitions move strictly forward, with one backward edge exception: `InProgress → {any UnevaluatedState variant}`, which restores state when a non-cacheable error (typically `DepthExceeded`) occurs and the thunk must be retried (see Exception below).
+The valid state transitions form an almost-acyclic directed graph — nearly all transitions move strictly forward, with one backward edge exception: `InProgress → {any UnevaluatedState variant}`, which restores state when a non-cacheable error (typically `ResourceLimitExceeded`) occurs and the thunk must be retried (see Exception below).
 
 ```text
 UnevaluatedState present ──→ InProgress (try_claim) ──┬──→ Materialized (settle Ok)
@@ -418,7 +418,7 @@ materialize(θ_inner) ⇒ error(e)    where e.is_cacheable()
 materialize(θ) ⇒ error(e)
 ```
 
-**[MATERIALIZE-GUARD-NONCACHEABLE]** — inner thunk materialization fails with a non-cacheable error (e.g., DepthExceeded from a builtin):
+**[MATERIALIZE-GUARD-NONCACHEABLE]** — inner thunk materialization fails with a non-cacheable error (e.g., ResourceLimitExceeded from a builtin):
 
 ```text
 θ.state = Guarded(θ_inner, τ, path, span)
@@ -579,9 +579,9 @@ Error semantics are specified in [Error Handling](10-errors.md). This section su
 
 **Stack frame accumulation:** When an error propagates through multiple materialization layers (e.g., `θ₁ → θ₂ → θ₃`), each layer adds a stack frame via DECORATE (doc/10 §Part 3). The first materialization site becomes `mat_span`; subsequent sites become stack frames. Deduplication guards prevent redundant frames.
 
-**Error caching:** Cacheable errors (all except `DepthExceeded`) are memoized in `Failed` state via `cache_failure()`. Subsequent access returns the cached error with additional materialization context. Non-cacheable errors (`DepthExceeded` from builtins) restore the thunk to its original state, allowing retry. See MEMO-CACHE and MEMO-SKIP rules in doc/10 §Part 5.
+**Error caching:** Cacheable errors are memoized in `Failed` state via `cache_failure()`. Subsequent access returns the cached error with additional materialization context. Non-cacheable errors (`ResourceLimitExceeded`) restore the thunk to its original state via `reset()`, allowing retry when the CEK continuation stack has more capacity available. See MEMO-CACHE rules in doc/10 §Part 5.
 
-**Error condition specifications:** The trigger conditions for all `ErrorKind` variants (when each error is raised) are documented in [Error Handling](10-errors.md) §Part 2: Error Sources. Propagation rules (PROP-EVAL, PROP-BUILTIN, PROP-RESULT, PROP-CYCLE, PROP-DEPTH) are in doc/10 §Part 4.
+**Error condition specifications:** The trigger conditions for all `ErrorKind` variants (when each error is raised) are documented in [Error Handling](10-errors.md) §Part 2: Error Sources. Propagation rules (PROP-EVAL, PROP-BUILTIN, PROP-RESULT, PROP-CYCLE) are in doc/10 §Part 4.
 
 ## Selective Materialization — Formal Specification
 
@@ -853,7 +853,7 @@ materialize(θ_body) ⇒ error(e)
 δ(try, [θ_func], cs) ⇒ Materialized(Variant("Error", Materialized(e.kind.to_string())))
 ```
 
-`$try` materializes the function argument and invokes it. On success, returns `[Ok value]`; on error, returns `[Error message]`. The error is caught — `$try` catches all user errors but re-propagates system-level limits (`DepthExceeded`, `ResourceLimitExceeded`) to the caller. Also handles Builtin callees (dispatches with zero args).
+`$try` materializes the function argument and invokes it. On success, returns `[Ok value]`; on error, returns `[Error message]`. The error is caught — `$try` catches all user errors but re-propagates system-level limits (`ResourceLimitExceeded`) to the caller. Also handles Builtin callees (dispatches with zero args).
 
 **[DELTA-MAP-DICT]**
 
@@ -1567,7 +1567,7 @@ The macro expansion pre-scan infrastructure (`expand_surface_program`, `[macro .
 
 **`gensym`:** Produces names of the form `ℊꜱʏᴍ⧼prefix⧽N` (`ℊ` U+210A, `ꜱʏᴍ` small-cap letters, `⧼⧽` U+29FC/29FD angle brackets). These codepoints require deliberate IME input — collision with user-written identifiers is practically impossible. Names are unique but not stable across evaluation orders. Wrap the returned string with `ident` to obtain a `VarRef` AST node.
 
-**`macro-error`:** `[macro-error message]` or `[macro-error message node]` terminates evaluation with `ErrorKind::MacroError` (E012). With one argument, uses the call site span. With two arguments and an AST node, uses the node's span.
+**`macro-error`:** `[macro-error message]` or `[macro-error message node]` terminates evaluation with `ErrorKind::MacroError`. With one argument, uses the call site span. With two arguments and an AST node, uses the node's span.
 
 **`inject:`** provides a controlled anaphoric escape hatch. A macro declares `inject: it: default-expr` to deliberately introduce `it` into the caller's scope by convention. The `macro-injects` builtin lets callers reflect on which bindings a macro will inject and what their defaults are.
 

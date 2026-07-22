@@ -18,17 +18,17 @@ Key properties:
 - **Iterative, not recursive.** Bracket nesting is tracked with an explicit `Vec<StackFrame>`. No Rust
   stack growth per nesting level.
 - **Error recovery inside brackets.** When a parse error occurs inside a bracket form, the parser records
-  a `ParseError` in `ParseOutput.errors` and continues. The broken sub-expression becomes a
+  a `TypeDiagnostic` in `ParseOutput.diagnostics` and continues. The broken sub-expression becomes a
   `SurfaceExpression::Error` node in the AST. Fatal errors (at the top level, or when the lexer fails)
-  return `Err(ParseError)`. The depth limit (`MAX_PARSE_DEPTH`) triggers `recover_from_failed_open`
+  return `Err(TypeDiagnostic)`. The depth limit (`MAX_PARSE_DEPTH`) triggers `recover_from_failed_open`
   when it fires inside a nested bracket, so even depth-limit violations inside brackets produce partial
   ASTs rather than fatal failures.
 - **Comment collection.** Comments are extracted separately into `leading_comments` and
-  `trailing_comments` maps keyed by the **byte offset** of the adjacent node's start position (not line
-  number). They do not appear in the AST.
+  `trailing_comments` maps keyed by `span_key(start_line, start_col)` (a `u64` combining line and
+  column numbers) of the adjacent node's start position. They do not appear in the AST.
 - **Two annotation paths.** Annotations inside bracket forms are collected by `AnnotationCollect`
   stack frames (the main path). Annotations inside `---` document-separator headers are parsed by the
-  separate `parse_annotation_direct` function. Unification of these two paths is tracked in T-1617.
+  separate `parse_annotation_direct` function. T-1778 complete: `parse_bracket_annotation_dict` extracted. Full elimination of `parse_annotation_direct` remains future work.
 
 ---
 
@@ -49,7 +49,7 @@ Both limits use the same value (256) but are independent checks.
 ### `parse`
 
 ```rust
-pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, ParseError>
+pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic>
 ```
 
 Parse a complete tinct source string. The caller always provides a file path as `Arc<str>`.
@@ -66,7 +66,7 @@ harnesses. `parse` is re-exported from `lib.rs` as part of the public crate API.
 ### `parse_surface_expression`
 
 ```rust
-pub fn parse_surface_expression(input: &str) -> Result<Arc<SurfaceNode>, ParseError>
+pub fn parse_surface_expression(input: &str) -> Result<Arc<SurfaceNode>, TypeDiagnostic>
 ```
 
 Parse a single tinct expression (not a full program). Uses `"<expression>"` as the synthetic file
@@ -80,7 +80,7 @@ Used by tests and the corpus test runner.
 pub fn parse_with_recovery(input: &str) -> ParseOutput
 ```
 
-Like `parse`, but always succeeds. Fatal errors are returned in `ParseOutput.errors` rather than as
+Like `parse`, but always succeeds. Fatal errors are returned in `ParseOutput.diagnostics` rather than as
 `Err(...)`, and a synthetic empty `SurfaceProgram` is returned. Uses `"<recovery>"` as the synthetic
 file name. Intended for LSP diagnostic passes and batch linting tools that need an AST even in the
 presence of unrecoverable errors.
@@ -88,12 +88,13 @@ presence of unrecoverable errors.
 ### `format_parse_error`
 
 ```rust
-pub fn format_parse_error(err: &ParseError, source: &str, file_name: &str) -> String
+pub fn format_parse_error(err: &TypeDiagnostic, source: &str, file_name: &str) -> String
 ```
 
-Format a `ParseError` with Rust-style rich diagnostics: a header line, a `-->` location line, and a
-source snippet with caret pointing at the error location. Re-exported from `lib.rs` as part of the
-public crate API. Used by the CLI to display parse errors to users.
+Format a `TypeDiagnostic` with Rust-style rich diagnostics: a header line, a `-->` location line, and a
+source snippet with caret pointing at the error location. When `err.spans.is_empty()`, falls back to
+span-less formatting. Re-exported from `lib.rs` as part of the public crate API. Used by the CLI to
+display parse errors to users.
 
 ---
 
@@ -103,23 +104,25 @@ public crate API. Used by the CLI to display parse errors to users.
 
 ```rust
 pub struct ParseOutput {
-    pub program: SurfaceProgram,
-    pub errors: Vec<ParseError>,
-    pub leading_comments: BTreeMap<usize, Vec<String>>,
-    pub trailing_comments: BTreeMap<usize, String>,
-    pub blank_before: BTreeMap<usize, bool>,
+    pub leading_comments: BTreeMap<u64, Vec<String>>,
+    pub trailing_comments: BTreeMap<u64, String>,
+    pub blank_before: BTreeMap<u64, bool>,
+    /// Recovered parse diagnostics (errors inside bracket forms where the parser continued).
+    pub diagnostics: Vec<TypeDiagnostic>,
+    /// The parsed Surface AST program — the primary output of the parser.
+    pub program: crate::ast::SurfaceProgram,
 }
 ```
 
 `program` is the primary output consumed by the evaluator and type checker. The other fields are for
 the formatter.
 
-The comment maps are keyed by **byte offset** (`span.start.offset`) of the adjacent AST node, not
-by line number. `leading_comments[offset]` holds comments on lines immediately before the node at
-that offset. `trailing_comments[offset]` holds the comment on the same line as the node. `blank_before[offset]`
+The comment maps are keyed by `span_key(start_line, start_col)` (a `u64` combining line and column)
+of the adjacent AST node. `leading_comments[key]` holds comments on lines immediately before the node at
+that position. `trailing_comments[key]` holds the comment on the same line as the node. `blank_before[key]`
 is set to `true` when two or more consecutive newlines (or semicolons) precede the node.
 
-`errors` is non-empty when the parser recovered from one or more bracket-internal errors. Those
+`diagnostics` is non-empty when the parser recovered from one or more bracket-internal errors. Those
 positions in the AST contain `SurfaceExpression::Error(span)` nodes.
 
 `ParseOutput::as_surface_program()` is a convenience accessor returning `&self.program`; prefer
@@ -224,12 +227,15 @@ predicates:
 - `is_var_ident_char(c)`: excludes `' '`, `'\t'`, `'\r'`, `'\n'`, `'['`, `']'`, `':'`, `';'`,
   `'#'`, `'"'`, `'@'`, `'.'`, `'|'`. Everything else is a valid identifier character, including
   `%`, `!`, `?`, `-`, `_`, `$` (inside a `$name` ref), digits, Unicode, etc.
-- `is_access_field_char(c, is_first)`: currently delegates to `is_var_ident_char(c)`, so access
-  field names use the same rules as general identifiers.
+- `is_access_field_char(c, is_first)`: applies a first-character restriction (T-1796): when
+  `is_first` is true, only ASCII alphabetic characters (`a`–`z`, `A`–`Z`) and underscore (`_`)
+  are accepted. Subsequent characters use the same denylist as `is_var_ident_char`. This means
+  access field names cannot start with digits, `%`, `$`, or other non-alpha characters, while
+  general identifiers can.
 
 After a `Dot` token, the lexer sets `after_access_dot = true`. The next bare word is then lexed
-in "access field" mode (using `is_access_field_char`). In practice this produces the same result as
-normal identifier lexing since both predicates are identical.
+in "access field" mode (using `is_access_field_char`), which enforces the stricter first-character
+rule for the leading character only.
 
 ---
 
@@ -361,8 +367,8 @@ The `parse_annotation_direct` function handles annotations appearing in `---` se
 (document header key-value pairs). It routes through `expression_to_annotation` (the same
 conversion function used by the main `AnnotationCollect` frame path), so the two paths share
 the core annotation-building logic. The separate token-scanning loop for `@[...]` bracket
-contents in `parse_annotation_direct` remains because header parsing occurs outside the main
-bracket-nesting stack machine. Full elimination is tracked in T-1778.
+contents has been extracted to `parse_bracket_annotation_dict` (T-1778 complete). Full
+elimination of `parse_annotation_direct` remains future work.
 
 ### Document Separator
 

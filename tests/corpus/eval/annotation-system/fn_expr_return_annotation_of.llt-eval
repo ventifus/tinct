@@ -1,0 +1,8 @@
+# annotation-of exposes @Expr return annotation as the string "Expr" (S-933, T-1790)
+# This verifies that functions annotated with @Expr (not @[return: Expr])
+# correctly expose their return annotation through the annotation-of builtin.
+[f: [fn@Expr [let x] x]]
+[ann: [annotation-of f]]
+[result: [= ann.return "Expr"]]
+=== out
+Dict({"result": Variant(Boolean.True, Null)})

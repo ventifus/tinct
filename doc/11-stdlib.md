@@ -251,7 +251,7 @@ The prelude wraps every primary-name operator that has a stable alias, making it
 | `<` | `[fn [a b] [builtin-lt a b]]` | Shadowable; calls stable alias `builtin-lt` |
 | `=` | `[fn [a b] [builtin-eq a b]]` | Shadowable; calls stable alias `builtin-eq` |
 | `+` | `[fn [a b] [builtin-add a b]]` | Shadowable; calls `builtin-add` |
-| `-` | `[fn [a b] [- a b]]` | Shadowable; calls raw `-` (generic subtraction) |
+| `-` | `Subtractable` typeclass dispatch | Resolved via `Subtractable` class instances to `builtin-int-sub` / `builtin-float-sub` |
 | `*` | `[fn [a b] [builtin-mul a b]]` | Shadowable; calls `builtin-mul` |
 | `/` | `[fn [a b] [builtin-div a b]]` | Shadowable; calls `builtin-div` |
 | `if` | `[fn [c t e] [builtin-if c t e]]` | Shadowable; calls `builtin-if` |
@@ -283,9 +283,9 @@ The following functions are tinct implementations in `stdlib/strings.llt` or `st
 | `ends-with?` | `stdlib/prelude.llt` | `str-slice`, `str-length` (char-based; correct for Unicode) |
 | `upper` | `stdlib/strings.llt` | `str-map-chars` + `str-to-upper-char` |
 | `lower` | `stdlib/strings.llt` | `str-map-chars` + `str-to-lower-char` |
-| `copy` | `stdlib/io.llt` | `open`, `slurp`, `raw-create`, `write-handle`, `close` |
+| `copy` | `stdlib/io.llt` | `open`, `read-all`, `write` |
 | `spki-pin` | `stdlib/net.llt` | pure dict construction, no I/O |
-| `has-cap?` | `stdlib/io.llt` | `cap-data` (returns null on miss) + `null?` |
+| `has-cap?` | `stdlib/io.llt` | `has?` (checks method key existence on protocol dict handle) |
 
 Type predicates `num?`, `record?`, and `map?` are LLT stdlib functions defined in `prelude.llt`: `num?` is `[or [int? x] [float? x]]`; `record?` and `map?` are both aliases for `dict?` (the runtime makes no key-type distinction).
 
@@ -371,10 +371,10 @@ Functions available to all user code. Collection operators (`map`, `filter`, `re
 - **Extended math** (`pow`, `sqrt`, `log`, `log2`, `log10`, `exp`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `nan?`, `inf?`, `finite?` in `stdlib/math.llt` as wrappers over `builtin-*` primitives; `pi`, `e`, `phi`, `hypot`, `deg->rad`, `rad->deg`, `log-base` are pure-tinct helpers in `math.llt`) — trigonometric, exponential, and logarithmic functions; NaN/infinity checks; all require `[include libdir "math.llt"]`
 - **Bitwise & Encoding** (`band`, `bor`, `bxor`, `shl`, `shr` as prelude wrappers over `builtin-*` primitives; `hex-encode`, `hex-decode`, `base64-encode`, `base64-decode` in `stdlib/encoding.llt`) — bitwise primitives available without include via prelude; pure-tinct encoding functions require `[include libdir "encoding.llt"]`
 - **Bytes** (`bytes`, `bytes-find`, `bytes-of`, `bytes-equal?`, `ct-equal?` as Rust builtins) — byte buffer operations with constant-time equality for cryptographic use
-- **Datetime** (`parse-timestamp`, `format-timestamp`, `timestamp->unix`, `unix->timestamp`, `now`, `fixed-clock`, `timestamp-add`, `timestamp-diff`, `timestamp-lt`, `timestamp-gt`, `timestamp-eq`, `timestamp-year`, `timestamp-month`, `timestamp-day`, `timestamp-hour`, `timestamp-minute`, `timestamp-second`, `timestamp-parts`, `duration-nanos`, `duration-seconds`, `duration-minutes`, `duration-hours`, `duration-days`, `duration->seconds`, `duration->nanos`, `load-tz`, `timestamp-in-tz`, `local-to-timestamp`, `local-tz-name` as Rust builtins) — RFC 3339 timestamp parsing/formatting, Unix epoch conversion, arithmetic, timezone handling
+- **Datetime** (`parse-timestamp`, `format-timestamp`, `timestamp->unix`, `unix->timestamp`, `now`, `fixed-clock`, `timestamp-add`, `timestamp-diff`, `timestamp<?`, `timestamp>?`, `timestamp=?`, `timestamp-year`, `timestamp-month`, `timestamp-day`, `timestamp-hour`, `timestamp-minute`, `timestamp-second`, `timestamp-parts`, `duration-nanos`, `duration-seconds`, `duration-minutes`, `duration-hours`, `duration-days`, `duration->seconds`, `duration->nanos`, `load-tz`, `timestamp-in-tz`, `local->timestamp`, `local-tz-name` as prelude wrappers over datetime module builtins) — RFC 3339 timestamp parsing/formatting, Unix epoch conversion, arithmetic, timezone handling; all available without `include`
 - **URI & HTTP** (`uri`, `url`, `urn` as Rust builtins; `uri-params`, `uri-origin`, `uri->string`, `http-get`, `fetch` in `stdlib/net.llt`) — RFC 3986/8141 URI parsing; HTTP client operations via reqwest
 - **Network handles** (`connect`, `tls-connect`, `tls-peer-cert`, `spki-pin`, `http-connect`, `socks5-connect`, `proxy-connect` as Rust builtins) — TCP/UDP/TLS connections with capability security; SPKI pinning; HTTP/2+3 connection pools; SOCKS5 and HTTP proxy tunneling
-- **I/O handles** (`open`, `slurp`, `lines`, `write`, `write-atomic`, `cap-data`, `write-handle`, `flush`, `close` as Rust builtins; `has-cap?` and `write-line` in `stdlib/io.llt`) — file/stream I/O with capability rows (Readable/Writable/Binary/Text/Seekable/Stream/Datagram/Tls); WriteHandle streaming output
+- **I/O handles** (`open`, `read-all`, `lines`, `write`, `write-atomic`, `flush`, `close` as Rust builtins; `write-handle` as prelude LLT wrapper; `has-cap?` and `write-line` in `stdlib/io.llt`) — file/stream I/O with capability rows (Readable/Writable/Binary/Text/Seekable/Stream/Datagram/Tls); protocol dict handles for streaming output
 
 Predicate builtins are Rust-native; `list?` is LLT-implemented on top of them.
 

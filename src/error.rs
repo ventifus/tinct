@@ -199,12 +199,6 @@ pub enum ErrorKind {
     ResourceLimitExceeded {
         message: String,
     },
-    /// Capability required but not provided (e.g., network access without --cap-net).
-    /// User-actionable error indicating missing capability flag.
-    CapabilityRequired {
-        message: String,
-    },
-
     // --- Include errors (E050-E059) ---
     /// Covers both "cannot open" (canonicalize failure) and "cannot read"
     /// (metadata/read failure). The `detail` field carries the OS error.
@@ -429,10 +423,6 @@ impl PartialEq for ErrorKind {
                 Self::ResourceLimitExceeded { message: m2 },
             ) => m1 == m2,
             (
-                Self::CapabilityRequired { message: m1 },
-                Self::CapabilityRequired { message: m2 },
-            ) => m1 == m2,
-            (
                 Self::IncludeIoError {
                     path: p1,
                     detail: d1,
@@ -551,7 +541,6 @@ impl ErrorKind {
             Self::ValueNotSerializable { .. } => "value-not-serializable",
             Self::FloatOutOfRange { .. } => "float-out-of-range",
             Self::ResourceLimitExceeded { .. } => "resource-limit",
-            Self::CapabilityRequired { .. } => "capability-required",
             Self::IncludeIoError { .. } => "include-io-error",
             Self::IncludeCycle { .. } => "include-cycle",
             Self::IncludeFileTooLarge { .. } => "include-file-too-large",
@@ -766,7 +755,6 @@ impl fmt::Display for ErrorKind {
                 write!(f, "{builtin}: {value} is out of range for Int")
             }
             Self::ResourceLimitExceeded { message } => write!(f, "{}", message),
-            Self::CapabilityRequired { message } => write!(f, "{}", message),
             Self::IncludeIoError { path, detail } => {
                 write!(f, "include: cannot access \"{path}\": {detail}")
             }
@@ -1099,17 +1087,6 @@ impl EvalError {
             kind: ErrorKind::DuplicateVariable {
                 name: name.to_string(),
             },
-            spans: vec![(span, String::new())],
-            stack: SmallVec::new(),
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-        }
-    }
-
-    pub fn capability_required(message: String, span: Span) -> Self {
-        Self {
-            kind: ErrorKind::CapabilityRequired { message },
             spans: vec![(span, String::new())],
             stack: SmallVec::new(),
             macro_expansion: None,
@@ -2180,9 +2157,6 @@ bad value (defined at src/test_util.rs:3:5-3:10)
             ErrorKind::ResourceLimitExceeded {
                 message: "test: resource limit exceeded (1000)".to_string(),
             },
-            ErrorKind::CapabilityRequired {
-                message: "test: capability required".to_string(),
-            },
             ErrorKind::IncludeIoError {
                 path: "x".to_string(),
                 detail: "error".to_string(),
@@ -2546,16 +2520,6 @@ bad value (defined at src/test_util.rs:3:5-3:10)
             ),
             "upper: output would exceed 64 MB limit (67108864 bytes)"
         );
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::CapabilityRequired {
-                    message: "%net@NetCap is required but not provided".to_string(),
-                }
-            ),
-            "%net@NetCap is required but not provided"
-        );
-
         // Include errors (E050-E059)
         assert_eq!(
             format!(
@@ -3455,7 +3419,6 @@ bad value (defined at src/test_util.rs:3:5-3:10)
                 ErrorKind::BuilderFinished { .. } => "E082",
                 ErrorKind::SchemaViolation { .. } => "E090",
                 ErrorKind::KindMismatch { .. } => "E091",
-                ErrorKind::CapabilityRequired { .. } => "E044",
                 ErrorKind::Internal { .. } => "E099",
             }
         }

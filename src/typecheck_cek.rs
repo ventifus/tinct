@@ -2418,7 +2418,15 @@ async fn finalize_call_no_positional_args(
                     .await
                 };
                 let mut constraints = std::mem::take(&mut state.constraints);
-                let _ = unify(&arg_ty, &param_ty, state, &mut constraints, na.span.clone()).await;
+                let _ = unify(
+                    &arg_ty,
+                    &param_ty,
+                    state,
+                    &mut constraints,
+                    na.span.clone(),
+                    0,
+                )
+                .await;
                 state.constraints = constraints;
             }
             None => {
@@ -2526,6 +2534,7 @@ async fn apply_call_args_poly(
             state,
             &mut constraints,
             span.clone(),
+            0,
         ))
         .await
         {
@@ -2603,6 +2612,7 @@ async fn apply_call_args_poly(
                     state,
                     &mut constraints,
                     span.clone(),
+                    0,
                 ))
                 .await
                 {
@@ -2631,6 +2641,7 @@ async fn apply_call_args_poly(
                     state,
                     &mut constraints,
                     span.clone(),
+                    0,
                 ))
                 .await
                 {
@@ -2699,6 +2710,7 @@ async fn apply_call_args_poly(
                     state,
                     &mut constraints,
                     na.span.clone(),
+                    0,
                 ))
                 .await
                 {
@@ -2767,6 +2779,7 @@ async fn apply_call_args_poly(
                 state,
                 &mut constraints,
                 span.clone(),
+                0,
             ))
             .await
             {

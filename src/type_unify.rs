@@ -23,6 +23,10 @@ use super::*;
 /// Prevents infinite loops when checking constraints on recursive types.
 const MAX_CONSTRAINT_DEPTH: usize = 256;
 
+/// Maximum recursion depth for unification.
+/// Prevents stack overflow on deeply nested type unification.
+const MAX_UNIFY_DEPTH: usize = 512;
+
 /// Check if a type satisfies a type class constraint.
 /// Returns true if the type is an instance of the class.
 ///
@@ -234,6 +238,7 @@ async fn check_constraints_on_var(
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     span: Span,
+    depth: usize,
 ) -> Result<(), TypeDiagnostic> {
     // Collect only the constraints that apply to var_name (immutable scan first).
     // This avoids cloning the entire Vec<Constraint> — we clone only the constraints
@@ -312,6 +317,7 @@ async fn check_constraints_on_var(
                             state,
                             &mut sub_constraints,
                             span.clone(),
+                            depth + 1,
                         ))
                         .await?;
                         constraints.extend(sub_constraints);
@@ -386,7 +392,7 @@ async fn check_constraints_on_var(
                     ));
                 }
                 state.instance_resolution_depth += 1;
-                let inst_env = state.build_instance_env_snapshot().clone();
+                let inst_env = state.get_working_instance_env();
                 let resolve_result =
                     Box::pin(inst_env.resolve_instance(&class, concrete_ty, state)).await;
                 state.instance_resolution_depth -= 1;
@@ -408,7 +414,7 @@ async fn check_constraints_on_var(
                             if satisfies_constraint(&widened, &class) {
                                 continue;
                             }
-                            let inst_env2 = state.build_instance_env_snapshot().clone();
+                            let inst_env2 = state.get_working_instance_env();
                             state.instance_resolution_depth += 1;
                             let retry_result =
                                 Box::pin(inst_env2.resolve_instance(&class, &widened, state)).await;
@@ -457,6 +463,7 @@ async fn check_constraints_on_var(
                     state,
                     constraints,
                     span.clone(),
+                    depth,
                 )
                 .await;
                 if was_inserted {
@@ -558,6 +565,7 @@ async fn improve_functional_dependency(
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     span: Span,
+    depth: usize,
 ) -> Result<(), TypeDiagnostic> {
     // Depth guard: prevent infinite recursion through the FD improvement cycle.
     if state.fd_depth >= MAX_FD_DEPTH {
@@ -581,6 +589,7 @@ async fn improve_functional_dependency(
         state,
         constraints,
         span,
+        depth,
     )
     .await;
     state.fd_depth -= 1;
@@ -598,6 +607,7 @@ async fn improve_functional_dependency_inner(
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     span: Span,
+    depth: usize,
 ) -> Result<(), TypeDiagnostic> {
     // For each functional dependency (determining → determined)
     for (det_positions, ded_positions) in fundeps {
@@ -656,7 +666,7 @@ async fn improve_functional_dependency_inner(
             if all_ded_ground {
                 // Scan InstanceEnv for an instance whose determined-position type
                 // unifies with the ground determined types we have.
-                let instance_env = state.build_instance_env_snapshot().clone();
+                let instance_env = state.get_working_instance_env();
                 if let Some((determining_types, det_pos_list)) = Box::pin(
                     instance_env.reverse_lookup_mptc(
                         class,
@@ -699,6 +709,7 @@ async fn improve_functional_dependency_inner(
                             state,
                             constraints,
                             span.clone(),
+                            depth + 1,
                         ))
                         .await;
                         state.fd_in_progress.remove(det_var.as_str());
@@ -847,7 +858,7 @@ async fn improve_functional_dependency_inner(
                 let det_arg_types: Vec<Type> = det_types.iter().map(|(_, ty)| ty.clone()).collect();
 
                 // Build a temporary InstanceEnv snapshot to avoid borrow checker conflict.
-                let instance_env = state.build_instance_env_snapshot().clone();
+                let instance_env = state.get_working_instance_env();
                 let lookup_result =
                     Box::pin(instance_env.lookup_mptc(class, &det_arg_types, state)).await;
 
@@ -858,7 +869,7 @@ async fn improve_functional_dependency_inner(
                         .map(|ty| crate::typecheck::typecheck_call::widen_literal_types(ty.clone()))
                         .collect();
                     if widened != det_arg_types {
-                        let instance_env2 = state.build_instance_env_snapshot().clone();
+                        let instance_env2 = state.get_working_instance_env();
                         Box::pin(instance_env2.lookup_mptc(class, &widened, state)).await
                     } else {
                         None
@@ -988,6 +999,7 @@ async fn improve_functional_dependency_inner(
                 state,
                 constraints,
                 span.clone(),
+                depth + 1,
             ))
             .await;
             state.fd_in_progress.remove(ded_var.as_str());
@@ -1480,6 +1492,7 @@ async fn unify_rows(
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     span: Span,
+    depth: usize,
 ) -> Result<(), TypeDiagnostic> {
     // Fast-path: identical field sets — unify all named fields, then fall through to tail.
     // Previously had an early return here, which silently swallowed tail mismatches when both
@@ -1489,7 +1502,7 @@ async fn unify_rows(
     {
         for (key, ty1) in &row1.fields {
             let ty2 = &row2.fields[key];
-            Box::pin(unify(ty1, ty2, state, constraints, span.clone())).await?;
+            Box::pin(unify(ty1, ty2, state, constraints, span.clone(), depth + 1)).await?;
         }
         // Fall through to tail unification — do NOT return here.
     } else {
@@ -1504,7 +1517,7 @@ async fn unify_rows(
             }
             if let Some(ty2) = row2.fields.get(key) {
                 shared_count += 1;
-                Box::pin(unify(ty1, ty2, state, constraints, span.clone())).await?;
+                Box::pin(unify(ty1, ty2, state, constraints, span.clone(), depth + 1)).await?;
             }
         }
         for ty2 in row2.fields.values() {
@@ -1569,14 +1582,22 @@ async fn unify_rows(
         // Both Uniform — unify value types, key types, then validate named fields
         // (T-1007/UNIFY-UNIFORM steps 1-3).
         (RowTail::Uniform { key: k1, value: v1 }, RowTail::Uniform { key: k2, value: v2 }) => {
-            Box::pin(unify(v1, v2, state, constraints, span.clone())).await?;
+            Box::pin(unify(v1, v2, state, constraints, span.clone(), depth + 1)).await?;
 
             // B-327: Unify key type constraints when both sides specify them.
             // When only one side specifies a key type (asymmetric), the unconstrained
             // side is implicitly compatible with any key type (Unknown semantics) and
             // no error is emitted — the keyed side's constraint is preserved in its row.
             if let (Some(k1_ty), Some(k2_ty)) = (k1, k2) {
-                Box::pin(unify(k1_ty, k2_ty, state, constraints, span.clone())).await?;
+                Box::pin(unify(
+                    k1_ty,
+                    k2_ty,
+                    state,
+                    constraints,
+                    span.clone(),
+                    depth + 1,
+                ))
+                .await?;
             }
 
             // UNIFY-UNIFORM steps 2-3: after unifying the value types, apply the
@@ -1605,6 +1626,7 @@ async fn unify_rows(
                         state,
                         constraints,
                         span.clone(),
+                        depth + 1,
                     ))
                     .await?;
                 } else if !v_fixed.has_inference_vars() {
@@ -1667,6 +1689,7 @@ async fn unify_rows(
                     state,
                     constraints,
                     span.clone(),
+                    depth + 1,
                 ))
                 .await?;
             } else if !v_fixed.has_inference_vars() {
@@ -1920,6 +1943,7 @@ async fn bas_cvar1_rewrite(
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     span: Span,
+    depth: usize,
 ) -> Result<(), TypeDiagnostic> {
     // Partition into TypeVars and concrete (non-TypeVar) members
     let type_vars: Vec<&Type> = compound_members
@@ -2026,7 +2050,8 @@ async fn bas_cvar1_rewrite(
                 constraints,
                 state,
             );
-            check_constraints_on_var(var_name, &promoted, state, constraints, span.clone()).await?;
+            check_constraints_on_var(var_name, &promoted, state, constraints, span.clone(), depth)
+                .await?;
             state.bind_type_var(var_name.clone(), promoted);
             return state.check_type_vars_size(span);
         } else {
@@ -2056,6 +2081,7 @@ async fn bas_cvar2_rewrite(
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     span: Span,
+    depth: usize,
 ) -> Result<(), TypeDiagnostic> {
     // Partition into TypeVars and concrete (non-TypeVar) members
     let type_vars: Vec<&Type> = compound_members
@@ -2123,7 +2149,8 @@ async fn bas_cvar2_rewrite(
                 constraints,
                 state,
             );
-            check_constraints_on_var(var_name, &promoted, state, constraints, span.clone()).await?;
+            check_constraints_on_var(var_name, &promoted, state, constraints, span.clone(), depth)
+                .await?;
             state.bind_type_var(var_name.clone(), promoted);
             return state.check_type_vars_size(span);
         } else {
@@ -2145,7 +2172,15 @@ pub async fn unify(
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     span: Span,
+    depth: usize,
 ) -> Result<(), TypeDiagnostic> {
+    if depth >= MAX_UNIFY_DEPTH {
+        return Err(TypeDiagnostic::error(
+            "type-error",
+            format!("unification depth limit exceeded (limit: {MAX_UNIFY_DEPTH})"),
+            span,
+        ));
+    }
     // Apply current substitution to both sides (Robinson step: chase bound vars).
     // Shared visited set avoids redundant allocation across both apply() calls.
     let mut visited_types = HashSet::new();
@@ -2285,7 +2320,7 @@ pub async fn unify(
                 state.bind_type_var(name.clone(), b);
             } else {
                 // Binding α to a concrete type — check constraints normally
-                check_constraints_on_var(name, &b, state, constraints, span.clone()).await?;
+                check_constraints_on_var(name, &b, state, constraints, span.clone(), depth).await?;
                 state.bind_type_var(name.clone(), b);
             }
             state.check_type_vars_size(span)?;
@@ -2320,7 +2355,7 @@ pub async fn unify(
                 state.bind_type_var(name.clone(), a);
             } else {
                 // Binding α to a concrete type — check constraints normally
-                check_constraints_on_var(name, &a, state, constraints, span.clone()).await?;
+                check_constraints_on_var(name, &a, state, constraints, span.clone(), depth).await?;
                 state.bind_type_var(name.clone(), a);
             }
             state.check_type_vars_size(span)?;
@@ -2362,7 +2397,15 @@ pub async fn unify(
             let fresh = state.fresh_type_var(&span);
             let opened_a = substitute_recvar(ba, va, &fresh);
             let opened_b = substitute_recvar(bb, vb, &fresh);
-            Box::pin(unify(&opened_a, &opened_b, state, constraints, span)).await
+            Box::pin(unify(
+                &opened_a,
+                &opened_b,
+                state,
+                constraints,
+                span,
+                depth + 1,
+            ))
+            .await
         }
 
         // Arm 4 (open-left): left is Recursive, right is a concrete type (not TypeVar — that
@@ -2371,7 +2414,7 @@ pub async fn unify(
         (Type::Recursive { var: va, body: ba }, _) => {
             let fresh = state.fresh_type_var(&span);
             let opened_a = substitute_recvar(ba, va, &fresh);
-            Box::pin(unify(&opened_a, &b, state, constraints, span)).await
+            Box::pin(unify(&opened_a, &b, state, constraints, span, depth + 1)).await
         }
 
         // Arm 5 (open-right): right is Recursive, left is a concrete type (not TypeVar — caught
@@ -2380,7 +2423,7 @@ pub async fn unify(
         (_, Type::Recursive { var: vb, body: bb }) => {
             let fresh = state.fresh_type_var(&span);
             let opened_b = substitute_recvar(bb, vb, &fresh);
-            Box::pin(unify(&a, &opened_b, state, constraints, span)).await
+            Box::pin(unify(&a, &opened_b, state, constraints, span, depth + 1)).await
         }
 
         // Literal type promotion shortcuts (performance optimization over U-SUBSUME).
@@ -2453,11 +2496,11 @@ pub async fn unify(
             // Apply special case when one side is zero-param variadic and the other has params.
             if is_any_function_1 && !p2.is_empty() {
                 // Zero-param variadic unifies with any concrete-arity function.
-                return Box::pin(unify(r1, r2, state, constraints, span)).await;
+                return Box::pin(unify(r1, r2, state, constraints, span, depth + 1)).await;
             }
             if is_any_function_2 && !p1.is_empty() {
                 // Zero-param variadic unifies with any concrete-arity function (symmetric).
-                return Box::pin(unify(r1, r2, state, constraints, span)).await;
+                return Box::pin(unify(r1, r2, state, constraints, span, depth + 1)).await;
             }
 
             if p1.len() != p2.len() {
@@ -2512,18 +2555,42 @@ pub async fn unify(
             // from earlier parameter unifications are therefore visible to later ones via
             // the shared `subst` -- this is correct Robinson (1965) unification.
             for ((_name_a, ty_a), (_name_b, ty_b)) in p1.iter().zip(p2.iter()) {
-                Box::pin(unify(ty_a, ty_b, state, constraints, span.clone())).await?;
+                Box::pin(unify(
+                    ty_a,
+                    ty_b,
+                    state,
+                    constraints,
+                    span.clone(),
+                    depth + 1,
+                ))
+                .await?;
             }
             // Unify typed variadic bucket types in declaration order.
             for ((_, ty_a), (_, ty_b)) in tv1.iter().zip(tv2.iter()) {
-                Box::pin(unify(ty_a, ty_b, state, constraints, span.clone())).await?;
+                Box::pin(unify(
+                    ty_a,
+                    ty_b,
+                    state,
+                    constraints,
+                    span.clone(),
+                    depth + 1,
+                ))
+                .await?;
             }
             // Unify rest types. Structural mismatch (one has rest, other doesn't) is an error —
             // but this can only happen when is_variadic_1 == is_variadic_2 == true and
             // tv1.len() == tv2.len() != 0 while one side has rest and the other doesn't.
             match (rest1, rest2) {
                 (Some(r1b), Some(r2b)) => {
-                    Box::pin(unify(&r1b.1, &r2b.1, state, constraints, span.clone())).await?;
+                    Box::pin(unify(
+                        &r1b.1,
+                        &r2b.1,
+                        state,
+                        constraints,
+                        span.clone(),
+                        depth + 1,
+                    ))
+                    .await?;
                 }
                 (None, None) => {}
                 _ => {
@@ -2533,7 +2600,7 @@ pub async fn unify(
                     ));
                 }
             }
-            Box::pin(unify(r1, r2, state, constraints, span)).await
+            Box::pin(unify(r1, r2, state, constraints, span, depth + 1)).await
         }
 
         (Type::Proxy, Type::Proxy) => Ok(()),
@@ -2556,7 +2623,7 @@ pub async fn unify(
 
         // Negation unification: structural (for now, basic support)
         (Type::Negation(t1), Type::Negation(t2)) => {
-            Box::pin(unify(t1, t2, state, constraints, span)).await
+            Box::pin(unify(t1, t2, state, constraints, span, depth + 1)).await
         }
 
         // Negation disjointness: if T <: A, then T & ~A = Never (provably empty intersection).
@@ -2873,7 +2940,7 @@ pub async fn unify(
                 state.bind_type_var(m.clone(), b.clone());
             } else {
                 // Binding to concrete type — check constraints
-                check_constraints_on_var(m, &b, state, constraints, span.clone()).await?;
+                check_constraints_on_var(m, &b, state, constraints, span.clone(), depth).await?;
                 state.bind_type_var(m.clone(), b.clone());
             }
             state.check_type_vars_size(span)?;
@@ -2898,7 +2965,7 @@ pub async fn unify(
                 state.bind_type_var(m.clone(), a.clone());
             } else {
                 // Binding to concrete type — check constraints
-                check_constraints_on_var(m, &a, state, constraints, span.clone()).await?;
+                check_constraints_on_var(m, &a, state, constraints, span.clone(), depth).await?;
                 state.bind_type_var(m.clone(), a.clone());
             }
             state.check_type_vars_size(span)?;
@@ -2927,12 +2994,26 @@ pub async fn unify(
                             let var = def.variance.get(i).copied().unwrap_or(Variance::Invariant);
                             match var {
                                 Variance::Covariant => {
-                                    Box::pin(unify(arg_a, arg_b, state, constraints, span.clone()))
-                                        .await?;
+                                    Box::pin(unify(
+                                        arg_a,
+                                        arg_b,
+                                        state,
+                                        constraints,
+                                        span.clone(),
+                                        depth + 1,
+                                    ))
+                                    .await?;
                                 }
                                 Variance::Contravariant => {
-                                    Box::pin(unify(arg_b, arg_a, state, constraints, span.clone()))
-                                        .await?;
+                                    Box::pin(unify(
+                                        arg_b,
+                                        arg_a,
+                                        state,
+                                        constraints,
+                                        span.clone(),
+                                        depth + 1,
+                                    ))
+                                    .await?;
                                 }
                                 Variance::Invariant => {
                                     // Invariant: bind TypeVars, but reject ground-type subsumption.
@@ -2941,8 +3022,15 @@ pub async fn unify(
                                     let ra = state.apply(arg_a);
                                     let rb = state.apply(arg_b);
                                     if ra.has_inference_vars() || rb.has_inference_vars() {
-                                        Box::pin(unify(&ra, &rb, state, constraints, span.clone()))
-                                            .await?;
+                                        Box::pin(unify(
+                                            &ra,
+                                            &rb,
+                                            state,
+                                            constraints,
+                                            span.clone(),
+                                            depth + 1,
+                                        ))
+                                        .await?;
                                     } else if ra != rb {
                                         let mut err = TypeDiagnostic::error(
                                             "type-error",
@@ -2966,13 +3054,13 @@ pub async fn unify(
                 }
             }
             // Fallback for non-TyCon App forms or unknown constructors: structural recursion.
-            Box::pin(unify(f1, f2, state, constraints, span.clone())).await?;
-            Box::pin(unify(a1, a2, state, constraints, span)).await
+            Box::pin(unify(f1, f2, state, constraints, span.clone(), depth + 1)).await?;
+            Box::pin(unify(a1, a2, state, constraints, span, depth + 1)).await
         }
 
         // Record unification: delegate to row unification
         (Type::Dict(row1), Type::Dict(row2)) => {
-            unify_rows(row1, row2, state, constraints, span).await
+            unify_rows(row1, row2, state, constraints, span, depth).await
         }
 
         (
@@ -2997,7 +3085,7 @@ pub async fn unify(
                     span,
                 ));
             }
-            unify_rows(fields1, fields2, state, constraints, span).await
+            unify_rows(fields1, fields2, state, constraints, span, depth).await
         }
 
         (Type::NominalVariant { tycon, ctor, .. }, Type::Dict(_)) => Err(TypeDiagnostic::error(
@@ -3035,7 +3123,15 @@ pub async fn unify(
         {
             let members = members.clone();
             for member in &members {
-                Box::pin(unify(&a, member, state, constraints, span.clone())).await?;
+                Box::pin(unify(
+                    &a,
+                    member,
+                    state,
+                    constraints,
+                    span.clone(),
+                    depth + 1,
+                ))
+                .await?;
             }
             Ok(())
         }
@@ -3044,7 +3140,15 @@ pub async fn unify(
         {
             let members = members.clone();
             for member in &members {
-                Box::pin(unify(member, &b, state, constraints, span.clone())).await?;
+                Box::pin(unify(
+                    member,
+                    &b,
+                    state,
+                    constraints,
+                    span.clone(),
+                    depth + 1,
+                ))
+                .await?;
             }
             Ok(())
         }
@@ -3080,7 +3184,7 @@ pub async fn unify(
                 && members.iter().any(|m| matches!(m, Type::TypeVar(_, _))) =>
         {
             let members = members.clone();
-            bas_cvar1_rewrite(&members, concrete, state, constraints, span).await
+            bas_cvar1_rewrite(&members, concrete, state, constraints, span, depth).await
         }
 
         // Symmetric C-Var1: Union on the left, concrete on the right
@@ -3089,7 +3193,7 @@ pub async fn unify(
                 && members.iter().any(|m| matches!(m, Type::TypeVar(_, _))) =>
         {
             let members = members.clone();
-            bas_cvar1_rewrite(&members, concrete, state, constraints, span).await
+            bas_cvar1_rewrite(&members, concrete, state, constraints, span, depth).await
         }
 
         // [C-VAR2] (BAS constraint rewriting — Parreaux & Chau 2022, §3.2.1):
@@ -3109,7 +3213,7 @@ pub async fn unify(
                 && members.iter().any(|m| matches!(m, Type::TypeVar(_, _))) =>
         {
             let members = members.clone();
-            bas_cvar2_rewrite(&members, concrete, state, constraints, span).await
+            bas_cvar2_rewrite(&members, concrete, state, constraints, span, depth).await
         }
 
         // Symmetric C-Var2: concrete on the left, Intersection on the right
@@ -3118,7 +3222,7 @@ pub async fn unify(
                 && members.iter().any(|m| matches!(m, Type::TypeVar(_, _))) =>
         {
             let members = members.clone();
-            bas_cvar2_rewrite(&members, concrete, state, constraints, span).await
+            bas_cvar2_rewrite(&members, concrete, state, constraints, span, depth).await
         }
 
         // TypeStageApp unification cases (after normalization in chr-normalization sprint).
@@ -3146,7 +3250,15 @@ pub async fn unify(
                 ));
             }
             for (arg1, arg2) in a1.iter().zip(a2.iter()) {
-                Box::pin(unify(arg1, arg2, state, constraints, span.clone())).await?;
+                Box::pin(unify(
+                    arg1,
+                    arg2,
+                    state,
+                    constraints,
+                    span.clone(),
+                    depth + 1,
+                ))
+                .await?;
             }
             Ok(())
         }
@@ -3288,7 +3400,7 @@ pub async fn constrain(
                 && members.iter().any(|m| matches!(m, Type::TypeVar(_, _))) =>
         {
             let members = members.clone();
-            return bas_cvar1_rewrite(&members, &sub, state, constraints, span).await;
+            return bas_cvar1_rewrite(&members, &sub, state, constraints, span, 0).await;
         }
 
         // [C-VAR2] (Parreaux & Chau 2022, §3.2.1): α ∧ τ₁ ≤ τ₂ → α ≤ ~τ₁ ∨ τ₂
@@ -3301,7 +3413,7 @@ pub async fn constrain(
                 && members.iter().any(|m| matches!(m, Type::TypeVar(_, _))) =>
         {
             let members = members.clone();
-            return bas_cvar2_rewrite(&members, &sup, state, constraints, span).await;
+            return bas_cvar2_rewrite(&members, &sup, state, constraints, span, 0).await;
         }
 
         // TypeVar accumulation: sub <: TypeVar(α) → α has lower bound sub.
@@ -3361,7 +3473,7 @@ pub async fn constrain(
         _ => {}
     }
 
-    unify(&sub, &sup, state, constraints, span).await
+    unify(&sub, &sup, state, constraints, span, 0).await
 }
 
 /// Process deferred equality constraints for stuck TypeStageApp applications.
@@ -3412,7 +3524,7 @@ pub async fn process_deferred_equalities(
             if !a_norm.has_type_stage_app() && !b_norm.has_type_stage_app() {
                 // Both sides fully reduced — attempt unification.
                 // F10 FIX: Emit diagnostic on unification failure instead of silently dropping.
-                match Box::pin(unify(&a_norm, &b_norm, state, constraints, span.clone())).await {
+                match Box::pin(unify(&a_norm, &b_norm, state, constraints, span.clone(), 0)).await {
                     Ok(()) => {
                         progress = true;
                     }

@@ -1,0 +1,7 @@
+# begin/>> forces intermediate expressions eagerly — raise must fire
+# This proves that begin is NOT lazy: the intermediate expression is evaluated
+# for its side effect (the raise call) even though the result is discarded.
+# If begin were lazy, this test would incorrectly return 99 without raising.
+[begin [raise "this must fire"] 99]
+=== error
+this must fire

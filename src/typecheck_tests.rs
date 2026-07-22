@@ -1717,6 +1717,7 @@ async fn test_error_absorbed_in_unify_does_not_corrupt_substitution() {
         &mut state,
         &mut constraints,
         span,
+        0,
     )
     .await;
     assert!(result.is_ok(), "unify(TypeVar, Error) must succeed");
@@ -2280,7 +2281,7 @@ async fn test_c_var1_binds_typevar_in_union() {
     let a = Type::Int;
     let b = Type::Union(vec![Type::Str, Type::TypeVar(var_name.clone(), 1)]);
     let mut constraints = Vec::new();
-    let result = unify(&a, &b, &mut state, &mut constraints, rust_span!()).await;
+    let result = unify(&a, &b, &mut state, &mut constraints, rust_span!(), 0).await;
     assert!(result.is_ok(), "C-Var1 should succeed: {result:?}");
     // a is bound to Int
     assert_eq!(
@@ -2299,7 +2300,7 @@ async fn test_c_var1_already_covered_no_binding() {
     let a = Type::Int;
     let b = Type::Union(vec![Type::Int, Type::TypeVar(var_name.clone(), 1)]);
     let mut constraints = Vec::new();
-    let result = unify(&a, &b, &mut state, &mut constraints, rust_span!()).await;
+    let result = unify(&a, &b, &mut state, &mut constraints, rust_span!(), 0).await;
     assert!(
         result.is_ok(),
         "C-Var1 already covered should succeed: {result:?}"
@@ -2320,7 +2321,7 @@ async fn test_c_var1_symmetric_union_on_left() {
     let a = Type::Union(vec![Type::Str, Type::TypeVar(var_name.clone(), 1)]);
     let b = Type::Int;
     let mut constraints = Vec::new();
-    let result = unify(&a, &b, &mut state, &mut constraints, rust_span!()).await;
+    let result = unify(&a, &b, &mut state, &mut constraints, rust_span!(), 0).await;
     assert!(
         result.is_ok(),
         "C-Var1 symmetric should succeed: {result:?}"
@@ -2343,7 +2344,7 @@ async fn test_c_var2_binds_typevar_in_intersection() {
     let a = Type::Intersection(vec![Type::Str, Type::TypeVar(var_name.clone(), 1)]);
     let b = Type::Int;
     let mut constraints = Vec::new();
-    let result = unify(&a, &b, &mut state, &mut constraints, rust_span!()).await;
+    let result = unify(&a, &b, &mut state, &mut constraints, rust_span!(), 0).await;
     assert!(result.is_ok(), "C-Var2 should succeed: {result:?}");
     assert_eq!(
         state.lookup_binding(&var_name),

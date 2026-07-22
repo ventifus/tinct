@@ -1602,7 +1602,7 @@ mod help_suggestion_tests {
             Box::new(Type::Int),
         );
         // Build a temporary InstanceEnv snapshot to avoid borrow checker conflict
-        let inst_env = state.build_instance_env_snapshot().clone();
+        let inst_env = state.get_working_instance_env();
         let resolved = inst_env
             .resolve_instance("Appendable", &target, &mut state)
             .await;

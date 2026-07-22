@@ -3394,7 +3394,7 @@ Fix: use a valid variance annotation or a registered class name (e.g., @Covarian
                 "unknown error code: {code}\n\
                  Run 'tinct explain <code>' with a valid code, e.g. E001 through E099 or T000-T004.\n\
                  Known codes: E001, E002, E010, E011, E020-E024, E030-E036, \
-                 E043-E044, E051-E056, E060, E063, E070, E080, E090, E099, \
+                 E043, E051-E056, E060, E063, E070, E080, E090, E099, \
                  T000, T001, T002, T003, T004, T017, \
                  match-pattern-mismatch, match-guard-failure, match-exhaustiveness, unknown-type-param."
             ));

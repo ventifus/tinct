@@ -1322,7 +1322,8 @@ pub struct ThunkInner {
     pub result: tokio::sync::OnceCell<Result<Value, Arc<EvalError>>>,
 
     /// Resolves when result is set. Allows tasks to await settlement.
-    pub notify: Arc<tokio::sync::Notify>,
+    /// Lazily initialized: only allocated when `settled()` is first awaited.
+    pub notify: std::sync::OnceLock<Arc<tokio::sync::Notify>>,
 }
 
 /// Lazy evaluation cell: wraps an unevaluated expression, a pending builtin call,
@@ -1359,7 +1360,7 @@ impl Thunk {
             inner: ThunkInner {
                 unevaluated: Mutex::new((None, None)),
                 result: tokio::sync::OnceCell::new(),
-                notify: Arc::new(tokio::sync::Notify::new()),
+                notify: std::sync::OnceLock::new(),
             },
             span,
         }
@@ -1379,7 +1380,7 @@ impl Thunk {
                     None,
                 )),
                 result: tokio::sync::OnceCell::new(),
-                notify: Arc::new(tokio::sync::Notify::new()),
+                notify: std::sync::OnceLock::new(),
             },
             span,
         }
@@ -1389,7 +1390,7 @@ impl Thunk {
         let inner = ThunkInner {
             unevaluated: Mutex::new((None, None)),
             result: tokio::sync::OnceCell::new(),
-            notify: Arc::new(tokio::sync::Notify::new()),
+            notify: std::sync::OnceLock::new(),
         };
         let _ = inner.result.set(Ok(value));
         Self { inner, span }
@@ -1409,7 +1410,7 @@ impl Thunk {
                     None,
                 )),
                 result: tokio::sync::OnceCell::new(),
-                notify: Arc::new(tokio::sync::Notify::new()),
+                notify: std::sync::OnceLock::new(),
             },
             span,
         }
@@ -1436,7 +1437,7 @@ impl Thunk {
                     None,
                 )),
                 result: tokio::sync::OnceCell::new(),
-                notify: Arc::new(tokio::sync::Notify::new()),
+                notify: std::sync::OnceLock::new(),
             },
             span,
         }
@@ -1464,7 +1465,7 @@ impl Thunk {
                     None,
                 )),
                 result: tokio::sync::OnceCell::new(),
-                notify: Arc::new(tokio::sync::Notify::new()),
+                notify: std::sync::OnceLock::new(),
             },
             span,
         }
@@ -1501,7 +1502,7 @@ impl Thunk {
                     None,
                 )),
                 result: tokio::sync::OnceCell::new(),
-                notify: Arc::new(tokio::sync::Notify::new()),
+                notify: std::sync::OnceLock::new(),
             },
             span,
         }
@@ -1529,7 +1530,7 @@ impl Thunk {
                     None,
                 )),
                 result: tokio::sync::OnceCell::new(),
-                notify: Arc::new(tokio::sync::Notify::new()),
+                notify: std::sync::OnceLock::new(),
             },
             span: guard_span.with_name(Arc::from("type guard")),
         }
@@ -1546,12 +1547,18 @@ impl Thunk {
             let mut guard = self.inner.unevaluated.lock().unwrap();
             guard.1 = None;
         }
-        self.inner.notify.notify_waiters();
+        if let Some(n) = self.inner.notify.get() {
+            n.notify_waiters();
+        }
     }
 
     pub async fn settled(&self) {
         loop {
-            let notified = self.inner.notify.notified();
+            let notified = self
+                .inner
+                .notify
+                .get_or_init(|| Arc::new(tokio::sync::Notify::new()))
+                .notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
             if self.inner.result.get().is_some() {
@@ -1670,7 +1677,7 @@ impl Thunk {
             inner: ThunkInner {
                 unevaluated: Mutex::new((Some(new_state), None)),
                 result: tokio::sync::OnceCell::new(),
-                notify: Arc::new(tokio::sync::Notify::new()),
+                notify: std::sync::OnceLock::new(),
             },
             span: self.span.clone(),
         }))

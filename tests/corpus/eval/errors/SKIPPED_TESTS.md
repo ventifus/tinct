@@ -70,8 +70,7 @@ The corpus test format doesn't support multi-file scenarios, and the `# no_fs` d
   from `src/error.rs`.
 - **E040 (DepthExceeded)**: This error code was removed in B-314 / T-908. The continuation stack
   depth limit was removed — tinct runs as a single-process CLI with no multi-tenant threat model.
-  The error code range E040–E049 now contains E043 (ResourceLimitExceeded) and E044
-  (CapabilityRequired).
+  The error code range E040–E049 now contains only E043 (ResourceLimitExceeded). E044 (CapabilityRequired) was removed in S-953.
 - **E050 (IncludeNotAvailable)**: Cannot distinguish from other include errors in corpus tests
   with `# no_fs` directive
 - **E051 (IncludeIoError)**: Would require actual filesystem errors (permission denied, etc.)

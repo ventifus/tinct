@@ -249,6 +249,10 @@ pub struct InferState {
     /// Cached InstanceEnv snapshot. Invalidated by `invalidate_env_caches` after any
     /// `insert_instance` call. Rebuilt lazily by `build_instance_env_snapshot`.
     cached_instance_env: Option<crate::types::InstanceEnv>,
+    /// Working copy of InstanceEnv for async constraint resolution. Cloned once per inference
+    /// pass from `cached_instance_env`, wrapped in Arc for cheap sharing across constraint checks.
+    /// Cleared by `invalidate_env_caches`.
+    working_instance_env: Option<std::sync::Arc<crate::types::InstanceEnv>>,
     /// Cached ClassEnv snapshot. Invalidated by `invalidate_env_caches` after any
     /// `insert_class` call. Rebuilt lazily by `build_class_env_snapshot`.
     cached_class_env: Option<crate::types::ClassEnv>,
@@ -401,6 +405,7 @@ impl InferState {
             level: 0,
             levels: HashMap::new(),
             cached_instance_env: None,
+            working_instance_env: None,
             cached_class_env: None,
             subst: Substitution::new(),
             constraints: Vec::new(),
@@ -582,6 +587,7 @@ impl InferState {
     /// rebuild against the updated env rather than serving stale data.
     pub fn invalidate_env_caches(&mut self) {
         self.cached_instance_env = None;
+        self.working_instance_env = None;
         self.cached_class_env = None;
     }
 
@@ -615,12 +621,9 @@ impl InferState {
     /// a reference to the same snapshot without rebuilding. Call `invalidate_env_caches`
     /// after any `insert_instance` to flush the cache.
     ///
-    /// When you need an owned copy for async consumers, clone the reference:
-    ///   ```ignore
-    ///   let inst_env = state.build_instance_env_snapshot().clone();
-    ///   let result = Box::pin(inst_env.resolve_instance(class_name, ty, state)).await;
-    ///   ```
-    pub fn build_instance_env_snapshot(&mut self) -> &crate::types::InstanceEnv {
+    /// When you need an owned copy for async consumers, use `get_working_instance_env` instead
+    /// to avoid cloning on every call site.
+    pub(crate) fn build_instance_env_snapshot(&mut self) -> &crate::types::InstanceEnv {
         if self.cached_instance_env.is_none() {
             let mut inst_env = crate::types::InstanceEnv::new();
             let env_guard = self.env.read().unwrap();
@@ -630,6 +633,22 @@ impl InferState {
             self.cached_instance_env = Some(inst_env);
         }
         self.cached_instance_env.as_ref().unwrap()
+    }
+
+    /// Get a working copy of InstanceEnv for async constraint resolution.
+    /// Clones from cached_instance_env ONCE per inference pass, wraps in Arc, then returns
+    /// Arc clones (cheap - just increments ref count) on subsequent calls. This avoids 2500+
+    /// full InstanceEnv clones per document when checking constraints.
+    /// Call this instead of `build_instance_env_snapshot().clone()` at constraint check sites.
+    ///
+    /// Returns an Arc<InstanceEnv> that can be moved into async functions across await points.
+    pub fn get_working_instance_env(&mut self) -> std::sync::Arc<crate::types::InstanceEnv> {
+        if self.working_instance_env.is_none() {
+            self.working_instance_env = Some(std::sync::Arc::new(
+                self.build_instance_env_snapshot().clone(),
+            ));
+        }
+        std::sync::Arc::clone(self.working_instance_env.as_ref().unwrap())
     }
 
     /// Compact the levels map by removing entries for TypeVars that have been unified.
