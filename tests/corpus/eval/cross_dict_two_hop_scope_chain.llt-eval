@@ -1,0 +1,9 @@
+# 3-dict document: dict_3 references dict_1's binding via OuterGroupRef(hops=2).
+# B-584: frame chain is dict_3_letrec → dict_2_frame → dict_1_frame → base_frame → root_frame.
+# 'x' lives in dict_1_frame.group[0]; reaching it from dict_3_letrec requires 2 hops.
+[x: 42]
+[y: 10]
+[z: x]
+.z
+=== out
+42

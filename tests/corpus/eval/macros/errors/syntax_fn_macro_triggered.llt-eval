@@ -16,4 +16,4 @@
 [add-fn 3 4]
 === error
 undefined variable: fn (did you mean the string "fn"? Use quotes.) (defined at 1:1-1:1) (called at 15:1-15:13)
-  in [add-fn ...] at 15:1-15:13
+  in add-fn at 15:1-15:13

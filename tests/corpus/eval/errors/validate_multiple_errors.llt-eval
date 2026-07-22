@@ -21,4 +21,4 @@ schema validation failed with 2 error(s):
   port: must be <= 65535
   hostname: length must be >= 3
  (defined at 16:11-16:59) (called at 2:1-17:9)
-  in [validate ...] at 16:11-16:59
+  in validate at 16:11-16:59

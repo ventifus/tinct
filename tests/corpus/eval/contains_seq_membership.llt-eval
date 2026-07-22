@@ -1,0 +1,5 @@
+# contains? with a Seq input uses the contains-seq? path and returns True for members.
+# B-578: verify the if [seq? xs] dispatch path correctly routes to contains-seq?.
+[contains? 2 [each [1 2 3]]]
+=== out
+Boolean.True

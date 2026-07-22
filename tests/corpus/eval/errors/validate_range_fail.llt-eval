@@ -5,4 +5,4 @@
 schema validation failed with 1 error(s):
   : must be <= 65535
  (defined at 2:1-2:50)
-  in [validate ...] at 2:1-2:50
+  in validate at 2:1-2:50

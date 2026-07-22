@@ -393,6 +393,23 @@ struct Environment {
 }
 ```
 
+### VarAddr — Variable Address Variants
+
+The `VarAddr` enum (in `src/ast.rs`) specifies how a variable reference is resolved at runtime. It has four variants:
+
+1. **`LetrecGroupMember(slot)`** — reference to a binding in the current letrec group. Runtime: index `frame.group[slot]`.
+2. **`ClosureCapture(slot)`** — fn closure capture. Runtime: index `fn.closure_env[slot]`. Used exclusively for variable references inside fn bodies that cross the fn boundary.
+3. **`Parameter(slot)`** — fn parameter. Runtime: index `frame.params[slot]`.
+4. **`OuterGroupRef(hops, slot)`** — cross-dict reference via outer frame chain. Runtime: traverse `hops` outer-frame links from the current frame, then index `outer_frame.group[slot]`.
+
+**OuterGroupRef semantics:**
+- Emitted by the resolver for cross-dict references that do NOT cross a fn boundary (document-level dict literals, nested dict literals inside fn bodies).
+- `hops` is the count of Dict scopes between the reference site and the binding's dict, excluding FnSequentialBody scopes (which are not real `eval_dict_core` frames).
+- For root-scope builtins/capabilities captured by a fn, the resolver computes `OuterGroupRef(hops, slot)` where `hops = 1 (doc_frame) + creation_dict_count + fn_outer_count`. `creation_dict_count` = Dict scopes between the root scope and the innermost fn's boundary (not dicts inside fn bodies). `fn_outer_count = enclosing_fn_count - 1` (one fn_call_frame per outer fn in the chain at creation time).
+- FnSequentialBody scopes are NOT counted toward `hops` — they are intermediate dict expressions in a multi-body fn, not separate eval_dict_core frames.
+
+**EvalFrame.outer field:** Added to support OuterGroupRef traversal. Each `eval_dict_core` frame stores `outer: Some(Arc::clone(outer_frame))` at creation time. `EvalFrame::empty()` initializes `outer: None`.
+
 ### Compiler Notes: Strictness Analysis
 
 **Materialization behavior is inferred by the compiler, not annotated in the type system.** The stdlib listing documents which functions are structural, lazy-transforming, materializing, or selective — but this is documentation for humans, not a language feature.

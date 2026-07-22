@@ -272,7 +272,9 @@ pub(crate) async fn eval_dict_core(
     // Collect the inner CoreExpr thunk for each non-literal entry (both static and computed key),
     // so we can patch its frame after the group Vec is assembled.
     let mut core_expr_thunks: Vec<Option<Arc<Thunk>>> = Vec::new();
-    // Whether any non-literal thunks were collected (controls whether we need a letrec frame).
+    // Whether any non-literal entries were collected (controls whether we need a letrec frame).
+    // ALL non-literal thunks (static-key AND computed-key) need the letrec frame so that
+    // computed-key values (e.g., [$k: v]) can access function parameters and closures.
     let mut has_non_literal = false;
 
     for entry in entries {
@@ -343,7 +345,8 @@ pub(crate) async fn eval_dict_core(
                         Arc::clone(ctx),
                         entry_span,
                     ));
-                    // Track for patching regardless of key kind.
+                    // Track for patching regardless of key kind — both static-key and
+                    // computed-key non-literal entries need the letrec frame.
                     let t2 = Some(Arc::clone(&t));
                     has_non_literal = true;
                     (t, t2)
@@ -447,9 +450,9 @@ pub(crate) async fn eval_dict_core(
     // state back in. If try_claim() returns None the thunk is already settled (can only
     // happen for literals, which have core_expr_thunk=None and are skipped).
     //
-    // Always create the letrec frame when there are any non-literal thunks, even if there
-    // are no static keys. This ensures computed-key entry values (e.g., [$k: v] in
-    // make-entry) can access function parameters via the frame's params field.
+    // Always create the letrec frame when there are any non-literal thunks (both
+    // static-key and computed-key). This ensures computed-key values (e.g., [$k: v]
+    // in make-entry) can access function parameters and closures via the frame.
     if has_non_literal {
         let group: std::sync::Arc<Vec<Arc<Thunk>>> = std::sync::Arc::new(letrec_slots.clone());
 

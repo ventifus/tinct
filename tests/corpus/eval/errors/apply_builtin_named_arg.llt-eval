@@ -7,4 +7,4 @@
 === error
 + does not accept named arguments (defined at 5:1-5:21)
   in apply at 5:1-5:21
-  in [apply ...] at 5:1-5:21
+  in apply at 5:1-5:21

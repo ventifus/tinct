@@ -1,0 +1,9 @@
+# OuterGroupRef error with hops=2: deeply nested dict referencing an undefined variable.
+# Two levels of nesting; missing_name is not defined at any level.
+# Verifies error span propagation for multi-hop OuterGroupRef.
+[outer: 42
+ mid: [mid-val: 10
+       inner: [ref: missing_name]]]
+.mid.inner.ref
+=== error
+undefined variable: missing_name

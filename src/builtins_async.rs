@@ -198,6 +198,7 @@ pub(crate) fn builtin_task(
                     params,
                     body,
                     closure_env,
+                    fn_outer,
                     annotation: _,
                 } => {
                     // Check for zero-arg function
@@ -216,6 +217,7 @@ pub(crate) fn builtin_task(
                         &crate::value::EvalFrame::for_function_call(
                             Arc::clone(&closure_env),
                             vec![],
+                            fn_outer,
                         ),
                         &ctx_clone,
                     )
@@ -1108,6 +1110,7 @@ pub(crate) fn builtin_select_once(
                             params,
                             body,
                             closure_env,
+                            fn_outer,
                             annotation: _,
                         } => {
                             if params.len() != 1 {
@@ -1130,6 +1133,7 @@ pub(crate) fn builtin_select_once(
                                 &crate::value::EvalFrame::for_function_call(
                                     Arc::clone(&closure_env),
                                     vec![],
+                                    fn_outer,
                                 ),
                                 &ctx,
                             )
@@ -1241,6 +1245,7 @@ pub(crate) fn builtin_par_map(
                         params,
                         body,
                         closure_env,
+                        fn_outer,
                         annotation: _,
                     } => {
                         if params.len() != 1 {
@@ -1263,6 +1268,7 @@ pub(crate) fn builtin_par_map(
                             &crate::value::EvalFrame::for_function_call(
                                 Arc::clone(&closure_env),
                                 vec![],
+                                fn_outer,
                             ),
                             &ctx_clone,
                         )
@@ -1384,6 +1390,7 @@ pub(crate) fn builtin_par_filter(
                         params,
                         body,
                         closure_env,
+                        fn_outer,
                         annotation: _,
                     } => {
                         if params.len() != 1 {
@@ -1405,6 +1412,7 @@ pub(crate) fn builtin_par_filter(
                             &crate::value::EvalFrame::for_function_call(
                                 Arc::clone(&closure_env),
                                 vec![],
+                                fn_outer,
                             ),
                             &ctx_clone,
                         )

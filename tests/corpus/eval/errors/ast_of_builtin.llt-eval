@@ -3,5 +3,5 @@
 [type-of [ast-of str]]
 === error
 type mismatch: expected Expression, got Builtin (defined at 2:10-2:22)
-  in [ast-of ...] at 2:10-2:22
-  in [type-of ...] at 2:1-2:23
+  in ast-of at 2:10-2:22
+  in type-of at 2:1-2:23

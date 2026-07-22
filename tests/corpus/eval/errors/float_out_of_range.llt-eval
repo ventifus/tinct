@@ -2,4 +2,4 @@
 [floor 10000000000000000000.0]
 === error
 floor: 10000000000000000000 is out of range for Int (defined at 1:1-1:31)
-  in [floor ...] at 1:1-1:31
+  in floor at 1:1-1:31

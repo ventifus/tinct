@@ -1287,9 +1287,10 @@ pub enum VarAddr {
     /// `hops = count(ScopeKind::Dict scopes strictly above match_depth)` — each Dict scope
     /// above the reference site is a real eval_dict_core frame boundary requiring one hop.
     ///
-    /// For fn captures: `hops = 1 + count(fn_scope_boundaries strictly between match_depth
-    /// and fn_boundary)` — the base hop crosses the current fn's letrec scope, and each
-    /// outer-fn boundary crossed adds one more hop via the fn_outer chain.
+    /// For root-scope captures by a fn: `hops = 1 (doc_frame) + creation_dict_count +
+    /// fn_outer_count`, where `creation_dict_count` is the count of ScopeKind::Dict scopes
+    /// between the root scope and the innermost fn's boundary, and `fn_outer_count =
+    /// fn_scope_boundaries.len() - 1` (one fn_call_frame per enclosing fn at creation time).
     OuterGroupRef(u32, u32),
     /// Index into EvalFrame.params (function call arguments)
     Parameter(u32),

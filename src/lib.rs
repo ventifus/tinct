@@ -189,41 +189,14 @@ pub async fn run_loader_pipeline(
     // coordinates at eval time, so typeclass method dispatch works in the production loader
     // path where typecheck precedes eval.
     let eval_ctx_with_frames: Arc<eval::EvalContext> = {
-        // Build root_frame from all named slots in scope 0: builtins, CLI-injected
-        // capabilities, user-defined CLI variables (-d foo=bar), and anything else
-        // the host has placed there. Each named thunk carries its name via span.name.
-        // Reading the actual scope 0 gives the resolver the complete picture so
-        // every injected name resolves to a correct de Bruijn coordinate.
-        // Build root_frame from core_builtins() PLUS runtime capabilities.
-        // Previously this read scope_arena.scopes[0] to include host-injected capabilities;
-        // with the EvalFrame migration, capabilities come from eval_ctx.capability_env.
-        // The capability names must be in root_frame so the resolver can assign VarAddr
-        // (ClosureCapture(BUILTIN_CLOSURE_OFFSET + slot)) and the runtime fallback
-        // in capability_env can then provide the actual thunk.
-        // Include all static builtin modules so the resolver can assign ClosureCapture
-        // addresses to any builtin name (builtin-lower, builtin-eval, etc.). At runtime,
-        // ClosureCapture(BUILTIN_CLOSURE_OFFSET + slot) misses in closure_env and falls
-        // back to ctx.builtin_defs, which also includes all builtins.
-        let all_static_builtins: Vec<crate::value::BuiltinDef> =
-            crate::builtins_core::core_builtins()
-                .into_iter()
-                .chain(crate::builtins_meta::meta_builtins())
-                .chain(crate::builtins_string::string_builtins())
-                .chain(crate::builtins_async::async_builtins())
-                .chain(crate::builtins_math::math_builtins())
-                .chain(crate::builtins_io::io_builtins())
-                .chain(crate::builtins_net::net_builtins())
-                .chain(crate::builtins_datetime::datetime_builtins())
-                .collect();
-        let mut root_frame: indexmap::IndexMap<String, u32> = all_static_builtins
-            .iter()
-            .enumerate()
-            .map(|(i, def)| (def.name.to_string(), i as u32))
-            .collect();
-        let base_slot = root_frame.len() as u32;
-        for (i, name) in eval_ctx.capability_env.keys().enumerate() {
-            root_frame.insert(name.clone(), base_slot + i as u32);
-        }
+        // Build the resolver seed frame from the eval context's root EvalFrame.
+        // root_frame.group contains all static builtins (slots 0..N-1) followed by
+        // capabilities (slots N..M-1) in the same order they were registered via
+        // with_root_frame_capabilities. root_frame_resolver_map() reads slot indices
+        // directly from the group, so the resolver and evaluator are always in sync.
+        // Each name gets OuterGroupRef(1, slot) from enter_scope_from_frame, which resolves
+        // at runtime via document-frame.outer (= root_frame) → group[slot].
+        let root_frame = eval_ctx.root_frame_resolver_map();
         let (_table, new_frames) =
             resolve::resolve_surface_program(&loader_program, std::slice::from_ref(&root_frame));
         // Combine: root_frame (outermost) followed by frames introduced by the program.

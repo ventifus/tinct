@@ -2,4 +2,4 @@
 [each 42]
 === error
 each: expected Dict, got Int (defined at 1:7-1:9)
-  in [each ...] at 1:1-1:10
+  in each at 1:1-1:10

@@ -3,5 +3,5 @@
 [+ [/ 1 0] 2]
 === error
 /: division by zero (defined at 2:4-2:11)
-  in [/ ...] at 2:4-2:11
-  in [+ ...] at 2:1-2:14
+  in / at 2:4-2:11
+  in + at 2:1-2:14

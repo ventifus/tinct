@@ -1,0 +1,10 @@
+# Nested fn: inner fn captures root-scope builtin (+) not captured by outer fn.
+# Exercises creation_dict_count via fn_scope_boundaries.first() (outermost fn boundary),
+# the specific code path fixed in the resolve.rs cascade else branch.
+[make-adder: [fn [let n]
+               [fn [let x] [+ n x]]]
+ add10: [make-adder 10]
+ result: [add10 5]]
+.result
+=== out
+15

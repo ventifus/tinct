@@ -6,4 +6,4 @@
 [to-float "not-a-float"]
 === error
 to-float: cannot parse "not-a-float" as Float (defined at 5:1-5:25)
-  in [to-float ...] at 5:1-5:25
+  in to-float at 5:1-5:25

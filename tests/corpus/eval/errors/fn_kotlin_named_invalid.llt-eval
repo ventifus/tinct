@@ -5,5 +5,5 @@
 ]
 === error
 unexpected named argument: "z" (valid parameter names: a, b) (defined at 3:11-3:24)
-  in [f ...] at 3:11-3:24
-  in [f ...] at 3:11-3:24
+  in f at 3:11-3:24
+  in f at 3:11-3:24

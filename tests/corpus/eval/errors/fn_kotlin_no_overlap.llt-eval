@@ -5,5 +5,5 @@
 ]
 === error
 parameter 'b' received both positional and named argument (defined at 3:11-3:26)
-  in [f ...] at 3:11-3:26
-  in [f ...] at 3:11-3:26
+  in f at 3:11-3:26
+  in f at 3:11-3:26

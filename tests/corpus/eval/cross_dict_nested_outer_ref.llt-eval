@@ -1,0 +1,7 @@
+# cross_dict_nested_outer_ref: inner dict accesses entry from its enclosing outer dict.
+# B-576: VarAddr::OuterGroupRef(1, slot) — one hop from inner frame to outer frame.
+[x: 42
+ inner: [y: x]]
+.inner.y
+=== out
+42

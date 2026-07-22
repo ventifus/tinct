@@ -1,4 +1,4 @@
 [+ "hello" "world"]
 === error
 no instance for Addable (String, String) (defined at 1:1-1:20)
-  in [+ ...] at 1:1-1:20
+  in + at 1:1-1:20

@@ -5,5 +5,5 @@
 ]
 === error
 missing argument for required parameter 'd' (defined at 3:11-3:21)
-  in [f ...] at 3:11-3:21
-  in [f ...] at 3:11-3:21
+  in f at 3:11-3:21
+  in f at 3:11-3:21

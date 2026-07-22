@@ -31,5 +31,5 @@
 
 === error
 type mismatch: expected Function or Builtin, got Expression (defined at 6:11-9:6)
-  in [x ...] at 6:11-9:6
+  in x at 6:11-9:6
   in in expansion of `add-one` at 26:10-26:21

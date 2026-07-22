@@ -5,4 +5,4 @@
 schema validation failed with 1 error(s):
   : expected type Int, got String
  (defined at 2:1-2:38)
-  in [validate ...] at 2:1-2:38
+  in validate at 2:1-2:38

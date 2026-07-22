@@ -3,4 +3,4 @@
 [to-tinct [task []]]
 === error
 to-tinct: no tinct representation for Task (defined at 2:1-2:21)
-  in [to-tinct ...] at 2:1-2:21
+  in to-tinct at 2:1-2:21

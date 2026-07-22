@@ -2,4 +2,4 @@
 [each-key "hello"]
 === error
 each-key: expected Dict, got String (defined at 1:11-1:18)
-  in [each-key ...] at 1:1-1:19
+  in each-key at 1:1-1:19

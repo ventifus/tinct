@@ -1,0 +1,5 @@
+# contains? with a Dict input uses the any? path (not contains-seq?).
+# B-578: the match-on-boolean with integer key was dead code — fixed to use if.
+[contains? "b" [a: 1  b: 2  c: 3]]
+=== out
+Boolean.True

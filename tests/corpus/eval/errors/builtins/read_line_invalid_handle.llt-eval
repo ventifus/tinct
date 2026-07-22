@@ -3,4 +3,4 @@
 [builtin-read-line 42]
 === error
 builtin-read-line: expected Handle, got Int (defined at 2:20-2:22)
-  in [builtin-read-line ...] at 2:1-2:23
+  in builtin-read-line at 2:1-2:23

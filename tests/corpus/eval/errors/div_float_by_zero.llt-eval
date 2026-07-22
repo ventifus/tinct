@@ -2,4 +2,4 @@
 [/ 1 0]
 === error
 /: division by zero (defined at 1:1-1:8)
-  in [/ ...] at 1:1-1:8
+  in / at 1:1-1:8

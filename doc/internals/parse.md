@@ -227,15 +227,13 @@ predicates:
 - `is_var_ident_char(c)`: excludes `' '`, `'\t'`, `'\r'`, `'\n'`, `'['`, `']'`, `':'`, `';'`,
   `'#'`, `'"'`, `'@'`, `'.'`, `'|'`. Everything else is a valid identifier character, including
   `%`, `!`, `?`, `-`, `_`, `$` (inside a `$name` ref), digits, Unicode, etc.
-- `is_access_field_char(c, is_first)`: applies a first-character restriction (T-1796): when
-  `is_first` is true, only ASCII alphabetic characters (`a`–`z`, `A`–`Z`) and underscore (`_`)
-  are accepted. Subsequent characters use the same denylist as `is_var_ident_char`. This means
-  access field names cannot start with digits, `%`, `$`, or other non-alpha characters, while
-  general identifiers can.
+The access-field first-character restriction (T-1796) is applied inline in `lex_bare_word_or_number`:
+when `after_access_dot` is true, the first character must be ASCII alphabetic or underscore. Subsequent
+characters use the same denylist as `is_var_ident_char`. Access field names cannot start with digits,
+`%`, `$`, or other non-alpha characters, while general identifiers can.
 
 After a `Dot` token, the lexer sets `after_access_dot = true`. The next bare word is then lexed
-in "access field" mode (using `is_access_field_char`), which enforces the stricter first-character
-rule for the leading character only.
+in "access field" mode (stricter first-character rule for the leading character only).
 
 ---
 

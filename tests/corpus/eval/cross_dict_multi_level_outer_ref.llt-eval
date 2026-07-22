@@ -1,0 +1,8 @@
+# cross_dict_multi_level_outer_ref: arithmetic expression across two levels of nesting.
+# B-576: verifies OuterGroupRef works with expressions, not just literal forwarding.
+[a: 10
+ mid: [b: [+ a 5]
+       inner: [c: [+ b a]]]]
+.mid.inner.c
+=== out
+25

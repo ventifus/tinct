@@ -1355,6 +1355,7 @@ impl Value {
                 body,
                 closure_env: _,
                 annotation: _,
+                fn_outer: _,
             } => match ctx {
                 Some(ctx) => {
                     // Value::Function no longer stores Arc<RwLock<Env>> (removed in T-1558).

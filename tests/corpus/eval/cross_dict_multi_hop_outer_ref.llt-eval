@@ -1,0 +1,8 @@
+# cross_dict_multi_hop_outer_ref: innermost dict references root dict, skipping mid.
+# B-576: VarAddr::OuterGroupRef(2, slot) — two hops from inner frame to root frame.
+[root-val: 100
+ mid: [mid-val: 200
+       inner: [result: [+ root-val mid-val]]]]
+.mid.inner.result
+=== out
+300

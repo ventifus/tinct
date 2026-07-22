@@ -2956,7 +2956,7 @@ bad value (defined at src/test_util.rs:3:5-3:10)
         // All frames with real spans must return true, regardless of label suffix.
         let real_span = test_span(5, 1, 5, 10);
         let impl_frame = StackFrame {
-            label: "[map-impl ...]".to_string(),
+            label: "map-impl".to_string(),
             definition_span: real_span.clone(),
         };
         assert!(
@@ -2964,7 +2964,7 @@ bad value (defined at src/test_util.rs:3:5-3:10)
             "frame with -impl suffix and real span must return true"
         );
         let step_frame = StackFrame {
-            label: "[remove-step ...]".to_string(),
+            label: "remove-step".to_string(),
             definition_span: real_span.clone(),
         };
         assert!(
@@ -2972,7 +2972,7 @@ bad value (defined at src/test_util.rs:3:5-3:10)
             "frame with -step suffix and real span must return true"
         );
         let check_frame = StackFrame {
-            label: "[validate-check ...]".to_string(),
+            label: "validate-check".to_string(),
             definition_span: real_span.clone(),
         };
         assert!(
@@ -2980,7 +2980,7 @@ bad value (defined at src/test_util.rs:3:5-3:10)
             "frame with -check suffix and real span must return true"
         );
         let merge_frame = StackFrame {
-            label: "[sort-merge ...]".to_string(),
+            label: "sort-merge".to_string(),
             definition_span: real_span.clone(),
         };
         assert!(
@@ -2988,7 +2988,7 @@ bad value (defined at src/test_util.rs:3:5-3:10)
             "frame with -merge suffix and real span must return true"
         );
         let user_frame = StackFrame {
-            label: "[map ...]".to_string(),
+            label: "map".to_string(),
             definition_span: real_span,
         };
         assert!(
@@ -3001,7 +3001,7 @@ bad value (defined at src/test_util.rs:3:5-3:10)
     fn test_should_display_frame_all_spans() {
         // should_display_frame returns true for all frames — no suppression.
         let rust_frame = StackFrame {
-            label: "[builtin-fn ...]".to_string(),
+            label: "builtin-fn".to_string(),
             definition_span: rust_span!(),
         };
         assert!(
@@ -3009,7 +3009,7 @@ bad value (defined at src/test_util.rs:3:5-3:10)
             "frame with rust_span!() must return true"
         );
         let real_frame = StackFrame {
-            label: "[user-fn ...]".to_string(),
+            label: "user-fn".to_string(),
             definition_span: test_span(3, 1, 3, 10),
         };
         assert!(

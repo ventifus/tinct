@@ -80,19 +80,19 @@ config.database.host            # chained dot access
   [+ x y]]
 
 # Named function (just a dict entry)
-add: [fn@Number [x@Number  y@Number]
+add: [fn@Number [let x@Number  y@Number]
   [+ x y]]
 
 # Named parameters (Kotlin model: any parameter can be named)
-fetch: [fn@String [url@String  timeout@[type: Number  default: 30]]
+fetch: [fn@String [let url@String  timeout@[type: Number  default: 30]]
   ...]
 
 # Variadic parameters
-apply-all: [fn [f ...args] [map f args]]
+apply-all: [fn [let f ...args] [map f args]]
 
 # Type alias
 User: [type [name: String  age: Number]]
-greet: [fn@String [u@User] [str "Hello " u.name]]
+greet: [fn@String [let u@User] [str "Hello " u.name]]
 
 # @ property annotations
 param@Type                      # Shorthand: param@[type: Type]
@@ -563,8 +563,8 @@ timeout@[type: Number  default: 30]  # With properties
 On the `fn` keyword:
 
 ```tinct
-[fn@String [x] x]                 # Function returning String
-[fn@[return: String  doc: "..."] [x] x]  # With properties
+[fn@String [let x] x]                 # Function returning String
+[fn@[return: String  doc: "..."] [let x] x]  # With properties
 ```
 
 ### Annotated Values
@@ -601,7 +601,7 @@ r@[host: String  port: Int]                     # inline record annotation (no r
 T1: [type [record host: String  port: Int]]
 T2: [type [_ : T1]]            # Map of T1 values (key: Any) — collection perspective
 T3: [type [String: T1]]        # Map from String to T1 — lookup perspective
-process: [fn [hosts@T2] ...]   # alias resolves transitively
+process: [fn [let hosts@T2] ...]   # alias resolves transitively
 ```
 
 **Bracket application for type parameters.** In `xs@[Seq Int]`, the `@` is the annotation separator and `[Seq Int]` is the annotation — a type-stage function application. `Seq` is called with `Int` as its element type argument. This is identical to how data bracket expressions work: `[Seq Int]` evaluates `Seq` in the type-stage Env and applies `Int` as an argument.
@@ -621,7 +621,7 @@ process: [fn [hosts@T2] ...]   # alias resolves transitively
 | `x@[or Int Null]` | Implied call with VarRef head (`or`) | YES — union type form (`or` is a type-stage function) |
 | `x@[or a Null]` | Implied call with lowercase VarRef head (`or`) | YES — union with type variable |
 | `x@[call f x]` | Explicit call (implied: false) | NO — parse error |
-| `x@[fn [a] $a]` | Fn special form | NO — parse error |
+| `x@[fn [let a] $a]` | Fn special form | NO — parse error |
 | `x@[type Number]` | TypeAlias declaration | NO — parse error |
 | `x@[@Number $val]` | TypeAssert expression | NO — parse error |
 
@@ -679,8 +679,8 @@ Predicate: [type [Fn@Boolean [a]]]
 Transform:  [type [Fn@b [a]]]
 
 # Use in annotations
-greet: [fn@String [u@User] [str "Hello " u.name]]
-users: [filter [fn [u@User] [> u.age 18]] all-users]
+greet: [fn@String [let u@User] [str "Hello " u.name]]
+users: [filter [fn [let u@User] [> u.age 18]] all-users]
 
 # Aliases compose
 AdminUser: [type [name: Name  age: Age  role: String]]
@@ -859,7 +859,7 @@ ast.fn                     # → "+" (field access on Expression values)
 [eval [seq [quote [+ 1 2]]]] # → 3
 
 # Build and run code programmatically
-[template: [fn [op a b] [eval [seq [quote [[unquote op] [unquote a] [unquote b]]]]]]]
+[template: [fn [let op a b] [eval [seq [quote [[unquote op] [unquote a] [unquote b]]]]]]]
 [template "+" 10 20]        # → 30
 ```
 

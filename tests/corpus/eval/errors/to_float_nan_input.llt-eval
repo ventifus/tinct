@@ -2,4 +2,4 @@
 [to-float "NaN"]
 === error
 to-float: NaN is not a finite number (defined at 1:1-1:17)
-  in [to-float ...] at 1:1-1:17
+  in to-float at 1:1-1:17

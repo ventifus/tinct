@@ -3,4 +3,4 @@
  result: [call $f 42 y: "not an int"]]
 === error
 no instance for Addable (Int, String) (defined at 1:27-1:42)
-  in [+ ...] at 1:27-1:42
+  in + at 1:27-1:42

@@ -2003,7 +2003,7 @@ pub(crate) fn builtin_resolve(
 
         // Build the ordered name list from the name-set's string keys (insertion order).
         // The i-th name gets LetrecGroupMember(i) in the resolver, corresponding to the
-        // i-th env-dict thunk in the accumulated_group of eval_core_document_exprs.
+        // i-th env-dict thunk in the env_frame.group of eval_core_document_exprs.
         let mut env_names: Vec<String> = Vec::with_capacity(name_set_dict.len());
         for (k, _v_thunk) in &name_set_dict {
             let name = match k {
@@ -2920,7 +2920,7 @@ pub(crate) fn builtin_doc_expressions(
 /// Header values are almost always literals (stage: "type", pragma: ["no-prelude"]),
 /// so the env is not needed for evaluation.  The argument is accepted and type-checked
 /// but the env dict is not injected into the evaluation context — header evaluation
-/// always runs with an empty accumulated_group so that non-literal header expressions
+/// always runs with an empty initial_group so that non-literal header expressions
 /// still evaluate in an isolated scope without accidentally resolving runtime names
 /// from the caller's env.
 ///
@@ -3111,10 +3111,11 @@ pub(crate) fn builtin_eval(
         };
 
         // arg1: Value::Dict — env-dict: name → thunk.
-        // Extract thunks in insertion order; these become the initial accumulated_group
-        // for eval_document_exprs_with_env so that CoreExpr::LetrecGroupMember(i) references
-        // into the env resolve correctly. The env-dict keys must be in the same insertion order
-        // as the name-set passed to builtin-resolve, which determines the LGM slot assignments.
+        // Extract thunks in insertion order; these become the initial_group (env_frame.group)
+        // for eval_core_document_exprs so that OuterGroupRef(N, i) references from inside
+        // dict_N's letrec traverse N hops through the frame chain to reach env_frame.group[i].
+        // The env-dict keys must be in the same insertion order as the name-set passed to
+        // builtin-resolve, which determines the LGM slot assignments.
         let env_val = args[1]
             .try_get_value()
             .expect("pre-materialized by Strictness::Seq")

@@ -1,4 +1,4 @@
 # Tests that contains? returns false for elements not in a Seq
 [contains? 99 [range 0 5]]
 === out
-Variant(Boolean.False, Null)
+Boolean.False

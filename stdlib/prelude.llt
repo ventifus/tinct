@@ -505,7 +505,7 @@
 # Wrappers like get, >=, and, or, not, empty?, has?, reindex, contains? etc.
 # are defined in the PUBLIC dict and are NOT in scope when this dict is evaluated.
 #
-# Workarounds used here:
+# Layering Rules — private dict restrictions:
 #   builtin-int-gte        instead of >= (which is in the public dict)
 #   builtin-get        instead of the get wrapper
 #   match for branching  instead of and/or
@@ -1830,15 +1830,15 @@ count@[doc: "Count elements satisfying predicate"]: [fn@[bind: [a]  return: Inte
 # Check if a collection contains val (using structural equality), a string contains a substring,
 # or a Bytes value contains a given byte (val must be an Int 0-255).
 # Handles Dict input (uses any?), Seq input (uses contains-seq?),
-# Stringing input (uses str-contains? for substring search),
+# String input (uses str-contains? for substring search),
 # and Bytes input (uses bytes-find to search for a single-byte needle).
 # Signature is Val -> Collection -> Bool (subject-last for pipeline composition).
 contains?@[doc: "Check if collection contains element"]: [fn@Boolean [let val xs]
     [match [builtin-eq-string [type-of xs] "String"]
         0: [match [builtin-eq-string [type-of xs] "Bytes"]
-            0: [match [seq? xs]
-                0: [any? [fn [let e] [= e val]] xs]
-                ...: [contains-seq? xs val]]
+            0: [if [seq? xs]
+                [contains-seq? xs val]
+                [any? [fn [let e] [= e val]] xs]]
             ...: [if [int? val]
                 [if [>= val 0]
                     [if [< val 256]
@@ -4966,7 +4966,6 @@ ByteStream@[doc: "Ordered, reliable byte pipe. Protocol dict with read-chunk/wri
 
 # ByteStreamHandle: Value::Handle removed. Protocol dicts (from `open`) are the stream type now.
 # The ByteStream typeclass is now implemented by protocol dict handles (from `open`).
-# TODO: Add a ByteStream instance for protocol dicts in the network redesign sprint.
 
 # Seekable: random-access extension of ByteStream (T-1359)
 #
@@ -4981,7 +4980,6 @@ Seekable@[doc: "Random-access extension of ByteStream. Only seekable file handle
     seek: [Fn@Integer [h SeekFrom]]]
 
 # SeekableHandle: Value::Handle removed.
-# TODO: Implement Seekable for protocol dict handles (via h.seek) in file redesign sprint.
 
 # ============================================================================
 # tmpl macro — string interpolation

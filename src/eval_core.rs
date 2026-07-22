@@ -644,6 +644,17 @@ pub(crate) async fn extract_fn_annotation_extra(
     Ok(extra)
 }
 
+/// Traverse outer-frame links to resolve an OuterGroupRef variable address.
+///
+/// Walks `hops` outer-frame links, then returns group[slot] from the target frame.
+fn traverse_outer_group(frame: &Arc<EvalFrame>, hops: u32, slot: u32) -> Option<Arc<Thunk>> {
+    let mut cur = frame.outer.as_ref();
+    for _ in 1..hops {
+        cur = cur.and_then(|f| f.outer.as_ref());
+    }
+    cur.and_then(|f| f.group.get(slot as usize)).map(Arc::clone)
+}
+
 /// Evaluate a CoreExpr to a thunk.
 ///
 /// Variable lookup uses `frame` (EvalFrame closure-conversion, replaces FlatEnv de Bruijn).
@@ -662,10 +673,10 @@ pub(crate) fn eval_core_expr<'a>(
             CoreExpr::Float(f) => Ok(Arc::new(Thunk::value(Value::Float(*f), span.clone()))),
             CoreExpr::Str(s) => Ok(Arc::new(Thunk::value(string_val(s), span.clone()))),
 
-            // Variable lookup via EvalFrame closure-conversion (replaces de Bruijn scope_arena).
-            // When an index miss occurs, fall back to name-based lookup in the stdlib env —
-            // this handles the transitional period where call_dispatch still uses de Bruijn
-            // coordinates that map to LetrecGroupMember(slot) but the slot isn't in the local group.
+            // Variable lookup via EvalFrame closure-conversion.
+            // All names — builtins, capabilities, and user-defined — resolve through the
+            // EvalFrame chain via their VarAddr. Root-scope names use OuterGroupRef(1, slot)
+            // which traverses one hop from the document-level frame to root_frame.group[slot].
             CoreExpr::Var { name, addr, .. } => {
                 let thunk = match addr {
                     VarAddr::LetrecGroupMember(i) => frame.group.get(*i as usize).map(Arc::clone),
@@ -673,41 +684,29 @@ pub(crate) fn eval_core_expr<'a>(
                         frame.closure_env.get(*i as usize).map(Arc::clone)
                     }
                     VarAddr::Parameter(i) => frame.params.get(*i as usize).map(Arc::clone),
-                    VarAddr::OuterGroupRef(hops, slot) => {
-                        // Traverse `hops` outer-frame links, then index group[slot].
-                        // hops = count(Dict scopes above the reference site in the resolver).
-                        let mut cur = frame.outer.as_ref();
-                        for _ in 1..*hops {
-                            cur = cur.and_then(|f| f.outer.as_ref());
-                        }
-                        cur.and_then(|f| f.group.get(*slot as usize))
-                            .map(Arc::clone)
-                    }
+                    VarAddr::OuterGroupRef(hops, slot) => traverse_outer_group(frame, *hops, *slot),
                 };
                 match thunk {
                     Some(t) => Ok(t),
                     None => {
-                        // T-1777 transition fallback: the EvalFrame slot targeted by addr is not
-                        // populated (call_dispatch still emits de Bruijn coordinates that don't
-                        // match the local letrec group during the migration window). Check, in order:
-                        // 1. Core builtins (static Rust functions registered in core_builtins()).
-                        // 2. Runtime capabilities (%cwd, %libdir, %clock, --cap-fs / --cap-net
-                        //    entries) — these are live thunks, not static builtins, so they are
-                        //    absent from builtin_defs and must be looked up in capability_env.
-                        if let Some(&def) = ctx.builtin_defs.get(name.as_str()) {
-                            Ok(Arc::new(crate::value::Thunk::value(
-                                crate::value::Value::Builtin(def),
-                                span.clone(),
-                            )))
-                        } else if let Some(thunk) = ctx.capability_env.get(name.as_str()) {
-                            Ok(Arc::clone(thunk))
-                        } else {
-                            Err(EvalError::undefined_variable(
-                                format!("'{name}' at addr={addr:?}"),
-                                span.clone(),
-                            )
-                            .into())
-                        }
+                        // VarAddr resolved to None — the resolver and evaluator are out of sync.
+                        // Uses EvalError (not panic!) so the error propagates through the thunk
+                        // graph to the caller, producing a useful error message rather than a crash.
+                        // Compare with the Fn closure-build arm (below) which panics because a
+                        // capture miss there is unrecoverable at fn-creation time.
+                        Err(EvalError::undefined_variable(
+                            format!(
+                                "'{name}' at addr={addr:?} resolved to None — \
+                                 resolver/evaluator out of sync \
+                                 (frame.group.len()={}, frame.closure_env.len()={}, \
+                                 frame.params.len()={})",
+                                frame.group.len(),
+                                frame.closure_env.len(),
+                                frame.params.len(),
+                            ),
+                            span.clone(),
+                        )
+                        .into())
                     }
                 }
             }
@@ -847,12 +846,17 @@ pub(crate) fn eval_core_expr<'a>(
                 //
                 // Build closure_env in capture-index order. Use map (not filter_map) so that
                 // each ClosureCapture(i) in the body resolves to closure_env[i] — skipping
-                // entries with filter_map would shift all subsequent indices (e.g. builtin-int-gte
-                // at capture 0 would collapse and cause _copy at capture 1 to map to index 0).
+                // entries would shift all subsequent indices.
                 //
-                // For entries not found in the current frame (builtins use BUILTIN_CLOSURE_OFFSET
-                // which is out of bounds for any realistic frame.group/closure_env), look up by
-                // name in ctx.builtin_defs and produce a pre-materialized Value::Builtin thunk.
+                // Each capture's original_addr is looked up in the enclosing EvalFrame:
+                //   - LetrecGroupMember(i) → frame.group[i]       (letrec dict binding)
+                //   - ClosureCapture(i)    → frame.closure_env[i] (outer fn capture)
+                //   - Parameter(i)         → frame.params[i]      (outer fn argument)
+                //   - OuterGroupRef(1, s)  → root_frame.group[s]  (builtin or capability)
+                //
+                // OuterGroupRef(1, slot) is resolved by traverse_outer_group via the frame's
+                // outer chain. Document-level frames have outer=Some(root_frame), so builtins
+                // and capabilities at root_frame.group[slot] are found in one hop.
                 let closure_env_vec: Vec<Arc<Thunk>> = captures
                     .iter()
                     .map(|(name, original_addr)| {
@@ -865,32 +869,20 @@ pub(crate) fn eval_core_expr<'a>(
                             }
                             VarAddr::Parameter(i) => frame.params.get(*i as usize).map(Arc::clone),
                             VarAddr::OuterGroupRef(hops, slot) => {
-                                // Traverse `hops` outer-frame links, then index group[slot].
-                                let mut cur = frame.outer.as_ref();
-                                for _ in 1..*hops {
-                                    cur = cur.and_then(|f| f.outer.as_ref());
-                                }
-                                cur.and_then(|f| f.group.get(*slot as usize))
-                                    .map(Arc::clone)
+                                traverse_outer_group(frame, *hops, *slot)
                             }
                         };
                         found.unwrap_or_else(|| {
-                            if let Some(&def) = ctx.builtin_defs.get(name.as_str()) {
-                                Arc::new(Thunk::value(Value::Builtin(def), span.clone()))
-                            } else if let Some(thunk) = ctx.capability_env.get(name.as_str()) {
-                                // Runtime capability captured by a closure (e.g., a function
-                                // that closes over %cwd, %libdir, or a --cap-fs entry).
-                                // Capabilities are not in builtin_defs (they are live thunks,
-                                // not static Rust builtins); check capability_env before
-                                // falling through to the empty-dict sentinel.
-                                Arc::clone(thunk)
-                            } else {
-                                // Unknown capture: empty dict as sentinel (errors at force time).
-                                Arc::new(Thunk::value(
-                                    Value::Dict(indexmap::IndexMap::new()),
-                                    span.clone(),
-                                ))
-                            }
+                            panic!(
+                                "capture miss for '{}': {:?} resolved to None \
+                                 (closure_env.len()={}, group.len()={}, \
+                                 params.len()={})",
+                                name,
+                                original_addr,
+                                frame.closure_env.len(),
+                                frame.group.len(),
+                                frame.params.len(),
+                            )
                         })
                     })
                     .collect();

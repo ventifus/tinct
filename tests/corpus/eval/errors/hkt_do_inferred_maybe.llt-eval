@@ -5,5 +5,5 @@
 [do [x: [Some 42]] [Some [+ x 1]]]
 === error
 undefined variable: ℊꜱʏᴍ⧼do-infer⧽2 (defined at 1:1-1:1) (called at 4:1-4:35)
-  in [<dot-access> ...] at 4:1-4:35
+  in <dot-access> at 4:1-4:35
   in expansion of `do` at 4:1

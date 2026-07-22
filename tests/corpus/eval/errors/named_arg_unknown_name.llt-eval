@@ -3,5 +3,5 @@
  result: [call $f 42 z: 999]]
 === error
 missing argument for required parameter 'y' (defined at 2:10-2:29)
-  in [f ...] at 2:10-2:29
-  in [f ...] at 2:10-2:29
+  in f at 2:10-2:29
+  in f at 2:10-2:29

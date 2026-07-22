@@ -1947,16 +1947,11 @@ async fn run_eval(
     };
 
     // Inject deferred cap thunks into the root scope, carrying the capability name on the span.
-    // The name on the thunk's span is how the resolver frame (built from core_builtins() + these)
-    // assigns de Bruijn coordinates. Ordering MUST match registration order above.
-    //
-    // Each named thunk is also inserted into cap_env so that eval_core_expr's VarAddr fallback
-    // can resolve capability references that miss the EvalFrame. Capabilities are live thunks
-    // (file handles, dicts), not static Rust builtins; they are absent from builtin_defs and
-    // must be in capability_env or they silently degrade to the empty-dict sentinel.
-    // cap_env is extended below with %programs and %args, then frozen via with_capability_env.
-    let mut cap_env: std::collections::HashMap<String, Arc<tinct::Thunk>> =
-        std::collections::HashMap::new();
+    // The name on the thunk's span is how the resolver frame (built from root_frame_resolver_map())
+    // assigns OuterGroupRef(1, slot) addresses. Ordering MUST be consistent: capabilities are
+    // appended to root_frame.group after the builtin slots, in the order they are added here.
+    // The resolver reads the same ordering from root_frame_resolver_map() later.
+    let mut capabilities: Vec<(String, Arc<tinct::Thunk>)> = Vec::new();
     for (name, thunk) in deferred_cap_thunks {
         let span = thunk
             .definition_span()
@@ -1966,8 +1961,7 @@ async fn run_eval(
         } else {
             thunk // non-value thunks keep original span (name missing, but capability is injected)
         };
-        cap_env.insert(name, Arc::clone(&named_thunk));
-        eval_ctx.alloc_thunk(0, named_thunk);
+        capabilities.push((name, named_thunk));
     }
 
     // Helper: create a materialized thunk (Arc<Thunk>) for a value.
@@ -2087,30 +2081,27 @@ async fn run_eval(
         Value::Dict(dict)
     };
 
-    // Inject %programs and %args into the stdlib environment so loader.llt can see them.
-    // T-1557: Register slot names in env (for resolver) and thunks in arena (for evaluator).
-    // Also register in cap_env so closures that capture %programs or %args resolve correctly
-    // via the VarAddr fallback in eval_core_expr (same reason as %cwd, %libdir, etc.).
+    // Inject %programs and %args into the capabilities list so they appear in root_frame.group
+    // alongside the other capabilities (%cwd, %libdir, %clock, etc.).
+    // Ordering: %programs and %args are appended last, matching the resolver seed ordering.
     {
         let programs_thunk = std::sync::Arc::new(tinct::Thunk::value(
             programs_dict,
             tinct::rust_span!().with_name(std::sync::Arc::from("%programs")),
         ));
-        cap_env.insert("%programs".to_string(), Arc::clone(&programs_thunk));
-        eval_ctx.alloc_thunk(0, programs_thunk);
+        capabilities.push(("%programs".to_string(), programs_thunk));
         let args_thunk = std::sync::Arc::new(tinct::Thunk::value(
             args_dict,
             tinct::rust_span!().with_name(std::sync::Arc::from("%args")),
         ));
-        cap_env.insert("%args".to_string(), Arc::clone(&args_thunk));
-        eval_ctx.alloc_thunk(0, args_thunk);
+        capabilities.push(("%args".to_string(), args_thunk));
     }
 
-    // Attach the complete capability map to the eval context.
+    // Attach the complete capability list to the eval context.
     // All capability thunks (%cwd, %libdir, %clock, --cap-fs / --cap-net, %programs, %args)
-    // are now registered.  eval_core_expr's VarAddr fallback checks capability_env after
-    // builtin_defs; child contexts (with_base_dir, with_cancel_token, etc.) inherit the Arc.
-    let eval_ctx = eval_ctx.with_capability_env(Arc::new(cap_env));
+    // are now part of root_frame.group. Document-level EvalFrames have outer=Some(root_frame),
+    // so OuterGroupRef(1, slot) resolves each capability by slot index — no special fallback needed.
+    let eval_ctx = eval_ctx.with_root_frame_capabilities(capabilities);
 
     // Wrap the evaluation section in an async block so profiling cleanup runs unconditionally
     // even when loader setup fails.

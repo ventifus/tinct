@@ -671,7 +671,13 @@ impl<'a> Lexer<'a> {
         while let Some(c) = self.peek_char() {
             if in_access_field {
                 // In access field context, use strict allowlist from grammar
-                if self.is_access_field_char(c, char_index == 0) {
+                // First char: alphabetic or underscore; subsequent: general ident chars
+                let is_valid = if char_index == 0 {
+                    c.is_ascii_alphabetic() || c == '_'
+                } else {
+                    self.is_var_ident_char(c)
+                };
+                if is_valid {
                     self.advance();
                     char_index += 1;
                 } else {
@@ -728,19 +734,6 @@ impl<'a> Lexer<'a> {
             self.last_was_nonwhitespace = true;
         }
         Ok(())
-    }
-
-    fn is_access_field_char(&self, c: char, is_first: bool) -> bool {
-        if is_first {
-            // Grammar: access_field = (ASCII_ALPHA | "_") ~ ...
-            // First character must be alphabetic or underscore.
-            c.is_ascii_alphabetic() || c == '_'
-        } else {
-            // Subsequent characters use the same expansive identifier rules as general identifiers.
-            // Tinct identifiers allow nearly any character — the denylist is very short.
-            // This allows '-', '?', '%', '!', etc. in field names after the first character.
-            self.is_var_ident_char(c)
-        }
     }
 
     fn lex_number(

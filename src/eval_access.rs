@@ -30,6 +30,7 @@ pub(crate) async fn invoke_proxy_handler(
             params,
             body,
             closure_env,
+            fn_outer,
             ..
         } => {
             invoke_function(&CallContext {
@@ -43,6 +44,7 @@ pub(crate) async fn invoke_proxy_handler(
                     .clone()
                     .with_name(Arc::from("proxy field access")),
                 ctx,
+                fn_outer,
             })
             .await
         }

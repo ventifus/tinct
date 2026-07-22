@@ -2,5 +2,5 @@
 [proxy]
 === error
 missing argument for required parameter 'handler' (defined at 1:1-1:8)
-  in [proxy ...] at 1:1-1:8
-  in [proxy ...] at 1:1-1:8
+  in proxy at 1:1-1:8
+  in proxy at 1:1-1:8

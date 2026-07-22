@@ -2,4 +2,4 @@
 [to-int "not-a-number"]
 === error
 to-int: cannot parse "not-a-number" as Int (defined at 1:1-1:24)
-  in [to-int ...] at 1:1-1:24
+  in to-int at 1:1-1:24

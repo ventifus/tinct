@@ -950,6 +950,7 @@ pub(crate) fn builtin_str_map_chars(
                     params,
                     body,
                     closure_env,
+                    fn_outer,
                     ..
                 } => {
                     let pos_args = vec![Arc::clone(&char_thunk)];
@@ -962,6 +963,7 @@ pub(crate) fn builtin_str_map_chars(
                         default_env_id: 0,
                         call_span: call_span.clone().with_name(Arc::from("str-map-chars")),
                         ctx: &ctx,
+                        fn_outer: fn_outer.clone(),
                     })
                     .await?
                 }

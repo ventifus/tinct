@@ -16,4 +16,4 @@
 .result
 === error
 select-once: channel poll limit exceeded — no channel was ready (defined at 13:11-13:42) (called at 6:1-15:8)
-  in [select-once ...] at 13:11-13:42
+  in select-once at 13:11-13:42
