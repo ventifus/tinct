@@ -5,8 +5,13 @@
 //!
 //! - `LetrecGroupMember(i)` — reference to the i-th binding in the current letrec group.
 //! - `Parameter(i)` — reference to the i-th parameter of the enclosing function.
-//! - `ClosureCapture(i)` — reference to a free variable captured from an outer scope;
-//!   `i` is the index into the function's capture list (`resolved_captures`).
+//! - `ClosureCapture(i)` — fn capture: a free variable referenced inside a fn body from
+//!   an outer scope. `i` is the index into the function's capture list (`resolved_captures`).
+//!   Exclusively emitted when inside a fn boundary — never for cross-dict references alone.
+//! - `OuterGroupRef(hops, slot)` — cross-dict reference: resolved via `frame.outer^hops.group[slot]`.
+//!   Emitted when a name is found in an enclosing dict scope (not across a fn boundary).
+//!   `hops` = count(ScopeKind::Dict scopes strictly above the reference site); each Dict scope
+//!   is a real eval_dict_core frame boundary requiring one hop.
 //!
 //! For each `SurfaceExpression::Fn` node, the resolver also sets `resolved_captures`:
 //! an ordered list of `(name, original_addr)` pairs in first-occurrence order, where
@@ -37,11 +42,21 @@ use std::sync::Arc;
 /// Used by `resolve_name_parent` to implement leading-dot (`.name`) parent-scope lookup:
 /// the nearest `Dict` scope and all non-`Dict` scopes above it are skipped, and the search
 /// starts from the scope immediately outside the skipped `Dict` scope.
+///
+/// Also used to determine whether a cross-dict OuterGroupRef is needed: only `Dict` scopes
+/// represent real runtime eval_dict_core frame boundaries. `FnSequentialBody` scopes are part
+/// of the same runtime letrec frame as the enclosing fn body and do NOT trigger OuterGroupRef.
 #[derive(Clone, Copy, PartialEq)]
 enum ScopeKind {
-    /// A letrec dict scope — the scope created when entering a `[k1: v1  k2: v2 ...]` dict.
-    /// Leading-dot `.name` skips to above the nearest Dict scope.
+    /// A letrec dict scope — the scope created when entering a `[k1: v1  k2: v2 ...]` dict
+    /// (both standalone dict literals and document-level dicts). Corresponds to a real runtime
+    /// eval_dict_core frame. Leading-dot `.name` skips to above the nearest Dict scope.
+    /// The presence of any Dict scope above a reference triggers OuterGroupRef emission.
     Dict,
+    /// Sequential scope for an fn body intermediate dict body. Same runtime letrec frame as
+    /// the enclosing fn body — NOT a separate eval_dict_core frame. Does not trigger
+    /// OuterGroupRef. Leading-dot `.name` skips these (they sit inside a Dict).
+    FnSequentialBody,
     /// Any other scope: fn params, let/case arm bindings, initial (root) frames.
     /// Leading-dot does not skip these when searching for the Dict boundary.
     Other,
@@ -132,13 +147,6 @@ struct SurfaceResolver {
     /// resolver converted it to ClosureCapture — the evaluator uses it to look up the thunk
     /// in the enclosing EvalFrame when building the function's closure_env at definition time.
     fn_capture_lists: Vec<Vec<(String, VarAddr)>>,
-    /// Stack of dict letrec group boundaries, one entry per enclosing Dict scope.
-    /// Each entry is the value of `self.scopes.len()` BEFORE `enter_scope` for that dict —
-    /// scopes at index < boundary belong to outer dicts or the document root.
-    /// When a name found at match_depth < dict_boundary is a LetrecGroupMember(slot),
-    /// it is converted to ClosureCapture(slot) so the runtime EvalFrame can look it up
-    /// in closure_env (which is built from the outer dict's group Vec).
-    dict_scope_boundaries: Vec<usize>,
 }
 
 impl SurfaceResolver {
@@ -154,7 +162,6 @@ impl SurfaceResolver {
             current_binding_context: None,
             fn_scope_boundaries: Vec::new(),
             fn_capture_lists: Vec::new(),
-            dict_scope_boundaries: Vec::new(),
         }
     }
 
@@ -187,7 +194,7 @@ impl SurfaceResolver {
     }
 
     /// Sentinel offset added to root-frame slot indices to avoid collision with
-    /// cross-dict ClosureCapture indices (which start at 0, one per outer group slot).
+    /// OuterGroupRef indices (which start at 0, one per outer group slot).
     /// Must be large enough that no realistic outer group size reaches it, and small
     /// enough that adding the max builtin count does not overflow u32.
     /// 0x8000_0000 (2^31) satisfies both: outer groups stay in [0, tens-of-thousands),
@@ -197,9 +204,12 @@ impl SurfaceResolver {
     /// Seed scope from an external frame (initial_frames from the loader).
     /// External frames carry u32 slot indices; convert to
     /// ClosureCapture(BUILTIN_CLOSURE_OFFSET + slot) so they occupy a distinct VarAddr
-    /// namespace far above cross-dict ClosureCapture indices (0..outer_group.len).
+    /// namespace far above OuterGroupRef indices (0..outer_group.len).
     /// At runtime, ClosureCapture(BUILTIN_CLOSURE_OFFSET + slot) always misses in any
     /// realistic closure_env vec, triggering the builtin_defs name-based fallback.
+    /// Cross-dict references from user dicts use OuterGroupRef instead of ClosureCapture;
+    /// these BUILTIN_CLOSURE_OFFSET entries remain ClosureCapture because they are fn-capture
+    /// fallback roots resolved via builtin_defs, not via frame.outer.group.
     /// Initial frames (root builtins, capabilities, external frames) are Other —
     /// they are not letrec dict scopes and leading-dot does not skip them.
     fn enter_scope_from_frame(&mut self, frame: &indexmap::IndexMap<String, u32>) {
@@ -312,28 +322,122 @@ impl SurfaceResolver {
                 // VarAddr that the Fn arm uses at function-creation time to look up the thunk
                 // from the enclosing EvalFrame.
                 //
-                // Cross-dict cross-fn capture (match_depth < dict_boundary AND < fn_boundary):
-                //   The binding comes from an outer dict's sequential scope. Its LGM slot refers
-                //   to the outer dict's group, which at runtime is in frame.closure_env (not
-                //   frame.group, which is the current dict's letrec group). Store the addr as
-                //   ClosureCapture(slot) so the Fn arm looks in frame.closure_env at that slot.
+                // Capture inheritance: if the immediately enclosing fn already captured this
+                // name, inherit its capture index as ClosureCapture(outer_idx). At inner fn
+                // creation, frame.closure_env = outer fn's closure_env, so ClosureCapture(outer_idx)
+                // correctly finds the thunk.
                 //
-                // Same-dict cross-fn capture (match_depth >= dict_boundary, < fn_boundary):
-                //   The binding is in the current dict's letrec scope. Store LGM(slot) so the
-                //   Fn arm looks in frame.group at that slot.
-                let original_addr = if let Some(&dict_boundary) = self.dict_scope_boundaries.last()
-                {
-                    if match_depth < dict_boundary {
-                        if let VarAddr::LetrecGroupMember(slot) = &addr {
-                            // Cross-dict: LGM → ClosureCapture so Fn arm uses closure_env.
-                            VarAddr::ClosureCapture(*slot)
-                        } else {
-                            addr.clone()
-                        }
-                    } else {
+                // For names not yet captured by the enclosing fn (or no enclosing fn):
+                //   - Same-dict capture (match_depth >= fn_enclosing_dict_depth): use LGM(slot).
+                //     frame.group[slot] at fn creation time gives the sibling thunk directly.
+                //   - Cross-scope capture (match_depth < fn_enclosing_dict_depth): use
+                //     OuterGroupRef(hops, slot). hops = 1 + count(fn_scope_boundaries strictly
+                //     between match_depth and fn_boundary). Each fn boundary crossed adds one
+                //     extra hop via the fn_outer chain; +1 for the base letrec-scope crossing.
+                let outer_capture_idx = self
+                    .fn_capture_lists
+                    .iter()
+                    .rev()
+                    .skip(1) // skip innermost (current fn being processed)
+                    .next() // only check the immediately enclosing fn
+                    .and_then(|captures| {
+                        captures
+                            .iter()
+                            .position(|(n, _)| n == name)
+                            .map(|pos| pos as u32)
+                    });
+
+                let original_addr = if let Some(outer_idx) = outer_capture_idx {
+                    // Immediately enclosing fn already captured this name → inherit via closure_env.
+                    VarAddr::ClosureCapture(outer_idx)
+                } else if let VarAddr::LetrecGroupMember(slot) = &addr {
+                    // Not yet in any enclosing fn's capture list.
+                    //
+                    // fn_enclosing_dict_depth: innermost ScopeKind::Dict below fn_boundary —
+                    // the per-body letrec Dict that CONTAINS this fn's definition.
+                    let fn_enclosing_dict_depth = (0..fn_boundary)
+                        .rev()
+                        .find(|&i| matches!(self.scopes[i].1, ScopeKind::Dict))
+                        .unwrap_or(0);
+
+                    if match_depth == fn_enclosing_dict_depth {
+                        // Same-dict: sibling in this fn's own letrec dict.
+                        // At fn creation, frame.group[slot] gives the thunk directly.
                         addr.clone()
+                    } else if match_depth > fn_enclosing_dict_depth {
+                        // Outer fn body sequential: name from enclosing fn's body sequential
+                        // (FnSequentialBody scope above the fn's own Dict letrec but below
+                        // fn_boundary). This fires when the fn is in the FINAL EXPRESSION of the
+                        // outer fn's body (no body Dict letrec active). The Fn arm uses the
+                        // accumulated outer fn frame directly, so frame.group[slot] gives the
+                        // sequential body thunk via LGM — no outer-frame hop needed.
+                        addr.clone() // LGM(slot)
+                    } else if self.fn_scope_boundaries.len() == 1 {
+                        // Outermost fn (no outer fn): cross-document, 1 hop to doc frame.
+                        VarAddr::OuterGroupRef(1, *slot)
+                    } else {
+                        // Cross-scope capture (match_depth < fn_enclosing_dict_depth):
+                        // multi-level cascade propagation.
+                        //
+                        // Walk fn levels from outermost to the immediately enclosing fn,
+                        // cascading the name through each level until we find one that can
+                        // access it directly (same-dict or outermost fn via OuterGroupRef(1)).
+                        // Each intermediate fn inherits from the level above via ClosureCapture.
+                        //
+                        // This handles cases where the name is in a document dict that's not
+                        // directly accessible via a single OuterGroupRef hop from deeper fn levels.
+                        let num_levels = self.fn_capture_lists.len(); // includes current fn (last)
+                                                                      // Process ALL enclosing fn levels from outermost (0) to immediately
+                                                                      // enclosing (num_levels-2). Each level inherits from the one above:
+                                                                      // - Level 0 (outermost): accesses the name directly via LGM or OGR(1)
+                                                                      // - Level 1..N-2: inherits from the level above via ClosureCapture
+                                                                      // Never break early — ALL intermediate levels must be chained.
+                        let mut last_pos: Option<u32> = None;
+                        for level_idx in 0..(num_levels - 1) {
+                            let level_fn_boundary = self.fn_scope_boundaries[level_idx];
+                            let level_fn_enclosing_dict_depth = (0..level_fn_boundary)
+                                .rev()
+                                .find(|&i| matches!(self.scopes[i].1, ScopeKind::Dict))
+                                .unwrap_or(0);
+
+                            // Compute this fn level's original_addr for the name.
+                            let level_original_addr =
+                                if match_depth >= level_fn_enclosing_dict_depth {
+                                    // Same-dict or outer fn body sequential for this level.
+                                    // This fn can access the name directly via LGM.
+                                    addr.clone() // LGM(slot)
+                                } else if let Some(prev_pos) = last_pos {
+                                    // This fn inherits from the outer level via ClosureCapture.
+                                    VarAddr::ClosureCapture(prev_pos)
+                                } else {
+                                    // Outermost fn (level 0) with cross-doc access.
+                                    // 1 hop: fn creation frame → doc frame → group[slot].
+                                    VarAddr::OuterGroupRef(1, *slot)
+                                };
+
+                            // Add to this fn level's capture list (if not already present).
+                            let existing_pos = self.fn_capture_lists[level_idx]
+                                .iter()
+                                .position(|(n, _)| n == name)
+                                .map(|p| p as u32);
+                            let pos = if let Some(p) = existing_pos {
+                                p
+                            } else {
+                                let idx = self.fn_capture_lists[level_idx].len() as u32;
+                                self.fn_capture_lists[level_idx]
+                                    .push((name.to_string(), level_original_addr.clone()));
+                                idx
+                            };
+                            last_pos = Some(pos);
+                            // Continue to next level — all intermediate levels must be chained.
+                        }
+
+                        // Current (innermost) fn inherits from the immediately enclosing fn.
+                        let enclosing_pos = last_pos.expect("cascade must set a position");
+                        VarAddr::ClosureCapture(enclosing_pos)
                     }
                 } else {
+                    // ClosureCapture(BUILTIN_CLOSURE_OFFSET+N), Parameter, etc: pass through.
                     addr.clone()
                 };
                 let capture_list = self
@@ -352,22 +456,25 @@ impl SurfaceResolver {
             }
         }
 
-        // Cross-dict closure conversion: if we are inside a dict scope AND the resolved
-        // scope frame belongs to an immediately-outer dict scope, convert LetrecGroupMember
-        // to ClosureCapture(slot). At runtime the inner dict's EvalFrame has closure_env
-        // built from the outer dict's group Vec, so ClosureCapture(slot) finds the outer
-        // binding at the same slot index.
+        // Cross-dict reference (fn check above did NOT fire, or name found inside the fn):
+        // if a LetrecGroupMember is found below one or more Dict scopes, convert to
+        // OuterGroupRef(hops, slot). At runtime the inner dict's EvalFrame walks `hops`
+        // outer-frame links to reach the defining frame's group[slot].
         //
-        // Only applies when the fn check above did NOT fire (no fn boundary, or found
-        // inside the fn). Root-frame builtins use ClosureCapture(u32::MAX - slot) and
-        // will miss (out-of-bounds) in any realistic closure_env, triggering the
-        // builtin_defs fallback.
-        if let Some(&dict_boundary) = self.dict_scope_boundaries.last() {
-            if match_depth < dict_boundary {
-                if let VarAddr::LetrecGroupMember(slot) = &addr {
-                    return Some(VarAddr::ClosureCapture(*slot));
-                }
-                // Other VarAddr types (ClosureCapture for root builtins, Parameter): pass through.
+        // hops = count(ScopeKind::Dict scopes strictly above match_depth). Each Dict scope
+        // above the reference site is a real eval_dict_core frame boundary requiring one hop.
+        // FnSequentialBody scopes are NOT real eval_dict_core frames and are excluded.
+        //
+        // Root-frame builtins use ClosureCapture(BUILTIN_CLOSURE_OFFSET + slot) and miss
+        // in any realistic closure_env, triggering the builtin_defs fallback — they never
+        // reach this path (their addr is ClosureCapture, not LetrecGroupMember).
+        if let VarAddr::LetrecGroupMember(slot) = &addr {
+            let hops = self.scopes[match_depth + 1..]
+                .iter()
+                .filter(|(_, k)| matches!(k, ScopeKind::Dict))
+                .count() as u32;
+            if hops > 0 {
+                return Some(VarAddr::OuterGroupRef(hops, *slot));
             }
         }
 
@@ -536,10 +643,9 @@ impl SurfaceResolver {
                     }
                 }
 
-                // Push dict boundary BEFORE entering the dict scope so that any names
-                // found in scopes below (index < boundary) are from outer dicts.
-                let dict_boundary = self.scopes.len();
-                self.dict_scope_boundaries.push(dict_boundary);
+                // Enter the dict's letrec scope. The Dict ScopeKind marks this as a real
+                // runtime eval_dict_core frame boundary — hop counting in resolve_name will
+                // count this scope when computing OuterGroupRef hops.
                 self.enter_scope(&static_keys, ScopeKind::Dict);
                 // Walk key annotations INSIDE the letrec scope so that annotation
                 // values can reference the dict's own entries (forward letrec refs).
@@ -563,7 +669,6 @@ impl SurfaceResolver {
                     self.walk_surface_node(&entry.node.value);
                 }
                 self.exit_scope();
-                self.dict_scope_boundaries.pop();
             }
 
             SurfaceExpression::Fn {
@@ -717,8 +822,19 @@ impl SurfaceResolver {
                                     self.walk_surface_node(&entry.node.value);
                                 }
                             } else {
-                                // Step 2: Enter the Dict letrec scope (for value walks to
-                                // reference sibling entries — same as the Dict arm behavior).
+                                // Step 2: Enter the per-body letrec scope for this intermediate dict.
+                                //
+                                // If we are inside an fn body, the intermediate dict bodies all share
+                                // one runtime letrec frame (LetrecChainStep) — they are NOT separate
+                                // eval_dict_core frames. Use FnSequentialBody so that hop counting in
+                                // resolve_name excludes these scopes from the OuterGroupRef hop count.
+                                //
+                                // Step 2 uses ScopeKind::Dict regardless of nesting level because
+                                // eval_dict_core IS called for each intermediate body dict (both at
+                                // document level and inside fn bodies via LetrecChainStep). This
+                                // creates a real runtime frame with outer pointing to the previous
+                                // step's accumulated frame. OuterGroupRef hop counting must cross
+                                // this boundary to reach outer group slots.
                                 self.enter_scope(&all_keys, ScopeKind::Dict);
 
                                 // Step 3: Build binding_list for lost-binding tracking.
@@ -808,7 +924,7 @@ impl SurfaceResolver {
                                 // Clear binding context after walking all entries.
                                 self.current_binding_context = None;
 
-                                // Step 6: Exit the Dict letrec scope.
+                                // Step 6: Exit the per-body letrec scope.
                                 self.exit_scope();
 
                                 // Step 7: Enter the Sequential scope (injected) so subsequent
@@ -817,10 +933,18 @@ impl SurfaceResolver {
                                 // which body a referenced name belongs to.
                                 // Use cumulative offset so each body's LGM slots don't overlap
                                 // with prior bodies' slots in the LetrecChainStep accumulated group.
+                                //
+                                // ALWAYS use FnSequentialBody for the accumulated sequential scope,
+                                // even at document level. This scope is purely a name-availability
+                                // bookkeeping scope — it does NOT correspond to a separate
+                                // eval_dict_core frame. At runtime, subsequent bodies reference
+                                // earlier entries via LGM in the accumulated_group. The hop count
+                                // for OuterGroupRef is determined by Step 2 per-body letrec scopes
+                                // (ScopeKind::Dict), NOT by these accumulated sequential scopes.
                                 self.enter_scope_with_offset(
                                     &all_keys,
                                     sequential_offset,
-                                    ScopeKind::Dict,
+                                    ScopeKind::FnSequentialBody,
                                 );
                                 sequential_offset += all_keys.len() as u32;
                                 let sequential_scope_depth = self.scopes.len() - 1;
@@ -1306,10 +1430,17 @@ impl SurfaceResolver {
                     if !is_last_expr {
                         if let Some(keys) = surface_node_static_keys(node) {
                             if !keys.is_empty() {
+                                // FnSequentialBody: this accumulated sequential scope is purely
+                                // a name-availability bookkeeping scope. It does NOT correspond
+                                // to a separate eval_dict_core frame — at runtime, subsequent
+                                // expressions reference earlier entries via LGM in the
+                                // accumulated_group (eval_document_exprs_with_env). Using
+                                // FnSequentialBody excludes these scopes from OuterGroupRef hop
+                                // counting, so direct cross-dict refs use LGM (not OuterGroupRef).
                                 self.enter_scope_with_offset(
                                     &keys,
                                     sequential_offset,
-                                    ScopeKind::Dict,
+                                    ScopeKind::FnSequentialBody,
                                 );
                                 sequential_offset += keys.len() as u32;
                                 injected += 1;
@@ -1326,8 +1457,9 @@ impl SurfaceResolver {
 
         // Capture injected frames, converting VarAddr back to u32 slot indices for the
         // public API (callers pass/receive IndexMap<String, u32> frames).
-        // Document-level frames only contain LetrecGroupMember(slot) values — Parameter
-        // and ClosureCapture are only produced inside function bodies and never exported.
+        // Document-level frames only contain LetrecGroupMember(slot) values — Parameter,
+        // ClosureCapture, and OuterGroupRef are only produced inside fn bodies or nested
+        // dict scopes during resolution and are never exported to the frame public API.
         let start = self.scopes.len() - injected;
         let frames: Vec<indexmap::IndexMap<String, u32>> = self.scopes[start..]
             .iter()

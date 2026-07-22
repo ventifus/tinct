@@ -99,6 +99,7 @@ pub(crate) async fn eval_document_exprs_with_env(
             group: Arc::new(accumulated_group.clone()),
             closure_env: Arc::new(vec![]),
             params: Arc::new(vec![]),
+            outer: None,
         });
 
         if i == last_idx {
@@ -178,6 +179,7 @@ pub(crate) async fn eval_core_document_exprs(
             group: Arc::new(accumulated_group.clone()),
             closure_env: Arc::new(vec![]),
             params: Arc::new(vec![]),
+            outer: None,
         });
 
         if i == last_idx {
@@ -514,14 +516,25 @@ impl EvalContext {
         Self::new_with_options(base_dir, no_fs, false, None)
     }
 
-    /// Build the shared builtin_defs map from core_builtins().
+    /// Build the shared builtin_defs map from all static builtin modules.
     ///
+    /// Includes core, meta, string, async, math, io, net, and datetime builtins so that
+    /// the runtime fallback (and resolver root_frame) can resolve any builtin name.
     /// Called once per root context (new_empty, new_with_options). Child contexts clone
     /// the Arc pointer — no re-allocation.
     fn build_builtin_defs() -> Arc<HashMap<String, crate::value::BuiltinDef>> {
+        let all: Vec<crate::value::BuiltinDef> = crate::builtins_core::core_builtins()
+            .into_iter()
+            .chain(crate::builtins_meta::meta_builtins())
+            .chain(crate::builtins_string::string_builtins())
+            .chain(crate::builtins_async::async_builtins())
+            .chain(crate::builtins_math::math_builtins())
+            .chain(crate::builtins_io::io_builtins())
+            .chain(crate::builtins_net::net_builtins())
+            .chain(crate::builtins_datetime::datetime_builtins())
+            .collect();
         Arc::new(
-            crate::builtins_core::core_builtins()
-                .into_iter()
+            all.into_iter()
                 .map(|def| (def.name.to_string(), def))
                 .collect(),
         )
@@ -3308,6 +3321,7 @@ mod tests {
             })),
             closure_env: Arc::new(vec![]),
             annotation: None,
+            fn_outer: None,
         };
 
         let func_thunk = Arc::new(Thunk::value(identity_fn, test_span(1, 1, 1, 10)));
@@ -3370,6 +3384,7 @@ mod tests {
             })),
             closure_env: Arc::new(vec![]),
             annotation: None,
+            fn_outer: None,
         };
 
         let ctx_unevarg = test_ctx();
@@ -5522,6 +5537,7 @@ mod tests {
             body: Arc::new(sp(CoreExpr::Dict(vec![]))),
             closure_env: Arc::new(vec![]),
             annotation: None,
+            fn_outer: None,
         };
         match ground_type_of(&non_variadic) {
             Type::Function {
@@ -5561,6 +5577,7 @@ mod tests {
             body: Arc::new(sp(CoreExpr::Dict(vec![]))),
             closure_env: Arc::new(vec![]),
             annotation: None,
+            fn_outer: None,
         };
         match ground_type_of(&variadic_fn) {
             Type::Function {
@@ -5595,6 +5612,7 @@ mod tests {
             }]),
             body: Arc::new(sp(CoreExpr::Dict(vec![]))),
             closure_env: Arc::new(vec![]),
+            fn_outer: None,
             annotation: None,
         };
         match ground_type_of(&only_variadic) {

@@ -1270,8 +1270,27 @@ impl std::fmt::Debug for MatchableBinding {
 pub enum VarAddr {
     /// Index into EvalFrame.group (current letrec group thunks)
     LetrecGroupMember(u32),
-    /// Index into EvalFrame.closure_env (captured outer scope thunks)
+    /// Index into EvalFrame.closure_env (fn-captured outer scope thunks).
+    /// Emitted exclusively for fn captures: a VarRef inside a fn body that refers to a
+    /// name outside the fn boundary. `i` is the index into the fn's capture list
+    /// (`resolved_captures`). At fn-definition time, the evaluator walks the capture list
+    /// and copies thunks from the enclosing EvalFrame into `closure_env`.
     ClosureCapture(u32),
+    /// Reference to slot `slot` reached by traversing `hops` outer-frame links:
+    /// `frame.outer^hops.group[slot]`.
+    ///
+    /// Emitted for cross-dict references that are NOT inside a fn boundary: a VarRef in
+    /// an inner dict body that refers to a name defined in an enclosing dict scope.
+    /// At runtime, resolved by walking `hops` `frame.outer` links and then indexing
+    /// `group[slot]`.
+    ///
+    /// `hops = count(ScopeKind::Dict scopes strictly above match_depth)` — each Dict scope
+    /// above the reference site is a real eval_dict_core frame boundary requiring one hop.
+    ///
+    /// For fn captures: `hops = 1 + count(fn_scope_boundaries strictly between match_depth
+    /// and fn_boundary)` — the base hop crosses the current fn's letrec scope, and each
+    /// outer-fn boundary crossed adds one more hop via the fn_outer chain.
+    OuterGroupRef(u32, u32),
     /// Index into EvalFrame.params (function call arguments)
     Parameter(u32),
 }

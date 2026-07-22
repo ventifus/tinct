@@ -673,6 +673,16 @@ pub(crate) fn eval_core_expr<'a>(
                         frame.closure_env.get(*i as usize).map(Arc::clone)
                     }
                     VarAddr::Parameter(i) => frame.params.get(*i as usize).map(Arc::clone),
+                    VarAddr::OuterGroupRef(hops, slot) => {
+                        // Traverse `hops` outer-frame links, then index group[slot].
+                        // hops = count(Dict scopes above the reference site in the resolver).
+                        let mut cur = frame.outer.as_ref();
+                        for _ in 1..*hops {
+                            cur = cur.and_then(|f| f.outer.as_ref());
+                        }
+                        cur.and_then(|f| f.group.get(*slot as usize))
+                            .map(Arc::clone)
+                    }
                 };
                 match thunk {
                     Some(t) => Ok(t),
@@ -854,6 +864,15 @@ pub(crate) fn eval_core_expr<'a>(
                                 frame.closure_env.get(*i as usize).map(Arc::clone)
                             }
                             VarAddr::Parameter(i) => frame.params.get(*i as usize).map(Arc::clone),
+                            VarAddr::OuterGroupRef(hops, slot) => {
+                                // Traverse `hops` outer-frame links, then index group[slot].
+                                let mut cur = frame.outer.as_ref();
+                                for _ in 1..*hops {
+                                    cur = cur.and_then(|f| f.outer.as_ref());
+                                }
+                                cur.and_then(|f| f.group.get(*slot as usize))
+                                    .map(Arc::clone)
+                            }
                         };
                         found.unwrap_or_else(|| {
                             if let Some(&def) = ctx.builtin_defs.get(name.as_str()) {
@@ -881,6 +900,7 @@ pub(crate) fn eval_core_expr<'a>(
                         body: Arc::clone(body),
                         closure_env: Arc::new(closure_env_vec),
                         annotation,
+                        fn_outer: frame.outer.clone(),
                     },
                     span.clone(),
                 )))
@@ -1078,6 +1098,7 @@ mod tests {
             closure_env: Arc::new(vec![]),
             group: Arc::new(vec![Arc::clone(&known_thunk)]),
             params: Arc::new(vec![]),
+            outer: None,
         });
 
         // Build a Var node: addr = LetrecGroupMember(0).

@@ -259,13 +259,21 @@ pub(crate) async fn eval_dict_core(
     // for LetrecGroupMember variable lookup. The frame is built once after the loop and
     // patched into each non-literal CoreExpr thunk via try_claim/reset.
     //
+    // ALL non-literal thunks (both static-key and computed-key) are patched with the
+    // letrec frame so that computed-key entry values can access function parameters,
+    // closure captures, and static-key siblings. For dicts with no static keys (e.g.,
+    // [$k: v] where $k is a computed key), the letrec frame is created with an empty
+    // group but still carries params and closure_env from the outer frame.
+    //
     // Collect the outer thunk (what goes in the dict map / letrec group) for each static key.
     // Position in this Vec corresponds to the LetrecGroupMember slot index assigned by the
     // resolver — the i-th static-key entry goes at index i.
     let mut letrec_slots: Vec<Arc<Thunk>> = Vec::new();
-    // Collect the inner CoreExpr thunk for each non-literal static-key entry, so we can
-    // patch its frame after the group Vec is assembled. Parallel to letrec_slots.
+    // Collect the inner CoreExpr thunk for each non-literal entry (both static and computed key),
+    // so we can patch its frame after the group Vec is assembled.
     let mut core_expr_thunks: Vec<Option<Arc<Thunk>>> = Vec::new();
+    // Whether any non-literal thunks were collected (controls whether we need a letrec frame).
+    let mut has_non_literal = false;
 
     for entry in entries {
         // Determine if this entry has a static key (CoreExpr::Str or annotated Var).
@@ -325,7 +333,9 @@ pub(crate) async fn eval_dict_core(
                 CoreExpr::Str(s) => (Arc::new(Thunk::value(string_val(s), entry_span)), None),
                 // Non-literal: create with EvalFrame::empty() as a placeholder.
                 // The real letrec frame is patched in below via try_claim/reset after
-                // the group Vec is assembled from all static-key thunks.
+                // the group Vec is assembled. ALL non-literal thunks are patched (both
+                // static-key and computed-key) so that computed-key values can reference
+                // function parameters, closures, and static-key siblings correctly.
                 _ => {
                     let t = Arc::new(Thunk::core_expr(
                         Arc::clone(&entry.node.value),
@@ -333,11 +343,9 @@ pub(crate) async fn eval_dict_core(
                         Arc::clone(ctx),
                         entry_span,
                     ));
-                    let t2 = if is_static_key {
-                        Some(Arc::clone(&t))
-                    } else {
-                        None
-                    };
+                    // Track for patching regardless of key kind.
+                    let t2 = Some(Arc::clone(&t));
+                    has_non_literal = true;
                     (t, t2)
                 }
             };
@@ -415,16 +423,22 @@ pub(crate) async fn eval_dict_core(
 
         if is_static_key {
             letrec_slots.push(Arc::clone(&thunk));
-            core_expr_thunks.push(core_expr_thunk);
         }
+        // Track all non-literal thunks (both static and computed key) for frame patching.
+        core_expr_thunks.push(core_expr_thunk);
     }
 
     // Phase 2: build the shared letrec EvalFrame and patch it into each non-literal
     // CoreExpr thunk. The group Vec contains the final thunks (one per static-key entry,
     // in slot order) so that VarAddr::LetrecGroupMember(i) lookups resolve correctly.
     //
-    // The closure_env comes from the outer frame: ClosureCapture variables in dict values
-    // reference the enclosing function/dict's captured environment.
+    // closure_env: propagate outer_frame.closure_env unchanged. Cross-dict references no longer
+    // use ClosureCapture — they use OuterGroupRef(hops, slot) which traverses outer-frame links
+    // directly. closure_env is only used by ClosureCapture for fn captures, which are set at
+    // fn creation time by walking the capture list against the enclosing EvalFrame.
+    //
+    // outer: set to outer_frame so that OuterGroupRef(hops, slot) lookups can traverse the
+    // outer-frame chain to reach the defining frame's group[slot].
     //
     // Patch is safe here: the thunks were just created in this function and have not been
     // shared with any other task yet (they are not in the dict map until after patch, and
@@ -432,28 +446,22 @@ pub(crate) async fn eval_dict_core(
     // atomically takes the UnevaluatedState out of the Mutex; reset() puts the updated
     // state back in. If try_claim() returns None the thunk is already settled (can only
     // happen for literals, which have core_expr_thunk=None and are skipped).
-    if !letrec_slots.is_empty() {
+    //
+    // Always create the letrec frame when there are any non-literal thunks, even if there
+    // are no static keys. This ensures computed-key entry values (e.g., [$k: v] in
+    // make-entry) can access function parameters via the frame's params field.
+    if has_non_literal {
         let group: std::sync::Arc<Vec<Arc<Thunk>>> = std::sync::Arc::new(letrec_slots.clone());
-        // Build closure_env from outer frame's group + outer frame's closure_env.
-        // Cross-dict ClosureCapture(slot) references (emitted by the resolver for names found
-        // in an immediately-outer dict scope) resolve to outer_frame.group[slot].
-        // Root-frame builtins use ClosureCapture(u32::MAX - slot) which always misses here
-        // (out of bounds for any realistic vec), falling back to ctx.builtin_defs by name.
-        let closure_env = {
-            let mut env =
-                Vec::with_capacity(outer_frame.group.len() + outer_frame.closure_env.len());
-            env.extend(outer_frame.group.iter().cloned());
-            env.extend(outer_frame.closure_env.iter().cloned());
-            std::sync::Arc::new(env)
-        };
+
         // Inherit outer_frame.params so that function parameters remain accessible
         // from within intermediate dict bodies inside a function. Without this, an
         // intermediate dict `[x: [fn-param-ref]]` inside `[fn [let p] [x: p] body]`
         // would fail because the dict's letrec_frame has empty params.
         let letrec_frame = std::sync::Arc::new(EvalFrame {
-            closure_env,
+            closure_env: std::sync::Arc::clone(&outer_frame.closure_env),
             group,
             params: std::sync::Arc::clone(&outer_frame.params),
+            outer: Some(std::sync::Arc::clone(outer_frame)),
         });
 
         for maybe_core_thunk in &core_expr_thunks {

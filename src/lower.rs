@@ -353,6 +353,9 @@ fn lower_expr(
                 VarAddr::LetrecGroupMember(s) => VarAddr::LetrecGroupMember(s + 1),
                 VarAddr::ClosureCapture(s) => VarAddr::ClosureCapture(s + 1),
                 VarAddr::Parameter(_) => VarAddr::Parameter(0), // placeholder for field slot
+                // OuterGroupRef refers to the outer dict's group — slot-get is one after field-get.
+                // hops stays the same; only the slot index increments by one.
+                VarAddr::OuterGroupRef(hops, s) => VarAddr::OuterGroupRef(*hops, s + 1),
             };
 
             let (getter_name, getter_addr, key_arg) = if let Some(typed_slot) = field_slot.get() {

@@ -200,7 +200,22 @@ pub async fn run_loader_pipeline(
         // The capability names must be in root_frame so the resolver can assign VarAddr
         // (ClosureCapture(BUILTIN_CLOSURE_OFFSET + slot)) and the runtime fallback
         // in capability_env can then provide the actual thunk.
-        let mut root_frame: indexmap::IndexMap<String, u32> = crate::builtins_core::core_builtins()
+        // Include all static builtin modules so the resolver can assign ClosureCapture
+        // addresses to any builtin name (builtin-lower, builtin-eval, etc.). At runtime,
+        // ClosureCapture(BUILTIN_CLOSURE_OFFSET + slot) misses in closure_env and falls
+        // back to ctx.builtin_defs, which also includes all builtins.
+        let all_static_builtins: Vec<crate::value::BuiltinDef> =
+            crate::builtins_core::core_builtins()
+                .into_iter()
+                .chain(crate::builtins_meta::meta_builtins())
+                .chain(crate::builtins_string::string_builtins())
+                .chain(crate::builtins_async::async_builtins())
+                .chain(crate::builtins_math::math_builtins())
+                .chain(crate::builtins_io::io_builtins())
+                .chain(crate::builtins_net::net_builtins())
+                .chain(crate::builtins_datetime::datetime_builtins())
+                .collect();
+        let mut root_frame: indexmap::IndexMap<String, u32> = all_static_builtins
             .iter()
             .enumerate()
             .map(|(i, def)| (def.name.to_string(), i as u32))

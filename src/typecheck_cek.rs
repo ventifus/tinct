@@ -1434,6 +1434,8 @@ async fn infer_var_ref(
                     crate::ast::VarAddr::LetrecGroupMember(i) => (0u32, *i),
                     crate::ast::VarAddr::ClosureCapture(i) => (1u32, *i),
                     crate::ast::VarAddr::Parameter(i) => (0u32, *i),
+                    // OuterGroupRef refers to an outer dict's letrec group — same level as LGM.
+                    crate::ast::VarAddr::OuterGroupRef(_hops, i) => (0u32, *i),
                 };
                 slot_scheme = env.read().unwrap().get_scheme_at(level, slot);
             }
