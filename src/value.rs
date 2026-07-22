@@ -1335,10 +1335,8 @@ pub struct Thunk {
     pub(crate) span: Span,
 }
 
-#[allow(dead_code)]
 pub(crate) struct ThunkPanicGuard(pub(crate) Option<Arc<Thunk>>);
 
-#[allow(dead_code)]
 impl ThunkPanicGuard {
     pub(crate) fn settle(mut self, result: Result<Value, Arc<EvalError>>) {
         let thunk = self.0.take().unwrap();

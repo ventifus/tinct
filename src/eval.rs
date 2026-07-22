@@ -1450,7 +1450,13 @@ pub fn materialize<'a>(
 
                 ThunkState::Unevaluated => {
                     if let Some(state) = thunk.try_claim() {
-                        let _result = crate::eval_materialize::run_owned(state, thunk, ctx).await;
+                        let guard =
+                            crate::value::ThunkPanicGuard(Some(Arc::clone(thunk)));
+                        let result =
+                            crate::eval_materialize::run_owned(state, thunk, ctx).await;
+                        guard.settle(result.map_err(|e| Arc::new(*e)));
+                    } else {
+                        thunk.settled().await;
                     }
                 }
             }

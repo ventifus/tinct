@@ -1,0 +1,13 @@
+# Diamond DAG concurrency test: two tasks await the same shared thunk.
+# Both tasks should successfully materialize the shared value without cycle errors.
+# This tests that spawn_local + settled() correctly handles diamond patterns.
+[
+  shared: [+ 1 2]
+  a: [task [fn [] shared]]
+  b: [task [fn [] shared]]
+  ra: [await a]
+  rb: [await b]
+  result: [and [= ra 3] [= rb 3]]
+]
+=== out
+Dict({"shared": Int(3), "a": Task, "b": Task, "ra": Int(3), "rb": Int(3), "result": Variant(Boolean.True, Null)})
