@@ -222,7 +222,7 @@ impl TypeScheme {
 ///
 /// Stored in `InferState.scheme_map` during inference, then extracted and returned as part
 /// of the type-checking result for LSP consumers.
-pub type SchemeMap = HashMap<(u32, u32), TypeScheme>;
+pub type SchemeMap = HashMap<(u32, u32, u32, u32), TypeScheme>;
 
 /// Type-stage entry: either a resolved type or a function that must be evaluated.
 #[derive(Debug, Clone)]
@@ -487,9 +487,9 @@ impl InferState {
     /// the parsed AST; Rust-internal creation sites use `rust_span!()` to embed the Rust
     /// source location. No 0:0 or empty-file spans are permitted.
     pub fn typevar_name(source: &str, kind: &Kind, span: &Span) -> String {
-        let file = span.file.path.as_ref();
-        let line = span.start.line;
-        let col = span.start.column;
+        let file = span.file.as_ref();
+        let line = span.start_line;
+        let col = span.start_col;
         match kind {
             Kind::Label => format!("ʟᴀʙᴇʟ∷{}⧼{}:{}:{}⧽", source, file, line, col),
             _ => format!("{}⧼{}:{}:{}⧽", source, file, line, col),

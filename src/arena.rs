@@ -9,9 +9,6 @@
 
 use std::sync::Arc;
 
-/// Per-thunk byte estimate for memory budget tracking.
-const PER_THUNK_BYTES: usize = std::mem::size_of::<crate::value::Thunk>() + 32;
-
 /// A handle to a thunk in the arena. Copy-cheap (8 bytes).
 /// `scope_id` indexes into `ScopeArena.scopes`; `slot` is the ordinal position within that Scope.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -60,10 +57,6 @@ impl ScopeArena {
             scope.parent = None;
             // slots was cleared by drop_scope; reserve capacity for new use.
             scope.slots.reserve(slot_count);
-            let actual_capacity = scope.slots.capacity();
-            let scope_bytes = std::mem::size_of::<Scope>()
-                + actual_capacity * std::mem::size_of::<Option<Arc<crate::value::Thunk>>>();
-            crate::memory_budget::record_scope_alloc(scope_bytes);
             return id;
         }
         let len = self.scopes.len();
@@ -74,13 +67,6 @@ impl ScopeArena {
         );
         let id = ScopeId(len as u32);
         self.scopes.push(Scope::new(None, slot_count));
-        // Read the actual capacity immediately after Vec::with_capacity(slot_count); for a
-        // freshly created Vec this equals slot_count, but using capacity() here ensures the
-        // alloc-side matches the free-side (drop_scope) which also uses capacity().
-        let actual_capacity = self.scopes.last().expect("just pushed").slots.capacity();
-        let scope_bytes = std::mem::size_of::<Scope>()
-            + actual_capacity * std::mem::size_of::<Option<Arc<crate::value::Thunk>>>();
-        crate::memory_budget::record_scope_alloc(scope_bytes);
         id
     }
 
@@ -92,10 +78,6 @@ impl ScopeArena {
             scope.parent = Some(parent_id);
             // slots was cleared by drop_scope; reserve capacity for new use.
             scope.slots.reserve(slot_count);
-            let actual_capacity = scope.slots.capacity();
-            let scope_bytes = std::mem::size_of::<Scope>()
-                + actual_capacity * std::mem::size_of::<Option<Arc<crate::value::Thunk>>>();
-            crate::memory_budget::record_scope_alloc(scope_bytes);
             return id;
         }
         let len = self.scopes.len();
@@ -106,13 +88,6 @@ impl ScopeArena {
         );
         let id = ScopeId(len as u32);
         self.scopes.push(Scope::new(Some(parent_id), slot_count));
-        // Read the actual capacity immediately after Vec::with_capacity(slot_count); for a
-        // freshly created Vec this equals slot_count, but using capacity() here ensures the
-        // alloc-side matches the free-side (drop_scope) which also uses capacity().
-        let actual_capacity = self.scopes.last().expect("just pushed").slots.capacity();
-        let scope_bytes = std::mem::size_of::<Scope>()
-            + actual_capacity * std::mem::size_of::<Option<Arc<crate::value::Thunk>>>();
-        crate::memory_budget::record_scope_alloc(scope_bytes);
         id
     }
 
@@ -139,6 +114,19 @@ impl ScopeArena {
                 .cloned()
                 .expect("fill_slot: source ThunkId points to an unfilled slot")
         };
+        self.scopes[env_id.0 as usize].fill(slot_idx, thunk);
+    }
+
+    /// Fill a reserved slot (letrec phase 2) directly from an Arc<Thunk>.
+    ///
+    /// Used when the Arc<Thunk> is already available (e.g., from Value::Dict construction),
+    /// avoiding a round-trip through ThunkId arena lookup.
+    pub fn fill_slot_arc(
+        &mut self,
+        env_id: ScopeId,
+        slot_idx: u32,
+        thunk: Arc<crate::value::Thunk>,
+    ) {
         self.scopes[env_id.0 as usize].fill(slot_idx, thunk);
     }
 
@@ -199,14 +187,6 @@ impl ScopeArena {
     /// onto the `free_list` so that `alloc_root`/`alloc_child` can reuse the slot without
     /// growing the `scopes` Vec.
     pub fn drop_scope(&mut self, env_id: ScopeId) {
-        let scope = &self.scopes[env_id.0 as usize];
-        let live = scope.count_live();
-        // Record scope deallocation: same formula as alloc_root/alloc_child.
-        // Use slots.capacity() to match the with_capacity(slot_count) used at allocation time.
-        let scope_bytes = std::mem::size_of::<Scope>()
-            + scope.slots.capacity() * std::mem::size_of::<Option<Arc<crate::value::Thunk>>>();
-        crate::memory_budget::record_thunk_free(live * PER_THUNK_BYTES, live);
-        crate::memory_budget::record_scope_free(scope_bytes);
         self.scopes[env_id.0 as usize].clear();
         // Make this slot available for future alloc_root/alloc_child calls.
         self.free_list.push(env_id);
@@ -227,12 +207,6 @@ impl ScopeArena {
     pub fn drop_range_and_truncate(&mut self, start_env_id: u32) {
         let end = self.scopes.len() as u32;
         for eid in start_env_id..end {
-            let scope = &self.scopes[eid as usize];
-            let live = scope.count_live();
-            let scope_bytes = std::mem::size_of::<Scope>()
-                + scope.slots.capacity() * std::mem::size_of::<Option<Arc<crate::value::Thunk>>>();
-            crate::memory_budget::record_thunk_free(live * PER_THUNK_BYTES, live);
-            crate::memory_budget::record_scope_free(scope_bytes);
             self.scopes[eid as usize].clear();
             // Do NOT push to free_list — scopes.truncate() below will remove these entries.
         }
@@ -285,7 +259,6 @@ impl Scope {
     pub(crate) fn push(&mut self, thunk: Arc<crate::value::Thunk>) -> u32 {
         let slot = self.slots.len() as u32;
         self.slots.push(Some(thunk));
-        crate::memory_budget::record_and_check(PER_THUNK_BYTES);
         slot
     }
 
@@ -460,11 +433,37 @@ pub fn migrate_value(
     use crate::value::Value;
     match value {
         Value::Dict(map) => {
+            // After T-1772, dict values are Arc<Thunk> directly (not via arena ThunkId).
+            // Migrate each Arc<Thunk> by allocating it into the destination arena and
+            // translating any ThunkIds in its UnevaluatedState.
+            //
+            // No pre-insert cycle-break sentinel is used here (unlike migrate_thunk_id's
+            // two-phase protocol for ThunkId-keyed thunks). This is correct: the cycle-break
+            // protocol uses thunk_map, which is keyed by ThunkId. Arc<Thunk> values stored
+            // directly in Value::Dict have no ThunkId identity — they are not registered in
+            // thunk_map and cannot be referenced by ThunkId from any UnevaluatedState field.
+            // Materialized Value::Dict cycles are also impossible in tinct's value model:
+            // a dict cannot contain itself as a value because Value is eagerly moved, not
+            // heap-aliased at the Value level. Unevaluated dict thunks reference other thunks
+            // by ThunkId (covered by thunk_map), not by Value::Dict nesting.
             let mut new_map = indexmap::IndexMap::with_capacity(map.len());
-            for (key, &thunk_id) in map.iter() {
-                let new_tid =
-                    migrate_thunk_id(thunk_id, src_range, dst_env_id, thunk_map, env_map, arena);
-                new_map.insert(key.clone(), new_tid);
+            for (key, thunk) in map.iter() {
+                // Synthesize a source ThunkId by placing the thunk in the src slot tracking map.
+                // Since the thunk is owned directly (not via ThunkId), we need to push it to dst.
+                // Strategy: push a placeholder to dst, migrate the thunk's content, settle.
+                let placeholder = Arc::new(crate::value::Thunk::placeholder(thunk.span.clone()));
+                let new_tid = arena.push_slot(dst_env_id, Arc::clone(&placeholder));
+                if let Some(val) = thunk.try_get_materialized() {
+                    let migrated_val =
+                        migrate_value(&val, src_range, dst_env_id, thunk_map, env_map, arena);
+                    placeholder.settle(Ok(migrated_val));
+                } else if let Some(state) = thunk.try_claim() {
+                    let translated = translate_unevaluated_state(
+                        state, src_range, dst_env_id, thunk_map, env_map, arena,
+                    );
+                    placeholder.reset(translated);
+                }
+                new_map.insert(key.clone(), arena.get_thunk(new_tid));
             }
             Value::Dict(new_map)
         }
@@ -530,11 +529,11 @@ pub fn migrate_value(
 ///
 /// Variants with no env_id or ThunkId fields (AstNodeField) are returned unchanged.
 ///
-/// **Precondition:** `AnnotatedWrap` thunks must be fully materialized before the caller
-/// invokes `migrate_thunk_id`. This function panics (`unreachable!`) if an unevaluated
-/// `AnnotatedWrap` is encountered. The `ctx` field in `AnnotatedWrap` references the source
-/// `EvalContext`; migrating it unevaluated would leave `ctx` pointing to the source arena
-/// while `inner` points to the destination arena — a use-after-free class bug (B-514 / D-6).
+/// `AnnotatedWrap` is handled by migrating its `inner` ThunkId and carrying `ctx` unchanged.
+/// `ctx` is `Arc<EvalContext>`, which keeps the source arena alive via the `EvalContext`'s
+/// own `Arc` refcount — so carrying it into the migrated state does not produce a dangling
+/// reference. The `Arc` reference count holds the source arena open for exactly as long as
+/// any migrated `AnnotatedWrap` refers to it.
 fn translate_unevaluated_state(
     state: crate::value::UnevaluatedState,
     src_range: &std::ops::Range<u32>,
@@ -546,26 +545,6 @@ fn translate_unevaluated_state(
     use crate::value::UnevaluatedState;
 
     match state {
-        UnevaluatedState::Surface {
-            node,
-            res,
-            types,
-            env_id,
-            ctx,
-        } => {
-            let new_env_id = if src_range.contains(&env_id) {
-                migrate_flat_env(env_id, src_range, dst_env_id, thunk_map, env_map, arena)
-            } else {
-                env_id
-            };
-            UnevaluatedState::Surface {
-                node,
-                res,
-                types,
-                env_id: new_env_id,
-                ctx,
-            }
-        }
         UnevaluatedState::CoreExpr { expr, env_id, ctx } => {
             let new_env_id = if src_range.contains(&env_id) {
                 migrate_flat_env(env_id, src_range, dst_env_id, thunk_map, env_map, arena)
@@ -1198,8 +1177,8 @@ mod tests {
         let tid2 = arena.push_slot(src_env_id, thunk2);
 
         let mut dict_map = indexmap::IndexMap::new();
-        dict_map.insert(key1.clone(), tid1);
-        dict_map.insert(key2.clone(), tid2);
+        dict_map.insert(key1.clone(), arena.get_thunk(tid1));
+        dict_map.insert(key2.clone(), arena.get_thunk(tid2));
         let dict_value = Value::Dict(dict_map);
 
         // Create destination scope
@@ -1218,22 +1197,14 @@ mod tests {
             &mut arena,
         );
 
-        // Extract the migrated dict and verify ThunkIds point to dst_env_id
+        // Extract the migrated dict and verify values are accessible (T-1772: dict stores Arc<Thunk>)
         if let Value::Dict(migrated_map) = &migrated_value {
-            let migrated_tid1 = migrated_map.get(&key1).expect("key 'a' missing");
-            let migrated_tid2 = migrated_map.get(&key2).expect("key 'b' missing");
-            assert_eq!(
-                migrated_tid1.scope_id, dst_env_id.0,
-                "migrated thunk1 should be in dst scope"
-            );
-            assert_eq!(
-                migrated_tid2.scope_id, dst_env_id.0,
-                "migrated thunk2 should be in dst scope"
-            );
+            let thunk1 = migrated_map.get(&key1).expect("key 'a' missing");
+            let thunk2 = migrated_map.get(&key2).expect("key 'b' missing");
 
-            // Verify values are still accessible
-            let val1 = arena.get_thunk(*migrated_tid1).try_get_materialized();
-            let val2 = arena.get_thunk(*migrated_tid2).try_get_materialized();
+            // Verify values are accessible directly from the Arc<Thunk>
+            let val1 = thunk1.try_get_materialized();
+            let val2 = thunk2.try_get_materialized();
             assert_eq!(val1, Some(Value::Int(1)), "migrated value 'a' should be 1");
             assert_eq!(val2, Some(Value::Int(2)), "migrated value 'b' should be 2");
         } else {
@@ -1245,8 +1216,8 @@ mod tests {
 
         // Verify dst dict entries are still accessible after source drop
         if let Value::Dict(migrated_map) = &migrated_value {
-            let migrated_tid1 = migrated_map.get(&key1).expect("key 'a' missing after drop");
-            let val1 = arena.get_thunk(*migrated_tid1).try_get_materialized();
+            let migrated_thunk1 = migrated_map.get(&key1).expect("key 'a' missing after drop");
+            let val1 = migrated_thunk1.try_get_materialized();
             assert_eq!(
                 val1,
                 Some(Value::Int(1)),
@@ -1283,7 +1254,7 @@ mod tests {
             span: rust_span!(),
         });
         let fn_value = Value::Function {
-            params: std::rc::Rc::new(vec![Param {
+            params: std::sync::Arc::new(vec![Param {
                 name: "x".to_string(),
                 annotation: None,
                 variadic: false,

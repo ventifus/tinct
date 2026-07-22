@@ -561,7 +561,7 @@ fn build_to_expr_arm(
 
     let arm = quote! {
         #enum_name::#variant_ident #destructure_pat => {
-            let mut __payload: ::indexmap::IndexMap<crate::value::HashableValue, crate::value::ThunkId> = ::indexmap::IndexMap::new();
+            let mut __payload: ::indexmap::IndexMap<crate::value::HashableValue, ::std::sync::Arc<crate::value::Thunk>> = ::indexmap::IndexMap::new();
             #insert_stmts
             #helpers::make_variant_with_payload(#qualified_tag, __payload, __span, ctx)
         }
@@ -691,44 +691,35 @@ fn build_to_expr_body(
                 #helpers::alloc_span(#ident, ctx)
             },
             FieldStrategy::AnnSpanFlat => {
-                // Emits the main annotation field plus 6 flat span fields.
-                // The main insert happens below; we also emit the 6 extra fields here.
-                let ann_start_offset_key = format!("{}-start-offset", key);
+                // Emits the main annotation field plus 4 flat span fields (line/col only).
+                // Offset is not part of the new compacted Span representation.
+                // The main insert happens below; we also emit the 4 extra fields here.
                 let ann_start_line_key = format!("{}-start-line", key);
                 let ann_start_col_key = format!("{}-start-col", key);
-                let ann_end_offset_key = format!("{}-end-offset", key);
                 let ann_end_line_key = format!("{}-end-line", key);
                 let ann_end_col_key = format!("{}-end-col", key);
 
-                // Push the 6 flat span fields first (main field inserted below)
+                // Push the flat span fields first (main field inserted below)
                 stmts.push(quote! {
                     __payload.insert(
                         crate::value::HashableValue::Str(#key.into()),
                         #helpers::alloc_annotation(#ident, ctx),
                     );
                     __payload.insert(
-                        crate::value::HashableValue::Str(#ann_start_offset_key.into()),
-                        #helpers::alloc_int(#ident.span.start.offset as i64, __span, ctx),
-                    );
-                    __payload.insert(
                         crate::value::HashableValue::Str(#ann_start_line_key.into()),
-                        #helpers::alloc_int(#ident.span.start.line as i64, __span, ctx),
+                        #helpers::alloc_int(#ident.span.start_line as i64, __span, ctx),
                     );
                     __payload.insert(
                         crate::value::HashableValue::Str(#ann_start_col_key.into()),
-                        #helpers::alloc_int(#ident.span.start.column as i64, __span, ctx),
-                    );
-                    __payload.insert(
-                        crate::value::HashableValue::Str(#ann_end_offset_key.into()),
-                        #helpers::alloc_int(#ident.span.end.offset as i64, __span, ctx),
+                        #helpers::alloc_int(#ident.span.start_col as i64, __span, ctx),
                     );
                     __payload.insert(
                         crate::value::HashableValue::Str(#ann_end_line_key.into()),
-                        #helpers::alloc_int(#ident.span.end.line as i64, __span, ctx),
+                        #helpers::alloc_int(#ident.span.end_line as i64, __span, ctx),
                     );
                     __payload.insert(
                         crate::value::HashableValue::Str(#ann_end_col_key.into()),
-                        #helpers::alloc_int(#ident.span.end.column as i64, __span, ctx),
+                        #helpers::alloc_int(#ident.span.end_col as i64, __span, ctx),
                     );
                 });
                 // Skip the normal insert below (already pushed above)
@@ -948,24 +939,22 @@ fn build_from_expr_arm_body(
                 #helpers::get_span_from_dict(&dict, ctx)
             },
             FieldStrategy::AnnSpanFlat => {
-                let start_offset_key = format!("{}-start-offset", desc.key);
                 let start_line_key = format!("{}-start-line", desc.key);
                 let start_col_key = format!("{}-start-col", desc.key);
-                let end_offset_key = format!("{}-end-offset", desc.key);
                 let end_line_key = format!("{}-end-line", desc.key);
                 let end_col_key = format!("{}-end-col", desc.key);
                 quote! {
                     {
                         let __ann = #helpers::get_annotation_field_with_aliases(&dict, #key, #aliases_ts, ctx)?;
-                        let __start_offset = #helpers::get_int_field_with_aliases(&dict, #start_offset_key, &[], ctx)? as u32;
-                        let __start_line   = #helpers::get_int_field_with_aliases(&dict, #start_line_key,   &[], ctx)? as u32;
-                        let __start_col    = #helpers::get_int_field_with_aliases(&dict, #start_col_key,    &[], ctx)? as u32;
-                        let __end_offset   = #helpers::get_int_field_with_aliases(&dict, #end_offset_key,   &[], ctx)? as u32;
-                        let __end_line     = #helpers::get_int_field_with_aliases(&dict, #end_line_key,     &[], ctx)? as u32;
-                        let __end_col      = #helpers::get_int_field_with_aliases(&dict, #end_col_key,      &[], ctx)? as u32;
+                        let __start_line = #helpers::get_int_field_with_aliases(&dict, #start_line_key, &[], ctx)? as u32;
+                        let __start_col  = #helpers::get_int_field_with_aliases(&dict, #start_col_key,  &[], ctx)? as u32;
+                        let __end_line   = #helpers::get_int_field_with_aliases(&dict, #end_line_key,   &[], ctx)? as u32;
+                        let __end_col    = #helpers::get_int_field_with_aliases(&dict, #end_col_key,    &[], ctx)? as u32;
                         let __ann_span = crate::ast::Span::new(
-                            crate::ast::Position { offset: __start_offset, line: __start_line, column: __start_col },
-                            crate::ast::Position { offset: __end_offset,   line: __end_line,   column: __end_col   },
+                            __start_line,
+                            __start_col,
+                            __end_line,
+                            __end_col,
                             crate::rust_span!().file.clone(),
                         );
                         crate::ast::Spanned::new(__ann.node, __ann_span)

@@ -304,7 +304,7 @@ pub(crate) fn builtin_str_slice(
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
-        // Extract the source Rc<str> from the input string
+        // Extract the source Arc<str> from the input string
         let (input_source, input_start, input_end) = match input_val {
             Value::String { source, start, end } => (source, start, end),
             _ => {

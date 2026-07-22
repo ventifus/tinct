@@ -2,7 +2,7 @@
 
 This document is for Rust contributors working in `src/arena.rs` and any code that allocates scopes, pushes slots, or resolves `ThunkId`s. Tinct developers: the arena is the reason all variable access is O(parent-chain depth) — each `[fn ...]` or dict scope adds one hop, and de Bruijn `level` counts those hops from innermost to outermost.
 
-The scope arena is the runtime memory model for lexical scopes and thunk storage. It provides stable, copy-cheap handles to both scopes (`ScopeId`) and individual thunks (`ThunkId`), and implements de Bruijn coordinate-based variable lookup. The scope arena is also the **authoritative type-stage environment** — the type checker reads type-stage resolver functions by name from the arena via `lookup_name_in_scope_chain`.
+The scope arena is the runtime memory model for lexical scopes and thunk storage. It provides stable, copy-cheap handles to both scopes (`ScopeId`) and individual thunks (`ThunkId`), and implements de Bruijn coordinate-based variable lookup. The scope arena is the **authoritative type-stage environment** — the type checker reads type-stage resolver functions from the arena via `type_stage_map` (a pre-computed `HashMap<String, TypeStageEntry>` built by the loader).
 
 ---
 
@@ -14,12 +14,13 @@ ScopeArena
 
 Scope
 ├── slots: Vec<Option<Arc<Thunk>>>   ← indexed by slot (u32 ordinal)
-├── slot_names: Vec<String>          ← parallel to slots; always same length
 └── parent: Option<ScopeId>          ← parent-chain link (None = root)
 
 ThunkId { scope_id: u32, slot: u32 } ← 8 bytes; Copy
 ScopeId(u32)                          ← 4 bytes; Copy
 ```
+
+Slot identity is purely positional (`slot` ordinal within the scope's `slots` vec). Variable names are carried by `Thunk.span.name` — set by `span.with_name(name)` at thunk creation time in `eval_dict.rs`. There is no `slot_names` parallel vec on `Scope`.
 
 `ScopeArena` is a flat `Vec<Scope>`. A `ScopeId` is an absolute index into that vec — it never changes once assigned and is never reused. A `ThunkId` is a stable `(scope_id, slot)` pair: `scope_id` selects the `Scope` and `slot` is the ordinal position of the thunk within that scope's `slots` vec.
 
@@ -53,7 +54,7 @@ Scope frames (`scope_frames` on `EvalContext`) mirror this: they are the resolve
 
 ### Filled Slot (normal binding)
 
-`push_slot(env_id, name, thunk)` appends a `Some(thunk)` entry to the scope's `slots` vec and a corresponding `name` to `slot_names`. Returns the new `ThunkId`. The slot index equals the number of slots before the push.
+`push_slot(env_id, thunk)` appends a `Some(thunk)` entry to the scope's `slots` vec. Returns the new `ThunkId`. The slot index equals the number of slots before the push. The thunk's name (for diagnostics) is set via `thunk.span.name` at creation time, not stored in the scope.
 
 ### Reserved Slot (letrec, two-phase)
 
@@ -61,9 +62,8 @@ Dict construction is letrec-scoped: all entries can mutually reference each othe
 
 **Phase 1 — reserve:**
 ```rust
-let slot_idx = arena.reserve_slot(env_id, name);
+let slot_idx = arena.reserve_slot(env_id);
 // slots[slot_idx] = None  (placeholder)
-// slot_names[slot_idx] = name
 ```
 
 **Phase 2 — fill:**
@@ -78,17 +78,16 @@ A reserved-but-unfilled slot (`None`) is an in-flight letrec placeholder. Forcin
 
 ### Anonymous Slot (alloc_thunk)
 
-The `EvalContext::alloc_thunk(env_id, thunk)` convenience wrapper calls `push_slot`. Once the `name` parameter is added to `push_slot` (see §Code Issues), `alloc_thunk` must pass a synthetic name (e.g., `"#anon"` or similar). This is the primary allocator used by the evaluator for expression-level thunks that do not need a user-visible name for diagnostics.
+The `EvalContext::alloc_thunk(env_id, thunk)` convenience wrapper calls `push_slot`. This is the primary allocator used by the evaluator for expression-level thunks. The thunk's span carries any available name information — there is no separate name parameter on `push_slot`.
 
 ---
 
 ## Invariants
 
-1. **Named slots only.** Every slot — reserved or filled — must have a name in `slot_names`. `push_slot` and `reserve_slot` take a `name: &str` parameter and record it at the same index. Synthetic slots use generated names (e.g., `#mig_N`).
-2. **Parallel vecs.** `slots` and `slot_names` are always kept the same length by the API. Direct mutation of either vec is not allowed outside `Scope`'s own methods.
-3. **Stable indices.** A `ScopeId` or `ThunkId` is valid for the lifetime of the `ScopeArena`. Once assigned, slot indices within a scope never shift. `drop_scope` clears the `Arc<Thunk>` refs but leaves the `ScopeId` in the arena permanently; `slot_names` is preserved for post-drop diagnostics.
-4. **u32 overflow guard.** `alloc_root` and `alloc_child` assert `scopes.len() < u32::MAX`. In practice, memory exhausts first.
-5. **Root scope at index 0.** `EvalContext::new_scope_arena()` allocates the root scope first, so `ScopeId(0)` is always the builtin root. All builtins are pushed into slot 0 at fixed positions matching the resolver's `build_core_env` slot ordering. Any `current_env_id: 0` reference is valid.
+1. **Slot identity is positional.** Slot indices within a scope never shift once assigned. Variable names are carried by `Thunk.span.name`, not by any parallel vec on `Scope`.
+2. **Stable handles.** A `ScopeId` or `ThunkId` is valid for the lifetime of the `ScopeArena`. Once assigned, slot indices within a scope never shift. `drop_scope` clears the `Arc<Thunk>` refs but leaves the `ScopeId` in the arena permanently.
+3. **u32 overflow guard.** `alloc_root` and `alloc_child` assert `scopes.len() < u32::MAX`. In practice, memory exhausts first.
+4. **Root scope at index 0.** `EvalContext::new_scope_arena()` allocates the root scope first, so `ScopeId(0)` is always the builtin root. All builtins are pushed into slot 0 at fixed positions matching the resolver's `build_core_env` slot ordering. Any `current_env_id: 0` reference is valid.
 
 ---
 
@@ -117,22 +116,22 @@ Allocates a child scope whose parent is `parent_id`.
 ### Slot Management
 
 ```rust
-arena.push_slot(env_id: ScopeId, name: &str, thunk: Arc<Thunk>) -> ThunkId
+arena.push_slot(env_id: ScopeId, thunk: Arc<Thunk>) -> ThunkId
 ```
 
-Appends a filled slot with its name. Returns the new `ThunkId`. The slot index equals the scope's current length before the push.
+Appends a filled slot. Returns the new `ThunkId`. The slot index equals the scope's current length before the push.
 
 ```rust
-arena.reserve_slot(env_id: ScopeId, name: &str) -> u32
+arena.reserve_slot(env_id: ScopeId) -> u32
 ```
 
-Letrec phase 1. Appends a `None` placeholder slot and records `name` in `slot_names`. Returns the slot index (not a `ThunkId` — the slot is not yet valid for `get_thunk`).
+Letrec phase 1. Appends a `None` placeholder slot. Returns the slot index (not a `ThunkId` — the slot is not yet valid for `get_thunk`).
 
 ```rust
 arena.fill_slot(env_id: ScopeId, slot_idx: u32, src_thunk_id: ThunkId)
 ```
 
-Letrec phase 2. Copies the `Arc<Thunk>` from `src_thunk_id` into the reserved slot. Does not modify `slot_names`.
+Letrec phase 2. Copies the `Arc<Thunk>` from `src_thunk_id` into the reserved slot.
 
 ### Lookup
 
@@ -142,19 +141,6 @@ arena.get_thunk(id: ThunkId) -> Arc<Thunk>
 
 O(1). Panics if the slot is `None` (unfilled placeholder — "use-after-free" message).
 
-```rust
-arena.lookup_name_in_scope_chain(start_env_id: u32, name: &str) -> Option<Arc<Thunk>>
-```
-
-Walks the parent chain from `start_env_id`, searching `slot_names` at each level for a slot whose name equals `name`. Returns the first match's `Arc<Thunk>`, or `None` if the name is not found in any ancestor. Used by the type checker's `resolve_type_head` (Step 4) and `normalize()` to look up type-stage resolver functions in the scope chain. The borrow of the arena must be released before calling `.await` on the result.
-
-### Iteration
-
-```rust
-scope.iter_named() -> impl Iterator<Item = (&str, u32)>
-```
-
-Yields `(name, slot_index)` pairs for all named slots in this scope frame (no parent walk). Used by `lib.rs` to build the root scope frame for `with_scope_frames()`, and by diagnostics tools to enumerate scope contents.
 
 ### Parent Chain Traversal
 
@@ -176,7 +162,7 @@ Returns the full parent chain outermost-first (`[root, ..., start]`). Used by th
 arena.drop_scope(env_id: ScopeId)
 ```
 
-Clears all `Arc<Thunk>` refs in the scope (freeing the thunks if no other owners exist). `slot_names` is preserved for post-drop diagnostics. The `ScopeId` remains in the arena permanently.
+Clears all `Arc<Thunk>` refs in the scope (freeing the thunks if no other owners exist). The `ScopeId` remains in the arena permanently.
 
 ---
 
@@ -188,19 +174,16 @@ The scope arena is the authoritative type-stage environment. When the loader pro
 2. **Forces all thunks** in the dict to build a `type_stage_map: HashMap<String, TypeStageEntry>` — either `Resolved(Type)` for primitive leaf types or `Function(ThunkId)` for parameterized type constructors.
 3. **Sets `type_stage_scope_id`** on the `TypeContextData` to the scope ID of the evaluated type-stage environment via `builtin-tc-with-scope`. This scope ID is then threaded into `InferState.type_stage_scope_id` by `builtin-typecheck-doc`.
 
-The type checker's `resolve_type_head` uses this scope ID in Step 4 of its lookup order:
+The type checker's `resolve_type_head` lookup order:
 
 ```
 1. Kind constraints (Operator, Label)
 2. class_env — type class names before tycon_env
-3. type_stage_map — pre-computed TypeStageEntry map
-4. scope-chain lookup via type_stage_scope_id → lookup_name_in_scope_chain → materialize → call_strict_resolver
-5. Undefined → TypeError
+3. type_stage_map — pre-computed TypeStageEntry map (handles the common case)
+4. Undefined → TypeError
 ```
 
-Step 3 (`type_stage_map`) handles the common case efficiently. Step 4 is the general mechanism: it borrows the arena to look up the name by walking `slot_names`, drops the borrow before the `.await`, then materializes the found thunk. This two-step borrow-then-await pattern is required because `RefCell` borrows cannot cross `.await` points.
-
-Similarly, `normalize()` in `type_normalize.rs` uses the same pattern for `TypeStageApp` node reduction: it extracts `type_stage_scope_id` from the `TypeContext` lock, borrows the arena to call `lookup_name_in_scope_chain`, drops the borrow, then `.await`s the materialization.
+`type_stage_map` is the primary lookup mechanism for type-stage names. The scope arena's `type_stage_scope_id` identifies which scope the type-stage environment lives in, but name lookup goes through `type_stage_map` (built at load time), not by searching slot names in the arena at check time.
 
 ---
 
@@ -220,16 +203,15 @@ migrate_value(value, src_range, dst_env_id, thunk_map, env_map, arena) -> Value
 - **`thunk_map`** and **`env_map`** — translation tables (`HashMap`) that map source `ThunkId`/`ScopeId` to their destination counterparts. Entries are inserted before recursive calls (two-phase cycle-safety at both levels).
 - **Two-phase protocol** — for each node (scope or thunk), a placeholder is allocated in the destination and inserted into the translation table *before* recursing into child nodes. This breaks reference cycles: if a thunk's value refers back to the same thunk, `migrate_thunk_id` finds it in `thunk_map` and returns the already-allocated destination `ThunkId` without recursing further.
 
-`translate_unevaluated_state` handles unevaluated thunks: it rewrites all `env_id` and `ThunkId` fields inside the `UnevaluatedState` so the migrated thunk does not reference scopes in the released range. The six `UnevaluatedState` variants handled are:
+`translate_unevaluated_state` handles unevaluated thunks: it rewrites all `env_id` and `ThunkId` fields inside the `UnevaluatedState` so the migrated thunk does not reference scopes in the released range. The five `UnevaluatedState` variants handled are:
 
-- `Surface` — rewrites `env_id`
 - `AstField` — no arena fields; returned unchanged
 - `CoreExpr` — rewrites `env_id`
 - `BuiltinCall` — rewrites `caller_env_id` and all `ThunkId`s in `args` and `named`
 - `FnCall` — rewrites `caller_env_id`, `func` ThunkId, and all `ThunkId`s in `args` and `named`
 - `Guarded` — rewrites `inner` ThunkId and the `env_id` inside the optional `default` field
 
-`migrate_flat_env` preserves `slot_names` by collecting them from the source scope and passing them to `push_slot` and `reserve_slot` during migration. Slots with empty names get synthetic names (`#mig_N`).
+`migrate_flat_env` copies slot thunks from the source scope into the destination scope via `push_slot` and `reserve_slot`. Migrated thunks retain their original `span.name` values for diagnostics.
 
 ---
 
@@ -242,25 +224,8 @@ The scope arena is **eval-stage only**. The type checker uses a parallel `Env` c
 | Stage | Eval (runtime) | Type check |
 | Threading | `Rc<RefCell<>>` (single-threaded) | `Arc<RwLock<>>` (shared) |
 | Slot storage | `Arc<Thunk>` | `TypeScheme` |
-| Name storage | `slot_names: Vec<String>` | `slots: IndexMap<String, EnvSlot>` |
+| Name storage | `Thunk.span.name` (on each thunk) | `slots: IndexMap<String, EnvSlot>` |
 | Lookup | `get_thunk(ThunkId)` | `get_scheme_at(level, slot)` |
 
-The type-stage integration (`type_stage_scope_id`) is the only path where the type checker reads from the scope arena directly — it does so by name via `lookup_name_in_scope_chain`, not by de Bruijn coordinate.
+The type-stage integration (`type_stage_scope_id`) is the only path where the type checker reads from the scope arena directly — it does so via the pre-computed `type_stage_map` (populated by the loader), not by scanning slot names in the arena.
 
----
-
-## Code Issues
-
-The following inconsistencies were observed in the current state of `src/arena.rs` (file marked `M` in git status) and should be resolved:
-
-1. **Missing `slot_names` field on `Scope`**: The `Scope` struct definition in `src/arena.rs` shows only `slots` and `parent`, but migration code (line 293) references `src_env.slot_names`, tests (line 1261) access `arena.scopes[...].slot_names`, and the invariants described in this document require it. The field must be added: `slot_names: Vec<String>`.
-
-2. **Missing `name` parameter on `push_slot` and `reserve_slot`**: The public `ScopeArena::push_slot` (line 79) and `reserve_slot` (line 88) signatures lack a `name: &str` parameter, but every caller (`eval.rs:191`, `eval_call.rs:314`, `eval_dict.rs:400`, `builtins_meta.rs:1877`, migration code, tests) passes one. The inner `Scope::push` and `Scope::reserve` methods are also missing the name parameter.
-
-3. **Missing `lookup_name_in_scope_chain` method**: Called in `typecheck_annot.rs:2244` and `type_normalize.rs:132` on `ScopeArena`, but not defined anywhere in `src/arena.rs`. This method is required for the type-stage scope-chain lookup path (Step 4 of `resolve_type_head`).
-
-4. **Missing `iter_named` method on `Scope`**: Called in `lib.rs:201`, `eval_core.rs:672`, `builtins.rs:769`, `builtins_meta.rs:1955`, and elsewhere. Not defined in `src/arena.rs`. Must return `impl Iterator<Item = (&str, u32)>` over `slot_names` and their slot indices.
-
-5. **`drop_scope` does not clear `slot_names`**: `Scope::clear()` only clears `slots`, preserving `slot_names` for post-drop diagnostics — this is intentional per invariant 3 above. Ensure `drop_scope` documentation states this explicitly.
-
-All four missing items are required for the codebase to compile correctly. They represent an incomplete edit of `src/arena.rs`.

@@ -1036,9 +1036,9 @@ Source snippets (source lines with caret annotations, like rustc) are rendered b
 **`render_span_snippet(source: &str, span: Span) -> Option<String>`** — public helper in `src/error.rs`:
 
 - Returns `None` for `Span::origin()` (synthetic spans have no source line)
-- Returns `None` if `span.start.line` exceeds the source line count (defensive)
-- Single-line spans: extracts the line, places `^` characters from `start.column` to `end.column` (clamped to line length)
-- Multi-line spans: first line gets `^` from `start.column` to end of line; middle lines get full `^`; last line gets `^` from column 0 to `end.column`
+- Returns `None` if `span.start_line` exceeds the source line count (defensive)
+- Single-line spans: extracts the line, places `^` characters from `start_col` to `end_col` (clamped to line length)
+- Multi-line spans: first line gets `^` from `start_col` to end of line; middle lines get full `^`; last line gets `^` from column 0 to `end_col`
 
 **CLI integration (`src/main.rs`):** Error display after `eval_file` receives the source string from the file read. Append snippet at display site.
 

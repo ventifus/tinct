@@ -147,10 +147,11 @@ mod tests {
         let Value::Dict(map) = val else {
             panic!("expected Dict, got: {val:?}");
         };
-        let result_id = *map
+        let result_thunk = map
             .get(&crate::value::HashableValue::Str("result".into()))
+            .cloned()
             .expect("key 'result' must exist");
-        let result_val = crate::eval::materialize(&ctx.get_thunk(result_id), None, &ctx)
+        let result_val = crate::eval::materialize(&result_thunk, None, &ctx)
             .await
             .unwrap();
         assert_eq!(
@@ -176,10 +177,11 @@ mod tests {
         let Value::Dict(map) = outer_val else {
             panic!("expected Dict, got: {outer_val:?}");
         };
-        let result_id = *map
+        let result_thunk = map
             .get(&crate::value::HashableValue::Str("result".into()))
+            .cloned()
             .expect("key 'result' must exist in outer dict");
-        let result = crate::eval::materialize(&ctx.get_thunk(result_id), None, &ctx).await;
+        let result = crate::eval::materialize(&result_thunk, None, &ctx).await;
 
         assert!(
             result.is_err(),
@@ -209,10 +211,11 @@ mod tests {
         let Value::Dict(map) = outer_val else {
             panic!("expected Dict, got: {outer_val:?}");
         };
-        let result_id = *map
+        let result_thunk = map
             .get(&crate::value::HashableValue::Str("result".into()))
+            .cloned()
             .expect("key 'result' must exist");
-        let result_val = crate::eval::materialize(&ctx.get_thunk(result_id), None, &ctx)
+        let result_val = crate::eval::materialize(&result_thunk, None, &ctx)
             .await
             .unwrap();
         assert_eq!(

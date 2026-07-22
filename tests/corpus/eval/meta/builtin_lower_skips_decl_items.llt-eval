@@ -1,0 +1,41 @@
+# builtin-lower correctly skips Decl items (type/class/instance declarations) when
+# building CoreDocument entries so that expression keys are contiguous (0-indexed even
+# when Decl items appear before Expr items in the document).
+#
+# The source document has a top-level [type ...] declaration (SurfaceItem::Decl) followed
+# by a dict expression (SurfaceItem::Expr). builtin-lower must not increment the key counter
+# for the Decl item, so the single Expr item gets key "0", not "1".
+#
+# CoreDocument entry keys are internal to the Rust type and not accessible from tinct
+# builtins, so we verify key contiguity indirectly:
+#   1. builtin-doc-expressions counts only Expr items (not Decls): count must be 1.
+#   2. builtin-lower succeeds and returns a CoreDocument (not an error).
+#   3. builtin-eval on the same document returns the correct value {x: 42},
+#      confirming the Expr item's content is reached and the Decl does not
+#      contribute a spurious entry to the evaluation result.
+#
+# If the original bug (incrementing expr_idx for Decl items) were present, the
+# CoreDocument would still have 1 entry but keyed "1" instead of "0". That specific
+# failure is not detectable at the tinct level; the checks below verify the
+# surrounding invariants that the fix maintains.
+[call [fn [let]
+  [src:     [builtin-str-bytes "[type Color Red Green Blue]\n[x: 42]"]]
+  [parsed:  [builtin-parse src "test.llt"]]
+  [desug:   [builtin-desugar parsed.program]]
+  [docs:    [builtin-program-docs desug]]
+  [doc0:    [builtin-get 0 docs]]
+  # Count only Expr items (Decl items must not be counted).
+  [doc-exprs: [builtin-doc-expressions doc0]]
+  [expr-count-ok: [builtin-eq-int [builtin-dict-length doc-exprs] 1]]
+  [resolved: [builtin-resolve doc0 []]]
+  [tc:      [builtin-make-type-ctx]]
+  [typed:   [builtin-typecheck-doc resolved.doc tc]]
+  [lowered: [builtin-lower typed.doc]]
+  [lower-type-ok: [builtin-eq-string [builtin-type-of lowered] "CoreDocument"]]
+  # Evaluate the document: Decl item must be skipped, Expr item [x: 42] must be eval'd.
+  [ev:      [builtin-eval typed.doc 0]]
+  [x-val:   [builtin-get "x" ev.result]]
+  [eval-ok: [builtin-eq-int x-val 42]]
+  [builtin-int-add [builtin-int-add expr-count-ok lower-type-ok] eval-ok]]]
+=== out
+Int(3)

@@ -13,11 +13,8 @@ use crate::Annotation;
 use indexmap::IndexMap;
 use std::sync::{Arc, RwLock};
 
-fn test_file(src: &str) -> Arc<crate::ast::SourceFile> {
-    Arc::new(crate::ast::SourceFile {
-        path: Arc::from(file!()),
-        content: Arc::from(src),
-    })
+fn test_file(_src: &str) -> Arc<str> {
+    Arc::from(file!())
 }
 
 /// Helper for test env lookup: look up a scheme by name in an Arc<RwLock<Env>>.
@@ -1211,7 +1208,12 @@ async fn test_call_any_callee_populates_type_map_for_positional_args() {
         crate::ast::SurfaceExpression::Call { args, .. } => {
             assert_eq!(args.len(), 1, "expected exactly one positional arg");
             let arg = &args[0];
-            (arg.span.start.offset, arg.span.end.offset)
+            (
+                arg.span.start_line,
+                arg.span.start_col,
+                arg.span.end_line,
+                arg.span.end_col,
+            )
         }
         other => panic!("expected SurfaceExpression::Call, got {other:?}"),
     };
@@ -4002,12 +4004,12 @@ async fn test_annotation_error_reported_at_source() {
         "expected annotation resolution error mentioning 'UndefinedType', got: {:?}",
         errors.iter().map(|e| e.message.clone()).collect::<Vec<_>>()
     );
-    // The error should point at or after the '@' (offset 7), not at offset 0.
+    // The error should point at or after the '@' (col 8, after "[f: [fn@"), not at col 1.
     if let Some(e) = annotation_error {
         assert!(
-            e.primary_span().start.offset >= 7,
-            "error should point to annotation site (offset 7+), got offset {}",
-            e.primary_span().start.offset
+            e.primary_span().start_col >= 8,
+            "error should point to annotation site (col 8+), got col {}",
+            e.primary_span().start_col
         );
     }
 }

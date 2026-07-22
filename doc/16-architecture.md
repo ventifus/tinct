@@ -44,7 +44,7 @@
 
 **Key contracts:**
 
-- `BuiltinFn` signature: `fn(BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>>` (no `+ Send` — futures are `!Send`); `BuiltinArgs` carries owned `args: Vec<Arc<Thunk>>`, `named: Option<IndexMap<String, Arc<Thunk>>>`, `call_span: Span`, `ctx: Arc<EvalContext>`
+- `BuiltinFn` signature: `fn(BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>>` (no `+ Send` — futures are `!Send`); `BuiltinArgs` carries owned `args: Vec<ThunkId>`, `named: Option<IndexMap<String, ThunkId>>`, `call_span: Span`, `ctx: Arc<EvalContext>`
 - `Value` serialization: every `Value` variant must have handlers in both `JsonVisitor` (via `visit_value`) and `value_to_display_string()` (src/lib.rs)
 - Type checker role: advisory only — type errors are warnings, evaluation proceeds regardless
 - AST coverage: every `SurfaceExpression` variant requires both a `lower` handler (src/lower.rs producing `CoreExpr`) and a `typecheck` handler (src/typecheck.rs); every `CoreExpr` variant requires an `eval_core_expr` handler (src/eval.rs)
@@ -314,7 +314,7 @@ struct EvalContext {
 
 **Threading pattern:** `Arc<EvalContext>` — thunks capture `Arc::clone(&ctx)` at creation time and use it at materialization time. This is necessary because thunks are deferred (all `UnevaluatedState` variants store `ctx: Arc<EvalContext>`) and materialized in a different stack frame than where they were created.
 
-**UnevaluatedState captures EvalContext:** All six `UnevaluatedState` variants (`Surface`, `AstField`, `CoreExpr`, `BuiltinCall`, `FnCall`, `Guarded`) store `ctx: Arc<EvalContext>` (except `Guarded` which does not need one). Environments are referenced by `env_id: u32` index into the `ScopeArena`. When a thunk is materialized via `try_claim()`, the captured context and env_id are used for evaluation.
+**UnevaluatedState captures EvalContext:** All five `UnevaluatedState` variants (`AstField`, `CoreExpr`, `BuiltinCall`, `FnCall`, `Guarded`) store `ctx: Arc<EvalContext>` (except `Guarded` which does not need one). Environments are referenced by `env_id: u32` index into the `ScopeArena`. When a thunk is materialized via `try_claim()`, the captured context and env_id are used for evaluation.
 
 **BuiltinArgs:** Carries `ctx: Arc<EvalContext>` (was `Rc<EvalContext>` before the runtime-v2 sprint). Data is owned (not borrowed) so the struct can be moved into `Box<dyn Future>` (which has an implicit `'static` bound). Most builtins ignore ctx; `$include` and I/O builtins use it for include resolution and sandboxing. There is no `depth` field — the iterative CEK machine (see §Iterative Evaluator) uses heap-allocated continuations rather than tracking recursion depth.
 
@@ -345,9 +345,9 @@ enum Value {
         env: Environment,
     },
     Builtin(fn(BuiltinArgs) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Error>>>>),
-    // BuiltinArgs { args: Vec<Arc<Thunk>>, named: Option<IndexMap<String, Arc<Thunk>>>,
+    // BuiltinArgs { args: Vec<ThunkId>, named: Option<IndexMap<String, ThunkId>>,
     //               call_span: Span, ctx: Arc<EvalContext> }
-    // (updated for async — see src/value.rs for current type alias)
+    // (see src/value.rs for current type alias)
 }
 
 struct Thunk {
@@ -362,7 +362,6 @@ struct ThunkInner {
 }
 
 enum UnevaluatedState {
-    Surface { node, res, types, env_id, ctx },    // pre-lowering AST node from builtin-eval
     AstField { node, field, ctx },                 // lazy AST field access
     CoreExpr { expr, env_id, ctx },                // lowered expression body
     BuiltinCall { def, args, named, call_span, caller_env_id, ctx },  // deferred builtin call

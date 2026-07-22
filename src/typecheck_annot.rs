@@ -4219,10 +4219,9 @@ async fn variant_payload_dict(
         Value::Dict(dict) => {
             // Extract each string-keyed field, materializing the field value.
             let mut fields = HashMap::new();
-            for (key, thunk_id) in &dict {
+            for (key, thunk) in &dict {
                 if let HashableValue::Str(k) = key {
-                    let field_thunk = ctx.get_thunk(*thunk_id);
-                    if let Ok(v) = crate::eval::materialize(&field_thunk, None, ctx).await {
+                    if let Ok(v) = crate::eval::materialize(thunk, None, ctx).await {
                         fields.insert(k.to_string(), v);
                     }
                 }
@@ -4254,9 +4253,8 @@ async fn collect_typenode_seq(
     let mut i = 0i64;
     loop {
         match dict.get(&HashableValue::Int(i)) {
-            Some(thunk_id) => {
-                let thunk = ctx.get_thunk(*thunk_id);
-                let val = crate::eval::materialize(&thunk, None, ctx).await.ok()?;
+            Some(thunk) => {
+                let val = crate::eval::materialize(thunk, None, ctx).await.ok()?;
                 let ty = Box::pin(typenode_value_to_type(&val, ctx)).await?;
                 result.push(ty);
                 i += 1;
@@ -4384,10 +4382,9 @@ fn typenode_value_to_type<'a>(
                             Value::Dict(ref dict) => {
                                 let mut out: indexmap::IndexMap<String, Type> =
                                     indexmap::IndexMap::new();
-                                for (key, thunk_id) in dict {
+                                for (key, thunk) in dict {
                                     if let HashableValue::Str(k) = key {
-                                        let thunk = ctx.get_thunk(*thunk_id);
-                                        let v = crate::eval::materialize(&thunk, None, ctx)
+                                        let v = crate::eval::materialize(thunk, None, ctx)
                                             .await
                                             .ok()?;
                                         let ty = typenode_value_to_type(&v, ctx).await?;
@@ -4579,8 +4576,7 @@ fn typenode_value_to_type<'a>(
             Value::Dict(entries) if !entries.is_empty() => {
                 let mut prefix: Option<String> = None;
                 let mut all_match = true;
-                for (_key, thunk_id) in entries {
-                    let thunk = ctx.get_thunk(*thunk_id);
+                for (_key, thunk) in entries {
                     if let Some(val) = thunk.try_get_materialized() {
                         match val {
                             Value::Variant { tycon, .. } => match &prefix {
@@ -4635,16 +4631,10 @@ fn type_to_typenode_value<'a>(
     span: Span,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<Value>> + 'a>> {
     Box::pin(async move {
-        let alloc_str = |s: &str| -> crate::value::ThunkId {
-            ctx.alloc_thunk(
-                0,
-                Arc::new(Thunk::value(crate::value::string_val(s), span.clone())),
-            )
-        };
-        let alloc_int = |n: i64| -> crate::value::ThunkId {
-            ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Int(n), span.clone())))
-        };
-        let alloc_val = |v: Value| -> crate::value::ThunkId {
+        // mk_arc: build an Arc<Thunk> for dict value insertion (T-1772: Value::Dict stores Arc<Thunk>)
+        let mk_arc = |v: Value| -> Arc<Thunk> { Arc::new(Thunk::value(v, span.clone())) };
+        // alloc_payload: allocate a Value::Dict as Variant payload ThunkId (arena allocation needed)
+        let alloc_payload = |v: Value| -> crate::value::ThunkId {
             ctx.alloc_thunk(0, Arc::new(Thunk::value(v, span.clone())))
         };
 
@@ -4690,11 +4680,17 @@ fn type_to_typenode_value<'a>(
                 payload: None,
             },
             Type::TypeVar(name, level) => {
-                let mut payload: indexmap::IndexMap<HashableValue, crate::value::ThunkId> =
+                let mut payload: indexmap::IndexMap<HashableValue, Arc<Thunk>> =
                     indexmap::IndexMap::new();
-                payload.insert(HashableValue::Str("name".into()), alloc_str(name));
-                payload.insert(HashableValue::Str("level".into()), alloc_int(*level as i64));
-                let payload_tid = alloc_val(Value::Dict(payload));
+                payload.insert(
+                    HashableValue::Str("name".into()),
+                    mk_arc(crate::value::string_val(name)),
+                );
+                payload.insert(
+                    HashableValue::Str("level".into()),
+                    mk_arc(Value::Int(*level as i64)),
+                );
+                let payload_tid = alloc_payload(Value::Dict(payload));
                 Value::Variant {
                     tycon: Arc::from("TypeNode"),
                     ctor: Arc::from("TypeVar"),
@@ -4703,22 +4699,25 @@ fn type_to_typenode_value<'a>(
             }
             Type::Dict(row) => {
                 // TypeNode.Dict { fields: dict_of_typenodes, open: Bool }
-                let mut fields_map: indexmap::IndexMap<HashableValue, crate::value::ThunkId> =
+                let mut fields_map: indexmap::IndexMap<HashableValue, Arc<Thunk>> =
                     indexmap::IndexMap::new();
                 for (k, v_ty) in &row.fields {
                     let field_tn =
                         Box::pin(type_to_typenode_value(v_ty, ctx, span.clone())).await?;
-                    let field_tid = alloc_val(field_tn);
-                    fields_map.insert(HashableValue::Str(k.clone().into()), field_tid);
+                    fields_map.insert(HashableValue::Str(k.clone().into()), mk_arc(field_tn));
                 }
-                let fields_tid = alloc_val(Value::Dict(fields_map));
                 let open = matches!(row.tail, crate::type_def::RowTail::Uniform { .. });
-                let open_tid = alloc_val(Value::Int(if open { 1 } else { 0 }));
-                let mut payload: indexmap::IndexMap<HashableValue, crate::value::ThunkId> =
+                let mut payload: indexmap::IndexMap<HashableValue, Arc<Thunk>> =
                     indexmap::IndexMap::new();
-                payload.insert(HashableValue::Str("fields".into()), fields_tid);
-                payload.insert(HashableValue::Str("open".into()), open_tid);
-                let payload_tid = alloc_val(Value::Dict(payload));
+                payload.insert(
+                    HashableValue::Str("fields".into()),
+                    mk_arc(Value::Dict(fields_map)),
+                );
+                payload.insert(
+                    HashableValue::Str("open".into()),
+                    mk_arc(Value::Int(if open { 1 } else { 0 })),
+                );
+                let payload_tid = alloc_payload(Value::Dict(payload));
                 Value::Variant {
                     tycon: Arc::from("TypeNode"),
                     ctor: Arc::from("Dict"),
@@ -4726,18 +4725,19 @@ fn type_to_typenode_value<'a>(
                 }
             }
             Type::Union(members) => {
-                let mut member_vals: indexmap::IndexMap<HashableValue, crate::value::ThunkId> =
+                let mut member_vals: indexmap::IndexMap<HashableValue, Arc<Thunk>> =
                     indexmap::IndexMap::new();
                 for (i, m) in members.iter().enumerate() {
                     let m_tn = Box::pin(type_to_typenode_value(m, ctx, span.clone())).await?;
-                    let m_tid = alloc_val(m_tn);
-                    member_vals.insert(HashableValue::Int(i as i64), m_tid);
+                    member_vals.insert(HashableValue::Int(i as i64), mk_arc(m_tn));
                 }
-                let types_tid = alloc_val(Value::Dict(member_vals));
-                let mut payload: indexmap::IndexMap<HashableValue, crate::value::ThunkId> =
+                let mut payload: indexmap::IndexMap<HashableValue, Arc<Thunk>> =
                     indexmap::IndexMap::new();
-                payload.insert(HashableValue::Str("types".into()), types_tid);
-                let payload_tid = alloc_val(Value::Dict(payload));
+                payload.insert(
+                    HashableValue::Str("types".into()),
+                    mk_arc(Value::Dict(member_vals)),
+                );
+                let payload_tid = alloc_payload(Value::Dict(payload));
                 Value::Variant {
                     tycon: Arc::from("TypeNode"),
                     ctor: Arc::from("Union"),
@@ -4990,7 +4990,8 @@ pub(crate) async fn as_type_dispatch(val: &Value, state: &mut InferState) -> Opt
 ///
 /// ```text
 /// SurfaceNode (annotation expr)
-///   → Thunk::surface in a minimal EvalContext
+///   → lower::lower → CoreExpr
+///   → Thunk::core_expr in a minimal EvalContext
 ///   → materialize(...).await   (produces TypeNode Value)
 ///   → typenode_value_to_type
 ///   → Type
@@ -5028,20 +5029,26 @@ pub(crate) async fn eval_type_stage_expr(
     // (written at definition time). Names resolve via the env chain at eval time.
     // All type annotations are inline on AST nodes — no external tables needed.
 
-    // Wrap the SurfaceNode in a lazy thunk that will evaluate it in the eval env.
-    // Use empty resolution and type-annotation tables (no pre-resolved coordinates);
-    // name lookup falls through to the tier-2 name-based path in the evaluator.
-    let surface_thunk = Arc::new(Thunk::surface(
-        Arc::clone(node),
-        Arc::new(std::collections::HashMap::new()),
-        Arc::new(std::collections::HashMap::new()),
+    // Lower the SurfaceNode to CoreExpr, then wrap as a CoreExpr thunk for lazy evaluation.
+    // scope_frames is None here (no loader frames in type-stage context); lower() uses
+    // inline resolution coordinates written on nodes at definition time.
+    let (lowered, lower_diags) = crate::lower::lower(node, None);
+    if let Some(lower_err) = crate::eval_materialize::lower_errors_to_eval_error(lower_diags) {
+        return Err(TypeDiagnostic::error(
+            "type-error",
+            format!("type-stage expression lowering failed: {lower_err}"),
+            node_span.clone(),
+        ));
+    }
+    let core_thunk = Arc::new(Thunk::core_expr(
+        Arc::new(lowered),
         0, // root scope
         Arc::clone(&ctx),
         node_span.clone(),
     ));
 
     // Materialize — type-stage evaluation is pure compute, no I/O.
-    let typenode_val = crate::eval::materialize(&surface_thunk, Some(&node_span), &ctx)
+    let typenode_val = crate::eval::materialize(&core_thunk, Some(&node_span), &ctx)
         .await
         .map_err(|e| {
             TypeDiagnostic::error(

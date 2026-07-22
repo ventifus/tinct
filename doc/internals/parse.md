@@ -49,15 +49,15 @@ Both limits use the same value (256) but are independent checks.
 ### `parse`
 
 ```rust
-pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseError>
+pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, ParseError>
 ```
 
-Parse a complete tinct source string. The caller always provides a `SourceFile` (created with
-`Arc::new(SourceFile { path: ..., content: ... })`). Returns `Ok(ParseOutput)` on success
-(including partial recovery from bracket-internal errors) or `Err(ParseError)` on fatal parse
-failure. There is no anonymous variant — every call carries a meaningful file identity. Tokens
-carry the `SourceFile` from the moment the lexer creates them, so all spans have correct
-attribution from the start.
+Parse a complete tinct source string. The caller always provides a file path as `Arc<str>`.
+Returns `Ok(ParseOutput)` on success (including partial recovery from bracket-internal errors)
+or `Err(ParseError)` on fatal parse failure. There is no anonymous variant — every call carries
+a meaningful file identity. Tokens carry the file path from the moment the lexer creates them,
+so all spans have correct attribution from the start. Source text is NOT stored in spans (T-1771
+Compact Span).
 
 Callers outside the parser: `lib.rs` (`run_loader_pipeline`, `typecheck_source`,
 `typecheck_source_errors_only`), `src/main.rs` (via re-export from `lib.rs`), and corpus test
@@ -155,8 +155,9 @@ returns `Err(...)` immediately — no partial AST is produced for lexer failures
 
 ## Token Types
 
-The lexer produces `Spanned<Token>` values. Every token carries a `Span` with start/end `Position`
-(offset + line + column) and a reference to the `SourceFile`.
+The lexer produces `Spanned<Token>` values. Every token carries a `Span` with start/end line and
+column (`start_line`, `start_col`, `end_line`, `end_col`) and an `Arc<str>` file path. Byte offsets
+are not stored in spans (T-1771 Compact Span).
 
 | Token | Source | Notes |
 |---|---|---|
@@ -384,7 +385,8 @@ as distinct token variants rather than `Identifier`. All other special-form name
 ## Stack Frames
 
 The parser maintains a `Vec<StackFrame>`. An `OpenBracket` pushes one frame; a `CloseBracket` pops
-one and constructs an AST node. All frames carry `span_start: Position` for span construction.
+one and constructs an AST node. All frames carry `span_start: Span` (the opening bracket's span)
+for span construction at close time.
 
 ```rust
 enum StackFrame {

@@ -846,8 +846,7 @@ impl fmt::Display for ErrorKind {
 /// - `definition_span`: where the thunk was defined (the origin of the value being forced)
 /// - `materialization_span`: where the thunk was forced (the call/access site)
 ///
-/// Both spans may carry `file: Option<Arc<SourceFile>>` so that rich source snippets
-/// can be rendered directly from the frame without a separate source-file registry.
+/// Both spans carry a `file: Arc<str>` file path for source location attribution.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StackFrame {
     pub label: String,
@@ -860,9 +859,8 @@ pub struct StackFrame {
 /// Evaluation error with definition-site span, optional materialization-site span,
 /// and a stack trace of enclosing function calls.
 ///
-/// Source file information is embedded in each span's `file: Option<Arc<SourceFile>>` field
-/// (populated by the parser for source-backed spans). There is no separate `source_file`
-/// field — use `self.spans[0].0.file` to obtain the file path and content for rendering.
+/// Each span carries a `file: Arc<str>` file path. Use `self.spans[0].0.file` to obtain
+/// the file path for source location display.
 ///
 /// `spans` is an ordered list of labeled source locations:
 /// - `spans[0]` is the primary span (the main error location, shown in the header).
@@ -1500,17 +1498,12 @@ fn should_display_frame(_frame: &StackFrame) -> bool {
     true
 }
 
-/// Write a source snippet for a stack frame's span, if the span carries file content.
-/// Outputs `\n   |\n{snippet}` — same style as the primary error snippet but for frames.
-fn write_frame_snippet(f: &mut fmt::Formatter<'_>, span: &Span) -> fmt::Result {
-    if !span.file.path.starts_with('<') {
-        if let Some(snippet) = render_span_snippet(&span.file.content, span.clone()) {
-            write!(f, "\n   |")?;
-            for line in snippet.lines() {
-                write!(f, "\n{}", line)?;
-            }
-        }
-    }
+/// Write a source snippet for a stack frame's span.
+///
+/// Source text is no longer embedded in spans (compact Span layout, T-1771).
+/// Snippet rendering requires the caller to supply source text; the Display impl
+/// cannot render snippets without it, so this function is a no-op.
+fn write_frame_snippet(_f: &mut fmt::Formatter<'_>, _span: &Span) -> fmt::Result {
     Ok(())
 }
 
@@ -1527,22 +1520,9 @@ impl fmt::Display for EvalError {
             write!(f, "{}", self.kind)?;
         }
 
-        // Source snippet: rustc-style caret underlining, shown when the span carries source content.
-        // Only rendered when the primary span has an embedded SourceFile (parser-backed spans).
-        // Positioned after the first line so the snippet does not disrupt span location inline text.
-        if let Some(ref def_span) = primary_span {
-            let sf = &def_span.file;
-            if !sf.path.starts_with('<') {
-                if let Some(snippet) = render_span_snippet(&sf.content, (*def_span).clone()) {
-                    write!(f, "\n  --> {}", def_span)?;
-                    write!(f, "\n   |")?;
-                    // render_span_snippet returns lines like "  N | line" and "  N | ^^^"
-                    for line in snippet.lines() {
-                        write!(f, "\n{}", line)?;
-                    }
-                }
-            }
-        }
+        // Source snippet: not rendered in Display because source text is no longer embedded in
+        // spans (compact Span layout, T-1771). Callers that have the source text available should
+        // call render_span_snippet() directly with the source string.
 
         // Note spans: spans[1..] — each displayed as "  note: {label} at {span}".
         // Covers both materialization spans ("evaluated here") and secondary spans.
@@ -1568,7 +1548,7 @@ impl fmt::Display for EvalError {
             write!(
                 f,
                 "\n  in expansion of `{}` at {}:{}",
-                macro_name, call_site.start.line, call_site.start.column
+                macro_name, call_site.start_line, call_site.start_col
             )?;
         }
 
@@ -1701,7 +1681,7 @@ impl std::fmt::Display for TypeDiagnostic {
             write!(
                 f,
                 "{}:{}: {}",
-                span.start.line, span.start.column, self.message
+                span.start_line, span.start_col, self.message
             )
         } else {
             write!(f, "{}", self.message)
@@ -1756,10 +1736,10 @@ pub fn render_span_snippet(source: &str, span: Span) -> Option<String> {
     let lines: Vec<&str> = source.lines().collect();
 
     // Convert position fields to usize for indexing.
-    let start_line = span.start.line as usize;
-    let end_line_raw = span.end.line as usize;
-    let start_col_raw = span.start.column as usize;
-    let end_col_raw = span.end.column as usize;
+    let start_line = span.start_line as usize;
+    let end_line_raw = span.end_line as usize;
+    let start_col_raw = span.start_col as usize;
+    let end_col_raw = span.end_col as usize;
 
     // Span uses 1-based line numbers
     if start_line < 1 || start_line > lines.len() {
@@ -3397,17 +3377,11 @@ bad value (defined at src/test_util.rs:3:5-3:10)
     fn test_render_span_snippet_single_line() {
         let source = "line1\nlet x = 42\nline3";
         let span = Span {
-            start: crate::ast::Position {
-                offset: 6,
-                line: 2,
-                column: 1,
-            },
-            end: crate::ast::Position {
-                offset: 9,
-                line: 2,
-                column: 4,
-            },
             file: rust_span!().file,
+            start_line: 2,
+            start_col: 1,
+            end_line: 2,
+            end_col: 4,
             name: None,
         };
         let snippet = render_span_snippet(source, span).unwrap();
@@ -3441,17 +3415,11 @@ bad value (defined at src/test_util.rs:3:5-3:10)
         // Span covers lines 2-4, col 1 to col 2 (i.e., "let x = [\n  42\n]")
         let source = "line1\nlet x = [\n  42\n]\nline5";
         let span = Span {
-            start: crate::ast::Position {
-                offset: 6,
-                line: 2,
-                column: 1,
-            },
-            end: crate::ast::Position {
-                offset: 21,
-                line: 4,
-                column: 2,
-            },
             file: rust_span!().file,
+            start_line: 2,
+            start_col: 1,
+            end_line: 4,
+            end_col: 2,
             name: None,
         };
         let snippet = render_span_snippet(source, span).unwrap();
@@ -3672,27 +3640,17 @@ bad value (defined at src/test_util.rs:3:5-3:10)
         assert_ne!(DiagnosticLevel::Warn, DiagnosticLevel::Err);
     }
 
-    // ── Span file-path tests (S-783: spans carry file: Option<Arc<SourceFile>>) ────
+    // ── Span file-path tests (S-783: spans carry file path for error messages) ────
 
-    /// Helper: build a Span whose `file` field is populated with a given path.
+    /// Helper: build a Span with a given file path.
     /// The span position itself is (line=3, col=5) → (line=3, col=10).
     fn span_with_file(path: &str) -> Span {
-        use crate::ast::{Position, SourceFile};
         Span {
-            start: Position {
-                offset: 10,
-                line: 3,
-                column: 5,
-            },
-            end: Position {
-                offset: 15,
-                line: 3,
-                column: 10,
-            },
-            file: Arc::new(SourceFile {
-                path: Arc::from(path),
-                content: Arc::from(""),
-            }),
+            file: Arc::from(path),
+            start_line: 3,
+            start_col: 5,
+            end_line: 3,
+            end_col: 10,
             name: None,
         }
     }
@@ -3724,7 +3682,7 @@ bad value (defined at src/test_util.rs:3:5-3:10)
 
     #[test]
     fn test_display_error_with_file_in_definition_span() {
-        // When definition_span carries a SourceFile, the error Display line must
+        // When definition_span carries a file path, the error Display line must
         // include the file path in the "defined at ..." clause.
         //
         // Expected: "oops (defined at prelude.llt:3:5-3:10)"
@@ -3770,22 +3728,12 @@ bad value (defined at src/test_util.rs:3:5-3:10)
         let _mat_span = span_with_file("user.llt");
         // Give mat_span a different position so it differs from def_span.
         let mat_span = {
-            use crate::ast::{Position, SourceFile};
             Span {
-                start: Position {
-                    offset: 20,
-                    line: 10,
-                    column: 1,
-                },
-                end: Position {
-                    offset: 25,
-                    line: 10,
-                    column: 6,
-                },
-                file: Arc::new(SourceFile {
-                    path: Arc::from("user.llt"),
-                    content: Arc::from(""),
-                }),
+                file: Arc::from("user.llt"),
+                start_line: 10,
+                start_col: 1,
+                end_line: 10,
+                end_col: 6,
                 name: None,
             }
         };
@@ -3815,7 +3763,7 @@ bad value (defined at src/test_util.rs:3:5-3:10)
     #[test]
     fn test_display_error_stack_frame_with_file() {
         // Stack frames use format_span_location for their "in fn at location" line.
-        // When a frame's definition_span carries a SourceFile, the frame location
+        // When a frame's definition_span carries a file path, the frame location
         // must include the file path.
         //
         // Scenario: error in user code, stack frame from "prelude.llt".

@@ -43,7 +43,6 @@ pub use value::{string_val, ChannelInner, ClockCapInner, DirPerms, HashableValue
 pub struct EvalContext {
     pub config: Arc<EvalConfig>,         // base_dir, no_fs, require_integrity, macro_injects_map
     pub(crate) scope_arena: Rc<RefCell<ScopeArena>>,  // all thunks and scopes
-    pub(crate) program_store: Rc<RefCell<Vec<SurfaceProgram>>>,  // for Value::Program
     pub env_allowed: Option<HashSet<String>>,          // env-var allowlist
     pub blame_map: Mutex<HashMap<ThunkId, String>>,    // pipeline blame for %
     pub boundary_guards: RwLock<HashMap<Span, Type>>,  // type-checker → evaluator guards
@@ -158,7 +157,6 @@ Unevaluated ──try_claim()──► InProgress ──settle(Ok)──► Mate
 
 ```rust
 pub enum UnevaluatedState {
-    Surface { node, res, types, env_id, ctx },        // pre-lowering (eval builtin only)
     AstField { node, field, ctx },                    // lazy AST field access
     CoreExpr { expr, env_id, ctx },                   // lowered CoreExpr body
     BuiltinCall { def, args, named, call_span, caller_env_id, ctx },
@@ -166,8 +164,6 @@ pub enum UnevaluatedState {
     Guarded { inner, expected, field_path, guard_span, blame_label, default },
 }
 ```
-
-`Surface` thunks are created only by the `eval` builtin — they carry a `SurfaceNode` that is lowered to `CoreExpr` at force time. All code that goes through the standard evaluation pipeline uses `CoreExpr` thunks.
 
 `AstField` thunks perform a single synchronous field extraction from a `SurfaceNode` (for `ast-of` / `quote` field lazy access). They never recurse into the CEK machine.
 
@@ -179,7 +175,6 @@ pub enum UnevaluatedState {
 |---|---|
 | `Thunk::value(v, span)` | Pre-materialized — `OnceCell` set immediately |
 | `Thunk::core_expr(expr, env_id, ctx, span)` | `CoreExpr` |
-| `Thunk::surface(node, res, types, env_id, ctx, span)` | `Surface` |
 | `Thunk::ast_field(node, field, ctx, span)` | `AstField` |
 | `Thunk::builtin_call(def, args, named, span, caller_env_id, ctx)` | `BuiltinCall` |
 | `Thunk::fn_call(func, args, named, call_span, caller_env_id, ...)` | `FnCall` |
@@ -311,8 +306,7 @@ Inspects one thunk's current state and produces the next `Action`. Never forces 
 | `BuiltinCall` | `BuiltinForceArg` (if force_count > 0) or `Memoize` | `Materialize(result_thunk)` |
 | `FnCall` | `PendingCallDispatch` | `Materialize(func_thunk)` |
 | `Guarded` | `GuardedValidate` | `Materialize(inner_thunk)` |
-| `Surface` | lowers to CoreExpr; if TypeAssert: `Memoize + TypeAssertCheck`; else `Memoize` | `Materialize(result_thunk)` |
-| `CoreExpr` | if TypeAssert: `Memoize + TypeAssertCheck`; if Sequential: `Memoize + SequentialStep`; if Match: `Memoize + MatchDispatch`; else `Memoize` | `Materialize(result_thunk)` or `EvalCore` |
+| `CoreExpr` | if TypeAssert: `Memoize + TypeAssertCheck`; if Sequential: `Memoize + LetrecChainStep`; if Match: `Memoize + MatchDispatch`; else `Memoize` | `Materialize(result_thunk)` or `EvalCore` |
 | `AstField` | (none) | `Continue(Ok(value))` — synchronous |
 
 **TypeAssert and Sequential/Match are handled inline** in `dispatch_state` (not via eval_core_expr round-trip) to avoid creating redundant CoreExpr thunks that would loop back into the same branch.
@@ -333,8 +327,8 @@ All large payloads are boxed so `Cont` fits in 96 bytes (one cache line). The st
 | `GuardedValidate` | `Guarded` dispatch | Type-check forced inner value; wrap record fields if record type; memoize or fallback to default |
 | `BuiltinForceArg` | `BuiltinCall` dispatch when `force_count > 0` or `Strictness::Seq` arg | Pre-materialize argument; when all forced args done, dispatch builtin |
 | `TypeAssertCheck` | TypeAssert inline path | Validate forced value against annotation type; check `is:` predicate if present |
-| `SequentialStep` | `Sequential` inline path | Evaluate next expression in body; thread dict bindings into scope |
-| `VariantUnpackForSeq` | `SequentialStep` when result is `Variant` | Unpack payload dict; add fields to scope; continue SequentialStep |
+| `LetrecChainStep` | `Sequential` inline path | Evaluate next expression in body; thread dict bindings into scope |
+| `VariantUnpackForLetrecChain` | `LetrecChainStep` when result is `Variant` | Unpack payload dict; add fields to scope; continue LetrecChainStep |
 | `MatchDispatch` | `Match` inline path | Try each arm pattern; on match evaluate body; on exhaustion error |
 | `MatchGuardCheck` | `MatchDispatch` | Check guard expression truthiness; advance arm or fall through |
 | `MatchPredicateCheck` | `MatchDispatch` | Invoke predicate on scrutinee; check `Bool(true)` |
@@ -418,7 +412,7 @@ pub(crate) fn eval_core_expr<'a>(
 | `Dict(entries)` | `eval_dict_core(entries, env_id, ctx)` |
 | `Call { func, args, named_args }` | `eval_call_core(...)` → `Thunk::fn_call` (PendingCall thunk) |
 | `Fn { params, body }` | `Thunk::value(Value::Function { ... })` — materialized at definition |
-| `Sequential(_)` | `Thunk::core_expr(...)` — CEK handles via SequentialStep |
+| `Sequential(_)` | `Thunk::core_expr(...)` — CEK handles via LetrecChainStep |
 | `Match { .. }` | `Thunk::core_expr(...)` — CEK handles via MatchDispatch |
 | `TypeAssert { .. }` | `Thunk::core_expr(...)` — CEK handles via TypeAssertCheck |
 | `Variant { tag, payload: None }` | `Thunk::value(Value::Variant { payload: None })` |
@@ -505,7 +499,7 @@ Binds positional and named arguments to function parameters, then wraps the body
 3. **BIND-NAMED-VALIDATE**: Reject named args that target positionally-bound params (C-NO-OVERLAP) or unknown params (C-NAMED-VALID). System-injected names (containing `∷`) bypass validation.
 4. Allocate a child FlatEnv for the call frame (`alloc_child(closure_env_id, params.len())`).
 5. **Phase 1**: `reserve_slot` for each param in declaration order (establishes correct de Bruijn slot indices).
-6. **BIND-POSITIONAL + BIND-NAMED**: Fill each regular param slot from positional args, named args, or default expressions. Defaults are wrapped as `Thunk::surface` with empty resolution tables (lazy evaluation at access time).
+6. **BIND-POSITIONAL + BIND-NAMED**: Fill each regular param slot from positional args, named args, or default expressions. Defaults are wrapped as `Thunk::core_expr` (lazy evaluation at access time).
 7. **BIND-VARIADIC**: Route excess positional args and unmatched named args into typed buckets or the rest bucket. **Typed variadic params are a strictness point**: materializing is necessary to inspect the runtime type for bucket dispatch. Untyped rest (`...args`) is lazy — args flow in without forcing.
 
 **CoreParam.resolved_type and slot:** The type checker populates `Param.resolved_type` and `Param.slot` (threaded via `CoreParam` fields). `resolved_type` is used at BIND-SPLIT time to classify variadic params into typed buckets vs. the untyped rest. `slot` is the resolver-assigned de Bruijn slot index used by `fill_slot` to place the arg thunk at the correct arena position. These fields were added in S-938 (commit `T-1691/B-533/B-534`) to enable the type checker to communicate type information to the evaluator without a runtime annotation lookup.
@@ -586,7 +580,7 @@ The following must **not** force evaluation (laziness invariants):
 
 | Site | What stays lazy |
 |---|---|
-| Dict construction | Values in `Value::Dict` are `ThunkId`s, never materialized |
+| Dict construction | Values in `Value::Dict` are `Arc<Thunk>`s, never materialized |
 | Function argument passing | Args are `Thunk::core_expr` until the callee forces them |
 | `%` at `---` boundaries | Last thunk passed as-is, no materialization |
 | `Value::Seq { head, tail }` | Both `head` and `tail` are `ThunkId`s |
@@ -634,6 +628,6 @@ The `include` builtin (`builtin_include` in `builtins_meta.rs`) uses `ctx.with_b
 
 **Legacy `Env` chain still present in match dispatch:** `MatchDispatchData`, `MatchGuardCheckData`, and `MatchPredicateCheckData` carry `env: Arc<RwLock<Env>>` alongside `env_id: u32`. This is a transitional state (B-515): pattern matching is migrating from the legacy Env chain to the FlatEnv arena. The `env` field is passed to `match_pattern` and `apply_predicate_to_subject` but is not the authoritative scope — `env_id` is. This dual-path is a known debt item.
 
-**`Thunk::surface` is only for the `eval` builtin:** Standard evaluation goes through `CoreExpr` thunks exclusively. `Surface` thunks bypass the lowering pass cache and re-lower the `SurfaceNode` every time they are first forced. This is acceptable for the `eval` builtin (which evaluates runtime-constructed AST nodes) but would be a performance and correctness problem if used on the standard evaluation path.
+**Standard evaluation uses `CoreExpr` thunks exclusively.** `UnevaluatedState::Surface` was deleted in T-1770. The `eval` builtin now calls `lower()` followed by `eval_core_expr()` inline — no intermediate `Surface` thunk is created. All evaluation paths go through `CoreExpr` thunks after the `builtin-lower` step.
 
 **Annotation evaluation in `eval_dict.rs`:** `eval_annotation_property_dict` supports only literal annotation values (string, int, float). Non-literal annotation values (e.g., a VarRef type name in `@[return: Dict doc: "..."]`) are silently skipped with `continue`. Full expression evaluation for annotation property dict values is tracked as T-1620.

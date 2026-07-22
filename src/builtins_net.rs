@@ -31,12 +31,9 @@
 //!
 //! Extracted from `builtins_io.rs` in T-915.
 
-use std::cell::RefCell;
-
 use std::future::Future;
 use std::pin::Pin;
-use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use indexmap::IndexMap;
 
@@ -233,14 +230,14 @@ fn resolve_hostname_for_cidr(
 
 /// TLS stream wrapper for reading (implements BufRead by delegating to shared TLS stream)
 struct TlsReader {
-    stream: Rc<RefCell<rustls::StreamOwned<rustls::ClientConnection, std::net::TcpStream>>>,
+    stream: Arc<Mutex<rustls::StreamOwned<rustls::ClientConnection, std::net::TcpStream>>>,
     buf: Vec<u8>,
     buf_pos: usize,
 }
 
 impl std::io::Read for TlsReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        std::io::Read::read(&mut *self.stream.borrow_mut(), buf)
+        std::io::Read::read(&mut *self.stream.lock().unwrap(), buf)
     }
 }
 
@@ -249,7 +246,7 @@ impl std::io::BufRead for TlsReader {
         // If buffer is exhausted, refill it
         if self.buf_pos >= self.buf.len() {
             self.buf.resize(8192, 0);
-            let n = std::io::Read::read(&mut *self.stream.borrow_mut(), &mut self.buf[..])?;
+            let n = std::io::Read::read(&mut *self.stream.lock().unwrap(), &mut self.buf[..])?;
             self.buf.truncate(n);
             self.buf_pos = 0;
         }
@@ -268,16 +265,16 @@ impl std::io::BufRead for TlsReader {
 
 /// TLS stream wrapper for writing (implements Write by delegating to shared TLS stream)
 struct TlsWriter {
-    stream: Rc<RefCell<rustls::StreamOwned<rustls::ClientConnection, std::net::TcpStream>>>,
+    stream: Arc<Mutex<rustls::StreamOwned<rustls::ClientConnection, std::net::TcpStream>>>,
 }
 
 impl std::io::Write for TlsWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        std::io::Write::write(&mut *self.stream.borrow_mut(), buf)
+        std::io::Write::write(&mut *self.stream.lock().unwrap(), buf)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        std::io::Write::flush(&mut *self.stream.borrow_mut())
+        std::io::Write::flush(&mut *self.stream.lock().unwrap())
     }
 }
 
@@ -309,11 +306,10 @@ pub(crate) async fn build_tls_config(
     let mut root_store = RootCertStore::empty();
 
     // Check no-system-roots
-    let no_system_roots = if let Some(thunk_id) =
+    let no_system_roots = if let Some(thunk) =
         opts_dict.get(&crate::value::HashableValue::Str("no-system-roots".into()))
     {
-        let thunk = ctx.get_thunk(*thunk_id);
-        let val = crate::eval::materialize(&thunk, Some(&opts_span), ctx).await?;
+        let val = crate::eval::materialize(thunk, Some(&opts_span), ctx).await?;
         matches!(val, crate::value::Value::Bool(true))
     } else {
         false
@@ -349,11 +345,10 @@ pub(crate) async fn build_tls_config(
     }
 
     // Load mozilla-roots if requested
-    let mozilla_roots = if let Some(thunk_id) =
+    let mozilla_roots = if let Some(thunk) =
         opts_dict.get(&crate::value::HashableValue::Str("mozilla-roots".into()))
     {
-        let thunk = ctx.get_thunk(*thunk_id);
-        let val = crate::eval::materialize(&thunk, Some(&opts_span), ctx).await?;
+        let val = crate::eval::materialize(thunk, Some(&opts_span), ctx).await?;
         matches!(val, crate::value::Value::Bool(true))
     } else {
         false
@@ -364,9 +359,8 @@ pub(crate) async fn build_tls_config(
     }
 
     // Load ca-bundle if provided
-    if let Some(thunk_id) = opts_dict.get(&crate::value::HashableValue::Str("ca-bundle".into())) {
-        let thunk = ctx.get_thunk(*thunk_id);
-        let handle_val = crate::eval::materialize(&thunk, Some(&opts_span), ctx).await?;
+    if let Some(thunk) = opts_dict.get(&crate::value::HashableValue::Str("ca-bundle".into())) {
+        let handle_val = crate::eval::materialize(thunk, Some(&opts_span), ctx).await?;
         let pem_bytes = slurp_handle_bytes(&handle_val, opts_span.clone())?;
 
         let mut cursor = std::io::Cursor::new(pem_bytes);
@@ -405,17 +399,15 @@ pub(crate) async fn build_tls_config(
             .into());
         }
 
-        let cert_thunk_id = opts_dict
+        let cert_thunk = opts_dict
             .get(&crate::value::HashableValue::Str("client-cert".into()))
             .unwrap();
-        let cert_thunk = ctx.get_thunk(*cert_thunk_id);
-        let cert_handle = crate::eval::materialize(&cert_thunk, Some(&opts_span), ctx).await?;
+        let cert_handle = crate::eval::materialize(cert_thunk, Some(&opts_span), ctx).await?;
 
-        let key_thunk_id = opts_dict
+        let key_thunk = opts_dict
             .get(&crate::value::HashableValue::Str("client-key".into()))
             .unwrap();
-        let key_thunk = ctx.get_thunk(*key_thunk_id);
-        let key_handle = crate::eval::materialize(&key_thunk, Some(&opts_span), ctx).await?;
+        let key_handle = crate::eval::materialize(key_thunk, Some(&opts_span), ctx).await?;
 
         let cert_pem = slurp_handle_bytes(&cert_handle, opts_span.clone())?;
         let key_pem = slurp_handle_bytes(&key_handle, opts_span.clone())?;
@@ -461,9 +453,8 @@ pub(crate) async fn build_tls_config(
     };
 
     // Set ALPN protocols
-    if let Some(thunk_id) = opts_dict.get(&crate::value::HashableValue::Str("alpn".into())) {
-        let thunk = ctx.get_thunk(*thunk_id);
-        let alpn_val = crate::eval::materialize(&thunk, Some(&opts_span), ctx).await?;
+    if let Some(thunk) = opts_dict.get(&crate::value::HashableValue::Str("alpn".into())) {
+        let alpn_val = crate::eval::materialize(thunk, Some(&opts_span), ctx).await?;
         let alpn_protocols = extract_alpn_protocols(&alpn_val, opts_span, ctx).await?;
         config.alpn_protocols = alpn_protocols;
     } else {
@@ -493,9 +484,8 @@ async fn extract_alpn_protocols(
         }
     };
     let mut protocols = Vec::new();
-    for (_idx, val_id) in map {
-        let thunk = ctx.get_thunk(*val_id);
-        let v = crate::eval::materialize(&thunk, Some(&span), ctx).await?;
+    for (_idx, thunk) in map {
+        let v = crate::eval::materialize(thunk, Some(&span), ctx).await?;
         let protocol_str = match v {
             Value::String { source, start, end } => source[start..end].to_string(),
             other => {
@@ -545,9 +535,8 @@ pub(crate) async fn validate_spki_pins(
         }
     };
     let mut pins = Vec::new();
-    for (_idx, val_id) in pins_map {
-        let thunk = ctx.get_thunk(*val_id);
-        let pin_val = crate::eval::materialize(&thunk, Some(&span), ctx).await?;
+    for (_idx, thunk) in pins_map {
+        let pin_val = crate::eval::materialize(thunk, Some(&span), ctx).await?;
         pins.push(pin_val);
     }
 
@@ -591,7 +580,7 @@ pub(crate) async fn validate_spki_pins(
             }
         };
 
-        let algorithm_thunk_id = pin_dict
+        let algorithm_thunk = pin_dict
             .get(&crate::value::HashableValue::Str("algorithm".into()))
             .ok_or_else(|| {
                 EvalError::user_error(
@@ -599,10 +588,9 @@ pub(crate) async fn validate_spki_pins(
                     span.clone(),
                 )
             })?;
-        let algorithm_thunk = ctx.get_thunk(*algorithm_thunk_id);
-        let algorithm_val = crate::eval::materialize(&algorithm_thunk, Some(&span), ctx).await?;
+        let algorithm_val = crate::eval::materialize(algorithm_thunk, Some(&span), ctx).await?;
 
-        let fingerprint_thunk_id = pin_dict
+        let fingerprint_thunk = pin_dict
             .get(&crate::value::HashableValue::Str("fingerprint".into()))
             .ok_or_else(|| {
                 EvalError::user_error(
@@ -610,9 +598,7 @@ pub(crate) async fn validate_spki_pins(
                     span.clone(),
                 )
             })?;
-        let fingerprint_thunk = ctx.get_thunk(*fingerprint_thunk_id);
-        let fingerprint_val =
-            crate::eval::materialize(&fingerprint_thunk, Some(&span), ctx).await?;
+        let fingerprint_val = crate::eval::materialize(fingerprint_thunk, Some(&span), ctx).await?;
 
         let algorithm_tag = match algorithm_val {
             Value::Variant { tycon, ctor, .. } => format!("{}.{}", tycon, ctor),
@@ -704,7 +690,7 @@ fn compute_spki_hash(cert_der: &[u8], algorithm: &str, span: Span) -> EvalResult
 fn extract_cert_info(
     cert_der: &rustls::pki_types::CertificateDer,
     span: Span,
-    ctx: &Arc<crate::eval::EvalContext>,
+    _ctx: &Arc<crate::eval::EvalContext>,
 ) -> EvalResult<Value> {
     // For now, return a minimal dict with just the cert bytes
     // Full X.509 parsing would require a crate like x509-parser or rustls-webpki
@@ -714,17 +700,14 @@ fn extract_cert_info(
     use crate::value::HashableValue;
     info.insert(
         HashableValue::Str("_raw_der".into()),
-        ctx.alloc_thunk(
-            0,
-            ok_val(
-                Value::Bytes {
-                    source: Rc::from(cert_der.as_ref()),
-                    start: 0,
-                    end: cert_der.len(),
-                },
-                span,
-            )?,
-        ),
+        ok_val(
+            Value::Bytes {
+                source: Arc::from(cert_der.as_ref()),
+                start: 0,
+                end: cert_der.len(),
+            },
+            span,
+        )?,
     );
 
     Ok(Value::Dict(info))
@@ -753,7 +736,7 @@ fn extract_cn(name: &x509_parser::x509::X509Name) -> Option<String> {
 async fn extract_sans(
     cert: &x509_parser::certificate::X509Certificate<'_>,
     span: Span,
-    ctx: &Arc<crate::eval::EvalContext>,
+    _ctx: &Arc<crate::eval::EvalContext>,
 ) -> EvalResult<Value> {
     use x509_parser::extensions::GeneralName;
 
@@ -811,11 +794,11 @@ async fn extract_sans(
     }
 
     // Build an integer-keyed Dict from the collected SAN values
-    let mut dict: indexmap::IndexMap<crate::value::HashableValue, crate::value::ThunkId> =
+    let mut dict: indexmap::IndexMap<crate::value::HashableValue, Arc<crate::value::Thunk>> =
         indexmap::IndexMap::new();
     for (i, val) in sans_list.into_iter().enumerate() {
-        let id = ctx.alloc_thunk(0, ok_val(val, span.clone())?);
-        dict.insert(crate::value::HashableValue::Int(i as i64), id);
+        let thunk = ok_val(val, span.clone())?;
+        dict.insert(crate::value::HashableValue::Int(i as i64), thunk);
     }
     Ok(Value::Dict(dict))
 }
@@ -1129,7 +1112,7 @@ pub(crate) fn builtin_quic_session(
         })
         .map_err(|msg| EvalError::user_error(msg, call_span.clone()))?;
 
-        ok_val(Value::QuicSession(Rc::new(connection)), call_span)
+        ok_val(Value::QuicSession(Arc::new(connection)), call_span)
     })
 }
 
@@ -1318,7 +1301,7 @@ pub(crate) fn builtin_http2_session(
 
         ok_val(
             Value::Http2Session {
-                client: Rc::new(client),
+                client: Arc::new(client),
                 base_url,
             },
             call_span,
@@ -1426,7 +1409,7 @@ pub(crate) fn builtin_http3_session(
 
         // Adapt the quinn connection into an h3-quinn connection, then build the H3 client.
         // `h3_quinn::Connection::new` takes ownership of a `quinn::Connection`.
-        // We Rc::clone the connection — quinn::Connection is Clone and the clone shares
+        // We clone the connection — quinn::Connection is Clone and the clone shares
         // the same underlying QUIC connection state.
         let quic_conn = (*conn).clone();
         let h3_conn = h3_quinn::Connection::new(quic_conn);
@@ -1445,7 +1428,7 @@ pub(crate) fn builtin_http3_session(
         // Spawn the driver as a local task so it is polled on every subsequent
         // `async_rt::block_on` call (cooperative multitasking on the current-thread runtime).
         // The JoinHandle is stored in Http3SessionState; dropping it aborts the driver task
-        // when the session is dropped (Rc refcount reaches zero).
+        // when the session is dropped (Arc refcount reaches zero).
         //
         // h3 0.0.8: `h3::client::Connection::poll_close(cx)` processes incoming QUIC frames
         // (SETTINGS, GOAWAY, server push, connection error) and returns `Poll::Ready` when
@@ -1462,7 +1445,7 @@ pub(crate) fn builtin_http3_session(
 
         use crate::value::Http3SessionState;
         ok_val(
-            Value::Http3Session(Rc::new(RefCell::new(Http3SessionState {
+            Value::Http3Session(Arc::new(Mutex::new(Http3SessionState {
                 send_request,
                 _driver: driver_handle,
             }))),
@@ -1534,18 +1517,17 @@ pub(crate) fn builtin_http_request(
         let body_str = require_string("http-request", body_val, call_span.clone())?;
 
         // Collect request headers from the Dict argument.
-        // Each value is a ThunkId in the arena — resolve and materialize to extract the string.
+        // Each value is an Arc<Thunk> — materialize to extract the string.
         let req_headers: Vec<(String, String)> = match headers_val {
             Value::Dict(ref map) => {
                 let mut out = Vec::with_capacity(map.len());
-                for (key, val_id) in map.iter() {
+                for (key, thunk) in map.iter() {
                     let key_str = match key {
                         crate::value::HashableValue::Str(s) => s.to_string(),
                         crate::value::HashableValue::Int(i) => i.to_string(),
                     };
-                    let thunk = ctx.get_thunk(*val_id);
                     let val_materialized =
-                        crate::eval::materialize(&thunk, Some(&call_span), &ctx).await?;
+                        crate::eval::materialize(thunk, Some(&call_span), &ctx).await?;
                     let val_str = require_string(
                         "http-request header value",
                         val_materialized,
@@ -1602,7 +1584,7 @@ pub(crate) fn builtin_http_request(
 
 /// Configuration for HTTP/2 requests.
 struct Http2RequestConfig<'a> {
-    client: &'a Rc<reqwest::Client>,
+    client: &'a Arc<reqwest::Client>,
     base_url: &'a str,
     method_str: &'a str,
     path_str: &'a str,
@@ -1629,7 +1611,7 @@ async fn http_request_h2(config: &Http2RequestConfig<'_>) -> EvalResult<Arc<Thun
     let req_headers = config.req_headers;
     let body_str = config.body_str;
     let span = config.span.clone();
-    let ctx = config.ctx;
+    let _ctx = config.ctx;
     // Build the full URL: base_url + path_str.
     // If path_str starts with http:// or https://, use it as-is (absolute URL).
     // Otherwise, join with base_url.
@@ -1686,7 +1668,7 @@ async fn http_request_h2(config: &Http2RequestConfig<'_>) -> EvalResult<Arc<Thun
             Ok(s) => s.to_string(),
             Err(_) => String::from_utf8_lossy(value.as_bytes()).into_owned(),
         };
-        headers_map.insert(k, ctx.alloc_thunk(0, ok_val(string_val(&v), span.clone())?));
+        headers_map.insert(k, ok_val(string_val(&v), span.clone())?);
     }
 
     // Collect body as a String (UTF-8, lossy).
@@ -1706,15 +1688,15 @@ async fn http_request_h2(config: &Http2RequestConfig<'_>) -> EvalResult<Arc<Thun
     let mut inner = IndexMap::new();
     inner.insert(
         crate::value::HashableValue::Str("status".into()),
-        ctx.alloc_thunk(0, ok_val(Value::Int(status), span.clone())?),
+        ok_val(Value::Int(status), span.clone())?,
     );
     inner.insert(
         crate::value::HashableValue::Str("headers".into()),
-        ctx.alloc_thunk(0, ok_val(Value::Dict(headers_map), span.clone())?),
+        ok_val(Value::Dict(headers_map), span.clone())?,
     );
     inner.insert(
         crate::value::HashableValue::Str("body".into()),
-        ctx.alloc_thunk(0, ok_val(string_val(&body_string), span.clone())?),
+        ok_val(string_val(&body_string), span.clone())?,
     );
 
     // Return {status: Int, headers: Dict, body: String} directly.
@@ -1727,13 +1709,13 @@ async fn http_request_h2(config: &Http2RequestConfig<'_>) -> EvalResult<Arc<Thun
 /// Builds the `http::Request`, sends it, collects the response headers and body,
 /// and returns `{status: Int, headers: Dict, body: String}` on success or raises on error.
 fn http_request_h3(
-    session_rc: Rc<RefCell<crate::value::Http3SessionState>>,
+    session_rc: Arc<Mutex<crate::value::Http3SessionState>>,
     method_str: String,
     path_str: String,
     req_headers: Vec<(String, String)>,
     body_str: String,
     span: crate::ast::Span,
-    ctx: &crate::eval::EvalContext,
+    _ctx: &crate::eval::EvalContext,
 ) -> EvalResult<Arc<Thunk>> {
     use bytes::Bytes;
 
@@ -1756,20 +1738,24 @@ fn http_request_h3(
     };
 
     // Send request headers; get back a RequestStream.
-    // borrow_mut() accesses send_request inside Http3SessionState.
-    // Safe — single-threaded; no other borrow_mut during block_on.
-    let mut stream =
-        match crate::async_rt::block_on(session_rc.borrow_mut().send_request.send_request(request))
-        {
-            Ok(s) => s,
-            Err(e) => {
-                return Err(EvalError::user_error(
-                    format!("http-request: send_request failed: {}", e),
-                    span,
-                )
-                .into());
-            }
-        };
+    // lock() accesses send_request inside Http3SessionState.
+    // Safe — single-threaded; no other lock during block_on.
+    let mut stream = match crate::async_rt::block_on(
+        session_rc
+            .lock()
+            .unwrap()
+            .send_request
+            .send_request(request),
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            return Err(EvalError::user_error(
+                format!("http-request: send_request failed: {}", e),
+                span,
+            )
+            .into());
+        }
+    };
 
     // Send the body as a DATA frame (empty body is a zero-length frame).
     if !body_str.is_empty() {
@@ -1816,7 +1802,7 @@ fn http_request_h3(
                 String::from_utf8_lossy(value.as_bytes()).into_owned()
             }
         };
-        headers_map.insert(k, ctx.alloc_thunk(0, ok_val(string_val(&v), span.clone())?));
+        headers_map.insert(k, ok_val(string_val(&v), span.clone())?);
     }
 
     // Collect response body DATA frames.
@@ -1850,15 +1836,15 @@ fn http_request_h3(
     let mut inner = IndexMap::new();
     inner.insert(
         crate::value::HashableValue::Str("status".into()),
-        ctx.alloc_thunk(0, ok_val(Value::Int(status), span.clone())?),
+        ok_val(Value::Int(status), span.clone())?,
     );
     inner.insert(
         crate::value::HashableValue::Str("headers".into()),
-        ctx.alloc_thunk(0, ok_val(Value::Dict(headers_map), span.clone())?),
+        ok_val(Value::Dict(headers_map), span.clone())?,
     );
     inner.insert(
         crate::value::HashableValue::Str("body".into()),
-        ctx.alloc_thunk(0, ok_val(string_val(&body_string), span.clone())?),
+        ok_val(string_val(&body_string), span.clone())?,
     );
 
     // Return {status: Int, headers: Dict, body: String} directly.
@@ -1959,7 +1945,7 @@ fn icmp_ping_impl(
     host: &str,
     timeout_ms: i64,
     span: Span,
-    ctx: &crate::eval::EvalContext,
+    _ctx: &crate::eval::EvalContext,
 ) -> EvalResult<Arc<Thunk>> {
     use std::net::ToSocketAddrs;
 
@@ -2179,7 +2165,7 @@ fn icmp_ping_impl(
     let mut result = IndexMap::new();
     result.insert(
         HashableValue::Str("latency-ms".into()),
-        ctx.alloc_thunk(0, ok_val(Value::Int(latency_ms), span.clone())?),
+        ok_val(Value::Int(latency_ms), span.clone())?,
     );
     ok_val(Value::Dict(result), span)
 }
@@ -2319,21 +2305,20 @@ pub(crate) fn builtin_recv_datagram(
         use crate::value::HashableValue;
 
         // Helper: build the `{data: Bytes}` result dict from a received byte buffer.
-        let make_data_dict =
-            |buf: Vec<u8>, ctx: &crate::eval::EvalContext| -> EvalResult<Arc<Thunk>> {
-                let data_len = buf.len();
-                let data_bytes = Value::Bytes {
-                    source: Rc::from(buf.as_slice()),
-                    start: 0,
-                    end: data_len,
-                };
-                let mut dict = IndexMap::new();
-                dict.insert(
-                    HashableValue::Str("data".into()),
-                    ctx.alloc_thunk(0, ok_val(data_bytes, call_span.clone())?),
-                );
-                ok_val(Value::Dict(dict), call_span.clone())
+        let make_data_dict = |buf: Vec<u8>| -> EvalResult<Arc<Thunk>> {
+            let data_len = buf.len();
+            let data_bytes = Value::Bytes {
+                source: Arc::from(buf.as_slice()),
+                start: 0,
+                end: data_len,
             };
+            let mut dict = IndexMap::new();
+            dict.insert(
+                HashableValue::Str("data".into()),
+                ok_val(data_bytes, call_span.clone())?,
+            );
+            ok_val(Value::Dict(dict), call_span.clone())
+        };
 
         match val {
             // QUIC unreliable datagram (RFC 9221) — async recv via block_on.
@@ -2346,7 +2331,7 @@ pub(crate) fn builtin_recv_datagram(
                         call_span.clone(),
                     )
                 })?;
-                make_data_dict(payload.to_vec(), &ctx)
+                make_data_dict(payload.to_vec())
             }
 
             other => Err(EvalError::type_mismatch_ctx(
@@ -2398,7 +2383,7 @@ pub(crate) fn builtin_uri(
             // scheme (lowercase)
             dict.insert(
                 HashableValue::Str("scheme".into()),
-                ctx.alloc_thunk(0, ok_val(string_val(parsed.scheme()), call_span.clone())?),
+                ok_val(string_val(parsed.scheme()), call_span.clone())?,
             );
 
             // username (split from userinfo)
@@ -2409,7 +2394,7 @@ pub(crate) fn builtin_uri(
             };
             dict.insert(
                 HashableValue::Str("username".into()),
-                ctx.alloc_thunk(0, ok_val(username, call_span.clone())?),
+                ok_val(username, call_span.clone())?,
             );
 
             // password (split from userinfo)
@@ -2419,7 +2404,7 @@ pub(crate) fn builtin_uri(
             };
             dict.insert(
                 HashableValue::Str("password".into()),
-                ctx.alloc_thunk(0, ok_val(password, call_span.clone())?),
+                ok_val(password, call_span.clone())?,
             );
 
             // host (null for non-hierarchical; strip IPv6 brackets)
@@ -2429,7 +2414,7 @@ pub(crate) fn builtin_uri(
             };
             dict.insert(
                 HashableValue::Str("host".into()),
-                ctx.alloc_thunk(0, ok_val(host, call_span.clone())?),
+                ok_val(host, call_span.clone())?,
             );
 
             // port (null if not specified)
@@ -2439,13 +2424,13 @@ pub(crate) fn builtin_uri(
             };
             dict.insert(
                 HashableValue::Str("port".into()),
-                ctx.alloc_thunk(0, ok_val(port, call_span.clone())?),
+                ok_val(port, call_span.clone())?,
             );
 
             // path (always present per RFC 3986)
             dict.insert(
                 HashableValue::Str("path".into()),
-                ctx.alloc_thunk(0, ok_val(string_val(parsed.path()), call_span.clone())?),
+                ok_val(string_val(parsed.path()), call_span.clone())?,
             );
 
             // query (null if absent)
@@ -2455,7 +2440,7 @@ pub(crate) fn builtin_uri(
             };
             dict.insert(
                 HashableValue::Str("query".into()),
-                ctx.alloc_thunk(0, ok_val(query, call_span.clone())?),
+                ok_val(query, call_span.clone())?,
             );
 
             // fragment (null if absent)
@@ -2465,7 +2450,7 @@ pub(crate) fn builtin_uri(
             };
             dict.insert(
                 HashableValue::Str("fragment".into()),
-                ctx.alloc_thunk(0, ok_val(fragment, call_span.clone())?),
+                ok_val(fragment, call_span.clone())?,
             );
 
             return ok_val(Value::Dict(dict), call_span);
@@ -2488,17 +2473,14 @@ pub(crate) fn builtin_uri(
 
         dict.insert(
             HashableValue::Str("scheme".into()),
-            ctx.alloc_thunk(
-                0,
-                ok_val(string_val(&scheme.to_lowercase()), call_span.clone())?,
-            ),
+            ok_val(string_val(&scheme.to_lowercase()), call_span.clone())?,
         );
 
         // Non-hierarchical URIs: all null for userinfo/host/port
         for key in ["username", "password", "host", "port"] {
             dict.insert(
                 HashableValue::Str(key.into()),
-                ctx.alloc_thunk(0, ok_val(Value::Dict(IndexMap::new()), call_span.clone())?),
+                ok_val(Value::Dict(IndexMap::new()), call_span.clone())?,
             );
         }
 
@@ -2507,14 +2489,14 @@ pub(crate) fn builtin_uri(
         // For urn:isbn:123, path is "isbn:123"
         dict.insert(
             HashableValue::Str("path".into()),
-            ctx.alloc_thunk(0, ok_val(string_val(rest), call_span.clone())?),
+            ok_val(string_val(rest), call_span.clone())?,
         );
 
         // query and fragment: null (non-hierarchical URIs typically don't have these)
         for key in ["query", "fragment"] {
             dict.insert(
                 HashableValue::Str(key.into()),
-                ctx.alloc_thunk(0, ok_val(Value::Dict(IndexMap::new()), call_span.clone())?),
+                ok_val(Value::Dict(IndexMap::new()), call_span.clone())?,
             );
         }
 
@@ -2567,7 +2549,7 @@ pub(crate) fn builtin_url(
         // scheme (lowercase)
         dict.insert(
             HashableValue::Str("scheme".into()),
-            ctx.alloc_thunk(0, ok_val(string_val(parsed.scheme()), call_span.clone())?),
+            ok_val(string_val(parsed.scheme()), call_span.clone())?,
         );
 
         // username (split from userinfo)
@@ -2578,7 +2560,7 @@ pub(crate) fn builtin_url(
         };
         dict.insert(
             HashableValue::Str("username".into()),
-            ctx.alloc_thunk(0, ok_val(username, call_span.clone())?),
+            ok_val(username, call_span.clone())?,
         );
 
         // password (split from userinfo)
@@ -2588,16 +2570,13 @@ pub(crate) fn builtin_url(
         };
         dict.insert(
             HashableValue::Str("password".into()),
-            ctx.alloc_thunk(0, ok_val(password, call_span.clone())?),
+            ok_val(password, call_span.clone())?,
         );
 
         // host (always present for URLs; unwrap is safe)
         dict.insert(
             HashableValue::Str("host".into()),
-            ctx.alloc_thunk(
-                0,
-                ok_val(string_val(parsed.host_str().unwrap()), call_span.clone())?,
-            ),
+            ok_val(string_val(parsed.host_str().unwrap()), call_span.clone())?,
         );
 
         // port (default to scheme default if not specified)
@@ -2608,7 +2587,7 @@ pub(crate) fn builtin_url(
         });
         dict.insert(
             HashableValue::Str("port".into()),
-            ctx.alloc_thunk(0, ok_val(Value::Int(i64::from(port)), call_span.clone())?),
+            ok_val(Value::Int(i64::from(port)), call_span.clone())?,
         );
 
         // path (always present per RFC 3986; default to "/" if empty)
@@ -2619,7 +2598,7 @@ pub(crate) fn builtin_url(
         };
         dict.insert(
             HashableValue::Str("path".into()),
-            ctx.alloc_thunk(0, ok_val(string_val(path), call_span.clone())?),
+            ok_val(string_val(path), call_span.clone())?,
         );
 
         // query (null if absent)
@@ -2629,7 +2608,7 @@ pub(crate) fn builtin_url(
         };
         dict.insert(
             HashableValue::Str("query".into()),
-            ctx.alloc_thunk(0, ok_val(query, call_span.clone())?),
+            ok_val(query, call_span.clone())?,
         );
 
         // fragment (null if absent)
@@ -2639,7 +2618,7 @@ pub(crate) fn builtin_url(
         };
         dict.insert(
             HashableValue::Str("fragment".into()),
-            ctx.alloc_thunk(0, ok_val(fragment, call_span.clone())?),
+            ok_val(fragment, call_span.clone())?,
         );
 
         ok_val(Value::Dict(dict), call_span)
@@ -2728,11 +2707,11 @@ pub(crate) fn builtin_urn(
 
         dict.insert(
             HashableValue::Str("nid".into()),
-            ctx.alloc_thunk(0, ok_val(string_val(nid), call_span.clone())?),
+            ok_val(string_val(nid), call_span.clone())?,
         );
         dict.insert(
             HashableValue::Str("nss".into()),
-            ctx.alloc_thunk(0, ok_val(string_val(nss), call_span.clone())?),
+            ok_val(string_val(nss), call_span.clone())?,
         );
 
         // r-component (null if absent)
@@ -2742,7 +2721,7 @@ pub(crate) fn builtin_urn(
         };
         dict.insert(
             HashableValue::Str("r-component".into()),
-            ctx.alloc_thunk(0, ok_val(r_val, call_span.clone())?),
+            ok_val(r_val, call_span.clone())?,
         );
 
         // q-component (null if absent)
@@ -2752,7 +2731,7 @@ pub(crate) fn builtin_urn(
         };
         dict.insert(
             HashableValue::Str("q-component".into()),
-            ctx.alloc_thunk(0, ok_val(q_val, call_span.clone())?),
+            ok_val(q_val, call_span.clone())?,
         );
 
         // fragment (null if absent)
@@ -2762,7 +2741,7 @@ pub(crate) fn builtin_urn(
         };
         dict.insert(
             HashableValue::Str("fragment".into()),
-            ctx.alloc_thunk(0, ok_val(frag_val, call_span.clone())?),
+            ok_val(frag_val, call_span.clone())?,
         );
 
         ok_val(Value::Dict(dict), call_span)

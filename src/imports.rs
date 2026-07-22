@@ -75,10 +75,7 @@ pub async fn get_builtin_core_type_env() -> Option<Arc<RwLock<Env>>> {
 async fn build_builtin_core_type_env_inner() -> Option<Arc<RwLock<Env>>> {
     // Embedded source — no libdir access needed at runtime.
     let source = include_str!("../stdlib/builtin_core.llt");
-    let sf = Arc::new(crate::ast::SourceFile {
-        path: Arc::from("stdlib/builtin_core.llt"),
-        content: Arc::from(source),
-    });
+    let sf: Arc<str> = Arc::from("stdlib/builtin_core.llt");
 
     // Parse — extract .program from ParseOutput
     let mut program = crate::parser::parse(source, sf).ok()?.program;

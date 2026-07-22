@@ -6,14 +6,12 @@
 //!
 //! All evaluation is CoreExpr-native via `eval_dict_core` / `eval_key_core`.
 
-use std::rc::Rc;
 use std::sync::Arc;
 
 use indexmap::IndexMap;
 
 use crate::ast::{Annotation, CoreEntry, CoreExpr, Span, Spanned, SurfaceExpression};
 use crate::error::{EvalError, EvalResult};
-use crate::value::ThunkId;
 use crate::value::{string_val, HashableValue, Thunk, Value};
 
 use super::{materialize, EvalContext};
@@ -25,7 +23,7 @@ fn value_to_key(value: &Value, span: &Span) -> EvalResult<HashableValue> {
             ref source,
             start,
             end,
-        } => Ok(HashableValue::Str(Rc::from(&source[*start..*end]))),
+        } => Ok(HashableValue::Str(Arc::from(&source[*start..*end]))),
         Value::Int(n) => Ok(HashableValue::Int(*n)),
         _ => Err(EvalError::type_mismatch("String or Int", value.type_name(), span.clone()).into()),
     }
@@ -56,7 +54,7 @@ async fn eval_annotation_property_dict(
     parent_env_id: u32,
     ctx: &Arc<EvalContext>,
 ) -> EvalResult<Value> {
-    let mut dict_map: IndexMap<HashableValue, ThunkId> = IndexMap::with_capacity(entries.len());
+    let mut dict_map: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::with_capacity(entries.len());
     let mut auto_index: i64 = 0;
 
     for entry in entries {
@@ -76,7 +74,7 @@ async fn eval_annotation_property_dict(
                     } else {
                         s.clone()
                     };
-                    HashableValue::Str(Rc::from(processed.as_str()))
+                    HashableValue::Str(Arc::from(processed.as_str()))
                 }
                 SurfaceExpression::Int(n) => HashableValue::Int(*n),
                 // U64 values that fit in i64 are used as integer keys; larger values error.
@@ -93,7 +91,7 @@ async fn eval_annotation_property_dict(
                     }
                 }
                 SurfaceExpression::VarRef { name, .. } => {
-                    HashableValue::Str(Rc::from(name.as_str()))
+                    HashableValue::Str(Arc::from(name.as_str()))
                 }
                 _ => {
                     // For complex key expressions, we'd need to lower and evaluate
@@ -166,8 +164,8 @@ async fn eval_annotation_property_dict(
         };
         let value_thunk = Arc::new(Thunk::value(value, entry.node.value.span.clone()));
 
-        let thunk_id = ctx.alloc_thunk(0, value_thunk);
-        if dict_map.insert(key, thunk_id).is_some() {
+        if let Some(old_thunk) = dict_map.insert(key, Arc::clone(&value_thunk)) {
+            let prev_span = old_thunk.span.clone();
             let key_str = match &entry.node.key {
                 Some(k_node) => match &k_node.expr {
                     SurfaceExpression::StringLiteral { content: s, .. } => s.clone(),
@@ -178,10 +176,10 @@ async fn eval_annotation_property_dict(
                 },
                 None => (auto_index - 1).to_string(),
             };
-            return Err(Box::new(EvalError::duplicate_key(
-                &key_str,
-                entry.span.clone(),
-            )));
+            return Err(Box::new(
+                EvalError::duplicate_key(&key_str, entry.span.clone())
+                    .with_secondary_span(prev_span, "previously defined here"),
+            ));
         }
     }
 
@@ -254,7 +252,7 @@ pub(crate) async fn eval_dict_core(
     dict_span: &Span,
 ) -> EvalResult<Arc<Thunk>> {
     // dict_env (legacy Arc<RwLock<Env>>) removed — T-1557. FlatEnv env_id used instead.
-    let mut dict_map: IndexMap<HashableValue, ThunkId> = IndexMap::with_capacity(entries.len());
+    let mut dict_map: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::with_capacity(entries.len());
     let mut auto_index: i64 = 0;
 
     // Always allocate a FlatEnv for every dict scope.
@@ -268,11 +266,12 @@ pub(crate) async fn eval_dict_core(
         .borrow_mut()
         .alloc_child(crate::arena::ScopeId(parent_env_id), entries.len());
     let mut slot_idx: u32 = 0;
-    // Collect (slot_idx, thunk_id, name) tuples for static-key entries so we can
+    // Collect (slot_idx, arc_thunk) tuples for static-key entries so we can
     // batch-acquire the arena lock once after the loop instead of once per entry.
     // The lock cannot be held across the .await in eval_key_core, so we must
-    // collect first and write after.
-    let mut letrec_slots: Vec<(u32, ThunkId)> = Vec::new();
+    // collect first and write after. We store Arc<Thunk> here; alloc_thunk is called
+    // during the batch-fill phase below to obtain ThunkIds for fill_slot.
+    let mut letrec_slots: Vec<(u32, Arc<Thunk>)> = Vec::new();
 
     for entry in entries {
         // Determine if this entry has a static key (CoreExpr::Str or annotated Var).
@@ -378,10 +377,10 @@ pub(crate) async fn eval_dict_core(
             value_thunk
         };
 
-        // Values go into arena slots (T-1557: Env is type-metadata only).
-        // The letrec scope is maintained via arena reserve_slot + fill_slot calls below.
-        let thunk_id = ctx.alloc_thunk(0, thunk);
-        if dict_map.insert(key, thunk_id).is_some() {
+        // Values go into the dict map (T-1772: Dict stores Arc<Thunk> directly).
+        // The letrec scope (ScopeArena) is maintained via reserve_slot + fill_slot_arc below.
+        if let Some(old_thunk) = dict_map.insert(key, Arc::clone(&thunk)) {
+            let prev_span = old_thunk.span.clone();
             // key was moved; reconstruct string representation from entry for error message
             let key_str = match &entry.node.key {
                 Some(k_expr) => match &k_expr.node {
@@ -393,14 +392,14 @@ pub(crate) async fn eval_dict_core(
                 },
                 None => (auto_index - 1).to_string(),
             };
-            return Err(Box::new(EvalError::duplicate_key(
-                &key_str,
-                entry.span.clone(),
-            )));
+            return Err(Box::new(
+                EvalError::duplicate_key(&key_str, entry.span.clone())
+                    .with_secondary_span(prev_span, "previously defined here"),
+            ));
         }
 
         if is_static_key {
-            letrec_slots.push((slot_idx, thunk_id));
+            letrec_slots.push((slot_idx, thunk));
             slot_idx += 1;
         }
     }
@@ -410,19 +409,19 @@ pub(crate) async fn eval_dict_core(
     // dicts with many string-keyed fields.
     //
     // Two-phase letrec: first reserve all named slots in the child scope (in order),
-    // then fill each reserved slot from the corresponding source ThunkId.
+    // then fill each reserved slot from the corresponding Arc<Thunk>.
     // This ensures child scope slots exist before any are filled, maintaining letrec semantics.
     if !letrec_slots.is_empty() {
         let mut arena_guard = ctx.scope_arena.borrow_mut();
-        for (idx, _thunk_id) in &letrec_slots {
+        for (idx, _thunk) in &letrec_slots {
             let reserved_idx = arena_guard.reserve_slot(env_id);
             debug_assert_eq!(
                 reserved_idx, *idx,
                 "letrec slot index must match reservation order"
             );
         }
-        for (idx, thunk_id) in letrec_slots {
-            arena_guard.fill_slot(env_id, idx, thunk_id);
+        for (idx, thunk) in letrec_slots {
+            arena_guard.fill_slot_arc(env_id, idx, thunk);
         }
     }
 
@@ -444,16 +443,16 @@ pub(crate) async fn eval_dict_core(
 
 /// Evaluate a dict key from a `CoreExpr` node, returning a concrete `HashableValue`.
 ///
-/// Fast path for literal keys (Str/Int) avoids creating temporary thunks.
+/// Direct key evaluation for literal keys (string/int literals) avoids creating temporary thunks.
 /// General path materializes the expression via `eval_core_expr`.
 pub(crate) async fn eval_key_core(
     key_expr: &Arc<Spanned<CoreExpr>>,
     parent_env_id: u32,
     ctx: &Arc<EvalContext>,
 ) -> EvalResult<HashableValue> {
-    // Fast path for static keys — avoids thunk creation and materialization
+    // Direct key evaluation for statically-known keys — avoids thunk creation and materialization
     match &key_expr.node {
-        CoreExpr::Str(s) => return Ok(HashableValue::Str(Rc::from(s.as_str()))),
+        CoreExpr::Str(s) => return Ok(HashableValue::Str(Arc::from(s.as_str()))),
         CoreExpr::Int(n) => return Ok(HashableValue::Int(*n)),
         // U64 keys that fit in i64 are used as integer keys; larger values error.
         CoreExpr::U64(n) => {
@@ -474,7 +473,7 @@ pub(crate) async fn eval_key_core(
             annotation: Some(_),
             ..
         } => {
-            return Ok(HashableValue::Str(Rc::from(name.as_str())));
+            return Ok(HashableValue::Str(Arc::from(name.as_str())));
         }
         _ => {}
     }
@@ -487,31 +486,23 @@ pub(crate) async fn eval_key_core(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, RwLock};
+    use std::sync::Arc;
 
     use indexmap::IndexMap;
 
     use crate::ast::{SurfaceDocument, SurfaceItem, SurfaceProgram};
     use crate::error::EvalResult;
     use crate::eval::EvalContext;
-    use crate::value::{HashableValue, Thunk, ThunkId, Value};
+    use crate::value::{HashableValue, Thunk, Value};
 
     fn test_ctx() -> Arc<EvalContext> {
         let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
         EvalContext::new(base_dir, false)
     }
 
-    fn empty_env() -> Arc<RwLock<crate::env::Env>> {
-        Arc::new(RwLock::new(crate::env::Env::new()))
-    }
-
     /// Parse and evaluate a surface expression string using the resolver so
     /// $name variable references are correctly dispatched via de Bruijn slots.
-    async fn eval_str(
-        src: &str,
-        env: Arc<RwLock<crate::env::Env>>,
-        ctx: &Arc<EvalContext>,
-    ) -> EvalResult<Arc<Thunk>> {
+    async fn eval_str(src: &str, ctx: &Arc<EvalContext>) -> EvalResult<Arc<Thunk>> {
         use crate::ast::Spanned;
         use crate::resolve::resolve_surface_program;
         let node = crate::parser::parse_surface_expression(src)
@@ -531,7 +522,6 @@ mod tests {
             .enumerate()
             .map(|(i, def)| (def.name.to_string(), i as u32))
             .collect();
-        let _ = env;
         let (_table, _frames) = resolve_surface_program(&program, &[root_frame]);
         crate::eval_surface_file(&program, ctx).await
     }
@@ -543,16 +533,18 @@ mod tests {
         crate::eval::materialize(thunk, None, ctx).await
     }
 
-    async fn mat_id(id: ThunkId, ctx: &Arc<EvalContext>) -> crate::error::EvalResult<Value> {
-        let thunk = ctx.get_thunk(id);
-        materialize(&thunk, ctx).await
+    async fn mat_thunk(
+        thunk: &Arc<Thunk>,
+        ctx: &Arc<EvalContext>,
+    ) -> crate::error::EvalResult<Value> {
+        materialize(thunk, ctx).await
     }
 
     /// Empty dict `[]` evaluates to an empty Value::Dict.
     #[tokio::test]
     async fn test_empty_dict() {
         let ctx = test_ctx();
-        let thunk = eval_str("[]", empty_env(), &ctx).await.unwrap();
+        let thunk = eval_str("[]", &ctx).await.unwrap();
         let val = materialize(&thunk, &ctx).await.unwrap();
         match val {
             Value::Dict(map) => assert!(map.is_empty(), "empty dict must have zero entries"),
@@ -568,22 +560,22 @@ mod tests {
     #[tokio::test]
     async fn test_dict_letrec_value_scope() {
         let ctx = test_ctx();
-        let thunk = eval_str("[x: 42  y: x]", empty_env(), &ctx).await.unwrap();
+        let thunk = eval_str("[x: 42  y: x]", &ctx).await.unwrap();
         let val = materialize(&thunk, &ctx).await.unwrap();
 
         let Value::Dict(map) = val else {
             panic!("expected Dict, got: {val:?}");
         };
 
-        let x_id = *map
+        let x_thunk = map
             .get(&HashableValue::Str("x".into()))
             .expect("key 'x' must exist");
-        let y_id = *map
+        let y_thunk = map
             .get(&HashableValue::Str("y".into()))
             .expect("key 'y' must exist");
 
-        let x_val = mat_id(x_id, &ctx).await.unwrap();
-        let y_val = mat_id(y_id, &ctx).await.unwrap();
+        let x_val = mat_thunk(x_thunk, &ctx).await.unwrap();
+        let y_val = mat_thunk(y_thunk, &ctx).await.unwrap();
 
         assert_eq!(x_val, Value::Int(42), "x must be 42");
         assert_eq!(
@@ -601,9 +593,7 @@ mod tests {
     #[tokio::test]
     async fn test_dict_key_not_in_value_scope() {
         let ctx = test_ctx();
-        let thunk = eval_str("[k: \"found\"  v: 42]", empty_env(), &ctx)
-            .await
-            .unwrap();
+        let thunk = eval_str("[k: \"found\"  v: 42]", &ctx).await.unwrap();
         let val = materialize(&thunk, &ctx).await.unwrap();
 
         let Value::Dict(map) = val else {
@@ -613,15 +603,15 @@ mod tests {
         // There must be exactly two keys: "k" and "v"
         assert_eq!(map.len(), 2, "dict must have exactly 2 entries");
 
-        let k_id = *map
+        let k_thunk = map
             .get(&HashableValue::Str("k".into()))
             .expect("key 'k' must exist");
-        let v_id = *map
+        let v_thunk = map
             .get(&HashableValue::Str("v".into()))
             .expect("key 'v' must exist");
 
-        let k_val = mat_id(k_id, &ctx).await.unwrap();
-        let v_val = mat_id(v_id, &ctx).await.unwrap();
+        let k_val = mat_thunk(k_thunk, &ctx).await.unwrap();
+        let v_val = mat_thunk(v_thunk, &ctx).await.unwrap();
 
         assert_eq!(
             k_val,

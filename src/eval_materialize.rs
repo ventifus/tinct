@@ -55,48 +55,26 @@ impl ProfilingSpanGuard {
     fn new(ctx: &Arc<EvalContext>, thunk: &Thunk, thunk_id: Option<ThunkId>) -> Self {
         let (profiling, span_id) = if let Some(ref prof) = ctx.profiling {
             // Extract span source information.
-            // Span carries file: Arc<SourceFile>. Use the embedded path when it is a
+            // Span carries file: Arc<str>. Use the path when it is a
             // real source file (not a synthetic span like <parse> or <origin>).
             let source_file: Option<String> = {
-                let sf = &thunk.span.file;
-                if !sf.path.starts_with('<') {
-                    Some(sf.path.as_ref().to_string())
+                if !thunk.span.file.starts_with('<') {
+                    Some(thunk.span.file.as_ref().to_string())
                 } else {
                     None
                 }
             };
             let (source_start, source_end) = if thunk.span != rust_span!() {
                 (
-                    Some((thunk.span.start.line, thunk.span.start.column)),
-                    Some((thunk.span.end.line, thunk.span.end.column)),
+                    Some((thunk.span.start_line, thunk.span.start_col)),
+                    Some((thunk.span.end_line, thunk.span.end_col)),
                 )
             } else {
                 (None, None)
             };
 
-            // Extract source text snippet from the embedded SourceFile content.
-            let source_text: Option<String> = {
-                let sf = &thunk.span.file;
-                if !sf.path.starts_with('<') && !sf.content.is_empty() {
-                    let content = sf.content.as_ref();
-                    let start_byte = thunk.span.start.offset as usize;
-                    let end_byte = (thunk.span.end.offset as usize).min(content.len());
-                    if start_byte < end_byte {
-                        let snippet = &content[start_byte..end_byte];
-                        // Keep first 60 chars; replace internal newlines with spaces
-                        let truncated: String = snippet
-                            .chars()
-                            .take(60)
-                            .map(|c| if c == '\n' { ' ' } else { c })
-                            .collect();
-                        Some(truncated)
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            };
+            // Source text snippet: not available since spans no longer embed source content (T-1771).
+            let source_text: Option<String> = None;
 
             let (builtin_name, origin_builtin) = match &thunk.span.name {
                 Some(name) if name.starts_with("builtin-") => (Some(name.to_string()), None),
@@ -168,11 +146,10 @@ pub fn lower_errors_to_eval_error(
         return None;
     }
     let fmt_loc = |diag: &crate::lower::LowerDiagnostic| -> String {
-        let sf = &diag.span.file;
-        if !sf.path.starts_with('<') {
+        if !diag.span.file.starts_with('<') {
             format!(
                 " (at {}:{}:{})",
-                sf.path, diag.span.start.line, diag.span.start.column
+                diag.span.file, diag.span.start_line, diag.span.start_col
             )
         } else {
             String::new()
@@ -307,14 +284,14 @@ pub(crate) struct BuiltinForceArgData {
     pub(crate) arg_idx: usize,
 }
 
-/// Payload for Cont::SequentialStep. Boxed to keep the Cont enum ≤96 bytes.
-pub(crate) struct SequentialStepData {
+/// Payload for Cont::LetrecChainStep. Boxed to keep the Cont enum ≤96 bytes.
+pub(crate) struct LetrecChainStepData {
     /// Remaining expressions to evaluate (index into the original Sequential exprs vec).
     /// When idx reaches exprs.len(), the Sequential is complete and we return the last value.
     pub(crate) idx: usize,
     /// Arc to the original CoreExpr::Sequential node. The exprs vec is extracted on demand
     /// to avoid cloning the whole vec per continuation frame.
-    pub(crate) seq_expr: Arc<Spanned<CoreExpr>>,
+    pub(crate) letrec_chain_expr: Arc<Spanned<CoreExpr>>,
     /// FlatEnv env_id — current scope for evaluating the next expression.
     pub(crate) env_id: u32,
     /// Arena length before evaluating exprs[idx]. If the expression allocated new FlatEnvs,
@@ -325,21 +302,21 @@ pub(crate) struct SequentialStepData {
     pub(crate) seq_span: Span,
 }
 
-/// Payload for Cont::VariantUnpackForSeq. Boxed to keep the Cont enum ≤96 bytes.
+/// Payload for Cont::VariantUnpackForLetrecChain. Boxed to keep the Cont enum ≤96 bytes.
 ///
-/// After materializing a Variant's payload in a SequentialStep context, this continuation
-/// unpacks the payload dict and proceeds with the sequential expression evaluation.
-pub(crate) struct VariantUnpackForSeqData {
-    /// Static keys extracted from the current sequential expression
+/// After materializing a Variant's payload in a LetrecChainStep context, this continuation
+/// unpacks the payload dict and proceeds with the letrec chain expression evaluation.
+pub(crate) struct VariantUnpackForLetrecChainData {
+    /// Static keys extracted from the current letrec chain expression
     pub(crate) static_key_set: HashSet<String>,
     /// Index of the next expression to evaluate
     pub(crate) next_idx: usize,
     /// Arc to the original CoreExpr::Sequential node. The exprs vec is extracted on demand
     /// to avoid cloning the whole vec per continuation frame.
-    pub(crate) seq_expr: Arc<Spanned<CoreExpr>>,
+    pub(crate) letrec_chain_expr: Arc<Spanned<CoreExpr>>,
     /// FlatEnv env_id — current scope for evaluating subsequent expressions.
     pub(crate) env_id: u32,
-    /// Arena length before evaluating this expression — same as SequentialStepData.arena_len_before.
+    /// Arena length before evaluating this expression — same as LetrecChainStepData.arena_len_before.
     pub(crate) arena_len_before: u32,
     pub(crate) ctx: Arc<EvalContext>,
     pub(crate) seq_span: Span,
@@ -448,14 +425,14 @@ pub(crate) enum Cont {
     /// → &Arc<SurfaceNode> → lower::lower → Action::EvalCore. When annotations store CoreExpr
     /// values natively, this becomes a no-op clone.
     TypeAssertCheck(Box<TypeAssertCheckData>),
-    /// Process the next step in a Sequential expression chain.
+    /// Process the next step in a LetrecChain expression chain.
     /// After an intermediate expression is materialized (and its dict bindings extracted),
     /// this continuation evaluates the next expression in the sequence.
-    SequentialStep(Box<SequentialStepData>),
-    /// Unpack a Variant payload for sequential expression scope binding.
+    LetrecChainStep(Box<LetrecChainStepData>),
+    /// Unpack a Variant payload for letrec chain expression scope binding.
     /// After materializing a Variant's payload thunk, this continuation calls require_dict
-    /// to extract the payload's dict entries and proceeds with SequentialStep logic.
-    VariantUnpackForSeq(Box<VariantUnpackForSeqData>),
+    /// to extract the payload's dict entries and proceeds with LetrecChainStep logic.
+    VariantUnpackForLetrecChain(Box<VariantUnpackForLetrecChainData>),
     /// Dispatch to the next arm after materializing the scrutinee in a Match expression.
     /// Tries each arm pattern in order until one matches, then evaluates that arm's body.
     MatchDispatch(Box<MatchDispatchData>),
@@ -576,14 +553,13 @@ pub(crate) fn make_span_dict(
     ctx: &Arc<EvalContext>,
     call_span: &crate::ast::Span,
 ) -> ThunkId {
-    let alloc = |v: Value| ctx.alloc_thunk(0, Arc::new(Thunk::value(v, call_span.clone())));
-    let mut w = indexmap::IndexMap::new();
+    let mk = |v: Value| Arc::new(Thunk::value(v, call_span.clone()));
+    let mut w: indexmap::IndexMap<HashableValue, Arc<Thunk>> = indexmap::IndexMap::new();
     w.insert(
         HashableValue::Str("file".into()),
-        alloc({
-            let sf = &span.file;
-            if !sf.path.starts_with('<') {
-                string_val(sf.path.as_ref())
+        mk({
+            if !span.file.starts_with('<') {
+                string_val(span.file.as_ref())
             } else {
                 Value::Dict(indexmap::IndexMap::new())
             }
@@ -591,29 +567,21 @@ pub(crate) fn make_span_dict(
     );
     w.insert(
         HashableValue::Str("start-line".into()),
-        alloc(Value::Int(span.start.line as i64)),
+        mk(Value::Int(span.start_line as i64)),
     );
     w.insert(
         HashableValue::Str("start-col".into()),
-        alloc(Value::Int(span.start.column as i64)),
-    );
-    w.insert(
-        HashableValue::Str("start-offset".into()),
-        alloc(Value::Int(span.start.offset as i64)),
+        mk(Value::Int(span.start_col as i64)),
     );
     w.insert(
         HashableValue::Str("end-line".into()),
-        alloc(Value::Int(span.end.line as i64)),
+        mk(Value::Int(span.end_line as i64)),
     );
     w.insert(
         HashableValue::Str("end-col".into()),
-        alloc(Value::Int(span.end.column as i64)),
+        mk(Value::Int(span.end_col as i64)),
     );
-    w.insert(
-        HashableValue::Str("end-offset".into()),
-        alloc(Value::Int(span.end.offset as i64)),
-    );
-    alloc(Value::Dict(w))
+    ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(w), call_span.clone())))
 }
 
 /// Returns true if the annotation is `@Expr`, meaning the parameter receives a quoted AST
@@ -737,13 +705,6 @@ async fn dispatch_state(
     _env_id: u32,
 ) -> Action {
     let thunk_span = thunk.span.clone();
-    if crate::memory_budget::is_oom_flagged() {
-        return Action::Continue(Err(crate::error::EvalError::resource_limit_exceeded(
-            "heap limit exceeded (arena bytes)".to_string(),
-            thunk_span.clone(),
-        )
-        .into()));
-    }
     let origin = thunk.span.name.clone();
 
     match state {
@@ -997,152 +958,6 @@ async fn dispatch_state(
             }
         }
 
-        UnevaluatedState::Surface {
-            node,
-            res: _res,
-            types: _types,
-            env_id,
-            ctx: thunk_ctx,
-        } => {
-            // Surface thunk handling in the CEK machine.
-            //
-            // The round-trip here is: SurfaceNode → lower() → Spanned<CoreExpr> → eval_core_expr()
-            // → Arc<Thunk>. All cross-phase data (type annotations, field slots) is inline on nodes.
-            // The lower() call reads inline fields directly — no external tables.
-            //
-            // After lower() we call eval_core_expr() to get a result thunk, then push a Memoize
-            // continuation and return Action::Materialize to force the result thunk iteratively.
-            // This keeps the Rust call stack flat (no recursive materialize() call).
-
-            let (lowered, surface_lower_diags) =
-                crate::lower::lower(&node, thunk_ctx.scope_frames.as_ref().map(|v| v.as_slice()));
-            if let Some(err) = lower_errors_to_eval_error(surface_lower_diags) {
-                let decorated = attach_materialization_context(
-                    err,
-                    None,
-                    origin.as_deref(),
-                    thunk_span.clone(),
-                );
-                thunk.settle(Err(Arc::new((*decorated).clone())));
-                return Action::Continue(Err(decorated));
-            }
-
-            // Handle CoreExpr::TypeAssert inline after lowering — same loop risk as take_core_expr.
-            if let crate::ast::CoreExpr::TypeAssert {
-                annotation,
-                expr: inner,
-                resolved_type,
-                pipeline_blame,
-            } = &lowered.node
-            {
-                // B-433/B-429: If inner is a Placeholder (lowered from a parse-time error or
-                // unresolvable VarRef) and annotation has default:, use the default instead.
-                // Placeholder is the dead-code marker emitted by the lowerer when a diagnostic
-                // is produced; it is never meant to evaluate successfully.
-                let inner_thunk = if let (crate::ast::CoreExpr::Placeholder, Some(default_node)) =
-                    (&inner.node, annotation.node.get_property("default"))
-                {
-                    let (lowered_default, lower_diags) = crate::lower::lower(
-                        default_node,
-                        thunk_ctx.scope_frames.as_ref().map(|v| v.as_slice()),
-                    );
-                    if let Some(err) = lower_errors_to_eval_error(lower_diags) {
-                        let decorated = attach_materialization_context(
-                            err,
-                            None,
-                            origin.as_deref(),
-                            thunk_span.clone(),
-                        );
-                        thunk.settle(Err(Arc::new((*decorated).clone())));
-                        return Action::Continue(Err(decorated));
-                    }
-                    match eval_core_expr(&lowered_default, env_id, &thunk_ctx).await {
-                        Ok(default_thunk) => default_thunk,
-                        Err(e) => {
-                            let decorated = attach_materialization_context(
-                                e,
-                                None,
-                                origin.as_deref(),
-                                thunk_span.clone(),
-                            );
-                            thunk.settle(Err(Arc::new((*decorated).clone())));
-                            return Action::Continue(Err(decorated));
-                        }
-                    }
-                } else {
-                    match eval_core_expr(inner, env_id, &thunk_ctx).await {
-                        Ok(t) => t,
-                        Err(e) => {
-                            let decorated = attach_materialization_context(
-                                e,
-                                None,
-                                origin.as_deref(),
-                                thunk_span.clone(),
-                            );
-                            thunk.settle(Err(Arc::new((*decorated).clone())));
-                            return Action::Continue(Err(decorated));
-                        }
-                    }
-                };
-                let inner_span = inner_thunk.span.clone();
-                stack.push(Cont::Memoize(Box::new(MemoizeData {
-                    thunk: Arc::clone(thunk),
-                    origin,
-                    thunk_span: thunk_span.clone(),
-                    mat_span: None,
-                })));
-                stack.push(Cont::TypeAssertCheck(Box::new(TypeAssertCheckData {
-                    annotation: Box::new(annotation.clone()),
-                    resolved: Box::new(resolved_type.clone()),
-                    expr_span: lowered.span.clone(),
-                    thunk_span: inner_span,
-                    env_id,
-                    ctx: Arc::clone(&thunk_ctx),
-                    pipeline_blame: pipeline_blame.clone(),
-                })));
-                return Action::Materialize {
-                    thunk: inner_thunk,
-                    mat_span: Some(lowered.span.clone()),
-                    thunk_id: None,
-                };
-            }
-
-            // Remaining CoreExpr variants (Call, Dict, Quote, etc.) fall through to eval_core_expr.
-            // Sequential and Match are handled inline above via CEK continuations.
-            match eval_core_expr(&lowered, env_id, &thunk_ctx).await {
-                Ok(result_thunk) => {
-                    // Fast path: if eval_core_expr already produced a materialized thunk
-                    // (e.g., literals), skip the Memoize push entirely.
-                    if let Some(value) = result_thunk.try_get_materialized() {
-                        thunk.settle(Ok(value.clone()));
-                        Action::Continue(Ok(value))
-                    } else {
-                        stack.push(Cont::Memoize(Box::new(MemoizeData {
-                            thunk: Arc::clone(thunk),
-                            origin,
-                            thunk_span: thunk_span.clone(),
-                            mat_span: None,
-                        })));
-                        Action::Materialize {
-                            thunk: result_thunk,
-                            mat_span: None,
-                            thunk_id: None,
-                        }
-                    }
-                }
-                Err(e) => {
-                    let decorated = attach_materialization_context(
-                        e,
-                        None,
-                        origin.as_deref(),
-                        thunk_span.clone(),
-                    );
-                    thunk.settle(Err(Arc::new((*decorated).clone())));
-                    Action::Continue(Err(decorated))
-                }
-            }
-        }
-
         UnevaluatedState::AstField {
             node,
             field,
@@ -1243,7 +1058,7 @@ async fn dispatch_state(
             }
 
             // Handle CoreExpr::Sequential inline — prevents loop through eval_core_expr.
-            // The CEK machine evaluates expressions iteratively via SequentialStep continuations.
+            // The CEK machine evaluates expressions iteratively via LetrecChainStep continuations.
             if let crate::ast::CoreExpr::Sequential(exprs) = &core_expr.node {
                 if exprs.is_empty() {
                     // Empty sequential: return empty dict
@@ -1259,13 +1074,13 @@ async fn dispatch_state(
                     mat_span: None,
                 })));
 
-                // Evaluate the first expression and push a SequentialStep to handle the result
+                // Evaluate the first expression and push a LetrecChainStep to handle the result
                 let first_expr = &exprs[0];
                 let arena_len_before_first = thunk_ctx.scope_arena.borrow().scopes.len() as u32;
-                stack.push(Cont::SequentialStep(Box::new(
-                    crate::eval_materialize::SequentialStepData {
+                stack.push(Cont::LetrecChainStep(Box::new(
+                    crate::eval_materialize::LetrecChainStepData {
                         idx: 0,
-                        seq_expr: Arc::clone(&core_expr),
+                        letrec_chain_expr: Arc::clone(&core_expr),
                         env_id,
                         arena_len_before: arena_len_before_first,
                         ctx: Arc::clone(&thunk_ctx),
@@ -2474,18 +2289,18 @@ pub(crate) async fn apply_cont(
                 }
             }
         }
-        Cont::SequentialStep(data) => {
-            let SequentialStepData {
+        Cont::LetrecChainStep(data) => {
+            let LetrecChainStepData {
                 idx,
-                seq_expr,
+                letrec_chain_expr,
                 env_id,
                 arena_len_before,
                 ctx,
                 seq_span,
             } = *data;
-            let exprs = match &seq_expr.node {
+            let exprs = match &letrec_chain_expr.node {
                 CoreExpr::Sequential(exprs) => exprs,
-                _ => unreachable!("SequentialStep seq_expr must be Sequential"),
+                _ => unreachable!("LetrecChainStep letrec_chain_expr must be Sequential"),
             };
 
             // Result is the materialized value from the previous expression
@@ -2600,11 +2415,11 @@ pub(crate) async fn apply_cont(
                                     // the payload after materialization, then force it through the CEK
                                     // machine. This replaces the sync materialization call that bypassed the
                                     // CEK continuation stack (B-396).
-                                    stack.push(Cont::VariantUnpackForSeq(Box::new(
-                                        VariantUnpackForSeqData {
+                                    stack.push(Cont::VariantUnpackForLetrecChain(Box::new(
+                                        VariantUnpackForLetrecChainData {
                                             static_key_set: static_key_set.clone(),
                                             next_idx,
-                                            seq_expr: Arc::clone(&seq_expr),
+                                            letrec_chain_expr: Arc::clone(&letrec_chain_expr),
                                             env_id,
                                             arena_len_before,
                                             ctx: Arc::clone(&ctx),
@@ -2646,14 +2461,14 @@ pub(crate) async fn apply_cont(
                             env_id // no new FlatEnv allocated (empty dict or all literals)
                         };
 
-                        // Record arena length for the NEXT expression's SequentialStepData.
+                        // Record arena length for the NEXT expression's LetrecChainStepData.
                         let next_arena_len = ctx.scope_arena.borrow().scopes.len() as u32;
 
                         // Proceed to the next expression.
                         let next_expr = &exprs[next_idx];
-                        stack.push(Cont::SequentialStep(Box::new(SequentialStepData {
+                        stack.push(Cont::LetrecChainStep(Box::new(LetrecChainStepData {
                             idx: next_idx,
-                            seq_expr: Arc::clone(&seq_expr),
+                            letrec_chain_expr: Arc::clone(&letrec_chain_expr),
                             env_id: seq_env_id,
                             arena_len_before: next_arena_len,
                             ctx: Arc::clone(&ctx),
@@ -2668,9 +2483,9 @@ pub(crate) async fn apply_cont(
                         // No static keys — continue with same env_id.
                         let next_arena_len = ctx.scope_arena.borrow().scopes.len() as u32;
                         let next_expr = &exprs[next_idx];
-                        stack.push(Cont::SequentialStep(Box::new(SequentialStepData {
+                        stack.push(Cont::LetrecChainStep(Box::new(LetrecChainStepData {
                             idx: next_idx,
-                            seq_expr: Arc::clone(&seq_expr),
+                            letrec_chain_expr: Arc::clone(&letrec_chain_expr),
                             env_id,
                             arena_len_before: next_arena_len,
                             ctx: Arc::clone(&ctx),
@@ -2685,20 +2500,22 @@ pub(crate) async fn apply_cont(
                 }
             }
         }
-        Cont::VariantUnpackForSeq(data) => {
-            let VariantUnpackForSeqData {
+        Cont::VariantUnpackForLetrecChain(data) => {
+            let VariantUnpackForLetrecChainData {
                 static_key_set,
                 next_idx,
-                seq_expr,
+                letrec_chain_expr,
                 env_id,
                 arena_len_before,
                 ctx,
                 seq_span,
                 current_expr_span,
             } = *data;
-            let exprs = match &seq_expr.node {
+            let exprs = match &letrec_chain_expr.node {
                 CoreExpr::Sequential(exprs) => exprs,
-                _ => unreachable!("VariantUnpackForSeq seq_expr must be Sequential"),
+                _ => {
+                    unreachable!("VariantUnpackForLetrecChain letrec_chain_expr must be Sequential")
+                }
             };
 
             // Result is the materialized payload value from the Variant
@@ -2733,9 +2550,9 @@ pub(crate) async fn apply_cont(
                     let next_arena_len = ctx.scope_arena.borrow().scopes.len() as u32;
 
                     let next_expr = &exprs[next_idx];
-                    stack.push(Cont::SequentialStep(Box::new(SequentialStepData {
+                    stack.push(Cont::LetrecChainStep(Box::new(LetrecChainStepData {
                         idx: next_idx,
-                        seq_expr: Arc::clone(&seq_expr),
+                        letrec_chain_expr: Arc::clone(&letrec_chain_expr),
                         env_id: seq_env_id,
                         arena_len_before: next_arena_len,
                         ctx: Arc::clone(&ctx),
@@ -3389,12 +3206,11 @@ fn eval_structural_pattern_inner<'a>(
 
                         for na in named_args.iter() {
                             let field_key = HashableValue::Str(na.node.name.clone().into());
-                            let Some(field_thunk_id) = payload_map.get(&field_key) else {
+                            let Some(field_thunk) = payload_map.get(&field_key) else {
                                 return Ok(false);
                             };
-                            let field_thunk = ctx.get_thunk(*field_thunk_id);
                             let field_val =
-                                materialize(&field_thunk, Some(&match_span), ctx).await?;
+                                materialize(field_thunk, Some(&match_span), ctx).await?;
 
                             if !eval_structural_pattern_inner(
                                 &na.node.value.node,
@@ -3447,11 +3263,10 @@ fn eval_structural_pattern_inner<'a>(
 
                     for (idx, arg) in args.iter().enumerate() {
                         let field_key = HashableValue::Int(idx as i64);
-                        let Some(field_thunk_id) = payload_map.get(&field_key) else {
+                        let Some(field_thunk) = payload_map.get(&field_key) else {
                             return Ok(false);
                         };
-                        let field_thunk = ctx.get_thunk(*field_thunk_id);
-                        let field_val = materialize(&field_thunk, Some(&match_span), ctx).await?;
+                        let field_val = materialize(field_thunk, Some(&match_span), ctx).await?;
 
                         if !eval_structural_pattern_inner(
                             &arg.node,
@@ -3533,11 +3348,10 @@ fn eval_structural_pattern_inner<'a>(
                             .into())
                         }
                     };
-                    let Some(field_thunk_id) = scrutinee_map.get(&key) else {
+                    let Some(field_thunk) = scrutinee_map.get(&key) else {
                         return Ok(false); // Required field missing — genuine no-match
                     };
-                    let field_thunk = ctx.get_thunk(*field_thunk_id);
-                    let field_val = materialize(&field_thunk, Some(&match_span), ctx).await?;
+                    let field_val = materialize(field_thunk, Some(&match_span), ctx).await?;
                     if !eval_structural_pattern_inner(
                         &entry.node.value.node,
                         binding_map,
@@ -4777,22 +4591,20 @@ fn force_dict_tree_impl<'a>(
         match val {
             Value::Dict(map) => {
                 let mut new_map = IndexMap::new();
-                for (key, thunk_id) in map {
-                    let thunk = ctx.get_thunk(*thunk_id);
-                    let thunk_ptr = Arc::as_ptr(&thunk);
+                for (key, thunk) in map {
+                    let thunk_ptr = Arc::as_ptr(thunk);
 
                     // Cycle detection: if we've already visited this thunk, return it as-is
                     if !visited.insert(thunk_ptr) {
                         // Cycle detected — stop recursing
-                        new_map.insert(key.clone(), *thunk_id);
+                        new_map.insert(key.clone(), Arc::clone(thunk));
                         continue;
                     }
 
-                    let forced_val = materialize(&thunk, None, ctx).await?;
+                    let forced_val = materialize(thunk, None, ctx).await?;
                     let deep_val = force_dict_tree_impl(&forced_val, ctx, visited).await?;
                     let deep_thunk = Arc::new(Thunk::value(deep_val, thunk.span.clone()));
-                    let deep_id = ctx.alloc_thunk(0, deep_thunk);
-                    new_map.insert(key.clone(), deep_id);
+                    new_map.insert(key.clone(), deep_thunk);
                 }
                 Ok(Value::Dict(new_map))
             }

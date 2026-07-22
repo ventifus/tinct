@@ -322,7 +322,8 @@ pub(crate) async fn bind_args_thunks(
     //
     // For positional and named args that are already ThunkIds, use fill_slot directly
     // to copy the Arc<Thunk> reference without allocating a redundant intermediate slot.
-    // For defaults (SurfaceNode), allocate a new Thunk::surface and then fill.
+    // For defaults (SurfaceNode), lower to CoreExpr via lower::lower and allocate a
+    // Thunk::core_expr for lazy evaluation in the default scope.
     for (i, param) in regular_params.iter().enumerate() {
         let slot = param.slot;
         if i < positional.len() {
@@ -337,13 +338,18 @@ pub(crate) async fn bind_args_thunks(
                     .borrow_mut()
                     .fill_slot(call_env_id, slot, named_id);
             } else if let Some(default_node) = get_default(param) {
-                // Default param: evaluate lazily in the default_env scope.
-                // Use empty res/types tables — defaults are surface nodes whose variable
-                // references resolve by name lookup in the default_env chain at force time.
-                let default_thunk = Arc::new(Thunk::surface(
-                    default_node,
-                    Arc::new(std::collections::HashMap::new()),
-                    Arc::new(std::collections::HashMap::new()),
+                // Default param: lower the surface node to CoreExpr, then wrap as a CoreExpr
+                // thunk so it evaluates lazily in default_env at force time.
+                let (lowered_default, lower_diags) = crate::lower::lower(
+                    &default_node,
+                    ctx.scope_frames.as_ref().map(|v| v.as_slice()),
+                );
+                if let Some(err) = crate::eval_materialize::lower_errors_to_eval_error(lower_diags)
+                {
+                    return Err(err);
+                }
+                let default_thunk = Arc::new(Thunk::core_expr(
+                    Arc::new(lowered_default),
                     default_env_id,
                     Arc::clone(ctx),
                     call_span.clone(),
@@ -356,10 +362,15 @@ pub(crate) async fn bind_args_thunks(
             // else: required param with no coverage — already caught by arity check.
         } else if let Some(default_node) = get_default(param) {
             // Default param (no named args provided).
-            let default_thunk = Arc::new(Thunk::surface(
-                default_node,
-                Arc::new(std::collections::HashMap::new()),
-                Arc::new(std::collections::HashMap::new()),
+            let (lowered_default, lower_diags) = crate::lower::lower(
+                &default_node,
+                ctx.scope_frames.as_ref().map(|v| v.as_slice()),
+            );
+            if let Some(err) = crate::eval_materialize::lower_errors_to_eval_error(lower_diags) {
+                return Err(err);
+            }
+            let default_thunk = Arc::new(Thunk::core_expr(
+                Arc::new(lowered_default),
                 default_env_id,
                 Arc::clone(ctx),
                 call_span.clone(),
@@ -406,7 +417,7 @@ pub(crate) async fn bind_args_thunks(
         // Accumulate ThunkIds for each typed bucket (in declaration order).
         let mut typed_buckets: Vec<Vec<ThunkId>> = vec![Vec::new(); typed_variadic_params.len()];
         // Accumulate rest bucket: integer-keyed positionals + string-keyed named.
-        let mut rest_dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+        let mut rest_dict: IndexMap<HashableValue, Arc<crate::value::Thunk>> = IndexMap::new();
         let mut rest_int_key: i64 = 0;
 
         // BIND-VARIADIC: Route each excess positional arg to its bucket.
@@ -434,7 +445,7 @@ pub(crate) async fn bind_args_thunks(
 
             if !routed {
                 if rest_param.is_some() {
-                    rest_dict.insert(HashableValue::Int(rest_int_key), tid);
+                    rest_dict.insert(HashableValue::Int(rest_int_key), ctx.get_thunk(tid));
                     rest_int_key += 1;
                 } else {
                     // No rest bucket and no typed bucket matched: arg cannot be accepted.
@@ -458,7 +469,10 @@ pub(crate) async fn bind_args_thunks(
                 if regular_params.iter().any(|p| &p.name == name) {
                     continue;
                 }
-                rest_dict.insert(HashableValue::Str(std::rc::Rc::from(name.as_str())), tid);
+                rest_dict.insert(
+                    HashableValue::Str(Arc::from(name.as_str())),
+                    ctx.get_thunk(tid),
+                );
             }
         }
 
@@ -533,9 +547,9 @@ fn build_seq(
 /// `default:` is specified via PropertyDict annotation with a "default" key, e.g.:
 /// `[fn [let x@[default: 42]] ...]`
 ///
-/// Returns the `Arc<SurfaceNode>` of the default expression directly — no Expr conversion.
-/// The caller wraps this in a lazy `Thunk::surface` using empty resolution/type tables
-/// (name-based lookup in the caller env is correct for default expressions).
+/// Returns the `Arc<SurfaceNode>` of the default expression directly.
+/// The caller lowers this to CoreExpr via `lower::lower` and wraps the result in a
+/// `Thunk::core_expr` for lazy evaluation in the default scope.
 pub(crate) fn get_default(param: &Param) -> Option<Arc<SurfaceNode>> {
     param
         .annotation

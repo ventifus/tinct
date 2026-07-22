@@ -46,7 +46,7 @@ impl std::fmt::Display for ParseError {
             write!(
                 f,
                 "{}:{}: {}",
-                span.start.line, span.start.column, self.message
+                span.start_line, span.start_col, self.message
             )
         } else {
             write!(f, "{}", self.message)
@@ -123,14 +123,27 @@ fn key_to_string(expr: &SurfaceExpression) -> Option<String> {
     }
 }
 
+/// Encode a span position as a `u64` key for comment maps.
+///
+/// Combines `start_line` and `start_col` into a single `u64`:
+/// `(start_line as u64) << 32 | start_col as u64`.
+///
+/// This is a unique key within a single source file because no two tokens can
+/// start at the same line and column. Keys are used by `leading_comments`,
+/// `trailing_comments`, and `blank_before` maps in `ParseOutput`.
+#[inline]
+pub(crate) fn span_key(line: u32, col: u32) -> u64 {
+    ((line as u64) << 32) | col as u64
+}
+
 /// Helper: count how many whitespace/newline/semicolon tokens to skip from the current position.
-/// Also collects comment tokens into the leading_comments map (keyed by the next non-whitespace token's offset).
+/// Also collects comment tokens into the leading_comments map (keyed by span_key of the next non-whitespace token).
 /// Detects blank lines (consecutive newlines) and marks the next token with blank_before: true.
 fn skip_whitespace_tokens(
     tokens: &[Spanned<Token>],
     current_index: usize,
-    leading_comments: &mut BTreeMap<u32, Vec<String>>,
-    blank_before: &mut BTreeMap<u32, bool>,
+    leading_comments: &mut BTreeMap<u64, Vec<String>>,
+    blank_before: &mut BTreeMap<u64, bool>,
 ) -> usize {
     let mut count = 0;
     let mut idx = current_index;
@@ -165,15 +178,16 @@ fn skip_whitespace_tokens(
             _ => {
                 // Found non-whitespace token — attach collected comments and blank-line flag to it
                 if idx < tokens.len() {
-                    let next_offset = tokens[idx].span.start.offset;
+                    let next_key =
+                        span_key(tokens[idx].span.start_line, tokens[idx].span.start_col);
                     if !collected_comments.is_empty() {
                         leading_comments
-                            .entry(next_offset)
+                            .entry(next_key)
                             .or_default()
                             .extend(collected_comments);
                     }
                     if has_blank_line {
-                        blank_before.insert(next_offset, true);
+                        blank_before.insert(next_key, true);
                     }
                 }
                 break;
@@ -225,8 +239,8 @@ fn skip_whitespace_tokens(
 fn parse_bracket_annotation_dict(
     tokens: &[Spanned<Token>],
     start_index: usize,
-    leading_comments: &mut BTreeMap<u32, Vec<String>>,
-    blank_before: &mut BTreeMap<u32, bool>,
+    leading_comments: &mut BTreeMap<u64, Vec<String>>,
+    blank_before: &mut BTreeMap<u64, bool>,
 ) -> Result<(Vec<Spanned<SurfaceEntry>>, Span, usize), ParseError> {
     let bracket_start_span = tokens[start_index].span.clone();
     let mut i = start_index + 1; // consume [
@@ -259,12 +273,13 @@ fn parse_bracket_annotation_dict(
                         });
                     }
 
-                    let ann_span = Span {
-                        start: bracket_start_span.start,
-                        end: tokens[i].span.end,
-                        file: bracket_start_span.file.clone(),
-                        name: None,
-                    };
+                    let ann_span = Span::new(
+                        bracket_start_span.start_line,
+                        bracket_start_span.start_col,
+                        tokens[i].span.end_line,
+                        tokens[i].span.end_col,
+                        Arc::clone(&bracket_start_span.file),
+                    );
                     let final_i = i + 1; // consume ]
                     return Ok((entries, ann_span, final_i));
                 }
@@ -325,7 +340,8 @@ fn parse_bracket_annotation_dict(
                     // Update the last entry's value in-place.
                     if let Some(last_entry) = entries.last_mut() {
                         last_entry.node.value = node;
-                        last_entry.span.end = tok_span.end;
+                        last_entry.span.end_line = tok_span.end_line;
+                        last_entry.span.end_col = tok_span.end_col;
                     }
                     waiting_for_value = false;
                 } else {
@@ -357,7 +373,8 @@ fn parse_bracket_annotation_dict(
                 if waiting_for_value {
                     if let Some(last_entry) = entries.last_mut() {
                         last_entry.node.value = node;
-                        last_entry.span.end = tok_span.end;
+                        last_entry.span.end_line = tok_span.end_line;
+                        last_entry.span.end_col = tok_span.end_col;
                     }
                     waiting_for_value = false;
                 } else {
@@ -381,7 +398,8 @@ fn parse_bracket_annotation_dict(
                 if waiting_for_value {
                     if let Some(last_entry) = entries.last_mut() {
                         last_entry.node.value = node;
-                        last_entry.span.end = tok_span.end;
+                        last_entry.span.end_line = tok_span.end_line;
+                        last_entry.span.end_col = tok_span.end_col;
                     }
                     waiting_for_value = false;
                 } else {
@@ -405,7 +423,8 @@ fn parse_bracket_annotation_dict(
                 if waiting_for_value {
                     if let Some(last_entry) = entries.last_mut() {
                         last_entry.node.value = node;
-                        last_entry.span.end = tok_span.end;
+                        last_entry.span.end_line = tok_span.end_line;
+                        last_entry.span.end_col = tok_span.end_col;
                     }
                     waiting_for_value = false;
                 } else {
@@ -442,8 +461,8 @@ fn parse_bracket_annotation_dict(
 fn parse_annotation_direct(
     tokens: &[Spanned<Token>],
     start_index: usize,
-    leading_comments: &mut BTreeMap<u32, Vec<String>>,
-    blank_before: &mut BTreeMap<u32, bool>,
+    leading_comments: &mut BTreeMap<u64, Vec<String>>,
+    blank_before: &mut BTreeMap<u64, bool>,
 ) -> Result<(Spanned<Annotation>, usize), ParseError> {
     let mut i = start_index;
 
@@ -485,12 +504,13 @@ fn parse_annotation_direct(
             if i < tokens.len() && matches!(&tokens[i].node, Token::ImmediateAt) {
                 let (inner_ann, final_i) =
                     parse_annotation_direct(tokens, i, leading_comments, blank_before)?;
-                let full_span = Span {
-                    start: name_span.start,
-                    end: inner_ann.span.end,
-                    file: name_span.file.clone(),
-                    name: None,
-                };
+                let full_span = Span::new(
+                    name_span.start_line,
+                    name_span.start_col,
+                    inner_ann.span.end_line,
+                    inner_ann.span.end_col,
+                    Arc::clone(&name_span.file),
+                );
                 // Build annotated VarRef node, then convert via expression_to_annotation.
                 let inner_varref = Arc::new(SurfaceNode::new(
                     SurfaceExpression::VarRef {
@@ -539,12 +559,13 @@ fn parse_annotation_direct(
             if final_i < tokens.len() && matches!(&tokens[final_i].node, Token::ImmediateAt) {
                 let (inner_ann, final_i) =
                     parse_annotation_direct(tokens, final_i, leading_comments, blank_before)?;
-                let chained_span = Span {
-                    start: bracket_start_span.start,
-                    end: inner_ann.span.end,
-                    file: bracket_start_span.file.clone(),
-                    name: None,
-                };
+                let chained_span = Span::new(
+                    bracket_start_span.start_line,
+                    bracket_start_span.start_col,
+                    inner_ann.span.end_line,
+                    inner_ann.span.end_col,
+                    Arc::clone(&bracket_start_span.file),
+                );
                 // Build outer Dict annotation, then chain via Annotated.
                 // T-1617: outer uses expression_to_annotation for consistency.
                 let outer_dict_node = Arc::new(SurfaceNode::new(
@@ -594,7 +615,7 @@ enum StackFrame {
         pending_key: Option<Arc<SurfaceNode>>,
         /// Track seen keys for duplicate detection (literal keys only)
         seen_keys: std::collections::HashSet<String>,
-        span_start: Position,
+        span_start: Span,
         /// Floating annotation: set when `[@Type ...]` form is used; wraps the next value in TypeAssert.
         floating_annotation: Option<Spanned<Annotation>>,
     },
@@ -612,7 +633,7 @@ enum StackFrame {
         /// when the argument name had a `@[...]` annotation (e.g. `fields@Child:`), `None`
         /// for plain `name:` named arguments.
         pending_key: Option<(String, Span, Option<Spanned<Annotation>>)>,
-        span_start: Position,
+        span_start: Span,
     },
     /// Function definition: `[fn [let params...] body]` or `[fn@Type [let params...] body]`
     Fn {
@@ -621,7 +642,7 @@ enum StackFrame {
         /// Body expressions — for multi-expression bodies (let-binding)
         body: Vec<Arc<SurfaceNode>>,
         return_ann: Option<Spanned<Annotation>>,
-        span_start: Position,
+        span_start: Span,
         /// True once the parameter bracket has been consumed (even if it added 0 params).
         /// Prevents a second empty bracket `[]` from being mistaken for a param list.
         params_consumed: bool,
@@ -643,22 +664,22 @@ enum StackFrame {
         /// Pending key node from a bare word followed by `:` inside [type ...].
         /// Holds the constructor name until the payload value arrives.
         pending_key: Option<Arc<SurfaceNode>>,
-        span_start: Position,
+        span_start: Span,
     },
     /// Quote special form: `[quote expr]`
     Quote {
         expr: Option<Arc<SurfaceNode>>,
-        span_start: Position,
+        span_start: Span,
     },
     /// Unquote special form: `[unquote expr]` — produces `SurfaceExpression::Unquote`
     Unquote {
         expr: Option<Arc<SurfaceNode>>,
-        span_start: Position,
+        span_start: Span,
     },
     /// Unquote-splice special form: `[unquote-splice expr]` — produces `SurfaceExpression::UnquoteSplice`
     UnquoteSplice {
         expr: Option<Arc<SurfaceNode>>,
-        span_start: Position,
+        span_start: Span,
     },
     /// Syntax class declaration (macros-v2): `[syntax-class name pattern: [...] message: "..."]`
     SyntaxClass {
@@ -666,7 +687,7 @@ enum StackFrame {
         pattern: Option<Arc<SurfaceNode>>,
         message: Option<String>,
         pending_key: Option<Arc<SurfaceNode>>,
-        span_start: Position,
+        span_start: Span,
     },
     /// Match expression: `[match scrutinee pattern: body ...]`
     Match {
@@ -676,7 +697,7 @@ enum StackFrame {
         pending_pattern_expr: Option<Arc<SurfaceNode>>,
         /// Pending pattern (SurfaceNode) paired with optional guard expression after the colon
         pending_pattern: Option<(Arc<SurfaceNode>, Option<Arc<SurfaceNode>>)>,
-        span_start: Position,
+        span_start: Span,
     },
     /// Class declaration: `[class [param...] [structural-metadata] method: Type ...]`
     /// Name comes from the binding position in the enclosing dict (e.g. `MyClass: [class [let a] ...]`).
@@ -689,7 +710,7 @@ enum StackFrame {
         pending_key: Option<Arc<SurfaceNode>>,
         /// Structural metadata bracket (second positional): `[determines: [...] resolver: ... superclasses: ...]`
         structural_metadata: Option<Arc<SurfaceNode>>,
-        span_start: Position,
+        span_start: Span,
     },
     /// Instance declaration: `[instance ClassName [pattern [...]]`: methods... ...]`
     InstanceDecl {
@@ -702,12 +723,12 @@ enum StackFrame {
         pending_key: Option<Arc<SurfaceNode>>,
         /// Current arm's accumulated method entries (before colon closes the arm)
         current_arm_methods: Vec<Spanned<SurfaceEntry>>,
-        span_start: Position,
+        span_start: Span,
     },
     /// Pattern declaration: `[pattern [a@Int b@Float]]`
     PatternDecl {
         bindings: Vec<Arc<SurfaceNode>>,
-        span_start: Position,
+        span_start: Span,
     },
     /// Binding declaration: `[let x@Int y@Float z: default]`
     /// Used in fn params, class TypeVars, type alias params, instance arm keys, and case arms.
@@ -730,7 +751,7 @@ enum StackFrame {
         ///   - the close bracket arrives, or
         ///   - the next new binding or colon arrives (signalling the end of the RHS).
         pending_rhs: Option<Arc<SurfaceNode>>,
-        span_start: Position,
+        span_start: Span,
     },
     /// Match arm with explicit scoping: `[case [let bindings] pattern body]`
     ///
@@ -744,7 +765,7 @@ enum StackFrame {
         let_bindings: Option<Arc<SurfaceNode>>,
         pattern: Option<Arc<SurfaceNode>>,
         body: Vec<Arc<SurfaceNode>>,
-        span_start: Position,
+        span_start: Span,
     },
     /// Pipe operator: `lhs | rhs`
     /// Holds the LHS and waits for the RHS to be parsed
@@ -760,7 +781,7 @@ enum StackFrame {
     AnnotationCollect {
         target: AnnotationTarget,
         value: Option<Arc<SurfaceNode>>,
-        span_start: Position,
+        span_start: Span,
     },
 }
 
@@ -804,9 +825,10 @@ enum CallArg {
 
 /// Parse output: AST plus comment side-channels for the formatter.
 ///
-/// `leading_comments` are keyed by the `span.start.offset` of the node they precede.
-/// `trailing_comments` are keyed by the `span.start.offset` of the node they follow.
-/// `blank_before` is keyed by the `span.start.offset` of the node and set to `true` when
+/// `leading_comments` are keyed by a `u64` span key encoding `(start_line << 32 | start_col)`
+/// of the node they precede.
+/// `trailing_comments` are keyed by the same encoding for the node they follow.
+/// `blank_before` is keyed by the same encoding and set to `true` when
 /// there was a blank line (consecutive newlines) before that node.
 ///
 /// `diagnostics` contains parse diagnostics (always `kind = "parse-error"`, level = Err) that
@@ -818,9 +840,9 @@ enum CallArg {
 /// The formatter uses all fields.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParseOutput {
-    pub leading_comments: BTreeMap<u32, Vec<String>>,
-    pub trailing_comments: BTreeMap<u32, String>,
-    pub blank_before: BTreeMap<u32, bool>,
+    pub leading_comments: BTreeMap<u64, Vec<String>>,
+    pub trailing_comments: BTreeMap<u64, String>,
+    pub blank_before: BTreeMap<u64, bool>,
     /// Recovered parse diagnostics (errors inside bracket forms where the parser continued).
     pub diagnostics: Vec<TypeDiagnostic>,
     /// The parsed Surface AST program — the primary output of the parser.
@@ -945,12 +967,13 @@ fn recover_from_bracket_error(
                         .into_iter()
                         .map(|e| {
                             let entry_span = if let Some(ref key) = e.node.key {
-                                Span {
-                                    start: key.span.start,
-                                    end: e.node.value.span.end,
-                                    file: key.span.file.clone(),
-                                    name: None,
-                                }
+                                Span::new(
+                                    key.span.start_line,
+                                    key.span.start_col,
+                                    e.node.value.span.end_line,
+                                    e.node.value.span.end_col,
+                                    Arc::clone(&key.span.file),
+                                )
                             } else {
                                 e.node.value.span.clone()
                             };
@@ -970,12 +993,13 @@ fn recover_from_bracket_error(
                         error_span.clone(),
                     ));
 
-                    let dict_span = Span {
-                        start: span_start,
-                        end: error_span.end,
-                        file: error_span.file.clone(),
-                        name: None,
-                    };
+                    let dict_span = Span::new(
+                        span_start.start_line,
+                        span_start.start_col,
+                        error_span.end_line,
+                        error_span.end_col,
+                        Arc::clone(&error_span.file),
+                    );
                     mk(SurfaceExpression::Dict(partial_entries), dict_span)
                 }
             }
@@ -1041,12 +1065,13 @@ fn recover_from_bracket_error(
                             error_span.clone(),
                         ));
 
-                        let call_span = Span {
-                            start: span_start,
-                            end: error_span.end,
-                            file: error_span.file.clone(),
-                            name: None,
-                        };
+                        let call_span = Span::new(
+                            span_start.start_line,
+                            span_start.start_col,
+                            error_span.end_line,
+                            error_span.end_col,
+                            Arc::clone(&error_span.file),
+                        );
                         mk(
                             SurfaceExpression::Call {
                                 func,
@@ -1159,7 +1184,7 @@ fn recover_from_failed_open(
 /// `SurfaceExpression::Error` node and skipping to the matching `]`. Recovered errors are collected
 /// in `ParseOutput.errors`. Fatal errors (lexer failure, unclosed brackets) still
 /// cause this function to return `Err(...)`.
-pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDiagnostic> {
+pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic> {
     // Tokenize the input via the lexer
     let tokens = lexer::tokenize(source, Arc::clone(&file))
         .map_err(|e| TypeDiagnostic::error("parse-error", e.message, e.span))?;
@@ -1173,10 +1198,10 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
     // All documents in the file
     let mut documents: Vec<Spanned<Arc<SurfaceDocument>>> = Vec::new();
 
-    // Comment maps
-    let mut leading_comments: BTreeMap<u32, Vec<String>> = BTreeMap::new();
-    let mut trailing_comments: BTreeMap<u32, String> = BTreeMap::new();
-    let mut blank_before: BTreeMap<u32, bool> = BTreeMap::new();
+    // Comment maps (keyed by span_key(start_line, start_col))
+    let mut leading_comments: BTreeMap<u64, Vec<String>> = BTreeMap::new();
+    let mut trailing_comments: BTreeMap<u64, String> = BTreeMap::new();
+    let mut blank_before: BTreeMap<u64, bool> = BTreeMap::new();
 
     // Recovered parse diagnostics (errors inside bracket forms).
     let mut diagnostics: Vec<TypeDiagnostic> = Vec::new();
@@ -1186,7 +1211,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
 
     // Track the last frame popped by a CloseBracket — when there are unclosed brackets at EOF,
     // the last popped frame is the extra bracket that consumed the expected outer close.
-    let mut last_popped_frame: Option<(&'static str, Position)> = None;
+    let mut last_popped_frame: Option<(&'static str, Span)> = None;
 
     // Phase 1: Track next document's header (parsed from --- line)
     let mut next_doc_header: indexmap::IndexMap<String, Arc<SurfaceNode>> =
@@ -1196,24 +1221,24 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
     let mut seen_section_names: std::collections::HashSet<String> =
         std::collections::HashSet::new();
 
-    fn frame_info_static(frame: &StackFrame) -> (&'static str, Position) {
+    fn frame_info_static(frame: &StackFrame) -> (&'static str, Span) {
         match frame {
-            StackFrame::Dict { span_start, .. } => ("dict", *span_start),
-            StackFrame::Call { span_start, .. } => ("call", *span_start),
-            StackFrame::Fn { span_start, .. } => ("fn", *span_start),
-            StackFrame::TypeAlias { span_start, .. } => ("type", *span_start),
-            StackFrame::Quote { span_start, .. } => ("quote", *span_start),
-            StackFrame::Unquote { span_start, .. } => ("unquote", *span_start),
-            StackFrame::UnquoteSplice { span_start, .. } => ("unquote-splice", *span_start),
-            StackFrame::SyntaxClass { span_start, .. } => ("syntax-class", *span_start),
-            StackFrame::Match { span_start, .. } => ("match", *span_start),
-            StackFrame::ClassDecl { span_start, .. } => ("class", *span_start),
-            StackFrame::InstanceDecl { span_start, .. } => ("instance", *span_start),
-            StackFrame::PatternDecl { span_start, .. } => ("pattern", *span_start),
-            StackFrame::LetDecl { span_start, .. } => ("let", *span_start),
-            StackFrame::CaseDecl { span_start, .. } => ("case", *span_start),
-            StackFrame::Pipe { pipe_span, .. } => ("pipe", pipe_span.start),
-            StackFrame::AnnotationCollect { span_start, .. } => ("annotation", *span_start),
+            StackFrame::Dict { span_start, .. } => ("dict", span_start.clone()),
+            StackFrame::Call { span_start, .. } => ("call", span_start.clone()),
+            StackFrame::Fn { span_start, .. } => ("fn", span_start.clone()),
+            StackFrame::TypeAlias { span_start, .. } => ("type", span_start.clone()),
+            StackFrame::Quote { span_start, .. } => ("quote", span_start.clone()),
+            StackFrame::Unquote { span_start, .. } => ("unquote", span_start.clone()),
+            StackFrame::UnquoteSplice { span_start, .. } => ("unquote-splice", span_start.clone()),
+            StackFrame::SyntaxClass { span_start, .. } => ("syntax-class", span_start.clone()),
+            StackFrame::Match { span_start, .. } => ("match", span_start.clone()),
+            StackFrame::ClassDecl { span_start, .. } => ("class", span_start.clone()),
+            StackFrame::InstanceDecl { span_start, .. } => ("instance", span_start.clone()),
+            StackFrame::PatternDecl { span_start, .. } => ("pattern", span_start.clone()),
+            StackFrame::LetDecl { span_start, .. } => ("let", span_start.clone()),
+            StackFrame::CaseDecl { span_start, .. } => ("case", span_start.clone()),
+            StackFrame::Pipe { pipe_span, .. } => ("pipe", pipe_span.clone()),
+            StackFrame::AnnotationCollect { span_start, .. } => ("annotation", span_start.clone()),
         }
     }
 
@@ -1280,7 +1305,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                         bindings: Vec::new(),
                         pending_key: None,
                         pending_rhs: None,
-                        span_start: span.start,
+                        span_start: span.clone(),
                     });
                     i += 1; // Consume the OpenBracket
                     continue;
@@ -1302,7 +1327,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                             implied: false,
                             args: Vec::new(),
                             pending_key: None,
-                            span_start: span.start,
+                            span_start: span.clone(),
                         });
                         i += 1; // Consume the OpenBracket
                                 // Skip whitespace and consume the "call" token
@@ -1343,7 +1368,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                             params: Vec::new(),
                             body: Vec::new(),
                             return_ann: None,
-                            span_start: span.start,
+                            span_start: span.clone(),
                             params_consumed: false,
                         });
 
@@ -1352,7 +1377,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                             stack.push(StackFrame::AnnotationCollect {
                                 target: AnnotationTarget::FnReturn,
                                 value: None,
-                                span_start: token_vec[i].span.start,
+                                span_start: token_vec[i].span.clone(),
                             });
                             i += 1; // Consume ImmediateAt
                         }
@@ -1373,7 +1398,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                             params: Vec::new(),
                             type_exprs: Vec::new(),
                             pending_key: None,
-                            span_start: span.start,
+                            span_start: span.clone(),
                         });
                         i += 1; // Consume the OpenBracket
                                 // Skip whitespace and consume the "type" token
@@ -1398,7 +1423,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                         // (depth already checked above)
                         stack.push(StackFrame::Quote {
                             expr: None,
-                            span_start: span.start,
+                            span_start: span.clone(),
                         });
                         i += 1; // Consume the OpenBracket
                                 // Skip whitespace and consume the "quote" token
@@ -1422,7 +1447,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                         // (Not an unquote form if the keyword is followed by colon: [unquote: x] is a dict.)
                         stack.push(StackFrame::Unquote {
                             expr: None,
-                            span_start: span.start,
+                            span_start: span.clone(),
                         });
                         i += 1; // Consume the OpenBracket
                                 // Skip whitespace and consume the "unquote" token
@@ -1446,7 +1471,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                         // (Not an unquote-splice form if the keyword is followed by colon: [unquote-splice: x] is a dict.)
                         stack.push(StackFrame::UnquoteSplice {
                             expr: None,
-                            span_start: span.start,
+                            span_start: span.clone(),
                         });
                         i += 1; // Consume the OpenBracket
                                 // Skip whitespace and consume the "unquote-splice" token
@@ -1473,7 +1498,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                             pattern: None,
                             message: None,
                             pending_key: None,
-                            span_start: span.start,
+                            span_start: span.clone(),
                         });
                         i += 1; // Consume the OpenBracket
                                 // Skip whitespace and consume the "syntax-class" token
@@ -1501,7 +1526,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                             arms: Vec::new(),
                             pending_pattern_expr: None,
                             pending_pattern: None,
-                            span_start: span.start,
+                            span_start: span.clone(),
                         });
                         i += 1; // Consume the OpenBracket
                                 // Skip whitespace and consume the "match" token
@@ -1527,7 +1552,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                             bindings: Vec::new(),
                             pending_key: None,
                             pending_rhs: None,
-                            span_start: span.start,
+                            span_start: span.clone(),
                         });
                         i += 1; // Consume the OpenBracket
                                 // Skip whitespace and consume the "let" token
@@ -1553,7 +1578,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                             let_bindings: None,
                             pattern: None,
                             body: vec![],
-                            span_start: span.start,
+                            span_start: span.clone(),
                         });
                         i += 1; // Consume the OpenBracket
                                 // Skip whitespace and consume the "case" token
@@ -1583,7 +1608,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                             methods: Vec::new(),
                             pending_key: None,
                             structural_metadata: None,
-                            span_start: span.start,
+                            span_start: span.clone(),
                         });
                         i += 1; // Consume the OpenBracket
                                 // Skip whitespace and consume the "class" token
@@ -1612,7 +1637,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                             pending_arm_pattern: None,
                             pending_key: None,
                             current_arm_methods: Vec::new(),
-                            span_start: span.start,
+                            span_start: span.clone(),
                         });
                         i += 1; // Consume the OpenBracket
                                 // Skip whitespace and consume the "instance" token
@@ -1637,7 +1662,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                         // (depth already checked above)
                         stack.push(StackFrame::PatternDecl {
                             bindings: Vec::new(),
-                            span_start: span.start,
+                            span_start: span.clone(),
                         });
                         i += 1; // Consume the OpenBracket
                                 // Skip whitespace and consume the "pattern" token
@@ -1660,7 +1685,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                             entries: Vec::new(),
                             pending_key: None,
                             seen_keys: std::collections::HashSet::new(),
-                            span_start: span.start,
+                            span_start: span.clone(),
                             floating_annotation: None,
                         });
                         i += 1; // Consume the OpenBracket
@@ -1679,7 +1704,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                             entries: Vec::new(),
                             pending_key: None,
                             seen_keys: std::collections::HashSet::new(),
-                            span_start: span.start,
+                            span_start: span.clone(),
                             floating_annotation: None,
                         });
                         i += 1; // Consume the OpenBracket
@@ -1699,7 +1724,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                             entries: Vec::new(),
                             pending_key: None,
                             seen_keys: std::collections::HashSet::new(),
-                            span_start: span.start,
+                            span_start: span.clone(),
                             floating_annotation: None,
                         });
                         i += 1; // Consume the OpenBracket
@@ -1744,7 +1769,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                             implied: true,
                             args: Vec::new(),
                             pending_key: None,
-                            span_start: span.start,
+                            span_start: span.clone(),
                         });
                         continue;
                     }
@@ -1756,7 +1781,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                             entries: Vec::new(),
                             pending_key: None,
                             seen_keys: std::collections::HashSet::new(),
-                            span_start: span.start,
+                            span_start: span.clone(),
                             floating_annotation: None,
                         });
                         i += 1;
@@ -1773,13 +1798,17 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                 // Record what was just popped — useful when unclosed brackets remain at EOF
                 last_popped_frame = Some(frame_info_static(&frame));
 
-                let span_end = span.end;
+                let span_end_line = span.end_line;
+                let span_end_col = span.end_col;
                 let span_file = span.file.clone();
-                let dict_span = move |span_start: Position| Span {
-                    start: span_start,
-                    end: span_end,
-                    file: span_file.clone(),
-                    name: None,
+                let dict_span = move |span_start: Span| {
+                    Span::new(
+                        span_start.start_line,
+                        span_start.start_col,
+                        span_end_line,
+                        span_end_col,
+                        Arc::clone(&span_file),
+                    )
                 };
 
                 // Helper: recover from a CloseBracket-handler error (frame already popped).
@@ -1834,12 +1863,13 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                                 if entries.len() == 1 && entries[0].node.key.is_none() {
                                     let entry_value =
                                         entries.into_iter().next().unwrap().node.value;
-                                    let assert_span = Span {
-                                        start: ann.span.start,
-                                        end: entry_value.span.end,
-                                        file: entry_value.span.file.clone(),
-                                        name: None,
-                                    };
+                                    let assert_span = Span::new(
+                                        ann.span.start_line,
+                                        ann.span.start_col,
+                                        entry_value.span.end_line,
+                                        entry_value.span.end_col,
+                                        Arc::clone(&entry_value.span.file),
+                                    );
                                     let type_assert_node = Arc::new(SurfaceNode::new(
                                         SurfaceExpression::TypeAssert {
                                             annotation: ann,
@@ -1900,12 +1930,13 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                                         .into_iter()
                                         .map(|e| {
                                             let entry_span = if let Some(ref key) = e.node.key {
-                                                Span {
-                                                    start: key.span.start,
-                                                    end: e.node.value.span.end,
-                                                    file: key.span.file.clone(),
-                                                    name: None,
-                                                }
+                                                Span::new(
+                                                    key.span.start_line,
+                                                    key.span.start_col,
+                                                    e.node.value.span.end_line,
+                                                    e.node.value.span.end_col,
+                                                    Arc::clone(&key.span.file),
+                                                )
                                             } else {
                                                 e.node.value.span.clone()
                                             };
@@ -1918,12 +1949,13 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                                     .into_iter()
                                     .map(|e| {
                                         let entry_span = if let Some(ref key) = e.node.key {
-                                            Span {
-                                                start: key.span.start,
-                                                end: e.node.value.span.end,
-                                                file: key.span.file.clone(),
-                                                name: None,
-                                            }
+                                            Span::new(
+                                                key.span.start_line,
+                                                key.span.start_col,
+                                                e.node.value.span.end_line,
+                                                e.node.value.span.end_col,
+                                                Arc::clone(&key.span.file),
+                                            )
                                         } else {
                                             e.node.value.span.clone()
                                         };
@@ -2112,7 +2144,10 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                         let body_expr = if body.len() == 1 {
                             body.into_iter().next().unwrap()
                         } else {
-                            mk(SurfaceExpression::Sequential(body), dict_span(span_start))
+                            mk(
+                                SurfaceExpression::Sequential(body),
+                                dict_span(span_start.clone()),
+                            )
                         };
 
                         let spanned_fn = mk(
@@ -2172,7 +2207,10 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                             } else {
                                 // Multi-entry or named-entry — wrap entries in a Dict.
                                 // type_exprs already contains Spanned<SurfaceEntry> with correct key info.
-                                mk(SurfaceExpression::Dict(type_exprs), dict_span(span_start))
+                                mk(
+                                    SurfaceExpression::Dict(type_exprs),
+                                    dict_span(span_start.clone()),
+                                )
                             };
                             let decl = SurfaceDeclaration::TypeAlias { params, body };
                             let spanned_decl = Spanned::new(decl, dict_span(span_start));
@@ -2510,12 +2548,13 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                                     .into_iter()
                                     .map(|e| {
                                         let entry_span = if let Some(ref key) = e.node.key {
-                                            Span {
-                                                start: key.span.start,
-                                                end: e.node.value.span.end,
-                                                file: key.span.file.clone(),
-                                                name: None,
-                                            }
+                                            Span::new(
+                                                key.span.start_line,
+                                                key.span.start_col,
+                                                e.node.value.span.end_line,
+                                                e.node.value.span.end_col,
+                                                Arc::clone(&key.span.file),
+                                            )
                                         } else {
                                             e.node.value.span.clone()
                                         };
@@ -2593,12 +2632,13 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                                             .into_iter()
                                             .map(|e| {
                                                 let entry_span = if let Some(ref key) = e.node.key {
-                                                    Span {
-                                                        start: key.span.start,
-                                                        end: e.node.value.span.end,
-                                                        file: key.span.file.clone(),
-                                                        name: None,
-                                                    }
+                                                    Span::new(
+                                                        key.span.start_line,
+                                                        key.span.start_col,
+                                                        e.node.value.span.end_line,
+                                                        e.node.value.span.end_col,
+                                                        Arc::clone(&key.span.file),
+                                                    )
                                                 } else {
                                                     e.node.value.span.clone()
                                                 };
@@ -2698,7 +2738,10 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                                 let body_expr = if body.len() == 1 {
                                     body.into_iter().next().expect("body len == 1")
                                 } else {
-                                    mk(SurfaceExpression::Sequential(body), dict_span(span_start))
+                                    mk(
+                                        SurfaceExpression::Sequential(body),
+                                        dict_span(span_start.clone()),
+                                    )
                                 };
                                 let spanned_case = mk(
                                     SurfaceExpression::CaseArm {
@@ -3005,7 +3048,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                         Some(ParseError {
                             message: format!(
                                 "`:` is not valid inside a {} form (opened at {}:{})",
-                                form_name, open_pos.line, open_pos.column
+                                form_name, open_pos.start_line, open_pos.start_col
                             ),
                             span: Some(span.clone()),
                         })
@@ -3534,15 +3577,19 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                 // Trailing: comment on the same line as the previous significant token
                 // Leading: comment on a different line (or no previous token)
                 if let Some(prev_span) = last_significant_span.clone() {
-                    if prev_span.start.line == span.start.line {
+                    if prev_span.start_line == span.start_line {
                         // Same line as previous token → trailing comment
-                        trailing_comments.insert(prev_span.start.offset, comment_text.clone());
+                        trailing_comments.insert(
+                            span_key(prev_span.start_line, prev_span.start_col),
+                            comment_text.clone(),
+                        );
                     } else {
                         // Different line → leading comment for next token
                         if let Some((_, next_idx)) = peek_next_significant(&token_vec, i) {
-                            let next_offset = token_vec[next_idx].span.start.offset;
+                            let next = &token_vec[next_idx].span;
+                            let next_key = span_key(next.start_line, next.start_col);
                             leading_comments
-                                .entry(next_offset)
+                                .entry(next_key)
                                 .or_default()
                                 .push(comment_text.clone());
                         }
@@ -3550,9 +3597,10 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                 } else {
                     // No previous token → leading comment for next token
                     if let Some((_, next_idx)) = peek_next_significant(&token_vec, i) {
-                        let next_offset = token_vec[next_idx].span.start.offset;
+                        let next = &token_vec[next_idx].span;
+                        let next_key = span_key(next.start_line, next.start_col);
                         leading_comments
-                            .entry(next_offset)
+                            .entry(next_key)
                             .or_default()
                             .push(comment_text.clone());
                     }
@@ -3584,12 +3632,15 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                     // Empty document: use separator position
                     span.clone()
                 } else {
-                    Span {
-                        start: items.first().unwrap().span().start,
-                        end: items.last().unwrap().span().end,
-                        file: items.first().unwrap().span().file.clone(),
-                        name: None,
-                    }
+                    let first_span = items.first().unwrap().span();
+                    let last_span = items.last().unwrap().span();
+                    Span::new(
+                        first_span.start_line,
+                        first_span.start_col,
+                        last_span.end_line,
+                        last_span.end_col,
+                        Arc::clone(&first_span.file),
+                    )
                 };
                 documents.push(Spanned::new(
                     Arc::new(SurfaceDocument {
@@ -3681,16 +3732,14 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                                         &mut leading_comments,
                                         &mut blank_before,
                                     )?;
-                                    let at_start = token_vec[i].span.start;
-                                    let at_file = token_vec[i].span.file.clone();
                                     let at_span = token_vec[i].span.clone();
-                                    let ann_end = ann.span.end;
-                                    let assert_span = Span {
-                                        start: at_start,
-                                        end: ann_end,
-                                        file: at_file,
-                                        name: None,
-                                    };
+                                    let assert_span = Span::new(
+                                        at_span.start_line,
+                                        at_span.start_col,
+                                        ann.span.end_line,
+                                        ann.span.end_col,
+                                        Arc::clone(&at_span.file),
+                                    );
                                     let null_node = Arc::new(SurfaceNode::new(
                                         SurfaceExpression::Dict(Vec::new()),
                                         at_span,
@@ -3771,12 +3820,11 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                                 // Inline simple expression parsing for header values
                                 match &token_vec[i].node {
                                     Token::OpenBracket => {
-                                        let start_pos = token_vec[i].span.start;
                                         temp_stack.push(StackFrame::Dict {
                                             entries: Vec::new(),
                                             pending_key: None,
                                             seen_keys: std::collections::HashSet::new(),
-                                            span_start: start_pos,
+                                            span_start: token_vec[i].span.clone(),
                                             floating_annotation: None,
                                         });
                                         i += 1;
@@ -3789,9 +3837,11 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                                         }) = temp_stack.pop()
                                         {
                                             let dict_span = Span::new(
-                                                span_start,
-                                                token_vec[i].span.end,
-                                                token_vec[i].span.file.clone(),
+                                                span_start.start_line,
+                                                span_start.start_col,
+                                                token_vec[i].span.end_line,
+                                                token_vec[i].span.end_col,
+                                                Arc::clone(&token_vec[i].span.file),
                                             );
                                             let dict_node = Arc::new(SurfaceNode::new(
                                                 SurfaceExpression::Dict(entries),
@@ -3980,9 +4030,13 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                                             &mut leading_comments,
                                             &mut blank_before,
                                         )?;
-                                        let ann_end = ann.span.end;
-                                        let assert_span =
-                                            Span::new(at_span.start, ann_end, at_span.file.clone());
+                                        let assert_span = Span::new(
+                                            at_span.start_line,
+                                            at_span.start_col,
+                                            ann.span.end_line,
+                                            ann.span.end_col,
+                                            Arc::clone(&at_span.file),
+                                        );
                                         // Placeholder inner expression: empty dict [] (null)
                                         let null_node = Arc::new(SurfaceNode::new(
                                             SurfaceExpression::Dict(Vec::new()),
@@ -4133,12 +4187,18 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                 match &token_vec[i].node {
                     Token::Identifier(field) => {
                         let field_key = crate::ast::DotKey::Ident(field.clone());
-                        let dot_access_span = Span {
-                            start: target.as_ref().map_or(span.start, |t| t.span.start),
-                            end: token_vec[i].span.end,
-                            file: token_vec[i].span.file.clone(),
-                            name: None,
-                        };
+                        let (start_line, start_col) = target
+                            .as_ref()
+                            .map_or((span.start_line, span.start_col), |t| {
+                                (t.span.start_line, t.span.start_col)
+                            });
+                        let dot_access_span = Span::new(
+                            start_line,
+                            start_col,
+                            token_vec[i].span.end_line,
+                            token_vec[i].span.end_col,
+                            Arc::clone(&token_vec[i].span.file),
+                        );
 
                         let spanned_access = Arc::new(SurfaceNode::new(
                             SurfaceExpression::Field {
@@ -4207,12 +4267,18 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                             return Err(err.into());
                         }
                         let field_key = crate::ast::DotKey::Int(*n);
-                        let dot_access_span = Span {
-                            start: target.as_ref().map_or(span.start, |t| t.span.start),
-                            end: token_vec[i].span.end,
-                            file: token_vec[i].span.file.clone(),
-                            name: None,
-                        };
+                        let (start_line, start_col) = target
+                            .as_ref()
+                            .map_or((span.start_line, span.start_col), |t| {
+                                (t.span.start_line, t.span.start_col)
+                            });
+                        let dot_access_span = Span::new(
+                            start_line,
+                            start_col,
+                            token_vec[i].span.end_line,
+                            token_vec[i].span.end_col,
+                            Arc::clone(&token_vec[i].span.file),
+                        );
 
                         let spanned_access = Arc::new(SurfaceNode::new(
                             SurfaceExpression::Field {
@@ -4361,14 +4427,14 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                         stack.push(StackFrame::AnnotationCollect {
                             target: AnnotationTarget::Attached(popped),
                             value: None,
-                            span_start: span.start,
+                            span_start: span.clone(),
                         });
                     } else {
                         // Nothing to pop — this @ is floating (e.g. [@Type expr])
                         stack.push(StackFrame::AnnotationCollect {
                             target: AnnotationTarget::Floating,
                             value: None,
-                            span_start: span.start,
+                            span_start: span.clone(),
                         });
                     }
                 } else {
@@ -4377,7 +4443,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                     stack.push(StackFrame::AnnotationCollect {
                         target: AnnotationTarget::Floating,
                         value: None,
-                        span_start: span.start,
+                        span_start: span.clone(),
                     });
                 }
 
@@ -4400,9 +4466,11 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
                             let n = name.clone();
                             let end_span = token_vec[i].span.clone();
                             let combined = Span {
-                                start: ellipsis_span.start,
-                                end: end_span.end,
-                                file: ellipsis_span.file.clone(),
+                                file: Arc::clone(&ellipsis_span.file),
+                                start_line: ellipsis_span.start_line,
+                                start_col: ellipsis_span.start_col,
+                                end_line: end_span.end_line,
+                                end_col: end_span.end_col,
                                 name: Some(Arc::from(n.as_str())),
                             };
                             (Some(n), combined, 1)
@@ -4689,7 +4757,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
     // tokenize() now receives the file from parse(), so all tokens carry the correct file.
     // For empty input (no tokens, no significant spans), fall back to this Rust source
     // location — honest attribution of where the fallback was constructed.
-    let eof_file: Arc<crate::ast::SourceFile> = token_vec
+    let eof_file: Arc<str> = token_vec
         .first()
         .map(|t| Arc::clone(&t.span.file))
         .or_else(|| last_significant_span.as_ref().map(|s| Arc::clone(&s.file)))
@@ -4698,27 +4766,24 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
     // Check for unclosed brackets
     if !stack.is_empty() {
         let innermost_frame = stack.last().unwrap();
-        let (_, innermost_pos) = frame_info_static(innermost_frame);
+        let (_, innermost_span) = frame_info_static(innermost_frame);
 
         // Build list of all unclosed brackets, outermost first
         let all_locations: Vec<String> = stack
             .iter()
             .map(|f| {
-                let (kind, pos) = frame_info_static(f);
-                format!("{}:{} ({})", pos.line, pos.column, kind)
+                let (kind, span) = frame_info_static(f);
+                format!("{}:{} ({})", span.start_line, span.start_col, kind)
             })
             .collect();
 
-        let unclosed_span = Span {
-            start: innermost_pos,
-            end: Position {
-                offset: innermost_pos.offset + 1,
-                line: innermost_pos.line,
-                column: innermost_pos.column + 1,
-            },
-            file: Arc::clone(&eof_file),
-            name: None,
-        };
+        let unclosed_span = Span::new(
+            innermost_span.start_line,
+            innermost_span.start_col,
+            innermost_span.start_line,
+            innermost_span.start_col + 1,
+            Arc::clone(&innermost_span.file),
+        );
 
         let count = stack.len();
         // When there's exactly 1 unclosed bracket, the last popped frame is the
@@ -4726,14 +4791,14 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
         // position pinpoints where the missing ] should be.
         let hint = if count == 1 {
             let mut parts = Vec::new();
-            if let Some((kind, pos)) = &last_popped_frame {
+            if let Some((kind, span)) = &last_popped_frame {
                 parts.push(format!(
                     "extra {} opened at {}:{} consumed the expected close",
-                    kind, pos.line, pos.column
+                    kind, span.start_line, span.start_col
                 ));
             }
             if let Some(s) = &last_significant_span {
-                parts.push(format!("last token at {}:{}", s.start.line, s.start.column));
+                parts.push(format!("last token at {}:{}", s.start_line, s.start_col));
             }
             if parts.is_empty() {
                 String::new()
@@ -4743,7 +4808,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
         } else {
             last_significant_span
                 .as_ref()
-                .map(|s| format!(" (last token at {}:{})", s.start.line, s.start.column))
+                .map(|s| format!(" (last token at {}:{})", s.start_line, s.start_col))
                 .unwrap_or_default()
         };
         let message = if matches!(innermost_frame, StackFrame::Pipe { .. }) {
@@ -4771,20 +4836,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
             header: next_doc_header,
             items: vec![],
         };
-        let doc_span = Span {
-            start: Position {
-                offset: 0,
-                line: 1,
-                column: 1,
-            },
-            end: Position {
-                offset: source.len() as u32,
-                line: 1,
-                column: 1,
-            },
-            file: Arc::clone(&eof_file),
-            name: None,
-        };
+        let doc_span = Span::new(1, 1, 1, 1, Arc::clone(&eof_file));
         documents.push(Spanned::new(Arc::new(doc), doc_span));
     } else if !current_document_items.is_empty() {
         // Finalize current document
@@ -4792,20 +4844,7 @@ pub fn parse(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, TypeDia
             header: next_doc_header,
             items: current_document_items,
         };
-        let doc_span = Span {
-            start: Position {
-                offset: 0,
-                line: 1,
-                column: 1,
-            },
-            end: Position {
-                offset: source.len() as u32,
-                line: 1,
-                column: 1,
-            },
-            file: Arc::clone(&eof_file),
-            name: None,
-        };
+        let doc_span = Span::new(1, 1, 1, 1, Arc::clone(&eof_file));
         documents.push(Spanned::new(Arc::new(doc), doc_span));
     }
 
@@ -5868,12 +5907,13 @@ fn push_expr_to_parent(
                 // We have the RHS expression; pop the frame and create the Pipe node
                 let lhs_expr = lhs.clone();
                 let op_span = op_span.clone();
-                let node_span = Span {
-                    start: op_span.start,
-                    end: node.span.end,
-                    file: node.span.file.clone(),
-                    name: None,
-                };
+                let node_span = Span::new(
+                    op_span.start_line,
+                    op_span.start_col,
+                    node.span.end_line,
+                    node.span.end_col,
+                    Arc::clone(&node.span.file),
+                );
                 stack.pop(); // Remove the Pipe frame
 
                 let spanned_pipe = mk(
@@ -5920,9 +5960,11 @@ fn commit_let_pending(
     bindings: &mut Vec<Arc<SurfaceNode>>,
 ) -> Result<(), ParseError> {
     let combined_span = Span {
-        start: key_node.span.start,
-        end: rhs_node.span.end,
-        file: key_node.span.file.clone(),
+        file: Arc::clone(&key_node.span.file),
+        start_line: key_node.span.start_line,
+        start_col: key_node.span.start_col,
+        end_line: rhs_node.span.end_line,
+        end_col: rhs_node.span.end_col,
         name: None,
     };
 
@@ -6140,9 +6182,11 @@ fn create_annotated_node(
             annotation: None,
         } => {
             let full_span = Span {
-                start: target.span.start,
-                end: annotation.span.end,
-                file: target.span.file.clone(),
+                file: Arc::clone(&target.span.file),
+                start_line: target.span.start_line,
+                start_col: target.span.start_col,
+                end_line: annotation.span.end_line,
+                end_col: annotation.span.end_col,
                 name: Some(Arc::from(name.as_str())),
             };
             Arc::new(SurfaceNode::new(
@@ -6159,9 +6203,11 @@ fn create_annotated_node(
         _ => {
             // Non-VarRef or already-annotated VarRef: wrap in TypeAssert
             let full_span = Span {
-                start: target.span.start,
-                end: annotation.span.end,
-                file: target.span.file.clone(),
+                file: Arc::clone(&target.span.file),
+                start_line: target.span.start_line,
+                start_col: target.span.start_col,
+                end_line: annotation.span.end_line,
+                end_col: annotation.span.end_col,
                 name: None,
             };
             Arc::new(SurfaceNode::new(
@@ -6235,12 +6281,13 @@ fn drain_annotation_frames(
         } = frame
         {
             let annotation = expression_to_annotation(&ann_expr);
-            let ann_span = Span {
-                start: span_start,
-                end: ann_expr.span.end,
-                file: ann_expr.span.file.clone(),
-                name: None,
-            };
+            let ann_span = Span::new(
+                span_start.start_line,
+                span_start.start_col,
+                ann_expr.span.end_line,
+                ann_expr.span.end_col,
+                Arc::clone(&ann_expr.span.file),
+            );
             let spanned_ann = Spanned::new(annotation, ann_span);
 
             match target {
@@ -6320,9 +6367,11 @@ fn push_value(
                 let node = inject_class_name_from_key(&node, &key);
                 // This value completes a keyed entry
                 let entry_span = crate::ast::Span {
-                    start: key.span.start,
-                    end: node.span.end,
-                    file: key.span.file.clone(),
+                    file: Arc::clone(&key.span.file),
+                    start_line: key.span.start_line,
+                    start_col: key.span.start_col,
+                    end_line: node.span.end_line,
+                    end_col: node.span.end_col,
                     name: key_to_string(&key.expr).map(|s| Arc::from(s.as_str())),
                 };
                 entries.push(Spanned::new(
@@ -6382,9 +6431,11 @@ fn push_value(
             } else if let Some(key) = pending_key.take() {
                 // This value completes a method signature entry
                 let entry_span = crate::ast::Span {
-                    start: key.span.start,
-                    end: node.span.end,
-                    file: key.span.file.clone(),
+                    file: Arc::clone(&key.span.file),
+                    start_line: key.span.start_line,
+                    start_col: key.span.start_col,
+                    end_line: node.span.end_line,
+                    end_col: node.span.end_col,
                     name: None,
                 };
                 methods.push(Spanned::new(
@@ -6417,9 +6468,11 @@ fn push_value(
             } else if let Some(key) = pending_key.take() {
                 // This value completes a method implementation entry within current arm
                 let entry_span = crate::ast::Span {
-                    start: key.span.start,
-                    end: node.span.end,
-                    file: key.span.file.clone(),
+                    file: Arc::clone(&key.span.file),
+                    start_line: key.span.start_line,
+                    start_col: key.span.start_col,
+                    end_line: node.span.end_line,
+                    end_col: node.span.end_col,
                     name: None,
                 };
                 current_arm_methods.push(Spanned::new(
@@ -6478,10 +6531,7 @@ fn push_value(
 /// top-level declarations can be displayed uniformly. For callers needing the raw
 /// `SurfaceProgram`, use `parse()` directly.
 pub fn parse_surface_expression(input: &str) -> Result<Arc<SurfaceNode>, TypeDiagnostic> {
-    let file = Arc::new(SourceFile {
-        path: Arc::from("<expression>"),
-        content: Arc::from(input),
-    });
+    let file: Arc<str> = Arc::from("<expression>");
     let output = parse(input, Arc::clone(&file))?;
     let surface = &output.program;
 
@@ -6528,10 +6578,7 @@ pub fn parse_surface_expression(input: &str) -> Result<Arc<SurfaceNode>, TypeDia
 /// Use this function when you want to report ALL parse errors at once (e.g. in an LSP
 /// diagnostic pass or a batch linting tool) and always need an AST, even if it's empty.
 pub fn parse_with_recovery(input: &str) -> ParseOutput {
-    let file = Arc::new(SourceFile {
-        path: Arc::from("<recovery>"),
-        content: Arc::from(input),
-    });
+    let file: Arc<str> = Arc::from("<recovery>");
     match parse(input, file) {
         Ok(output) => output,
         Err(fatal_diag) => {
@@ -6568,8 +6615,8 @@ pub fn format_parse_error(err: &TypeDiagnostic, source: &str, file_name: &str) -
     }
 
     let span = err.spans[0].0.clone();
-    let line = span.start.line;
-    let col = span.start.column;
+    let line = span.start_line;
+    let col = span.start_col;
 
     // Header: error: message
     let mut out = format!("error: {}\n", err.message);
@@ -6591,11 +6638,8 @@ mod tests {
     use super::*;
     use crate::error::DiagnosticLevel;
 
-    fn test_file(src: &str) -> Arc<SourceFile> {
-        Arc::new(SourceFile {
-            path: Arc::from(file!()),
-            content: Arc::from(src),
-        })
+    fn test_file(_src: &str) -> Arc<str> {
+        Arc::from(file!())
     }
 
     /// Helper: parse successfully and return the first expression from the first document.
@@ -8340,8 +8384,8 @@ mod tests {
     fn test_fn_param_span() {
         // [fn [let x@Int] $x] — verify param[0] span covers "x@Int"
         // "[fn [let x@Int] $x]"
-        //  0123456789012345678
-        //  offset 9 = 'x', offset 10 = '@', offset 11..13 = "Int"
+        //  column 1234567890123456789
+        //  column 10 = 'x', column 11 = '@', column 12..14 = "Int"
         let output =
             parse("[fn [let x@Int] $x]", test_file("[fn [let x@Int] $x]")).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
@@ -8350,14 +8394,14 @@ mod tests {
                 assert_eq!(params.len(), 1);
                 let param_span = params[0].span.clone();
                 assert_eq!(
-                    param_span.start.offset, 9,
-                    "expected param span to start at offset 9 ('x'), got {}",
-                    param_span.start.offset
+                    param_span.start_col, 10,
+                    "expected param span to start at column 10 ('x'), got {}",
+                    param_span.start_col
                 );
                 assert!(
-                    param_span.end.offset > 13,
-                    "expected param span end > 13 (includes '@Int'), got {}",
-                    param_span.end.offset
+                    param_span.end_col > 13,
+                    "expected param span end col > 13 (includes '@Int'), got {}",
+                    param_span.end_col
                 );
             }
             other => panic!("expected Fn, got {other:?}"),
@@ -8441,11 +8485,8 @@ mod tests {
         let output = parse(input, test_file(input)).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         // The first item is the dict; its span should start at line 4, column 1
-        assert_eq!(items[0].span.start.line, 4, "Dict should start on line 4");
-        assert_eq!(
-            items[0].span.start.column, 1,
-            "Dict should start at column 1"
-        );
+        assert_eq!(items[0].span.start_line, 4, "Dict should start on line 4");
+        assert_eq!(items[0].span.start_col, 1, "Dict should start at column 1");
 
         // Also test a nested bracket form
         let input2 = "# Line 1\n[outer: [inner: 1]]";
@@ -8456,7 +8497,7 @@ mod tests {
                 assert_eq!(entries.len(), 1);
                 // Outer dict starts on line 2
                 assert_eq!(
-                    items2[0].span.start.line, 2,
+                    items2[0].span.start_line, 2,
                     "Outer dict should start on line 2"
                 );
                 // Inner dict should also have correct line/column (line 2, after "outer: ")
@@ -8464,11 +8505,11 @@ mod tests {
                     SurfaceExpression::Dict(_) => {
                         let inner_span = entries[0].node.value.span.clone();
                         assert_eq!(
-                            inner_span.start.line, 2,
+                            inner_span.start_line, 2,
                             "Inner dict should start on line 2"
                         );
                         assert_eq!(
-                            inner_span.start.column, 9,
+                            inner_span.start_col, 9,
                             "Inner dict should start at column 9 (after 'outer: ')"
                         );
                     }
@@ -8489,7 +8530,7 @@ mod tests {
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::Call { .. } => {
-                assert_eq!(items[0].span.start.line, 3, "Call should start on line 3");
+                assert_eq!(items[0].span.start_line, 3, "Call should start on line 3");
             }
             other => panic!("expected Call, got {other:?}"),
         }
@@ -8500,7 +8541,7 @@ mod tests {
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
             SurfaceExpression::Fn { .. } => {
-                assert_eq!(items[0].span.start.line, 3, "Fn should start on line 3");
+                assert_eq!(items[0].span.start_line, 3, "Fn should start on line 3");
             }
             other => panic!("expected Fn, got {other:?}"),
         }
@@ -8513,7 +8554,7 @@ mod tests {
         match &items[0] {
             SurfaceItem::Decl(decl) => match &decl.node {
                 SurfaceDeclaration::TypeAlias { .. } => {
-                    assert_eq!(decl.span.start.line, 3, "TypeAlias should start on line 3");
+                    assert_eq!(decl.span.start_line, 3, "TypeAlias should start on line 3");
                 }
                 other => panic!("expected TypeAlias declaration, got {other:?}"),
             },
@@ -8527,7 +8568,7 @@ mod tests {
         match &items[0].expr {
             SurfaceExpression::TypeAssert { .. } => {
                 assert_eq!(
-                    items[0].span.start.line, 3,
+                    items[0].span.start_line, 3,
                     "TypeAssert should start on line 3"
                 );
             }

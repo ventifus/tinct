@@ -451,10 +451,7 @@ impl SurfaceResolver {
                         self.diagnostics.push(TypeDiagnostic {
                             level: DiagnosticLevel::Warn,
                             kind: "lost-binding",
-                            message: format!(
-                                "parameter '{}' is never referenced in the function body",
-                                name
-                            ),
+                            message: format!("function parameter '{}' is never referenced", name),
                             spans: vec![(span, String::new())],
                             notes: vec![],
                         });
@@ -703,10 +700,7 @@ impl SurfaceResolver {
                         self.diagnostics.push(TypeDiagnostic {
                             level: DiagnosticLevel::Warn,
                             kind: "lost-binding",
-                            message: format!(
-                                "intermediate binding '{}' is defined but never referenced from a later body — its value is lost in tinct's lazy evaluation",
-                                key.1
-                            ),
+                            message: format!("variable '{}' is never referenced", key.1),
                             spans: vec![(span.clone(), String::new())],
                             notes: vec![],
                         });
@@ -885,8 +879,17 @@ impl SurfaceResolver {
             | SurfaceExpression::U64(_)
             | SurfaceExpression::Float(_)
             | SurfaceExpression::StringLiteral { .. }
-            | SurfaceExpression::Placeholder(..)
             | SurfaceExpression::Error(_) => {}
+
+            // Placeholder (...) is a genuine TODO marker — treat it as consuming all
+            // bindings in every enclosing scope so no lost-binding warnings fire.
+            SurfaceExpression::Placeholder(..) => {
+                for info in &mut self.intermediate_bodies {
+                    for binding in &mut info.bindings {
+                        binding.2 = true; // consumed
+                    }
+                }
+            }
         }
     }
 
@@ -1581,11 +1584,8 @@ mod tests {
     use super::*;
     use crate::ast::{node_id, NodeId, SurfaceExpression};
 
-    fn test_file(src: &str) -> Arc<crate::ast::SourceFile> {
-        Arc::new(crate::ast::SourceFile {
-            path: Arc::from(file!()),
-            content: Arc::from(src),
-        })
+    fn test_file(_src: &str) -> Arc<str> {
+        Arc::from(file!())
     }
 
     /// Parse `src`, desugar, and resolve. Returns (program, table).
@@ -1995,7 +1995,7 @@ mod tests {
             .iter()
             .filter_map(|d| {
                 d.message
-                    .strip_prefix("intermediate binding '")
+                    .strip_prefix("variable '")
                     .and_then(|s| s.split('\'').next())
             })
             .collect();
@@ -2032,7 +2032,7 @@ mod tests {
             .iter()
             .filter_map(|d| {
                 d.message
-                    .strip_prefix("intermediate binding '")
+                    .strip_prefix("variable '")
                     .and_then(|s| s.split('\'').next())
             })
             .collect();
@@ -2071,7 +2071,7 @@ mod tests {
             .iter()
             .filter_map(|d| {
                 d.message
-                    .strip_prefix("intermediate binding '")
+                    .strip_prefix("variable '")
                     .and_then(|s| s.split('\'').next())
             })
             .collect();
@@ -2119,7 +2119,7 @@ mod tests {
             .iter()
             .filter_map(|d| {
                 d.message
-                    .strip_prefix("intermediate binding '")
+                    .strip_prefix("variable '")
                     .and_then(|s| s.split('\'').next())
             })
             .collect();

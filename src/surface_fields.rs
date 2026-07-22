@@ -9,7 +9,7 @@
 //! The field extraction functions return `Value` variants. Child expression nodes are
 //! returned as `Value::Variant { tag: "Expr.<Tag>", .. }` — the canonical runtime
 //! representation. `Value::Document` carries its original Arc for efficient sharing.
-//! `Value::Program` carries a u32 id into `EvalContext.program_store`.
+//! `Value::Program` carries an `Arc<SurfaceProgram>` directly.
 
 use std::sync::Arc;
 
@@ -46,7 +46,7 @@ use crate::value::{string_val, HashableValue, Value};
 /// Primitive fields return scalar values. Expression-typed fields (child nodes) return
 /// `Value::Variant { tag: "Expr.<Tag>", .. }` — the canonical runtime representation.
 /// Sequence-typed fields (args, params, entries, bindings, arms) return
-/// `Value::Dict(IndexMap<HashableValue::Int, ThunkId>)` — integer-keyed lists of
+/// `Value::Dict(IndexMap<HashableValue::Int, Arc<Thunk>>)` — integer-keyed lists of
 /// `Expr.*` variants, allocated into the EvalContext arena.
 /// The `span` field returns a Dict with start_line, start_col, end_line, end_col, start_offset, end_offset fields.
 /// Unrecognized fields return null.
@@ -191,16 +191,14 @@ fn nodes_to_list_dict(
     nodes: &[Arc<SurfaceNode>],
     ctx: &std::sync::Arc<crate::eval::EvalContext>,
 ) -> Value {
-    let mut map = indexmap::IndexMap::new();
+    use crate::value::Thunk;
+    let mut map: indexmap::IndexMap<HashableValue, Arc<Thunk>> = indexmap::IndexMap::new();
     for (i, node) in nodes.iter().enumerate() {
-        use crate::value::Thunk;
-
         let thunk = Arc::new(Thunk::value(
             crate::surface_convert::surface_node_to_expr_variant(node, ctx),
             node.span.clone(),
         ));
-        let tid = ctx.alloc_thunk(0, thunk);
-        map.insert(HashableValue::Int(i as i64), tid);
+        map.insert(HashableValue::Int(i as i64), thunk);
     }
     Value::Dict(map)
 }
@@ -219,8 +217,7 @@ fn surface_entries_to_list_dict(
     ctx: &std::sync::Arc<crate::eval::EvalContext>,
 ) -> Value {
     use crate::value::Thunk;
-
-    let mut map = indexmap::IndexMap::new();
+    let mut map: indexmap::IndexMap<HashableValue, Arc<Thunk>> = indexmap::IndexMap::new();
     for (i, entry) in entries.iter().enumerate() {
         // Build Entry Variant: {key: Expr.* variant, value: Expr.* variant, span: []}
         let key_val = entry.node.key.as_ref().map_or_else(
@@ -229,14 +226,14 @@ fn surface_entries_to_list_dict(
         );
         let val_val = crate::surface_convert::surface_node_to_expr_variant(&entry.node.value, ctx);
         // Pack as a Variant("Entry", {key: ..., value: ...})
-        let mut payload = indexmap::IndexMap::new();
+        let mut payload: indexmap::IndexMap<HashableValue, Arc<Thunk>> = indexmap::IndexMap::new();
         payload.insert(
             HashableValue::Str("key".into()),
-            ctx.alloc_thunk(0, Arc::new(Thunk::value(key_val, entry.span.clone()))),
+            Arc::new(Thunk::value(key_val, entry.span.clone())),
         );
         payload.insert(
             HashableValue::Str("value".into()),
-            ctx.alloc_thunk(0, Arc::new(Thunk::value(val_val, entry.span.clone()))),
+            Arc::new(Thunk::value(val_val, entry.span.clone())),
         );
         let entry_variant = Value::Variant {
             tycon: "Expr".into(),
@@ -246,8 +243,8 @@ fn surface_entries_to_list_dict(
                 Arc::new(Thunk::value(Value::Dict(payload), entry.span.clone())),
             )),
         };
-        let tid = ctx.alloc_thunk(0, Arc::new(Thunk::value(entry_variant, entry.span.clone())));
-        map.insert(HashableValue::Int(i as i64), tid);
+        let thunk = Arc::new(Thunk::value(entry_variant, entry.span.clone()));
+        map.insert(HashableValue::Int(i as i64), thunk);
     }
     Value::Dict(map)
 }
@@ -259,25 +256,19 @@ fn named_args_to_list_dict(
 ) -> Value {
     use crate::value::Thunk;
 
-    let mut map = indexmap::IndexMap::new();
+    let mut map: indexmap::IndexMap<HashableValue, Arc<Thunk>> = indexmap::IndexMap::new();
     for (i, na) in named_args.iter().enumerate() {
-        let mut payload = indexmap::IndexMap::new();
+        let mut payload: indexmap::IndexMap<HashableValue, Arc<Thunk>> = indexmap::IndexMap::new();
         payload.insert(
             HashableValue::Str("name".into()),
-            ctx.alloc_thunk(
-                0,
-                Arc::new(Thunk::value(string_val(&na.node.name), na.span.clone())),
-            ),
+            Arc::new(Thunk::value(string_val(&na.node.name), na.span.clone())),
         );
         payload.insert(
             HashableValue::Str("value".into()),
-            ctx.alloc_thunk(
-                0,
-                Arc::new(Thunk::value(
-                    crate::surface_convert::surface_node_to_expr_variant(&na.node.value, ctx),
-                    na.span.clone(),
-                )),
-            ),
+            Arc::new(Thunk::value(
+                crate::surface_convert::surface_node_to_expr_variant(&na.node.value, ctx),
+                na.span.clone(),
+            )),
         );
         let na_variant = Value::Variant {
             tycon: "Expr".into(),
@@ -287,8 +278,8 @@ fn named_args_to_list_dict(
                 Arc::new(Thunk::value(Value::Dict(payload), na.span.clone())),
             )),
         };
-        let tid = ctx.alloc_thunk(0, Arc::new(Thunk::value(na_variant, na.span.clone())));
-        map.insert(HashableValue::Int(i as i64), tid);
+        let thunk = Arc::new(Thunk::value(na_variant, na.span.clone()));
+        map.insert(HashableValue::Int(i as i64), thunk);
     }
     Value::Dict(map)
 }
@@ -300,32 +291,26 @@ fn params_to_list_dict(
 ) -> Value {
     use crate::value::Thunk;
 
-    let mut map = indexmap::IndexMap::new();
+    let mut map: indexmap::IndexMap<HashableValue, Arc<Thunk>> = indexmap::IndexMap::new();
     for (i, p) in params.iter().enumerate() {
-        let mut payload = indexmap::IndexMap::new();
+        let mut payload: indexmap::IndexMap<HashableValue, Arc<Thunk>> = indexmap::IndexMap::new();
         payload.insert(
             HashableValue::Str("name".into()),
-            ctx.alloc_thunk(
-                0,
-                Arc::new(Thunk::value(string_val(&p.node.name), p.span.clone())),
-            ),
+            Arc::new(Thunk::value(string_val(&p.node.name), p.span.clone())),
         );
         payload.insert(
             HashableValue::Str("variadic".into()),
-            ctx.alloc_thunk(
-                0,
-                Arc::new(Thunk::value(
-                    Value::Int(if p.node.variadic { 1 } else { 0 }),
-                    p.span.clone(),
-                )),
-            ),
+            Arc::new(Thunk::value(
+                Value::Int(if p.node.variadic { 1 } else { 0 }),
+                p.span.clone(),
+            )),
         );
         // Expose the parameter's type annotation text so tinct code can reconstruct
         // full signatures (e.g. "n@Int") without source text parsing.
         let ann_val = annotation_opt_to_value(p.node.annotation.as_ref(), ctx);
         payload.insert(
             HashableValue::Str("annotation".into()),
-            ctx.alloc_thunk(0, Arc::new(Thunk::value(ann_val, p.span.clone()))),
+            Arc::new(Thunk::value(ann_val, p.span.clone())),
         );
         let p_variant = Value::Variant {
             tycon: "Expr".into(),
@@ -335,8 +320,8 @@ fn params_to_list_dict(
                 Arc::new(Thunk::value(Value::Dict(payload), p.span.clone())),
             )),
         };
-        let tid = ctx.alloc_thunk(0, Arc::new(Thunk::value(p_variant, p.span.clone())));
-        map.insert(HashableValue::Int(i as i64), tid);
+        let thunk = Arc::new(Thunk::value(p_variant, p.span.clone()));
+        map.insert(HashableValue::Int(i as i64), thunk);
     }
     Value::Dict(map)
 }
@@ -351,7 +336,7 @@ fn match_arms_to_list_dict(
     use crate::value::Thunk;
 
     let span = rust_span!();
-    let mut map = indexmap::IndexMap::new();
+    let mut map: indexmap::IndexMap<HashableValue, Arc<Thunk>> = indexmap::IndexMap::new();
     for (i, arm) in arms.iter().enumerate() {
         // T-1750: pattern is now Arc<SurfaceNode>, serialize directly like body and guard
         let pattern_val = crate::surface_convert::surface_node_to_expr_variant(&arm.pattern, ctx);
@@ -362,24 +347,21 @@ fn match_arms_to_list_dict(
         );
         // Arms are stored as plain Dicts (not Variants) so get_match_arm_list_field_with_aliases
         // can read them directly.
-        let mut arm_dict = indexmap::IndexMap::new();
+        let mut arm_dict: indexmap::IndexMap<HashableValue, Arc<Thunk>> = indexmap::IndexMap::new();
         arm_dict.insert(
             HashableValue::Str("pattern".into()),
-            ctx.alloc_thunk(0, Arc::new(Thunk::value(pattern_val, span.clone()))),
+            Arc::new(Thunk::value(pattern_val, span.clone())),
         );
         arm_dict.insert(
             HashableValue::Str("body".into()),
-            ctx.alloc_thunk(0, Arc::new(Thunk::value(body_val, span.clone()))),
+            Arc::new(Thunk::value(body_val, span.clone())),
         );
         arm_dict.insert(
             HashableValue::Str("guard".into()),
-            ctx.alloc_thunk(0, Arc::new(Thunk::value(guard_val, span.clone()))),
+            Arc::new(Thunk::value(guard_val, span.clone())),
         );
-        let tid = ctx.alloc_thunk(
-            0,
-            Arc::new(Thunk::value(Value::Dict(arm_dict), span.clone())),
-        );
-        map.insert(HashableValue::Int(i as i64), tid);
+        let thunk = Arc::new(Thunk::value(Value::Dict(arm_dict), span.clone()));
+        map.insert(HashableValue::Int(i as i64), thunk);
     }
     Value::Dict(map)
 }
@@ -394,10 +376,10 @@ pub fn dot_key_to_value(key: &DotKey, ctx: &std::sync::Arc<crate::eval::EvalCont
     let span = rust_span!();
     match key {
         DotKey::Ident(name) => {
-            let mut payload_dict = IndexMap::new();
+            let mut payload_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             payload_dict.insert(
                 HashableValue::Str("name".into()),
-                ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(name), span.clone()))),
+                Arc::new(Thunk::value(string_val(name), span.clone())),
             );
             Value::Variant {
                 tycon: "DotKey".into(),
@@ -408,10 +390,10 @@ pub fn dot_key_to_value(key: &DotKey, ctx: &std::sync::Arc<crate::eval::EvalCont
             }
         }
         DotKey::Int(index) => {
-            let mut payload_dict = IndexMap::new();
+            let mut payload_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             payload_dict.insert(
                 HashableValue::Str("index".into()),
-                ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Int(*index), span.clone()))),
+                Arc::new(Thunk::value(Value::Int(*index), span.clone())),
             );
             Value::Variant {
                 tycon: "DotKey".into(),
@@ -456,17 +438,17 @@ fn annotation_inner_to_value(
 
     let text = ann.to_string();
 
-    let mut payload_map = indexmap::IndexMap::new();
+    let mut payload_map: indexmap::IndexMap<HashableValue, Arc<Thunk>> = indexmap::IndexMap::new();
     payload_map.insert(
         HashableValue::Str("text".into()),
-        ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(&text), span.clone()))),
+        Arc::new(Thunk::value(string_val(&text), span.clone())),
     );
 
     let (tycon, ctor) = match ann {
         Annotation::Simple(name) => {
             payload_map.insert(
                 HashableValue::Str("name".into()),
-                ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(name), span.clone()))),
+                Arc::new(Thunk::value(string_val(name), span.clone())),
             );
             ("Annotation", "Simple")
         }
@@ -475,7 +457,8 @@ fn annotation_inner_to_value(
             // This allows tinct code to access the structure of type annotations like @[Seq k]
             // without string parsing. Named entries (doc:, return:) are also exposed by name.
             let positional: Vec<_> = entries.iter().filter(|e| e.node.key.is_none()).collect();
-            let mut parts_map = indexmap::IndexMap::new();
+            let mut parts_map: indexmap::IndexMap<HashableValue, Arc<Thunk>> =
+                indexmap::IndexMap::new();
             for (i, pos_entry) in positional.iter().enumerate() {
                 // Convert the positional entry value to an annotation-like value using its text.
                 // For simple names (VarRef), expose as Simple. Otherwise expose text.
@@ -490,33 +473,22 @@ fn annotation_inner_to_value(
                         let name = name.as_str();
                         let inner_text = annotation.node.to_string();
                         let full_text = format!("{}@{}", name, inner_text);
-                        let mut p = indexmap::IndexMap::new();
+                        let mut p: indexmap::IndexMap<HashableValue, Arc<Thunk>> =
+                            indexmap::IndexMap::new();
                         p.insert(
                             HashableValue::Str("text".into()),
-                            ctx.alloc_thunk(
-                                0,
-                                Arc::new(Thunk::value(
-                                    string_val(&full_text),
-                                    pos_entry.span.clone(),
-                                )),
-                            ),
+                            Arc::new(Thunk::value(string_val(&full_text), pos_entry.span.clone())),
                         );
                         p.insert(
                             HashableValue::Str("name".into()),
-                            ctx.alloc_thunk(
-                                0,
-                                Arc::new(Thunk::value(string_val(name), pos_entry.span.clone())),
-                            ),
+                            Arc::new(Thunk::value(string_val(name), pos_entry.span.clone())),
                         );
                         p.insert(
                             HashableValue::Str("inner".into()),
-                            ctx.alloc_thunk(
-                                0,
-                                Arc::new(Thunk::value(
-                                    string_val(&inner_text),
-                                    pos_entry.span.clone(),
-                                )),
-                            ),
+                            Arc::new(Thunk::value(
+                                string_val(&inner_text),
+                                pos_entry.span.clone(),
+                            )),
                         );
                         Value::Variant {
                             tycon: "Annotation".into(),
@@ -533,20 +505,15 @@ fn annotation_inner_to_value(
                         ..
                     } => {
                         // Simple name like "Seq", "k", "union" — no annotation.
-                        let mut p = indexmap::IndexMap::new();
+                        let mut p: indexmap::IndexMap<HashableValue, Arc<Thunk>> =
+                            indexmap::IndexMap::new();
                         p.insert(
                             HashableValue::Str("text".into()),
-                            ctx.alloc_thunk(
-                                0,
-                                Arc::new(Thunk::value(string_val(name), pos_entry.span.clone())),
-                            ),
+                            Arc::new(Thunk::value(string_val(name), pos_entry.span.clone())),
                         );
                         p.insert(
                             HashableValue::Str("name".into()),
-                            ctx.alloc_thunk(
-                                0,
-                                Arc::new(Thunk::value(string_val(name), pos_entry.span.clone())),
-                            ),
+                            Arc::new(Thunk::value(string_val(name), pos_entry.span.clone())),
                         );
                         Value::Variant {
                             tycon: "Annotation".into(),
@@ -561,13 +528,11 @@ fn annotation_inner_to_value(
                         // Complex expression (e.g. [Map k v] parsed as Call) — expose as text only.
                         // Uses "Annotation.Unknown" to distinguish from real PropertyDict annotations.
                         let text = pos_entry.node.value.to_string();
-                        let mut p = indexmap::IndexMap::new();
+                        let mut p: indexmap::IndexMap<HashableValue, Arc<Thunk>> =
+                            indexmap::IndexMap::new();
                         p.insert(
                             HashableValue::Str("text".into()),
-                            ctx.alloc_thunk(
-                                0,
-                                Arc::new(Thunk::value(string_val(&text), pos_entry.span.clone())),
-                            ),
+                            Arc::new(Thunk::value(string_val(&text), pos_entry.span.clone())),
                         );
                         Value::Variant {
                             tycon: "Annotation".into(),
@@ -581,15 +546,12 @@ fn annotation_inner_to_value(
                 };
                 parts_map.insert(
                     HashableValue::Int(i as i64),
-                    ctx.alloc_thunk(0, Arc::new(Thunk::value(part_val, pos_entry.span.clone()))),
+                    Arc::new(Thunk::value(part_val, pos_entry.span.clone())),
                 );
             }
             payload_map.insert(
                 HashableValue::Str("parts".into()),
-                ctx.alloc_thunk(
-                    0,
-                    Arc::new(Thunk::value(Value::Dict(parts_map), span.clone())),
-                ),
+                Arc::new(Thunk::value(Value::Dict(parts_map), span.clone())),
             );
             // Also expose well-known named keys: doc: and return:
             for entry in entries {
@@ -609,10 +571,7 @@ fn annotation_inner_to_value(
                                 };
                             payload_map.insert(
                                 HashableValue::Str(key_name.clone().into()),
-                                ctx.alloc_thunk(
-                                    0,
-                                    Arc::new(Thunk::value(string_val(&clean), entry.span.clone())),
-                                ),
+                                Arc::new(Thunk::value(string_val(&clean), entry.span.clone())),
                             );
                         }
                     }
@@ -629,14 +588,14 @@ fn annotation_inner_to_value(
                 Annotation::Simple(name) => {
                     payload_map.insert(
                         HashableValue::Str("name".into()),
-                        ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(name), span.clone()))),
+                        Arc::new(Thunk::value(string_val(name), span.clone())),
                     );
                 }
                 other_outer => {
                     let outer_val = annotation_inner_to_value(other_outer, span.clone(), ctx);
                     payload_map.insert(
                         HashableValue::Str("outer".into()),
-                        ctx.alloc_thunk(0, Arc::new(Thunk::value(outer_val, span.clone()))),
+                        Arc::new(Thunk::value(outer_val, span.clone())),
                     );
                 }
             }
@@ -645,7 +604,7 @@ fn annotation_inner_to_value(
             let inner_ann_val = annotation_inner_to_value(inner.as_ref(), span.clone(), ctx);
             payload_map.insert(
                 HashableValue::Str("inner-ann".into()),
-                ctx.alloc_thunk(0, Arc::new(Thunk::value(inner_ann_val, span.clone()))),
+                Arc::new(Thunk::value(inner_ann_val, span.clone())),
             );
             ("Annotation", "Annotated")
         }
@@ -685,68 +644,33 @@ pub fn annotation_opt_to_value(
 /// materialized directly (not thunked) since all fields are primitive integers.
 pub fn span_to_value(
     span: &crate::ast::Span,
-    ctx: &std::sync::Arc<crate::eval::EvalContext>,
+    _ctx: &std::sync::Arc<crate::eval::EvalContext>,
 ) -> Value {
     use crate::value::Thunk;
 
-    let mut map = indexmap::IndexMap::new();
+    let mut map: indexmap::IndexMap<HashableValue, Arc<Thunk>> = indexmap::IndexMap::new();
 
     map.insert(
         HashableValue::Str("start_line".into()),
-        ctx.alloc_thunk(
-            0,
-            Arc::new(Thunk::value(
-                Value::Int(span.start.line as i64),
-                span.clone(),
-            )),
-        ),
+        Arc::new(Thunk::value(
+            Value::Int(span.start_line as i64),
+            span.clone(),
+        )),
     );
     map.insert(
         HashableValue::Str("start_col".into()),
-        ctx.alloc_thunk(
-            0,
-            Arc::new(Thunk::value(
-                Value::Int(span.start.column as i64),
-                span.clone(),
-            )),
-        ),
+        Arc::new(Thunk::value(
+            Value::Int(span.start_col as i64),
+            span.clone(),
+        )),
     );
     map.insert(
         HashableValue::Str("end_line".into()),
-        ctx.alloc_thunk(
-            0,
-            Arc::new(Thunk::value(Value::Int(span.end.line as i64), span.clone())),
-        ),
+        Arc::new(Thunk::value(Value::Int(span.end_line as i64), span.clone())),
     );
     map.insert(
         HashableValue::Str("end_col".into()),
-        ctx.alloc_thunk(
-            0,
-            Arc::new(Thunk::value(
-                Value::Int(span.end.column as i64),
-                span.clone(),
-            )),
-        ),
-    );
-    map.insert(
-        HashableValue::Str("start_offset".into()),
-        ctx.alloc_thunk(
-            0,
-            Arc::new(Thunk::value(
-                Value::Int(span.start.offset as i64),
-                span.clone(),
-            )),
-        ),
-    );
-    map.insert(
-        HashableValue::Str("end_offset".into()),
-        ctx.alloc_thunk(
-            0,
-            Arc::new(Thunk::value(
-                Value::Int(span.end.offset as i64),
-                span.clone(),
-            )),
-        ),
+        Arc::new(Thunk::value(Value::Int(span.end_col as i64), span.clone())),
     );
 
     Value::Dict(map)

@@ -759,48 +759,69 @@ pub fn merge_env_chain_into(src: &Arc<RwLock<Env>>, dst: &Arc<RwLock<Env>>) {
     if frames.is_empty() {
         return;
     }
-    let mut guard = dst.write().unwrap();
-    // Walk innermost-to-outermost (frames[0] is innermost) so inner frames' or_insert
-    // wins: the innermost frame is processed first and its entries are inserted; when
-    // the outer frame is processed, or_insert skips already-present keys.
+    // Phase 1: Collect entries from the chain with or_insert (inner scope wins
+    // within the chain — innermost frame is processed first, outer frame entries
+    // are only added if not already present from an inner frame).
+    let mut collected = Env::new();
     for frame_arc in frames.iter() {
         let frame = frame_arc.read().unwrap();
         for (name, slot) in &frame.slots {
-            guard
+            collected
                 .slots
                 .entry(name.clone())
                 .or_insert_with(|| slot.clone());
         }
         for (name, slot) in &frame.extras {
-            guard
+            collected
                 .extras
                 .entry(name.clone())
                 .or_insert_with(|| slot.clone());
         }
         for (name, alias) in &frame.type_aliases {
-            guard
+            collected
                 .type_aliases
                 .entry(name.clone())
                 .or_insert_with(|| alias.clone());
         }
         for (name, decl) in &frame.classes {
-            guard
+            collected
                 .classes
                 .entry(name.clone())
                 .or_insert_with(|| decl.clone());
         }
         for (mangled, decl) in &frame.instances {
-            guard
+            collected
                 .instances
                 .entry(mangled.clone())
                 .or_insert_with(|| decl.clone());
         }
         for (name, def) in &frame.tycon_defs {
-            guard
+            collected
                 .tycon_defs
                 .entry(name.clone())
                 .or_insert_with(|| Arc::clone(def));
         }
+    }
+    // Phase 2: Insert collected entries into dst with `insert` (later document
+    // shadows earlier document — matches runtime `merge` right-biased semantics).
+    let mut guard = dst.write().unwrap();
+    for (name, slot) in collected.slots {
+        guard.slots.insert(name, slot);
+    }
+    for (name, slot) in collected.extras {
+        guard.extras.insert(name, slot);
+    }
+    for (name, alias) in collected.type_aliases {
+        guard.type_aliases.insert(name, alias);
+    }
+    for (name, decl) in collected.classes {
+        guard.classes.insert(name, decl);
+    }
+    for (mangled, decl) in collected.instances {
+        guard.instances.insert(mangled, decl);
+    }
+    for (name, def) in collected.tycon_defs {
+        guard.tycon_defs.insert(name, def);
     }
 }
 
@@ -972,12 +993,13 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_env_chain_dst_pre_existing_not_overwritten() {
-        // dst's own pre-existing bindings are NOT overwritten by inner frames
-        // because merge uses or_insert semantics.
+    fn test_merge_env_chain_src_shadows_dst() {
+        // Later document (src chain) shadows earlier document (dst).
+        // This matches runtime `merge` right-biased semantics.
         //
         // Chain: child → dst
-        // Both child and dst define "Shared". dst's definition should survive.
+        // Both child and dst define "Shared". child's definition should win
+        // because it represents the later document's bindings.
         let mut dst_raw = Env::new();
         let dst_def = make_def("Shared");
         dst_raw.insert_tycon_def("Shared".to_string(), Arc::clone(&dst_def));
@@ -993,12 +1015,9 @@ mod tests {
         let guard = dst.read().unwrap();
         let found = guard.tycon_defs.get("Shared");
         assert!(found.is_some(), "Shared must still be in dst");
-        // dst's entry was already present before merge_env_chain_into ran.
-        // or_insert_with in the merge loop sees the key already exists and is a no-op,
-        // so dst's original definition is preserved.
         assert!(
-            Arc::ptr_eq(found.unwrap(), &dst_def),
-            "dst's pre-existing definition of Shared should not be overwritten"
+            Arc::ptr_eq(found.unwrap(), &child_def),
+            "child's definition of Shared should shadow dst's pre-existing definition"
         );
     }
 
@@ -1019,6 +1038,45 @@ mod tests {
         assert!(
             Arc::ptr_eq(found.unwrap(), &def),
             "the merged tycon_def must be the same Arc"
+        );
+    }
+
+    // ── slots shadowing test ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_merge_env_chain_slots_src_shadows_dst() {
+        // Verify that slots — the most semantically critical field — are merged
+        // with later-document-wins (Phase 2 plain insert) semantics.
+        //
+        // Setup: dst defines slot "foo"; src (child of dst) also defines slot "foo".
+        // After merge_env_chain_into(src, dst), dst's "foo" slot must be the src's
+        // slot (later document shadows earlier document, matching runtime right-biased merge).
+
+        // dst has slot "foo" with no scheme (name-only, as inserted by insert_slot_name_only)
+        let mut dst_raw = Env::new();
+        dst_raw.insert_slot_name_only("foo".to_string());
+        let dst = Arc::new(RwLock::new(dst_raw));
+
+        // src (child of dst) also has slot "foo" with a TypeScheme (populated by the type checker)
+        let mut src_raw = Env::with_parent(Arc::clone(&dst));
+        src_raw.insert_scheme(
+            "foo".to_string(),
+            crate::types::TypeScheme::mono(crate::type_def::Type::Unknown),
+        );
+        let src = Arc::new(RwLock::new(src_raw));
+
+        merge_env_chain_into(&src, &dst);
+
+        let guard = dst.read().unwrap();
+        let slot = guard
+            .slots
+            .get("foo")
+            .expect("slot 'foo' must be present in dst");
+        // After merge, the slot should carry the src's scheme (Some), not the dst's None.
+        assert!(
+            slot.scheme.is_some(),
+            "src's slot (with scheme) must shadow dst's slot (name-only, scheme=None) \
+             after merge_env_chain_into"
         );
     }
 }

@@ -126,10 +126,10 @@ impl SpanRecord {
     /// Produces a dict with kebab-case keys matching the schema in doc/12-tooling.md.
     /// Empty optional fields use Value::Dict(IndexMap::new()) — the tinct empty-dict sentinel.
     /// Used for converting span records to an integer-keyed Dict for output.
-    pub fn to_value(&self, ctx: &Arc<EvalContext>) -> Value {
-        /// Allocate a materialized thunk into the arena and return the ThunkId.
-        fn alloc(val: Value, ctx: &Arc<EvalContext>) -> crate::value::ThunkId {
-            ctx.alloc_thunk(0, Arc::new(Thunk::value(val, rust_span!())))
+    pub fn to_value(&self, _ctx: &Arc<EvalContext>) -> Value {
+        /// Create a materialized thunk as Arc<Thunk>.
+        fn alloc(val: Value) -> Arc<Thunk> {
+            Arc::new(Thunk::value(val, rust_span!()))
         }
 
         /// The tinct empty-value sentinel (empty dict = `[]`).
@@ -137,11 +137,11 @@ impl SpanRecord {
             Value::Dict(IndexMap::new())
         }
 
-        let mut entries: IndexMap<HashableValue, crate::value::ThunkId> = IndexMap::new();
+        let mut entries: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
 
         entries.insert(
             HashableValue::Str("id".into()),
-            alloc(Value::Int(self.id as i64), ctx),
+            alloc(Value::Int(self.id as i64)),
         );
 
         entries.insert(
@@ -150,7 +150,6 @@ impl SpanRecord {
                 self.materialize_parent
                     .map(|id| Value::Int(id as i64))
                     .unwrap_or_else(empty),
-                ctx,
             ),
         );
 
@@ -160,13 +159,12 @@ impl SpanRecord {
                 self.create_parent
                     .map(|id| Value::Int(id as i64))
                     .unwrap_or_else(empty),
-                ctx,
             ),
         );
 
         entries.insert(
             HashableValue::Str("create-time-us".into()),
-            alloc(Value::Int(self.create_time_us as i64), ctx),
+            alloc(Value::Int(self.create_time_us as i64)),
         );
 
         entries.insert(
@@ -176,7 +174,6 @@ impl SpanRecord {
                     .clone()
                     .map(|f| string_val(&f))
                     .unwrap_or_else(empty),
-                ctx,
             ),
         );
 
@@ -186,7 +183,6 @@ impl SpanRecord {
                 self.source_start
                     .map(|(line, col)| Value::Int((line as i64) * 1000000 + col as i64))
                     .unwrap_or(Value::Int(0)),
-                ctx,
             ),
         );
 
@@ -196,7 +192,6 @@ impl SpanRecord {
                 self.source_end
                     .map(|(line, col)| Value::Int((line as i64) * 1000000 + col as i64))
                     .unwrap_or(Value::Int(0)),
-                ctx,
             ),
         );
 
@@ -207,7 +202,6 @@ impl SpanRecord {
                     .clone()
                     .map(|t| string_val(&t))
                     .unwrap_or_else(empty),
-                ctx,
             ),
         );
 
@@ -218,7 +212,6 @@ impl SpanRecord {
                     .clone()
                     .map(|b| string_val(&b))
                     .unwrap_or_else(empty),
-                ctx,
             ),
         );
 
@@ -229,21 +222,20 @@ impl SpanRecord {
                     .clone()
                     .map(|o| string_val(&o))
                     .unwrap_or_else(empty),
-                ctx,
             ),
         );
 
         entries.insert(
             HashableValue::Str("start-us".into()),
-            alloc(Value::Int(self.start_us as i64), ctx),
+            alloc(Value::Int(self.start_us as i64)),
         );
         entries.insert(
             HashableValue::Str("end-us".into()),
-            alloc(Value::Int(self.end_us as i64), ctx),
+            alloc(Value::Int(self.end_us as i64)),
         );
         entries.insert(
             HashableValue::Str("stall-us".into()),
-            alloc(Value::Int(self.stall_us as i64), ctx),
+            alloc(Value::Int(self.stall_us as i64)),
         );
 
         entries.insert(
@@ -253,7 +245,6 @@ impl SpanRecord {
                     .clone()
                     .map(|k| string_val(&k))
                     .unwrap_or_else(empty),
-                ctx,
             ),
         );
 
@@ -468,11 +459,11 @@ impl ProfilingCollector {
     /// Public to allow main.rs to serialize extracted spans.
     pub fn spans_to_value(spans: Vec<SpanRecord>, ctx: &Arc<EvalContext>) -> Value {
         use crate::value::HashableValue;
-        let mut dict = IndexMap::new();
+        let mut dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         for (i, s) in spans.into_iter().enumerate() {
             let span_dict = s.to_value(ctx);
-            let id = ctx.alloc_thunk(0, Arc::new(Thunk::value(span_dict, rust_span!())));
-            dict.insert(HashableValue::Int(i as i64), id);
+            let thunk = Arc::new(Thunk::value(span_dict, rust_span!()));
+            dict.insert(HashableValue::Int(i as i64), thunk);
         }
         Value::Dict(dict)
     }
@@ -516,8 +507,10 @@ mod tests {
         match value {
             Value::Dict(ref outer) => {
                 assert_eq!(outer.len(), 1, "expected one span entry");
-                let span_id = outer.get(&HashableValue::Int(0)).expect("entry 0 missing");
-                let span_thunk = ctx.get_thunk(*span_id);
+                let span_thunk = outer
+                    .get(&HashableValue::Int(0))
+                    .expect("entry 0 missing")
+                    .clone();
                 let span_val = span_thunk
                     .try_get_materialized()
                     .expect("span dict should be materialized");

@@ -12,11 +12,11 @@
 //! - [`value_to_display_string`] -- render a materialized `Value` as a human-readable string
 
 #![deny(clippy::disallowed_types, clippy::disallowed_methods)]
-// Arc<Thunk> and related types are !Send because Thunk contains Rc<...> (e.g. Rc<str>
-// for string sharing, Rc<RefCell<...>> for IO handles). LLT uses tokio::task::LocalSet
-// with a current_thread runtime, so values never cross thread boundaries. The !Send
-// constraint is intentional and correct; Rc-based sharing is cheaper and simpler than
-// Arc<Mutex<...>> for data that never leaves the local thread.
+// Arc<Thunk> and related types are !Send because EvalContext contains Rc<RefCell<...>>
+// (e.g. Rc<RefCell<ScopeArena>> for single-threaded arena sharing). LLT uses
+// tokio::task::LocalSet with a current_thread runtime, so values never cross thread
+// boundaries. The !Send constraint is intentional and correct; Rc-based sharing is
+// cheaper and simpler than Arc<Mutex<...>> for data that never leaves the local thread.
 #![allow(clippy::arc_with_non_send_sync)]
 // TypeDiagnostic is a large struct used pervasively as the Err type across the type checker.
 // Boxing it at every return site would be invasive and would hurt readability for marginal
@@ -24,8 +24,6 @@
 #![allow(clippy::result_large_err)]
 
 pub(crate) mod arena;
-// Memory budget tracking for arena-based allocation.
-pub mod memory_budget;
 // Shared async runtime for QUIC/HTTP3 builtins (block_on helper).
 pub mod ast;
 pub mod async_rt;
@@ -97,7 +95,7 @@ pub mod profiling;
 use std::sync::Arc;
 
 /// AST node types produced by the parser.
-pub use ast::{Annotation, Param, Position, SourceFile, Span, Spanned};
+pub use ast::{Annotation, Param, Span, Spanned};
 /// Surface AST types for the runtime-v2 pipeline.
 pub use ast::{
     CallDispatch, MacroProvenance, Provenance, Resolution, SlotAnnotation, SurfaceEntry,
@@ -169,10 +167,7 @@ pub async fn run_loader_pipeline(
     init_path: &str,
     injected_type_env: Option<Arc<std::sync::RwLock<crate::env::Env>>>,
 ) -> Result<(), String> {
-    let loader_sf = Arc::new(SourceFile {
-        path: Arc::from(init_path),
-        content: Arc::from(init_source),
-    });
+    let loader_sf: Arc<str> = Arc::from(init_path);
     let loader_parsed = parse(init_source, Arc::clone(&loader_sf))
         .map_err(|e| format!("{init_path} parse error: {e}"))?;
     for diag in &loader_parsed.diagnostics {
@@ -263,10 +258,9 @@ pub async fn run_loader_pipeline(
                         String,
                         crate::type_infer::TypeStageEntry,
                     > = std::collections::HashMap::new();
-                    for (key, &thunk_id) in &entries {
+                    for (key, thunk) in &entries {
                         if let crate::value::HashableValue::Str(name) = key {
-                            let thunk = eval_ctx_with_frames.get_thunk(thunk_id);
-                            let val = eval::materialize(&thunk, None, &eval_ctx_with_frames)
+                            let val = eval::materialize(thunk, None, &eval_ctx_with_frames)
                                 .await
                                 .map_err(|e| {
                                     format!(
@@ -283,17 +277,19 @@ pub async fn run_loader_pipeline(
                                 );
                             } else if matches!(val, crate::value::Value::Function { .. }) {
                                 // Function → keep as ThunkId for parameterized types
+                                let tid = eval_ctx_with_frames.alloc_thunk(0, Arc::clone(thunk));
                                 map.insert(
                                     name.to_string(),
-                                    crate::type_infer::TypeStageEntry::Function(thunk_id),
+                                    crate::type_infer::TypeStageEntry::Function(tid),
                                 );
                             } else {
                                 // Non-leaf TypeNode (e.g., complex record, union) — use typenode_leaf_to_type
                                 // fallback by trying again. If it's not a TypeNode variant at all, skip.
                                 // For now, treat unknown values as functions (conservative).
+                                let tid = eval_ctx_with_frames.alloc_thunk(0, Arc::clone(thunk));
                                 map.insert(
                                     name.to_string(),
-                                    crate::type_infer::TypeStageEntry::Function(thunk_id),
+                                    crate::type_infer::TypeStageEntry::Function(tid),
                                 );
                             }
                         }
@@ -348,8 +344,8 @@ pub async fn run_loader_pipeline(
                 format!(
                     "{}:{}:{}: {}",
                     init_path,
-                    e.primary_span().start.line,
-                    e.primary_span().start.column,
+                    e.primary_span().start_line,
+                    e.primary_span().start_col,
                     e.message
                 )
             })
@@ -391,10 +387,7 @@ pub async fn run_loader_pipeline(
 /// `=== warn` section is present). For corpus tests that only care about type *errors*
 /// (not quality diagnostics), use [`typecheck_source_errors_only`] instead.
 pub async fn typecheck_source(input: &str) -> Result<(), String> {
-    let file = Arc::new(SourceFile {
-        path: Arc::from("<typecheck>"),
-        content: Arc::from(input),
-    });
+    let file: Arc<str> = Arc::from("<typecheck>");
     let parsed = parse(input, file).map_err(|e| format!("{e}"))?;
     // PIPELINE INVARIANT: parse -> desugar -> typecheck.
     let mut program = parsed.program;
@@ -422,10 +415,7 @@ pub async fn typecheck_source(input: &str) -> Result<(), String> {
 /// programs type-check without errors but may legitimately contain polymorphic or
 /// open-record patterns that produce `Unknown` in intermediate type-map entries.
 pub async fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
-    let file = Arc::new(SourceFile {
-        path: Arc::from("<typecheck>"),
-        content: Arc::from(input),
-    });
+    let file: Arc<str> = Arc::from("<typecheck>");
     let parsed = parse(input, file).map_err(|e| format!("{e}"))?;
     // PIPELINE INVARIANT: parse -> desugar -> typecheck.
     let mut program = parsed.program;
@@ -562,9 +552,8 @@ pub fn visit_value<'a, V: ValueVisitor + 'a>(
             }
             value::Value::Dict(map) => {
                 let mut entries = Vec::with_capacity(map.len());
-                for (key, thunk_id) in map {
-                    let thunk = ctx.get_thunk(*thunk_id);
-                    let v = eval::materialize(&thunk, None, ctx).await?;
+                for (key, thunk) in map {
+                    let v = eval::materialize(thunk, None, ctx).await?;
                     let child_span = thunk.span.clone();
                     entries.push((
                         key.clone(),
@@ -694,6 +683,9 @@ pub fn visit_value<'a, V: ValueVisitor + 'a>(
                 "Arena".to_string(),
                 span,
             ))),
+            value::Value::CoreDocument { .. } => Err(Box::new(
+                error::EvalError::value_not_serializable("CoreDocument".to_string(), span),
+            )),
         }
     })
 }
@@ -1121,11 +1113,8 @@ mod tests {
         super::value_to_display_string(val, ctx, span).await
     }
 
-    fn test_file(src: &str) -> Arc<SourceFile> {
-        Arc::new(SourceFile {
-            path: Arc::from(file!()),
-            content: Arc::from(src),
-        })
+    fn test_file(_src: &str) -> Arc<str> {
+        Arc::from(file!())
     }
 
     async fn test_ctx() -> Arc<eval::EvalContext> {
@@ -1292,7 +1281,7 @@ mod tests {
     /// the evaluator doesn't currently tag that way).
     #[tokio::test]
     async fn test_multiline_span_snippet_shows_all_lines() {
-        use crate::ast::{Position, Span};
+        use crate::ast::Span;
 
         // A three-line expression:
         //   line 1: "let x = ["
@@ -1302,17 +1291,11 @@ mod tests {
 
         // Span covering the entire expression: line 1 col 1 → line 3 col 2.
         let span = Span {
-            start: Position {
-                offset: 0,
-                line: 1,
-                column: 1,
-            },
-            end: Position {
-                offset: 23,
-                line: 3,
-                column: 2,
-            },
             file: rust_span!().file,
+            start_line: 1,
+            start_col: 1,
+            end_line: 3,
+            end_col: 2,
             name: None,
         };
 

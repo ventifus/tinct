@@ -28,11 +28,11 @@ use crate::value::{HashableValue, Value};
 /// path serializing scalar dicts). Function serialization requires `Some(ctx)` for stdlib
 /// membership checks.
 pub fn fmt_dict(
-    map: &IndexMap<HashableValue, ThunkId>,
+    map: &IndexMap<HashableValue, Arc<crate::value::Thunk>>,
     ctx: Option<&Arc<EvalContext>>,
 ) -> Result<String, String> {
     let mut out = String::from("[");
-    for (i, (key, thunk_id)) in map.iter().enumerate() {
+    for (i, (key, thunk)) in map.iter().enumerate() {
         if i > 0 {
             out.push_str("  ");
         }
@@ -55,10 +55,7 @@ pub fn fmt_dict(
         }
 
         // Format value — retrieve the materialized value and recursively serialize.
-        // ctx is required for thunk access (arena lookup); only non-empty dicts reach here.
-        let thunk = ctx
-            .ok_or("dict serialization requires EvalContext")?
-            .get_thunk(*thunk_id);
+        // ctx is passed to to_tinct below; it is required for Function serialization.
         let value = thunk
             .try_get_materialized()
             .ok_or("dict value not materialized")?;
@@ -1403,7 +1400,7 @@ impl Value {
                 // Merge: start with left, then overlay right (right wins)
                 let mut merged = left_dict.clone();
                 for (k, v) in right_dict.iter() {
-                    merged.insert(k.clone(), *v);
+                    merged.insert(k.clone(), Arc::clone(v));
                 }
 
                 // Serialize the merged dict
@@ -1464,6 +1461,9 @@ impl Value {
                 Err(format!("no tinct representation for {}", self.type_name()))
             }
             Value::Arena { .. } => Err(format!("no tinct representation for {}", self.type_name())),
+            Value::CoreDocument { .. } => {
+                Err(format!("no tinct representation for {}", self.type_name()))
+            }
         }
     }
 }

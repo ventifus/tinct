@@ -64,8 +64,11 @@ pub fn desugar_surface_program(program: &mut SurfaceProgram) {
 /// Runs BEFORE `desugar_surface_program` (`$_` desugaring and pipe lowering).
 pub fn desugar_instance_decls_surface_program(program: &mut SurfaceProgram) {
     for doc_spanned in &mut program.documents {
+        let count = Arc::strong_count(&doc_spanned.node);
         desugar_instance_decls_document(
-            Arc::get_mut(&mut doc_spanned.node).expect("desugar runs before any Arc sharing"),
+            Arc::get_mut(&mut doc_spanned.node).unwrap_or_else(|| {
+                panic!("document Arc has {count} strong references, expected 1")
+            }),
         );
     }
 }
@@ -1001,11 +1004,8 @@ mod tests {
     //   1. The single-arm instance IS transformed to SurfaceExpression::Dict.
     //   2. The multi-arm instance is NOT transformed (still SurfaceExpression::Decl(InstanceDecl)).
 
-    fn test_file(src: &str) -> Arc<crate::ast::SourceFile> {
-        Arc::new(crate::ast::SourceFile {
-            path: Arc::from(file!()),
-            content: Arc::from(src),
-        })
+    fn test_file(_src: &str) -> Arc<str> {
+        Arc::from(file!())
     }
 
     fn parse_program(src: &str) -> SurfaceProgram {

@@ -350,7 +350,8 @@ pub fn block_span_to_md(
     span: crate::ast::Span,
     markdown: &str,
 ) -> crate::ast::Span {
-    use crate::ast::{Position, Span};
+    use crate::ast::Span;
+    use std::sync::Arc;
 
     if let Some(block) = blocks.get(block_idx) {
         let offset_delta = block.md_code_start;
@@ -362,17 +363,11 @@ pub fn block_span_to_md(
             .filter(|&c| c == '\n')
             .count();
         Span::new(
-            Position {
-                offset: span.start.offset + offset_delta as u32,
-                line: span.start.line + block_start_line as u32,
-                column: span.start.column,
-            },
-            Position {
-                offset: span.end.offset + offset_delta as u32,
-                line: span.end.line + block_start_line as u32,
-                column: span.end.column,
-            },
-            span.file.clone(),
+            span.start_line + block_start_line as u32,
+            span.start_col,
+            span.end_line + block_start_line as u32,
+            span.end_col,
+            Arc::clone(&span.file),
         )
     } else {
         // Block index out of bounds — return original span unchanged
@@ -629,31 +624,16 @@ mod tests {
 
     #[test]
     fn block_span_to_md_simple() {
-        use crate::ast::{Position, Span};
+        use crate::ast::Span;
 
         let md = "```tinct\n[x: 1]\n```";
         let blocks = extract_blocks(md);
-        // Block-local span: offset 1..2 (the "x" in "[x: 1]")
-        let block_span = Span::new(
-            Position {
-                offset: 1,
-                line: 1,
-                column: 2,
-            },
-            Position {
-                offset: 2,
-                line: 1,
-                column: 3,
-            },
-            crate::rust_span!().file,
-        );
+        // Block-local span: col 2..3 (the "x" in "[x: 1]"), line 1
+        let block_span = Span::new(1, 2, 1, 3, crate::rust_span!().file);
         let md_span = block_span_to_md(&blocks, 0, block_span, md);
-        // Code starts at md offset 9, so offset 1 → 10
-        assert_eq!(md_span.start.offset, 10);
-        assert_eq!(md_span.end.offset, 11);
         // "```tinct\n" has 1 newline, so block_start_line = 1.
         // Block-local line 1 → markdown line 2 (1 + 1).
-        assert_eq!(md_span.start.line, 2);
-        assert_eq!(md_span.end.line, 2);
+        assert_eq!(md_span.start_line, 2);
+        assert_eq!(md_span.end_line, 2);
     }
 }

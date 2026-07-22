@@ -6,13 +6,12 @@
 //! The canonical runtime representation of AST nodes is `Value::Variant { tag: "Expr.<Tag>", .. }`.
 
 use std::fmt;
-use std::rc::Rc;
 use std::sync::Arc;
 
 use indexmap::IndexMap;
 
 use crate::ast::{
-    Annotation, DotKey, Position, Span, Spanned, SurfaceDeclaration, SurfaceDocument, SurfaceEntry,
+    Annotation, DotKey, Span, Spanned, SurfaceDeclaration, SurfaceDocument, SurfaceEntry,
     SurfaceExpression, SurfaceItem, SurfaceNamedArg, SurfaceNode, SurfaceParam, SurfaceProgram,
 };
 use crate::error::EvalResult;
@@ -65,7 +64,7 @@ pub fn surface_node_to_expr_variant(
     inject_span_into_expr_variant(val, &node.span, ctx)
 }
 
-/// Add `span: {start: {line, col, offset}, end: {...}}` to an Expr.* variant's payload.
+/// Add `span: {start: {line, col}, end: {...}}` to an Expr.* variant's payload.
 fn inject_span_into_expr_variant(
     val: Value,
     span: &Span,
@@ -75,19 +74,24 @@ fn inject_span_into_expr_variant(
 
     let synth = rust_span!(); // span for the synthetic thunks wrapping position integers
 
-    let make_pos = |pos: &Position| -> crate::value::ThunkId {
-        let mut d: IndexMap<HashableValue, crate::value::ThunkId> = IndexMap::new();
-        let mk = |n: i64| ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Int(n), synth.clone())));
-        d.insert(HashableValue::Str("line".into()), mk(pos.line as i64));
-        d.insert(HashableValue::Str("col".into()), mk(pos.column as i64));
-        d.insert(HashableValue::Str("offset".into()), mk(pos.offset as i64));
-        ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(d), synth.clone())))
+    let make_pos = |line: u32, col: u32| -> Arc<Thunk> {
+        let mut d: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+        let mk = |n: i64| Arc::new(Thunk::value(Value::Int(n), synth.clone()));
+        d.insert(HashableValue::Str("line".into()), mk(line as i64));
+        d.insert(HashableValue::Str("col".into()), mk(col as i64));
+        Arc::new(Thunk::value(Value::Dict(d), synth.clone()))
     };
 
     let span_val = {
-        let mut d: IndexMap<HashableValue, crate::value::ThunkId> = IndexMap::new();
-        d.insert(HashableValue::Str("start".into()), make_pos(&span.start));
-        d.insert(HashableValue::Str("end".into()), make_pos(&span.end));
+        let mut d: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+        d.insert(
+            HashableValue::Str("start".into()),
+            make_pos(span.start_line, span.start_col),
+        );
+        d.insert(
+            HashableValue::Str("end".into()),
+            make_pos(span.end_line, span.end_col),
+        );
         Value::Dict(d)
     };
 
@@ -99,8 +103,8 @@ fn inject_span_into_expr_variant(
         } => {
             let payload_thunk = ctx.get_thunk(payload_id);
             if let Some(Value::Dict(mut payload_dict)) = payload_thunk.try_get_materialized() {
-                let span_id = ctx.alloc_thunk(0, Arc::new(Thunk::value(span_val, synth.clone())));
-                payload_dict.insert(HashableValue::Str("span".into()), span_id);
+                let span_thunk = Arc::new(Thunk::value(span_val, synth.clone()));
+                payload_dict.insert(HashableValue::Str("span".into()), span_thunk);
                 let new_payload_id = ctx.alloc_thunk(
                     0,
                     Arc::new(Thunk::value(Value::Dict(payload_dict), span.clone())),
@@ -205,135 +209,78 @@ pub fn core_expr_to_expr_value(
 
     let synth = rust_span!(); // span for synthetic thunks wrapping primitive values
 
-    // Helper to recursively convert child CoreExpr nodes
-    let recurse = |child: &Spanned<CoreExpr>| -> ThunkId {
+    // Helper to recursively convert child CoreExpr nodes — returns Arc<Thunk> for payload insertion
+    let recurse = |child: &Spanned<CoreExpr>| -> Arc<Thunk> {
         let child_val = core_expr_to_expr_value(child, ctx);
-        ctx.alloc_thunk(0, Arc::new(Thunk::value(child_val, child.span.clone())))
+        Arc::new(Thunk::value(child_val, child.span.clone()))
     };
 
-    // Helper to convert a Vec of CoreExpr to a Dict (auto-indexed)
-    let recurse_vec = |children: &[Arc<Spanned<CoreExpr>>]| -> ThunkId {
-        let mut dict = IndexMap::new();
+    // Helper to convert a Vec of CoreExpr to a Dict (auto-indexed) — allocated for Variant payload use
+    let recurse_vec = |children: &[Arc<Spanned<CoreExpr>>]| -> Arc<Thunk> {
+        let mut dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         for (i, child) in children.iter().enumerate() {
-            let child_id = recurse(child);
-            dict.insert(HashableValue::Int(i as i64), child_id);
+            let child_thunk = recurse(child);
+            dict.insert(HashableValue::Int(i as i64), child_thunk);
         }
-        ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(dict), synth.clone())))
+        Arc::new(Thunk::value(Value::Dict(dict), synth.clone()))
     };
 
     // Helper to build an Expr.* variant with a payload dict
-    let make_variant = |tag: &str, fields: IndexMap<HashableValue, ThunkId>| -> Value {
+    let make_variant = |tag: &str, fields: IndexMap<HashableValue, Arc<Thunk>>| -> Value {
         make_variant_with_payload(&format!("Expr.{}", tag), fields, &core.span, ctx)
     };
+
+    // Helper: build a Dict-typed Arc<Thunk> from a map (for inner nested dicts)
+    let mk_dict = |map: IndexMap<HashableValue, Arc<Thunk>>,
+                   span: crate::ast::Span|
+     -> Arc<Thunk> { Arc::new(Thunk::value(Value::Dict(map), span)) };
+    // Helper: build a simple materialized Arc<Thunk> for scalar values
+    let mk = |v: Value| -> Arc<Thunk> { Arc::new(Thunk::value(v, synth.clone())) };
+    // Null sentinel (empty dict)
+    let null_thunk = || mk(Value::Dict(IndexMap::new()));
 
     let val = match &core.node {
         // ── Literals ─────────────────────────────────────────────────────────────
         CoreExpr::Int(n) => {
-            let mut payload = IndexMap::new();
-            payload.insert(
-                HashableValue::Str("kind".into()),
-                ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val("int"), synth.clone()))),
-            );
-            payload.insert(
-                HashableValue::Str("value".into()),
-                ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Int(*n), synth.clone()))),
-            );
-            payload.insert(
-                HashableValue::Str("bare".into()),
-                ctx.alloc_thunk(
-                    0,
-                    Arc::new(Thunk::value(
-                        Value::Dict(IndexMap::new()), // Null
-                        synth.clone(),
-                    )),
-                ),
-            );
+            let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+            payload.insert(HashableValue::Str("kind".into()), mk(string_val("int")));
+            payload.insert(HashableValue::Str("value".into()), mk(Value::Int(*n)));
+            payload.insert(HashableValue::Str("bare".into()), null_thunk());
             make_variant("Literal", payload)
         }
 
         CoreExpr::U64(n) => {
-            let mut payload = IndexMap::new();
-            payload.insert(
-                HashableValue::Str("kind".into()),
-                ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val("u64"), synth.clone()))),
-            );
+            let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+            payload.insert(HashableValue::Str("kind".into()), mk(string_val("u64")));
             payload.insert(
                 HashableValue::Str("value".into()),
-                ctx.alloc_thunk(
-                    0,
-                    Arc::new(Thunk::value(Value::Int(*n as i64), synth.clone())),
-                ),
+                mk(Value::Int(*n as i64)),
             );
-            payload.insert(
-                HashableValue::Str("bare".into()),
-                ctx.alloc_thunk(
-                    0,
-                    Arc::new(Thunk::value(
-                        Value::Dict(IndexMap::new()), // Null
-                        synth.clone(),
-                    )),
-                ),
-            );
+            payload.insert(HashableValue::Str("bare".into()), null_thunk());
             make_variant("Literal", payload)
         }
 
         CoreExpr::Float(f) => {
-            let mut payload = IndexMap::new();
-            payload.insert(
-                HashableValue::Str("kind".into()),
-                ctx.alloc_thunk(
-                    0,
-                    Arc::new(Thunk::value(string_val("float"), synth.clone())),
-                ),
-            );
-            payload.insert(
-                HashableValue::Str("value".into()),
-                ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Float(*f), synth.clone()))),
-            );
-            payload.insert(
-                HashableValue::Str("bare".into()),
-                ctx.alloc_thunk(
-                    0,
-                    Arc::new(Thunk::value(
-                        Value::Dict(IndexMap::new()), // Null
-                        synth.clone(),
-                    )),
-                ),
-            );
+            let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+            payload.insert(HashableValue::Str("kind".into()), mk(string_val("float")));
+            payload.insert(HashableValue::Str("value".into()), mk(Value::Float(*f)));
+            payload.insert(HashableValue::Str("bare".into()), null_thunk());
             make_variant("Literal", payload)
         }
 
         CoreExpr::Str(s) => {
-            let mut payload = IndexMap::new();
-            payload.insert(
-                HashableValue::Str("kind".into()),
-                ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val("str"), synth.clone()))),
-            );
-            payload.insert(
-                HashableValue::Str("value".into()),
-                ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(s), synth.clone()))),
-            );
-            payload.insert(
-                HashableValue::Str("bare".into()),
-                ctx.alloc_thunk(
-                    0,
-                    Arc::new(Thunk::value(
-                        Value::Dict(IndexMap::new()), // Null
-                        synth.clone(),
-                    )),
-                ),
-            );
+            let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+            payload.insert(HashableValue::Str("kind".into()), mk(string_val("str")));
+            payload.insert(HashableValue::Str("value".into()), mk(string_val(s)));
+            payload.insert(HashableValue::Str("bare".into()), null_thunk());
             make_variant("Literal", payload)
         }
 
         // ── Variables ────────────────────────────────────────────────────────────
         // DROP de Bruijn coordinates — only preserve the name
         CoreExpr::Var { name, .. } => {
-            let mut payload = IndexMap::new();
-            payload.insert(
-                HashableValue::Str("name".into()),
-                ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(name), synth.clone()))),
-            );
+            let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+            payload.insert(HashableValue::Str("name".into()), mk(string_val(name)));
             make_variant("VarRef", payload)
         }
 
@@ -344,23 +291,17 @@ pub fn core_expr_to_expr_value(
             named_args,
             implied,
         } => {
-            let mut payload = IndexMap::new();
+            let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             payload.insert(HashableValue::Str("fn".into()), recurse(func));
             payload.insert(HashableValue::Str("args".into()), recurse_vec(args));
 
             // Convert named args to Dict
-            let mut named_dict = IndexMap::new();
+            let mut named_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             for (i, named_arg) in named_args.iter().enumerate() {
-                let mut arg_dict = IndexMap::new();
+                let mut arg_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
                 arg_dict.insert(
                     HashableValue::Str("name".into()),
-                    ctx.alloc_thunk(
-                        0,
-                        Arc::new(Thunk::value(
-                            string_val(&named_arg.node.name),
-                            synth.clone(),
-                        )),
-                    ),
+                    mk(string_val(&named_arg.node.name)),
                 );
                 arg_dict.insert(
                     HashableValue::Str("value".into()),
@@ -368,50 +309,30 @@ pub fn core_expr_to_expr_value(
                 );
                 named_dict.insert(
                     HashableValue::Int(i as i64),
-                    ctx.alloc_thunk(
-                        0,
-                        Arc::new(Thunk::value(Value::Dict(arg_dict), named_arg.span.clone())),
-                    ),
+                    mk_dict(arg_dict, named_arg.span.clone()),
                 );
             }
             payload.insert(
                 HashableValue::Str("named-args".into()),
-                ctx.alloc_thunk(
-                    0,
-                    Arc::new(Thunk::value(Value::Dict(named_dict), synth.clone())),
-                ),
+                mk_dict(named_dict, synth.clone()),
             );
-
             payload.insert(
                 HashableValue::Str("implied".into()),
-                ctx.alloc_thunk(
-                    0,
-                    Arc::new(Thunk::value(
-                        Value::Int(if *implied { 1 } else { 0 }),
-                        synth.clone(),
-                    )),
-                ),
+                mk(Value::Int(if *implied { 1 } else { 0 })),
             );
-
             make_variant("Call", payload)
         }
 
         // ── Dict ─────────────────────────────────────────────────────────────────
         CoreExpr::Dict(entries) => {
-            let mut entries_dict = IndexMap::new();
+            let mut entries_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             for (i, entry) in entries.iter().enumerate() {
-                let mut entry_dict = IndexMap::new();
+                let mut entry_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
                 entry_dict.insert(
                     HashableValue::Str("key".into()),
                     match &entry.node.key {
                         Some(k) => recurse(k),
-                        None => ctx.alloc_thunk(
-                            0,
-                            Arc::new(Thunk::value(
-                                Value::Dict(IndexMap::new()), // Null
-                                synth.clone(),
-                            )),
-                        ),
+                        None => null_thunk(),
                     },
                 );
                 entry_dict.insert(
@@ -420,19 +341,13 @@ pub fn core_expr_to_expr_value(
                 );
                 entries_dict.insert(
                     HashableValue::Int(i as i64),
-                    ctx.alloc_thunk(
-                        0,
-                        Arc::new(Thunk::value(Value::Dict(entry_dict), entry.span.clone())),
-                    ),
+                    mk_dict(entry_dict, entry.span.clone()),
                 );
             }
-            let mut payload = IndexMap::new();
+            let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             payload.insert(
                 HashableValue::Str("entries".into()),
-                ctx.alloc_thunk(
-                    0,
-                    Arc::new(Thunk::value(Value::Dict(entries_dict), synth.clone())),
-                ),
+                mk_dict(entries_dict, synth.clone()),
             );
             make_variant("Dict", payload)
         }
@@ -444,15 +359,12 @@ pub fn core_expr_to_expr_value(
             return_ann,
             ..
         } => {
-            let mut params_dict = IndexMap::new();
+            let mut params_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             for (i, param) in params.iter().enumerate() {
-                let mut param_dict = IndexMap::new();
+                let mut param_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
                 param_dict.insert(
                     HashableValue::Str("name".into()),
-                    ctx.alloc_thunk(
-                        0,
-                        Arc::new(Thunk::value(string_val(&param.node.name), synth.clone())),
-                    ),
+                    mk(string_val(&param.node.name)),
                 );
                 param_dict.insert(
                     HashableValue::Str("annotation".into()),
@@ -460,30 +372,18 @@ pub fn core_expr_to_expr_value(
                 );
                 param_dict.insert(
                     HashableValue::Str("variadic".into()),
-                    ctx.alloc_thunk(
-                        0,
-                        Arc::new(Thunk::value(
-                            Value::Int(if param.node.variadic { 1 } else { 0 }),
-                            synth.clone(),
-                        )),
-                    ),
+                    mk(Value::Int(if param.node.variadic { 1 } else { 0 })),
                 );
                 params_dict.insert(
                     HashableValue::Int(i as i64),
-                    ctx.alloc_thunk(
-                        0,
-                        Arc::new(Thunk::value(Value::Dict(param_dict), param.span.clone())),
-                    ),
+                    mk_dict(param_dict, param.span.clone()),
                 );
             }
 
-            let mut payload = IndexMap::new();
+            let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             payload.insert(
                 HashableValue::Str("params".into()),
-                ctx.alloc_thunk(
-                    0,
-                    Arc::new(Thunk::value(Value::Dict(params_dict), synth.clone())),
-                ),
+                mk_dict(params_dict, synth.clone()),
             );
             payload.insert(HashableValue::Str("body".into()), recurse(body));
             payload.insert(
@@ -495,76 +395,61 @@ pub fn core_expr_to_expr_value(
 
         // ── Sequential ───────────────────────────────────────────────────────────
         CoreExpr::Sequential(exprs) => {
-            let mut payload = IndexMap::new();
+            let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             payload.insert(HashableValue::Str("exprs".into()), recurse_vec(exprs));
             make_variant("Sequential", payload)
         }
 
         // ── Match ────────────────────────────────────────────────────────────────
         CoreExpr::Match { scrutinee, arms } => {
-            let mut arms_dict = IndexMap::new();
+            let mut arms_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             for (i, arm) in arms.iter().enumerate() {
                 // CoreMatchArm has pattern, guard, body — serialize as opaque Dict
-                let mut arm_dict = IndexMap::new();
+                let mut arm_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
                 arm_dict.insert(
                     HashableValue::Str("pattern".into()),
-                    ctx.alloc_thunk(
-                        0,
-                        Arc::new(Thunk::value(
-                            surface_node_to_expr_variant(&arm.pattern, ctx),
-                            arm.pattern.span.clone(),
-                        )),
-                    ),
+                    Arc::new(Thunk::value(
+                        surface_node_to_expr_variant(&arm.pattern, ctx),
+                        arm.pattern.span.clone(),
+                    )),
                 );
                 arm_dict.insert(
                     HashableValue::Str("guard".into()),
                     match &arm.guard {
                         Some(g) => recurse(g),
-                        None => ctx.alloc_thunk(
-                            0,
-                            Arc::new(Thunk::value(
-                                Value::Dict(IndexMap::new()), // Null
-                                synth.clone(),
-                            )),
-                        ),
+                        None => null_thunk(),
                     },
                 );
                 arm_dict.insert(HashableValue::Str("body".into()), recurse(&arm.body));
                 arms_dict.insert(
                     HashableValue::Int(i as i64),
-                    ctx.alloc_thunk(
-                        0,
-                        Arc::new(Thunk::value(Value::Dict(arm_dict), synth.clone())),
-                    ),
+                    mk_dict(arm_dict, synth.clone()),
                 );
             }
-            let mut payload = IndexMap::new();
+            let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             payload.insert(HashableValue::Str("scrutinee".into()), recurse(scrutinee));
             payload.insert(
                 HashableValue::Str("arms".into()),
-                ctx.alloc_thunk(
-                    0,
-                    Arc::new(Thunk::value(Value::Dict(arms_dict), synth.clone())),
-                ),
+                mk_dict(arms_dict, synth.clone()),
             );
             make_variant("Match", payload)
         }
 
         // ── Quote / Unquote / UnquoteSplice ──────────────────────────────────────
         CoreExpr::Quote(e) => {
-            let mut payload = IndexMap::new();
+            let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             payload.insert(HashableValue::Str("expr".into()), recurse(e));
             make_variant("Quote", payload)
         }
 
         CoreExpr::Unquote(e) => {
-            let mut payload = IndexMap::new();
+            let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             payload.insert(HashableValue::Str("expr".into()), recurse(e));
             make_variant("Unquote", payload)
         }
 
         CoreExpr::UnquoteSplice(e) => {
-            let mut payload = IndexMap::new();
+            let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             payload.insert(HashableValue::Str("expr".into()), recurse(e));
             make_variant("UnquoteSplice", payload)
         }
@@ -573,7 +458,7 @@ pub fn core_expr_to_expr_value(
         CoreExpr::TypeAssert {
             annotation, expr, ..
         } => {
-            let mut payload = IndexMap::new();
+            let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             payload.insert(
                 HashableValue::Str("annotation".into()),
                 alloc_annotation_opt(Some(annotation), ctx),
@@ -584,7 +469,7 @@ pub fn core_expr_to_expr_value(
 
         // ── Rest ─────────────────────────────────────────────────────────────────
         CoreExpr::Rest(name_opt) => {
-            let mut payload = IndexMap::new();
+            let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             payload.insert(
                 HashableValue::Str("name".into()),
                 alloc_string_opt(name_opt.as_deref(), ctx),
@@ -594,7 +479,7 @@ pub fn core_expr_to_expr_value(
 
         // ── LetDecl / PatternDecl ────────────────────────────────────────────────
         CoreExpr::LetDecl { bindings } => {
-            let mut payload = IndexMap::new();
+            let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             let arc_bindings: Vec<Arc<Spanned<CoreExpr>>> =
                 bindings.iter().map(|b| Arc::new(b.clone())).collect();
             payload.insert(
@@ -605,7 +490,7 @@ pub fn core_expr_to_expr_value(
         }
 
         CoreExpr::PatternDecl { bindings } => {
-            let mut payload = IndexMap::new();
+            let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             let arc_bindings: Vec<Arc<Spanned<CoreExpr>>> =
                 bindings.iter().map(|b| Arc::new(b.clone())).collect();
             payload.insert(
@@ -621,7 +506,7 @@ pub fn core_expr_to_expr_value(
             pattern,
             body,
         } => {
-            let mut payload = IndexMap::new();
+            let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             payload.insert(
                 HashableValue::Str("let-bindings".into()),
                 recurse(let_bindings),
@@ -634,37 +519,22 @@ pub fn core_expr_to_expr_value(
         // ── Variant ──────────────────────────────────────────────────────────────
         // This is AST variant construction (Expr.Variant), NOT Value::Variant itself
         CoreExpr::Variant { tag, payload } => {
-            let mut fields = IndexMap::new();
-            fields.insert(
-                HashableValue::Str("tag".into()),
-                ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(tag), synth.clone()))),
-            );
+            let mut fields: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+            fields.insert(HashableValue::Str("tag".into()), mk(string_val(tag)));
             fields.insert(
                 HashableValue::Str("payload".into()),
                 match payload {
                     Some(p) => recurse(p),
-                    None => ctx.alloc_thunk(
-                        0,
-                        Arc::new(Thunk::value(
-                            Value::Dict(IndexMap::new()), // Null
-                            synth.clone(),
-                        )),
-                    ),
+                    None => null_thunk(),
                 },
             );
             make_variant("Variant", fields)
         }
 
         CoreExpr::UnitVariant { tycon, ctor } => {
-            let mut fields = IndexMap::new();
-            fields.insert(
-                HashableValue::Str("tycon".into()),
-                ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(tycon), synth.clone()))),
-            );
-            fields.insert(
-                HashableValue::Str("ctor".into()),
-                ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(ctor), synth.clone()))),
-            );
+            let mut fields: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+            fields.insert(HashableValue::Str("tycon".into()), mk(string_val(tycon)));
+            fields.insert(HashableValue::Str("ctor".into()), mk(string_val(ctor)));
             make_variant("UnitVariant", fields)
         }
 
@@ -852,19 +722,18 @@ fn dict_to_annotation(
 // ============================================================================
 
 fn get_field(
-    dict: &IndexMap<HashableValue, ThunkId>,
+    dict: &IndexMap<HashableValue, Arc<Thunk>>,
     key: &str,
     path: &[&str],
-    ctx: &Arc<crate::eval::EvalContext>,
+    _ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<Value, AstError> {
-    let thunk_id = dict
+    let thunk = dict
         .get(&HashableValue::Str(key.into()))
         .ok_or_else(|| AstError {
             message: format!("missing required field: {}", key),
             field_path: path.iter().map(|s| s.to_string()).collect(),
         })?;
 
-    let thunk = ctx.get_thunk(*thunk_id);
     thunk.try_get_materialized().ok_or_else(|| AstError {
         message: format!("field '{}' is not materialized", key),
         field_path: path.iter().map(|s| s.to_string()).collect(),
@@ -872,7 +741,7 @@ fn get_field(
 }
 
 fn get_string_field(
-    dict: &IndexMap<HashableValue, ThunkId>,
+    dict: &IndexMap<HashableValue, Arc<Thunk>>,
     key: &str,
     path: &[&str],
     ctx: &Arc<crate::eval::EvalContext>,
@@ -910,7 +779,7 @@ fn get_string_field(
 }
 
 fn get_bool_field(
-    dict: &IndexMap<HashableValue, ThunkId>,
+    dict: &IndexMap<HashableValue, Arc<Thunk>>,
     key: &str,
     path: &[&str],
     ctx: &Arc<crate::eval::EvalContext>,
@@ -920,7 +789,7 @@ fn get_bool_field(
 }
 
 fn get_dict_field(
-    dict: &IndexMap<HashableValue, ThunkId>,
+    dict: &IndexMap<HashableValue, Arc<Thunk>>,
     key: &str,
     path: &[&str],
     ctx: &Arc<crate::eval::EvalContext>,
@@ -936,15 +805,12 @@ fn get_dict_field(
 }
 
 fn get_optional_dict_field(
-    dict: &IndexMap<HashableValue, ThunkId>,
+    dict: &IndexMap<HashableValue, Arc<Thunk>>,
     key: &str,
-    ctx: &Arc<crate::eval::EvalContext>,
+    _ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<Option<Value>, AstError> {
     match dict.get(&HashableValue::Str(key.into())) {
-        Some(thunk_id) => {
-            let thunk = ctx.get_thunk(*thunk_id);
-            Ok(thunk.try_get_materialized())
-        }
+        Some(thunk) => Ok(thunk.try_get_materialized()),
         None => Ok(None),
     }
 }
@@ -954,68 +820,51 @@ fn is_empty_dict(val: &Value) -> bool {
 }
 
 pub(crate) fn extract_span(
-    dict: &IndexMap<HashableValue, ThunkId>,
+    dict: &IndexMap<HashableValue, Arc<Thunk>>,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Option<Span> {
-    let span_thunk_id = dict.get(&HashableValue::Str("span".into()))?;
-    let span_thunk = ctx.get_thunk(*span_thunk_id);
+    let span_thunk = dict.get(&HashableValue::Str("span".into()))?;
     let span_val = span_thunk.try_get_materialized()?;
 
     match span_val {
         Value::Dict(span_dict) => {
-            let start_id = span_dict.get(&HashableValue::Str("start".into()))?;
-            let start_thunk = ctx.get_thunk(*start_id);
+            let start_thunk = span_dict.get(&HashableValue::Str("start".into()))?;
             let start_val = start_thunk.try_get_materialized()?;
 
-            let end_id = span_dict.get(&HashableValue::Str("end".into()))?;
-            let end_thunk = ctx.get_thunk(*end_id);
+            let end_thunk = span_dict.get(&HashableValue::Str("end".into()))?;
             let end_val = end_thunk.try_get_materialized()?;
 
-            let start = extract_position(&start_val, ctx)?;
-            let end = extract_position(&end_val, ctx)?;
+            let (start_line, start_col) = extract_position(&start_val, ctx)?;
+            let (end_line, end_col) = extract_position(&end_val, ctx)?;
 
             Some(Span::new(
-                start,
-                end,
-                std::sync::Arc::new(crate::ast::SourceFile {
-                    path: std::sync::Arc::from("<surface-convert>"),
-                    content: std::sync::Arc::from(""),
-                }),
+                start_line,
+                start_col,
+                end_line,
+                end_col,
+                std::sync::Arc::from("<surface-convert>"),
             ))
         }
         _ => None,
     }
 }
 
-fn extract_position(val: &Value, ctx: &Arc<crate::eval::EvalContext>) -> Option<Position> {
+fn extract_position(val: &Value, _ctx: &Arc<crate::eval::EvalContext>) -> Option<(u32, u32)> {
     match val {
         Value::Dict(dict) => {
-            let line_id = dict.get(&HashableValue::Str("line".into()))?;
-            let line_thunk = ctx.get_thunk(*line_id);
+            let line_thunk = dict.get(&HashableValue::Str("line".into()))?;
             let line = match line_thunk.try_get_materialized()? {
                 Value::Int(n) => n as u32,
                 _ => return None,
             };
 
-            let col_id = dict.get(&HashableValue::Str("col".into()))?;
-            let col_thunk = ctx.get_thunk(*col_id);
-            let column = match col_thunk.try_get_materialized()? {
+            let col_thunk = dict.get(&HashableValue::Str("col".into()))?;
+            let col = match col_thunk.try_get_materialized()? {
                 Value::Int(n) => n as u32,
                 _ => return None,
             };
 
-            let offset_id = dict.get(&HashableValue::Str("offset".into()))?;
-            let offset_thunk = ctx.get_thunk(*offset_id);
-            let offset = match offset_thunk.try_get_materialized()? {
-                Value::Int(n) => n as u32,
-                _ => return None,
-            };
-
-            Some(Position {
-                line,
-                column,
-                offset,
-            })
+            Some((line, col))
         }
         _ => None,
     }
@@ -1024,15 +873,14 @@ fn extract_position(val: &Value, ctx: &Arc<crate::eval::EvalContext>) -> Option<
 fn extract_list(
     val: &Value,
     path: &[&str],
-    ctx: &Arc<crate::eval::EvalContext>,
+    _ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<Vec<Value>, AstError> {
     match val {
         Value::Dict(d) => {
             let mut result = Vec::new();
             for i in 0.. {
                 match d.get(&HashableValue::Int(i)) {
-                    Some(thunk_id) => {
-                        let thunk = ctx.get_thunk(*thunk_id);
+                    Some(thunk) => {
                         let val = thunk.try_get_materialized().ok_or_else(|| AstError {
                             message: format!("list element {} is not materialized", i),
                             field_path: path.iter().map(|s| s.to_string()).collect(),
@@ -1060,38 +908,35 @@ fn extract_list(
 // They wrap the private helpers above and expose a stable interface for the
 // generated code to use.
 
-pub(crate) fn alloc_str(s: &str, span: &Span, ctx: &Arc<crate::eval::EvalContext>) -> ThunkId {
-    ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(s), span.clone())))
+pub(crate) fn alloc_str(s: &str, span: &Span, _ctx: &Arc<crate::eval::EvalContext>) -> Arc<Thunk> {
+    Arc::new(Thunk::value(string_val(s), span.clone()))
 }
 
-pub(crate) fn alloc_bool(b: bool, span: &Span, ctx: &Arc<crate::eval::EvalContext>) -> ThunkId {
-    ctx.alloc_thunk(
-        0,
-        Arc::new(Thunk::value(
-            Value::Int(if b { 1 } else { 0 }),
-            span.clone(),
-        )),
-    )
+pub(crate) fn alloc_bool(b: bool, span: &Span, _ctx: &Arc<crate::eval::EvalContext>) -> Arc<Thunk> {
+    Arc::new(Thunk::value(
+        Value::Int(if b { 1 } else { 0 }),
+        span.clone(),
+    ))
 }
 
-pub(crate) fn alloc_int(n: i64, span: &Span, ctx: &Arc<crate::eval::EvalContext>) -> ThunkId {
-    ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Int(n), span.clone())))
+pub(crate) fn alloc_int(n: i64, span: &Span, _ctx: &Arc<crate::eval::EvalContext>) -> Arc<Thunk> {
+    Arc::new(Thunk::value(Value::Int(n), span.clone()))
 }
 
-pub(crate) fn alloc_u64(n: u64, span: &Span, ctx: &Arc<crate::eval::EvalContext>) -> ThunkId {
-    ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::U64(n), span.clone())))
+pub(crate) fn alloc_u64(n: u64, span: &Span, _ctx: &Arc<crate::eval::EvalContext>) -> Arc<Thunk> {
+    Arc::new(Thunk::value(Value::U64(n), span.clone()))
 }
 
-pub(crate) fn alloc_float(f: f64, span: &Span, ctx: &Arc<crate::eval::EvalContext>) -> ThunkId {
-    ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Float(f), span.clone())))
+pub(crate) fn alloc_float(f: f64, span: &Span, _ctx: &Arc<crate::eval::EvalContext>) -> Arc<Thunk> {
+    Arc::new(Thunk::value(Value::Float(f), span.clone()))
 }
 
 pub(crate) fn alloc_expr_child(
     node: &Arc<SurfaceNode>,
     ctx: &Arc<crate::eval::EvalContext>,
-) -> ThunkId {
+) -> Arc<Thunk> {
     let val = surface_node_to_expr_variant(node, ctx);
-    ctx.alloc_thunk(0, Arc::new(Thunk::value(val, node.span.clone())))
+    Arc::new(Thunk::value(val, node.span.clone()))
 }
 
 /// Allocate an optional child expression node.
@@ -1100,51 +945,45 @@ pub(crate) fn alloc_expr_child(
 pub(crate) fn alloc_expr_child_opt(
     node: Option<&Arc<SurfaceNode>>,
     ctx: &Arc<crate::eval::EvalContext>,
-) -> ThunkId {
+) -> Arc<Thunk> {
     match node {
         Some(n) => alloc_expr_child(n, ctx),
-        None => ctx.alloc_thunk(
-            0,
-            Arc::new(Thunk::value(Value::Dict(IndexMap::new()), rust_span!())),
-        ),
+        None => Arc::new(Thunk::value(Value::Dict(IndexMap::new()), rust_span!())),
     }
 }
 
 pub(crate) fn alloc_child_list(
     nodes: &[Arc<SurfaceNode>],
     ctx: &Arc<crate::eval::EvalContext>,
-) -> ThunkId {
-    let mut map = IndexMap::new();
+) -> Arc<Thunk> {
+    let mut map: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
     for (i, n) in nodes.iter().enumerate() {
-        let tid = ctx.alloc_thunk(
-            0,
-            Arc::new(Thunk::value(
-                surface_node_to_expr_variant(n, ctx),
-                n.span.clone(),
-            )),
-        );
-        map.insert(HashableValue::Int(i as i64), tid);
+        let thunk = Arc::new(Thunk::value(
+            surface_node_to_expr_variant(n, ctx),
+            n.span.clone(),
+        ));
+        map.insert(HashableValue::Int(i as i64), thunk);
     }
-    ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(map), rust_span!())))
+    Arc::new(Thunk::value(Value::Dict(map), rust_span!()))
 }
 
 pub(crate) fn alloc_entry_list(
     entries: &[Spanned<SurfaceEntry>],
     ctx: &Arc<crate::eval::EvalContext>,
-) -> ThunkId {
-    let mut dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+) -> Arc<Thunk> {
+    let mut dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
     for (i, entry) in entries.iter().enumerate() {
         // key: Some(node) → Expr.* variant, None → null (empty dict)
         let key_val = match &entry.node.key {
             Some(key_node) => SurfaceExpression::to_expr_variant(key_node, ctx),
             None => Value::Dict(IndexMap::new()),
         };
-        let key_thunk = ctx.alloc_thunk(0, Arc::new(Thunk::value(key_val, entry.span.clone())));
+        let key_thunk = Arc::new(Thunk::value(key_val, entry.span.clone()));
         // value: Expr.* variant
         let val_val = SurfaceExpression::to_expr_variant(&entry.node.value, ctx);
-        let val_thunk = ctx.alloc_thunk(0, Arc::new(Thunk::value(val_val, entry.span.clone())));
+        let val_thunk = Arc::new(Thunk::value(val_val, entry.span.clone()));
         // Build payload dict for Expr.Entry
-        let mut payload: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+        let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         payload.insert(HashableValue::Str("key".into()), key_thunk);
         payload.insert(HashableValue::Str("value".into()), val_thunk);
         let payload_id = ctx.alloc_thunk(
@@ -1157,162 +996,143 @@ pub(crate) fn alloc_entry_list(
             ctor: Arc::from("Entry"),
             payload: Some(payload_id),
         };
-        let entry_thunk =
-            ctx.alloc_thunk(0, Arc::new(Thunk::value(entry_variant, entry.span.clone())));
+        let entry_thunk = Arc::new(Thunk::value(entry_variant, entry.span.clone()));
         dict.insert(HashableValue::Int(i as i64), entry_thunk);
     }
-    ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(dict), rust_span!())))
+    Arc::new(Thunk::value(Value::Dict(dict), rust_span!()))
 }
 
 pub(crate) fn alloc_named_arg_list(
     args: &[Spanned<SurfaceNamedArg>],
     ctx: &Arc<crate::eval::EvalContext>,
-) -> ThunkId {
-    let mut na_map = IndexMap::new();
+) -> Arc<Thunk> {
+    let mut na_map: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
     for (i, na) in args.iter().enumerate() {
-        let mut na_payload = IndexMap::new();
+        let mut na_payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         na_payload.insert(
             HashableValue::Str("name".into()),
-            ctx.alloc_thunk(
-                0,
-                Arc::new(Thunk::value(string_val(&na.node.name), na.span.clone())),
-            ),
+            Arc::new(Thunk::value(string_val(&na.node.name), na.span.clone())),
         );
         na_payload.insert(
             HashableValue::Str("value".into()),
-            ctx.alloc_thunk(
-                0,
-                Arc::new(Thunk::value(
-                    surface_node_to_expr_variant(&na.node.value, ctx),
-                    na.span.clone(),
-                )),
-            ),
+            Arc::new(Thunk::value(
+                surface_node_to_expr_variant(&na.node.value, ctx),
+                na.span.clone(),
+            )),
         );
         let payload_id = ctx.alloc_thunk(
             0,
             Arc::new(Thunk::value(Value::Dict(na_payload), na.span.clone())),
         );
-        let na_tid = ctx.alloc_thunk(
-            0,
-            Arc::new(Thunk::value(
-                Value::Variant {
-                    tycon: Arc::from("Expr"),
-                    ctor: Arc::from("NamedArg"),
-                    payload: Some(payload_id),
-                },
-                na.span.clone(),
-            )),
-        );
-        na_map.insert(HashableValue::Int(i as i64), na_tid);
+        let na_thunk = Arc::new(Thunk::value(
+            Value::Variant {
+                tycon: Arc::from("Expr"),
+                ctor: Arc::from("NamedArg"),
+                payload: Some(payload_id),
+            },
+            na.span.clone(),
+        ));
+        na_map.insert(HashableValue::Int(i as i64), na_thunk);
     }
-    ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(na_map), rust_span!())))
+    Arc::new(Thunk::value(Value::Dict(na_map), rust_span!()))
 }
 
 pub(crate) fn alloc_param_list(
     params: &[Spanned<SurfaceParam>],
     ctx: &Arc<crate::eval::EvalContext>,
-) -> ThunkId {
-    let mut params_map = IndexMap::new();
+) -> Arc<Thunk> {
+    let mut params_map: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
     for (i, p) in params.iter().enumerate() {
-        let mut p_payload = IndexMap::new();
+        let mut p_payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         p_payload.insert(
             HashableValue::Str("name".into()),
-            ctx.alloc_thunk(
-                0,
-                Arc::new(Thunk::value(string_val(&p.node.name), p.span.clone())),
-            ),
+            Arc::new(Thunk::value(string_val(&p.node.name), p.span.clone())),
         );
         p_payload.insert(
             HashableValue::Str("variadic".into()),
-            ctx.alloc_thunk(
-                0,
-                Arc::new(Thunk::value(
-                    Value::Int(if p.node.variadic { 1 } else { 0 }),
-                    p.span.clone(),
-                )),
-            ),
+            Arc::new(Thunk::value(
+                Value::Int(if p.node.variadic { 1 } else { 0 }),
+                p.span.clone(),
+            )),
         );
         let ann_val =
             crate::surface_fields::annotation_opt_to_value(p.node.annotation.as_ref(), ctx);
         p_payload.insert(
             HashableValue::Str("annotation".into()),
-            ctx.alloc_thunk(0, Arc::new(Thunk::value(ann_val, p.span.clone()))),
+            Arc::new(Thunk::value(ann_val, p.span.clone())),
         );
         let param_payload_id = ctx.alloc_thunk(
             0,
             Arc::new(Thunk::value(Value::Dict(p_payload), p.span.clone())),
         );
-        let p_tid = ctx.alloc_thunk(
-            0,
-            Arc::new(Thunk::value(
-                Value::Variant {
-                    tycon: Arc::from("Expr"),
-                    ctor: Arc::from("Param"),
-                    payload: Some(param_payload_id),
-                },
-                p.span.clone(),
-            )),
-        );
-        params_map.insert(HashableValue::Int(i as i64), p_tid);
+        let p_thunk = Arc::new(Thunk::value(
+            Value::Variant {
+                tycon: Arc::from("Expr"),
+                ctor: Arc::from("Param"),
+                payload: Some(param_payload_id),
+            },
+            p.span.clone(),
+        ));
+        params_map.insert(HashableValue::Int(i as i64), p_thunk);
     }
-    ctx.alloc_thunk(
-        0,
-        Arc::new(Thunk::value(Value::Dict(params_map), rust_span!())),
-    )
+    Arc::new(Thunk::value(Value::Dict(params_map), rust_span!()))
 }
 
 pub(crate) fn alloc_match_arm_list(
     arms: &[crate::ast::SurfaceMatchArm],
     ctx: &Arc<crate::eval::EvalContext>,
-) -> ThunkId {
+) -> Arc<Thunk> {
     let val = crate::surface_fields::match_arms_to_list_dict_pub(arms, ctx);
-    ctx.alloc_thunk(0, Arc::new(Thunk::value(val, rust_span!())))
+    Arc::new(Thunk::value(val, rust_span!()))
 }
 
 pub(crate) fn alloc_annotation(
     ann: &Spanned<Annotation>,
     ctx: &Arc<crate::eval::EvalContext>,
-) -> ThunkId {
+) -> Arc<Thunk> {
     let val = crate::surface_fields::annotation_to_value(ann, ctx);
-    ctx.alloc_thunk(0, Arc::new(Thunk::value(val, ann.span.clone())))
+    Arc::new(Thunk::value(val, ann.span.clone()))
 }
 
 pub(crate) fn alloc_annotation_opt(
     ann: Option<&Spanned<Annotation>>,
     ctx: &Arc<crate::eval::EvalContext>,
-) -> ThunkId {
+) -> Arc<Thunk> {
     let val = crate::surface_fields::annotation_opt_to_value(ann, ctx);
-    ctx.alloc_thunk(0, Arc::new(Thunk::value(val, rust_span!())))
+    Arc::new(Thunk::value(val, rust_span!()))
 }
 
-pub(crate) fn alloc_string_opt(s: Option<&str>, ctx: &Arc<crate::eval::EvalContext>) -> ThunkId {
+pub(crate) fn alloc_string_opt(
+    s: Option<&str>,
+    _ctx: &Arc<crate::eval::EvalContext>,
+) -> Arc<Thunk> {
     let val = match s {
         Some(name) => string_val(name),
         None => Value::Dict(IndexMap::new()),
     };
-    ctx.alloc_thunk(0, Arc::new(Thunk::value(val, rust_span!())))
+    Arc::new(Thunk::value(val, rust_span!()))
 }
 
 pub(crate) fn alloc_dot_key(
     key: &DotKey,
     span: &Span,
-    ctx: &Arc<crate::eval::EvalContext>,
-) -> ThunkId {
+    _ctx: &Arc<crate::eval::EvalContext>,
+) -> Arc<Thunk> {
     let val = match key {
         DotKey::Ident(name) => string_val(name),
         DotKey::Int(n) => string_val(&n.to_string()),
     };
-    ctx.alloc_thunk(0, Arc::new(Thunk::value(val, span.clone())))
+    Arc::new(Thunk::value(val, span.clone()))
 }
 
-pub(crate) fn alloc_span(span: &Span, ctx: &Arc<crate::eval::EvalContext>) -> ThunkId {
+pub(crate) fn alloc_span(span: &Span, ctx: &Arc<crate::eval::EvalContext>) -> Arc<Thunk> {
     let val = crate::surface_fields::span_to_value(span, ctx);
-    ctx.alloc_thunk(0, Arc::new(Thunk::value(val, span.clone())))
+    Arc::new(Thunk::value(val, span.clone()))
 }
 
 pub(crate) fn make_variant_with_payload(
     tag: &str,
-    payload: IndexMap<HashableValue, ThunkId>,
+    payload: IndexMap<HashableValue, Arc<Thunk>>,
     span: &Span,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Value {
@@ -1349,7 +1169,7 @@ pub(crate) fn make_surface_node(expr: SurfaceExpression, span: Span) -> Arc<Surf
 pub(crate) fn extract_tag_and_dict(
     val: &Value,
     ctx: &Arc<crate::eval::EvalContext>,
-) -> Result<(String, IndexMap<HashableValue, ThunkId>), AstError> {
+) -> Result<(String, IndexMap<HashableValue, Arc<Thunk>>), AstError> {
     match val {
         Value::Variant {
             tycon,
@@ -1387,14 +1207,13 @@ pub(crate) fn extract_tag_and_dict(
 
 /// Try a primary key then each alias in order; return the first materialized value found.
 fn get_field_with_aliases(
-    dict: &IndexMap<HashableValue, ThunkId>,
+    dict: &IndexMap<HashableValue, Arc<Thunk>>,
     key: &str,
     aliases: &[&str],
-    ctx: &Arc<crate::eval::EvalContext>,
+    _ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<Value, AstError> {
     // Try primary key first
-    if let Some(thunk_id) = dict.get(&HashableValue::Str(key.into())) {
-        let thunk = ctx.get_thunk(*thunk_id);
+    if let Some(thunk) = dict.get(&HashableValue::Str(key.into())) {
         return thunk.try_get_materialized().ok_or_else(|| AstError {
             message: format!("field '{}' is not materialized", key),
             field_path: vec![key.to_string()],
@@ -1402,8 +1221,7 @@ fn get_field_with_aliases(
     }
     // Try aliases
     for alias in aliases {
-        if let Some(thunk_id) = dict.get(&HashableValue::Str((*alias).into())) {
-            let thunk = ctx.get_thunk(*thunk_id);
+        if let Some(thunk) = dict.get(&HashableValue::Str((*alias).into())) {
             return thunk.try_get_materialized().ok_or_else(|| AstError {
                 message: format!("field '{}' (alias '{}') is not materialized", key, alias),
                 field_path: vec![key.to_string()],
@@ -1417,7 +1235,7 @@ fn get_field_with_aliases(
 }
 
 pub(crate) fn get_string_field_with_aliases(
-    dict: &IndexMap<HashableValue, ThunkId>,
+    dict: &IndexMap<HashableValue, Arc<Thunk>>,
     key: &str,
     aliases: &[&str],
     ctx: &Arc<crate::eval::EvalContext>,
@@ -1441,7 +1259,7 @@ pub(crate) fn get_string_field_with_aliases(
 }
 
 pub(crate) fn get_bool_field_with_aliases(
-    dict: &IndexMap<HashableValue, ThunkId>,
+    dict: &IndexMap<HashableValue, Arc<Thunk>>,
     key: &str,
     aliases: &[&str],
     ctx: &Arc<crate::eval::EvalContext>,
@@ -1451,7 +1269,7 @@ pub(crate) fn get_bool_field_with_aliases(
 }
 
 pub(crate) fn get_int_field_with_aliases(
-    dict: &IndexMap<HashableValue, ThunkId>,
+    dict: &IndexMap<HashableValue, Arc<Thunk>>,
     key: &str,
     aliases: &[&str],
     ctx: &Arc<crate::eval::EvalContext>,
@@ -1467,7 +1285,7 @@ pub(crate) fn get_int_field_with_aliases(
 }
 
 pub(crate) fn get_u64_field_with_aliases(
-    dict: &IndexMap<HashableValue, ThunkId>,
+    dict: &IndexMap<HashableValue, Arc<Thunk>>,
     key: &str,
     aliases: &[&str],
     ctx: &Arc<crate::eval::EvalContext>,
@@ -1483,7 +1301,7 @@ pub(crate) fn get_u64_field_with_aliases(
 }
 
 pub(crate) fn get_float_field_with_aliases(
-    dict: &IndexMap<HashableValue, ThunkId>,
+    dict: &IndexMap<HashableValue, Arc<Thunk>>,
     key: &str,
     aliases: &[&str],
     ctx: &Arc<crate::eval::EvalContext>,
@@ -1499,7 +1317,7 @@ pub(crate) fn get_float_field_with_aliases(
 }
 
 pub(crate) fn get_child_field_with_aliases(
-    dict: &IndexMap<HashableValue, ThunkId>,
+    dict: &IndexMap<HashableValue, Arc<Thunk>>,
     key: &str,
     aliases: &[&str],
     ctx: &Arc<crate::eval::EvalContext>,
@@ -1515,7 +1333,7 @@ pub(crate) fn get_child_field_with_aliases(
 /// Get an optional child expression node.
 /// Returns `Ok(None)` when the field is absent or null (empty dict).
 pub(crate) fn get_child_opt_field_with_aliases(
-    dict: &IndexMap<HashableValue, ThunkId>,
+    dict: &IndexMap<HashableValue, Arc<Thunk>>,
     key: &str,
     aliases: &[&str],
     ctx: &Arc<crate::eval::EvalContext>,
@@ -1534,7 +1352,7 @@ pub(crate) fn get_child_opt_field_with_aliases(
 }
 
 pub(crate) fn get_child_list_field_with_aliases(
-    dict: &IndexMap<HashableValue, ThunkId>,
+    dict: &IndexMap<HashableValue, Arc<Thunk>>,
     key: &str,
     aliases: &[&str],
     ctx: &Arc<crate::eval::EvalContext>,
@@ -1548,7 +1366,7 @@ pub(crate) fn get_child_list_field_with_aliases(
 }
 
 pub(crate) fn get_entry_list_field_with_aliases(
-    dict: &IndexMap<HashableValue, ThunkId>,
+    dict: &IndexMap<HashableValue, Arc<Thunk>>,
     key: &str,
     aliases: &[&str],
     ctx: &Arc<crate::eval::EvalContext>,
@@ -1571,19 +1389,16 @@ pub(crate) fn get_entry_list_field_with_aliases(
             });
         }
         // key field: Expr.* or null (empty dict)
-        let key_thunk_id = payload_dict
+        let key_thunk = payload_dict
             .get(&HashableValue::Str("key".into()))
             .ok_or_else(|| AstError {
                 message: "Expr.Entry missing key field".into(),
                 field_path: vec![key.to_string(), i_str.clone(), "key".to_string()],
             })?;
-        let key_val = ctx
-            .get_thunk(*key_thunk_id)
-            .try_get_materialized()
-            .ok_or_else(|| AstError {
-                message: "Expr.Entry key not materialized".into(),
-                field_path: vec![key.to_string(), i_str.clone(), "key".to_string()],
-            })?;
+        let key_val = key_thunk.try_get_materialized().ok_or_else(|| AstError {
+            message: "Expr.Entry key not materialized".into(),
+            field_path: vec![key.to_string(), i_str.clone(), "key".to_string()],
+        })?;
         let key_node = match &key_val {
             Value::Dict(d) if d.is_empty() => None,
             _ => Some(
@@ -1596,19 +1411,16 @@ pub(crate) fn get_entry_list_field_with_aliases(
             ),
         };
         // value field: Expr.*
-        let value_thunk_id = payload_dict
+        let value_thunk = payload_dict
             .get(&HashableValue::Str("value".into()))
             .ok_or_else(|| AstError {
                 message: "Expr.Entry missing value field".into(),
                 field_path: vec![key.to_string(), i_str.clone(), "value".to_string()],
             })?;
-        let value_val = ctx
-            .get_thunk(*value_thunk_id)
-            .try_get_materialized()
-            .ok_or_else(|| AstError {
-                message: "Expr.Entry value not materialized".into(),
-                field_path: vec![key.to_string(), i_str.clone(), "value".to_string()],
-            })?;
+        let value_val = value_thunk.try_get_materialized().ok_or_else(|| AstError {
+            message: "Expr.Entry value not materialized".into(),
+            field_path: vec![key.to_string(), i_str.clone(), "value".to_string()],
+        })?;
         let value_node =
             dict_to_surface_node(&value_val, &fallback_span, ctx).map_err(|mut e| {
                 e.field_path.insert(0, "value".to_string());
@@ -1628,7 +1440,7 @@ pub(crate) fn get_entry_list_field_with_aliases(
 }
 
 pub(crate) fn get_named_arg_list_field_with_aliases(
-    dict: &IndexMap<HashableValue, ThunkId>,
+    dict: &IndexMap<HashableValue, Arc<Thunk>>,
     key: &str,
     aliases: &[&str],
     ctx: &Arc<crate::eval::EvalContext>,
@@ -1652,19 +1464,16 @@ pub(crate) fn get_named_arg_list_field_with_aliases(
         // name field: String
         let name = get_string_field(&payload_dict, "name", &[key, &i_str], ctx)?;
         // value field: Expr.*
-        let value_thunk_id = payload_dict
+        let value_thunk = payload_dict
             .get(&HashableValue::Str("value".into()))
             .ok_or_else(|| AstError {
                 message: "Expr.NamedArg missing value field".into(),
                 field_path: vec![key.to_string(), i_str.clone(), "value".to_string()],
             })?;
-        let value_val = ctx
-            .get_thunk(*value_thunk_id)
-            .try_get_materialized()
-            .ok_or_else(|| AstError {
-                message: "Expr.NamedArg value not materialized".into(),
-                field_path: vec![key.to_string(), i_str.clone(), "value".to_string()],
-            })?;
+        let value_val = value_thunk.try_get_materialized().ok_or_else(|| AstError {
+            message: "Expr.NamedArg value not materialized".into(),
+            field_path: vec![key.to_string(), i_str.clone(), "value".to_string()],
+        })?;
         let fallback_span = extract_span(&payload_dict, ctx).unwrap_or_else(|| rust_span!());
         let value_node =
             dict_to_surface_node(&value_val, &fallback_span, ctx).map_err(|mut e| {
@@ -1686,7 +1495,7 @@ pub(crate) fn get_named_arg_list_field_with_aliases(
 }
 
 pub(crate) fn get_param_list_field_with_aliases(
-    dict: &IndexMap<HashableValue, ThunkId>,
+    dict: &IndexMap<HashableValue, Arc<Thunk>>,
     key: &str,
     aliases: &[&str],
     ctx: &Arc<crate::eval::EvalContext>,
@@ -1728,7 +1537,7 @@ pub(crate) fn get_param_list_field_with_aliases(
 }
 
 pub(crate) fn get_match_arm_list_field_with_aliases(
-    dict: &IndexMap<HashableValue, ThunkId>,
+    dict: &IndexMap<HashableValue, Arc<Thunk>>,
     key: &str,
     aliases: &[&str],
     ctx: &Arc<crate::eval::EvalContext>,
@@ -1771,7 +1580,7 @@ pub(crate) fn get_match_arm_list_field_with_aliases(
 }
 
 pub(crate) fn get_annotation_field_with_aliases(
-    dict: &IndexMap<HashableValue, ThunkId>,
+    dict: &IndexMap<HashableValue, Arc<Thunk>>,
     key: &str,
     aliases: &[&str],
     ctx: &Arc<crate::eval::EvalContext>,
@@ -1781,7 +1590,7 @@ pub(crate) fn get_annotation_field_with_aliases(
 }
 
 pub(crate) fn get_annotation_opt_field_with_aliases(
-    dict: &IndexMap<HashableValue, ThunkId>,
+    dict: &IndexMap<HashableValue, Arc<Thunk>>,
     key: &str,
     aliases: &[&str],
     ctx: &Arc<crate::eval::EvalContext>,
@@ -1794,7 +1603,7 @@ pub(crate) fn get_annotation_opt_field_with_aliases(
 }
 
 pub(crate) fn get_string_opt_field_with_aliases(
-    dict: &IndexMap<HashableValue, ThunkId>,
+    dict: &IndexMap<HashableValue, Arc<Thunk>>,
     key: &str,
     aliases: &[&str],
     ctx: &Arc<crate::eval::EvalContext>,
@@ -1815,7 +1624,7 @@ pub(crate) fn get_string_opt_field_with_aliases(
 }
 
 pub(crate) fn get_dot_key_field_with_aliases(
-    dict: &IndexMap<HashableValue, ThunkId>,
+    dict: &IndexMap<HashableValue, Arc<Thunk>>,
     key: &str,
     aliases: &[&str],
     ctx: &Arc<crate::eval::EvalContext>,
@@ -1844,7 +1653,7 @@ pub(crate) fn get_dot_key_field_with_aliases(
 }
 
 pub(crate) fn get_span_from_dict(
-    dict: &IndexMap<HashableValue, ThunkId>,
+    dict: &IndexMap<HashableValue, Arc<Thunk>>,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Span {
     extract_span(dict, ctx).unwrap_or_else(|| rust_span!())
@@ -1869,9 +1678,9 @@ pub struct AstToDictOpts<'a> {
 /// Comment and blank-line metadata from ParseOutput.
 #[derive(Clone)]
 pub struct CommentMaps<'a> {
-    pub leading_comments: &'a std::collections::BTreeMap<u32, Vec<String>>,
-    pub trailing_comments: &'a std::collections::BTreeMap<u32, String>,
-    pub blank_before: &'a std::collections::BTreeMap<u32, bool>,
+    pub leading_comments: &'a std::collections::BTreeMap<u64, Vec<String>>,
+    pub trailing_comments: &'a std::collections::BTreeMap<u64, String>,
+    pub blank_before: &'a std::collections::BTreeMap<u64, bool>,
 }
 
 // ============================================================================
@@ -1897,282 +1706,109 @@ pub fn surface_program_to_dict(
         .first()
         .map(|d| d.span.clone())
         .unwrap_or_else(|| rust_span!());
-    let mut root = IndexMap::new();
+    let mut root: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
 
     root.insert(
         HashableValue::Str("type".into()),
-        ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val("file"), span.clone()))),
+        Arc::new(Thunk::value(string_val("file"), span.clone())),
     );
 
     root.insert(
         HashableValue::Str("schema-version".into()),
-        ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Int(1), span.clone()))),
+        Arc::new(Thunk::value(Value::Int(1), span.clone())),
     );
 
     // documents: list of document dicts
-    let docs: Vec<_> = program
+    let doc_arcs: Vec<Arc<Thunk>> = program
         .documents
         .iter()
-        .map(|doc| surface_document_to_thunk_id(&doc.node, doc.span.clone(), opts, ctx))
+        .map(|doc| {
+            Ok(ctx.get_thunk(surface_document_to_thunk_id(
+                &doc.node,
+                doc.span.clone(),
+                opts,
+                ctx,
+            )?))
+        })
         .collect::<EvalResult<Vec<_>>>()?;
 
     root.insert(
         HashableValue::Str("documents".into()),
-        list_to_thunk_id(docs.into_iter(), span.clone(), ctx)?,
+        ctx.get_thunk(list_to_thunk_id(doc_arcs.into_iter(), span.clone(), ctx)?),
     );
 
     root.insert(
         HashableValue::Str("span".into()),
-        span_to_thunk_id(span.clone(), ctx)?,
+        ctx.get_thunk(span_to_thunk_id(span.clone(), ctx)?),
     );
 
     Ok(Arc::new(Thunk::value(Value::Dict(root), span)))
 }
 
+/// Return the character at 1-based (line, col) in the given source text, if in bounds.
+///
+/// Used to determine whether a string literal key was written bare (without quotes) or
+/// quoted, by checking if the first character at the span position is a double-quote.
+fn get_char_at(source: &str, line: u32, col: u32) -> Option<char> {
+    let target_line = line as usize; // 1-based
+    let target_col = col as usize; // 1-based
+    let line_text = source.lines().nth(target_line.checked_sub(1)?)?;
+    line_text.chars().nth(target_col.checked_sub(1)?)
+}
+
 fn span_to_thunk_id(span: Span, ctx: &Arc<crate::eval::EvalContext>) -> EvalResult<ThunkId> {
-    let mut dict = IndexMap::new();
+    let mut dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
 
     // start position
-    let mut start_dict = IndexMap::new();
+    let mut start_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
     start_dict.insert(
         HashableValue::Str("line".into()),
-        ctx.alloc_thunk(
-            0,
-            Arc::new(Thunk::value(
-                Value::Int(span.start.line as i64),
-                span.clone(),
-            )),
-        ),
+        Arc::new(Thunk::value(
+            Value::Int(span.start_line as i64),
+            span.clone(),
+        )),
     );
     start_dict.insert(
         HashableValue::Str("col".into()),
-        ctx.alloc_thunk(
-            0,
-            Arc::new(Thunk::value(
-                Value::Int(span.start.column as i64),
-                span.clone(),
-            )),
-        ),
-    );
-    start_dict.insert(
-        HashableValue::Str("offset".into()),
-        ctx.alloc_thunk(
-            0,
-            Arc::new(Thunk::value(
-                Value::Int(span.start.offset as i64),
-                span.clone(),
-            )),
-        ),
+        Arc::new(Thunk::value(
+            Value::Int(span.start_col as i64),
+            span.clone(),
+        )),
     );
 
     // end position
-    let mut end_dict = IndexMap::new();
+    let mut end_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
     end_dict.insert(
         HashableValue::Str("line".into()),
-        ctx.alloc_thunk(
-            0,
-            Arc::new(Thunk::value(Value::Int(span.end.line as i64), span.clone())),
-        ),
+        Arc::new(Thunk::value(Value::Int(span.end_line as i64), span.clone())),
     );
     end_dict.insert(
         HashableValue::Str("col".into()),
-        ctx.alloc_thunk(
-            0,
-            Arc::new(Thunk::value(
-                Value::Int(span.end.column as i64),
-                span.clone(),
-            )),
-        ),
-    );
-    end_dict.insert(
-        HashableValue::Str("offset".into()),
-        ctx.alloc_thunk(
-            0,
-            Arc::new(Thunk::value(
-                Value::Int(span.end.offset as i64),
-                span.clone(),
-            )),
-        ),
+        Arc::new(Thunk::value(Value::Int(span.end_col as i64), span.clone())),
     );
 
     dict.insert(
         HashableValue::Str("start".into()),
-        ctx.alloc_thunk(
-            0,
-            Arc::new(Thunk::value(Value::Dict(start_dict), span.clone())),
-        ),
+        Arc::new(Thunk::value(Value::Dict(start_dict), span.clone())),
     );
     dict.insert(
         HashableValue::Str("end".into()),
-        ctx.alloc_thunk(
-            0,
-            Arc::new(Thunk::value(Value::Dict(end_dict), span.clone())),
-        ),
+        Arc::new(Thunk::value(Value::Dict(end_dict), span.clone())),
     );
 
     Ok(ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(dict), span))))
 }
 
-/// Convert a Vec<ThunkId> to a dict-based list (auto-indexed dict with integer keys).
+/// Convert an iterator of Arc<Thunk> to a dict-based list (auto-indexed dict with integer keys).
 pub(crate) fn list_to_thunk_id(
-    items: impl ExactSizeIterator<Item = ThunkId>,
+    items: impl ExactSizeIterator<Item = Arc<Thunk>>,
     span: Span,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> EvalResult<ThunkId> {
-    let mut dict = IndexMap::with_capacity(items.len());
+    let mut dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::with_capacity(items.len());
     for (i, item) in items.enumerate() {
         dict.insert(HashableValue::Int(i as i64), item);
     }
-    Ok(ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(dict), span))))
-}
-
-pub(crate) fn annotation_to_thunk_id(
-    ann: &Annotation,
-    span: Span,
-    ctx: &Arc<crate::eval::EvalContext>,
-) -> EvalResult<ThunkId> {
-    let mut dict = IndexMap::new();
-
-    dict.insert(
-        HashableValue::Str("type".into()),
-        ctx.alloc_thunk(
-            0,
-            Arc::new(Thunk::value(string_val("annotation"), span.clone())),
-        ),
-    );
-
-    match ann {
-        Annotation::Simple(name) => {
-            dict.insert(
-                HashableValue::Str("kind".into()),
-                ctx.alloc_thunk(
-                    0,
-                    Arc::new(Thunk::value(string_val("simple"), span.clone())),
-                ),
-            );
-            dict.insert(
-                HashableValue::Str("value".into()),
-                ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(name), span.clone()))),
-            );
-        }
-        Annotation::Quote => {
-            // Quoting sentinel — serialised as kind:"quote" to avoid re-coupling the wire
-            // format to the prelude's "Expr" type name. No value field; the kind alone
-            // identifies this as the quoting annotation.
-            dict.insert(
-                HashableValue::Str("kind".into()),
-                ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val("quote"), span.clone()))),
-            );
-        }
-        Annotation::Annotated(outer, inner) => {
-            dict.insert(
-                HashableValue::Str("kind".into()),
-                ctx.alloc_thunk(
-                    0,
-                    Arc::new(Thunk::value(string_val("annotated"), span.clone())),
-                ),
-            );
-            // Serialize outer as "name" string for wire-format compat when outer is Simple.
-            // For non-Simple outers (e.g., PropertyDict@Next), serialize as "outer" dict.
-            match outer.as_ref() {
-                Annotation::Simple(name) => {
-                    dict.insert(
-                        HashableValue::Str("name".into()),
-                        ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(name), span.clone()))),
-                    );
-                }
-                _ => {
-                    dict.insert(
-                        HashableValue::Str("outer".into()),
-                        annotation_to_thunk_id(outer, span.clone(), ctx)?,
-                    );
-                }
-            }
-            dict.insert(
-                HashableValue::Str("inner".into()),
-                annotation_to_thunk_id(inner, span.clone(), ctx)?,
-            );
-        }
-        Annotation::PropertyDict(entries) => {
-            dict.insert(
-                HashableValue::Str("kind".into()),
-                ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val("dict"), span.clone()))),
-            );
-
-            // Convert entries to thunk IDs - these are annotation entries (simpler than regular entries)
-            let entry_ids: Vec<_> = entries
-                .iter()
-                .map(|e| {
-                    let mut entry_dict = IndexMap::new();
-                    entry_dict.insert(
-                        HashableValue::Str("type".into()),
-                        ctx.alloc_thunk(
-                            0,
-                            Arc::new(Thunk::value(string_val("entry"), e.span.clone())),
-                        ),
-                    );
-
-                    // For annotation dicts, keys are always string literals (bare words).
-                    // SurfaceEntry.key is Arc<SurfaceNode>; SurfaceEntry.value is Arc<SurfaceNode>.
-                    let key_id = match &e.node.key {
-                        Some(k) => match &k.expr {
-                            crate::ast::SurfaceExpression::StringLiteral { content: s, .. } => ctx
-                                .alloc_thunk(
-                                    0,
-                                    Arc::new(Thunk::value(string_val(s), k.span.clone())),
-                                ),
-                            _ => ctx.alloc_thunk(
-                                0,
-                                Arc::new(Thunk::value(
-                                    Value::Dict(IndexMap::new()),
-                                    k.span.clone(),
-                                )),
-                            ),
-                        },
-                        None => ctx.alloc_thunk(
-                            0,
-                            Arc::new(Thunk::value(Value::Dict(IndexMap::new()), e.span.clone())),
-                        ),
-                    };
-
-                    entry_dict.insert(HashableValue::Str("key".into()), key_id);
-
-                    // Annotation entry values are strings/ints for simple cases,
-                    // or full AST dicts for compound values like [a: Numeric] or Seq@Int.
-                    let value_id = match &e.node.value.expr {
-                        crate::ast::SurfaceExpression::StringLiteral { content: s, .. } => ctx
-                            .alloc_thunk(
-                                0,
-                                Arc::new(Thunk::value(string_val(s), e.node.value.span.clone())),
-                            ),
-                        crate::ast::SurfaceExpression::Int(n) => ctx.alloc_thunk(
-                            0,
-                            Arc::new(Thunk::value(Value::Int(*n), e.node.value.span.clone())),
-                        ),
-                        crate::ast::SurfaceExpression::U64(n) => ctx.alloc_thunk(
-                            0,
-                            Arc::new(Thunk::value(Value::U64(*n), e.node.value.span.clone())),
-                        ),
-                        _ => {
-                            surface_node_to_thunk_id(&e.node.value, &AstToDictOpts::default(), ctx)?
-                        }
-                    };
-
-                    entry_dict.insert(HashableValue::Str("value".into()), value_id);
-                    Ok(ctx.alloc_thunk(
-                        0,
-                        Arc::new(Thunk::value(Value::Dict(entry_dict), e.span.clone())),
-                    ))
-                })
-                .collect::<EvalResult<Vec<_>>>()?;
-
-            dict.insert(
-                HashableValue::Str("entries".into()),
-                list_to_thunk_id(entry_ids.into_iter(), span.clone(), ctx)?,
-            );
-        }
-    }
-
     Ok(ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(dict), span))))
 }
 
@@ -2188,65 +1824,69 @@ fn surface_document_to_thunk_id(
     opts: &AstToDictOpts,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> EvalResult<ThunkId> {
-    let mut dict = IndexMap::new();
+    let mut dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
 
     dict.insert(
         HashableValue::Str("type".into()),
-        ctx.alloc_thunk(
-            0,
-            Arc::new(Thunk::value(string_val("document"), span.clone())),
-        ),
+        Arc::new(Thunk::value(string_val("document"), span.clone())),
     );
 
     // expressions: list of expression/declaration dicts (all SurfaceItems, both Expr and Decl)
-    let item_ids: Vec<_> = doc
+    let item_arcs: Vec<Arc<Thunk>> = doc
         .items
         .iter()
         .map(|item| match item {
-            SurfaceItem::Expr(node) => surface_node_to_thunk_id(node, opts, ctx),
-            SurfaceItem::Decl(decl) => {
-                surface_decl_to_thunk_id(&decl.node, decl.span.clone(), opts, ctx)
+            SurfaceItem::Expr(node) => {
+                Ok(ctx.get_thunk(surface_node_to_thunk_id(node, opts, ctx)?))
             }
+            SurfaceItem::Decl(decl) => Ok(ctx.get_thunk(surface_decl_to_thunk_id(
+                &decl.node,
+                decl.span.clone(),
+                opts,
+                ctx,
+            )?)),
         })
         .collect::<EvalResult<Vec<_>>>()?;
 
     dict.insert(
         HashableValue::Str("expressions".into()),
-        list_to_thunk_id(item_ids.into_iter(), span.clone(), ctx)?,
+        ctx.get_thunk(list_to_thunk_id(item_arcs.into_iter(), span.clone(), ctx)?),
     );
 
     // header: dict of header entries (as SurfaceNode values)
-    let header_thunks: IndexMap<HashableValue, ThunkId> = doc
+    let header_thunks: IndexMap<HashableValue, Arc<Thunk>> = doc
         .header
         .iter()
         .map(|(k, v)| {
             Ok((
                 HashableValue::Str(k.clone().into()),
-                surface_node_to_thunk_id(v, opts, ctx)?,
+                ctx.get_thunk(surface_node_to_thunk_id(v, opts, ctx)?),
             ))
         })
         .collect::<EvalResult<_>>()?;
     dict.insert(
         HashableValue::Str("header".into()),
-        ctx.alloc_thunk(
-            0,
-            Arc::new(Thunk::value(Value::Dict(header_thunks), span.clone())),
-        ),
+        Arc::new(Thunk::value(Value::Dict(header_thunks), span.clone())),
     );
 
     // leading-comments: absent when None or empty
     if let Some(comment_maps) = &opts.comments {
-        if let Some(comments) = comment_maps.leading_comments.get(&span.start.offset) {
+        if let Some(comments) = comment_maps
+            .leading_comments
+            .get(&crate::parser::span_key(span.start_line, span.start_col))
+        {
             if !comments.is_empty() {
-                let comment_ids: Vec<ThunkId> = comments
+                let comment_arcs: Vec<Arc<Thunk>> = comments
                     .iter()
-                    .map(|c| {
-                        ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(c), span.clone())))
-                    })
+                    .map(|c| Arc::new(Thunk::value(string_val(c), span.clone())))
                     .collect();
                 dict.insert(
                     HashableValue::Str("leading-comments".into()),
-                    list_to_thunk_id(comment_ids.into_iter(), span.clone(), ctx)?,
+                    ctx.get_thunk(list_to_thunk_id(
+                        comment_arcs.into_iter(),
+                        span.clone(),
+                        ctx,
+                    )?),
                 );
             }
         }
@@ -2254,7 +1894,7 @@ fn surface_document_to_thunk_id(
 
     dict.insert(
         HashableValue::Str("span".into()),
-        span_to_thunk_id(span.clone(), ctx)?,
+        ctx.get_thunk(span_to_thunk_id(span.clone(), ctx)?),
     );
 
     Ok(ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(dict), span))))
@@ -2279,20 +1919,22 @@ fn surface_decl_to_thunk_id(
         SurfaceDeclaration::TypeAlias { params, body } => {
             variant_tag = "TypeAlias";
             if !params.is_empty() {
-                let params_thunk_ids: Vec<ThunkId> = params
+                let params_arcs: Vec<Arc<Thunk>> = params
                     .iter()
-                    .map(|(name, _ann)| {
-                        ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(name), span.clone())))
-                    })
+                    .map(|(name, _ann)| Arc::new(Thunk::value(string_val(name), span.clone())))
                     .collect();
                 dict.insert(
                     HashableValue::Str("params".into()),
-                    list_to_thunk_id(params_thunk_ids.into_iter(), span.clone(), ctx)?,
+                    ctx.get_thunk(list_to_thunk_id(
+                        params_arcs.into_iter(),
+                        span.clone(),
+                        ctx,
+                    )?),
                 );
             }
             dict.insert(
                 HashableValue::Str("expr".into()),
-                surface_node_to_thunk_id(body, opts, ctx)?,
+                ctx.get_thunk(surface_node_to_thunk_id(body, opts, ctx)?),
             );
         }
 
@@ -2309,60 +1951,52 @@ fn surface_decl_to_thunk_id(
             variant_tag = "ClassDecl";
             dict.insert(
                 HashableValue::Str("name".into()),
-                ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(name), span.clone()))),
+                Arc::new(Thunk::value(string_val(name), span.clone())),
             );
             // params: integer-keyed list of param name strings
-            let params_dict: IndexMap<HashableValue, ThunkId> = params
+            let params_dict: IndexMap<HashableValue, Arc<Thunk>> = params
                 .iter()
                 .enumerate()
                 .map(|(i, p)| {
                     (
                         HashableValue::Int(i as i64),
-                        ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(p), span.clone()))),
+                        Arc::new(Thunk::value(string_val(p), span.clone())),
                     )
                 })
                 .collect();
             dict.insert(
                 HashableValue::Str("params".into()),
-                ctx.alloc_thunk(
-                    0,
-                    Arc::new(Thunk::value(Value::Dict(params_dict), span.clone())),
-                ),
+                Arc::new(Thunk::value(Value::Dict(params_dict), span.clone())),
             );
             // superclasses: Seq of [class-name, param1, param2, ...] seqs
             // Only emitted when non-empty (e.g. [class Ord a where Eq a] → [[Eq a]])
             if !superclasses.is_empty() {
-                let pair_thunk_ids: Vec<ThunkId> = superclasses
+                let pair_arcs: Vec<Arc<Thunk>> = superclasses
                     .iter()
                     .map(|(class_name, var_names)| {
-                        let mut entries: Vec<(HashableValue, ThunkId)> = vec![(
+                        let mut entries: Vec<(HashableValue, Arc<Thunk>)> = vec![(
                             HashableValue::Int(0),
-                            ctx.alloc_thunk(
-                                0,
-                                Arc::new(Thunk::value(string_val(class_name), span.clone())),
-                            ),
+                            Arc::new(Thunk::value(string_val(class_name), span.clone())),
                         )];
                         for (i, var_name) in var_names.iter().enumerate() {
                             entries.push((
                                 HashableValue::Int((i + 1) as i64),
-                                ctx.alloc_thunk(
-                                    0,
-                                    Arc::new(Thunk::value(string_val(var_name), span.clone())),
-                                ),
+                                Arc::new(Thunk::value(string_val(var_name), span.clone())),
                             ));
                         }
-                        let inner: IndexMap<HashableValue, ThunkId> = entries.into_iter().collect();
-                        ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(inner), span.clone())))
+                        let inner: IndexMap<HashableValue, Arc<Thunk>> =
+                            entries.into_iter().collect();
+                        Arc::new(Thunk::value(Value::Dict(inner), span.clone()))
                     })
                     .collect();
                 dict.insert(
                     HashableValue::Str("superclasses".into()),
-                    list_to_thunk_id(pair_thunk_ids.into_iter(), span.clone(), ctx)?,
+                    ctx.get_thunk(list_to_thunk_id(pair_arcs.into_iter(), span.clone(), ctx)?),
                 );
             }
             // methods: string-keyed dict of method expression dicts
             // Keys are SurfaceExpression::StringLiteral bare words; values are the full entry value nodes.
-            let methods_dict: IndexMap<HashableValue, ThunkId> = methods
+            let methods_dict: IndexMap<HashableValue, Arc<Thunk>> = methods
                 .iter()
                 .filter_map(|method| {
                     method.node.key.as_ref().and_then(|key| {
@@ -2371,8 +2005,10 @@ fn surface_decl_to_thunk_id(
                         } = &key.expr
                         {
                             Some((
-                                HashableValue::Str(Rc::from(key_str.as_str())),
-                                surface_node_to_thunk_id(&method.node.value, opts, ctx).ok()?,
+                                HashableValue::Str(Arc::from(key_str.as_str())),
+                                ctx.get_thunk(
+                                    surface_node_to_thunk_id(&method.node.value, opts, ctx).ok()?,
+                                ),
                             ))
                         } else {
                             None
@@ -2382,43 +2018,37 @@ fn surface_decl_to_thunk_id(
                 .collect();
             dict.insert(
                 HashableValue::Str("methods".into()),
-                ctx.alloc_thunk(
-                    0,
-                    Arc::new(Thunk::value(Value::Dict(methods_dict), span.clone())),
-                ),
+                Arc::new(Thunk::value(Value::Dict(methods_dict), span.clone())),
             );
             // determines: optional integer-keyed list of expression dicts
             if !determines.is_empty() {
-                let determines_dict: IndexMap<HashableValue, ThunkId> = determines
+                let determines_dict: IndexMap<HashableValue, Arc<Thunk>> = determines
                     .iter()
                     .enumerate()
                     .filter_map(|(i, fd_node)| {
                         Some((
                             HashableValue::Int(i as i64),
-                            surface_node_to_thunk_id(fd_node, opts, ctx).ok()?,
+                            ctx.get_thunk(surface_node_to_thunk_id(fd_node, opts, ctx).ok()?),
                         ))
                     })
                     .collect();
                 dict.insert(
                     HashableValue::Str("determines".into()),
-                    ctx.alloc_thunk(
-                        0,
-                        Arc::new(Thunk::value(Value::Dict(determines_dict), span.clone())),
-                    ),
+                    Arc::new(Thunk::value(Value::Dict(determines_dict), span.clone())),
                 );
             }
             // resolver: optional expression dict
             if let Some(resolver_node) = resolver {
                 dict.insert(
                     HashableValue::Str("resolver".into()),
-                    surface_node_to_thunk_id(resolver_node, opts, ctx)?,
+                    ctx.get_thunk(surface_node_to_thunk_id(resolver_node, opts, ctx)?),
                 );
             }
             // injective: optional bool (only emitted when true)
             if *resolver_injective {
                 dict.insert(
                     HashableValue::Str("injective".into()),
-                    ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Int(1), span.clone()))),
+                    Arc::new(Thunk::value(Value::Int(1), span.clone())),
                 );
             }
         }
@@ -2427,23 +2057,20 @@ fn surface_decl_to_thunk_id(
             variant_tag = "InstanceDecl";
             dict.insert(
                 HashableValue::Str("class".into()),
-                ctx.alloc_thunk(
-                    0,
-                    Arc::new(Thunk::value(string_val(class_name), span.clone())),
-                ),
+                Arc::new(Thunk::value(string_val(class_name), span.clone())),
             );
             // arms: integer-keyed list of {pattern, methods} dicts
-            let arms_dict: IndexMap<HashableValue, ThunkId> = arms
+            let arms_dict: IndexMap<HashableValue, Arc<Thunk>> = arms
                 .iter()
                 .enumerate()
                 .filter_map(|(i, (pattern_node, methods))| {
-                    let mut arm_dict = IndexMap::new();
+                    let mut arm_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
                     arm_dict.insert(
                         HashableValue::Str("pattern".into()),
-                        surface_node_to_thunk_id(pattern_node, opts, ctx).ok()?,
+                        ctx.get_thunk(surface_node_to_thunk_id(pattern_node, opts, ctx).ok()?),
                     );
                     // methods: string-keyed dict matching ClassDecl.methods format
-                    let methods_dict: IndexMap<HashableValue, ThunkId> = methods
+                    let methods_dict: IndexMap<HashableValue, Arc<Thunk>> = methods
                         .iter()
                         .filter_map(|method| {
                             method.node.key.as_ref().and_then(|key| {
@@ -2452,9 +2079,11 @@ fn surface_decl_to_thunk_id(
                                 } = &key.expr
                                 {
                                     Some((
-                                        HashableValue::Str(Rc::from(key_str.as_str())),
-                                        surface_node_to_thunk_id(&method.node.value, opts, ctx)
-                                            .ok()?,
+                                        HashableValue::Str(Arc::from(key_str.as_str())),
+                                        ctx.get_thunk(
+                                            surface_node_to_thunk_id(&method.node.value, opts, ctx)
+                                                .ok()?,
+                                        ),
                                     ))
                                 } else {
                                     None
@@ -2464,26 +2093,17 @@ fn surface_decl_to_thunk_id(
                         .collect();
                     arm_dict.insert(
                         HashableValue::Str("methods".into()),
-                        ctx.alloc_thunk(
-                            0,
-                            Arc::new(Thunk::value(Value::Dict(methods_dict), span.clone())),
-                        ),
+                        Arc::new(Thunk::value(Value::Dict(methods_dict), span.clone())),
                     );
                     Some((
                         HashableValue::Int(i as i64),
-                        ctx.alloc_thunk(
-                            0,
-                            Arc::new(Thunk::value(Value::Dict(arm_dict), span.clone())),
-                        ),
+                        Arc::new(Thunk::value(Value::Dict(arm_dict), span.clone())),
                     ))
                 })
                 .collect();
             dict.insert(
                 HashableValue::Str("arms".into()),
-                ctx.alloc_thunk(
-                    0,
-                    Arc::new(Thunk::value(Value::Dict(arms_dict), span.clone())),
-                ),
+                Arc::new(Thunk::value(Value::Dict(arms_dict), span.clone())),
             );
         }
 
@@ -2495,48 +2115,47 @@ fn surface_decl_to_thunk_id(
             variant_tag = "SyntaxClass";
             dict.insert(
                 HashableValue::Str("name".into()),
-                ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(name), span.clone()))),
+                Arc::new(Thunk::value(string_val(name), span.clone())),
             );
             dict.insert(
                 HashableValue::Str("pattern".into()),
-                surface_node_to_thunk_id(pattern, opts, ctx)?,
+                ctx.get_thunk(surface_node_to_thunk_id(pattern, opts, ctx)?),
             );
             if let Some(msg) = message {
                 dict.insert(
                     HashableValue::Str("message".into()),
-                    ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val(msg), span.clone()))),
+                    Arc::new(Thunk::value(string_val(msg), span.clone())),
                 );
             }
         }
 
         SurfaceDeclaration::Splice(forms) => {
             variant_tag = "Splice";
-            let mut form_list = Vec::new();
-            for form in forms {
-                form_list.push(surface_node_to_thunk_id(form, opts, ctx)?);
-            }
+            let form_arcs: Vec<Arc<Thunk>> = forms
+                .iter()
+                .map(|form| -> EvalResult<Arc<Thunk>> {
+                    Ok(ctx.get_thunk(surface_node_to_thunk_id(form, opts, ctx)?))
+                })
+                .collect::<EvalResult<Vec<_>>>()?;
             dict.insert(
                 HashableValue::Str("forms".into()),
-                ctx.alloc_thunk(
-                    0,
-                    Arc::new(Thunk::value(
-                        Value::Dict(
-                            form_list
-                                .into_iter()
-                                .enumerate()
-                                .map(|(i, v)| (HashableValue::Int(i as i64), v))
-                                .collect(),
-                        ),
-                        span.clone(),
-                    )),
-                ),
+                Arc::new(Thunk::value(
+                    Value::Dict(
+                        form_arcs
+                            .into_iter()
+                            .enumerate()
+                            .map(|(i, v)| (HashableValue::Int(i as i64), v))
+                            .collect(),
+                    ),
+                    span.clone(),
+                )),
             );
         }
     }
 
     dict.insert(
         HashableValue::Str("span".into()),
-        span_to_thunk_id(span.clone(), ctx)?,
+        ctx.get_thunk(span_to_thunk_id(span.clone(), ctx)?),
     );
     let payload_id = ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(dict), span.clone())));
     let (vt_tycon, vt_ctor) = variant_tag.split_once('.').unwrap_or(("", variant_tag));
@@ -2577,14 +2196,11 @@ fn override_bare_in_literal_variant(
         if tycon.as_ref() == "Expr" && ctor.as_ref() == "Literal" {
             let payload_thunk = ctx.get_thunk(payload_id);
             if let Some(Value::Dict(mut dict)) = payload_thunk.try_get_materialized() {
-                let new_bare_id = ctx.alloc_thunk(
-                    0,
-                    Arc::new(Thunk::value(
-                        Value::Int(if bare { 1 } else { 0 }),
-                        span.clone(),
-                    )),
-                );
-                dict.insert(HashableValue::Str("bare".into()), new_bare_id);
+                let new_bare_thunk = Arc::new(Thunk::value(
+                    Value::Int(if bare { 1 } else { 0 }),
+                    span.clone(),
+                ));
+                dict.insert(HashableValue::Str("bare".into()), new_bare_thunk);
                 let new_payload_id =
                     ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(dict), span.clone())));
                 return Value::Variant {
@@ -2609,7 +2225,7 @@ fn alloc_entry_list_with_opts(
     opts: &AstToDictOpts,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> EvalResult<ThunkId> {
-    let mut dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+    let mut dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
     for (i, entry) in entries.iter().enumerate() {
         // key: Some(node) → Expr.* variant with corrected bare flag, None → null
         let key_val = match &entry.node.key {
@@ -2621,9 +2237,13 @@ fn alloc_entry_list_with_opts(
                         Some(source) => {
                             // Span starts at the opening quote for quoted strings,
                             // or at the first identifier char for bare words.
-                            // Check the character AT the span start.
-                            let offset = key_node.span.start.offset as usize;
-                            source.as_bytes().get(offset) != Some(&b'"')
+                            // Check the character AT the span start using line/col.
+                            let first_char = get_char_at(
+                                source,
+                                key_node.span.start_line,
+                                key_node.span.start_col,
+                            );
+                            first_char != Some('"')
                         }
                         None => false,
                     };
@@ -2633,56 +2253,53 @@ fn alloc_entry_list_with_opts(
             }
             None => Value::Dict(IndexMap::new()),
         };
-        let key_thunk = ctx.alloc_thunk(0, Arc::new(Thunk::value(key_val, entry.span.clone())));
+        let key_thunk = Arc::new(Thunk::value(key_val, entry.span.clone()));
 
         // value: Expr.* variant
         let val_val = SurfaceExpression::to_expr_variant(&entry.node.value, ctx);
-        let val_thunk = ctx.alloc_thunk(0, Arc::new(Thunk::value(val_val, entry.span.clone())));
+        let val_thunk = Arc::new(Thunk::value(val_val, entry.span.clone()));
 
         // Build payload dict for Expr.Entry
-        let mut payload: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+        let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         payload.insert(HashableValue::Str("key".into()), key_thunk);
         payload.insert(HashableValue::Str("value".into()), val_thunk);
 
         // Add comment fields when comment maps are provided
         if let Some(ref comment_maps) = opts.comments {
-            let offset = entry.span.start.offset;
+            let key = crate::parser::span_key(entry.span.start_line, entry.span.start_col);
 
             // leading-comments: list of comment strings before this entry
-            if let Some(comments) = comment_maps.leading_comments.get(&offset) {
+            if let Some(comments) = comment_maps.leading_comments.get(&key) {
                 if !comments.is_empty() {
-                    let comment_ids: Vec<ThunkId> = comments
+                    let comment_arcs: Vec<Arc<Thunk>> = comments
                         .iter()
-                        .map(|c| {
-                            ctx.alloc_thunk(
-                                0,
-                                Arc::new(Thunk::value(string_val(c), entry.span.clone())),
-                            )
-                        })
+                        .map(|c| Arc::new(Thunk::value(string_val(c), entry.span.clone())))
                         .collect();
-                    let comments_tid =
-                        list_to_thunk_id(comment_ids.into_iter(), entry.span.clone(), ctx)?;
-                    payload.insert(HashableValue::Str("leading-comments".into()), comments_tid);
+                    let comments_thunk = ctx.get_thunk(list_to_thunk_id(
+                        comment_arcs.into_iter(),
+                        entry.span.clone(),
+                        ctx,
+                    )?);
+                    payload.insert(
+                        HashableValue::Str("leading-comments".into()),
+                        comments_thunk,
+                    );
                 }
             }
 
             // blank-before: true when there is a blank line before this entry
-            let is_blank = comment_maps.blank_before.get(&offset) == Some(&true);
-            let blank_tid = ctx.alloc_thunk(
-                0,
-                Arc::new(Thunk::value(
-                    Value::Int(if is_blank { 1 } else { 0 }),
-                    entry.span.clone(),
-                )),
-            );
-            payload.insert(HashableValue::Str("blank-before".into()), blank_tid);
+            let is_blank = comment_maps.blank_before.get(&key) == Some(&true);
+            let blank_thunk = Arc::new(Thunk::value(
+                Value::Int(if is_blank { 1 } else { 0 }),
+                entry.span.clone(),
+            ));
+            payload.insert(HashableValue::Str("blank-before".into()), blank_thunk);
         }
 
         // When no comment maps, always include blank-before: false as default
         if opts.comments.is_none() {
-            let blank_tid =
-                ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Int(0), entry.span.clone())));
-            payload.insert(HashableValue::Str("blank-before".into()), blank_tid);
+            let blank_thunk = Arc::new(Thunk::value(Value::Int(0), entry.span.clone()));
+            payload.insert(HashableValue::Str("blank-before".into()), blank_thunk);
         }
 
         let payload_id = ctx.alloc_thunk(
@@ -2695,8 +2312,7 @@ fn alloc_entry_list_with_opts(
             ctor: Arc::from("Entry"),
             payload: Some(payload_id),
         };
-        let entry_thunk =
-            ctx.alloc_thunk(0, Arc::new(Thunk::value(entry_variant, entry.span.clone())));
+        let entry_thunk = Arc::new(Thunk::value(entry_variant, entry.span.clone()));
         dict.insert(HashableValue::Int(i as i64), entry_thunk);
     }
     Ok(ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(dict), rust_span!()))))
@@ -2715,9 +2331,9 @@ fn surface_node_to_thunk_id(
     // For Dict nodes, build the Expr.Dict variant with opts-aware entry conversion
     // so that bare flags and comment fields are correctly populated.
     let val = if let SurfaceExpression::Dict(entries) = &node.expr {
-        let entries_tid = alloc_entry_list_with_opts(entries, opts, ctx)?;
-        let mut payload: IndexMap<HashableValue, ThunkId> = IndexMap::new();
-        payload.insert(HashableValue::Str("entries".into()), entries_tid);
+        let entries_thunk = ctx.get_thunk(alloc_entry_list_with_opts(entries, opts, ctx)?);
+        let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+        payload.insert(HashableValue::Str("entries".into()), entries_thunk);
         let payload_id = ctx.alloc_thunk(
             0,
             Arc::new(Thunk::value(Value::Dict(payload), node.span.clone())),
@@ -2751,7 +2367,7 @@ mod tests {
     fn peel_variant(
         val: Value,
         ctx: &Arc<crate::eval::EvalContext>,
-    ) -> (String, IndexMap<HashableValue, ThunkId>) {
+    ) -> (String, IndexMap<HashableValue, Arc<Thunk>>) {
         match val {
             Value::Variant {
                 tycon,
@@ -2768,11 +2384,8 @@ mod tests {
         }
     }
 
-    fn test_file(src: &str) -> Arc<crate::ast::SourceFile> {
-        Arc::new(crate::ast::SourceFile {
-            path: Arc::from(file!()),
-            content: Arc::from(src),
-        })
+    fn test_file(_src: &str) -> Arc<str> {
+        Arc::from(file!())
     }
 
     #[test]
@@ -2787,14 +2400,13 @@ mod tests {
 
         match thunk.try_get_materialized() {
             Some(Value::Dict(map)) => {
-                let type_id = map.get(&HashableValue::Str("type".into())).unwrap();
-                let type_thunk = ctx.get_thunk(*type_id);
+                let type_thunk = map.get(&HashableValue::Str("type".into())).unwrap().clone();
                 assert_eq!(type_thunk.try_get_materialized(), Some(string_val("file")));
 
-                let version_id = map
+                let version_thunk = map
                     .get(&HashableValue::Str("schema-version".into()))
-                    .unwrap();
-                let version_thunk = ctx.get_thunk(*version_id);
+                    .unwrap()
+                    .clone();
                 assert_eq!(version_thunk.try_get_materialized(), Some(Value::Int(1)));
             }
             _ => panic!("expected Dict"),
@@ -2819,41 +2431,39 @@ mod tests {
         // Navigate to the first document's first expression (the dict)
         match thunk.try_get_materialized() {
             Some(Value::Dict(file_dict)) => {
-                let docs_id = file_dict
+                let docs_thunk = file_dict
                     .get(&HashableValue::Str("documents".into()))
-                    .unwrap();
-                let docs_thunk = ctx.get_thunk(*docs_id);
+                    .unwrap()
+                    .clone();
                 match docs_thunk.try_get_materialized() {
                     Some(Value::Dict(docs_list)) => {
-                        let doc_id = docs_list.get(&HashableValue::Int(0)).unwrap();
-                        let doc_thunk = ctx.get_thunk(*doc_id);
+                        let doc_thunk = docs_list.get(&HashableValue::Int(0)).unwrap().clone();
                         match doc_thunk.try_get_materialized() {
                             Some(Value::Dict(doc_dict)) => {
-                                let exprs_id = doc_dict
+                                let exprs_thunk = doc_dict
                                     .get(&HashableValue::Str("expressions".into()))
-                                    .unwrap();
-                                let exprs_thunk = ctx.get_thunk(*exprs_id);
+                                    .unwrap()
+                                    .clone();
                                 match exprs_thunk.try_get_materialized() {
                                     Some(Value::Dict(exprs_list)) => {
-                                        let expr_id =
-                                            exprs_list.get(&HashableValue::Int(0)).unwrap();
-                                        let expr_thunk = ctx.get_thunk(*expr_id);
+                                        let expr_thunk =
+                                            exprs_list.get(&HashableValue::Int(0)).unwrap().clone();
                                         let expr_val = expr_thunk
                                             .try_get_materialized()
                                             .expect("expr not materialized");
                                         let (_tag, dict_node) = peel_variant(expr_val, &ctx);
                                         {
                                             // Get the entries list
-                                            let entries_id = dict_node
+                                            let entries_thunk = dict_node
                                                 .get(&HashableValue::Str("entries".into()))
-                                                .unwrap();
-                                            let entries_thunk = ctx.get_thunk(*entries_id);
+                                                .unwrap()
+                                                .clone();
                                             match entries_thunk.try_get_materialized() {
                                                 Some(Value::Dict(entries_list)) => {
-                                                    let entry_id = entries_list
+                                                    let entry_thunk = entries_list
                                                         .get(&HashableValue::Int(0))
-                                                        .unwrap();
-                                                    let entry_thunk = ctx.get_thunk(*entry_id);
+                                                        .unwrap()
+                                                        .clone();
                                                     let entry_val = entry_thunk
                                                         .try_get_materialized()
                                                         .expect("entry not materialized");
@@ -2861,20 +2471,20 @@ mod tests {
                                                         peel_variant(entry_val, &ctx);
                                                     {
                                                         // Get the key expression
-                                                        let key_id = entry_dict
+                                                        let key_thunk = entry_dict
                                                             .get(&HashableValue::Str("key".into()))
-                                                            .unwrap();
-                                                        let key_thunk = ctx.get_thunk(*key_id);
+                                                            .unwrap()
+                                                            .clone();
                                                         let key_val = key_thunk
                                                             .try_get_materialized()
                                                             .expect("key not materialized");
                                                         let (_key_tag, key_dict) =
                                                             peel_variant(key_val, &ctx);
                                                         // Check bare: true
-                                                        let bare_id = key_dict
+                                                        let bare_thunk = key_dict
                                                             .get(&HashableValue::Str("bare".into()))
-                                                            .expect("bare field missing");
-                                                        let bare_thunk = ctx.get_thunk(*bare_id);
+                                                            .expect("bare field missing")
+                                                            .clone();
                                                         assert_eq!(
                                                             bare_thunk
                                                                 .try_get_materialized(),
@@ -2918,59 +2528,57 @@ mod tests {
         // Navigate to the key and check bare: false
         match thunk.try_get_materialized() {
             Some(Value::Dict(file_dict)) => {
-                let docs_id = file_dict
+                let docs_thunk = file_dict
                     .get(&HashableValue::Str("documents".into()))
-                    .unwrap();
-                let docs_thunk = ctx.get_thunk(*docs_id);
+                    .unwrap()
+                    .clone();
                 match docs_thunk.try_get_materialized() {
                     Some(Value::Dict(docs_list)) => {
-                        let doc_id = docs_list.get(&HashableValue::Int(0)).unwrap();
-                        let doc_thunk = ctx.get_thunk(*doc_id);
+                        let doc_thunk = docs_list.get(&HashableValue::Int(0)).unwrap().clone();
                         match doc_thunk.try_get_materialized() {
                             Some(Value::Dict(doc_dict)) => {
-                                let exprs_id = doc_dict
+                                let exprs_thunk = doc_dict
                                     .get(&HashableValue::Str("expressions".into()))
-                                    .unwrap();
-                                let exprs_thunk = ctx.get_thunk(*exprs_id);
+                                    .unwrap()
+                                    .clone();
                                 match exprs_thunk.try_get_materialized() {
                                     Some(Value::Dict(exprs_list)) => {
-                                        let expr_id =
-                                            exprs_list.get(&HashableValue::Int(0)).unwrap();
-                                        let expr_thunk = ctx.get_thunk(*expr_id);
+                                        let expr_thunk =
+                                            exprs_list.get(&HashableValue::Int(0)).unwrap().clone();
                                         let expr_val = expr_thunk
                                             .try_get_materialized()
                                             .expect("expr not materialized");
                                         let (_tag, dict_node) = peel_variant(expr_val, &ctx);
                                         {
-                                            let entries_id = dict_node
+                                            let entries_thunk = dict_node
                                                 .get(&HashableValue::Str("entries".into()))
-                                                .unwrap();
-                                            let entries_thunk = ctx.get_thunk(*entries_id);
+                                                .unwrap()
+                                                .clone();
                                             match entries_thunk.try_get_materialized() {
                                                 Some(Value::Dict(entries_list)) => {
-                                                    let entry_id = entries_list
+                                                    let entry_thunk = entries_list
                                                         .get(&HashableValue::Int(0))
-                                                        .unwrap();
-                                                    let entry_thunk = ctx.get_thunk(*entry_id);
+                                                        .unwrap()
+                                                        .clone();
                                                     let entry_val = entry_thunk
                                                         .try_get_materialized()
                                                         .expect("entry not materialized");
                                                     let (_entry_tag, entry_dict) =
                                                         peel_variant(entry_val, &ctx);
                                                     {
-                                                        let key_id = entry_dict
+                                                        let key_thunk = entry_dict
                                                             .get(&HashableValue::Str("key".into()))
-                                                            .unwrap();
-                                                        let key_thunk = ctx.get_thunk(*key_id);
+                                                            .unwrap()
+                                                            .clone();
                                                         let key_val = key_thunk
                                                             .try_get_materialized()
                                                             .expect("key not materialized");
                                                         let (_key_tag, key_dict) =
                                                             peel_variant(key_val, &ctx);
-                                                        let bare_id = key_dict
+                                                        let bare_thunk = key_dict
                                                             .get(&HashableValue::Str("bare".into()))
-                                                            .expect("bare field missing");
-                                                        let bare_thunk = ctx.get_thunk(*bare_id);
+                                                            .expect("bare field missing")
+                                                            .clone();
                                                         assert_eq!(
                                                             bare_thunk
                                                                 .try_get_materialized(),
@@ -3019,40 +2627,38 @@ mod tests {
         // Navigate to the entry and check for leading-comments
         match thunk.try_get_materialized() {
             Some(Value::Dict(file_dict)) => {
-                let docs_id = file_dict
+                let docs_thunk = file_dict
                     .get(&HashableValue::Str("documents".into()))
-                    .unwrap();
-                let docs_thunk = ctx.get_thunk(*docs_id);
+                    .unwrap()
+                    .clone();
                 match docs_thunk.try_get_materialized() {
                     Some(Value::Dict(docs_list)) => {
-                        let doc_id = docs_list.get(&HashableValue::Int(0)).unwrap();
-                        let doc_thunk = ctx.get_thunk(*doc_id);
+                        let doc_thunk = docs_list.get(&HashableValue::Int(0)).unwrap().clone();
                         match doc_thunk.try_get_materialized() {
                             Some(Value::Dict(doc_dict)) => {
-                                let exprs_id = doc_dict
+                                let exprs_thunk = doc_dict
                                     .get(&HashableValue::Str("expressions".into()))
-                                    .unwrap();
-                                let exprs_thunk = ctx.get_thunk(*exprs_id);
+                                    .unwrap()
+                                    .clone();
                                 match exprs_thunk.try_get_materialized() {
                                     Some(Value::Dict(exprs_list)) => {
-                                        let expr_id =
-                                            exprs_list.get(&HashableValue::Int(0)).unwrap();
-                                        let expr_thunk = ctx.get_thunk(*expr_id);
+                                        let expr_thunk =
+                                            exprs_list.get(&HashableValue::Int(0)).unwrap().clone();
                                         let expr_val = expr_thunk
                                             .try_get_materialized()
                                             .expect("expr not materialized");
                                         let (_tag, dict_node) = peel_variant(expr_val, &ctx);
                                         {
-                                            let entries_id = dict_node
+                                            let entries_thunk = dict_node
                                                 .get(&HashableValue::Str("entries".into()))
-                                                .unwrap();
-                                            let entries_thunk = ctx.get_thunk(*entries_id);
+                                                .unwrap()
+                                                .clone();
                                             match entries_thunk.try_get_materialized() {
                                                 Some(Value::Dict(entries_list)) => {
-                                                    let entry_id = entries_list
+                                                    let entry_thunk = entries_list
                                                         .get(&HashableValue::Int(0))
-                                                        .unwrap();
-                                                    let entry_thunk = ctx.get_thunk(*entry_id);
+                                                        .unwrap()
+                                                        .clone();
                                                     let entry_val = entry_thunk
                                                         .try_get_materialized()
                                                         .expect("entry not materialized");
@@ -3060,23 +2666,21 @@ mod tests {
                                                         peel_variant(entry_val, &ctx);
                                                     {
                                                         // Check for leading-comments field
-                                                        let comments_id = entry_dict
+                                                        let comments_thunk = entry_dict
                                                             .get(&HashableValue::Str(
                                                                 "leading-comments".into(),
                                                             ))
                                                             .expect(
                                                                 "leading-comments field missing",
-                                                            );
-                                                        let comments_thunk =
-                                                            ctx.get_thunk(*comments_id);
+                                                            )
+                                                            .clone();
                                                         match comments_thunk.try_get_materialized()
                                                         {
                                                             Some(Value::Dict(comments_list)) => {
-                                                                let comment_id = comments_list
+                                                                let comment_thunk = comments_list
                                                                     .get(&HashableValue::Int(0))
-                                                                    .expect("comment 0 missing");
-                                                                let comment_thunk =
-                                                                    ctx.get_thunk(*comment_id);
+                                                                    .expect("comment 0 missing")
+                                                                    .clone();
                                                                 assert_eq!(
                                                                     comment_thunk
                                                                         .try_get_materialized(),
@@ -3119,10 +2723,10 @@ mod tests {
         let input = "[a: 1\nb: 2]";
         let parse_output = parse(input, test_file(input)).unwrap();
 
-        // Find the offset of 'b' (the second entry's key).
-        // In "[a: 1\nb: 2]": [ at 0, a at 1, : at 2, ' ' at 3, 1 at 4, \n at 5, b at 6
+        // Mark 'b' (line 2, col 1) as having a blank line before it.
+        // In "[a: 1\nb: 2]": 'b' is on line 2, column 1.
         let mut blank_before_map = BTreeMap::new();
-        blank_before_map.insert(6u32, true); // mark 'b' as having a blank line before it
+        blank_before_map.insert(crate::parser::span_key(2, 1), true); // mark 'b' as having a blank line before it
         let comment_maps = CommentMaps {
             leading_comments: &parse_output.leading_comments,
             trailing_comments: &parse_output.trailing_comments,
@@ -3139,40 +2743,38 @@ mod tests {
         // Navigate to the second entry and check blank-before: true
         match thunk.try_get_materialized() {
             Some(Value::Dict(file_dict)) => {
-                let docs_id = file_dict
+                let docs_thunk = file_dict
                     .get(&HashableValue::Str("documents".into()))
-                    .unwrap();
-                let docs_thunk = ctx.get_thunk(*docs_id);
+                    .unwrap()
+                    .clone();
                 match docs_thunk.try_get_materialized() {
                     Some(Value::Dict(docs_list)) => {
-                        let doc_id = docs_list.get(&HashableValue::Int(0)).unwrap();
-                        let doc_thunk = ctx.get_thunk(*doc_id);
+                        let doc_thunk = docs_list.get(&HashableValue::Int(0)).unwrap().clone();
                         match doc_thunk.try_get_materialized() {
                             Some(Value::Dict(doc_dict)) => {
-                                let exprs_id = doc_dict
+                                let exprs_thunk = doc_dict
                                     .get(&HashableValue::Str("expressions".into()))
-                                    .unwrap();
-                                let exprs_thunk = ctx.get_thunk(*exprs_id);
+                                    .unwrap()
+                                    .clone();
                                 match exprs_thunk.try_get_materialized() {
                                     Some(Value::Dict(exprs_list)) => {
-                                        let expr_id =
-                                            exprs_list.get(&HashableValue::Int(0)).unwrap();
-                                        let expr_thunk = ctx.get_thunk(*expr_id);
+                                        let expr_thunk =
+                                            exprs_list.get(&HashableValue::Int(0)).unwrap().clone();
                                         let expr_val = expr_thunk
                                             .try_get_materialized()
                                             .expect("expr not materialized");
                                         let (_tag, dict_node) = peel_variant(expr_val, &ctx);
                                         {
-                                            let entries_id = dict_node
+                                            let entries_thunk = dict_node
                                                 .get(&HashableValue::Str("entries".into()))
-                                                .unwrap();
-                                            let entries_thunk = ctx.get_thunk(*entries_id);
+                                                .unwrap()
+                                                .clone();
                                             match entries_thunk.try_get_materialized() {
                                                 Some(Value::Dict(entries_list)) => {
-                                                    let entry_id = entries_list
+                                                    let entry_thunk = entries_list
                                                         .get(&HashableValue::Int(1))
-                                                        .unwrap();
-                                                    let entry_thunk = ctx.get_thunk(*entry_id);
+                                                        .unwrap()
+                                                        .clone();
                                                     let entry_val = entry_thunk
                                                         .try_get_materialized()
                                                         .expect("entry not materialized");
@@ -3180,12 +2782,12 @@ mod tests {
                                                         peel_variant(entry_val, &ctx);
                                                     {
                                                         // Check blank-before: true
-                                                        let blank_id = entry_dict
+                                                        let blank_thunk = entry_dict
                                                             .get(&HashableValue::Str(
                                                                 "blank-before".into(),
                                                             ))
-                                                            .expect("blank-before field missing");
-                                                        let blank_thunk = ctx.get_thunk(*blank_id);
+                                                            .expect("blank-before field missing")
+                                                            .clone();
                                                         assert_eq!(
                                                             blank_thunk
                                                                 .try_get_materialized(),
@@ -3229,59 +2831,57 @@ mod tests {
         // Navigate to the key and check bare: false (default when source is None)
         match thunk.try_get_materialized() {
             Some(Value::Dict(file_dict)) => {
-                let docs_id = file_dict
+                let docs_thunk = file_dict
                     .get(&HashableValue::Str("documents".into()))
-                    .unwrap();
-                let docs_thunk = ctx.get_thunk(*docs_id);
+                    .unwrap()
+                    .clone();
                 match docs_thunk.try_get_materialized() {
                     Some(Value::Dict(docs_list)) => {
-                        let doc_id = docs_list.get(&HashableValue::Int(0)).unwrap();
-                        let doc_thunk = ctx.get_thunk(*doc_id);
+                        let doc_thunk = docs_list.get(&HashableValue::Int(0)).unwrap().clone();
                         match doc_thunk.try_get_materialized() {
                             Some(Value::Dict(doc_dict)) => {
-                                let exprs_id = doc_dict
+                                let exprs_thunk = doc_dict
                                     .get(&HashableValue::Str("expressions".into()))
-                                    .unwrap();
-                                let exprs_thunk = ctx.get_thunk(*exprs_id);
+                                    .unwrap()
+                                    .clone();
                                 match exprs_thunk.try_get_materialized() {
                                     Some(Value::Dict(exprs_list)) => {
-                                        let expr_id =
-                                            exprs_list.get(&HashableValue::Int(0)).unwrap();
-                                        let expr_thunk = ctx.get_thunk(*expr_id);
+                                        let expr_thunk =
+                                            exprs_list.get(&HashableValue::Int(0)).unwrap().clone();
                                         let expr_val = expr_thunk
                                             .try_get_materialized()
                                             .expect("expr not materialized");
                                         let (_tag, dict_node) = peel_variant(expr_val, &ctx);
                                         {
-                                            let entries_id = dict_node
+                                            let entries_thunk = dict_node
                                                 .get(&HashableValue::Str("entries".into()))
-                                                .unwrap();
-                                            let entries_thunk = ctx.get_thunk(*entries_id);
+                                                .unwrap()
+                                                .clone();
                                             match entries_thunk.try_get_materialized() {
                                                 Some(Value::Dict(entries_list)) => {
-                                                    let entry_id = entries_list
+                                                    let entry_thunk = entries_list
                                                         .get(&HashableValue::Int(0))
-                                                        .unwrap();
-                                                    let entry_thunk = ctx.get_thunk(*entry_id);
+                                                        .unwrap()
+                                                        .clone();
                                                     let entry_val = entry_thunk
                                                         .try_get_materialized()
                                                         .expect("entry not materialized");
                                                     let (_entry_tag, entry_dict) =
                                                         peel_variant(entry_val, &ctx);
                                                     {
-                                                        let key_id = entry_dict
+                                                        let key_thunk = entry_dict
                                                             .get(&HashableValue::Str("key".into()))
-                                                            .unwrap();
-                                                        let key_thunk = ctx.get_thunk(*key_id);
+                                                            .unwrap()
+                                                            .clone();
                                                         let key_val = key_thunk
                                                             .try_get_materialized()
                                                             .expect("key not materialized");
                                                         let (_key_tag, key_dict) =
                                                             peel_variant(key_val, &ctx);
-                                                        let bare_id = key_dict
+                                                        let bare_thunk = key_dict
                                                             .get(&HashableValue::Str("bare".into()))
-                                                            .expect("bare field missing");
-                                                        let bare_thunk = ctx.get_thunk(*bare_id);
+                                                            .expect("bare field missing")
+                                                            .clone();
                                                         assert_eq!(
                                                             bare_thunk
                                                                 .try_get_materialized(),
@@ -3290,12 +2890,12 @@ mod tests {
                                                         );
 
                                                         // Check that blank-before is still present (always included)
-                                                        let blank_id = entry_dict
+                                                        let blank_thunk = entry_dict
                                                             .get(&HashableValue::Str(
                                                                 "blank-before".into(),
                                                             ))
-                                                            .expect("blank-before field missing");
-                                                        let blank_thunk = ctx.get_thunk(*blank_id);
+                                                            .expect("blank-before field missing")
+                                                            .clone();
                                                         assert_eq!(
                                                             blank_thunk
                                                                 .try_get_materialized(),

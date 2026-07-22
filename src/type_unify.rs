@@ -2631,20 +2631,14 @@ pub async fn unify(
                         .definition_span
                         .as_ref()
                         .map(|s| {
-                            format!(
-                                " (defined at {}:{}:{})",
-                                s.file.path, s.start.line, s.start.column
-                            )
+                            format!(" (defined at {}:{}:{})", s.file, s.start_line, s.start_col)
                         })
                         .unwrap_or_default();
                     let loc2 = d2
                         .definition_span
                         .as_ref()
                         .map(|s| {
-                            format!(
-                                " (defined at {}:{}:{})",
-                                s.file.path, s.start.line, s.start.column
-                            )
+                            format!(" (defined at {}:{}:{})", s.file, s.start_line, s.start_col)
                         })
                         .unwrap_or_default();
                     Err(TypeDiagnostic::error(

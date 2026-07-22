@@ -1915,7 +1915,7 @@ mod help_suggestion_tests {
     // the function name rather than the internal TypeVar name.
     #[test]
     fn test_t013_origin_name_message_format() {
-        use crate::ast::{Position, Span};
+        use crate::ast::Span;
         use crate::error::DiagnosticLevel;
         use crate::type_class::{ClassDecl, Constraint};
         use std::collections::{HashMap, HashSet};
@@ -1935,17 +1935,11 @@ mod help_suggestion_tests {
 
         // Constraint with origin_name="cast" (as would be set by instantiate_scheme at a VarRef)
         let arg_span = Span {
-            start: Position {
-                offset: 10,
-                line: 1,
-                column: 11,
-            },
-            end: Position {
-                offset: 14,
-                line: 1,
-                column: 15,
-            },
             file: crate::rust_span!().file,
+            start_line: 1,
+            start_col: 11,
+            end_line: 1,
+            end_col: 15,
             name: None,
         };
         let constraint_with_origin = Constraint::Class {
@@ -1960,17 +1954,11 @@ mod help_suggestion_tests {
         let source_names: HashMap<String, String> = HashMap::new();
         let mut diagnostics: Vec<crate::error::TypeDiagnostic> = Vec::new();
         let fallback_span = Span {
-            start: Position {
-                offset: 0,
-                line: 1,
-                column: 1,
-            },
-            end: Position {
-                offset: 5,
-                line: 1,
-                column: 6,
-            },
             file: crate::rust_span!().file,
+            start_line: 1,
+            start_col: 1,
+            end_line: 1,
+            end_col: 6,
             name: None,
         };
         let mut emitted: HashSet<(String, Span)> = HashSet::new();
@@ -2015,7 +2003,7 @@ mod help_suggestion_tests {
     // T013 Task 5: when origin_name is absent, the fallback message format is preserved.
     #[test]
     fn test_t013_fallback_message_format() {
-        use crate::ast::{Position, Span};
+        use crate::ast::Span;
         use crate::error::DiagnosticLevel;
         use crate::type_class::{ClassDecl, Constraint};
         use std::collections::{HashMap, HashSet};
@@ -2044,17 +2032,11 @@ mod help_suggestion_tests {
         let source_names: HashMap<String, String> = HashMap::new();
         let mut diagnostics: Vec<crate::error::TypeDiagnostic> = Vec::new();
         let call_span = Span {
-            start: Position {
-                offset: 0,
-                line: 1,
-                column: 1,
-            },
-            end: Position {
-                offset: 5,
-                line: 1,
-                column: 6,
-            },
             file: crate::rust_span!().file,
+            start_line: 1,
+            start_col: 1,
+            end_line: 1,
+            end_col: 6,
             name: None,
         };
         let mut emitted: HashSet<(String, Span)> = HashSet::new();

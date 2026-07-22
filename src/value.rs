@@ -1,12 +1,10 @@
 //! Runtime value types: `Value`, `Thunk` (lazy memoization), `Environment` (legacy name chain), `Scope` (runtime scope via `ScopeArena`).
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
 use std::hash::{Hash, Hasher};
 use std::pin::Pin;
-use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -113,11 +111,11 @@ impl fmt::Debug for BuiltinDef {
 }
 
 /// Dict key type: either an integer (auto-indexed) or a string (bare word / quoted).
-/// This is the canonical hashable key used in `Value::Dict` and `IndexMap<HashableValue, ThunkId>`.
+/// This is the canonical hashable key used in `Value::Dict` and `IndexMap<HashableValue, Arc<Thunk>>`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HashableValue {
     Int(i64),
-    Str(Rc<str>),
+    Str(Arc<str>),
 }
 
 impl PartialOrd for HashableValue {
@@ -134,7 +132,7 @@ impl Hash for HashableValue {
     fn hash<H: Hasher>(&self, state: &mut H) {
         // Use explicit u8 discriminants (Int=0u8, Str=2u8) instead of
         // std::mem::discriminant so that StrHashableValue::hash can use the same
-        // literal without allocating a temporary Rc<str>.
+        // literal without allocating a temporary Arc<str>.
         match self {
             HashableValue::Int(n) => {
                 0u8.hash(state);
@@ -166,7 +164,7 @@ pub(crate) struct StrHashableValue<'a>(pub &'a str);
 impl Hash for StrHashableValue<'_> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         // HashableValue::Str is discriminant 2u8 (Int=0, Str=2).
-        // Using 2u8 directly avoids the Rc::from("") allocation that the
+        // Using 2u8 directly avoids the Arc::from("") allocation that the
         // std::mem::discriminant approach required on every hash call.
         2u8.hash(state);
         // Then hash the string content
@@ -370,7 +368,7 @@ impl DirPerms {
 /// are the hot path in builder-heavy prelude code like `collect-kv`).
 pub struct Builder {
     frozen: AtomicBool,
-    inner: Mutex<Option<IndexMap<HashableValue, ThunkId>>>,
+    inner: Mutex<Option<IndexMap<HashableValue, Arc<Thunk>>>>,
 }
 
 impl Builder {
@@ -396,7 +394,7 @@ impl Builder {
     }
 
     /// Set a key-value pair. Returns error if frozen.
-    pub fn set(&self, key: HashableValue, value: ThunkId) -> Result<(), String> {
+    pub fn set(&self, key: HashableValue, value: Arc<Thunk>) -> Result<(), String> {
         // Fast-path: check frozen flag without taking the mutex.
         if self.frozen.load(Ordering::Relaxed) {
             return Err("builder is frozen (already finished)".to_string());
@@ -438,23 +436,27 @@ impl Builder {
     }
 
     /// Get a value by key. Returns None if key doesn't exist or builder is frozen.
-    pub fn get(&self, key: &HashableValue) -> Option<ThunkId> {
+    pub fn get(&self, key: &HashableValue) -> Option<Arc<Thunk>> {
         // Fast-path: frozen builder has no entries.
         if self.frozen.load(Ordering::Relaxed) {
             return None;
         }
         let guard = self.inner.lock().unwrap();
-        guard.as_ref().and_then(|map| map.get(key).copied())
+        guard.as_ref().and_then(|map| map.get(key).cloned())
     }
 
-    /// Atomically get-or-insert: if `key` exists, return its ThunkId; otherwise
-    /// insert `default_id` at `key` and return `default_id`.
+    /// Atomically get-or-insert: if `key` exists, return its Arc<Thunk>; otherwise
+    /// insert `default_thunk` at `key` and return `default_thunk`.
     /// Returns error if the builder is frozen.
     ///
     /// This eliminates the `builder-has?` + `builder-get` + `builder-set` triple
     /// that `group-by` previously used, reducing locking overhead and avoiding the
     /// race window between the has? check and the set.
-    pub fn get_or(&self, key: HashableValue, default_id: ThunkId) -> Result<ThunkId, String> {
+    pub fn get_or(
+        &self,
+        key: HashableValue,
+        default_thunk: Arc<Thunk>,
+    ) -> Result<Arc<Thunk>, String> {
         // Fast-path: frozen builder cannot be mutated.
         if self.frozen.load(Ordering::Relaxed) {
             return Err("builder is frozen (already finished)".to_string());
@@ -462,11 +464,11 @@ impl Builder {
         let mut guard = self.inner.lock().unwrap();
         match guard.as_mut() {
             Some(map) => {
-                if let Some(&existing) = map.get(&key) {
-                    Ok(existing)
+                if let Some(existing) = map.get(&key) {
+                    Ok(Arc::clone(existing))
                 } else {
-                    map.insert(key, default_id);
-                    Ok(default_id)
+                    map.insert(key, Arc::clone(&default_thunk));
+                    Ok(default_thunk)
                 }
             }
             None => Err("builder is frozen (already finished)".to_string()),
@@ -474,7 +476,7 @@ impl Builder {
     }
 
     /// Take the inner map, freezing the builder. Returns error if already frozen.
-    pub fn finish(&self) -> Result<IndexMap<HashableValue, ThunkId>, String> {
+    pub fn finish(&self) -> Result<IndexMap<HashableValue, Arc<Thunk>>, String> {
         // Set the frozen flag BEFORE taking the mutex so that concurrent readers
         // on the fast-path see frozen=true as soon as possible.
         if self.frozen.swap(true, Ordering::Relaxed) {
@@ -488,7 +490,7 @@ impl Builder {
     }
 
     /// Clone the inner map without freezing. Returns error if frozen.
-    pub fn snapshot(&self) -> Result<IndexMap<HashableValue, ThunkId>, String> {
+    pub fn snapshot(&self) -> Result<IndexMap<HashableValue, Arc<Thunk>>, String> {
         // Fast-path: no need to take the lock to know it's empty.
         if self.frozen.load(Ordering::Relaxed) {
             return Err("builder is frozen".to_string());
@@ -512,7 +514,6 @@ impl Clone for Builder {
 }
 
 /// A materialized runtime value.
-#[derive(Clone)]
 pub enum Value {
     /// 64-bit signed integer
     Int(i64),
@@ -524,14 +525,14 @@ pub enum Value {
     /// Stored as a shared slice of a source string with byte offsets.
     /// This enables zero-copy substring operations and shared storage.
     String {
-        source: Rc<str>,
+        source: Arc<str>,
         start: usize,
         end: usize,
     },
     /// Internal boolean value — used by Rust-level boolean predicates returning true/false
     Bool(bool),
     /// Ordered key-value map with lazy (thunked) values
-    Dict(IndexMap<HashableValue, ThunkId>),
+    Dict(IndexMap<HashableValue, Arc<Thunk>>),
     /// Transient builder for efficient mutable dict construction.
     /// One-shot invariant: once frozen (via builder-finish), all mutations error.
     /// Sequential-use: not safe for concurrent modification (Mutex protects state, not semantics).
@@ -540,7 +541,7 @@ pub enum Value {
     /// `body` is stored as `Arc<Spanned<CoreExpr>>` (Parts-E migration: no Expr round-trip).
     /// `closure_env_id` is the ScopeId index into EvalContext.scope_arena for the closure scope.
     Function {
-        params: Rc<Vec<Param>>,
+        params: Arc<Vec<Param>>,
         body: Arc<Spanned<CoreExpr>>,
         closure_env_id: u32,
         annotation: Option<Box<FnAnnotation>>,
@@ -556,19 +557,19 @@ pub enum Value {
     Overlay(ThunkId, ThunkId),
     /// Capability-bound directory handle (object capability model)
     DirCap {
-        dir: Rc<cap_std::fs::Dir>,
+        dir: cap_std::fs::Dir,
         perms: DirPerms,
     },
     /// Network capability — authority to connect to specified hosts/subnets
-    NetCap(Rc<Vec<NetCapEntry>>),
+    NetCap(Arc<Vec<NetCapEntry>>),
     /// Raw OS file handle (thin wrapper over cap_std::fs::File, no buffering).
     /// Opened via `builtin-file-open`; read/written/sought via `builtin-file-*` builtins.
-    File(Rc<std::cell::RefCell<cap_std::fs::File>>),
+    File(Arc<Mutex<cap_std::fs::File>>),
     /// Revocable directory capability
     RevocableDirCap {
-        inner: Rc<cap_std::fs::Dir>,
+        inner: cap_std::fs::Dir,
         perms: DirPerms,
-        revoked: Rc<std::cell::Cell<bool>>,
+        revoked: Arc<AtomicBool>,
     },
     /// Nominal variant (enum-like value)
     Variant {
@@ -582,7 +583,7 @@ pub enum Value {
     BigInt(num_bigint::BigInt),
     /// Byte sequence (opaque binary data).
     Bytes {
-        source: Rc<[u8]>,
+        source: Arc<[u8]>,
         start: usize,
         end: usize,
     },
@@ -593,33 +594,31 @@ pub enum Value {
     /// Signed duration (nanoseconds).
     Duration(i64),
     /// Clock capability for reading current time (object capability model).
-    ClockCap(Rc<ClockCapInner>),
+    ClockCap(Arc<ClockCapInner>),
     /// Timezone (parsed IANA TZ rules from zoneinfo file).
-    Timezone(Rc<jiff::tz::TimeZone>),
+    Timezone(Arc<jiff::tz::TimeZone>),
     /// QUIC session — multiplexed connection over UDP (RFC 9000).
-    QuicSession(Rc<quinn::Connection>),
+    QuicSession(Arc<quinn::Connection>),
     /// HTTP/2 session — multiplexed HTTP connection (RFC 9113).
     Http2Session {
-        client: Rc<reqwest::Client>,
+        client: Arc<reqwest::Client>,
         base_url: String,
     },
     /// HTTP/3 session — HTTP over QUIC (RFC 9114).
-    Http3Session(Rc<RefCell<Http3SessionState>>),
+    Http3Session(Arc<Mutex<Http3SessionState>>),
     /// QUIC datagram handle — unreliable message delivery over QUIC (RFC 9221).
-    QuicDatagramHandle(Rc<quinn::Connection>),
+    QuicDatagramHandle(Arc<quinn::Connection>),
 
     // =========================================================================
     // runtime-v2 native AST value types
     // =========================================================================
-    /// A complete tinct program — the type returned by `load` and `expand`.
+    /// A complete tinct program — the type returned by `builtin-parse` and related builtins.
     ///
-    /// `program_ref` is a stable handle into `EvalContext.program_store`. When the last
-    /// `Rc<ProgramRef>` referencing this store entry is dropped, the `SurfaceProgram` AST
-    /// is freed. Access the index via `program_ref.id` and the program via
-    /// `ctx.with_program(program_ref.id, |p| ...)`. Consistent with the arena pattern:
-    /// ThunkId is a coordinate, not data — programs follow the same indirection.
+    /// The `SurfaceProgram` AST is stored directly in an `Arc` for shared ownership.
+    /// `resolutions`, `types`, and `expects_resolved` are populated by the resolve/typecheck
+    /// pipeline stages and carried alongside the program for use by downstream builtins.
     Program {
-        program_ref: std::rc::Rc<crate::eval::ProgramRef>,
+        program: std::sync::Arc<crate::ast::SurfaceProgram>,
         resolutions: Arc<crate::ast::ResolutionTable>,
         types: Arc<crate::ast::TypeAnnotationTable>,
         expects_resolved: Arc<HashMap<crate::ast::Span, crate::types::Type>>,
@@ -670,6 +669,142 @@ pub enum Value {
     /// Type-checker context handle — wraps `TypeContextData` for passing between tinct builtins.
     /// Created by `builtin-get-type-context`; consumed by `builtin-typecheck-doc`, `builtin-resolve`, etc.
     TypeContext(std::sync::Arc<std::sync::Mutex<crate::eval::TypeContextData>>),
+    /// A fully-lowered document — produced by `builtin-lower` after lowering all SurfaceNodes to
+    /// CoreExpr. This is the discrete lowering step that separates surface-to-core lowering from
+    /// evaluation. Entries are (key_name, lowered_CoreExpr) pairs in document order.
+    ///
+    /// Treated as non-equal to everything (including itself) in PartialEq — CoreDocument is a
+    /// pipeline-internal intermediate value; structural equality is meaningless at this stage.
+    CoreDocument {
+        entries: std::sync::Arc<
+            Vec<(
+                String,
+                std::sync::Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
+            )>,
+        >,
+        span: crate::ast::Span,
+    },
+}
+
+impl Clone for Value {
+    fn clone(&self) -> Self {
+        match self {
+            Value::Int(n) => Value::Int(*n),
+            Value::U64(n) => Value::U64(*n),
+            Value::Float(n) => Value::Float(*n),
+            Value::String { source, start, end } => Value::String {
+                source: Arc::clone(source),
+                start: *start,
+                end: *end,
+            },
+            Value::Bool(b) => Value::Bool(*b),
+            Value::Dict(map) => Value::Dict(map.clone()),
+            Value::Builder(b) => Value::Builder(Arc::clone(b)),
+            Value::Function {
+                params,
+                body,
+                closure_env_id,
+                annotation,
+            } => Value::Function {
+                params: Arc::clone(params),
+                body: Arc::clone(body),
+                closure_env_id: *closure_env_id,
+                annotation: annotation.clone(),
+            },
+            Value::Builtin(def) => Value::Builtin(*def),
+            Value::Seq { head, tail } => Value::Seq {
+                head: *head,
+                tail: *tail,
+            },
+            Value::Proxy { handler } => Value::Proxy { handler: *handler },
+            Value::Overlay(l, r) => Value::Overlay(*l, *r),
+            Value::DirCap { dir, perms } => Value::DirCap {
+                // SAFETY: DirCap values are always created from valid OS file descriptors
+                // (main.rs and builtins_io.rs construction sites). try_clone() can fail with
+                // EMFILE (too many open files) or EBADF (invalid descriptor) only if the
+                // descriptor is closed or the fd table is exhausted. DirCap values are assumed
+                // to remain valid for their Arc lifetime — the descriptor is never explicitly
+                // closed while a DirCap holding it is alive.
+                dir: dir.try_clone().expect("DirCap try_clone"),
+                perms: perms.clone(),
+            },
+            Value::NetCap(entries) => Value::NetCap(Arc::clone(entries)),
+            Value::File(f) => Value::File(Arc::clone(f)),
+            Value::RevocableDirCap {
+                inner,
+                perms,
+                revoked,
+            } => Value::RevocableDirCap {
+                inner: inner.try_clone().expect("RevocableDirCap try_clone"),
+                perms: perms.clone(),
+                revoked: Arc::clone(revoked),
+            },
+            Value::Variant {
+                tycon,
+                ctor,
+                payload,
+            } => Value::Variant {
+                tycon: Arc::clone(tycon),
+                ctor: Arc::clone(ctor),
+                payload: *payload,
+            },
+            Value::Decimal(d) => Value::Decimal(*d),
+            Value::BigInt(n) => Value::BigInt(n.clone()),
+            Value::Bytes { source, start, end } => Value::Bytes {
+                source: Arc::clone(source),
+                start: *start,
+                end: *end,
+            },
+            Value::Uri { scheme, uri } => Value::Uri {
+                scheme: scheme.clone(),
+                uri: uri.clone(),
+            },
+            Value::Timestamp(n) => Value::Timestamp(*n),
+            Value::Duration(n) => Value::Duration(*n),
+            Value::ClockCap(c) => Value::ClockCap(Arc::clone(c)),
+            Value::Timezone(tz) => Value::Timezone(Arc::clone(tz)),
+            Value::QuicSession(s) => Value::QuicSession(Arc::clone(s)),
+            Value::Http2Session { client, base_url } => Value::Http2Session {
+                client: Arc::clone(client),
+                base_url: base_url.clone(),
+            },
+            Value::Http3Session(s) => Value::Http3Session(Arc::clone(s)),
+            Value::QuicDatagramHandle(h) => Value::QuicDatagramHandle(Arc::clone(h)),
+            Value::Program {
+                program,
+                resolutions,
+                types,
+                expects_resolved,
+            } => Value::Program {
+                program: std::sync::Arc::clone(program),
+                resolutions: Arc::clone(resolutions),
+                types: Arc::clone(types),
+                expects_resolved: Arc::clone(expects_resolved),
+            },
+            Value::Document(d) => Value::Document(Arc::clone(d)),
+            Value::Expression(e) => Value::Expression(Arc::clone(e)),
+            Value::Task(t) => Value::Task(Arc::clone(t)),
+            Value::Channel(c) => Value::Channel(Arc::clone(c)),
+            Value::BroadcastChannel(c) => Value::BroadcastChannel(Arc::clone(c)),
+            Value::OneshotSender(s) => Value::OneshotSender(Arc::clone(s)),
+            Value::OneshotReceiver(r) => Value::OneshotReceiver(Arc::clone(r)),
+            Value::Context(c) => Value::Context(c.clone()),
+            Value::ReactiveCell(r) => Value::ReactiveCell(Arc::clone(r)),
+            Value::Arena { name, start_env_id } => Value::Arena {
+                name: Arc::clone(name),
+                start_env_id: *start_env_id,
+            },
+            Value::Annotated { inner, annotation } => Value::Annotated {
+                inner: inner.clone(),
+                annotation: annotation.clone(),
+            },
+            Value::TypeContext(tc) => Value::TypeContext(Arc::clone(tc)),
+            Value::CoreDocument { entries, span } => Value::CoreDocument {
+                entries: std::sync::Arc::clone(entries),
+                span: span.clone(),
+            },
+        }
+    }
 }
 
 /// State of an async task spawned via `task` builtin.
@@ -716,7 +851,7 @@ pub struct Http3SessionState {
 /// Helper function to construct a `Value::String` from a string slice.
 pub fn string_val(s: &str) -> Value {
     Value::String {
-        source: Rc::from(s),
+        source: Arc::from(s),
         start: 0,
         end: s.len(),
     }
@@ -725,7 +860,7 @@ pub fn string_val(s: &str) -> Value {
 /// Helper function to construct a `Value::Bytes` from a byte slice.
 pub fn bytes_val(data: &[u8]) -> Value {
     Value::Bytes {
-        source: Rc::from(data),
+        source: Arc::from(data),
         start: 0,
         end: data.len(),
     }
@@ -777,6 +912,7 @@ impl Value {
             Value::Arena { .. } => "Arena",
             Value::Annotated { inner, .. } => inner.type_name(),
             Value::TypeContext(_) => "TypeContext",
+            Value::CoreDocument { .. } => "CoreDocument",
         }
     }
 
@@ -868,7 +1004,7 @@ impl fmt::Debug for Value {
             Value::NetCap(entries) => write!(f, "NetCap({} entries)", entries.len()),
             Value::File(_) => write!(f, "File"),
             Value::RevocableDirCap { revoked, .. } => {
-                if revoked.get() {
+                if revoked.load(Ordering::Acquire) {
                     write!(f, "DirCap(revoked)")
                 } else {
                     write!(f, "DirCap(revocable)")
@@ -920,6 +1056,9 @@ impl fmt::Debug for Value {
             Value::Arena { name, start_env_id } => write!(f, "Arena({name}@{start_env_id})"),
             Value::Annotated { inner, .. } => write!(f, "Annotated({inner:?})"),
             Value::TypeContext(_) => write!(f, "TypeContext"),
+            Value::CoreDocument { entries, .. } => {
+                write!(f, "CoreDocument({} entries)", entries.len())
+            }
         }
     }
 }
@@ -967,7 +1106,7 @@ impl fmt::Display for Value {
             Value::NetCap(_) => write!(f, "<NetCap>"),
             Value::File(_) => write!(f, "<File>"),
             Value::RevocableDirCap { revoked, .. } => {
-                if revoked.get() {
+                if revoked.load(Ordering::Acquire) {
                     write!(f, "<DirCap (revoked)>")
                 } else {
                     write!(f, "<DirCap (revocable)>")
@@ -1021,6 +1160,9 @@ impl fmt::Display for Value {
             Value::Arena { name, start_env_id } => write!(f, "<arena:{name}@{start_env_id}>"),
             Value::Annotated { inner, .. } => fmt::Display::fmt(inner, f),
             Value::TypeContext(_) => write!(f, "<TypeContext>"),
+            Value::CoreDocument { entries, .. } => {
+                write!(f, "<core-document:{} entries>", entries.len())
+            }
         }
     }
 }
@@ -1071,12 +1213,12 @@ impl PartialEq for Value {
             (Value::Timestamp(a), Value::Timestamp(b)) => a == b,
             (Value::Duration(a), Value::Duration(b)) => a == b,
             (Value::ClockCap(a), Value::ClockCap(b)) => a == b,
-            (Value::QuicSession(a), Value::QuicSession(b)) => Rc::ptr_eq(a, b),
+            (Value::QuicSession(a), Value::QuicSession(b)) => Arc::ptr_eq(a, b),
             (Value::Http2Session { client: a, .. }, Value::Http2Session { client: b, .. }) => {
-                Rc::ptr_eq(a, b)
+                Arc::ptr_eq(a, b)
             }
-            (Value::Http3Session(a), Value::Http3Session(b)) => Rc::ptr_eq(a, b),
-            (Value::QuicDatagramHandle(a), Value::QuicDatagramHandle(b)) => Rc::ptr_eq(a, b),
+            (Value::Http3Session(a), Value::Http3Session(b)) => Arc::ptr_eq(a, b),
+            (Value::QuicDatagramHandle(a), Value::QuicDatagramHandle(b)) => Arc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -1090,15 +1232,6 @@ impl PartialEq for Value {
 /// Stores the data needed to evaluate a thunk when it's first accessed.
 #[derive(Debug, Clone)]
 pub enum UnevaluatedState {
-    /// Pre-lowering Surface thunk — created by the `eval` builtin.
-    Surface {
-        node: Arc<SurfaceNode>,
-        res: Arc<crate::ast::ResolutionTable>,
-        types: Arc<crate::ast::TypeAnnotationTable>,
-        /// Index into EvalContext.scope_arena (ScopeArena) for the evaluation environment.
-        env_id: u32,
-        ctx: Arc<crate::eval::EvalContext>,
-    },
     /// Lazy AST node field access via `surface_node_get_field`.
     AstField {
         node: Arc<SurfaceNode>,
@@ -1159,7 +1292,6 @@ impl UnevaluatedState {
     pub fn initial_env_id(&self) -> u32 {
         match self {
             UnevaluatedState::CoreExpr { env_id, .. } => *env_id,
-            UnevaluatedState::Surface { env_id, .. } => *env_id,
             UnevaluatedState::BuiltinCall { caller_env_id, .. } => *caller_env_id,
             UnevaluatedState::FnCall { caller_env_id, .. } => *caller_env_id,
             UnevaluatedState::AstField { .. } => 0,
@@ -1266,34 +1398,6 @@ impl Thunk {
         };
         let _ = inner.result.set(Ok(value));
         Self { inner, span }
-    }
-
-    /// Create a Surface thunk — wraps a SurfaceNode for lazy evaluation.
-    pub fn surface(
-        node: std::sync::Arc<crate::ast::SurfaceNode>,
-        res: std::sync::Arc<crate::ast::ResolutionTable>,
-        types: std::sync::Arc<crate::ast::TypeAnnotationTable>,
-        env_id: u32,
-        ctx: Arc<crate::eval::EvalContext>,
-        span: Span,
-    ) -> Self {
-        Self {
-            inner: ThunkInner {
-                unevaluated: Mutex::new((
-                    Some(UnevaluatedState::Surface {
-                        node,
-                        res,
-                        types,
-                        env_id,
-                        ctx,
-                    }),
-                    None,
-                )),
-                result: tokio::sync::OnceCell::new(),
-                notify: Arc::new(tokio::sync::Notify::new()),
-            },
-            span,
-        }
     }
 
     /// Create a lazy AstField thunk.
@@ -1517,19 +1621,6 @@ impl Thunk {
                 env_id,
                 ctx: new_ctx,
             },
-            UnevaluatedState::Surface {
-                node,
-                res,
-                types,
-                env_id,
-                ctx: _,
-            } => UnevaluatedState::Surface {
-                node,
-                res,
-                types,
-                env_id,
-                ctx: new_ctx,
-            },
             UnevaluatedState::AstField {
                 node,
                 field,
@@ -1647,15 +1738,6 @@ impl Thunk {
     pub fn is_pending_call(&self) -> bool {
         let guard = self.inner.unevaluated.lock().unwrap();
         matches!(&guard.0, Some(UnevaluatedState::FnCall { .. }))
-    }
-
-    /// Peek at the SurfaceNode if this thunk is in Surface state.
-    pub fn peek_surface_node(&self) -> Option<std::sync::Arc<crate::ast::SurfaceNode>> {
-        let guard = self.inner.unevaluated.lock().unwrap();
-        match &guard.0 {
-            Some(UnevaluatedState::Surface { node, .. }) => Some(std::sync::Arc::clone(node)),
-            _ => None,
-        }
     }
 
     /// Peek at the AstField if this thunk is in AstField state.

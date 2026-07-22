@@ -1,0 +1,16 @@
+# builtin-lower takes a resolved+typechecked Document and returns a CoreDocument.
+# Pipeline: parse -> desugar -> program-docs -> resolve -> typecheck-doc -> lower.
+# Verifies that builtin-lower returns a value of type "CoreDocument" without error.
+[call [fn [let]
+  [src:     [builtin-str-bytes "[answer: 42]"]]
+  [parsed:  [builtin-parse src "test.llt"]]
+  [desug:   [builtin-desugar parsed.program]]
+  [docs:    [builtin-program-docs desug]]
+  [doc0:    [builtin-get 0 docs]]
+  [resolved: [builtin-resolve doc0 []]]
+  [tc:      [builtin-make-type-ctx]]
+  [typed:   [builtin-typecheck-doc resolved.doc tc]]
+  [lowered: [builtin-lower typed.doc]]
+  [builtin-eq-string [builtin-type-of lowered] "CoreDocument"]]]
+=== out
+Int(1)

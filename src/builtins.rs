@@ -186,10 +186,8 @@ pub(crate) async fn flatten_overlay(
     name: &str,
     ctx: &Arc<crate::eval::EvalContext>,
     call_span: Span,
-) -> EvalResult<IndexMap<HashableValue, ThunkId>> {
-    use crate::value::ThunkId;
-
-    // Work stack: each entry is a thunk ID to materialize and add as a layer.
+) -> EvalResult<IndexMap<HashableValue, Arc<crate::value::Thunk>>> {
+    // Work stack: each entry is a thunk to materialize and add as a layer.
     // We push L before R so that when we pop, R is processed first (override wins).
     // But to maintain correct left-to-right override order, we collect layers and reverse.
     //
@@ -209,16 +207,15 @@ pub(crate) async fn flatten_overlay(
     // When we pop for processing: R is processed first → appended to layers first.
     // Then reverse layers to get [L_base, ..., R_override] order.
 
-    let mut work_stack: Vec<ThunkId> = Vec::new();
+    let mut work_stack: Vec<Arc<crate::value::Thunk>> = Vec::new();
     // Push in reverse order: left first (processed last = base layer), right second (processed first = override).
-    work_stack.push(*left);
-    work_stack.push(*right);
+    work_stack.push(ctx.get_thunk(*left));
+    work_stack.push(ctx.get_thunk(*right));
 
     // Collect flat layers in processing order (right to left).
-    let mut layers: Vec<IndexMap<HashableValue, ThunkId>> = Vec::new();
+    let mut layers: Vec<IndexMap<HashableValue, Arc<crate::value::Thunk>>> = Vec::new();
 
-    while let Some(thunk_id) = work_stack.pop() {
-        let thunk = ctx.get_thunk(thunk_id);
+    while let Some(thunk) = work_stack.pop() {
         let val = materialize(&thunk, Some(&call_span), ctx).await?;
         match val {
             Value::Dict(map) => {
@@ -226,8 +223,8 @@ pub(crate) async fn flatten_overlay(
             }
             Value::Overlay(l, r) => {
                 // Unwind: push L first (base, processed later), R second (override, processed sooner).
-                work_stack.push(l);
-                work_stack.push(r);
+                work_stack.push(ctx.get_thunk(l));
+                work_stack.push(ctx.get_thunk(r));
             }
             Value::Variant { payload, .. } => {
                 // Auto-unpack variant payload. This intentionally diverges from require_dict
@@ -237,7 +234,7 @@ pub(crate) async fn flatten_overlay(
                     Some(payload_id) => {
                         // Re-push the payload thunk for processing in the next iteration.
                         // This handles recursive cases (payload is itself an Overlay).
-                        work_stack.push(payload_id);
+                        work_stack.push(ctx.get_thunk(payload_id));
                     }
                     None => {
                         // Unit variant: contribute an empty dict layer.
@@ -263,7 +260,8 @@ pub(crate) async fn flatten_overlay(
     layers.reverse();
 
     let total_cap = layers.iter().map(|m| m.len()).sum();
-    let mut result: IndexMap<HashableValue, ThunkId> = IndexMap::with_capacity(total_cap);
+    let mut result: IndexMap<HashableValue, Arc<crate::value::Thunk>> =
+        IndexMap::with_capacity(total_cap);
     for map in layers {
         for (key, thunk) in map {
             result.insert(key, thunk);
@@ -283,7 +281,7 @@ pub(crate) async fn require_dict(
     def_span: Span,
     ctx: &Arc<crate::eval::EvalContext>,
     call_span: Span,
-) -> EvalResult<IndexMap<HashableValue, ThunkId>> {
+) -> EvalResult<IndexMap<HashableValue, Arc<crate::value::Thunk>>> {
     match value {
         Value::Dict(map) => Ok(map),
         Value::Overlay(l, r) => flatten_overlay(&l, &r, name, ctx, call_span).await,
@@ -374,6 +372,7 @@ pub(crate) use crate::builtins_math::{
     builtin_float_add,
     builtin_float_gt,
     builtin_float_gte,
+    builtin_float_lt,
     builtin_float_mul,
     builtin_float_sub,
     builtin_inf_check,
@@ -398,6 +397,7 @@ pub(crate) use crate::builtins_math::{
     builtin_sqrt,
     builtin_str_gt,
     builtin_str_gte,
+    builtin_str_lt,
     builtin_tan,
 };
 
@@ -747,11 +747,8 @@ mod tests {
 
     /// Parse and evaluate an LLT snippet, returning the result value.
     ///
-    fn test_file(src: &str) -> Arc<crate::ast::SourceFile> {
-        Arc::new(crate::ast::SourceFile {
-            path: Arc::from(file!()),
-            content: Arc::from(src),
-        })
+    fn test_file(_src: &str) -> Arc<str> {
+        Arc::from(file!())
     }
 
     /// Uses the stdlib environment so that builtins are available in the body.
@@ -781,54 +778,33 @@ mod tests {
             .unwrap_or_else(|e| panic!("parse_eval: materialize failed for {:?}: {}", llt_src, e))
     }
 
-    /// Create an unevaluated Surface thunk referencing a nonexistent variable.
+    /// Create an unevaluated thunk that always fails when forced.
     ///
-    /// When forced, materializing this thunk will fail with an "undefined variable" error.
-    /// Used by laziness tests to prove that a thunk is not forced prematurely.
+    /// Uses `CoreExpr::Placeholder` which the evaluator always rejects with an internal
+    /// error. Used by laziness tests to prove that a thunk is not forced prematurely.
     fn make_undef_thunk(ctx: &Arc<crate::eval::EvalContext>) -> Arc<Thunk> {
-        let node = Arc::new(crate::ast::SurfaceNode {
-            expr: crate::ast::SurfaceExpression::VarRef {
-                name: "__nonexistent__".to_string(),
-                escaped: false,
-                resolution: crate::ast::Resolution::new(), // Not set → unresolvable → CoreExpr::Placeholder + LowerDiagnostic
-                call_dispatch: crate::ast::CallDispatch::new(),
-                annotation: None,
-            },
-            span: test_span(1, 1, 1, 10),
-            type_guard: crate::ast::TypeAnnotation::new(),
-            provenance: crate::ast::Provenance::new(),
-        });
-        Arc::new(Thunk::surface(
-            node,
-            Arc::new(std::collections::HashMap::new()),
-            Arc::new(std::collections::HashMap::new()),
-            0, // root scope
-            Arc::clone(ctx),
-            test_span(1, 1, 1, 10),
-        ))
+        let span = test_span(1, 1, 1, 10);
+        let expr = Arc::new(crate::ast::Spanned::new(
+            crate::ast::CoreExpr::Placeholder,
+            span.clone(),
+        ));
+        Arc::new(Thunk::core_expr(expr, 0, Arc::clone(ctx), span))
     }
 
-    /// Build a materialized dict thunk whose entries are allocated into `ctx`'s arena.
-    /// Accepts `IndexMap<HashableValue, Arc<Thunk>>` (convenient for test construction) and
-    /// stores each as a `ThunkId` in `Value::Dict`, as the runtime requires.
+    /// Build a materialized dict thunk from an `IndexMap<HashableValue, Arc<Thunk>>`.
     /// Returns a `ThunkId` so the result can be used directly in `BuiltinArgs.args`.
     fn thunk_dict(
         map: IndexMap<HashableValue, Arc<Thunk>>,
         ctx: &Arc<crate::eval::EvalContext>,
     ) -> ThunkId {
-        let mut id_map: IndexMap<HashableValue, ThunkId> = IndexMap::with_capacity(map.len());
-        for (k, v) in map {
-            id_map.insert(k, ctx.alloc_thunk(0, v));
-        }
         ctx.alloc_thunk(
             0,
-            Arc::new(Thunk::value(Value::Dict(id_map), test_span(1, 1, 1, 5))),
+            Arc::new(Thunk::value(Value::Dict(map), test_span(1, 1, 1, 5))),
         )
     }
 
-    /// Helper: materialize the thunk identified by `id` in `ctx`'s arena.
-    async fn mat_id(id: ThunkId, ctx: &Arc<crate::eval::EvalContext>) -> Value {
-        let thunk = ctx.get_thunk(id);
+    /// Helper: materialize an `Arc<Thunk>` — used by tests inspecting dict entry values after T-1772.
+    async fn mat_id(thunk: Arc<Thunk>, ctx: &Arc<crate::eval::EvalContext>) -> Value {
         materialize_sync(&thunk, None, ctx).await.unwrap()
     }
 
@@ -2150,11 +2126,11 @@ mod tests {
         .await;
         match result {
             Value::Dict(map) => {
-                let ok_tid = map
+                let ok_thunk = map
                     .get(&HashableValue::Str("ok".into()))
-                    .copied()
+                    .cloned()
                     .expect("success dict must have 'ok' key");
-                let ok_val_result = mat_id(ok_tid, &ctx).await;
+                let ok_val_result = mat_id(ok_thunk, &ctx).await;
                 assert_eq!(ok_val_result, Value::Int(42));
             }
             _ => panic!("expected Dict {{ok: ...}}, got: {:?}", result),
@@ -2174,11 +2150,11 @@ mod tests {
         .await;
         match result {
             Value::Dict(map) => {
-                let ok_tid = map
+                let ok_thunk = map
                     .get(&HashableValue::Str("ok".into()))
-                    .copied()
+                    .cloned()
                     .expect("success dict must have 'ok' key");
-                let ok_val_result = mat_id(ok_tid, &ctx).await;
+                let ok_val_result = mat_id(ok_thunk, &ctx).await;
                 assert_eq!(ok_val_result, string_val("hello".into()));
             }
             _ => panic!("expected Dict {{ok: ...}}, got: {:?}", result),
@@ -2258,11 +2234,11 @@ mod tests {
         .await;
         match result {
             Value::Dict(map) => {
-                let ok_tid = map
+                let ok_thunk = map
                     .get(&HashableValue::Str("ok".into()))
-                    .copied()
+                    .cloned()
                     .expect("success dict must have 'ok' key");
-                let ok_val_result = mat_id(ok_tid, &ctx).await;
+                let ok_val_result = mat_id(ok_thunk, &ctx).await;
                 assert_eq!(ok_val_result, Value::Int(99));
             }
             _ => panic!("expected Dict {{ok: ...}}, got: {:?}", result),
@@ -2303,11 +2279,11 @@ mod tests {
         .await;
         match result {
             Value::Dict(map) => {
-                let err_tid = map
+                let err_thunk = map
                     .get(&HashableValue::Str("error".into()))
-                    .copied()
+                    .cloned()
                     .expect("failure dict must have 'error' key");
-                let err_val = mat_id(err_tid, &ctx).await;
+                let err_val = mat_id(err_thunk, &ctx).await;
                 let s = format!("{err_val}");
                 assert!(
                     s.contains("builtin error"),
@@ -2778,7 +2754,7 @@ mod tests {
             Value::Dict(keys_map) => {
                 assert_eq!(keys_map.len(), 3);
                 for i in 0..3 {
-                    let val = mat_id(keys_map[&HashableValue::Int(i)], &ctx).await;
+                    let val = mat_id(Arc::clone(&keys_map[&HashableValue::Int(i)]), &ctx).await;
                     assert_eq!(val, Value::Int(i));
                 }
             }
@@ -2808,9 +2784,9 @@ mod tests {
         match result {
             Value::Dict(keys_map) => {
                 assert_eq!(keys_map.len(), 2);
-                let k0 = mat_id(keys_map[&HashableValue::Int(0)], &ctx).await;
+                let k0 = mat_id(Arc::clone(&keys_map[&HashableValue::Int(0)]), &ctx).await;
                 assert_eq!(k0, string_val("name".into()));
-                let k1 = mat_id(keys_map[&HashableValue::Int(1)], &ctx).await;
+                let k1 = mat_id(Arc::clone(&keys_map[&HashableValue::Int(1)]), &ctx).await;
                 assert_eq!(k1, string_val("age".into()));
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -2840,11 +2816,11 @@ mod tests {
         match result {
             Value::Dict(keys_map) => {
                 assert_eq!(keys_map.len(), 3);
-                let k0 = mat_id(keys_map[&HashableValue::Int(0)], &ctx).await;
+                let k0 = mat_id(Arc::clone(&keys_map[&HashableValue::Int(0)]), &ctx).await;
                 assert_eq!(k0, Value::Int(0));
-                let k1 = mat_id(keys_map[&HashableValue::Int(1)], &ctx).await;
+                let k1 = mat_id(Arc::clone(&keys_map[&HashableValue::Int(1)]), &ctx).await;
                 assert_eq!(k1, string_val("label".into()));
-                let k2 = mat_id(keys_map[&HashableValue::Int(2)], &ctx).await;
+                let k2 = mat_id(Arc::clone(&keys_map[&HashableValue::Int(2)]), &ctx).await;
                 assert_eq!(k2, Value::Int(5));
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -2870,9 +2846,9 @@ mod tests {
         .await;
         match result {
             Value::Dict(keys_map) => {
-                let k0 = mat_id(keys_map[&HashableValue::Int(0)], &ctx).await;
-                let k1 = mat_id(keys_map[&HashableValue::Int(1)], &ctx).await;
-                let k2 = mat_id(keys_map[&HashableValue::Int(2)], &ctx).await;
+                let k0 = mat_id(Arc::clone(&keys_map[&HashableValue::Int(0)]), &ctx).await;
+                let k1 = mat_id(Arc::clone(&keys_map[&HashableValue::Int(1)]), &ctx).await;
+                let k2 = mat_id(Arc::clone(&keys_map[&HashableValue::Int(2)]), &ctx).await;
                 assert_eq!(k0, string_val("z".into()));
                 assert_eq!(k1, string_val("a".into()));
                 assert_eq!(k2, string_val("m".into()));
@@ -5030,11 +5006,19 @@ mod tests {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 2);
                 assert_eq!(
-                    mat_id(*map.get(&HashableValue::Str("a".into())).unwrap(), &ctx).await,
+                    mat_id(
+                        Arc::clone(map.get(&HashableValue::Str("a".into())).unwrap()),
+                        &ctx
+                    )
+                    .await,
                     Value::Int(1)
                 );
                 assert_eq!(
-                    mat_id(*map.get(&HashableValue::Str("b".into())).unwrap(), &ctx).await,
+                    mat_id(
+                        Arc::clone(map.get(&HashableValue::Str("b".into())).unwrap()),
+                        &ctx
+                    )
+                    .await,
                     Value::Int(2)
                 );
             }
@@ -5181,7 +5165,7 @@ mod tests {
             Value::Dict(ref map) => {
                 assert_eq!(map.len(), 1);
                 assert_eq!(
-                    mat_id(*map.get(&HashableValue::Int(0)).unwrap(), &ctx).await,
+                    mat_id(Arc::clone(map.get(&HashableValue::Int(0)).unwrap()), &ctx).await,
                     Value::Int(1)
                 );
             }
@@ -5212,11 +5196,11 @@ mod tests {
             Value::Dict(ref map) => {
                 assert_eq!(map.len(), 2);
                 assert_eq!(
-                    mat_id(*map.get(&HashableValue::Int(0)).unwrap(), &ctx).await,
+                    mat_id(Arc::clone(map.get(&HashableValue::Int(0)).unwrap()), &ctx).await,
                     Value::Int(1)
                 );
                 assert_eq!(
-                    mat_id(*map.get(&HashableValue::Int(1)).unwrap(), &ctx).await,
+                    mat_id(Arc::clone(map.get(&HashableValue::Int(1)).unwrap()), &ctx).await,
                     Value::Int(2)
                 );
             }
@@ -5251,19 +5235,19 @@ mod tests {
             Value::Dict(ref map) => {
                 assert_eq!(map.len(), 4);
                 assert_eq!(
-                    mat_id(*map.get(&HashableValue::Int(0)).unwrap(), &ctx).await,
+                    mat_id(Arc::clone(map.get(&HashableValue::Int(0)).unwrap()), &ctx).await,
                     Value::Int(1)
                 );
                 assert_eq!(
-                    mat_id(*map.get(&HashableValue::Int(1)).unwrap(), &ctx).await,
+                    mat_id(Arc::clone(map.get(&HashableValue::Int(1)).unwrap()), &ctx).await,
                     Value::Int(2)
                 );
                 assert_eq!(
-                    mat_id(*map.get(&HashableValue::Int(2)).unwrap(), &ctx).await,
+                    mat_id(Arc::clone(map.get(&HashableValue::Int(2)).unwrap()), &ctx).await,
                     Value::Int(3)
                 );
                 assert_eq!(
-                    mat_id(*map.get(&HashableValue::Int(3)).unwrap(), &ctx).await,
+                    mat_id(Arc::clone(map.get(&HashableValue::Int(3)).unwrap()), &ctx).await,
                     Value::Int(4)
                 );
             }
@@ -5329,19 +5313,19 @@ mod tests {
                 assert_eq!(map.len(), 4);
                 // All values should be reindexed with integer keys 0, 1, 2, 3
                 assert_eq!(
-                    mat_id(*map.get(&HashableValue::Int(0)).unwrap(), &ctx).await,
+                    mat_id(Arc::clone(map.get(&HashableValue::Int(0)).unwrap()), &ctx).await,
                     Value::Int(1)
                 );
                 assert_eq!(
-                    mat_id(*map.get(&HashableValue::Int(1)).unwrap(), &ctx).await,
+                    mat_id(Arc::clone(map.get(&HashableValue::Int(1)).unwrap()), &ctx).await,
                     Value::Int(2)
                 );
                 assert_eq!(
-                    mat_id(*map.get(&HashableValue::Int(2)).unwrap(), &ctx).await,
+                    mat_id(Arc::clone(map.get(&HashableValue::Int(2)).unwrap()), &ctx).await,
                     Value::Int(3)
                 );
                 assert_eq!(
-                    mat_id(*map.get(&HashableValue::Int(3)).unwrap(), &ctx).await,
+                    mat_id(Arc::clone(map.get(&HashableValue::Int(3)).unwrap()), &ctx).await,
                     Value::Int(4)
                 );
             }
@@ -5374,7 +5358,7 @@ mod tests {
             Value::Dict(ref m) => {
                 assert_eq!(m.len(), 1);
                 assert_eq!(
-                    mat_id(*m.get(&HashableValue::Int(0)).unwrap(), &ctx).await,
+                    mat_id(m.get(&HashableValue::Int(0)).unwrap().clone(), &ctx).await,
                     Value::Int(99)
                 );
             }
@@ -5400,7 +5384,7 @@ mod tests {
         match val {
             Value::Proxy { handler: h } => {
                 // Verify the handler thunk contains the expected value.
-                let handler_val = mat_id(h, &ctx).await;
+                let handler_val = mat_id(ctx.get_thunk(h), &ctx).await;
                 assert_eq!(handler_val, Value::Int(42));
             }
             other => panic!("expected Proxy, got {:?}", other),

@@ -38,15 +38,15 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use indexmap::IndexMap;
 
 use crate::ast::Span;
 use crate::builtins::{ok_val, reject_named, require_string};
 use crate::error::{EvalError, EvalResult};
-use crate::value::{string_val, BuiltinArgs, DirPerms, HashableValue, Thunk, ThunkId, Value};
+use crate::value::{string_val, BuiltinArgs, DirPerms, HashableValue, Thunk, Value};
 
 /// Extract DirCap from a Value, checking revocation and returning (dir, perms).
 /// Used by all DirCap-consuming builtins.
@@ -54,7 +54,7 @@ pub(crate) fn extract_dir_cap<'a>(
     val: &'a Value,
     builtin_name: &str,
     span: Span,
-) -> EvalResult<(&'a Rc<cap_std::fs::Dir>, &'a DirPerms)> {
+) -> EvalResult<(&'a cap_std::fs::Dir, &'a DirPerms)> {
     match val {
         Value::DirCap { dir, perms } => Ok((dir, perms)),
         Value::RevocableDirCap {
@@ -62,7 +62,7 @@ pub(crate) fn extract_dir_cap<'a>(
             perms,
             revoked,
         } => {
-            if revoked.get() {
+            if revoked.load(Ordering::Acquire) {
                 return Err(EvalError::user_error(
                     format!("{builtin_name}: capability has been revoked"),
                     span,
@@ -287,7 +287,7 @@ pub(crate) fn builtin_narrow(
 
             ok_val(
                 Value::DirCap {
-                    dir: Rc::new(narrowed),
+                    dir: narrowed,
                     perms: perms.clone(),
                 },
                 call_span,
@@ -443,7 +443,7 @@ pub(crate) fn builtin_narrow(
 
             ok_val(
                 Value::DirCap {
-                    dir: Rc::clone(dir),
+                    dir: dir.try_clone().expect("dir try_clone"),
                     perms: narrowed_perms,
                 },
                 call_span,
@@ -485,7 +485,9 @@ pub(crate) fn builtin_revocable(
 
         // Extract DirCap and preserve permissions
         let (dir, perms) = match val {
-            Value::DirCap { dir, perms } => (Rc::clone(&dir), perms.clone()),
+            Value::DirCap { dir, perms } => {
+                (dir.try_clone().expect("dir try_clone"), perms.clone())
+            }
             Value::RevocableDirCap {
                 inner,
                 perms,
@@ -493,7 +495,7 @@ pub(crate) fn builtin_revocable(
             } => {
                 // Already revocable — return a new revocable wrapper with a new flag
                 // (allows independent revocation)
-                (Rc::clone(&inner), perms.clone())
+                (inner.try_clone().expect("dir try_clone"), perms.clone())
             }
             other => {
                 return Err(EvalError::type_mismatch_ctx(
@@ -507,7 +509,7 @@ pub(crate) fn builtin_revocable(
         };
 
         // Create a new revoked flag
-        let revoked = Rc::new(std::cell::Cell::new(false));
+        let revoked = Arc::new(AtomicBool::new(false));
 
         ok_val(
             Value::RevocableDirCap {
@@ -545,7 +547,7 @@ pub(crate) fn builtin_revoke_cap(
         // Extract RevocableDirCap
         match val {
             Value::RevocableDirCap { revoked, .. } => {
-                revoked.set(true);
+                revoked.store(true, Ordering::Release);
                 ok_val(Value::Dict(IndexMap::new()), call_span)
             }
             other => Err(EvalError::type_mismatch_ctx(
@@ -842,35 +844,34 @@ pub(crate) fn builtin_list_dir(
                 .unwrap_or(0);
 
             // Build metadata dict
-            let mut dict = IndexMap::new();
+            let mut dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             dict.insert(
                 HashableValue::Str("name".into()),
-                ctx.alloc_thunk(0, ok_val(string_val(&name), call_span.clone())?),
+                ok_val(string_val(&name), call_span.clone())?,
             );
             dict.insert(
                 HashableValue::Str("type".into()),
-                ctx.alloc_thunk(0, ok_val(string_val(file_type), call_span.clone())?),
+                ok_val(string_val(file_type), call_span.clone())?,
             );
             dict.insert(
                 HashableValue::Str("size".into()),
-                ctx.alloc_thunk(
-                    0,
-                    ok_val(Value::Int(metadata.len() as i64), call_span.clone())?,
-                ),
+                ok_val(Value::Int(metadata.len() as i64), call_span.clone())?,
             );
             dict.insert(
                 HashableValue::Str("mtime".into()),
-                ctx.alloc_thunk(0, ok_val(Value::Int(mtime), call_span.clone())?),
+                ok_val(Value::Int(mtime), call_span.clone())?,
             );
 
             entry_values.push(Value::Dict(dict));
         }
 
         // Build an integer-keyed Dict from the collected entries
-        let mut result: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+        let mut result: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         for (i, entry) in entry_values.into_iter().enumerate() {
-            let id = ctx.alloc_thunk(0, ok_val(entry, call_span.clone())?);
-            result.insert(HashableValue::Int(i as i64), id);
+            result.insert(
+                HashableValue::Int(i as i64),
+                ok_val(entry, call_span.clone())?,
+            );
         }
         ok_val(Value::Dict(result), call_span)
     })
@@ -952,59 +953,47 @@ pub(crate) fn builtin_stat(
         let mode = 0i64;
 
         // Build metadata dict
-        let mut dict = IndexMap::new();
+        let mut dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         dict.insert(
             HashableValue::Str("name".into()),
-            ctx.alloc_thunk(0, ok_val(string_val(&path), call_span.clone())?),
+            ok_val(string_val(&path), call_span.clone())?,
         );
         dict.insert(
             HashableValue::Str("type".into()),
-            ctx.alloc_thunk(0, ok_val(string_val(file_type), call_span.clone())?),
+            ok_val(string_val(file_type), call_span.clone())?,
         );
         dict.insert(
             HashableValue::Str("size".into()),
-            ctx.alloc_thunk(
-                0,
-                ok_val(Value::Int(metadata.len() as i64), call_span.clone())?,
-            ),
+            ok_val(Value::Int(metadata.len() as i64), call_span.clone())?,
         );
         dict.insert(
             HashableValue::Str("mtime".into()),
-            ctx.alloc_thunk(0, ok_val(Value::Int(mtime), call_span.clone())?),
+            ok_val(Value::Int(mtime), call_span.clone())?,
         );
         dict.insert(
             HashableValue::Str("mode".into()),
-            ctx.alloc_thunk(0, ok_val(Value::Int(mode), call_span.clone())?),
+            ok_val(Value::Int(mode), call_span.clone())?,
         );
         dict.insert(
             HashableValue::Str("is-dir".into()),
-            ctx.alloc_thunk(
-                0,
-                ok_val(
-                    Value::Int(if metadata.is_dir() { 1 } else { 0 }),
-                    call_span.clone(),
-                )?,
-            ),
+            ok_val(
+                Value::Int(if metadata.is_dir() { 1 } else { 0 }),
+                call_span.clone(),
+            )?,
         );
         dict.insert(
             HashableValue::Str("is-file".into()),
-            ctx.alloc_thunk(
-                0,
-                ok_val(
-                    Value::Int(if metadata.is_file() { 1 } else { 0 }),
-                    call_span.clone(),
-                )?,
-            ),
+            ok_val(
+                Value::Int(if metadata.is_file() { 1 } else { 0 }),
+                call_span.clone(),
+            )?,
         );
         dict.insert(
             HashableValue::Str("is-symlink".into()),
-            ctx.alloc_thunk(
-                0,
-                ok_val(
-                    Value::Int(if metadata.is_symlink() { 1 } else { 0 }),
-                    call_span.clone(),
-                )?,
-            ),
+            ok_val(
+                Value::Int(if metadata.is_symlink() { 1 } else { 0 }),
+                call_span.clone(),
+            )?,
         );
 
         ok_val(Value::Dict(dict), call_span)
@@ -1146,59 +1135,47 @@ pub(crate) fn builtin_stat_symlink(
         let mode = 0i64;
 
         // Build metadata dict
-        let mut dict = IndexMap::new();
+        let mut dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         dict.insert(
             HashableValue::Str("name".into()),
-            ctx.alloc_thunk(0, ok_val(string_val(&path), call_span.clone())?),
+            ok_val(string_val(&path), call_span.clone())?,
         );
         dict.insert(
             HashableValue::Str("type".into()),
-            ctx.alloc_thunk(0, ok_val(string_val(file_type), call_span.clone())?),
+            ok_val(string_val(file_type), call_span.clone())?,
         );
         dict.insert(
             HashableValue::Str("size".into()),
-            ctx.alloc_thunk(
-                0,
-                ok_val(Value::Int(metadata.len() as i64), call_span.clone())?,
-            ),
+            ok_val(Value::Int(metadata.len() as i64), call_span.clone())?,
         );
         dict.insert(
             HashableValue::Str("mtime".into()),
-            ctx.alloc_thunk(0, ok_val(Value::Int(mtime), call_span.clone())?),
+            ok_val(Value::Int(mtime), call_span.clone())?,
         );
         dict.insert(
             HashableValue::Str("mode".into()),
-            ctx.alloc_thunk(0, ok_val(Value::Int(mode), call_span.clone())?),
+            ok_val(Value::Int(mode), call_span.clone())?,
         );
         dict.insert(
             HashableValue::Str("is-dir".into()),
-            ctx.alloc_thunk(
-                0,
-                ok_val(
-                    Value::Int(if metadata.is_dir() { 1 } else { 0 }),
-                    call_span.clone(),
-                )?,
-            ),
+            ok_val(
+                Value::Int(if metadata.is_dir() { 1 } else { 0 }),
+                call_span.clone(),
+            )?,
         );
         dict.insert(
             HashableValue::Str("is-file".into()),
-            ctx.alloc_thunk(
-                0,
-                ok_val(
-                    Value::Int(if metadata.is_file() { 1 } else { 0 }),
-                    call_span.clone(),
-                )?,
-            ),
+            ok_val(
+                Value::Int(if metadata.is_file() { 1 } else { 0 }),
+                call_span.clone(),
+            )?,
         );
         dict.insert(
             HashableValue::Str("is-symlink".into()),
-            ctx.alloc_thunk(
-                0,
-                ok_val(
-                    Value::Int(if metadata.is_symlink() { 1 } else { 0 }),
-                    call_span.clone(),
-                )?,
-            ),
+            ok_val(
+                Value::Int(if metadata.is_symlink() { 1 } else { 0 }),
+                call_span.clone(),
+            )?,
         );
 
         ok_val(Value::Dict(dict), call_span)
@@ -1550,7 +1527,7 @@ pub(crate) fn builtin_get_xattr(
                 let len = value.len();
                 ok_val(
                     Value::Bytes {
-                        source: Rc::from(value.as_slice()),
+                        source: Arc::from(value.as_slice()),
                         start: 0,
                         end: len,
                     },
@@ -1875,11 +1852,13 @@ pub(crate) fn builtin_list_xattrs(
 
         // Convert names to an integer-keyed Dict of Strings
         use crate::value::string_val;
-        let mut result: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+        let mut result: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         for (i, name) in names.into_iter().enumerate() {
             let name_str = name.to_string_lossy().to_string();
-            let id = ctx.alloc_thunk(0, ok_val(string_val(&name_str), call_span.clone())?);
-            result.insert(HashableValue::Int(i as i64), id);
+            result.insert(
+                HashableValue::Int(i as i64),
+                ok_val(string_val(&name_str), call_span.clone())?,
+            );
         }
 
         ok_val(Value::Dict(result), call_span)
@@ -2245,7 +2224,7 @@ pub(crate) fn builtin_path_dir(
 
         ok_val(
             Value::DirCap {
-                dir: Rc::new(opened),
+                dir: opened,
                 perms: DirPerms::full(),
             },
             call_span,
@@ -2264,7 +2243,7 @@ pub(crate) fn builtin_path_dir(
 /// - `"create"` → create file if it doesn't exist (write mode implied)
 /// - `"truncate"` → truncate to zero length (write mode implied)
 ///
-/// Returns `Value::File(Rc<RefCell<cap_std::fs::File>>)`.
+/// Returns `Value::File(Arc<Mutex<cap_std::fs::File>>)`.
 /// All I/O protocol is built in tinct — `open` in prelude wraps this in a protocol dict.
 pub(crate) fn builtin_file_open(
     ctx_arg: BuiltinArgs,
@@ -2365,10 +2344,7 @@ pub(crate) fn builtin_file_open(
             }
         };
 
-        ok_val(
-            Value::File(Rc::new(std::cell::RefCell::new(file))),
-            call_span,
-        )
+        ok_val(Value::File(Arc::new(Mutex::new(file))), call_span)
     })
 }
 
@@ -2437,7 +2413,7 @@ pub(crate) fn builtin_file_read(
 
         use std::io::Read;
         let mut buf = vec![0u8; n];
-        let bytes_read = file_rc.borrow_mut().read(&mut buf).map_err(|e| {
+        let bytes_read = file_rc.lock().unwrap().read(&mut buf).map_err(|e| {
             EvalError::user_error(
                 format!("builtin-file-read: read failed: {}", e),
                 call_span.clone(),
@@ -2447,7 +2423,7 @@ pub(crate) fn builtin_file_read(
         let len = buf.len();
         ok_val(
             Value::Bytes {
-                source: Rc::from(buf),
+                source: Arc::from(buf),
                 start: 0,
                 end: len,
             },
@@ -2502,12 +2478,16 @@ pub(crate) fn builtin_file_write(
         let s = require_string("builtin-file-write", s_val, thunk1.span.clone())?;
 
         use std::io::Write;
-        file_rc.borrow_mut().write_all(s.as_bytes()).map_err(|e| {
-            EvalError::user_error(
-                format!("builtin-file-write: write failed: {}", e),
-                call_span.clone(),
-            )
-        })?;
+        file_rc
+            .lock()
+            .unwrap()
+            .write_all(s.as_bytes())
+            .map_err(|e| {
+                EvalError::user_error(
+                    format!("builtin-file-write: write failed: {}", e),
+                    call_span.clone(),
+                )
+            })?;
 
         Ok(thunk0)
     })
@@ -2550,7 +2530,7 @@ pub(crate) fn builtin_file_flush(
         };
 
         use std::io::Write;
-        file_rc.borrow_mut().flush().map_err(|e| {
+        file_rc.lock().unwrap().flush().map_err(|e| {
             EvalError::user_error(
                 format!("builtin-file-flush: flush failed: {}", e),
                 call_span.clone(),
@@ -2587,7 +2567,7 @@ pub(crate) fn builtin_file_close(
 
         match val {
             Value::File(_) => {
-                // Dropping the Rc here closes the file if no other references exist.
+                // Dropping the Arc here closes the file if no other references exist.
                 drop(val);
                 ok_val(Value::Int(1), call_span)
             }
@@ -2667,7 +2647,8 @@ pub(crate) fn builtin_file_seek(
 
         use std::io::Seek;
         file_rc
-            .borrow_mut()
+            .lock()
+            .unwrap()
             .seek(std::io::SeekFrom::Start(pos))
             .map_err(|e| {
                 EvalError::user_error(
@@ -2818,7 +2799,7 @@ pub(crate) fn builtin_read_stdin(
         let len = buf.len();
         ok_val(
             Value::Bytes {
-                source: Rc::from(buf),
+                source: Arc::from(buf),
                 start: 0,
                 end: len,
             },

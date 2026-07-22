@@ -1,15 +1,15 @@
 # Lower and Eval
 
-This document is for Rust contributors working in `src/lower.rs`, `src/eval.rs`, and `src/eval_core.rs`. Tinct developers: the key architectural fact is that lowering is not a separate compiler pass — it happens per-thunk at first force. A tinct expression that is never accessed is never lowered or evaluated.
+This document is for Rust contributors working in `src/lower.rs`, `src/eval.rs`, and `src/eval_core.rs`. Tinct developers: the key architectural fact is that lowering runs eagerly on the entire document before evaluation via the `builtin-lower` pipeline step. The evaluator only ever sees already-lowered `CoreExpr` thunks.
 
-Lowering and evaluation are fused: there is no upfront lowering pass. `lower()` is called lazily inside the CEK machine when a `Surface` thunk is first forced, and eagerly at each document boundary in `eval_document_exprs_with_env`. `eval_core_expr()` then converts the resulting `CoreExpr` into thunks. Both steps happen on demand, per thunk, per first access.
+Lowering and evaluation are discrete pipeline steps: `builtin-lower` runs lowering eagerly on the full document AST before `eval_surface_file` is called. `eval_core_expr()` then converts `CoreExpr` nodes into thunks on demand as evaluation proceeds. A tinct expression that is never accessed is never evaluated, but it is lowered eagerly as part of the document.
 
 ---
 
-## Two-Layer Lazy Pipeline
+## Two-Layer Pipeline
 
 ```
-Surface thunk first forced (or document boundary)
+builtin-lower (eager, runs on full document before eval)
     │
     │ lower(arc, scope_frames)          src/lower.rs
     ↓
@@ -24,7 +24,7 @@ Arc<Thunk>  (unevaluated or materialized)
 Value
 ```
 
-A thunk that is never demanded is never lowered or evaluated. `SurfaceExpression::Error` nodes (from parse recovery) become `CoreExpr::Placeholder`. When a document boundary is reached, lower diagnostics are converted to `EvalError` eagerly — the placeholder only fires lazily for `Surface` thunks forced later by the CEK machine, not at document-load time.
+Lowering runs eagerly on every node before evaluation begins. `SurfaceExpression::Error` nodes (from parse recovery) become `CoreExpr::Placeholder`. Lower diagnostics are converted to `EvalError` at the end of `builtin-lower` — the document load fails immediately if any error-severity diagnostics are produced. At eval time the CEK machine only ever sees `CoreExpr` thunks; `Surface` thunks are created only by the `eval` builtin for runtime-constructed AST and are not part of the standard evaluation pipeline.
 
 ---
 
@@ -214,7 +214,6 @@ The `merge` Var uses `level: u32::MAX, slot: u32::MAX` — a sentinel that trigg
 |---|---|---|
 | `config` | `Arc<EvalConfig>` | Immutable: base_dir, no_fs, require_integrity, macro_injects_map, source_file |
 | `scope_arena` | `Rc<RefCell<ScopeArena>>` | All FlatEnv scopes and thunk slots; single-threaded (LocalSet) |
-| `program_store` | `Rc<RefCell<Vec<SurfaceProgram>>>` | Append-only store for `Value::Program` payloads; shared via Rc::clone |
 | `env_allowed` | `Option<HashSet<String>>` | OS env var allowlist; None = all allowed |
 | `blame_map` | `Mutex<HashMap<ThunkId, String>>` | Pipeline blame: maps `%` ThunkId → producing stage label |
 | `boundary_guards` | `RwLock<HashMap<Span, Type>>` | Type inference boundary guards: span → expected type |
@@ -300,7 +299,7 @@ Key dispatch:
 | `Fn` | Materialized `Value::Function` capturing `env_id` as `closure_env_id`; FnAnnotation populated from `return_ann` |
 | `Call { func, args }` | Calls `eval_call_core` — creates a `UnevaluatedState::FnCall` or `UnevaluatedState::BuiltinCall` thunk |
 | `TypeAssert { .. }` | `UnevaluatedState::CoreExpr` thunk — CEK machine handles `TypeAssertCheck` continuation |
-| `Sequential` | `UnevaluatedState::CoreExpr` thunk — CEK machine handles `SequentialStep` continuation |
+| `Sequential` | `UnevaluatedState::CoreExpr` thunk — CEK machine handles `LetrecChainStep` continuation |
 | `Match` | `UnevaluatedState::CoreExpr` thunk — CEK machine handles `MatchDispatch` continuation |
 | `Variant { payload: None }` | Materialized `Value::Variant { tycon, ctor, payload: None }` |
 | `Variant { payload: Some(expr) }` | Materializes the payload dict immediately, stores as ThunkId; `Value::Variant { payload: Some(id) }` |
@@ -339,12 +338,14 @@ This two-phase protocol allows entries to reference each other by slot before an
 
 ### What lowering does vs desugaring
 
-Desugaring (`src/desugar.rs`) is an AST-to-AST transformation: it removes `Pipe` nodes and `$_` placeholders by rewriting them as `Call` and `Fn` nodes in the `SurfaceExpression` layer. Lowering (`src/lower.rs`) is the `SurfaceExpression`-to-`CoreExpr` translation: it reads inline OnceLock fields (set by the resolver and type checker) and produces the internal representation the CEK machine evaluates. The two passes are distinct: desugar runs once before name resolution; lowering runs per-thunk at eval time.
+Desugaring (`src/desugar.rs`) is an AST-to-AST transformation: it removes `Pipe` nodes and `$_` placeholders by rewriting them as `Call` and `Fn` nodes in the `SurfaceExpression` layer. Lowering (`src/lower.rs`) is the `SurfaceExpression`-to-`CoreExpr` translation: it reads inline OnceLock fields (set by the resolver and type checker) and produces the internal representation the CEK machine evaluates. The two passes are distinct: desugar runs once before name resolution; lowering runs eagerly via `builtin-lower` before evaluation begins.
 
 ### What lowering does vs name resolution
 
 Name resolution (`src/resolve.rs`) walks the surface AST and writes de Bruijn `(level, slot)` coordinates into inline `OnceLock<Option<(u32, u32)>>` fields on `VarRef` and `Field` nodes. Lowering reads those fields. The resolver does not produce `CoreExpr`; lowering does not perform name lookup. If the resolver did not run on a node, `resolution.get()` returns `None` and lowering emits a diagnostic + `Placeholder`.
 
-### `Source` thunks vs direct lowering
+### Direct lowering — no Surface thunks
 
-`UnevaluatedState::Surface` thunks are created by the `eval` builtin (re-evaluation of runtime-constructed AST). When forced, `force_step` calls `lower()` then `eval_core_expr()`. Direct lowering (at document boundaries and inside `eval_quote_preprocess`) calls `lower()` and `eval_core_expr()` in the same call path without creating an intermediate `Surface` thunk.
+`UnevaluatedState::Surface` no longer exists. T-1770 deleted `Surface` entirely. All lowering is eager and explicit: `builtin-lower` runs `lower()` on every Expr item in the document before any evaluation begins. The evaluator only receives `UnevaluatedState::CoreExpr` thunks. There is no lazy Surface thunk path in the standard pipeline.
+
+When the `eval` builtin re-evaluates runtime-constructed AST, it calls `lower()` followed by `eval_core_expr()` directly — no intermediate `Surface` thunk is created. Similarly, `eval_quote_preprocess` calls `lower()` and `eval_core_expr()` in the same call path. In both cases, lowering is performed inline at the call site, not deferred to a thunk-forcing step.

@@ -805,16 +805,12 @@ impl Type {
     /// Use for synthetic/internal failures where a meaningful description exists but no AST
     /// node to point at. Shows as `<error: {msg}>` in diagnostics.
     pub fn error_note(msg: impl Into<String>) -> Self {
-        use crate::ast::Position;
-        let zero = Position {
-            offset: 0,
-            line: 0,
-            column: 0,
-        };
         let span = Span {
-            start: zero,
-            end: zero,
             file: crate::rust_span!().file,
+            start_line: 0,
+            start_col: 0,
+            end_line: 0,
+            end_col: 0,
             name: None,
         };
         Type::Error(Arc::new(vec![TypeDiagnostic::error(

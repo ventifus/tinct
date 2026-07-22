@@ -199,8 +199,7 @@ pub(crate) fn builtin_bytes_of(
         match val {
             Value::Dict(map) => {
                 // Iterate dict values in insertion order — map is owned (Send)
-                for (_key, thunk_id) in map {
-                    let item_thunk = ctx.get_thunk(thunk_id);
+                for (_key, item_thunk) in map {
                     let item_val = materialize(&item_thunk, Some(&call_span), &ctx).await?;
 
                     match item_val {
@@ -650,7 +649,7 @@ pub(crate) fn builtin_encode(
 /// - `b`: Bytes — the byte sequence
 ///
 /// Returns `Int` in range 0–255. Errors if `i` is out of bounds.
-/// O(1) — direct slice index into the underlying `Rc<[u8]>`.
+/// O(1) — direct slice index into the underlying `Arc<[u8]>`.
 pub(crate) fn builtin_bytes_get(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -745,7 +744,7 @@ pub(crate) fn builtin_bytes_get(
 ///
 /// Returns `Bytes`. Errors if `start` or `start + len` is out of bounds,
 /// or if `len` is negative.
-/// O(1) — shares the underlying `Rc<[u8]>` without copying, just adjusts offsets.
+/// O(1) — shares the underlying `Arc<[u8]>` without copying, just adjusts offsets.
 pub(crate) fn builtin_bytes_slice(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -793,7 +792,7 @@ pub(crate) fn builtin_bytes_slice(
             .expect("pre-materialized by pos_strictness");
 
         let (source, base_start, base_end) = match &b_val {
-            Value::Bytes { source, start, end } => (std::rc::Rc::clone(source), *start, *end),
+            Value::Bytes { source, start, end } => (Arc::clone(source), *start, *end),
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-bytes-slice".to_string(),
@@ -865,7 +864,7 @@ pub(crate) fn builtin_bytes_slice(
             .into());
         }
 
-        // Zero-copy subslice: share the same Rc<[u8]>, adjust offsets only.
+        // Zero-copy subslice: share the same Arc<[u8]>, adjust offsets only.
         let new_start = base_start + start_i as usize;
         let new_end = base_start + end_i as usize;
         ok_val(

@@ -307,7 +307,7 @@ Extends Launchbury (1993) natural semantics for call-by-need with deferred compu
 - `unevaluated: Mutex<(Option<UnevaluatedState>, Option<tokio::task::Id>)>` — taken on evaluation start via `try_claim()`
 - `result: tokio::sync::OnceCell<Result<Value, Arc<EvalError>>>` — set exactly once on completion via `settle()`
 
-`UnevaluatedState` is a 6-variant enum: `Surface`, `AstField`, `CoreExpr`, `BuiltinCall`, `FnCall`, `Guarded`. Blackholing (cycle detection) is implemented by `try_claim()` returning `None` — if the state has already been taken, the thunk is in progress. Non-cacheable errors restore the state via `reset()`.
+`UnevaluatedState` is a 5-variant enum: `AstField`, `CoreExpr`, `BuiltinCall`, `FnCall`, `Guarded`. Blackholing (cycle detection) is implemented by `try_claim()` returning `None` — if the state has already been taken, the thunk is in progress. Non-cacheable errors restore the state via `reset()`.
 
 **User-visible states:** As a user, you observe three effective states:
 
@@ -315,7 +315,7 @@ Extends Launchbury (1993) natural semantics for call-by-need with deferred compu
 - A thunk is **materialized** when first accessed (you used a value; it was computed and cached).
 - A thunk is **failed** when a computation error occurred (the error is cached; re-accessing returns the same error).
 
-The runtime distinguishes six `UnevaluatedState` variants internally: `Surface` (pre-lowering AST node), `AstField` (lazy AST field access), `CoreExpr` (lowered expression body), `BuiltinCall` (deferred builtin), `FnCall` (deferred function call), and `Guarded` (type assertion contract). The `ThunkState` enum derived from inspecting the two fields has four logical states: `Unevaluated` (state present, no result), `InProgress` (state taken, no result yet), `Materialized(Value)` (result is `Ok`), `Failed(Arc<EvalError>)` (result is `Err`).
+The runtime distinguishes five `UnevaluatedState` variants internally: `AstField` (lazy AST field access), `CoreExpr` (lowered expression body), `BuiltinCall` (deferred builtin), `FnCall` (deferred function call), and `Guarded` (type assertion contract). The `ThunkState` enum derived from inspecting the two fields has four logical states: `Unevaluated` (state present, no result), `InProgress` (state taken, no result yet), `Materialized(Value)` (result is `Ok`), `Failed(Arc<EvalError>)` (result is `Err`).
 
 ### Part 1: State Transition Graph
 
@@ -341,7 +341,7 @@ Transition rules (each maps to `try_claim()`, `settle()`, or `reset()` in `src/v
 
 **Monotonicity proof sketch:** The materialization graph has no cycles. One backward edge class exists (InProgress → UnevaluatedState via `reset()`), which is acyclic: InProgress cannot cycle back through a deferred state because the restored state transitions only to InProgress via `try_claim()`, and from there only to Materialized or Failed. Each UnevaluatedState variant transitions only to InProgress. InProgress transitions only to Materialized or Failed — with one exception: the backward edge for non-cacheable errors (see Exception below); these preserve semantic monotonicity because the thunk's observable meaning is unchanged between retries. Materialized is terminal (OnceCell is write-once). Failed is terminal for the same reason, though diagnostic refinement may enrich the error's stack frames. Therefore all transition sequences are finite, and the semantic content of a thunk is monotonically determined. ∎
 
-**Exception — retryable non-cacheable errors:** The backward edge (InProgress → UnevaluatedState via `reset()`) fires when evaluation fails with a non-cacheable error. This applies to all six UnevaluatedState variants uniformly. `DepthExceeded` can be raised by the continuation stack depth guard (`MAX_CONTINUATION_STACK = 2048` frames, `src/eval_materialize.rs`) inside the core CEK loop, and by individual builtins (e.g., `MAX_COLLECT_SIZE` in `$collect`). Because such errors are transient resource-bound conditions (not semantic errors), they are non-cacheable — `settle()` is skipped and the thunk is restored to its pre-InProgress state via `reset()` so the computation can be retried. This backward restoration means strict state-order monotonicity does not hold for the non-cacheable path. However, semantic monotonicity is preserved: the thunk's observable meaning is unchanged between attempts, and the error identity is not fixed. Every other error kind is cacheable and takes the normal `InProgress → Failed` forward edge. (`src/eval_materialize.rs`, in `force_step()`)
+**Exception — retryable non-cacheable errors:** The backward edge (InProgress → UnevaluatedState via `reset()`) fires when evaluation fails with a non-cacheable error. This applies to all five UnevaluatedState variants uniformly. `DepthExceeded` can be raised by the continuation stack depth guard (`MAX_CONTINUATION_STACK = 2048` frames, `src/eval_materialize.rs`) inside the core CEK loop, and by individual builtins (e.g., `MAX_COLLECT_SIZE` in `$collect`). Because such errors are transient resource-bound conditions (not semantic errors), they are non-cacheable — `settle()` is skipped and the thunk is restored to its pre-InProgress state via `reset()` so the computation can be retried. This backward restoration means strict state-order monotonicity does not hold for the non-cacheable path. However, semantic monotonicity is preserved: the thunk's observable meaning is unchanged between attempts, and the error identity is not fixed. Every other error kind is cacheable and takes the normal `InProgress → Failed` forward edge. (`src/eval_materialize.rs`, in `force_step()`)
 
 **Atomicity invariant:** `try_claim()` atomically takes the `UnevaluatedState` from the `Mutex<(Option<UnevaluatedState>, Option<tokio::task::Id>)>` via `Option::take()` and records the current task id. This ensures no observer can see the old state after the transition begins. The `Mutex` provides exclusive access across async tasks; `settle()` writes the result to the `OnceCell` (write-once) and notifies all waiters via `tokio::sync::Notify`.
 
@@ -567,7 +567,7 @@ The iterative evaluator (§Iterative Evaluator) uses explicit `Cont` variants on
 
 - **BuiltinCall** (formerly PendingBuiltin) stores deferred builtin calls for lazy sequences (`$map`, `$filter`, `$fold_step`, etc.) and proxy handler dispatch. Cannot be replaced by CoreExpr because builtin function pointers (`BuiltinFn`) have no AST representation. Lazy sequences need persistent storage for deferred steps.
 - **FnCall** (formerly PendingCall) stores deferred function calls for lazy dispatch and tail-call optimization. Represents work already done by `eval_call` (evaluated func_expr, wrapped args) that CoreExpr would duplicate.
-- The monotonicity proof and semantic properties remain unchanged — the `UnevaluatedState` (6-variant) + `OnceCell` design is the stable architecture.
+- The monotonicity proof and semantic properties remain unchanged — the `UnevaluatedState` (5-variant) + `OnceCell` design is the stable architecture.
 - **Sharing preservation is the critical migration invariant**: thunk identity (`Arc<Thunk>` pointer) must be preserved through continuation dispatch. A materialized thunk must be the same allocation that was created at the definition site.
 - The iterative CEK machine uses heap-allocated continuations with no hardcoded depth bound
 
@@ -1327,7 +1327,7 @@ The `ValueVisitor` trait (in `src/lib.rs`) provides a visitor pattern for struct
 **Arena allocation (current implementation).** The runtime uses `ThunkArena` with `ThunkId` handles for all thunk storage. This is the "arena-backed registry" approach:
 
 - `ThunkArena` exists in `EvalContext` with `RefCell` interior mutability
-- `Value` variants use `ThunkId` handles: `Dict(IndexMap<Key, ThunkId>)`, `Seq { head: ThunkId, tail: ThunkId }`, `Overlay(ThunkId, ThunkId)`
+- `Value` variants use `ThunkId` handles for sequences: `Seq { head: ThunkId, tail: ThunkId }`, `Overlay(ThunkId, ThunkId)`. `Dict` uses `Arc<Thunk>` directly: `Dict(IndexMap<HashableValue, Arc<Thunk>>)`
 - Allocation goes through `ctx.alloc_thunk(Thunk)` which wraps in `Arc<Thunk>` and stores in arena `Vec<Arc<Thunk>>`
 - Arena persists across `---` boundaries (append-only, no per-section deallocation)
 - **No migration needed**: ThunkIds are stable indices that never invalidate; `$include` cache stores standalone `Arc<Thunk>` (arena-independent)
@@ -1442,7 +1442,7 @@ enum Cont {
     // (DotAccessForce was removed — dot access is eliminated by the lowering pass before the
     // evaluator runs; field-get and slot-get are normal Call nodes, no continuation needed)
     TypeAssertCheck(Box<TypeAssertCheckData>),          // validate against TypeAssert annotation
-    SequentialStep(Box<SequentialStepData>),            // process next step in Sequential expression
+    LetrecChainStep(Box<LetrecChainStepData>),           // process next step in Sequential expression
     ForceAndBind(Box<ForceAndBindData>),                // force dict entry and bind to environment
     MatchDispatch(Box<MatchDispatchData>),              // dispatch to next arm after scrutinee materialized
     MatchGuardCheck(Box<MatchGuardCheckData>),          // check guard result for matched arm
@@ -1507,7 +1507,7 @@ This is **structurally determined** by the `Cont` variant on the stack, not infe
 
 **Error stack traces:** Walk `Vec<Cont>` to reconstruct the call stack, using each variant's stored span and label to produce precise "materialized at" context for every frame. This replaces the current `EvalError::stack` vector with a continuation-derived trace.
 
-**Cont variant count:** 11 variants — `Memoize`, `PendingCallDispatch`, `GuardedValidate`, `BuiltinForceArg`, `TypeAssertCheck`, `SequentialStep`, `ForceAndBind`, `MatchDispatch`, `CaseArmExactValueCheck`, `MatchGuardCheck`, `PredicateCheck`. (`DotAccessForce` was removed — dot access desugars to `Call(field-get/slot-get, ...)` before evaluation.) Each variant stores only its specific continuation data (Arc pointers + Span + small fields). Frame size: ≤96 bytes per Cont (enforced by the compile-time assertion at `src/eval_materialize.rs:501`).
+**Cont variant count:** 11 variants — `Memoize`, `PendingCallDispatch`, `GuardedValidate`, `BuiltinForceArg`, `TypeAssertCheck`, `LetrecChainStep`, `ForceAndBind`, `MatchDispatch`, `CaseArmExactValueCheck`, `MatchGuardCheck`, `PredicateCheck`. (`DotAccessForce` was removed — dot access desugars to `Call(field-get/slot-get, ...)` before evaluation.) Each variant stores only its specific continuation data (Arc pointers + Span + small fields). Frame size: ≤96 bytes per Cont (enforced by the compile-time assertion at `src/eval_materialize.rs:501`).
 
 **Relationship to allocation strategy:** Arena allocation and flat environments integrate naturally with the CEK machine: `Cont` variants hold `ThunkId` handles into the arena, and the `Vec<Cont>` stack's lifetime defines the arena's lifetime scope.
 
@@ -1594,7 +1594,7 @@ Thunks are allocated in a `ThunkArena` (global bulk deallocation boundary) but s
 | TypeAssert validation | `Action::EvalCore` (inner expr) + `Cont::TypeAssertCheck` |
 | Dot access (field extraction) | Lowered to `Call(field-get/slot-get, ...)` before eval — no continuation needed |
 | Function/builtin call dispatch | `Action::Materialize` (callee) + `Cont::PendingCallDispatch` |
-| Sequential expression chain | `Action::EvalCore` (current expr) + `Cont::SequentialStep` (for next) |
+| Sequential expression chain | `Action::EvalCore` (current expr) + `Cont::LetrecChainStep` (for next) |
 | Match expression dispatch | `Action::Materialize` (scrutinee) + `Cont::MatchDispatch` |
 | Match guard check | `Action::EvalCore` (guard expr) + `Cont::MatchGuardCheck` |
 | Guarded thunk validation | `Action::Materialize` (inner thunk) + `Cont::GuardedValidate` |

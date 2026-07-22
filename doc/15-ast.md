@@ -123,16 +123,15 @@ After the Surface AST is resolved and type-checked, the **lowering pass** (`src/
 - **Match arm patterns pass through as `Arc<SurfaceNode>`:** `SurfaceMatchArm.pattern` is stored as an `Arc<SurfaceNode>` and passed through to the evaluator unchanged — no lowering step converts match arm patterns into a separate pattern representation.
 
 ```rust
-/// Source location
+/// Source location — compact span layout (T-1771).
+/// File path is shared via Arc<str>; no source text stored in spans.
 struct Span {
-    start: Position,
-    end: Position,
-}
-
-struct Position {
-    offset: usize,  // byte offset
-    line: usize,    // 1-based
-    column: usize,  // 1-based Unicode scalar count
+    file: Arc<str>,      // file path — shared across all spans from the same file
+    start_line: u32,     // 1-based
+    start_col: u32,      // 1-based
+    end_line: u32,       // 1-based
+    end_col: u32,        // 1-based
+    name: Option<Arc<str>>,  // optional binding name for blame tracking
 }
 
 /// A node with source span

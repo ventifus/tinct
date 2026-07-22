@@ -8,20 +8,18 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use std::io::{self, Read};
 use std::path::PathBuf;
-use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::Arc;
 use tinct::{
-    build_core_env, literate, parse, string_val, EvalContext, HashableValue, SourceFile, Thunk,
-    ThunkId, Value,
+    build_core_env, literate, parse, string_val, EvalContext, HashableValue, Thunk, ThunkId, Value,
 };
 // Exit codes for llt eval
 const EXIT_OK: i32 = 0;
 const EXIT_ERROR: i32 = 1;
 const EXIT_TIMEOUT: i32 = 2;
-const EXIT_OOM: i32 = tinct::memory_budget::EXIT_OOM;
-// EXIT_OOM (3): soft heap-limit exceeded — diagnostics printed, clean exit.
-// Note: RLIMIT_AS violations (hard backstop) cause abort via handle_alloc_error, not a clean exit.
+// EXIT_OOM (3, formerly used for soft heap limit) is removed — the soft AtomicI64 budget
+// tracker (memory_budget.rs) is deleted (T-1770). The hard RLIMIT_AS backstop still applies
+// but causes abort via handle_alloc_error, not a clean exit.
 // RLIMIT_CPU violations cause SIGXCPU (soft) or SIGKILL (hard). Both terminate without EXIT_ERROR.
 
 /// A pipeline stage: either a file path or an inline expression.
@@ -334,14 +332,6 @@ async fn async_main() -> i32 {
 
     let cli = Cli::parse();
 
-    // Soft heap limit: fires before RLIMIT_AS, prints diagnostics, exits cleanly.
-    // Works on all platforms; no-op when --max-memory is not passed.
-    if let Some(max_bytes) = cli.max_memory {
-        if max_bytes > 0 {
-            tinct::memory_budget::set_limit(max_bytes);
-        }
-    }
-
     // Hard RLIMIT_AS backstop: catches anything that bypasses the allocator
     // (direct mmap, stack growth, shared-library mappings).
     #[cfg(unix)]
@@ -473,19 +463,8 @@ async fn async_main() -> i32 {
     match result {
         Ok(()) => EXIT_OK,
         Err(e) => {
-            if tinct::memory_budget::is_oom_flagged() {
-                let limit = cli.max_memory.unwrap_or(0);
-                eprintln!("tinct: out of memory (limit: {limit} bytes)");
-                eprintln!(
-                    "  tracked heap (arena): {} bytes",
-                    tinct::memory_budget::allocated_bytes()
-                );
-                eprintln!("  note: dict/string/async heap untracked; actual usage may be higher");
-                EXIT_OOM
-            } else {
-                eprintln!("{e}");
-                EXIT_ERROR
-            }
+            eprintln!("{e}");
+            EXIT_ERROR
         }
     }
 }
@@ -1550,7 +1529,7 @@ async fn run_eval(
         let cwd_dir = cap_std::fs::Dir::open_ambient_dir(&cwd_path, cap_std::ambient_authority())
             .map_err(|e| format!("cannot open %cwd directory: {e}"))?;
         let cwd_value = Value::DirCap {
-            dir: Rc::new(cwd_dir),
+            dir: cwd_dir,
             perms: tinct::DirPerms::full(),
         };
         let cwd_thunk = Arc::new(tinct::Thunk::value(cwd_value, tinct::rust_span!()));
@@ -1621,9 +1600,8 @@ async fn run_eval(
                 cap_std::fs::Dir::open_ambient_dir(path, cap_std::ambient_authority())
             {
                 let libdir_arc = Arc::new(libdir_std);
-                // Clone the Dir for the DirCap value (needs Rc<Dir>)
-                let libdir_dir_for_cap =
-                    Rc::new(libdir_arc.open_dir(".").expect("failed to dup libdir"));
+                // Clone the Dir for the DirCap value (now owned)
+                let libdir_dir_for_cap = libdir_arc.open_dir(".").expect("failed to dup libdir");
                 let libdir_value = Value::DirCap {
                     dir: libdir_dir_for_cap,
                     perms: tinct::DirPerms::full(),
@@ -1648,8 +1626,8 @@ async fn run_eval(
         use tinct::Value;
         let cap_entries = open_cap_fs_entries(&cap_fs, no_fs)?;
         for (name, cap_dir_arc, perms) in cap_entries {
-            // Clone the Arc to get an independent Rc for the DirCap value
-            let dir_for_cap = Rc::new(cap_dir_arc.open_dir(".").expect("failed to dup cap dir"));
+            // Clone the Arc to get an independent owned Dir for the DirCap value
+            let dir_for_cap = cap_dir_arc.open_dir(".").expect("failed to dup cap dir");
             let cap_value = Value::DirCap {
                 dir: dir_for_cap,
                 perms,
@@ -1706,7 +1684,7 @@ async fn run_eval(
 
         // Create NetCap values and inject them as `%NAME`.
         for (name, entries) in net_caps {
-            let cap_value = Value::NetCap(Rc::new(entries));
+            let cap_value = Value::NetCap(Arc::new(entries));
             let cap_thunk = Arc::new(tinct::Thunk::value(cap_value, tinct::rust_span!()));
             env.write().unwrap().insert_slot_name_only(name.clone());
             deferred_cap_thunks.push((name, cap_thunk));
@@ -1734,10 +1712,10 @@ async fn run_eval(
                     timestamp_str
                 )
             })?;
-            Value::ClockCap(Rc::new(ClockCapInner::Fixed(nanos)))
+            Value::ClockCap(Arc::new(ClockCapInner::Fixed(nanos)))
         } else {
             // Default: real system clock
-            Value::ClockCap(Rc::new(ClockCapInner::Real))
+            Value::ClockCap(Arc::new(ClockCapInner::Real))
         };
 
         let cap_thunk = Arc::new(tinct::Thunk::value(cap_value, tinct::rust_span!()));
@@ -1999,21 +1977,25 @@ async fn run_eval(
         eval_ctx.alloc_thunk(0, named_thunk);
     }
 
+    // Helper: create a materialized thunk (Arc<Thunk>) for a value.
+    // Used to build Value::Dict entries (which now store Arc<Thunk> directly).
+    let mk_thunk = |v: Value| -> Arc<Thunk> { Arc::new(Thunk::value(v, tinct::rust_span!())) };
+
     // Helper: allocate a value as a materialized thunk in the eval_ctx arena and return its ThunkId.
-    // Used to build Value::Dict entries (which use ThunkId, not Arc<Thunk>).
+    // Used only for Value::Variant payload (which still embeds ThunkId).
     let alloc_val = |v: Value| -> ThunkId {
         eval_ctx.alloc_thunk(0, Arc::new(Thunk::value(v, tinct::rust_span!())))
     };
 
     // Build %programs as an integer-keyed Value::Dict.
-    // Each entry is a Value::Variant (ProgramItem.File or ProgramItem.Expr) ThunkId.
+    // Each entry is a Value::Variant (ProgramItem.File or ProgramItem.Expr) Arc<Thunk>.
     //
-    // Value::Dict uses ThunkId keys (arena-based), not Arc<Thunk>.
+    // After T-1772, Value::Dict stores Arc<Thunk> directly.
     // All thunks allocated here use the eval_ctx arena created above.
     let programs_dict: Value = {
         use indexmap::IndexMap;
         let mut pre_open_iter = pre_opened_files.into_iter();
-        let mut dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+        let mut dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
 
         for (index, stage) in interleaved_stages.iter().enumerate() {
             let key = HashableValue::Int(index as i64);
@@ -2022,11 +2004,9 @@ async fn run_eval(
                     if file_path == "-" {
                         // stdin: ProgramItem.File with path="-", no handle.
                         // loader.llt eval-file checks path=="-" and reads from %stdin.
-                        let mut payload_dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
-                        payload_dict.insert(
-                            HashableValue::Str("path".into()),
-                            alloc_val(string_val("-")),
-                        );
+                        let mut payload_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+                        payload_dict
+                            .insert(HashableValue::Str("path".into()), mk_thunk(string_val("-")));
                         let payload_id = alloc_val(Value::Dict(payload_dict));
                         Value::Variant {
                             tycon: Arc::from("ProgramItem"),
@@ -2044,18 +2024,18 @@ async fn run_eval(
                         // Wrap the raw std::fs::File as a Value::File (thin OS primitive).
                         // cap_std::fs::File::from_std() wraps a std::fs::File without ambient authority.
                         // AMBIENT-OK: this file was opened before Landlock activation (pre_opened_files).
-                        use std::cell::RefCell;
+                        use std::sync::Mutex;
                         let cap_file = cap_std::fs::File::from_std(raw_handle);
-                        let handle_value = Value::File(Rc::new(RefCell::new(cap_file)));
+                        let handle_value = Value::File(Arc::new(Mutex::new(cap_file)));
 
                         // Build payload dict: { path: String, handle: Handle }
-                        let mut payload_dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+                        let mut payload_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
                         payload_dict.insert(
                             HashableValue::Str("path".into()),
-                            alloc_val(string_val(&abs_path)),
+                            mk_thunk(string_val(&abs_path)),
                         );
                         payload_dict
-                            .insert(HashableValue::Str("handle".into()), alloc_val(handle_value));
+                            .insert(HashableValue::Str("handle".into()), mk_thunk(handle_value));
                         let payload_id = alloc_val(Value::Dict(payload_dict));
                         Value::Variant {
                             tycon: Arc::from("ProgramItem"),
@@ -2066,10 +2046,10 @@ async fn run_eval(
                 }
                 PipelineStage::Expr(expression) => {
                     // ProgramItem.Expr { src: String }
-                    let mut payload_dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+                    let mut payload_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
                     payload_dict.insert(
                         HashableValue::Str("src".into()),
-                        alloc_val(string_val(expression)),
+                        mk_thunk(string_val(expression)),
                     );
                     let payload_id = alloc_val(Value::Dict(payload_dict));
                     Value::Variant {
@@ -2079,7 +2059,7 @@ async fn run_eval(
                     }
                 }
             };
-            dict.insert(key, alloc_val(item_value));
+            dict.insert(key, mk_thunk(item_value));
         }
         Value::Dict(dict)
     };
@@ -2094,24 +2074,24 @@ async fn run_eval(
     // dict 3 reads %args.input to construct the input ProgramItem.File if non-empty.
     let args_dict: Value = {
         use indexmap::IndexMap;
-        let mut dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+        let mut dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
 
         // output: name of the -o formatter (default "none").
         dict.insert(
             HashableValue::Str("output".into()),
-            alloc_val(string_val(output.as_deref().unwrap_or("none"))),
+            mk_thunk(string_val(output.as_deref().unwrap_or("none"))),
         );
 
         // input: name of the -i formatter (default "" = no input formatter).
         dict.insert(
             HashableValue::Str("input".into()),
-            alloc_val(string_val(input.as_deref().unwrap_or(""))),
+            mk_thunk(string_val(input.as_deref().unwrap_or(""))),
         );
 
         // strict: whether type errors are fatal.
         dict.insert(
             HashableValue::Str("strict".into()),
-            alloc_val(Value::Int(if strict { 1 } else { 0 })),
+            mk_thunk(Value::Int(if strict { 1 } else { 0 })),
         );
 
         Value::Dict(dict)
@@ -2296,14 +2276,13 @@ async fn run_fmt(
     output_name: &str,
     strict: bool,
 ) -> Result<(), String> {
-    let sf = read_source(file_path)?;
-    let source = String::from(&*sf.content);
+    let (sf_path, source) = read_source(file_path)?;
 
     // If --strict is set, typecheck the file first and fail if type errors exist.
     // Parse once and run the type checking pipeline on the parsed AST.
     // This avoids the double-parse that would happen if we called typecheck_source().
     if strict {
-        let output = parse(&source, Arc::clone(&sf))
+        let output = parse(&source, Arc::clone(&sf_path))
             .map_err(|e| tinct::format_parse_error(&e, &source, file_path))?;
 
         // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
@@ -2438,11 +2417,10 @@ async fn run_lint(
     _cap_fs: &[String],
     _cap_net: &[String],
 ) -> Result<(), String> {
-    let sf = read_source(file_path)?;
-    let source = String::from(&*sf.content);
+    let (sf_path, source) = read_source(file_path)?;
 
     // Parse the file
-    let output = parse(&source, Arc::clone(&sf))
+    let output = parse(&source, Arc::clone(&sf_path))
         .map_err(|e| tinct::format_parse_error(&e, &source, file_path))?;
 
     // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
@@ -2518,8 +2496,8 @@ fn format_type_diagnostic(diag: &tinct::TypeDiagnostic, source: &str, file_name:
 
     let code = diag.kind;
     let primary_span = diag.primary_span();
-    let line = primary_span.start.line;
-    let col = primary_span.start.column;
+    let line = primary_span.start_line;
+    let col = primary_span.start_col;
 
     // Header: level[Txxx]: message
     let mut out = format!("{level_str}[{code}]: {}\n", diag.message);
@@ -2553,31 +2531,24 @@ fn run_hash(file_path: &str) -> Result<(), String> {
 
 /// Read LLT source from a file path or stdin (when path is `-`).
 ///
-/// Returns an `Arc<SourceFile>` with both the path and content, ready to be
-/// threaded into `parse()` so that all spans in the parsed AST carry
-/// a reference to the originating source file.
+/// Returns a `(Arc<str>, String)` pair of (file_path, source_content) ready to be
+/// threaded into `parse()` so that all spans in the parsed AST carry the file path.
 // AMBIENT-OK: CLI entry point reading operator-specified file.
 #[allow(clippy::disallowed_types)]
-fn read_source(file_path: &str) -> Result<Arc<SourceFile>, String> {
+fn read_source(file_path: &str) -> Result<(Arc<str>, String), String> {
     if file_path == "-" {
         let mut buf = String::new();
         io::stdin()
             .read_to_string(&mut buf)
             .map_err(|e| format!("error reading stdin: {e}"))?;
-        Ok(Arc::new(SourceFile {
-            path: Arc::from("-"),
-            content: Arc::from(buf.as_str()),
-        }))
+        Ok((Arc::from("-"), buf))
     } else {
         let mut buf = String::new();
         std::fs::File::open(file_path)
             .map_err(|e| format!("error reading file: {e}"))?
             .read_to_string(&mut buf)
             .map_err(|e| format!("error reading file: {e}"))?;
-        Ok(Arc::new(SourceFile {
-            path: Arc::from(file_path),
-            content: Arc::from(buf.as_str()),
-        }))
+        Ok((Arc::from(file_path), buf))
     }
 }
 
@@ -2598,7 +2569,7 @@ struct LiterateConfig<'a> {
 #[allow(clippy::disallowed_methods)]
 async fn run_literate(config: &LiterateConfig<'_>) -> Result<(), String> {
     let file_path = config.file_path;
-    let markdown = String::from(&*read_source(file_path)?.content);
+    let (_, markdown) = read_source(file_path)?;
     let blocks = literate::extract_code_blocks(&markdown);
 
     if blocks.is_empty() {
@@ -2645,10 +2616,7 @@ async fn run_literate_lint(tangled: &str, config: &LiterateConfig<'_>) -> Result
     let strict = config.strict;
 
     // Parse the tangled source.
-    let tangle_file = Arc::new(tinct::SourceFile {
-        path: Arc::from(markdown_path.to_string().as_str()),
-        content: Arc::from(tangled),
-    });
+    let tangle_file: Arc<str> = Arc::from(markdown_path.to_string().as_str());
     let output = parse(tangled, tangle_file).map_err(|e| {
         if strict {
             tinct::format_parse_error(&e, tangled, markdown_path)
@@ -2746,9 +2714,8 @@ struct ContractSection {
 // AMBIENT-OK: CLI describe — opens file parent dir for type-checking
 #[allow(clippy::disallowed_methods)]
 async fn run_describe(file_path: &str) -> Result<(), String> {
-    let sf = read_source(file_path)?;
-    let source = String::from(&*sf.content);
-    let output = parse(&source, Arc::clone(&sf)).map_err(|e| format!("{e}"))?;
+    let (sf_path, source) = read_source(file_path)?;
+    let output = parse(&source, Arc::clone(&sf_path)).map_err(|e| format!("{e}"))?;
 
     // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
     let mut program = output.program;

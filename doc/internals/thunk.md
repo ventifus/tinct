@@ -125,7 +125,7 @@ pub struct ThunkId {
 
 `ScopeArena` owns all `Arc<Thunk>` values. `EvalContext.scope_arena` is an `Rc<RefCell<ScopeArena>>` shared across the evaluation session. `ThunkId` is the stable address for the lifetime of an evaluation run.
 
-`Dict`, `Seq`, `Variant`, `Overlay`, and `Proxy` values embed `ThunkId` for their lazy members — they reference arena slots rather than holding `Arc<Thunk>` directly. This avoids `Arc` reference-count overhead on every dict field access.
+`Seq`, `Variant`, `Overlay`, and `Proxy` values embed `ThunkId` for their lazy members — they reference arena slots rather than holding `Arc<Thunk>` directly. `Dict` holds `Arc<Thunk>` directly: `IndexMap<HashableValue, Arc<Thunk>>`.
 
 ---
 
@@ -138,13 +138,6 @@ pub enum UnevaluatedState {
     CoreExpr {
         expr: Arc<Spanned<CoreExpr>>,
         env_id: u32,        // index into EvalContext.scope_arena
-        ctx: Arc<EvalContext>,
-    },
-    Surface {
-        node: Arc<SurfaceNode>,
-        res: Arc<ResolutionTable>,
-        types: Arc<TypeAnnotationTable>,
-        env_id: u32,
         ctx: Arc<EvalContext>,
     },
     AstField {
@@ -196,10 +189,6 @@ All constructors take their arguments by value, produce an `Unevaluated` thunk (
 // Wrap a CoreExpr for lazy evaluation (most common path from eval_core_expr)
 Thunk::core_expr(expr: Arc<Spanned<CoreExpr>>, env_id: u32, ctx: Arc<EvalContext>, span: Span) -> Self
 
-// Wrap a SurfaceNode for lazy evaluation (pre-lowering path, used by `eval` builtin)
-Thunk::surface(node: Arc<SurfaceNode>, res: Arc<ResolutionTable>, types: Arc<TypeAnnotationTable>,
-               env_id: u32, ctx: Arc<EvalContext>, span: Span) -> Self
-
 // Wrap a lazy AST field access
 Thunk::ast_field(node: Arc<SurfaceNode>, field: &'static str, ctx: Arc<EvalContext>, span: Span) -> Self
 
@@ -227,7 +216,7 @@ Thunk::placeholder(span: Span) -> Self
 
 `Thunk::placeholder` starts in `InProgress(None)` state. Its purpose is letrec: dict entries pre-allocate placeholder slots. These are filled in before any thunk that references them is forced, so a correctly constructed dict never actually encounters a live placeholder. Encountering a placeholder during evaluation (cycle detection conservative arm) produces a `CircularDependency` error.
 
-**Profiling fields**: `core_expr`, `surface`, `ast_field`, `builtin_call`, and `fn_call` record `create_parent` and `create_time_us` from `ctx.profiling` at construction time. `value`, `placeholder`, and `guarded` set both to zero/None — they don't represent user-visible computation that needs profiling attribution.
+**Profiling fields**: `core_expr`, `ast_field`, `builtin_call`, and `fn_call` record `create_parent` and `create_time_us` from `ctx.profiling` at construction time. `value`, `placeholder`, and `guarded` set both to zero/None — they don't represent user-visible computation that needs profiling attribution.
 
 ---
 
@@ -433,7 +422,6 @@ The dispatch table:
 | `BuiltinCall` (no pre-materialization needed) | `Memoize` (slow path) or none (fast path) | `Continue(Ok(v))` or `Materialize(result_thunk)` |
 | `FnCall` | `PendingCallDispatch` | `Materialize(func_thunk)` |
 | `Guarded` | `GuardedValidate` | `Materialize(inner_thunk)` |
-| `Surface` | `Memoize` | `Materialize(result_thunk)` |
 | `CoreExpr` | `Memoize` | `Materialize(result_thunk)` |
 | `AstField` | none | `Continue(Ok(field_value))` (synchronous) |
 

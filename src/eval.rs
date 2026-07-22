@@ -327,46 +327,6 @@ pub struct EvalConfig {
     pub source_file: Option<String>,
 }
 
-/// Stable handle to a program entry in the program store.
-///
-/// Carries the index (`id`) and a weak pointer to the store. When all `Value::Program`
-/// values that reference this entry are dropped (i.e., the `Rc<ProgramRef>` ref-count
-/// reaches zero), `Drop` sets `store[id] = None`, freeing the `SurfaceProgram` AST.
-/// This releases the parsed AST once it is no longer needed for evaluation or desugaring,
-/// avoiding unbounded accumulation in long-running pipelines.
-///
-/// The store is accessed via `Weak` to avoid a retain cycle: `EvalContext` holds the
-/// store (`Rc`), and `Value::Program` is stored in thunks that live inside the same
-/// arena owned by the context. A strong `Rc` here would form a cycle. The `Weak`
-/// degrades gracefully if the context is dropped first.
-///
-/// Note: `ProgramRef` uses `Rc<ProgramRef>` (not `Arc`) because `ProgramRef.store` is
-/// `Rc::Weak`, making `ProgramRef` !Send. This is correct — `Value` is already `!Send`.
-pub struct ProgramRef {
-    /// Index into `EvalContext.program_store`.
-    pub id: u32,
-    /// Weak reference to the shared program store (avoids retain cycle with EvalContext).
-    store: std::rc::Weak<RefCell<Vec<Option<crate::ast::SurfaceProgram>>>>,
-}
-
-impl Drop for ProgramRef {
-    fn drop(&mut self) {
-        // Try to upgrade the Weak — fails silently if the EvalContext was already dropped.
-        if let Some(store_rc) = self.store.upgrade() {
-            let mut store = store_rc.borrow_mut();
-            if let Some(slot) = store.get_mut(self.id as usize) {
-                *slot = None;
-            }
-        }
-    }
-}
-
-impl std::fmt::Debug for ProgramRef {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ProgramRef(id={})", self.id)
-    }
-}
-
 /// Evaluation infrastructure context: separates session config from variable bindings.
 ///
 /// Config is immutable (Arc without Mutex); scope_arena is Rc<RefCell<>> (single-threaded only).
@@ -380,12 +340,6 @@ pub struct EvalContext {
     /// **Shared ownership:** Rc<RefCell<>> allows child contexts to share the parent's arena.
     /// Safe because the eval runtime is strictly single-threaded (LocalSet + current_thread).
     pub(crate) scope_arena: Rc<RefCell<ScopeArena>>,
-    /// Program store: append-only Vec of optional SurfaceProgram values, indexed by u32.
-    /// `Value::Program { program_ref }` carries a `Rc<ProgramRef>` whose `Drop` implementation
-    /// sets `store[id] = None`, releasing the AST once no `Value::Program` referencing it
-    /// remains alive. Shared (Rc::clone) across all child contexts so that any context can
-    /// read a program that was created by another context in the same evaluation session.
-    pub(crate) program_store: Rc<RefCell<Vec<Option<crate::ast::SurfaceProgram>>>>,
     /// Env variable allowlist. None = unrestricted (all allowed), Some(set) = only those in set.
     /// Some(empty) means all denied (--no-env mode).
     pub env_allowed: Option<HashSet<String>>,
@@ -527,7 +481,6 @@ impl EvalContext {
                 source_file: None,
             }),
             scope_arena: Self::new_scope_arena(),
-            program_store: Rc::new(RefCell::new(Vec::new())),
             env_allowed: None,
             blame_map: Mutex::new(HashMap::new()),
             boundary_guards: RwLock::new(HashMap::new()),
@@ -557,7 +510,6 @@ impl EvalContext {
                 source_file: None,
             }),
             scope_arena: Self::new_scope_arena(),
-            program_store: Rc::new(RefCell::new(Vec::new())),
             env_allowed,
             blame_map: Mutex::new(HashMap::new()),
             boundary_guards: RwLock::new(HashMap::new()),
@@ -590,7 +542,6 @@ impl EvalContext {
                 source_file: self.config.source_file.clone(),
             }),
             scope_arena: Rc::clone(&self.scope_arena),
-            program_store: Rc::clone(&self.program_store),
             env_allowed: self.env_allowed.clone(),
             blame_map: Mutex::new(self.blame_map.lock().unwrap().clone()),
             boundary_guards: RwLock::new(self.boundary_guards.read().unwrap().clone()),
@@ -636,7 +587,6 @@ impl EvalContext {
         let child_ctx = Arc::new(Self {
             config: Arc::clone(&self.config),
             scope_arena: Rc::clone(&self.scope_arena),
-            program_store: Rc::clone(&self.program_store),
             env_allowed: self.env_allowed.clone(),
             blame_map: Mutex::new(self.blame_map.lock().unwrap().clone()),
             boundary_guards: RwLock::new(self.boundary_guards.read().unwrap().clone()),
@@ -674,7 +624,6 @@ impl EvalContext {
         Arc::new(Self {
             config: Arc::clone(&self.config),
             scope_arena: Rc::clone(&self.scope_arena),
-            program_store: Rc::clone(&self.program_store),
             env_allowed: self.env_allowed.clone(),
             blame_map: Mutex::new(self.blame_map.lock().unwrap().clone()),
             boundary_guards: RwLock::new(self.boundary_guards.read().unwrap().clone()),
@@ -714,7 +663,6 @@ impl EvalContext {
         Arc::new(Self {
             config: Arc::clone(&self.config),
             scope_arena: Rc::clone(&self.scope_arena),
-            program_store: Rc::clone(&self.program_store),
             env_allowed: self.env_allowed.clone(),
             blame_map: Mutex::new(self.blame_map.lock().unwrap().clone()),
             boundary_guards: RwLock::new(self.boundary_guards.read().unwrap().clone()),
@@ -781,7 +729,6 @@ impl EvalContext {
         Arc::new(Self {
             config: Arc::clone(&self.config),
             scope_arena: Rc::clone(&self.scope_arena),
-            program_store: Rc::clone(&self.program_store),
             env_allowed: self.env_allowed.clone(),
             blame_map: Mutex::new(self.blame_map.lock().unwrap().clone()),
             boundary_guards: RwLock::new(self.boundary_guards.read().unwrap().clone()),
@@ -811,53 +758,6 @@ impl EvalContext {
     /// Look up blame provenance for a thunk ID (if recorded at a pipeline boundary).
     pub fn blame_label(&self, thunk_id: ThunkId) -> Option<String> {
         self.blame_map.lock().unwrap().get(&thunk_id).cloned()
-    }
-
-    /// Push a SurfaceProgram into the program store and return a `ProgramRef` handle.
-    ///
-    /// The returned `Rc<ProgramRef>` should be stored in `Value::Program`. When the last
-    /// `Rc<ProgramRef>` is dropped, the `ProgramRef::drop` implementation sets
-    /// `store[id] = None`, freeing the `SurfaceProgram` AST. The id is stable for the
-    /// lifetime of this EvalContext and all contexts sharing the same program_store.
-    pub(crate) fn push_program(&self, program: crate::ast::SurfaceProgram) -> Rc<ProgramRef> {
-        let mut store = self.program_store.borrow_mut();
-        let id = store.len() as u32;
-        store.push(Some(program));
-        Rc::new(ProgramRef {
-            id,
-            store: Rc::downgrade(&self.program_store),
-        })
-    }
-
-    /// Mutate the SurfaceProgram at the given id in-place via a closure.
-    ///
-    /// Used by `builtin_desugar` to apply desugar passes without cloning.
-    /// Panics if the slot has been dropped (ProgramRef was deallocated before this call).
-    pub(crate) fn with_program_mut<F>(&self, id: u32, f: F)
-    where
-        F: FnOnce(&mut crate::ast::SurfaceProgram),
-    {
-        let mut store = self.program_store.borrow_mut();
-        let program = store[id as usize]
-            .as_mut()
-            .expect("with_program_mut: program slot has been dropped (ProgramRef deallocated)");
-        f(program);
-    }
-
-    /// Borrow the SurfaceProgram at the given id for reading.
-    ///
-    /// The closure receives a reference to the SurfaceProgram; the borrow is
-    /// released when the closure returns.
-    /// Panics if the slot has been dropped (ProgramRef was deallocated before this call).
-    pub(crate) fn with_program<F, R>(&self, id: u32, f: F) -> R
-    where
-        F: FnOnce(&crate::ast::SurfaceProgram) -> R,
-    {
-        let store = self.program_store.borrow();
-        let program = store[id as usize]
-            .as_ref()
-            .expect("with_program: program slot has been dropped (ProgramRef deallocated)");
-        f(program)
     }
 
     /// Set the type constructor environment from type inference.
@@ -1048,7 +948,7 @@ pub fn ground_type_of(v: &Value) -> Type {
 ///
 /// Integer-keyed entries (`HashableValue::Int`) are skipped — they are explicit positional entries
 /// like `[0: x 1: y]`, not record fields.
-fn extract_row(map: &IndexMap<HashableValue, ThunkId>) -> Row {
+fn extract_row(map: &IndexMap<HashableValue, Arc<Thunk>>) -> Row {
     let fields = map
         .keys()
         .filter_map(|k| match k {
@@ -1178,7 +1078,7 @@ pub(crate) fn format_expected_label(expected: &Type, ctx: &EvalContext) -> Strin
         {
             return format!(
                 "{} (defined at {}:{}:{})",
-                base, span.file.path, span.start.line, span.start.column
+                base, span.file, span.start_line, span.start_col
             );
         }
     }
@@ -1266,7 +1166,7 @@ pub(crate) fn as_record_row_merged(expected: &Type) -> Option<Cow<'_, Row>> {
 /// Guards created by this function do NOT propagate default_expr to avoid infinite recursion.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn validate_and_wrap_record(
-    entries: &IndexMap<HashableValue, ThunkId>,
+    entries: &IndexMap<HashableValue, Arc<Thunk>>,
     row: &Row,
     field_path: &mut Vec<String>,
     guard_span: Span,
@@ -1275,11 +1175,11 @@ pub(crate) fn validate_and_wrap_record(
     ctx: &Arc<EvalContext>,
     default: Option<GuardDefault>,
     blame_label: Option<crate::error::BlameLabel>,
-) -> EvalResult<IndexMap<HashableValue, ThunkId>> {
+) -> EvalResult<IndexMap<HashableValue, Arc<Thunk>>> {
     // Shape check: verify all required fields exist
     // Per doc/07:117, try HashableValue::Str first, then HashableValue::Int fallback
     for (field_name, _field_type) in row.fields.iter() {
-        let has_field = entries.contains_key(&HashableValue::Str(Rc::from(field_name.as_str())))
+        let has_field = entries.contains_key(&HashableValue::Str(Arc::from(field_name.as_str())))
             || field_name
                 .parse::<i64>()
                 .ok()
@@ -1315,7 +1215,7 @@ pub(crate) fn validate_and_wrap_record(
     // Use a for loop with push/pop on field_path to avoid cloning the full path
     // for every field — only the thunk's owned copy is allocated per field.
     let mut new_entries = IndexMap::with_capacity(entries.len());
-    for (key, &thunk_id) in entries.iter() {
+    for (key, thunk) in entries.iter() {
         // Try to find a matching field type
         let field_type = match key {
             HashableValue::Str(field_name) => row.fields.get(field_name.as_ref()),
@@ -1334,7 +1234,8 @@ pub(crate) fn validate_and_wrap_record(
             let nested_path = field_path.clone();
             field_path.pop();
 
-            // T-1558: guarded takes ThunkId; use thunk_id directly.
+            // Guarded takes ThunkId: allocate the field thunk into the arena first.
+            let thunk_id = ctx.alloc_thunk(env_id, Arc::clone(thunk));
             let guarded = Arc::new(Thunk::guarded(
                 thunk_id,
                 field_type.clone(),
@@ -1343,10 +1244,9 @@ pub(crate) fn validate_and_wrap_record(
                 blame_label.clone(),
                 default.clone(),
             ));
-            let guarded_id = ctx.alloc_thunk(env_id, guarded);
-            new_entries.insert(key.clone(), guarded_id);
+            new_entries.insert(key.clone(), guarded);
         } else {
-            new_entries.insert(key.clone(), thunk_id);
+            new_entries.insert(key.clone(), Arc::clone(thunk));
         }
     }
 
@@ -1860,13 +1760,11 @@ pub(crate) fn match_pattern<'a>(
                         // recursively match the sub-pattern.
                         let mut result_env = Arc::clone(env);
                         for na in named_args.iter() {
-                            let field_key = HashableValue::Str(Rc::from(na.node.name.as_str()));
-                            let Some(field_thunk_id) = payload_map.get(&field_key) else {
+                            let field_key = HashableValue::Str(Arc::from(na.node.name.as_str()));
+                            let Some(field_thunk) = payload_map.get(&field_key) else {
                                 return Ok(None);
                             };
-                            let field_thunk = ctx.get_thunk(*field_thunk_id);
-                            let field_val =
-                                materialize(&field_thunk, Some(value_span), ctx).await?;
+                            let field_val = materialize(field_thunk, Some(value_span), ctx).await?;
                             match match_pattern(
                                 &na.node.value,
                                 &field_val,
@@ -1928,12 +1826,11 @@ pub(crate) fn match_pattern<'a>(
                             };
 
                             // Look up the field in the dict
-                            if let Some(field_thunk_id) =
-                                dict_thunk_ids.get(&HashableValue::Str(Rc::from(key_str.as_str())))
+                            if let Some(field_thunk) =
+                                dict_thunk_ids.get(&HashableValue::Str(Arc::from(key_str.as_str())))
                             {
-                                let field_thunk = ctx.get_thunk(*field_thunk_id);
                                 let field_value =
-                                    materialize(&field_thunk, Some(value_span), ctx).await?;
+                                    materialize(field_thunk, Some(value_span), ctx).await?;
 
                                 // Recursively match the field pattern
                                 match match_pattern(
@@ -2066,14 +1963,17 @@ pub(crate) fn primitive_eq(a: Value, b: Value) -> bool {
                 payload: None,
             },
         ) => tycon1 == tycon2 && ctor1 == ctor2,
-        // Dict shallow equality: same keys and same thunk IDs (no value materialization).
+        // Dict shallow equality: same keys and same thunk Arc pointers (no value materialization).
         // This covers null equality ([] == []) and self-equality for Dicts,
         // without deep structural comparison of values.
         (Value::Dict(a), Value::Dict(b)) => {
             if a.len() != b.len() {
                 return false;
             }
-            a.iter().all(|(k, id_a)| b.get(k) == Some(id_a))
+            a.iter().all(|(k, thunk_a)| {
+                b.get(k)
+                    .is_some_and(|thunk_b| Arc::ptr_eq(thunk_a, thunk_b))
+            })
         }
         _ => false,
     }
@@ -2230,20 +2130,16 @@ mod tests {
         super::materialize(thunk, mat_span, ctx).await
     }
 
-    /// Resolve a `ThunkId` from the arena in `ctx` and materialize it.
-    ///
-    /// Dict values in `Value::Dict` are now `ThunkId` handles into the eval context's arena.
-    /// Tests that inspect individual dict entries must resolve them through the same context
-    /// that was used during `eval()`.
-    async fn mat_id(id: &ThunkId, ctx: &Arc<EvalContext>) -> EvalResult<Value> {
-        let thunk = ctx.get_thunk(*id);
-        materialize(&thunk, None, ctx).await
+    /// Materialize an `Arc<Thunk>` from a dict entry (after T-1772, dict values are Arc<Thunk>).
+    async fn mat_id(thunk: &Arc<Thunk>, ctx: &Arc<EvalContext>) -> EvalResult<Value> {
+        materialize(thunk, None, ctx).await
     }
 
-    /// Resolve a `ThunkId` to `Arc<Thunk>` for tests that need direct thunk access
+    /// Clone an `Arc<Thunk>` from a dict entry for tests that need direct thunk access
     /// (e.g. inspecting `ThunkState` or materializing with a custom mat_span).
-    fn get_thunk_rc(id: &ThunkId, ctx: &Arc<EvalContext>) -> Arc<Thunk> {
-        ctx.get_thunk(*id)
+    /// After T-1772, dict values are `Arc<Thunk>` directly — no ThunkId lookup needed.
+    fn get_thunk_arc(thunk: &Arc<Thunk>) -> Arc<Thunk> {
+        Arc::clone(thunk)
     }
 
     /// Build a `Spanned<SurfaceEntry>` with a string key and a simple expression value.
@@ -2411,9 +2307,7 @@ mod tests {
         let val = materialize(&thunk, None, &ctx).await.unwrap();
 
         let x_thunk = match val {
-            Value::Dict(map) => {
-                get_thunk_rc(map.get(&HashableValue::Str("x".into())).unwrap(), &ctx)
-            }
+            Value::Dict(map) => get_thunk_arc(map.get(&HashableValue::Str("x".into())).unwrap()),
             other => panic!("expected Dict, got {other:?}"),
         };
 
@@ -2470,9 +2364,7 @@ mod tests {
         let dict_val = materialize(&dict_thunk, None, &ctx).await.unwrap();
 
         let x_thunk = match &dict_val {
-            Value::Dict(map) => {
-                get_thunk_rc(map.get(&HashableValue::Str("x".into())).unwrap(), &ctx)
-            }
+            Value::Dict(map) => get_thunk_arc(map.get(&HashableValue::Str("x".into())).unwrap()),
             other => panic!("expected Dict, got {other:?}"),
         };
 
@@ -3010,11 +2902,10 @@ mod tests {
         let val = materialize(&thunk, None, &ctx).await.unwrap();
         match val {
             Value::Dict(map) => {
-                let name_val = map
+                let name_thunk = map
                     .get(&HashableValue::Str("name".into()))
                     .expect("name field missing");
-                let name_thunk = ctx.get_thunk(*name_val);
-                let name = materialize(&name_thunk, None, &ctx).await.unwrap();
+                let name = materialize(name_thunk, None, &ctx).await.unwrap();
                 assert_eq!(name, string_val("fallback".into()));
             }
             _ => panic!("expected Dict, got: {:?}", val),
@@ -3061,9 +2952,7 @@ mod tests {
 
         // Extract x's thunk from the dict
         let x_thunk = match &dict_val {
-            Value::Dict(map) => {
-                get_thunk_rc(map.get(&HashableValue::Str("x".into())).unwrap(), &ctx)
-            }
+            Value::Dict(map) => get_thunk_arc(map.get(&HashableValue::Str("x".into())).unwrap()),
             other => panic!("expected Dict, got {other:?}"),
         };
 
@@ -3092,7 +2981,7 @@ mod tests {
         match val {
             Value::Dict(map) => {
                 let x_id = map.get(&HashableValue::Str("x".into())).unwrap();
-                let x_thunk = get_thunk_rc(x_id, &ctx);
+                let x_thunk = get_thunk_arc(x_id);
                 let mat_span = test_span(10, 1, 10, 5);
                 let err = materialize(&x_thunk, Some(&mat_span), &ctx)
                     .await
@@ -3354,7 +3243,7 @@ mod tests {
         // Create a function that would fail if called twice
         // (we'll verify it's only called once by checking the state)
         let identity_fn = Value::Function {
-            params: Rc::new(vec![Param {
+            params: Arc::new(vec![Param {
                 name: "x".into(),
                 annotation: None,
                 variadic: false,
@@ -3417,7 +3306,7 @@ mod tests {
         let _env = empty_env();
 
         let identity_fn = Value::Function {
-            params: Rc::new(vec![Param {
+            params: Arc::new(vec![Param {
                 name: "x".into(),
                 annotation: None,
                 variadic: false,
@@ -3488,9 +3377,7 @@ mod tests {
         let dict_val = materialize(&dict_thunk, None, &ctx).await.unwrap();
 
         let x_thunk = match &dict_val {
-            Value::Dict(map) => {
-                get_thunk_rc(map.get(&HashableValue::Str("x".into())).unwrap(), &ctx)
-            }
+            Value::Dict(map) => get_thunk_arc(map.get(&HashableValue::Str("x".into())).unwrap()),
             other => panic!("expected Dict, got {other:?}"),
         };
 
@@ -3595,9 +3482,7 @@ mod tests {
         let dict_val = materialize(&dict_thunk, None, &ctx).await.unwrap();
 
         let x_thunk = match &dict_val {
-            Value::Dict(map) => {
-                get_thunk_rc(map.get(&HashableValue::Str("x".into())).unwrap(), &ctx)
-            }
+            Value::Dict(map) => get_thunk_arc(map.get(&HashableValue::Str("x".into())).unwrap()),
             other => panic!("expected Dict, got {other:?}"),
         };
 
@@ -4673,7 +4558,7 @@ mod tests {
         };
 
         // Create entries that are missing field "y"
-        let entries: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+        let entries: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         let ctx = test_ctx();
 
         // Call validate_and_wrap_record with nested field_path ["outer", "inner"]
@@ -4737,15 +4622,15 @@ mod tests {
 
         // Create entries with "x" plus an extra field "z"
         let ctx = test_ctx();
-        let mut entries: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+        let mut entries: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         let span = test_span(1, 1, 1, 5);
         entries.insert(
             HashableValue::Str("x".into()),
-            ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Int(1), span.clone()))),
+            Arc::new(Thunk::value(Value::Int(1), span.clone())),
         );
         entries.insert(
             HashableValue::Str("z".into()),
-            ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Int(99), span))),
+            Arc::new(Thunk::value(Value::Int(99), span)),
         );
 
         let mut field_path = vec!["config".to_string()];
@@ -4786,7 +4671,7 @@ mod tests {
         };
 
         // Create empty entries (missing "name")
-        let entries: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+        let entries: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         let ctx = test_ctx();
 
         // Call with empty field_path
@@ -4848,18 +4733,15 @@ mod tests {
 
         // Create entries with "name" (valid) plus an integer-keyed entry
         let ctx = test_ctx();
-        let mut entries: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+        let mut entries: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         let span = test_span(1, 1, 1, 5);
         entries.insert(
             HashableValue::Int(0),
-            ctx.alloc_thunk(
-                0,
-                Arc::new(Thunk::value(string_val("x".into()), span.clone())),
-            ),
+            Arc::new(Thunk::value(string_val("x".into()), span.clone())),
         );
         entries.insert(
             HashableValue::Str("name".into()),
-            ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val("y".into()), span))),
+            Arc::new(Thunk::value(string_val("y".into()), span)),
         );
 
         let mut field_path = vec![];
@@ -4899,18 +4781,15 @@ mod tests {
         };
 
         let ctx = test_ctx();
-        let mut entries: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+        let mut entries: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         let span = test_span(1, 1, 1, 5);
         entries.insert(
             HashableValue::Int(0),
-            ctx.alloc_thunk(
-                0,
-                Arc::new(Thunk::value(string_val("x".into()), span.clone())),
-            ),
+            Arc::new(Thunk::value(string_val("x".into()), span.clone())),
         );
         entries.insert(
             HashableValue::Str("name".into()),
-            ctx.alloc_thunk(0, Arc::new(Thunk::value(string_val("y".into()), span))),
+            Arc::new(Thunk::value(string_val("y".into()), span)),
         );
 
         let mut field_path = vec![];
@@ -5138,13 +5017,8 @@ mod tests {
 ]
         "#;
 
-        let test_file = || {
-            Arc::new(crate::ast::SourceFile {
-                path: Arc::from(file!()),
-                content: Arc::from(source),
-            })
-        };
-        let parsed = crate::parse(source, test_file()).expect("parse should succeed");
+        let test_file: Arc<str> = Arc::from(file!());
+        let parsed = crate::parse(source, Arc::clone(&test_file)).expect("parse should succeed");
         let mut surface_program = parsed.program;
         crate::desugar::desugar_program_full(&mut surface_program);
         // Resolve without env: dict siblings ($a, $b, $c) are resolved by scope tracking.
@@ -5163,11 +5037,10 @@ mod tests {
         // Access one of the cyclic keys to trigger cycle detection
         let err = match dict_val {
             Value::Dict(ref map) => {
-                let a_thunk_id = map
+                let a_thunk = map
                     .get(&HashableValue::Str("a".into()))
                     .expect("dict should have 'a' key");
-                let a_thunk = ctx.get_thunk(*a_thunk_id);
-                materialize(&a_thunk, None, &ctx).await.unwrap_err()
+                materialize(a_thunk, None, &ctx).await.unwrap_err()
             }
             _ => panic!("Expected Dict value"),
         };
@@ -5264,7 +5137,7 @@ mod tests {
                 // Verify the "unused" key exists but is NOT materialized
                 let unused_key = HashableValue::Str("unused".into());
                 let unused_thunk_id = map.get(&unused_key).expect("unused key should exist");
-                let unused_thunk = get_thunk_rc(unused_thunk_id, &ctx);
+                let unused_thunk = get_thunk_arc(unused_thunk_id);
 
                 // Check that the unused thunk is still in an unevaluated state
                 // (it should not be Materialized)
@@ -5577,7 +5450,7 @@ mod tests {
     async fn test_ground_type_of_variadic_function() {
         // Non-variadic function: ground_type_of must report variadic: false.
         let non_variadic = Value::Function {
-            params: Rc::new(vec![
+            params: Arc::new(vec![
                 Param {
                     name: "x".into(),
                     annotation: None,
@@ -5616,7 +5489,7 @@ mod tests {
 
         // Variadic function: last param has variadic: true — ground_type_of must reflect it.
         let variadic_fn = Value::Function {
-            params: Rc::new(vec![
+            params: Arc::new(vec![
                 Param {
                     name: "x".into(),
                     annotation: None,
@@ -5660,7 +5533,7 @@ mod tests {
 
         // Single variadic param (zero-arg form, e.g. [fn [let ...xs] body]).
         let only_variadic = Value::Function {
-            params: Rc::new(vec![Param {
+            params: Arc::new(vec![Param {
                 name: "xs".into(),
                 annotation: None,
                 variadic: true,

@@ -122,34 +122,35 @@ fn take_three_thunks(
     ))
 }
 
-/// Helper to collect a Seq into a Vec<ThunkId> by walking the linked list.
-/// Returns the thunk IDs in order. Materializes each tail to check for continuation or termination.
-/// Collect elements from an integer-keyed Dict into a Vec of ThunkIds.
+/// Helper to collect a Seq into a Vec<Arc<Thunk>> by walking the linked list.
+/// Returns the thunks in order. Materializes each tail to check for continuation or termination.
+/// Collect elements from an integer-keyed Dict into a Vec of Arc<Thunk>.
 /// Used by par-map, par-filter, and select-once which now accept Dict input.
 async fn collect_dict_to_vec(
     dict_val: Value,
     _ctx: &Arc<crate::eval::EvalContext>,
     call_span: Span,
     _name: &str,
-) -> EvalResult<Vec<ThunkId>> {
+) -> EvalResult<Vec<Arc<Thunk>>> {
     let map = match dict_val {
         Value::Dict(m) => m,
         other => return Err(EvalError::type_mismatch("Dict", other.type_name(), call_span).into()),
     };
 
-    Ok(map.values().copied().collect())
+    Ok(map.into_values().collect())
 }
 
-/// Helper to build an integer-keyed Dict from a Vec<ThunkId>.
+/// Helper to build an integer-keyed Dict from a Vec<Arc<Thunk>>.
 /// Returns a ThunkId for the resulting Dict.
 fn build_dict_from_vec(
-    items: Vec<ThunkId>,
+    items: Vec<Arc<Thunk>>,
     ctx: &Arc<crate::eval::EvalContext>,
     call_span: Span,
 ) -> ThunkId {
-    let mut dict = indexmap::IndexMap::new();
-    for (i, id) in items.into_iter().enumerate() {
-        dict.insert(crate::value::HashableValue::Int(i as i64), id);
+    let mut dict: indexmap::IndexMap<crate::value::HashableValue, Arc<Thunk>> =
+        indexmap::IndexMap::new();
+    for (i, thunk) in items.into_iter().enumerate() {
+        dict.insert(crate::value::HashableValue::Int(i as i64), thunk);
     }
     ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(dict), call_span)))
 }
@@ -683,7 +684,7 @@ pub(crate) fn builtin_oneshot_channel(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _ctx,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -712,23 +713,17 @@ pub(crate) fn builtin_oneshot_channel(
         };
 
         // Return {0: receiver, 1: sender}
-        let sender_id = ctx.alloc_thunk(
-            0,
-            Arc::new(Thunk::value(
-                Value::OneshotSender(Arc::new(sender_inner)),
-                call_span.clone(),
-            )),
-        );
-        let receiver_id = ctx.alloc_thunk(
-            0,
-            Arc::new(Thunk::value(
-                Value::OneshotReceiver(Arc::new(receiver_inner)),
-                call_span.clone(),
-            )),
-        );
+        let sender_thunk = Arc::new(Thunk::value(
+            Value::OneshotSender(Arc::new(sender_inner)),
+            call_span.clone(),
+        ));
+        let receiver_thunk = Arc::new(Thunk::value(
+            Value::OneshotReceiver(Arc::new(receiver_inner)),
+            call_span.clone(),
+        ));
         let mut dict = indexmap::IndexMap::new();
-        dict.insert(HashableValue::Int(0), receiver_id);
-        dict.insert(HashableValue::Int(1), sender_id);
+        dict.insert(HashableValue::Int(0), receiver_thunk);
+        dict.insert(HashableValue::Int(1), sender_thunk);
         ok_val(Value::Dict(dict), call_span)
     })
 }
@@ -881,20 +876,18 @@ pub(crate) fn builtin_select_once(
         }
 
         // Parse each source as a {ch:, handler:} Dict
-        let mut sources: Vec<(ChannelSource, ThunkId)> = Vec::with_capacity(source_ids.len());
-        for source_id in source_ids {
-            let source_thunk = ctx.get_thunk(source_id);
+        let mut sources: Vec<(ChannelSource, Arc<Thunk>)> = Vec::with_capacity(source_ids.len());
+        for source_thunk in source_ids {
             let source_val = materialize(&source_thunk, Some(&call_span), &ctx).await?;
 
             match source_val {
                 Value::Dict(ref map) => {
                     // Validate that the dict has the required `ch:` and `handler:` keys.
-                    let ch_id = map.get(&HashableValue::Str("ch".into())).copied();
-                    let handler_id = map.get(&HashableValue::Str("handler".into())).copied();
-                    match (ch_id, handler_id) {
-                        (Some(ch_id), Some(handler_id)) => {
-                            let ch_thunk = ctx.get_thunk(ch_id);
-                            let ch_val = materialize(&ch_thunk, Some(&call_span), &ctx).await?;
+                    let ch_thunk_opt = map.get(&HashableValue::Str("ch".into())).cloned();
+                    let handler_thunk_opt = map.get(&HashableValue::Str("handler".into())).cloned();
+                    match (ch_thunk_opt, handler_thunk_opt) {
+                        (Some(ch_thunk_val), Some(handler_id)) => {
+                            let ch_val = materialize(&ch_thunk_val, Some(&call_span), &ctx).await?;
                             match ch_val {
                                 Value::Channel(ch) => {
                                     sources.push((ChannelSource::Channel(ch), handler_id));
@@ -1100,8 +1093,7 @@ pub(crate) fn builtin_select_once(
                 // If we got a value, call the handler
                 if let Ok(value) = recv_result {
                     // Retrieve and materialize the handler.
-                    let handler_thunk = ctx.get_thunk(*handler_id);
-                    let handler_val = materialize(&handler_thunk, Some(&call_span), &ctx).await?;
+                    let handler_val = materialize(&handler_id, Some(&call_span), &ctx).await?;
 
                     // Call the handler with the received value.
                     let result_thunk = match handler_val {
@@ -1214,9 +1206,9 @@ pub(crate) fn builtin_par_map(
 
         // Spawn a task for each item
         let mut tasks = Vec::new();
-        for item_id in &item_ids {
+        for item_thunk in &item_ids {
             let func_thunk_clone = Arc::clone(&func_thunk);
-            let item_thunk_clone = ctx.get_thunk(*item_id);
+            let item_thunk_clone = Arc::clone(item_thunk);
             let ctx_clone = Arc::clone(&ctx);
             let call_span_clone = call_span.clone();
 
@@ -1284,7 +1276,7 @@ pub(crate) fn builtin_par_map(
         }
 
         // Await all tasks and collect results, aborting remaining handles on cancellation.
-        let mut result_ids = Vec::new();
+        let mut result_thunks: Vec<Arc<Thunk>> = Vec::new();
         let mut remaining = tasks.into_iter();
         for handle in remaining.by_ref() {
             // Race each handle against context cancellation.
@@ -1305,13 +1297,11 @@ pub(crate) fn builtin_par_map(
                     ).into());
                 }
             };
-            let result_id =
-                ctx.alloc_thunk(0, Arc::new(Thunk::value(result_val, call_span.clone())));
-            result_ids.push(result_id);
+            result_thunks.push(Arc::new(Thunk::value(result_val, call_span.clone())));
         }
 
         // Build the result sequence
-        let result_seq_id = build_dict_from_vec(result_ids, &ctx, call_span);
+        let result_seq_id = build_dict_from_vec(result_thunks, &ctx, call_span);
         Ok(ctx.get_thunk(result_seq_id))
     })
 }
@@ -1351,12 +1341,12 @@ pub(crate) fn builtin_par_filter(
 
         // Spawn a task for each item to evaluate the predicate
         let mut tasks = Vec::new();
-        for (idx, item_id) in item_ids.iter().enumerate() {
+        for (idx, item_thunk) in item_ids.iter().enumerate() {
             let pred_thunk_clone = Arc::clone(&pred_thunk);
-            let item_thunk_clone = ctx.get_thunk(*item_id);
+            let item_thunk_clone = Arc::clone(item_thunk);
             let ctx_clone = Arc::clone(&ctx);
             let call_span_clone = call_span.clone();
-            let item_id_copy = *item_id;
+            let item_thunk_copy = Arc::clone(item_thunk);
             let matchable_binding_clone = pred_matchable_binding.clone();
 
             let handle = crate::async_rt::spawn_local(async move {
@@ -1431,7 +1421,7 @@ pub(crate) fn builtin_par_filter(
                 )
                 .await
                 {
-                    Ok(Some((idx, item_id_copy)))
+                    Ok(Some((idx, item_thunk_copy)))
                 } else {
                     Ok(None)
                 }
@@ -1470,11 +1460,11 @@ pub(crate) fn builtin_par_filter(
         // Sort by original index to preserve order
         results_with_idx.sort_by_key(|(idx, _)| *idx);
 
-        // Extract ThunkIds
-        let result_ids: Vec<ThunkId> = results_with_idx.into_iter().map(|(_, id)| id).collect();
+        // Extract Arc<Thunk>s
+        let result_thunks: Vec<Arc<Thunk>> = results_with_idx.into_iter().map(|(_, t)| t).collect();
 
         // Build the result sequence
-        let result_seq_id = build_dict_from_vec(result_ids, &ctx, call_span);
+        let result_seq_id = build_dict_from_vec(result_thunks, &ctx, call_span);
         Ok(ctx.get_thunk(result_seq_id))
     })
 }
@@ -1521,8 +1511,7 @@ pub(crate) fn builtin_signal_channel(
             }
         };
         let mut sig_names: Vec<String> = Vec::new();
-        for (_idx, val_id) in &sig_dict {
-            let head_thunk = ctx.get_thunk(*val_id);
+        for (_idx, head_thunk) in &sig_dict {
             let head_val = materialize(&head_thunk, Some(&call_span), &ctx).await?;
             let name = match head_val {
                 Value::Variant {
@@ -1974,11 +1963,14 @@ pub(crate) fn builtin_with_cancel(
 
         // Build the payload dict with the same structure as before
         let mut payload_dict = IndexMap::new();
-        let child_ctx_id =
-            ctx.alloc_thunk(0, Arc::new(Thunk::value(child_ctx_val, call_span.clone())));
-        let cancel_id = ctx.alloc_thunk(0, Arc::new(Thunk::value(cancel_val, call_span.clone())));
-        payload_dict.insert(HashableValue::Str("child-ctx".into()), child_ctx_id);
-        payload_dict.insert(HashableValue::Str("cancel".into()), cancel_id);
+        payload_dict.insert(
+            HashableValue::Str("child-ctx".into()),
+            Arc::new(Thunk::value(child_ctx_val, call_span.clone())),
+        );
+        payload_dict.insert(
+            HashableValue::Str("cancel".into()),
+            Arc::new(Thunk::value(cancel_val, call_span.clone())),
+        );
 
         // Wrap the dict in a Variant with tag "CancelHandle"
         let payload_thunk_id = ctx.alloc_thunk(

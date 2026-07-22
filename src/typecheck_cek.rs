@@ -315,7 +315,7 @@ pub(crate) async fn run_typecheck(
 /// Record an inferred type into the type_map for LSP hover.
 fn record_type_map(type_map: &mut Option<&mut TypeMap>, span: &Span, ty: &Type) {
     if let Some(ref mut map) = type_map {
-        let key = (span.start.offset, span.end.offset);
+        let key = (span.start_line, span.start_col, span.end_line, span.end_col);
         let simplified = Type::simplify_type(ty.clone());
         map.insert(key, simplified);
     }
@@ -1414,7 +1414,12 @@ async fn infer_var_ref(
             || !scheme.kind_vars.is_empty()
         {
             if let Some(ref mut smap) = state.scheme_map {
-                let key = (node.span.start.offset, node.span.end.offset);
+                let key = (
+                    node.span.start_line,
+                    node.span.start_col,
+                    node.span.end_line,
+                    node.span.end_col,
+                );
                 smap.insert(key, scheme.clone());
             }
         }
@@ -1479,7 +1484,7 @@ async fn infer_var_ref(
         if let Some(cause_span) = state.failed_bindings.get(name) {
             err.add_note(format!(
                 "`{}` could not be defined because its definition at {}:{} failed type checking",
-                name, cause_span.start.line, cause_span.start.column
+                name, cause_span.start_line, cause_span.start_col
             ));
         }
 
@@ -4434,8 +4439,10 @@ pub(crate) async fn run_typecheck_dict(
                             .insert(name.clone(), entry.span.clone());
                         if let Some(ref mut map) = type_map {
                             let key = (
-                                entry.node.value.span.start.offset,
-                                entry.node.value.span.end.offset,
+                                entry.node.value.span.start_line,
+                                entry.node.value.span.start_col,
+                                entry.node.value.span.end_line,
+                                entry.node.value.span.end_col,
                             );
                             map.insert(key, fallback_ty);
                         }

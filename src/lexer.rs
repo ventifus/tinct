@@ -8,7 +8,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use crate::ast::{Position, SourceFile, Span, Spanned};
+use crate::ast::{Span, Spanned};
 
 /// Token types for the tinct lexer.
 #[derive(Debug, Clone, PartialEq)]
@@ -131,9 +131,9 @@ const MAX_LEX_DEPTH: usize = 256;
 /// Tokenize input string into a flat token stream.
 ///
 /// Returns a vector of spanned tokens or an error if the input is malformed.
-/// Requires an explicit source file for accurate span attribution.
-pub fn tokenize(input: &str, file: Arc<SourceFile>) -> Result<Vec<Spanned<Token>>, LexError> {
-    Lexer::new(input, file).tokenize()
+/// Requires an explicit file path for accurate span attribution.
+pub fn tokenize(input: &str, file_path: Arc<str>) -> Result<Vec<Spanned<Token>>, LexError> {
+    Lexer::new(input, file_path).tokenize()
 }
 
 struct Lexer<'a> {
@@ -162,12 +162,12 @@ struct Lexer<'a> {
     /// Set to true after: Identifier, CloseBracket, StringLiteral, Int, Float, U64Lit, EscapedRef.
     /// Set to false after: whitespace, newlines, keywords (Let, Case), OpenBracket, operators.
     last_was_nonwhitespace: bool,
-    /// Source file shared across all spans produced by this lexer.
-    source_file: Arc<SourceFile>,
+    /// File path shared across all spans produced by this lexer.
+    file_path: Arc<str>,
 }
 
 impl<'a> Lexer<'a> {
-    fn new(input: &'a str, source_file: Arc<SourceFile>) -> Self {
+    fn new(input: &'a str, file_path: Arc<str>) -> Self {
         let mut chars = input.char_indices();
         let current = chars.next();
         Self {
@@ -182,12 +182,12 @@ impl<'a> Lexer<'a> {
             bracket_depth: 0,
             after_access_dot: false,
             last_was_nonwhitespace: false,
-            source_file,
+            file_path,
         }
     }
 
-    fn make_span(&self, start: Position, end: Position) -> Span {
-        Span::new(start, end, Arc::clone(&self.source_file))
+    fn make_span(&self, start: (u32, u32), end: (u32, u32)) -> Span {
+        Span::new(start.0, start.1, end.0, end.1, Arc::clone(&self.file_path))
     }
 
     fn tokenize(mut self) -> Result<Vec<Spanned<Token>>, LexError> {
@@ -202,15 +202,9 @@ impl<'a> Lexer<'a> {
         Ok(self.tokens)
     }
 
-    fn current_position(&self) -> Position {
-        Position {
-            offset: self
-                .current
-                .map(|(i, _)| i as u32)
-                .unwrap_or(self.input.len() as u32),
-            line: self.line,
-            column: self.column,
-        }
+    /// Returns the (line, col) of the current position.
+    fn current_position(&self) -> (u32, u32) {
+        (self.line, self.column)
     }
 
     fn peek_char(&self) -> Option<char> {
@@ -514,7 +508,7 @@ impl<'a> Lexer<'a> {
 
         // EVEN count: emit quote_count/2 empty StringLiterals, each with its own 2-char span.
         // The counting loop has already advanced past all N quote chars. Since `"` is single-byte
-        // ASCII, pair k starts at offset = start.offset + k*2, column = start.column + k*2.
+        // ASCII, pair k starts at col = start.1 + k*2.
         if quote_count % 2 == 0 {
             if quote_count > MAX_LEX_DEPTH {
                 let end = self.current_position();
@@ -529,16 +523,8 @@ impl<'a> Lexer<'a> {
             let delimiter = "\"".to_string();
             let empty_content = String::new();
             for k in 0..(quote_count / 2) {
-                let pair_start = Position {
-                    offset: start.offset + (k * 2) as u32,
-                    line: start.line,
-                    column: start.column + (k * 2) as u32,
-                };
-                let pair_end = Position {
-                    offset: start.offset + (k * 2 + 2) as u32,
-                    line: start.line,
-                    column: start.column + (k * 2 + 2) as u32,
-                };
+                let pair_start = (start.0, start.1 + (k * 2) as u32);
+                let pair_end = (start.0, start.1 + (k * 2 + 2) as u32);
                 self.tokens.push(Spanned::new(
                     Token::StringLiteral {
                         prefix: prefix.clone(),
@@ -739,7 +725,7 @@ impl<'a> Lexer<'a> {
 
     fn lex_number(
         &mut self,
-        start: Position,
+        start: (u32, u32),
         word_start: usize,
         in_access_field: bool,
     ) -> Result<(), LexError> {
@@ -866,7 +852,7 @@ impl<'a> Lexer<'a> {
 
     /// Consume an exponent suffix `e[+-]?digits` at the current position.
     /// Called when `peek_char()` is 'e' or 'E'.
-    fn maybe_consume_exponent(&mut self, start: Position) -> Result<(), LexError> {
+    fn maybe_consume_exponent(&mut self, start: (u32, u32)) -> Result<(), LexError> {
         match self.peek_char() {
             Some('e') | Some('E') => {
                 self.advance(); // consume 'e'/'E'
@@ -893,7 +879,7 @@ impl<'a> Lexer<'a> {
 
     /// Emit a `Token::Float` by stripping underscore separators from `self.input[word_start..current]`
     /// and parsing with `str::parse::<f64>`.
-    fn emit_float(&mut self, start: Position, word_start: usize) -> Result<(), LexError> {
+    fn emit_float(&mut self, start: (u32, u32), word_start: usize) -> Result<(), LexError> {
         // Reject trailing `u` suffix on floats (not meaningful).
         if self.peek_char() == Some('u') {
             self.advance();
@@ -930,7 +916,7 @@ impl<'a> Lexer<'a> {
     /// Emit a `Token::Int` or `Token::U64Lit` for a decimal integer starting at `word_start`.
     fn emit_integer(
         &mut self,
-        start: Position,
+        start: (u32, u32),
         word_start: usize,
         is_negative: bool,
     ) -> Result<(), LexError> {
@@ -991,7 +977,7 @@ impl<'a> Lexer<'a> {
 
     /// Guard: the character immediately after the number must not be a bare-word identifier
     /// character (to prevent `42abc` from silently lexing as `42` + `abc`).
-    fn check_no_trailing_ident_chars(&self, start: Position) -> Result<(), LexError> {
+    fn check_no_trailing_ident_chars(&self, start: (u32, u32)) -> Result<(), LexError> {
         if let Some(c) = self.peek_char() {
             // Characters that are valid bare-word chars but not valid number suffixes
             // (excluding 'u' which is handled by the caller, 'e'/'E' handled by exponent logic,
@@ -1015,7 +1001,7 @@ impl<'a> Lexer<'a> {
     /// On entry, current is pointing at `0`; `prefix` is "0x", "0b", or "0o".
     fn lex_radix_number(
         &mut self,
-        start: Position,
+        start: (u32, u32),
         radix: u32,
         prefix: &str,
         _in_access_field: bool,
@@ -1142,7 +1128,7 @@ impl<'a> Lexer<'a> {
     /// On entry, current is on `0` and peek_ahead(1) is a decimal digit.
     fn lex_octal_leading_zero(
         &mut self,
-        start: Position,
+        start: (u32, u32),
         _in_access_field: bool,
     ) -> Result<(), LexError> {
         self.advance(); // consume '0'
@@ -1322,11 +1308,8 @@ pub(crate) fn fmt_bytes(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
-    fn test_file(src: &str) -> Arc<SourceFile> {
-        Arc::new(SourceFile {
-            path: Arc::from(file!()),
-            content: Arc::from(src),
-        })
+    fn test_file(_src: &str) -> Arc<str> {
+        Arc::from(file!())
     }
 
     fn tok(input: &str) -> Vec<Token> {
@@ -1946,12 +1929,12 @@ mod tests {
     #[test]
     fn test_position_tracking() {
         let result = tokenize("a\nb", test_file("a\nb")).unwrap();
-        assert_eq!(result[0].span.start.line, 1);
-        assert_eq!(result[0].span.start.column, 1);
-        assert_eq!(result[1].span.start.line, 1);
-        assert_eq!(result[1].span.end.line, 2);
-        assert_eq!(result[2].span.start.line, 2);
-        assert_eq!(result[2].span.start.column, 1);
+        assert_eq!(result[0].span.start_line, 1);
+        assert_eq!(result[0].span.start_col, 1);
+        assert_eq!(result[1].span.start_line, 1);
+        assert_eq!(result[1].span.end_line, 2);
+        assert_eq!(result[2].span.start_line, 2);
+        assert_eq!(result[2].span.start_col, 1);
     }
 
     #[test]
@@ -1959,12 +1942,12 @@ mod tests {
         // Test bare CR (Mac Classic line ending) increments line counter
         let result = tokenize("a\rb", test_file("a\rb")).unwrap();
         assert_eq!(result.len(), 3); // Identifier, Newline, Identifier
-        assert_eq!(result[0].span.start.line, 1);
-        assert_eq!(result[0].span.start.column, 1);
-        assert_eq!(result[1].span.start.line, 1); // Newline starts on line 1
-        assert_eq!(result[1].span.end.line, 2); // Newline ends on line 2
-        assert_eq!(result[2].span.start.line, 2);
-        assert_eq!(result[2].span.start.column, 1);
+        assert_eq!(result[0].span.start_line, 1);
+        assert_eq!(result[0].span.start_col, 1);
+        assert_eq!(result[1].span.start_line, 1); // Newline starts on line 1
+        assert_eq!(result[1].span.end_line, 2); // Newline ends on line 2
+        assert_eq!(result[2].span.start_line, 2);
+        assert_eq!(result[2].span.start_col, 1);
     }
 
     #[test]
@@ -2146,9 +2129,9 @@ mod tests {
             "expected depth error message, got: {}",
             err.message
         );
-        // Span must be one character wide (covers the offending `[`, not zero-width).
-        assert_ne!(
-            err.span.start, err.span.end,
+        // Span must be non-zero-width (covers the offending `[`).
+        assert!(
+            err.span.start_col < err.span.end_col || err.span.start_line < err.span.end_line,
             "error span must not be zero-width"
         );
     }

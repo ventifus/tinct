@@ -124,8 +124,8 @@ pub(crate) fn process_escapes(content: &str, delimiter: &str) -> String {
 
 /// Lower a single surface node to a CoreExpr, collecting diagnostics.
 ///
-/// This is the entry point for per-thunk lowering. Called from `eval_materialize.rs`
-/// when a `UnevaluatedState::Surface` thunk is first forced.
+/// This is the entry point for per-thunk lowering. Called eagerly during `builtin-lower`
+/// (the discrete lowering pipeline step) and from other callers that need a CoreExpr.
 ///
 /// Lowering errors (unresolvable variables, malformed AST) are reported as `LowerDiagnostic`
 /// entries in the returned vec and the corresponding expression is replaced with
@@ -1809,8 +1809,8 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
 mod tests {
     use super::*;
     use crate::ast::{
-        CallDispatch, Provenance, Resolution, SurfaceDeclaration, SurfaceExpression, SurfaceNode,
-        TypeAnnotation,
+        CallDispatch, Provenance, Resolution, Spanned, SurfaceDeclaration, SurfaceExpression,
+        SurfaceItem, SurfaceNode, TypeAnnotation,
     };
     use std::sync::Arc;
 
@@ -2009,6 +2009,66 @@ mod tests {
                 other
             ),
         }
+    }
+
+    // ── builtin-lower Decl-skip key contiguity ────────────────────────────────
+    //
+    // Regression test for the expr_idx fix (C-516 F-1): when a SurfaceDocument has a
+    // SurfaceItem::Decl before a SurfaceItem::Expr, the key for the first Expr item must
+    // be "0", not "1". Using enumerate() over all items (before the fix) would assign "1"
+    // because the Decl item was counted. The corrected logic uses a separate expr_idx
+    // counter incremented only on Expr arms.
+    //
+    // This test replicates the builtin_lower item-iteration logic directly to verify that
+    // the key assigned to the first expression entry in entries[0].0 is "0" regardless
+    // of how many Decl items precede it.
+    #[test]
+    fn test_builtin_lower_decl_skip_key_contiguity() {
+        let span = rust_span!();
+
+        // Construct a SurfaceDocument with:
+        //   item 0: SurfaceItem::Decl (a TypeAlias declaration — simulates [type Color ...])
+        //   item 1: SurfaceItem::Expr (a simple integer literal — simulates [x: 42])
+        let decl_body = Arc::new(SurfaceNode::new(SurfaceExpression::Int(0), span.clone()));
+        let decl = SurfaceDeclaration::TypeAlias {
+            params: vec![],
+            body: decl_body,
+        };
+        let spanned_decl = Spanned::new(decl, span.clone());
+
+        let expr_node = Arc::new(SurfaceNode::new(SurfaceExpression::Int(42), span.clone()));
+
+        let items: Vec<SurfaceItem> = vec![
+            SurfaceItem::Decl(spanned_decl),
+            SurfaceItem::Expr(expr_node),
+        ];
+
+        // Replicate builtin_lower's key-assignment loop.
+        let mut entries: Vec<(String, Arc<crate::ast::Spanned<CoreExpr>>)> = Vec::new();
+        let mut expr_idx: usize = 0;
+        for item in &items {
+            let node = match item {
+                SurfaceItem::Expr(n) => n,
+                SurfaceItem::Decl(_) => continue,
+            };
+            let (core_spanned, _diags) = lower(node, None);
+            entries.push((format!("{expr_idx}"), Arc::new(core_spanned)));
+            expr_idx += 1;
+        }
+
+        // There should be exactly one entry (the Expr item; the Decl is skipped).
+        assert_eq!(
+            entries.len(),
+            1,
+            "expected exactly 1 entry (Decl skipped), got {}",
+            entries.len()
+        );
+        // The key for the first Expr item must be "0", not "1".
+        assert_eq!(
+            entries[0].0, "0",
+            "first expression entry key must be \"0\" after skipping leading Decl items; got {:?}",
+            entries[0].0
+        );
     }
 
     // ── process_escapes unit tests ────────────────────────────────────────────

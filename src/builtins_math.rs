@@ -357,6 +357,94 @@ pub(crate) fn builtin_lt(
     })
 }
 
+/// `builtin-float-lt`: Float less-than. Returns Int(1) if a < b, Int(0) otherwise.
+pub(crate) fn builtin_float_lt(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+        ..
+    } = ctx_arg;
+    Box::pin(async move {
+        reject_named("builtin-float-lt", named.as_ref(), call_span.clone())?;
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        let a = ctx
+            .get_thunk(args[0])
+            .try_get_materialized()
+            .expect("pre-materialized");
+        let b = ctx
+            .get_thunk(args[1])
+            .try_get_materialized()
+            .expect("pre-materialized");
+        match (&a, &b) {
+            (Value::Float(x), Value::Float(y)) => {
+                ok_val(Value::Int(if x < y { 1 } else { 0 }), call_span)
+            }
+            _ => Err(EvalError::type_mismatch(
+                "Float",
+                &format!("{} and {}", a.type_name(), b.type_name()),
+                call_span,
+            )
+            .into()),
+        }
+    })
+}
+
+/// `builtin-str-lt`: String lexicographic less-than. Returns Int(1) if a < b, Int(0) otherwise.
+pub(crate) fn builtin_str_lt(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+        ..
+    } = ctx_arg;
+    Box::pin(async move {
+        reject_named("builtin-str-lt", named.as_ref(), call_span.clone())?;
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        let a = ctx
+            .get_thunk(args[0])
+            .try_get_materialized()
+            .expect("pre-materialized");
+        let b = ctx
+            .get_thunk(args[1])
+            .try_get_materialized()
+            .expect("pre-materialized");
+        match (&a, &b) {
+            (
+                Value::String {
+                    source: sa,
+                    start: sta,
+                    end: ea,
+                },
+                Value::String {
+                    source: sb,
+                    start: stb,
+                    end: eb,
+                },
+            ) => ok_val(
+                Value::Int(if sa[*sta..*ea] < sb[*stb..*eb] { 1 } else { 0 }),
+                call_span,
+            ),
+            _ => Err(EvalError::type_mismatch(
+                "String",
+                &format!("{} and {}", a.type_name(), b.type_name()),
+                call_span,
+            )
+            .into()),
+        }
+    })
+}
+
 /// `<=`: Less-than-or-equal comparison.
 ///
 /// Implemented as `!(b < a)` (negation of `>`).
@@ -1536,6 +1624,20 @@ pub fn math_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!(
             "builtin-lte",
             builtin_lte,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["a", "b"]
+        ),
+        builtin!(
+            "builtin-float-lt",
+            builtin_float_lt,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["a", "b"]
+        ),
+        builtin!(
+            "builtin-str-lt",
+            builtin_str_lt,
             [Strictness::Seq, Strictness::Seq],
             2,
             ["a", "b"]

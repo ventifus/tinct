@@ -8,7 +8,6 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -225,7 +224,7 @@ pub fn builtin_fixed_clock(
         };
 
         Ok(Arc::new(Thunk::value(
-            Value::ClockCap(Rc::new(ClockCapInner::Fixed(nanos))),
+            Value::ClockCap(Arc::new(ClockCapInner::Fixed(nanos))),
             call_span,
         )))
     })
@@ -749,63 +748,45 @@ pub fn builtin_timestamp_parts(
 
         let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
 
-        let mut map = IndexMap::new();
+        let mut map: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         map.insert(
             HashableValue::Str("year".into()),
-            args.ctx.alloc_thunk(
-                0,
-                Arc::new(Thunk::value(
-                    Value::Int(dt.year() as i64),
-                    call_span.clone(),
-                )),
-            ),
+            Arc::new(Thunk::value(
+                Value::Int(dt.year() as i64),
+                call_span.clone(),
+            )),
         );
         map.insert(
             HashableValue::Str("month".into()),
-            args.ctx.alloc_thunk(
-                0,
-                Arc::new(Thunk::value(
-                    Value::Int(dt.month() as i64),
-                    call_span.clone(),
-                )),
-            ),
+            Arc::new(Thunk::value(
+                Value::Int(dt.month() as i64),
+                call_span.clone(),
+            )),
         );
         map.insert(
             HashableValue::Str("day".into()),
-            args.ctx.alloc_thunk(
-                0,
-                Arc::new(Thunk::value(Value::Int(dt.day() as i64), call_span.clone())),
-            ),
+            Arc::new(Thunk::value(Value::Int(dt.day() as i64), call_span.clone())),
         );
         map.insert(
             HashableValue::Str("hour".into()),
-            args.ctx.alloc_thunk(
-                0,
-                Arc::new(Thunk::value(
-                    Value::Int(dt.hour() as i64),
-                    call_span.clone(),
-                )),
-            ),
+            Arc::new(Thunk::value(
+                Value::Int(dt.hour() as i64),
+                call_span.clone(),
+            )),
         );
         map.insert(
             HashableValue::Str("minute".into()),
-            args.ctx.alloc_thunk(
-                0,
-                Arc::new(Thunk::value(
-                    Value::Int(dt.minute() as i64),
-                    call_span.clone(),
-                )),
-            ),
+            Arc::new(Thunk::value(
+                Value::Int(dt.minute() as i64),
+                call_span.clone(),
+            )),
         );
         map.insert(
             HashableValue::Str("second".into()),
-            args.ctx.alloc_thunk(
-                0,
-                Arc::new(Thunk::value(
-                    Value::Int(dt.second() as i64),
-                    call_span.clone(),
-                )),
-            ),
+            Arc::new(Thunk::value(
+                Value::Int(dt.second() as i64),
+                call_span.clone(),
+            )),
         );
 
         Ok(Arc::new(Thunk::value(Value::Dict(map), call_span)))
@@ -1137,7 +1118,7 @@ pub fn builtin_load_tz(args: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalRes
         })?;
 
         Ok(Arc::new(Thunk::value(
-            Value::Timezone(Rc::new(tz)),
+            Value::Timezone(Arc::new(tz)),
             call_span,
         )))
     })
@@ -1192,83 +1173,59 @@ pub fn builtin_timestamp_in_tz(
 
         let dt = ts.to_zoned((**tz).clone());
 
-        let mut map = IndexMap::new();
+        let mut map: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         map.insert(
             HashableValue::Str("year".into()),
-            args.ctx.alloc_thunk(
-                0,
-                Arc::new(Thunk::value(
-                    Value::Int(dt.year() as i64),
-                    call_span.clone(),
-                )),
-            ),
+            Arc::new(Thunk::value(
+                Value::Int(dt.year() as i64),
+                call_span.clone(),
+            )),
         );
         map.insert(
             HashableValue::Str("month".into()),
-            args.ctx.alloc_thunk(
-                0,
-                Arc::new(Thunk::value(
-                    Value::Int(dt.month() as i64),
-                    call_span.clone(),
-                )),
-            ),
+            Arc::new(Thunk::value(
+                Value::Int(dt.month() as i64),
+                call_span.clone(),
+            )),
         );
         map.insert(
             HashableValue::Str("day".into()),
-            args.ctx.alloc_thunk(
-                0,
-                Arc::new(Thunk::value(Value::Int(dt.day() as i64), call_span.clone())),
-            ),
+            Arc::new(Thunk::value(Value::Int(dt.day() as i64), call_span.clone())),
         );
         map.insert(
             HashableValue::Str("hour".into()),
-            args.ctx.alloc_thunk(
-                0,
-                Arc::new(Thunk::value(
-                    Value::Int(dt.hour() as i64),
-                    call_span.clone(),
-                )),
-            ),
+            Arc::new(Thunk::value(
+                Value::Int(dt.hour() as i64),
+                call_span.clone(),
+            )),
         );
         map.insert(
             HashableValue::Str("minute".into()),
-            args.ctx.alloc_thunk(
-                0,
-                Arc::new(Thunk::value(
-                    Value::Int(dt.minute() as i64),
-                    call_span.clone(),
-                )),
-            ),
+            Arc::new(Thunk::value(
+                Value::Int(dt.minute() as i64),
+                call_span.clone(),
+            )),
         );
         map.insert(
             HashableValue::Str("second".into()),
-            args.ctx.alloc_thunk(
-                0,
-                Arc::new(Thunk::value(
-                    Value::Int(dt.second() as i64),
-                    call_span.clone(),
-                )),
-            ),
+            Arc::new(Thunk::value(
+                Value::Int(dt.second() as i64),
+                call_span.clone(),
+            )),
         );
         map.insert(
             HashableValue::Str("offset-seconds".into()),
-            args.ctx.alloc_thunk(
-                0,
-                Arc::new(Thunk::value(
-                    Value::Int(dt.offset().seconds() as i64),
-                    call_span.clone(),
-                )),
-            ),
+            Arc::new(Thunk::value(
+                Value::Int(dt.offset().seconds() as i64),
+                call_span.clone(),
+            )),
         );
         map.insert(
             HashableValue::Str("tz-name".into()),
-            args.ctx.alloc_thunk(
-                0,
-                Arc::new(Thunk::value(
-                    string_val(dt.time_zone().iana_name().unwrap_or("Unknown")),
-                    call_span.clone(),
-                )),
-            ),
+            Arc::new(Thunk::value(
+                string_val(dt.time_zone().iana_name().unwrap_or("Unknown")),
+                call_span.clone(),
+            )),
         );
 
         Ok(Arc::new(Thunk::value(Value::Dict(map), call_span)))

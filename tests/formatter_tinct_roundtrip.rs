@@ -5,11 +5,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tinct::{format_source_tinct, parse};
 
-fn test_file(src: &str) -> Arc<tinct::ast::SourceFile> {
-    Arc::new(tinct::ast::SourceFile {
-        path: Arc::from(file!()),
-        content: Arc::from(src),
-    })
+fn test_file(_src: &str) -> Arc<str> {
+    Arc::from(file!())
 }
 
 // format_source_tinct is async; run it synchronously inside the large-stack thread.

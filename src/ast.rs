@@ -30,13 +30,6 @@ macro_rules! rust_span {
     };
 }
 
-/// Source file with path and content, shared across all spans from the same file.
-#[derive(Debug, Clone)]
-pub struct SourceFile {
-    pub path: Arc<str>,
-    pub content: Arc<str>,
-}
-
 /// Key type for dot access — either a string field name or an integer index.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DotKey {
@@ -53,21 +46,16 @@ impl std::fmt::Display for DotKey {
     }
 }
 
-/// Byte offset + line/column position in source text
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Position {
-    pub offset: u32,
-    pub line: u32,
-    pub column: u32,
-}
-
-/// Source span (start..end). Every span must carry its source file —
-/// a line/column number without a filename is meaningless.
+/// Source span (start..end). Carries file path and line/column positions.
+/// Every span must carry its source file — a line/column number without a filename is meaningless.
 #[derive(Debug, Clone)]
 pub struct Span {
-    pub start: Position,
-    pub end: Position,
-    pub file: Arc<SourceFile>,
+    /// File path — shared across all spans from the same file.
+    pub file: Arc<str>,
+    pub start_line: u32,
+    pub start_col: u32,
+    pub end_line: u32,
+    pub end_col: u32,
     /// Optional binding name carried alongside the location for blame tracking and stack traces.
     /// Not part of span identity — two spans at the same location are equal regardless of name.
     pub name: Option<Arc<str>>,
@@ -78,7 +66,11 @@ pub struct Span {
 // rust_span!() spans carry Rust file paths; user spans carry source file paths.
 impl PartialEq for Span {
     fn eq(&self, other: &Self) -> bool {
-        self.start == other.start && self.end == other.end && self.file.path == other.file.path
+        self.start_line == other.start_line
+            && self.start_col == other.start_col
+            && self.end_line == other.end_line
+            && self.end_col == other.end_col
+            && self.file == other.file
     }
 }
 
@@ -86,19 +78,29 @@ impl Eq for Span {}
 
 impl Hash for Span {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.start.hash(state);
-        self.end.hash(state);
-        self.file.path.hash(state);
+        self.start_line.hash(state);
+        self.start_col.hash(state);
+        self.end_line.hash(state);
+        self.end_col.hash(state);
+        self.file.hash(state);
     }
 }
 
 impl Span {
-    /// Create a span with a mandatory source file.
-    pub fn new(start: Position, end: Position, file: Arc<SourceFile>) -> Self {
+    /// Create a span with a mandatory file path.
+    pub fn new(
+        start_line: u32,
+        start_col: u32,
+        end_line: u32,
+        end_col: u32,
+        file: Arc<str>,
+    ) -> Self {
         Self {
-            start,
-            end,
             file,
+            start_line,
+            start_col,
+            end_line,
+            end_col,
             name: None,
         }
     }
@@ -109,18 +111,12 @@ impl Span {
     /// passes `file!()` and `line!()` so error messages show the Rust source location
     /// where the synthetic node was created rather than the unhelpful `1:1-1:1`.
     pub fn rust_source(file: &'static str, line: u32) -> Self {
-        let pos = Position {
-            offset: 0,
-            line,
-            column: 1,
-        };
         Self {
-            start: pos,
-            end: pos,
-            file: std::sync::Arc::new(SourceFile {
-                path: std::sync::Arc::from(file),
-                content: std::sync::Arc::from(""),
-            }),
+            file: Arc::from(file),
+            start_line: line,
+            start_col: 1,
+            end_line: line,
+            end_col: 1,
             name: None,
         }
     }
@@ -475,13 +471,13 @@ impl fmt::Display for SurfaceDeclaration {
 
 impl fmt::Display for Span {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if !self.file.path.starts_with('<') {
-            write!(f, "{}:", self.file.path)?;
+        if !self.file.starts_with('<') {
+            write!(f, "{}:", self.file)?;
         }
         write!(
             f,
             "{}:{}-{}:{}",
-            self.start.line, self.start.column, self.end.line, self.end.column
+            self.start_line, self.start_col, self.end_line, self.end_col
         )
     }
 }
@@ -1375,17 +1371,11 @@ mod tests {
     fn test_display_annotation_property_dict_with_entries() {
         // Annotation keys from the parser are always SurfaceExpression::StringLiteral (bare words).
         let zero_span = Span {
-            start: Position {
-                offset: 0,
-                line: 0,
-                column: 0,
-            },
-            end: Position {
-                offset: 0,
-                line: 0,
-                column: 0,
-            },
             file: rust_span!().file,
+            start_line: 0,
+            start_col: 0,
+            end_line: 0,
+            end_col: 0,
             name: None,
         };
         let mk_node = |expr: SurfaceExpression| -> Arc<SurfaceNode> {
@@ -1439,5 +1429,96 @@ mod tests {
         // Simple("Expr") must NOT trigger quoting — the parser converts @Expr to Quote
         // immediately. If it ever produces Simple("Expr") instead, quoting silently breaks.
         assert!(!is_expr_annotation(&Annotation::Simple("Expr".to_string())));
+    }
+
+    // ── Span PartialEq and Hash identity tests ────────────────────────────────
+    //
+    // T-1771 restructured Span: `name` is explicitly excluded from span identity.
+    // Two spans at the same file/line/col are equal even if their names differ.
+    // Two spans at different line/col are not equal even if their names match.
+
+    #[test]
+    fn test_span_partialeq_excludes_name() {
+        let file: Arc<str> = Arc::from("test.llt");
+        let span_a = Span {
+            file: Arc::clone(&file),
+            start_line: 1,
+            start_col: 5,
+            end_line: 1,
+            end_col: 10,
+            name: Some(Arc::from("foo")),
+        };
+        let span_b = Span {
+            file: Arc::clone(&file),
+            start_line: 1,
+            start_col: 5,
+            end_line: 1,
+            end_col: 10,
+            name: Some(Arc::from("bar")), // different name
+        };
+        // Same file/line/col — must be equal regardless of name.
+        assert_eq!(
+            span_a, span_b,
+            "Spans with identical file/line/col must be equal even if name differs"
+        );
+    }
+
+    #[test]
+    fn test_span_hash_excludes_name() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let file: Arc<str> = Arc::from("test.llt");
+        let hash_span = |name: Option<&str>| {
+            let s = Span {
+                file: Arc::clone(&file),
+                start_line: 2,
+                start_col: 0,
+                end_line: 2,
+                end_col: 4,
+                name: name.map(Arc::from),
+            };
+            let mut hasher = DefaultHasher::new();
+            s.hash(&mut hasher);
+            hasher.finish()
+        };
+
+        // Both spans have the same file/line/col but different names — hashes must match.
+        assert_eq!(
+            hash_span(Some("alpha")),
+            hash_span(Some("beta")),
+            "Spans with identical file/line/col must hash the same regardless of name"
+        );
+        assert_eq!(
+            hash_span(Some("x")),
+            hash_span(None),
+            "Span with name and Span without name at same location must hash the same"
+        );
+    }
+
+    #[test]
+    fn test_span_partialeq_different_location_not_equal() {
+        let file: Arc<str> = Arc::from("test.llt");
+        let span_a = Span {
+            file: Arc::clone(&file),
+            start_line: 3,
+            start_col: 1,
+            end_line: 3,
+            end_col: 5,
+            name: Some(Arc::from("same-name")),
+        };
+        let span_b = Span {
+            file: Arc::clone(&file),
+            start_line: 4, // different line
+            start_col: 1,
+            end_line: 4,
+            end_col: 5,
+            name: Some(Arc::from("same-name")),
+        };
+        // Different line — must not be equal even if name is identical.
+        assert_ne!(
+            span_a, span_b,
+            "Spans at different lines must not be equal even if name matches"
+        );
     }
 }

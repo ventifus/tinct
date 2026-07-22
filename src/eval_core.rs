@@ -12,7 +12,6 @@
 //! - `eval_call.rs` (function evaluation)
 //! - `builtins_async.rs` (eval builtin, macro transformers)
 
-use std::rc::Rc;
 use std::sync::Arc;
 
 use indexmap::IndexMap;
@@ -20,7 +19,6 @@ use indexmap::IndexMap;
 use crate::ast::{CoreExpr, Param, Span, Spanned};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{eval_call_core, eval_dict_core, materialize, EvalContext};
-use crate::value::ThunkId;
 use crate::value::{string_val, HashableValue, Thunk, Value};
 
 // maybe_wrap_guard removed: type guards are now inline on SurfaceNode.type_guard
@@ -99,10 +97,10 @@ async fn collect_seq_elements(
         Value::Dict(ref dict) => {
             // Integer-keyed Dict (from macro variadic args) — collect elements in key order
             // Validate that all keys are integers and sequential from 0
-            let mut int_entries: Vec<(i64, ThunkId)> = Vec::new();
-            for (key, thunk_id) in dict {
+            let mut int_entries: Vec<(i64, Arc<crate::value::Thunk>)> = Vec::new();
+            for (key, thunk) in dict {
                 if let HashableValue::Int(i) = key {
-                    int_entries.push((*i, *thunk_id));
+                    int_entries.push((*i, Arc::clone(thunk)));
                 } else {
                     return Err(EvalError::type_mismatch(
                         "Seq or integer-keyed Dict",
@@ -132,8 +130,7 @@ async fn collect_seq_elements(
             }
 
             // Materialize each element
-            for (_, thunk_id) in int_entries {
-                let thunk = ctx.get_thunk(thunk_id);
+            for (_, thunk) in int_entries {
                 let value = materialize(&thunk, Some(&span), ctx).await?;
                 elements.push(value);
             }
@@ -219,11 +216,10 @@ fn eval_quote_preprocess<'a>(
                         match value {
                             Value::Dict(ref dict) => {
                                 // Splice dict entries into the current dict
-                                for (key, value_thunk_id) in dict {
+                                for (key, value_thunk) in dict {
                                     // Convert the thunk to a Value, then to a SurfaceNode
-                                    let value_thunk = ctx.get_thunk(*value_thunk_id);
                                     let value_val =
-                                        materialize(&value_thunk, Some(&inner_span), ctx).await?;
+                                        materialize(value_thunk, Some(&inner_span), ctx).await?;
                                     let value_node =
                                         value_to_surface_node(&value_val, inner_span.clone(), ctx)?;
 
@@ -628,13 +624,6 @@ pub(crate) fn eval_core_expr<'a>(
     ctx: &'a Arc<EvalContext>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>> + 'a>> {
     Box::pin(async move {
-        if crate::memory_budget::is_oom_flagged() {
-            return Err(crate::error::EvalError::resource_limit_exceeded(
-                "heap limit exceeded (arena bytes)".to_string(),
-                expr.span.clone(),
-            )
-            .into());
-        }
         let span = expr.span.clone();
         match &expr.node {
             // Fast path: literals materialize directly without wrapping in Unevaluated
@@ -763,7 +752,7 @@ pub(crate) fn eval_core_expr<'a>(
             // Sequential: evaluate each expression in order, extending the environment
             // with dict bindings from each intermediate dict expression.
             // Sequential: wrap as CoreExpr thunk — the CEK machine will handle iterative
-            // evaluation via SequentialStep continuations.
+            // evaluation via LetrecChainStep continuations.
             // This eliminates async recursion on the Rust stack for deeply nested sequential blocks.
             CoreExpr::Sequential(_) => Ok(Arc::new(Thunk::core_expr(
                 Arc::new(expr.clone()),
@@ -843,7 +832,7 @@ pub(crate) fn eval_core_expr<'a>(
                 // Closure captures env_id as the FlatEnv scope at definition time.
                 Ok(Arc::new(Thunk::value(
                     Value::Function {
-                        params: Rc::new(fn_params),
+                        params: Arc::new(fn_params),
                         body: Arc::clone(body),
                         closure_env_id: env_id,
                         annotation,
@@ -914,9 +903,9 @@ pub(crate) fn eval_core_expr<'a>(
             // Syntax: [let name value] → bindings = [Str("name"), value_expr]
             // (lower_let_decl_binding converts declaration-position VarRef/Annotated/Rest to Str)
             // Pairs are (bindings[2i], bindings[2i+1]).
-            // Returns a Dict so the SequentialStep can extract keys via its Dict-based binding logic.
+            // Returns a Dict so the LetrecChainStep can extract keys via its Dict-based binding logic.
             CoreExpr::LetDecl { bindings } => {
-                let mut dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+                let mut dict: IndexMap<HashableValue, Arc<crate::value::Thunk>> = IndexMap::new();
                 let mut i = 0;
                 while i + 1 < bindings.len() {
                     let name_expr = &bindings[i];
@@ -944,8 +933,10 @@ pub(crate) fn eval_core_expr<'a>(
                         Arc::clone(ctx),
                         val_expr.span.clone(),
                     ));
-                    let thunk_id = ctx.alloc_thunk(env_id, val_thunk);
-                    dict.insert(HashableValue::Str(Rc::from(name.as_str())), thunk_id);
+                    dict.insert(
+                        HashableValue::Str(Arc::from(name.as_str())),
+                        Arc::clone(&val_thunk),
+                    );
                     i += 2;
                 }
                 Ok(Arc::new(Thunk::value(Value::Dict(dict), span.clone())))
@@ -1076,37 +1067,5 @@ mod tests {
             Value::Int(77),
             "CoreExpr::Var at level=0 slot=0 must resolve to the injected Int(77)"
         );
-    }
-
-    /// B-526: OOM guard fires before CoreExpr dispatch and returns ResourceLimitExceeded.
-    ///
-    /// Sets the memory budget limit to 1 byte and trips the OOM flag, then calls
-    /// eval_core_expr and verifies ResourceLimitExceeded is returned — not a panic
-    /// or a successful evaluation.
-    #[tokio::test]
-    async fn test_eval_core_expr_oom_guard_fires() {
-        use crate::error::ErrorKind;
-
-        let span = test_span(1, 1, 1, 5);
-        let ctx = test_ctx();
-
-        // Trip the OOM flag: set limit to 1 byte, record any allocation.
-        crate::memory_budget::set_limit(1);
-        crate::memory_budget::record_and_check(2); // exceeds limit → sets OOM flag
-
-        let expr = Spanned::new(CoreExpr::Int(42), span.clone());
-        let result = super::eval_core_expr(&expr, 0, &ctx).await;
-
-        // Reset global state so other tests are not affected.
-        crate::memory_budget::reset_for_test();
-
-        match result {
-            Err(e) => assert!(
-                matches!(e.kind, ErrorKind::ResourceLimitExceeded { .. }),
-                "OOM guard must return ResourceLimitExceeded, got: {:?}",
-                e.kind
-            ),
-            Ok(_) => panic!("expected ResourceLimitExceeded from OOM guard, got Ok"),
-        }
     }
 }

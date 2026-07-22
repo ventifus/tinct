@@ -15,7 +15,6 @@ pub async fn format_source_tinct_with_dir(
     script_path: &std::path::Path,
     base_dir: Option<cap_std::fs::Dir>,
 ) -> Result<String, String> {
-    use crate::ast::SourceFile;
     use crate::desugar;
     use crate::eval::{self, EvalContext};
     use crate::parser::parse;
@@ -43,10 +42,7 @@ pub async fn format_source_tinct_with_dir(
     };
 
     // Parse the input source (no env/ctx needed yet).
-    let file = Arc::new(SourceFile {
-        path: Arc::from("<formatter>"),
-        content: Arc::from(input),
-    });
+    let file: Arc<str> = Arc::from("<formatter>");
     let parse_output = parse(input, file).map_err(|e| format!("{e}"))?;
 
     // Load the formatter script BEFORE creating env/ctx.
@@ -58,10 +54,7 @@ pub async fn format_source_tinct_with_dir(
             script_path.display()
         )
     })?;
-    let formatter_file = Arc::new(SourceFile {
-        path: Arc::from(script_path.display().to_string()),
-        content: Arc::from(formatter_source.clone()),
-    });
+    let formatter_file: Arc<str> = Arc::from(script_path.display().to_string().as_str());
     let formatter_parsed = parse(&formatter_source, formatter_file)
         .map_err(|e| format!("formatter parse error: {e}"))?;
 

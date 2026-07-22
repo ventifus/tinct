@@ -37,7 +37,7 @@ the relevant source lines and renders a caret annotation:
 pub fn render_span_snippet(source: &str, span: Span) -> Option<String> {
     // Suppress for synthetic spans (Span::origin() = line 1, col 1, offset 0)
     if span == Span::origin() { return None; }
-    // Extract line(s) by splitting on '\n' and indexing by span.start.line (1-based)
+    // Extract line(s) by splitting on '\n' and indexing by span.start_line (1-based)
     // Render: line text, then "    " + "^" repeated for (end_col - start_col), clamped to line length
     // Multi-line: first line: "^" from start_col to line end; middle lines: full "^"; last line: "^" to end_col
     ...

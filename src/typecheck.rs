@@ -39,10 +39,10 @@ use typecheck_narrow::{
     extract_param_indices, extract_pattern_types, patterns_overlap, types_can_unify,
 };
 
-/// Map from source span `(start_offset, end_offset)` to inferred type. Populated during type
-/// checking so LSP hover/diagnostics can look up types without re-running inference. Offsets
-/// are sufficient as keys; the full `Span` source text is not needed.
-pub type TypeMap = HashMap<(u32, u32), Type>;
+/// Map from source span `(start_line, start_col, end_line, end_col)` to inferred type.
+/// Populated during type checking so LSP hover/diagnostics can look up types without
+/// re-running inference.
+pub type TypeMap = HashMap<(u32, u32, u32, u32), Type>;
 
 /// Map from variable/parameter name to its documentation string.
 /// Populated during type checking by extracting `doc:` properties from annotations.
@@ -980,8 +980,8 @@ pub(crate) async fn infer_instance_decl_from_surface(
                     format!(
                         "overlapping instance patterns for class '{}': arm at line {} and arm at line {} could both match the same types",
                         class_name,
-                        span_i.start.line,
-                        span_j.start.line
+                        span_i.start_line,
+                        span_j.start_line
                     ),
                     span_j.clone(),
                 );
@@ -1047,8 +1047,8 @@ pub(crate) async fn infer_instance_decl_from_surface(
                                 format!(
                                     "consistency violation for class '{}': arm at line {} and arm at line {} have overlapping determining positions but incompatible determined types",
                                     class_name,
-                                    span_i.start.line,
-                                    span_j.start.line
+                                    span_i.start_line,
+                                    span_j.start_line
                                 ),
                                 span_j.clone(),
                             );
