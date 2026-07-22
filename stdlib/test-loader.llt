@@ -125,7 +125,7 @@
   # The returned state.stderr is the genuine consumer — it is forced when the next
   # stage (or the reduce's passed computation) accesses state.stderr.
   log-step: [fn [let msg state]
-    [merge state [stderr: [%stderr.write [builtin-string-concat msg "\n"] state.stderr]]]]
+    [merge state [stderr: [call [builtin-get "write" %stderr] [builtin-string-concat msg "\n"] state.stderr]]]]
 
   # env-to-name-set: build name-set Dict<String,1> from env for builtin-resolve.
   # builtin-resolve now takes a flat Dict<String,1> of all visible names (values ignored).
@@ -230,7 +230,7 @@
   _emit-loop: [fn [let diags@Dict i@Integer len@Integer h]
     [match [builtin-int-gte i len]
       0: [_emit-loop diags [builtin-int-add i 1] len
-            [%stderr.write [format-diagnostic [builtin-get i diags]] h]]
+            [call [builtin-get "write" %stderr] [format-diagnostic [builtin-get i diags]] h]]
       ...: h]]
 
   # emit-diagnostics: write all diagnostics to h, return the updated stderr handle.
@@ -444,7 +444,7 @@
                  [match [builtin-has-key? "ok" try-result]
                    0: [call [fn [let]
                         [err-msg:     [builtin-get "error" try-result]]
-                        [eval-stderr: [%stderr.write [builtin-string-concat err-msg "\n"] new-stderr]]
+                        [eval-stderr: [call [builtin-get "write" %stderr] [builtin-string-concat err-msg "\n"] new-stderr]]
                         [err-diag: [make-entry 0
                           [level: "error"  kind: "eval-error"  message: err-msg
                            span: []  notes: []  call-stack: []  macro-expand: []  blame: []]]]
@@ -546,7 +546,7 @@
     Ok:    [value: a]
     Error: [msg: String]]
 
-  write-str: [fn [let h s] [h.write s]]
+  write-str: [fn [let h s] [call [builtin-get "write" h] s h]]
 
   # extract-source: given file content, return everything before "\n=== ".
   extract-source: [fn [let content]
@@ -666,7 +666,7 @@
       0: [merge state [diagnostics: [make-entry 0
                [level: "error"  kind: "eval-error"  message: [builtin-get "error" try-result]
                 span: []  notes: []  call-stack: []  macro-expand: []  blame: []]]
-                       stderr: [%stderr.write [builtin-get "error" try-result] state.stderr]]]
+                       stderr: [call [builtin-get "write" %stderr] [builtin-get "error" try-result] state.stderr]]]
       ...: [merge state
            [env:         [builtin-get "ok" try-result].env
             last-result:  [builtin-get "ok" try-result].last-result
@@ -899,7 +899,7 @@
     [p:         [match item
                   ProgramItem.File: item.path
                   ...:                    "<expr>"]]
-    [new-stderr: [%stderr.write [builtin-string-concat "test:    " [builtin-string-concat p "\n"]] stderr-h]]
+    [new-stderr: [call [builtin-get "write" %stderr] [builtin-string-concat "test:    " [builtin-string-concat p "\n"]] stderr-h]]
     [base-result: [match item
       ProgramItem.File: [run-test-file item prelude-env prelude-tc new-stderr]
       ProgramItem.Expr: [path: "<expr>"  passed: Boolean.True  actual: ""  expected: ""  stderr: new-stderr]]]
@@ -1027,7 +1027,7 @@
       [result: [run-test item _prelude-env _prelude-result.tc-ready state.stderr]]
       # Thread stdout and stderr handles forward — each write returns the next handle.
       # Both chains collapse when the final dict's stdout/stderr fields are forced.
-      [new-stdout: [%stdout.write [format-result result] state.stdout]]
+      [new-stdout: [call [builtin-get "write" %stdout] [format-result result] state.stdout]]
       [delta: [bool->int result.passed]]
       [idx:        [builtin-int-add state.idx 1]
        total:      [builtin-int-add state.total 1]
@@ -1057,7 +1057,7 @@
           0
           _prelude-result.diagnostics]]
 [n-failed: [builtin-int-add prelude-error-count [builtin-int-sub final-state.total final-state.passed]]]
-[summary-stdout: [%stdout.write [join "" [
+[summary-stdout: [call [builtin-get "write" %stdout] [join "" [
     "\n"
     [builtin-int->string final-state.passed] "/" [builtin-int->string final-state.total] " tests passed"
     [match [builtin-eq-int n-failed 0]
