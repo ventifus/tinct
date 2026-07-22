@@ -383,7 +383,15 @@ pub enum Type {
     /// Named type constructor — a concrete type constructor like `Map` or `Handle`.
     /// Used as the head of `App` chains: `App(TyCon("Map"), Str)`.
     /// Display: just the name.
+    /// Used for builtin types and unresolved type constructor references.
     TyCon(String),
+    /// Resolved type constructor with Arc identity.
+    /// Produced by annotation resolution when a type name is looked up in the tycon_env.
+    /// Carries both the name (for display and error messages) and the full TyConDef Arc
+    /// (for cross-scope shadowing detection via Arc::ptr_eq in UNIFY-TYCON).
+    /// Two TyConResolved values with different Arcs (even if the name is the same)
+    /// represent distinct types from different scope declarations.
+    TyConResolved(String, Arc<TyConDef>),
     /// Type constructor variable — represents a type constructor like `m` in `Monad m`.
     /// Kind: `Operator` (i.e., `* → *`). Used in typeclass constraints and generic functions.
     Operator(String),
@@ -492,6 +500,9 @@ impl PartialEq for Type {
             (Type::Never, Type::Never) => true,
             (Type::App(f1, a1), Type::App(f2, a2)) => f1 == f2 && a1 == a2,
             (Type::TyCon(n1), Type::TyCon(n2)) => n1 == n2,
+            (Type::TyConResolved(_name1, arc1), Type::TyConResolved(_name2, arc2)) => {
+                Arc::ptr_eq(arc1, arc2)
+            }
             (Type::Operator(name1), Type::Operator(name2)) => name1 == name2,
             (
                 Type::TypeStageApp {
@@ -591,6 +602,11 @@ impl std::hash::Hash for Type {
                 a.hash(state);
             }
             Type::TyCon(name) => name.hash(state),
+            Type::TyConResolved(_name, arc) => {
+                // Hash by Arc pointer identity for cross-scope shadowing detection.
+                // Two TyConResolved with different Arcs (even same name) are different types.
+                (Arc::as_ptr(arc) as usize).hash(state);
+            }
             Type::Operator(name) => name.hash(state),
             Type::TypeStageApp { fn_name, args } => {
                 fn_name.hash(state);
@@ -1011,6 +1027,11 @@ impl Type {
                 Self::is_consistent_subtype(f1, f2) && Self::is_consistent_subtype(a1, a2)
             }
             (Type::TyCon(n1), Type::TyCon(n2)) => n1 == n2,
+            (Type::TyConResolved(n1, arc1), Type::TyConResolved(n2, arc2)) => {
+                n1 == n2 && Arc::ptr_eq(arc1, arc2)
+            }
+            (Type::TyConResolved(n, _), Type::TyCon(name))
+            | (Type::TyCon(name), Type::TyConResolved(n, _)) => n == name,
             (Type::Dict(sub_row), Type::Dict(sup_row)) => {
                 // Width subtyping: sub must supply every field sup requires.
                 // Field types use consistent subtyping: Unknown field ~<: any annotation.
@@ -1971,6 +1992,7 @@ impl Type {
             | Type::QuicDatagramHandle
             | Type::DatagramHandle
             | Type::Never => {}
+            Type::TyConResolved(_, _) => {}
         }
     }
 
@@ -2543,6 +2565,7 @@ fn type_order(ty: &Type) -> u8 {
         Type::NominalVariant { .. } => 38,
         // S-860: equirecursive-types-core
         Type::Recursive { .. } => 39,
+        Type::TyConResolved(_, _) => 40,
     }
 }
 

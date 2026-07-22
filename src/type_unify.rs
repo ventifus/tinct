@@ -1386,6 +1386,7 @@ pub fn apply_type_with_visited<'a>(
             })
         }
         Type::TyCon(_) => Cow::Borrowed(ty),
+        Type::TyConResolved(_, _) => Cow::Borrowed(ty),
         Type::Recursive { var, body } => {
             let applied_body = apply_type_with_visited(body, type_vars, depth + 1, visited_types);
             match applied_body {
@@ -1785,6 +1786,7 @@ fn lower_levels_check_occurs(
         | Type::DirCap
         | Type::NetCap
         | Type::TyCon(_)
+        | Type::TyConResolved(_, _)
         | Type::Uri
         | Type::Timestamp
         | Type::Duration
@@ -2654,6 +2656,49 @@ pub async fn unify(
                     // Both None (unknown TyCon), or same Arc (same definition) — unify.
                     Ok(())
                 }
+            }
+        }
+
+        // UNIFY-TYCON-RESOLVED: TyConResolved unified with TyConResolved.
+        // Uses Arc::ptr_eq for identity check — same Arc = same type definition.
+        (Type::TyConResolved(n1, arc1), Type::TyConResolved(n2, arc2)) => {
+            if Arc::ptr_eq(arc1, arc2) {
+                Ok(())
+            } else {
+                // Different Arcs — cross-scope shadowing detected.
+                let loc1 = arc1
+                    .definition_span
+                    .as_ref()
+                    .map(|s| format!(" (defined at {}:{}:{})", s.file, s.start_line, s.start_col))
+                    .unwrap_or_default();
+                let loc2 = arc2
+                    .definition_span
+                    .as_ref()
+                    .map(|s| format!(" (defined at {}:{}:{})", s.file, s.start_line, s.start_col))
+                    .unwrap_or_default();
+                Err(TypeDiagnostic::error(
+                    "type-error",
+                    format!(
+                        "type constructor '{n1}' refers to two distinct definitions: \
+                         {n1}{loc1} vs {n2}{loc2}"
+                    ),
+                    span,
+                ))
+            }
+        }
+
+        // UNIFY-TYCON-INTEROP: TyConResolved unified with TyCon (string-based).
+        // Check name equality for interop with unresolved/builtin TyCon uses.
+        (Type::TyConResolved(name, _arc), Type::TyCon(n))
+        | (Type::TyCon(n), Type::TyConResolved(name, _arc)) => {
+            if name == n {
+                Ok(())
+            } else {
+                Err(TypeDiagnostic::error(
+                    "type-error",
+                    format!("cannot unify {} with {}", a.clone(), b.clone()),
+                    span,
+                ))
             }
         }
 

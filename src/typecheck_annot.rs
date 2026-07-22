@@ -5318,13 +5318,13 @@ pub(crate) fn expand_named(
     }
 
     // Step 2a: nominal ADT guard — do NOT expand the body of a declared nominal type.
-    // Nominal ADTs (those with declared constructors) must stay as TyCon so that nominal
-    // identity is preserved. Expanding a TyCon to its Union of constructors collapses
+    // Nominal ADTs (those with declared constructors) must stay as TyCon/TyConResolved so that
+    // nominal identity is preserved. Expanding a TyCon to its Union of constructors collapses
     // it into structural equivalence with any union that happens to match the body —
     // which is wrong for nominal typing. UNIFY-TYCON-EXPAND handles the TyCon ~
     // NominalVariant and TyCon ~ Union cases correctly without body expansion.
     if !def.constructors.is_empty() {
-        let base = Type::TyCon(name.to_string());
+        let base = Type::TyConResolved(name.to_string(), def_arc);
         if args.is_empty() {
             return Some(base);
         }
@@ -5343,10 +5343,10 @@ pub(crate) fn expand_named(
     }
 
     // Step 3: builtin-opaque types — do not structurally expand.
-    // Return App(TyCon(name), args) so that UNIFY-TYCON handles them by name equality
+    // Return App(TyConResolved(name, arc), args) so that UNIFY-TYCON handles them by Arc identity
     // and variance-directed comparison, not by structural equivalence.
     if def.builtin_type.is_some() {
-        let base = Type::TyCon(name.to_string());
+        let base = Type::TyConResolved(name.to_string(), def_arc);
         if args.is_empty() {
             return Some(base);
         }

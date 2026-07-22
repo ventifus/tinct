@@ -118,10 +118,25 @@ pub fn normalize<'a>(
                     ctx.call_stack.push(fn_name.clone());
 
                     let result = if ctx.allow_eval {
-                        if let (Some(ref map), Some(eval_ctx)) =
+                        // First: try Resolved entries — these don't need eval_ctx.
+                        // TypeStageEntry::Resolved(ty) means "this resolver always produces ty
+                        // for any ground args." No evaluation machinery is required.
+                        let resolved_no_eval = ctx.type_stage_map.as_ref().and_then(|map| {
+                            map.get(fn_name).and_then(|entry| match entry {
+                                crate::type_infer::TypeStageEntry::Resolved(ty) => {
+                                    Some(ty.clone())
+                                }
+                                _ => None,
+                            })
+                        });
+
+                        if let Some(ty) = resolved_no_eval {
+                            ty
+                        } else if let (Some(ref map), Some(eval_ctx)) =
                             (&ctx.type_stage_map, ctx.eval_ctx.clone())
                         {
-                            // O(1) lookup in the pre-built type_stage_map.
+                            // O(1) lookup in the pre-built type_stage_map — Function entries
+                            // require eval_ctx to materialize the thunk.
                             let resolved = if let Some(entry) = map.get(fn_name) {
                                 match entry {
                                     crate::type_infer::TypeStageEntry::Function(thunk_id) => {
@@ -132,20 +147,8 @@ pub fn normalize<'a>(
                                         )
                                         .await
                                     }
-                                    crate::type_infer::TypeStageEntry::Resolved(ty) => {
-                                        if normalized_args.is_empty() {
-                                            Some(ty.clone())
-                                        } else {
-                                            let mut result = ty.clone();
-                                            for arg in &normalized_args {
-                                                result = Type::App(
-                                                    Box::new(result),
-                                                    Box::new(arg.clone()),
-                                                );
-                                            }
-                                            Some(result)
-                                        }
-                                    }
+                                    // Resolved was already handled above; unreachable here.
+                                    crate::type_infer::TypeStageEntry::Resolved(_) => None,
                                 }
                             } else {
                                 None
@@ -535,6 +538,17 @@ impl fmt::Display for Type {
                                 }
                                 return write!(f, "]");
                             }
+                            Type::TyConResolved(name, _def) => {
+                                args_rev.reverse();
+                                write!(f, "{name}[")?;
+                                for (i, a) in args_rev.iter().enumerate() {
+                                    if i > 0 {
+                                        write!(f, ", ")?;
+                                    }
+                                    write!(f, "{a}")?;
+                                }
+                                return write!(f, "]");
+                            }
                             _ => break,
                         }
                     }
@@ -542,6 +556,7 @@ impl fmt::Display for Type {
                 write!(f, "[{} {}]", func, arg)
             }
             Type::TyCon(name) => write!(f, "{}", name),
+            Type::TyConResolved(name, _def) => write!(f, "{}", name),
             Type::Operator(name) => write!(f, "{}", name),
             Type::TypeStageApp { fn_name, args } => {
                 write!(f, "{}(", fn_name)?;
@@ -911,5 +926,138 @@ mod tests {
                 args: vec![Type::Int, Type::Float],
             }
         );
+    }
+
+    // ── B-428: Re-implemented type-stage resolver tests ────────────────────────
+
+    /// B-428: TypeStageApp with ground args resolves via type_stage_map
+    #[tokio::test]
+    async fn test_normalize_type_stage_app_ground_args_resolves() {
+        let tv = empty_type_vars();
+
+        // Create a simple type-stage resolver that returns Int when called
+        use crate::type_infer::TypeStageEntry;
+        let mut type_stage_map = std::collections::HashMap::new();
+        type_stage_map.insert("AddResult".to_string(), TypeStageEntry::Resolved(Type::Int));
+
+        let mut ctx = NormCtxt::new(None);
+        ctx.type_stage_map = Some(type_stage_map);
+
+        let ty = Type::TypeStageApp {
+            fn_name: "AddResult".to_string(),
+            args: vec![Type::Int, Type::Int],
+        };
+
+        let result = norm(&ty, &tv, &mut ctx).await;
+
+        // Should resolve to Int (both args are Int)
+        assert_eq!(result, Type::Int);
+    }
+
+    /// B-428: TypeStageApp with recursive arg normalization
+    #[tokio::test]
+    async fn test_normalize_type_stage_app_with_arg_substitution() {
+        let mut tv = IndexMap::new();
+        {
+            let mut entry = TypeVarEntry::blank(0, Kind::Type);
+            entry.binding = Some(Type::Float);
+            tv.insert("a".to_string(), entry);
+        }
+
+        use crate::type_infer::TypeStageEntry;
+        let mut type_stage_map = std::collections::HashMap::new();
+        type_stage_map.insert(
+            "AddResult".to_string(),
+            TypeStageEntry::Resolved(Type::Float),
+        );
+
+        let mut ctx = NormCtxt::new(None);
+        ctx.type_stage_map = Some(type_stage_map);
+
+        // AddResult(Int, TypeVar("a")) where a is bound to Float → should normalize to Float
+        let ty = Type::TypeStageApp {
+            fn_name: "AddResult".to_string(),
+            args: vec![Type::Int, Type::TypeVar("a".to_string(), 0)],
+        };
+
+        let result = norm(&ty, &tv, &mut ctx).await;
+
+        // Should resolve to Float (Int + Float → Float per resolver)
+        assert_eq!(result, Type::Float);
+    }
+
+    /// B-428: Resolver cache - AddResult(Int, Int) → Int
+    #[tokio::test]
+    async fn test_type_stage_app_resolver_caching_add_int_int() {
+        let tv = empty_type_vars();
+
+        use crate::type_infer::TypeStageEntry;
+        let mut type_stage_map = std::collections::HashMap::new();
+        type_stage_map.insert("AddResult".to_string(), TypeStageEntry::Resolved(Type::Int));
+
+        let mut ctx = NormCtxt::new(None);
+        ctx.type_stage_map = Some(type_stage_map);
+
+        let ty = Type::TypeStageApp {
+            fn_name: "AddResult".to_string(),
+            args: vec![Type::Int, Type::Int],
+        };
+
+        let result = norm(&ty, &tv, &mut ctx).await;
+        assert_eq!(result, Type::Int);
+
+        // Verify the result was cached (cache should contain the TypeStageApp → Int mapping)
+        assert!(ctx.cache.contains_key(&ty));
+    }
+
+    /// B-428: Resolver cache - AddResult(Int, Float) → Float
+    #[tokio::test]
+    async fn test_type_stage_app_resolver_caching_add_int_float() {
+        let tv = empty_type_vars();
+
+        use crate::type_infer::TypeStageEntry;
+        let mut type_stage_map = std::collections::HashMap::new();
+        type_stage_map.insert(
+            "AddResult".to_string(),
+            TypeStageEntry::Resolved(Type::Float),
+        );
+
+        let mut ctx = NormCtxt::new(None);
+        ctx.type_stage_map = Some(type_stage_map);
+
+        let ty = Type::TypeStageApp {
+            fn_name: "AddResult".to_string(),
+            args: vec![Type::Int, Type::Float],
+        };
+
+        let result = norm(&ty, &tv, &mut ctx).await;
+        assert_eq!(result, Type::Float);
+
+        // Verify caching
+        assert!(ctx.cache.contains_key(&ty));
+    }
+
+    /// B-428: Resolver cache - DivResult(Int, Int) → Int
+    #[tokio::test]
+    async fn test_type_stage_app_resolver_caching_div_int_int() {
+        let tv = empty_type_vars();
+
+        use crate::type_infer::TypeStageEntry;
+        let mut type_stage_map = std::collections::HashMap::new();
+        type_stage_map.insert("DivResult".to_string(), TypeStageEntry::Resolved(Type::Int));
+
+        let mut ctx = NormCtxt::new(None);
+        ctx.type_stage_map = Some(type_stage_map);
+
+        let ty = Type::TypeStageApp {
+            fn_name: "DivResult".to_string(),
+            args: vec![Type::Int, Type::Int],
+        };
+
+        let result = norm(&ty, &tv, &mut ctx).await;
+        assert_eq!(result, Type::Int);
+
+        // Verify caching
+        assert!(ctx.cache.contains_key(&ty));
     }
 }

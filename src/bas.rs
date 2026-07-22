@@ -335,6 +335,7 @@ pub fn to_rdnf(ty: &Type) -> Rdnf {
 
         // Type constructor: atom
         Type::TyCon(name) => vec![vec![SignedAtom::Pos(Atom::TyCon(name.clone()))]],
+        Type::TyConResolved(name, _arc) => vec![vec![SignedAtom::Pos(Atom::TyCon(name.clone()))]],
 
         // Type application: atom
         Type::App(f, a) => vec![vec![SignedAtom::Pos(Atom::App(f.clone(), a.clone()))]],

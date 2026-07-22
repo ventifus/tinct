@@ -3049,18 +3049,22 @@ async fn test_expand_named_zero_param_tycyon_body() {
 async fn test_expand_named_builtin_opaque() {
     let (env, mut state) = make_expand_env();
     let def = make_builtin_tycon("a", "Coll");
+    // Keep a clone of the Arc so we can build the expected value with the same pointer.
+    let def_for_expected = Arc::clone(&def);
     state.tycon_env.insert("Coll".to_string(), def);
 
-    // Coll[Int] — builtin opaque, returns App(TyCon("Coll"), Int)
+    // Coll[Int] — builtin opaque, returns App(TyConResolved("Coll", arc), Int)
+    // After S-919 (T-1206), expand_named produces TyConResolved (not TyCon) for
+    // builtin-opaque types so that UNIFY-TYCON can use Arc::ptr_eq for identity checking.
     let result = expand_named("Coll", &[Type::Int], &env, &mut state);
     let expected = Type::App(
-        Box::new(Type::TyCon("Coll".to_string())),
+        Box::new(Type::TyConResolved("Coll".to_string(), def_for_expected)),
         Box::new(Type::Int),
     );
     assert_eq!(
         result,
         Some(expected),
-        "Coll[Int] should stay as App(TyCon(Coll), Int)"
+        "Coll[Int] should stay as App(TyConResolved(Coll, arc), Int)"
     );
 }
 

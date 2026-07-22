@@ -1018,6 +1018,89 @@ async fn test_types_are_disjoint_function_vs_map() {
     );
 }
 
+/// T-1206: TyConResolved with different Arcs should NOT unify (cross-scope shadowing)
+#[tokio::test]
+async fn test_tycon_resolved_different_arcs_reject_unification() {
+    use std::sync::Arc;
+
+    let mut state = InferState::new();
+    let span = rust_span!();
+
+    // Create two distinct TyConDef Arcs with the same name "Foo"
+    let def1 = Arc::new(TyConDef {
+        params: vec![],
+        body: Type::Int,
+        constraints: vec![],
+        variance: vec![],
+        constructors: vec![],
+        builtin_type: None,
+        annotation: None,
+        field_annotations: IndexMap::new(),
+        constructor_constants: IndexMap::new(),
+        definition_span: Some(rust_span!()),
+    });
+
+    let def2 = Arc::new(TyConDef {
+        params: vec![],
+        body: Type::Str, // Different body
+        constraints: vec![],
+        variance: vec![],
+        constructors: vec![],
+        builtin_type: None,
+        annotation: None,
+        field_annotations: IndexMap::new(),
+        constructor_constants: IndexMap::new(),
+        definition_span: Some(rust_span!()),
+    });
+
+    let ty1 = Type::TyConResolved("Foo".to_string(), Arc::clone(&def1));
+    let ty2 = Type::TyConResolved("Foo".to_string(), Arc::clone(&def2));
+
+    let result = unify_sync(&ty1, &ty2, &mut state, &mut Vec::new(), span).await;
+
+    assert!(
+        result.is_err(),
+        "TyConResolved with different Arcs (different definitions) should NOT unify"
+    );
+    assert!(
+        result.unwrap_err().message.contains("distinct definitions"),
+        "Error message should mention distinct definitions"
+    );
+}
+
+/// T-1206: TyConResolved with same Arc SHOULD unify (same definition)
+#[tokio::test]
+async fn test_tycon_resolved_same_arc_unifies() {
+    use std::sync::Arc;
+
+    let mut state = InferState::new();
+    let span = rust_span!();
+
+    let def = Arc::new(TyConDef {
+        params: vec![],
+        body: Type::Int,
+        constraints: vec![],
+        variance: vec![],
+        constructors: vec![],
+        builtin_type: None,
+        annotation: None,
+        field_annotations: IndexMap::new(),
+        constructor_constants: IndexMap::new(),
+        definition_span: Some(rust_span!()),
+    });
+
+    let ty1 = Type::TyConResolved("Foo".to_string(), Arc::clone(&def));
+    let ty2 = Type::TyConResolved("Foo".to_string(), Arc::clone(&def));
+
+    let result = unify_sync(&ty1, &ty2, &mut state, &mut Vec::new(), span).await;
+
+    assert!(
+        result.is_ok(),
+        "TyConResolved with same Arc (same definition) should unify: {:?}",
+        result.unwrap_err()
+    );
+}
+
 #[tokio::test]
 async fn test_types_are_not_disjoint_function_vs_function() {
     let fn1 = Type::Function {
