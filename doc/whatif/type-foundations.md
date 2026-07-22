@@ -517,7 +517,7 @@ Produces `%data` and `%config` as DirCap entries in the initial dict. The name a
 A single document with three consecutive dicts (no `---` separators). The full implementation is in the whatif directory. Key design points:
 
 - Dict 1: `read-handle` — private helper using only core builtins
-- Dict 2: `Boolean`, `ProgramItem`, `DocName`, `include`, `expand`, `eval-document-runtime`, `eval-pipeline-item`, `eval-file`, `eval-expr`, `cli-pipeline` — all closures capture the initial environment (`%cwd`, `%libdir`, `%stdout`, `%args`) as bare names
+- Dict 2: `Boolean`, `ProgramItem`, `DocName`, `include`, `eval-document-runtime`, `eval-pipeline-item`, `eval-file`, `eval-expr`, `cli-pipeline` — all closures capture the initial environment (`%cwd`, `%libdir`, `%stdout`, `%args`) as bare names
 - Dict 3: loads `_prelude`, creates `emit-ch`, constructs the `formatter` ProgramItem, calls `cli-pipeline`
 
 The formatter is passed as a separate parameter to `cli-pipeline` (not appended to `%programs`), so `cli-pipeline` runs all user programs first via `builtin-reduce`, then runs the formatter last. The formatter materializes `%` and drains `%emit-channel`, driving the evaluation cascade.
@@ -578,22 +578,21 @@ The pipeline is split into maximally granular stages so tinct tools can stop at 
 
 ```tinct
 # Stage 1: builtin-parse   — Bytes + path → raw AST (List of Document)
-# Stage 2: expand          — tinct-controlled macro expansion loop
-# Stage 3: builtin-resolve — name resolution, de Bruijn levels
-# Stage 4: builtin-typecheck — resolved AST × TypeContext → typed Program
-# Stage 5: builtin-eval    — execution (side effects: emit, I/O, channel sends)
+# Stage 2: builtin-resolve — name resolution, de Bruijn levels
+# Stage 3: builtin-typecheck — resolved AST × TypeContext → typed Program
+# Stage 4: builtin-eval    — execution (side effects: emit, I/O, channel sends)
+#                            (macros expand lazily here via @Expr param quoting)
 
-# include = all five stages (the common runtime case)
+# include = all four stages (the common runtime case)
 include: [fn [let cap path]
   [handle:   [builtin-open cap path Readable]]
   [bytes:    [read-handle handle [builtin-bytes]]]
   [raw:      [builtin-parse bytes path]]
-  [expanded: [expand raw]]
-  [resolved: [builtin-resolve expanded]]
+  [resolved: [builtin-resolve raw]]
   [typed:    [builtin-typecheck resolved [builtin-get-type-context]]]
   [builtin-eval typed]]
 
-# LSP usage — stop at stage 4 (no execution):
+# LSP usage — stop at stage 3 (no execution):
 # [typed: [builtin-typecheck resolved [builtin-get-type-context]]]
 # → type errors, hover info, completions available from typed; no side effects
 
@@ -707,40 +706,34 @@ The annotation resolver no longer needs two separate lookups (type-stage env →
 | 1 | Rust | Follow the CLI construction sequence above: parse argv, open files pre-sandbox, apply Landlock, build `%programs`/`%args` |
 | 2 | Rust | Seed the initial dict with `builtin_module("core")` `Value::Builtin` thunks. Create root TypeContext initialized **empty** — no pre-seeding from Rust. The TypeContext is populated incrementally as `builtin-typecheck` is called during loader.llt's execution (via `uses-scope` in `eval-file`). Then evaluate `stdlib/loader.llt` with the initial dict as scope. |
 | 3 | loader.llt dict 1 | `read-handle` defined; sees initial-env entries (`%cwd`, `%libdir`, etc.) as bare names |
-| 4 | loader.llt dict 2 | `Boolean`, `ProgramItem`, `DocName`, `include`, `expand`, `cli-pipeline`, `eval-*` defined. All closures capture the initial env in their scope chain. |
+| 4 | loader.llt dict 2 | `Boolean`, `ProgramItem`, `DocName`, `include`, `cli-pipeline`, `eval-*` defined. All closures capture the initial env in their scope chain. |
 | 5 | loader.llt dict 3 | `_prelude: [include %libdir "prelude.llt"]` thunk created. `emit-ch`, `formatter` defined. `[cli-pipeline %programs formatter [] %cwd _prelude emit-ch]` is the auto-indexed entry. |
 | 6 | cli-pipeline forced | `builtin-reduce` iterates `%programs` via `eval-pipeline-item` |
-| 7 | eval-file (per user file) | `[builtin-get-type-context prelude]` forces `_prelude` — loads prelude.llt, updates TypeContext, adds prelude macro values to env. Then per document: `builtin-parse` → `builtin-expand env: prelude-env` → `builtin-resolve` → `builtin-typecheck` → `builtin-eval`. `prelude-env` carries `Value::MacroTransformer` entries for `>>`, `tmpl`, `do`, etc. |
+| 7 | eval-file (per user file) | `[builtin-get-type-context prelude]` forces `_prelude` — loads prelude.llt, updates TypeContext. Then per document: `builtin-parse` → `builtin-resolve` → `builtin-typecheck` → `builtin-eval`. Macros (functions with `@Expr` params like `tmpl`, `do`) expand lazily at call time during evaluation. |
 | 8 | eval-document-runtime | Builds user doc scope: prelude + `%cwd`/`%libdir`/`%stdout`/`%args` (from closure) + `%include-dir` (file's own dir) + emit machinery |
 | 9 | output formatter | `eval-pipeline-item` runs it last with the final `%`; formatter drains `%emit-channel`, writes to `%stdout` |
 
 Rust exits after step 2's `eval_file` returns. All output has already occurred via side effects.
 
-**Macros are values in the runtime env.**
+**Macros expand lazily within the runtime phase via the @Expr calling convention — no separate expand pass.**
 
-`[macro name [let params] body]` is evaluated by the runtime, not skipped. It produces a `Value::MacroTransformer` (a tagged function) bound to `name` in the env — exactly as `[fn ...]` produces `Value::Function`. The Rust macro registry (`register_stdlib_macros_from_env`) is deleted. No macros are hardcoded in Rust.
+Macros are ordinary functions with `@Expr` parameter annotations. When the evaluator detects `@Expr` params at call time (by resolving param annotations via TypeContext), it quotes the argument AST (via `core_expr_to_expr_value`) instead of evaluating it, and appends implicit `__call-env__` and `__call-span__` args. The macro body calls `eval-macro-ast` (or equivalent) to evaluate the expansion in the call-site scope. This is a pure runtime behavior — no separate expand phase exists.
 
-The consequence: macro declarations flow through the same env chain as all other values. Loader.llt defines `>>`, `begin`, `tmpl`, `do` as tinct `[macro ...]` declarations. When loader.llt is expanded, its own macros are discovered by the two-pass within-file pre-scan (B-304). After loader.llt evaluates, those macro values live in the loader env. When `eval-file` expands prelude, it passes the loader env to `builtin-expand env: loader-env`; the expander finds `>>`, `tmpl`, etc. as `Value::MacroTransformer` entries. After prelude evaluates, prelude's macro values join the env. User code gets the full accumulated macro set.
+The `[macro]` keyword was removed from the parser. Macros are defined using plain `fn` with `@Expr` params: `[fn [let arg@Expr __call-env__ __call-span__] ...]`. No special syntax, no desugaring, no pre-scan.
 
-`builtin-expand` gains an `env:` parameter (a `Value::Environment`). The expander reads macro declarations from that env rather than from a Rust-global registry. `pre_scan_follow_libdir_include` is deleted.
+**Construction sequence — three phases at every file boundary:**
 
-**Include-time macros from user libraries are not supported.** When user code does `[include %libdir "lib.llt"]` at runtime, the user file has already been expanded. There is no retroactive macro injection into an expanded file without interleaving expand↔eval phases (a separate, more complex feature). Macros flow only through the loader→prelude→user chain via the env.
-
-**Construction sequence — four phases at every file boundary:**
-
-Every file processed by the pipeline goes through the same four phases in order: `--- uses:` → expand → stage:type → runtime. The phases are described below for each file.
+Every file processed by the pipeline goes through the same three phases in order: `--- uses:` → stage:type → runtime. The phases are described below for each file.
 
 **Phase description:**
 
-*`--- uses:` phase:* The file's `--- uses:` declaration is read. For each declared module, `builtin_module(name)` is called. This has **two sub-phases** that must both complete before moving to expand:
+*`--- uses:` phase:* The file's `--- uses:` declaration is read. For each declared module, `builtin_module(name)` is called. This has **two sub-phases** that must both complete before moving to stage:type:
 
 1. **Evaluator injection**: Each `BuiltinDef` is wrapped as `Value::Builtin(def)` → `Arc<Thunk::new_materialized(Value::Builtin(def), Span::origin())>` and inserted into the current type-stage env by name. After this sub-phase the env contains the declared module's callable Rust functions.
 
 2. **Type-checker injection**: The module's corresponding `builtin_X.llt` declaration file is type-checked through the normal pipeline (`builtin-parse` → `builtin-typecheck`) against the current TypeContext. This registers TypeSchemes for all `builtin-*` names declared in that file, and TyConDefs for all `[type ...]` entries. The TypeSchemes become available to the type checker when it subsequently type-checks the file's `stage:type` and runtime sections.
 
 **Why the type-checker injection is necessary:** Without it, calls to `builtin-open`, `builtin-read-chunk`, etc. inside prelude function bodies type as `Unknown`. The gradual typing consistency relation (`Unknown ~: T`) would then allow incorrect prelude code through silently — the opposite of "prelude type errors must surface." The `builtin_X.llt` declarations with their `fn@[...]` annotations are the type-checker's source of truth for what each builtin accepts and returns.
-
-*expand phase:* The parsed source is expanded using `builtin-expand ast env: accumulated-env`. The `accumulated-env` is the runtime env built from all previously evaluated files in the pipeline (loader env → prelude env → ...). The expander reads `Value::MacroTransformer` entries from this env to find available macros. For **loader.llt itself**, macro expansion uses only the within-file two-pass pre-scan (B-304) — loader's own `[macro >> ...]` etc. are discovered by pre-scanning all of loader's documents before expanding any of them. No `env:` seeding is required for loader's self-expansion. After expansion, the AST is ready for resolution.
 
 **Two-level split — Rust for loader.llt, tinct for everything else:**
 
@@ -761,8 +754,7 @@ uses-scope: [fn [let module-names]
       [decl-handle:   [builtin-open %libdir decl-path Readable]]
       [decl-bytes:    [read-handle decl-handle [builtin-bytes]]]
       [decl-raw:      [builtin-parse decl-bytes decl-path]]
-      [decl-expanded: [expand decl-raw]]
-      [decl-resolved: [builtin-resolve decl-expanded]]
+      [decl-resolved: [builtin-resolve decl-raw]]
       # Type-check for TypeContext side-effect. Discard typed AST — no eval.
       [builtin-typecheck decl-resolved [builtin-get-type-context]]
       # Accumulate runtime implementations.
@@ -786,30 +778,26 @@ uses-scope: [fn [let module-names]
 **loader.llt** (steps 1–3, Rust bootstrap):
 
 - `--- uses: ["core"]` → Rust handles the **evaluator side only**: injects `builtin_module("core")` `Value::Builtin` thunks into the initial dict. The **type-checker side** (registering TypeSchemes for core builtins) is deferred — the root TypeContext starts empty and is populated by `uses-scope` when the first file with `--- uses: ["core"]` is processed through `eval-file`.
-- expand → two-pass pre-scan within loader.llt itself discovers `[macro >> ...]`, `[macro begin ...]`, `[macro tmpl ...]`, `[macro do ...]` declared in loader's own body. No external env needed — the pre-scan runs before expansion of loader's own call sites, following B-304.
 - stage:type → currently empty; wired uniformly for future use
-- runtime → evaluate: defines `uses-scope`, `eval-document-runtime`, `eval-file`, `cli-pipeline`. **Evaluating `[macro >> ...]` etc. produces `Value::MacroTransformer` values bound in the loader env.** These flow to prelude and user code via the env chain.
+- runtime → evaluate: defines `uses-scope`, `eval-document-runtime`, `eval-file`, `cli-pipeline`. No special macro handling — macros are ordinary functions.
 
 **prelude.llt** (steps 4–6, driven by `eval-programs "prelude.llt"`):
 
 - `--- uses: ["core"]` → **Prelude declares `--- uses: ["core"]`** so that `uses-scope` type-checks `stdlib/builtin_core.llt` into the TypeContext before prelude itself is type-checked. This is how TypeSchemes for `builtin-open`, `builtin-raise`, `builtin-if`, etc. become available to the type checker when it analyzes prelude function bodies. `Value::Builtin` thunks are already in scope from Rust's initial dict seeding.
-- expand → `builtin-expand prelude-ast env: loader-env`. The loader env contains `>>`, `begin`, `tmpl`, `do` as `Value::MacroTransformer`. Prelude's body can use all loader-defined macros. Prelude may additionally declare its own macros; after evaluation they join the prelude env.
 - stage:type → produces: `Int`, `Float`, `Never`, `Any: [builtin-variant "TypeNode.Any"]`, `Unknown: [builtin-variant "TypeNode.Unknown"]`, type combinators (`union`, `all`, `without`, `Seq`, `Map`, `mu`), TypeNode ADT with traversal protocol (`children`, `map-children`, `as-type`). The arithmetic resolvers `AddResult`/`SubResult`/`MulResult`/`DivResult` are deleted (dead code — no callers since FD resolver design was superseded).
-- runtime → type-check registers TyConDefs (`Grapheme`, `Graphemes`, `Boolean`, `Seq`, `Absent`, `Never`, `Number` class, etc.) and constructor schemes (`Grapheme.Cluster`, `Boolean.True`, `Boolean.False`, `Seq.Cons`, `Seq.End`) in prelude TypeEnv; evaluate makes runtime bindings active.
+- runtime → type-check registers TyConDefs (`Grapheme`, `Graphemes`, `Boolean`, `Seq`, `Absent`, `Never`, `Number` class, etc.) and constructor schemes (`Grapheme.Cluster`, `Boolean.True`, `Boolean.False`, `Seq.Cons`, `Seq.End`) in prelude TypeEnv; evaluate makes runtime bindings active. Macros like `tmpl` and `do` are ordinary `fn@Expr` functions — no special handling.
 
 **user file** (steps 7–9, driven by `eval-programs user-code`):
 
 - `--- uses:` → inject declared modules (e.g. `--- uses: ["text"]` injects text.llt following steps 10–12 for that file before continuing)
-- expand → `builtin-expand user-ast env: prelude-env`. The prelude env contains the full accumulated set of macro values: loader macros + prelude macros. All standard macros (`>>`, `tmpl`, `do`, string interpolation, etc.) are available.
 - stage:type → evaluated in a child of the prelude type-stage env; user type-stage bindings shadow prelude's; all prelude type-stage bindings accessible via parent chain
-- runtime → type-check registers user TyConDefs in a child TypeEnv; evaluate produces output. **User-defined `[macro ...]` declarations produce `Value::MacroTransformer` values in the user env, but these are only usable as macros within the same file** (via the within-file two-pass pre-scan). They do not propagate to files that `[include ...]` this file at runtime — `include` is runtime, expansion has already occurred.
+- runtime → type-check registers user TyConDefs in a child TypeEnv; evaluate produces output. User-defined macros (functions with `@Expr` params) work like any other function — they are called at runtime and their arguments are quoted automatically by the evaluator.
 
 **included file** (steps 10–12, driven by `[include ...]`):
 
 - `--- uses:` → inject declared modules
-- expand → `builtin-expand included-ast env: current-env`. The current env at include time carries all macros accumulated so far (loader + prelude + any previously evaluated user macros). The included file may use all of these.
 - stage:type → evaluated in a child of the current type-stage env
-- runtime → type-check and evaluate; exports merged into the including file's env. Macro values produced by `[macro ...]` in the included file become part of the exported env — usable by the including scope at runtime but **not retroactively available as macros in the including file** (which was already expanded).
+- runtime → type-check and evaluate; exports merged into the including file's env. Macros (functions with `@Expr` params) in the included file are usable by the including scope like any other function.
 
 **Annotation resolution — the unified path:**
 
@@ -1020,7 +1008,7 @@ Triple-quoted strings and interpolated strings were always designed to be implem
 - `parser.rs:204` (`"tmpl"` hardcode) — delete with desugaring
 - `parser.rs:3112,3154` (`"unindent"` hardcodes) — delete with desugaring
 
-**Where the macros live:** Prelude defines both macros. In tinct's demand-driven expander, the expander forces macro thunks from the environment on use — even if defined in the same letrec dict. Prelude can define and use `i"..."` / `"""..."""` within the same source. User files work identically. Loader.llt is the only exception (runs before anything is loaded, macros don't exist yet) but has no need for these forms.
+**Where string desugaring happens:** The parser desugars `i"..."` → `[tmpl ...]` and `"""..."""` → `[unindent ...]` during the parse pass (see `doc/02-syntax.md`). `tmpl` and `unindent` are ordinary prelude functions — they execute at runtime like any other function call. Prelude can define and use `i"..."` / `"""..."""` within the same source because desugaring happens before evaluation. Loader.llt is the only exception (runs before anything is loaded, these helpers don't exist yet) but has no need for these forms.
 
 **Not special cases (confirmed correct):**
 - `null` — zero parser knowledge; `null?` is a prelude function; `[]` is just an empty dict

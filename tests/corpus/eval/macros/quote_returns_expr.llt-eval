@@ -1,0 +1,4 @@
+# [quote expr] returns Expr.* variant, NOT the evaluated result
+[= [type-of [quote [+ 1 2]]] "Expr.Call"]
+=== out
+Boolean.True

@@ -114,12 +114,14 @@ Macros are tinct functions that receive AST-as-data and return AST-as-data. tinc
 source → parse → desugar → resolve → typecheck → eval
 ```
 
-Note: The `expand_surface_program` pass and `[macro ...]` declaration forms have been removed. Macro-like behavior is implemented as ordinary runtime tinct functions in the stdlib.
+Note: The `expand_surface_program` pass and `[macro ...]` declaration forms have been removed. Macros are ordinary runtime functions with `@Expr` parameter annotations.
 
-- `[macro name [let params] body]` registers a compile-time function
-- When `[name arg1 arg2 ...]` appears in source, the expander quotes the arguments (converts each AST node to a typed `Expr` variant value) and calls the macro function with the quoted forms
-- The macro function returns a `Value::Expression` (or a dict convertible to AST) representing the expanded code
-- The expander converts the result back to AST and continues expansion
+**The @Expr calling convention** — macros expand lazily at runtime, not in a separate expand phase:
+
+- Macros are ordinary functions with parameters annotated `@Expr`: `[fn [let arg@Expr __call-env__ __call-span__] ...]`
+- When the evaluator encounters a call to a function with `@Expr` params, it quotes the arguments (converts each AST node to a typed `Expr` variant value via `core_expr_to_expr_value`) instead of evaluating them
+- The evaluator appends two implicit arguments: `__call-env__` (the call-site environment) and `__call-span__` (the call-site span dict)
+- The macro body calls `eval-macro-ast` to evaluate the expansion in the call-site scope
 - `quote` converts code to its `Expr` variant representation; `unquote` splices values into quoted code
 
 ### Hygiene Model
@@ -157,13 +159,13 @@ The AST enum (`Expr`) is projected into typed variant values with a stable schem
 
 See `doc/feature/ast-schema.md` for the canonical AST dict schema — all consumers (formatter, quasiquoting, macros) share one definition.
 
-### Compile-Time Evaluation
+### Runtime Evaluation
 
-Macro bodies execute during expansion, before the main evaluation pass. This requires a restricted evaluator (or reuse of the main evaluator) that runs macro definitions eagerly. Since tinct is interpreted, this is the same evaluator with a separate entry point — not a distinct compilation phase.
+Macro bodies execute during the runtime evaluation pass, not in a separate expand phase. When the evaluator detects `@Expr` params (by resolving param annotations via TypeContext at call time), it quotes the arguments and passes them as `Expr.*` variant values. The macro body calls `eval-macro-ast` to evaluate the expansion.
 
-**Lazy evaluation tension:** macros need their arguments as *unevaluated AST*, not as lazy thunks. A macro call site `[when pred body]` passes the *syntax* `pred` and `body`, not their *values*. Macro arguments bypass the normal evaluation model.
+**Lazy evaluation tension:** macros need their arguments as *unevaluated AST*, not as lazy thunks. A macro call site `[when pred body]` passes the *syntax* `pred` and `body`, not their *values*. The `@Expr` annotation triggers quoting instead of normal evaluation.
 
-**Termination:** recursive macro expansion could loop. A depth limit plus blackhole detection (analogous to the evaluator's InProgress sentinel) prevents infinite expansion.
+**Termination:** recursive macro calls could loop. The evaluator's normal stack depth limit applies — macro expansion is just function calls, so infinite recursion produces the standard stack overflow error.
 
 ### Error Reporting
 
@@ -171,7 +173,7 @@ Macro-generated AST nodes carry both the expansion source span and the original 
 
 ### Interaction with `include`
 
-Macros defined in an included file are available to the includer **only when using the two-argument libdir form** `[include %libdir "..."]`. The macro pre-scan follows libdir includes to discover macros. Bare single-argument includes `[include "file.llt"]` do **not** propagate macros to the includer — they are evaluated at runtime, after macro expansion is complete.
+Macros defined in an included file are available to the includer as ordinary functions — there is no special macro propagation mechanism. Since macros are just functions with `@Expr` params, they flow through the environment chain like any other function. `[include ...]` merges the included file's exports into the including scope, making all functions (including macros) available.
 
 ## Implementation
 

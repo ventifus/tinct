@@ -1,0 +1,8 @@
+# fn@Expr macros receive __call-span__ with non-zero start-line
+[
+  span-reader: [fn [let x@Expr __call-env__ __call-span__] __call-span__]
+  result: [span-reader [+ 1 2]]
+]
+[> result.start-line 0]
+=== out
+Boolean.True

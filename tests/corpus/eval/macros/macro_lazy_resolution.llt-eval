@@ -1,0 +1,8 @@
+# Macro defined and called in same letrec dict (lazy resolution must work)
+[
+  m: [fn [let x@Expr __call-env__ __call-span__] [eval-macro-ast [quote [+ 1 [unquote x]]]]]
+  r: [m 41]
+]
+[r]
+=== out
+Int(42)

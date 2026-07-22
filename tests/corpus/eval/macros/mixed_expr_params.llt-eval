@@ -1,0 +1,9 @@
+# Mixed @Expr and non-@Expr params: name@String evaluated, body@Expr quoted
+[
+  define-adder: [fn [let name@String body@Expr __call-env__ __call-span__]
+                  [eval-macro-ast [quote [str name ": " [str [unquote body]]]]]]
+  result: [define-adder "answer" [+ 40 2]]
+]
+[result]
+=== out
+String("answer: 42")
