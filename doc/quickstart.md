@@ -123,13 +123,13 @@ For dynamic or computed keys, use `get`:
 
 ```tinct
 [
-  person:  [name: "Alice"  age: 30]
+  person:  [name: "Alice"  age: 30  address: [city: "Portland"]]
   field:   "name"
 
   static:  [get "name" person]    # → "Alice"
   dynamic: [get field person]     # → "Alice"
   indexed: [get 0 ["x" "y"]]     # → "x"
-  nested:  [get-in person ["address" "city"]]
+  nested:  [get-in ["address" "city"] person]  # → "Portland"
   safe:    [get-or "missing" "default" person]  # → "default"
   exists:  [has? "name" person]   # → true
   maybe:   [get? "missing" person]              # → Absent.Absent (not [])

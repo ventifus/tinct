@@ -1301,8 +1301,15 @@ pub(crate) fn builtin_tag_of(
 /// }
 /// ```
 ///
-/// `Expr.*` variants do not carry source spans in their payload — spans are not preserved
-/// when converting `SurfaceNode` to `Expr.*` variants. Returns empty dict `[]` for all inputs.
+/// `Expr.*` variants carry a `span` field in their payload dict (injected by
+/// `inject_span_into_expr_variant` in `surface_convert.rs`). The span dict has
+/// the shape `{start: {line: Int, col: Int}, end: {line: Int, col: Int}}`.
+///
+/// This builtin extracts that span and returns it in the flat format used by
+/// `make_span_dict`: `{file, start-line, start-col, end-line, end-col}`.
+/// The file is taken from the thunk's own `Span.file` field.
+///
+/// Returns empty dict `[]` if the value is not an Expr variant or has no span.
 ///
 /// Used for precise error reporting in macros.
 pub(crate) fn builtin_span_of(
@@ -1324,9 +1331,81 @@ pub(crate) fn builtin_span_of(
             call_span.clone(),
         )?;
 
-        // Expr.* variants do not carry source spans in their payload.
-        // Return empty dict for all inputs.
-        let _ = val;
+        // Extract span from Expr.* variant payload.
+        if let Value::Variant {
+            ref tycon,
+            payload: Some(payload_id),
+            ..
+        } = val
+        {
+            if tycon.as_ref() == "Expr" {
+                let payload_thunk = ctx.get_thunk(payload_id);
+                if let Some(Value::Dict(payload_dict)) = payload_thunk.try_get_materialized() {
+                    if let Some(span_thunk) =
+                        payload_dict.get(&HashableValue::Str("span".into()))
+                    {
+                        if let Some(Value::Dict(span_dict)) = span_thunk.try_get_materialized() {
+                            // Extract {start: {line, col}, end: {line, col}}
+                            let get_pos = |key: &str| -> Option<(i64, i64)> {
+                                let pos_thunk = span_dict.get(&HashableValue::Str(key.into()))?;
+                                let Value::Dict(pos_dict) = pos_thunk.try_get_materialized()? else {
+                                    return None;
+                                };
+                                let line = pos_dict
+                                    .get(&HashableValue::Str("line".into()))?
+                                    .try_get_materialized()?;
+                                let col = pos_dict
+                                    .get(&HashableValue::Str("col".into()))?
+                                    .try_get_materialized()?;
+                                if let (Value::Int(l), Value::Int(c)) = (line, col) {
+                                    Some((l, c))
+                                } else {
+                                    None
+                                }
+                            };
+
+                            if let (Some((sl, sc)), Some((el, ec))) =
+                                (get_pos("start"), get_pos("end"))
+                            {
+                                // Get the file from the thunk wrapping the Expr value.
+                                let expr_thunk = ctx.get_thunk(args[0]);
+                                let file_str = &expr_thunk.span.file;
+                                let file_val = if !file_str.starts_with('<') {
+                                    string_val(file_str.as_ref())
+                                } else {
+                                    Value::Dict(IndexMap::new())
+                                };
+
+                                let mk = |v: Value| {
+                                    Arc::new(Thunk::value(v, call_span.clone()))
+                                };
+                                let mut w: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+                                w.insert(HashableValue::Str("file".into()), mk(file_val));
+                                w.insert(
+                                    HashableValue::Str("start-line".into()),
+                                    mk(Value::Int(sl)),
+                                );
+                                w.insert(
+                                    HashableValue::Str("start-col".into()),
+                                    mk(Value::Int(sc)),
+                                );
+                                w.insert(
+                                    HashableValue::Str("end-line".into()),
+                                    mk(Value::Int(el)),
+                                );
+                                w.insert(
+                                    HashableValue::Str("end-col".into()),
+                                    mk(Value::Int(ec)),
+                                );
+                                return ok_val(Value::Dict(w), call_span);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Not an Expr variant or no span found — return empty dict.
         ok_val(Value::Dict(IndexMap::new()), call_span)
     })
 }

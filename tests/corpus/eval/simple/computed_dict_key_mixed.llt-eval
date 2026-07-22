@@ -1,0 +1,3 @@
+[static: 1  ["dynamic"]: 2  [[str "com" "puted"]]: 3]
+=== out
+Dict({"static": Int(1), "dynamic": Int(2), "computed": Int(3)})

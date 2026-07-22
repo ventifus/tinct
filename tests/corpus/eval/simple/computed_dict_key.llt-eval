@@ -1,0 +1,3 @@
+[["hello"]: 42]
+=== out
+Dict({"hello": Int(42)})
