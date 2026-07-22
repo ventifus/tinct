@@ -194,14 +194,21 @@ pub async fn run_loader_pipeline(
         // the host has placed there. Each named thunk carries its name via span.name.
         // Reading the actual scope 0 gives the resolver the complete picture so
         // every injected name resolves to a correct de Bruijn coordinate.
-        // ScopeArena has been deleted — build root_frame from core_builtins() statically.
+        // Build root_frame from core_builtins() PLUS runtime capabilities.
         // Previously this read scope_arena.scopes[0] to include host-injected capabilities;
-        // with the EvalFrame migration, root_frame uses the static builtin list.
-        let root_frame: indexmap::IndexMap<String, u32> = crate::builtins_core::core_builtins()
+        // with the EvalFrame migration, capabilities come from eval_ctx.capability_env.
+        // The capability names must be in root_frame so the resolver can assign VarAddr
+        // (ClosureCapture(BUILTIN_CLOSURE_OFFSET + slot)) and the runtime fallback
+        // in capability_env can then provide the actual thunk.
+        let mut root_frame: indexmap::IndexMap<String, u32> = crate::builtins_core::core_builtins()
             .iter()
             .enumerate()
             .map(|(i, def)| (def.name.to_string(), i as u32))
             .collect();
+        let base_slot = root_frame.len() as u32;
+        for (i, name) in eval_ctx.capability_env.keys().enumerate() {
+            root_frame.insert(name.clone(), base_slot + i as u32);
+        }
         let (_table, new_frames) =
             resolve::resolve_surface_program(&loader_program, std::slice::from_ref(&root_frame));
         // Combine: root_frame (outermost) followed by frames introduced by the program.

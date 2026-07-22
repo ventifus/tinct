@@ -4836,7 +4836,7 @@ fn test_cek_type_contains_typevar_nested_in_union() {
 /// now pushes a synthetic innermost frame to `state.scope_frames` that maps each slot name
 /// (including ɪ-prefixed mangled instance bindings) to its slot index.  During Pass 3,
 /// `check_constraints_on_var` calls `resolve_name_in_frames` and finds the mangled binding in the
-/// synthetic frame, enabling `call_dispatch.set(level, slot)`.
+/// synthetic frame, enabling `call_dispatch.set(debruijn_to_var_addr(level, slot))`.
 ///
 /// Test strategy: parse a program containing a class declaration, an instance declaration, and a
 /// call to the class method.  Manually set `state.scope_frames` with a synthetic frame that

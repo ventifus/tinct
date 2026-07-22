@@ -446,10 +446,14 @@ pub(crate) async fn eval_dict_core(
             env.extend(outer_frame.closure_env.iter().cloned());
             std::sync::Arc::new(env)
         };
+        // Inherit outer_frame.params so that function parameters remain accessible
+        // from within intermediate dict bodies inside a function. Without this, an
+        // intermediate dict `[x: [fn-param-ref]]` inside `[fn [let p] [x: p] body]`
+        // would fail because the dict's letrec_frame has empty params.
         let letrec_frame = std::sync::Arc::new(EvalFrame {
             closure_env,
             group,
-            params: std::sync::Arc::new(vec![]),
+            params: std::sync::Arc::clone(&outer_frame.params),
         });
 
         for maybe_core_thunk in &core_expr_thunks {

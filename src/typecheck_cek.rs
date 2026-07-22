@@ -3909,8 +3909,9 @@ pub(crate) async fn run_typecheck_dict(
     // When the user declares an [instance ...] in this dict, Pass 1 above pre-inserts the
     // ɪ-prefixed mangled binding name into dict_env.slots with a fresh TypeVar placeholder.
     // During Pass 3, check_constraints_on_var fires when the TypeVar resolves, and calls
-    // resolve_name_in_frames to convert the mangled name to a (level, slot) pair for
-    // call_dispatch.set().  Without this synthetic frame, resolve_name_in_frames only
+    // resolve_name_in_frames to convert the mangled name to a (level, slot) pair, then
+    // calls call_dispatch.set(debruijn_to_var_addr(level, slot)).  Without this synthetic
+    // frame, resolve_name_in_frames only
     // searches the parent runtime scope chain (outer evaluated scopes) and misses the current
     // dict's instance bindings — because the user's document has not been evaluated yet.
     //

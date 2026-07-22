@@ -307,9 +307,35 @@ impl SurfaceResolver {
         if let Some(&fn_boundary) = self.fn_scope_boundaries.last() {
             if match_depth < fn_boundary {
                 // Free variable: found in a scope outside the current function boundary.
-                // Store (name, original_addr) — `addr` is the VarAddr the binding holds in
-                // the enclosing frame (LetrecGroupMember/ClosureCapture/Parameter), before we
-                // convert it to ClosureCapture for references inside this function.
+                //
+                // Determine the original_addr to store in the captures list. This is the
+                // VarAddr that the Fn arm uses at function-creation time to look up the thunk
+                // from the enclosing EvalFrame.
+                //
+                // Cross-dict cross-fn capture (match_depth < dict_boundary AND < fn_boundary):
+                //   The binding comes from an outer dict's sequential scope. Its LGM slot refers
+                //   to the outer dict's group, which at runtime is in frame.closure_env (not
+                //   frame.group, which is the current dict's letrec group). Store the addr as
+                //   ClosureCapture(slot) so the Fn arm looks in frame.closure_env at that slot.
+                //
+                // Same-dict cross-fn capture (match_depth >= dict_boundary, < fn_boundary):
+                //   The binding is in the current dict's letrec scope. Store LGM(slot) so the
+                //   Fn arm looks in frame.group at that slot.
+                let original_addr = if let Some(&dict_boundary) = self.dict_scope_boundaries.last()
+                {
+                    if match_depth < dict_boundary {
+                        if let VarAddr::LetrecGroupMember(slot) = &addr {
+                            // Cross-dict: LGM → ClosureCapture so Fn arm uses closure_env.
+                            VarAddr::ClosureCapture(*slot)
+                        } else {
+                            addr.clone()
+                        }
+                    } else {
+                        addr.clone()
+                    }
+                } else {
+                    addr.clone()
+                };
                 let capture_list = self
                     .fn_capture_lists
                     .last_mut()
@@ -319,7 +345,7 @@ impl SurfaceResolver {
                         pos as u32
                     } else {
                         let idx = capture_list.len() as u32;
-                        capture_list.push((name.to_string(), addr.clone()));
+                        capture_list.push((name.to_string(), original_addr));
                         idx
                     };
                 return Some(VarAddr::ClosureCapture(capture_idx));
@@ -638,6 +664,12 @@ impl SurfaceResolver {
                 let prev_binding_context = self.current_binding_context.take();
                 let intermediate_bodies_base = self.intermediate_bodies.len();
                 let mut injected = 0usize;
+                // Cumulative LGM slot offset for sequential scope injection within this
+                // Sequential expression. Mirrors the same mechanism in walk_surface_document:
+                // each body's sequential scope uses LGM slots starting at this offset so
+                // that LetrecChainStep's accumulated group has non-overlapping indices.
+                // Body 0 starts at offset 0; body 1 starts at body-0's key count; etc.
+                let mut sequential_offset: u32 = 0;
                 for (i, e) in exprs.iter().enumerate() {
                     let is_last = i == exprs.len() - 1;
                     // Set current_body_index so resolve_name knows which body we are in.
@@ -783,7 +815,14 @@ impl SurfaceResolver {
                                 // bodies can reference this body's bindings. Record scope_depth
                                 // from this scope — this is what resolve_name uses to identify
                                 // which body a referenced name belongs to.
-                                self.enter_scope(&all_keys, ScopeKind::Dict);
+                                // Use cumulative offset so each body's LGM slots don't overlap
+                                // with prior bodies' slots in the LetrecChainStep accumulated group.
+                                self.enter_scope_with_offset(
+                                    &all_keys,
+                                    sequential_offset,
+                                    ScopeKind::Dict,
+                                );
+                                sequential_offset += all_keys.len() as u32;
                                 let sequential_scope_depth = self.scopes.len() - 1;
                                 if has_tracked_bindings {
                                     // Update the scope_depth placeholder now that we have
@@ -799,7 +838,12 @@ impl SurfaceResolver {
                             // scope injection path stays correct for future cases).
                             self.walk_surface_node(e);
                             if !keys.is_empty() {
-                                self.enter_scope(&keys, ScopeKind::Dict);
+                                self.enter_scope_with_offset(
+                                    &keys,
+                                    sequential_offset,
+                                    ScopeKind::Dict,
+                                );
+                                sequential_offset += keys.len() as u32;
                                 injected += 1;
                             }
                         } else {

@@ -698,43 +698,21 @@ try-or-impl: [fn@[bind: [a]  return: a] [let try-result default@a]
         [case [let _] [Result.Error]   default]]]
 
 # ============================================================================
-# Document scope helpers
+# Document env helpers
 # ============================================================================
 
-# _scope-null?: true if x is the empty dict [] (null scope parent = root reached).
-# Defined here so scope-to-frames-inner can check termination without referencing Dict 2.
-_scope-null?: [fn [let x]
-  [match [builtin-eq-string [builtin-type-of x] "Dict"]
-    0: 0
-    ...: [builtin-eq-int [builtin-dict-length x] 0]]]
-
-# _scope-shift-keys: shift all integer keys in dict d by +1.
-# {0: v} → {1: v}, {0: a, 1: b} → {1: a, 2: b}.
-# Used by scope-to-frames-inner to make room for new outermost frame at key 0.
-_scope-shift-keys: [fn [let d n i b]
+# env-to-name-set: convert an env dict to a flat Dict<String,1> for builtin-resolve.
+# builtin-resolve now takes a name-set (flat dict of all visible names, values=1)
+# rather than a scope-frames array. The env is already a flat dict of name→thunk.
+env-to-name-set-inner: [fn [let keys n i builder]
   [match [builtin-eq-int i n]
-    0: [_scope-shift-keys d n [builtin-int-add i 1]
-          [builtin-builder-set [builtin-int-add [builtin-dict-key-nth d i] 1]
-                               [builtin-dict-nth d i]
-                               b]]
-    ...: [builtin-builder-finish b]]]
+    0: [env-to-name-set-inner keys n [builtin-int-add i 1]
+          [builtin-builder-set [builtin-get i keys] 1 builder]]
+    ...: [builtin-builder-finish builder]]]
 
-# scope-to-frames-inner: recursively walk the parent chain building a Dict accumulator.
-# Each step prepends the current scope's frame at key 0 and shifts existing entries up.
-# Result is {0: outermost-frame, ..., N: innermost-frame} as required by builtin-resolve.
-# Uses only Dict 1 siblings and builtin-* names — no Dict 2 dependencies.
-scope-to-frames-inner: [fn [let scope-id acc]
-  [acc-next: [dict-merge
-               [make-entry 0 [builtin-scope-frame scope-id]]
-               [_scope-shift-keys acc [builtin-dict-length acc] 0 [builtin-make-builder]]]]
-  [parent: [builtin-scope-parent scope-id]]
-  [match [_scope-null? parent]
-    0: [scope-to-frames-inner parent acc-next]
-    ...: acc-next]]
-
-# scope-to-frames: convert a scope-id to {0: outermost-frame, ..., N: innermost-frame}.
-scope-to-frames: [fn [let scope-id]
-  [scope-to-frames-inner scope-id []]]
+env-to-name-set: [fn [let env]
+  [keys: [builtin-keys env]]
+  [env-to-name-set-inner keys [builtin-dict-length keys] 0 [builtin-make-builder]]]
 
 # ============================================================================
 # Async private helpers (T-733: moved from stdlib/async.llt)
@@ -3302,23 +3280,23 @@ read-chunk@[doc: "Read up to n bytes from a handle (size first, handle last)."]:
       [h.read-chunk n h]]]
 
 # Meta primitives: resolve/eval for AST introspection and meta-programming.
-resolve@[doc: "Resolve a Document against scope frames, returning {doc, diagnostics, warnings}. diagnostics: errors only (undefined variables). warnings: lost-binding / unused-param. Args: doc frames."]: builtin-resolve
+resolve@[doc: "Resolve a Document against a name-set, returning {doc, diagnostics}. name-set: flat Dict<String,1> of all visible names. diagnostics: errors only (undefined variables). Args: doc name-set."]: builtin-resolve
+lower@[doc: "Lower a resolved+typechecked Document to a CoreDocument. Must be called after typecheck-doc and before eval."]: builtin-lower
 program@[doc: "Construct a Program value from a sequence of Document values. Used for program transformation."]: builtin-program
-eval@[doc: "Evaluate a resolved+typed Document in a scope. Args: typed-doc scope-id. Returns {result, scope-id, diagnostics}."]: builtin-eval
+eval@[doc: "Evaluate a lowered CoreDocument with an env dict. Args: lowered env. Returns the exports Dict directly (raises on error)."]: builtin-eval
 eval-types@[doc: "Evaluate expressions in the type-stage environment"]: builtin-eval-types
 blake3@[doc: "Compute the BLAKE3 cryptographic hash of a string, returning a hex-encoded digest."]: builtin-blake3
 cap-identity@[doc: "Return a stable string identity for a DirCap (used for content-addressed caching keys)."]: builtin-cap-identity
 # cap-data removed: operated on Value::Handle/WriteHandle which no longer exist.
-# scope-to-frames: Convert a scope-id to an auto-indexed Dict of name-to-slot dicts for resolver initial_frames.
-# Returns auto-indexed Dict {0: outermost-frame, ..., N: innermost-frame} (outermost scope first).
-# Used by loader.llt to construct initial_frames for resolve_surface_document_inplace.
-scope-to-frames@[doc: "Convert a scope-id to an auto-indexed Dict of name-to-slot dicts. Returns Dict {0: outermost-frame, ..., N: innermost-frame} (outermost scope first)."]: scope-to-frames
+# env-to-name-set: Convert a flat env dict to a Dict<String,1> for builtin-resolve.
+# Replaces the old scope-to-frames helper — env is already a flat dict of name→thunk.
+env-to-name-set@[doc: "Convert an accumulated env dict to a flat Dict<String,1> for builtin-resolve. All visible names map to 1 (values ignored by resolver)."]: env-to-name-set
 
 # module: resolve a module name to its export dict (used to build eval scope from doc.uses).
 module@[doc: "Resolve a builtin module name to its export dict."]: builtin-module
 
 # update-named: Accumulate named sections from --- %name document headers.
-# Takes (state, val, meta) where meta is the result of [builtin-doc-meta doc scope-id].
+# Takes (state, val, meta) where meta is the result of [builtin-doc-meta doc env].
 # Returns the updated named dict (or unchanged state.named if no name in meta).
 # Mirrors the definition in stdlib/loader.llt.
 update-named: [fn@Dict [let state val meta]
@@ -3333,41 +3311,41 @@ update-named: [fn@Dict [let state val meta]
 uses-scope: [fn@Dict [let module-names]
     [reduce dict-merge [] [map builtin-module module-names]]]
 
-# eval-program: Evaluate all documents in a desugared Program, threading % via scope-id.
-# Uses the new thin meta API: builtin-doc-meta, builtin-scope-new, scope-to-frames,
-# builtin-resolve, builtin-typecheck-doc, builtin-eval.
+# eval-program: Evaluate all documents in a desugared Program, threading % via env-dict.
+# Uses the env-dict protocol: builtin-resolve takes name-set, builtin-eval takes
+# (lowered, env) and returns the exports Dict directly.
 # Cannot be a simple re-export alias — in a letrec dict, `eval-program: eval-program`
 # is self-referential (circular thunk [E070]). Full implementation required.
 eval-program@[doc: """
-Evaluate all documents in a Program, threading % via scope-id accumulation.
+Evaluate all documents in a Program, threading % via env-dict accumulation.
 
 prog:          Program value (already desugared via builtin-desugar)
 initial-input: initial % value for the first document
-scope-id:      Int — the parent scope to evaluate in (e.g. the prelude scope)
+env:           Dict — the accumulated env dict (e.g. from prelude loading)
 tc:            TypeContext — accumulated type state (from builtin-make-type-ctx)
 
 Returns the final document's result.
-Named document sections (--- name: "foo") accumulate as %foo bindings in scope.
-"""]: [fn [let prog initial-input scope-id tc]
+Named document sections (--- name: "foo") accumulate as %foo bindings in env.
+"""]: [fn [let prog initial-input env tc]
   [docs: [builtin-program-docs prog]]
   [state: [reduce
     [fn [let st doc]
-      [meta:   [builtin-doc-meta doc st.scope-id]]
-      [uses:   [uses-scope [get-or [] "uses" meta]]]
-      [sc:     [builtin-scope-new st.scope-id [merge uses [%: st.percent]]]]
-      [frames: [scope-to-frames sc]]
-      [res:    [builtin-resolve doc frames]]
+      [meta:     [builtin-doc-meta doc st.env]]
+      [uses:     [uses-scope [get-or [] "uses" meta]]]
+      [doc-env:  [dict-merge st.env [dict-merge uses [%: st.percent]]]]
+      [name-set: [env-to-name-set doc-env]]
+      [res:      [builtin-resolve doc name-set]]
       [tc-result: [builtin-typecheck-doc res.doc tc]]
       [typed:     tc-result.doc]
-      [ev:        [builtin-eval typed sc]]
-      [doc-name: [>> [if [null? ev.diagnostics] [] [raise ev.diagnostics.0.message]]
-                     [get-or "" "name" meta]]]
-      [next-sc: [builtin-scope-new ev.scope-id
-                  [if [= "" doc-name]
-                    [%: ev.result]
-                    [merge [make-entry [str "%" doc-name] ev.result] [%: ev.result]]]]]
-      [scope-id: next-sc  percent: ev.result]]
-    [scope-id: scope-id  percent: initial-input]
+      [lowered:   [builtin-lower typed]]
+      [exports:   [builtin-eval lowered doc-env]]
+      [doc-name:  [get-or "" "name" meta]]
+      [next-env:  [dict-merge doc-env
+                    [if [= "" doc-name]
+                      [%: exports]
+                      [dict-merge [make-entry [str "%" doc-name] exports] [%: exports]]]]]
+      [env: next-env  percent: exports]]
+    [env: env  percent: initial-input]
     docs]]
   state.percent]
 
@@ -3380,14 +3358,14 @@ Evaluate a sequence of Programs in pipeline order, threading %.
 
 programs:      Seq of Program values (already desugared)
 initial-input: initial % value for the first Program
-scope-id:      Int — the parent scope to evaluate in
+env:           Dict — the accumulated env dict (e.g. from prelude loading)
 tc:            TypeContext — accumulated type state
 
 Returns the final Program's result.
-"""]: [fn [let programs initial-input scope-id tc]
+"""]: [fn [let programs initial-input env tc]
   [reduce
     [fn [let percent prog]
-      [eval-program prog percent scope-id tc]]
+      [eval-program prog percent env tc]]
     initial-input
     programs]]
 
@@ -3929,9 +3907,9 @@ Example:
 # ============================================================================
 #
 # include: load, resolve, and evaluate a tinct file from a DirCap.
-# Uses the thin meta API (scope-id based). Errors propagate naturally.
+# Uses the env-dict protocol. Errors propagate naturally.
 #
-# %prelude: a scope-id injected by the loader representing the prelude scope.
+# %prelude: an env dict injected by the loader containing all prelude exports.
 # Included files start with % = [] (they do not inherit the caller's pipeline input).
 include: [fn@[return: Any  doc: """
 Load, resolve, and evaluate a tinct file from a DirCap.
@@ -3940,7 +3918,7 @@ cap:  DirCap — confines filesystem access
 path: String — file path relative to cap
 
 Included files start with % = [] (fresh pipeline input).
-Requires %prelude (scope-id Int) to be in scope — injected by the loader.
+Requires %prelude (env Dict) to be in scope — injected by the loader.
 """] [let cap@DirCap path@String integrity-hash@[default: Absent.Absent]]
   [source: [read-all [open cap path "read"]]]
   [_verify: [if [absent? integrity-hash] []

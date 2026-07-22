@@ -679,14 +679,18 @@ pub(crate) fn eval_core_expr<'a>(
                     None => {
                         // T-1777 transition fallback: the EvalFrame slot targeted by addr is not
                         // populated (call_dispatch still emits de Bruijn coordinates that don't
-                        // match the local letrec group during the migration window). Look up the
-                        // builtin by name and return a pre-materialized Value::Builtin thunk so
-                        // the call site can dispatch normally via PendingCallDispatch.
+                        // match the local letrec group during the migration window). Check, in order:
+                        // 1. Core builtins (static Rust functions registered in core_builtins()).
+                        // 2. Runtime capabilities (%cwd, %libdir, %clock, --cap-fs / --cap-net
+                        //    entries) — these are live thunks, not static builtins, so they are
+                        //    absent from builtin_defs and must be looked up in capability_env.
                         if let Some(&def) = ctx.builtin_defs.get(name.as_str()) {
                             Ok(Arc::new(crate::value::Thunk::value(
                                 crate::value::Value::Builtin(def),
                                 span.clone(),
                             )))
+                        } else if let Some(thunk) = ctx.capability_env.get(name.as_str()) {
+                            Ok(Arc::clone(thunk))
                         } else {
                             Err(EvalError::undefined_variable(
                                 format!("'{name}' at addr={addr:?}"),
@@ -849,13 +853,18 @@ pub(crate) fn eval_core_expr<'a>(
                             VarAddr::ClosureCapture(i) => {
                                 frame.closure_env.get(*i as usize).map(Arc::clone)
                             }
-                            VarAddr::Parameter(i) => {
-                                frame.params.get(*i as usize).map(Arc::clone)
-                            }
+                            VarAddr::Parameter(i) => frame.params.get(*i as usize).map(Arc::clone),
                         };
                         found.unwrap_or_else(|| {
                             if let Some(&def) = ctx.builtin_defs.get(name.as_str()) {
                                 Arc::new(Thunk::value(Value::Builtin(def), span.clone()))
+                            } else if let Some(thunk) = ctx.capability_env.get(name.as_str()) {
+                                // Runtime capability captured by a closure (e.g., a function
+                                // that closes over %cwd, %libdir, or a --cap-fs entry).
+                                // Capabilities are not in builtin_defs (they are live thunks,
+                                // not static Rust builtins); check capability_env before
+                                // falling through to the empty-dict sentinel.
+                                Arc::clone(thunk)
                             } else {
                                 // Unknown capture: empty dict as sentinel (errors at force time).
                                 Arc::new(Thunk::value(

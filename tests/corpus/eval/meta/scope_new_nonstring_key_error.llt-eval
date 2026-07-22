@@ -1,5 +1,0 @@
-# builtin-scope-new: integer key in bindings dict is a type error.
-# Non-string keys are rejected immediately — all scope binding names must be strings.
-[builtin-scope-new 0 [0: "val"]]
-=== error
-builtin-scope-new bindings key: expected String, got Int

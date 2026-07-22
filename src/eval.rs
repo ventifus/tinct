@@ -51,12 +51,18 @@ thread_local! {
 /// closure-conversion rather than arena env_ids. This parameter is accepted but not used
 /// for arena allocation (ScopeArena has been deleted).
 ///
+/// `initial_group`: when `Some`, seeds the accumulated group with the given thunks before
+/// processing any expression node. Used by `builtin-eval` to inject env-dict thunks as the
+/// initial accumulated group so that LetrecGroupMember references resolve into the
+/// caller-supplied environment.
+///
 /// Returns `(last_thunk, scope_id)` where `scope_id` is 0 (bridge placeholder — the
 /// env_id concept is being migrated to EvalFrame).
 pub(crate) async fn eval_document_exprs_with_env(
     expr_nodes: &[Arc<SurfaceNode>],
     ctx: &Arc<EvalContext>,
     parent_env_id: Option<u32>,
+    initial_group: Option<Vec<Arc<Thunk>>>,
 ) -> EvalResult<(Arc<Thunk>, u32)> {
     let fallback_env_id = parent_env_id.unwrap_or(0);
 
@@ -75,7 +81,10 @@ pub(crate) async fn eval_document_exprs_with_env(
     // This preserves the pre-T-1774 scope-chain semantics where later expressions in a
     // document could reference bindings from earlier dicts (e.g., Dict 2 using Dict 1's
     // private helpers in the two-dict library convention).
-    let mut accumulated_group: Vec<Arc<Thunk>> = Vec::new();
+    //
+    // When `initial_group` is Some, seed the accumulated group from the caller-supplied
+    // thunks (env-dict protocol: env-dict values in insertion order correspond to LGM slots).
+    let mut accumulated_group: Vec<Arc<Thunk>> = initial_group.unwrap_or_default();
     let last_idx = expr_nodes.len() - 1;
 
     for (i, node) in expr_nodes.iter().enumerate() {
@@ -123,6 +132,81 @@ pub(crate) async fn eval_document_exprs_with_env(
 
     unreachable!(
         "eval_document_exprs_with_env: loop did not return — expr_nodes was non-empty but last_idx was never reached"
+    )
+}
+
+/// Evaluate a sequence of pre-lowered `CoreExpr` entries (from `Value::CoreDocument`) as a
+/// scope chain, returning the last expression's result dict.
+///
+/// This is the `builtin-eval` evaluation path for the env-dict protocol (T-1775 / B-553).
+/// Unlike `eval_document_exprs_with_env`, which calls `lower()` on each SurfaceNode, this
+/// function accepts CoreExprs that are already lowered and evaluates them directly via
+/// `eval_core_expr`.
+///
+/// `initial_group`: the env-dict thunks in insertion order, seeding the accumulated group
+/// so that `CoreExpr::Var { addr: VarAddr::LetrecGroupMember(i) }` references into the env
+/// resolve correctly.
+///
+/// Returns the last expression's thunk. The caller is responsible for materializing
+/// to a Dict (exports). Intermediate dict expressions are materialized to extract their
+/// string-keyed thunks into the accumulated group (identical semantics to
+/// `eval_document_exprs_with_env`).
+pub(crate) async fn eval_core_document_exprs(
+    core_entries: &[(
+        String,
+        std::sync::Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
+    )],
+    ctx: &Arc<EvalContext>,
+    initial_group: Vec<Arc<Thunk>>,
+) -> EvalResult<Arc<Thunk>> {
+    if core_entries.is_empty() {
+        return Ok(Arc::new(Thunk::value(
+            Value::Dict(IndexMap::new()),
+            rust_span!(),
+        )));
+    }
+
+    let mut accumulated_group: Vec<Arc<Thunk>> = initial_group;
+    let last_idx = core_entries.len() - 1;
+
+    for (i, (_key, spanned_core)) in core_entries.iter().enumerate() {
+        let frame = Arc::new(EvalFrame {
+            group: Arc::new(accumulated_group.clone()),
+            closure_env: Arc::new(vec![]),
+            params: Arc::new(vec![]),
+        });
+
+        if i == last_idx {
+            // Last expression: return its thunk lazily (no materialization).
+            let thunk = crate::eval_core::eval_core_expr(spanned_core, &frame, ctx).await?;
+            return Ok(thunk);
+        }
+
+        // Intermediate expression: eval and materialize to extract potential bindings.
+        let thunk = crate::eval_core::eval_core_expr(spanned_core, &frame, ctx).await?;
+        let entry_span = spanned_core.span.clone();
+        let val = materialize(&thunk, Some(&entry_span), ctx).await?;
+
+        // If the result is a Dict, accumulate its string-keyed thunks into the group
+        // for subsequent expressions. String keys are in LGM-slot order (insertion order
+        // from eval_dict_core) so LetrecGroupMember(i) resolves to the i-th string-key entry.
+        if let Value::Dict(ref dict_map) = val {
+            let new_thunks: Vec<Arc<Thunk>> = dict_map
+                .iter()
+                .filter_map(|(k, v)| {
+                    if matches!(k, HashableValue::Str(_)) {
+                        Some(Arc::clone(v))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            accumulated_group.extend(new_thunks);
+        }
+    }
+
+    unreachable!(
+        "eval_core_document_exprs: loop did not return — core_entries was non-empty but last_idx was never reached"
     )
 }
 
@@ -179,7 +263,7 @@ async fn eval_surface_file_from_env(
     let mut last = EMPTY_DICT_THUNK.with(Arc::clone);
     for surface_doc in &program.documents {
         let expr_nodes: Vec<Arc<SurfaceNode>> = surface_doc.node.expressions().cloned().collect();
-        last = eval_document_exprs_with_env(&expr_nodes, ctx, parent_env_id)
+        last = eval_document_exprs_with_env(&expr_nodes, ctx, parent_env_id, None)
             .await
             .map(|(thunk, _env_id)| thunk)?;
     }
@@ -402,6 +486,21 @@ pub struct EvalContext {
     /// The map is populated once at context creation and shared cheaply via `Arc`. Child
     /// contexts clone the `Arc` pointer — no re-allocation.
     pub builtin_defs: Arc<HashMap<String, crate::value::BuiltinDef>>,
+    /// Runtime capability bindings: name → thunk.
+    ///
+    /// Maps capability names (e.g., `%stderr`, `%stdout`, `%cwd`, `%libdir`, `%clock`,
+    /// `%args`, user --cap-fs / --cap-net entries) to their live `Arc<Thunk>` values.
+    ///
+    /// Used by `eval_core_expr`'s `CoreExpr::Var` fallback and by the closure-capture
+    /// builder (`CoreExpr::Fn`) when a `ClosureCapture` index is out of bounds for the
+    /// current frame (capabilities assigned `BUILTIN_CLOSURE_OFFSET + slot` by the
+    /// resolver). Checking here after `builtin_defs` ensures capabilities — which are
+    /// runtime file handles and dicts, not static Rust builtins — are resolved correctly.
+    ///
+    /// Populated once by `main.rs` via `with_capability_env` after all capability thunks
+    /// have been built; shared via `Arc` across all child contexts (no re-allocation).
+    /// Empty in bootstrap contexts and tests where capabilities are not injected.
+    pub capability_env: Arc<HashMap<String, Arc<crate::value::Thunk>>>,
 }
 
 impl EvalContext {
@@ -448,6 +547,7 @@ impl EvalContext {
             type_context: Arc::new(Mutex::new(None)),
             scope_frames: None,
             builtin_defs: Self::build_builtin_defs(),
+            capability_env: Arc::new(HashMap::new()),
         })
     }
 
@@ -477,6 +577,7 @@ impl EvalContext {
             type_context: Arc::new(Mutex::new(None)),
             scope_frames: None,
             builtin_defs: Self::build_builtin_defs(),
+            capability_env: Arc::new(HashMap::new()),
         })
     }
 
@@ -515,6 +616,7 @@ impl EvalContext {
             type_context: Arc::clone(&self.type_context),
             scope_frames: self.scope_frames.clone(),
             builtin_defs: Arc::clone(&self.builtin_defs),
+            capability_env: Arc::clone(&self.capability_env),
         })
     }
 
@@ -557,6 +659,7 @@ impl EvalContext {
             type_context: Arc::clone(&self.type_context),
             scope_frames: self.scope_frames.clone(),
             builtin_defs: Arc::clone(&self.builtin_defs),
+            capability_env: Arc::clone(&self.capability_env),
         });
         (child_ctx, child_token)
     }
@@ -594,6 +697,7 @@ impl EvalContext {
             type_context: Arc::clone(&self.type_context),
             scope_frames: self.scope_frames.clone(),
             builtin_defs: Arc::clone(&self.builtin_defs),
+            capability_env: Arc::clone(&self.capability_env),
         })
     }
 
@@ -633,6 +737,7 @@ impl EvalContext {
             type_context: Arc::clone(&self.type_context),
             scope_frames: self.scope_frames.clone(),
             builtin_defs: Arc::clone(&self.builtin_defs),
+            capability_env: Arc::clone(&self.capability_env),
         })
     }
 
@@ -687,6 +792,47 @@ impl EvalContext {
             type_context: Arc::clone(&self.type_context),
             scope_frames: Some(frames),
             builtin_defs: Arc::clone(&self.builtin_defs),
+            capability_env: Arc::clone(&self.capability_env),
+        })
+    }
+
+    /// Create a child EvalContext with a populated capability environment.
+    ///
+    /// Called by `main.rs` after all capability thunks (`%cwd`, `%libdir`, `%clock`,
+    /// user --cap-fs / --cap-net entries) have been built and named, but before the
+    /// loader program runs.  The resulting context's `capability_env` is checked by
+    /// `eval_core_expr`'s `CoreExpr::Var` fallback and by the closure-capture builder
+    /// (`CoreExpr::Fn`) whenever a `ClosureCapture` index misses the current EvalFrame —
+    /// which happens for capability bindings that the resolver assigned
+    /// `BUILTIN_CLOSURE_OFFSET + slot` (out of bounds for any real frame).
+    ///
+    /// The map is stored as an `Arc` so the clone is cheap (pointer copy).
+    /// All child contexts (with_base_dir, with_cancel_token, etc.) inherit it unchanged.
+    pub fn with_capability_env(
+        self: &Arc<Self>,
+        capability_env: Arc<HashMap<String, Arc<Thunk>>>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            config: Arc::clone(&self.config),
+            env_allowed: self.env_allowed.clone(),
+            blame_map: Mutex::new(self.blame_map.lock().unwrap().clone()),
+            boundary_guards: RwLock::new(self.boundary_guards.read().unwrap().clone()),
+            do_infer_resolutions: RwLock::new(self.do_infer_resolutions.read().unwrap().clone()),
+            libdir_dir: Mutex::new(self.libdir_dir.lock().unwrap().clone()),
+            cancel: self.cancel.clone(),
+            task_registry: Arc::clone(&self.task_registry),
+            profiling: self.profiling.as_ref().map(Arc::clone),
+            tycon_env: {
+                let child_lock = std::sync::OnceLock::new();
+                if let Some(env) = self.tycon_env.get() {
+                    child_lock.set(std::sync::Arc::clone(env)).ok();
+                }
+                child_lock
+            },
+            type_context: Arc::clone(&self.type_context),
+            scope_frames: self.scope_frames.clone(),
+            builtin_defs: Arc::clone(&self.builtin_defs),
+            capability_env,
         })
     }
 

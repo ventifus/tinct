@@ -59,9 +59,8 @@ use crate::builtins_meta::{
     builtin_builtin_module, builtin_cap_env_has, builtin_check_type, builtin_desugar,
     builtin_doc_expressions, builtin_doc_meta, builtin_eval, builtin_get_type_context,
     builtin_is_variant, builtin_llt_repr, builtin_parse, builtin_program_docs, builtin_raise,
-    builtin_resolve, builtin_scope_frame, builtin_scope_new, builtin_scope_parent, builtin_scopes,
-    builtin_tag_of, builtin_tc_with_scope, builtin_try, builtin_type_of, builtin_typecheck_doc,
-    builtin_variant_payload,
+    builtin_resolve, builtin_tag_of, builtin_tc_with_scope, builtin_try, builtin_type_of,
+    builtin_typecheck_doc, builtin_variant_payload,
 };
 // I/O implementations — Core-46 only.
 use crate::builtins_dict::{builtin_concat, builtin_drop, builtin_take};
@@ -552,7 +551,7 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             builtin_eval,
             [Strictness::Seq, Strictness::Seq],
             2,
-            ["doc", "scope-id"]
+            ["doc", "env-dict"]
         ),
         builtin!(
             "builtin-eval-expr",
@@ -567,40 +566,6 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             [Strictness::Seq],
             1,
             ["variant"]
-        ),
-        // ── Scope arena primitives ─────────────────────────────────────────────────────
-        builtin!("builtin-scopes", builtin_scopes, [], 0),
-        builtin!(
-            "builtin-scope-new",
-            builtin_scope_new,
-            [Strictness::Seq, Strictness::Seq],
-            0,
-            ["parent", "entries"]
-        ),
-        // `builtin-extend-env` is the loader-facing alias for `builtin-scope-new`.
-        // Takes (parent-env-id: Int, bindings: Dict) and returns Int (the new scope-id).
-        // Registered here so loader.llt and user code can use the semantically meaningful
-        // name `extend-env` without a separate implementation.
-        builtin!(
-            "builtin-extend-env",
-            builtin_scope_new,
-            [Strictness::Seq, Strictness::Seq],
-            0,
-            ["parent", "entries"]
-        ),
-        builtin!(
-            "builtin-scope-parent",
-            builtin_scope_parent,
-            [Strictness::Seq],
-            0,
-            ["scope-id"]
-        ),
-        builtin!(
-            "builtin-scope-frame",
-            builtin_scope_frame,
-            [Strictness::Seq],
-            0,
-            ["scope-id"]
         ),
         // ── Program/document decomposition ────────────────────────────────────────────
         builtin!(
@@ -677,35 +642,6 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             [Strictness::Seq],
             0,
             ["x"]
-        ),
-        // ── Arena builtins (T-1563) ───────────────────────────────────────────────────
-        builtin!(
-            "builtin-arena-new",
-            crate::builtins_meta::builtin_arena_new,
-            [Strictness::Seq],
-            0,
-            ["name"]
-        ),
-        builtin!(
-            "builtin-arena-drop",
-            crate::builtins_meta::builtin_arena_drop,
-            [Strictness::Seq],
-            0,
-            ["arena"]
-        ),
-        builtin!(
-            "builtin-arena-stats",
-            crate::builtins_meta::builtin_arena_stats,
-            [Strictness::Seq],
-            0,
-            ["arena"]
-        ),
-        builtin!(
-            "builtin-arena-migrate",
-            crate::builtins_meta::builtin_arena_migrate,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            0,
-            ["value", "src", "dst"]
         ),
     ]
 }

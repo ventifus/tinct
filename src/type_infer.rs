@@ -12,7 +12,7 @@ use crate::types::{Constraint, Kind, Row, RowTail, Type};
 
 /// A deferred typeclass dispatch: connects a constraint TypeVar to the call-site VarRef.
 /// When check_constraints_on_var resolves the TypeVar to a concrete type, it uses this to
-/// set call_dispatch on the VarRef with the resolved (level, slot) coordinates.
+/// set call_dispatch on the VarRef with the resolved VarAddr (via debruijn_to_var_addr).
 #[derive(Clone, Debug)]
 pub struct DispatchObligation {
     /// The TypeVar name (at a determining position) that must resolve before dispatch fires.

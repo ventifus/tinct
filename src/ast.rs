@@ -1044,29 +1044,28 @@ pub struct MacroProvenance {
 
 /// Inline call dispatch — written once by the type checker for typeclass method VarRef nodes.
 ///
-/// Stores the mangled instance binding name (e.g., `ɪɴꜱᴛᴀɴᴄᴇ⧼Addable∷+⟨Int,Int,Int⟩⧽`).
-/// The lowerer calls `resolve_name_in_frames` to look up the mangled name in the accumulated
-/// resolver scope frames and emit a `CoreExpr::Var` with correct de Bruijn coordinates.
-/// If the name is not found in the frames, a `LowerDiagnostic::Error` is emitted instead.
+/// Stores the resolved `VarAddr` for the concrete instance binding.  The type checker sets
+/// this after argument-type unification determines the concrete instance; the lowerer reads
+/// it and emits a `CoreExpr::Var` with that address directly, without any de Bruijn conversion.
 ///
 /// Written at most once by the type checker (after argument-type unification determines the
 /// concrete instance). Read once by the lowerer when emitting the Call's function sub-expression.
 /// Interior-mutable via `OnceLock` so the type checker can set it through a shared reference
 /// to the `Arc<SurfaceNode>` that owns the VarRef.
-pub struct CallDispatch(std::sync::OnceLock<(u32, u32)>);
+pub struct CallDispatch(std::sync::OnceLock<VarAddr>);
 impl CallDispatch {
     pub fn new() -> Self {
         Self(std::sync::OnceLock::new())
     }
-    /// Returns the (level, slot) coordinates if set, or `None` if not yet dispatched.
-    pub fn get(&self) -> Option<(u32, u32)> {
-        self.0.get().copied()
+    /// Returns the resolved `VarAddr` if set, or `None` if not yet dispatched.
+    pub fn get(&self) -> Option<&VarAddr> {
+        self.0.get()
     }
-    /// Set the (level, slot) coordinates.  Silently ignores a second call (OnceLock
+    /// Set the resolved `VarAddr`.  Silently ignores a second call (OnceLock
     /// semantics): the first write wins.  Call sites must ensure the write happens at most
     /// once per VarRef (guaranteed because type-checking is a single forward pass).
-    pub fn set(&self, level: u32, slot: u32) {
-        let _ = self.0.set((level, slot));
+    pub fn set(&self, addr: VarAddr) {
+        let _ = self.0.set(addr);
     }
 }
 impl Clone for CallDispatch {

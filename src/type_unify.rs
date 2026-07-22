@@ -528,7 +528,7 @@ async fn check_constraints_on_var(
                 if let crate::ast::SurfaceExpression::VarRef { call_dispatch, .. } =
                     &obligation.varref_node.expr
                 {
-                    call_dispatch.set(level, slot);
+                    call_dispatch.set(crate::lower::debruijn_to_var_addr(level, slot));
                 }
             }
         }

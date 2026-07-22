@@ -26,6 +26,7 @@
     # Opaque Rust value types — no payload, identity-matched by tag name.
     Program
     Document
+    CoreDocument
     TypeContext
     DirCap
     NetCap
@@ -57,6 +58,7 @@
   Dict:         [TypeNode.Dict fields: []  open: 1  key-type: TypeNode.Top  value-type: TypeNode.Top]
   Program:      TypeNode.Program
   Document:     TypeNode.Document
+  CoreDocument: TypeNode.CoreDocument
   TypeContext:  TypeNode.TypeContext
   DirCap:       TypeNode.DirCap
   NetCap:       TypeNode.NetCap
@@ -169,7 +171,9 @@
   builtin-llt-repr:        [fn@String  [let x@Any] ...]
 
   # ── Capability ─────────────────────────────────────────────────────────────
-  builtin-cap-env-has?:  [fn@Integer [let name@String env@Any] ...]
+  # cap-env-has?: true (1) if the named capability key is present in the env dict.
+  # env: flat Dict<String, thunk> — the accumulated env dict passed to builtin-eval.
+  builtin-cap-env-has?:  [fn@Integer [let name@String env@Dict] ...]
 
   # ── I/O ───────────────────────────────────────────────────────────────────
   builtin-narrow:        [fn@DirCap  [let cap@DirCap path@String] ...]
@@ -185,30 +189,29 @@
   builtin-parse:          [fn@Dict     [let src@Bytes path@String] ...]
   # desugar: desugar a Program (apply $_ transformation, pipe lowering, etc.).
   builtin-desugar:        [fn@Program  [let prog@Program] ...]
-  # resolve: resolve VarRef de Bruijn coords in a document against scope frames.
-  # frames: {frame-index: {var-name: slot-index}, ...}
-  # Returns {doc, diagnostics, warnings}.
+  # resolve: resolve VarRef de Bruijn coords in a document against a name-set.
+  # name-set: Dict<String, 1> — flat dict of all visible names, values ignored.
+  # Returns {doc, diagnostics}.
   # diagnostics: error-level diagnostics only (undefined variables).
-  # warnings: warning-level diagnostics (lost-binding, unused-param).
-  builtin-resolve:        [fn@Dict     [let doc@Document frames@[Map Int [Map String Int]]] ...]
-  # eval: evaluate a resolved+typed document in a scope; returns {result, scope-id, diagnostics}.
-  builtin-eval:           [fn@Dict     [let typed@Document scope-id@Integer] ...]
+  builtin-resolve:        [fn@Dict     [let doc@Document name-set@Dict] ...]
+  # lower: lower a resolved+typechecked Document to a CoreDocument.
+  # Must be called after builtin-typecheck-doc and before builtin-eval.
+  builtin-lower:          [fn@CoreDocument [let typed@Document] ...]
+  # eval: evaluate a lowered CoreDocument with an env dict.
+  # env: flat Dict<String, thunk> — all names in scope (prelude + prior doc exports + caps).
+  # Returns the exports Dict directly (raises on error — no diagnostics wrapper).
+  builtin-eval:           [fn@Dict     [let lowered@CoreDocument env@Dict] ...]
   # typecheck-doc: type-check a single resolved document against a TypeContext.
   # Returns {doc, diagnostics}.
   builtin-typecheck-doc:  [fn@Dict     [let doc@Document tc@TypeContext] ...]
   # program-docs: return auto-indexed dict of documents in a Program.
   builtin-program-docs:      [fn@Dict     [let prog@Program] ...]
-  # doc-meta: evaluate a document's --- header in a scope, returning the result dict.
-  builtin-doc-meta:          [fn@Dict     [let doc@Document scope-id@Integer] ...]
+  # doc-meta: evaluate a document's --- header with env dict, returning the result dict.
+  # env: flat Dict<String, thunk> — same accumulated env passed to builtin-eval.
+  builtin-doc-meta:          [fn@Dict     [let doc@Document env@Dict] ...]
   # doc-expressions: return auto-indexed dict of Expr-variant values from a document's expression items.
   # Decl items (type declarations, class/instance declarations, etc.) are skipped.
   builtin-doc-expressions:   [fn@Dict     [let doc@Document] ...]
-
-  # ── Scope arena primitives ────────────────────────────────────────────────
-  builtin-scopes:         [fn@Dict [let] ...]
-  builtin-scope-new:      [fn@Integer  [let parent@Any bindings@Dict] ...]
-  builtin-scope-parent:   [fn@Any  [let scope-id@Integer] ...]
-  builtin-scope-frame:    [fn@Dict [let scope-id@Integer] ...]
 
   # ── Module system ─────────────────────────────────────────────────────────
   builtin-module:         [fn@Dict    [let name@String] ...]
@@ -216,7 +219,7 @@
   # ── TypeContext bootstrap ──────────────────────────────────────────────────
   builtin-get-type-context: [fn@TypeContext [] ...]
   builtin-make-type-ctx:    [fn@TypeContext [] ...]
-  builtin-tc-with-scope:    [fn@TypeContext [let ctx@TypeContext scope-id@Integer] ...]
+  builtin-tc-with-scope:    [fn@TypeContext [let ctx@TypeContext env@Dict] ...]
 
   # ── Sequences (core collection ops) ───────────────────────────────────────
   builtin-take:    [fn@Dict [let n@Integer xs@Dict] ...]

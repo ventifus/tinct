@@ -53,151 +53,6 @@ use crate::value::{string_val, BuiltinArgs, HashableValue, Strictness, Thunk, Va
 
 // ── Unified error dict helpers ────────────────────────────────────────────────
 
-/// Build a unified error dict from an `EvalError` for return from `builtin-eval`.
-///
-/// Schema: `{level, kind, message, span, notes, call-stack, macro-expand, blame,
-///           materialization-span, secondary-span}`
-/// `level` is always `"error"` (eval errors are always error-level).
-/// `kind` is always `"eval-error"`.
-/// `blame` is `{origin-span, boundary-span, polarity}` when present, `{}` otherwise.
-/// `materialization-span` is `spans[1]` when its label is `"evaluated here"`, `{}` when absent.
-/// `secondary-spans` are the note spans that are not the materialization span.
-fn eval_error_to_dict(
-    err: &crate::error::EvalError,
-    ctx: &Arc<crate::eval::EvalContext>,
-    call_span: &crate::ast::Span,
-) -> Arc<Thunk> {
-    let mk = |v: Value| -> Arc<Thunk> { Arc::new(Thunk::value(v, call_span.clone())) };
-    let alloc_arc = |v: Value| -> Arc<Thunk> { mk(v) };
-    let alloc = |v: Value| -> Arc<Thunk> { ctx.alloc_thunk(0, mk(v)) };
-    let span_arc = |span: &crate::ast::Span| -> Arc<Thunk> { make_span_dict(span, ctx, call_span) };
-
-    // spans[0] is the primary (definition-site) span.
-    let primary_span = err.spans.first().map(|(s, _)| s).unwrap_or(call_span);
-
-    let mut w: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-    w.insert(
-        HashableValue::Str("level".into()),
-        alloc_arc(string_val("error")),
-    );
-    w.insert(
-        HashableValue::Str("kind".into()),
-        alloc_arc(string_val("eval-error")),
-    );
-    w.insert(
-        HashableValue::Str("message".into()),
-        alloc_arc(string_val(&format!("{}", err))),
-    );
-    w.insert(HashableValue::Str("span".into()), span_arc(primary_span));
-    w.insert(
-        HashableValue::Str("notes".into()),
-        alloc_arc(Value::Dict(IndexMap::new())),
-    );
-
-    // Build call-stack: {0: {name, span}, 1: {name, span}, ...}
-    let mut stack_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-    for (i, frame) in err.stack.iter().enumerate() {
-        let mut frame_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-        frame_dict.insert(
-            HashableValue::Str("name".into()),
-            alloc_arc(string_val(&frame.label)),
-        );
-        frame_dict.insert(
-            HashableValue::Str("span".into()),
-            span_arc(&frame.definition_span),
-        );
-        stack_dict.insert(
-            HashableValue::Int(i as i64),
-            alloc_arc(Value::Dict(frame_dict)),
-        );
-    }
-    w.insert(
-        HashableValue::Str("call-stack".into()),
-        alloc_arc(Value::Dict(stack_dict)),
-    );
-
-    // Build macro-expand: {name, span} or {}
-    let macro_expand_dict = if let Some((name, span)) = &err.macro_expansion {
-        let mut m: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-        m.insert(
-            HashableValue::Str("name".into()),
-            alloc_arc(string_val(name)),
-        );
-        m.insert(HashableValue::Str("span".into()), span_arc(span));
-        Value::Dict(m)
-    } else {
-        Value::Dict(IndexMap::new())
-    };
-    w.insert(
-        HashableValue::Str("macro-expand".into()),
-        alloc_arc(macro_expand_dict),
-    );
-
-    // Build blame: {origin-span, boundary-span, polarity} or {}
-    let blame_dict = if let Some(ref blame) = err.blame {
-        let polarity_str = match blame.polarity {
-            crate::error::BlameParity::Positive => "positive",
-            crate::error::BlameParity::Negative => "negative",
-        };
-        let mut b: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-        b.insert(
-            HashableValue::Str("origin-span".into()),
-            span_arc(&blame.origin_span),
-        );
-        b.insert(
-            HashableValue::Str("boundary-span".into()),
-            span_arc(&blame.boundary_span),
-        );
-        b.insert(
-            HashableValue::Str("polarity".into()),
-            alloc_arc(string_val(polarity_str)),
-        );
-        Value::Dict(b)
-    } else {
-        Value::Dict(IndexMap::new())
-    };
-    w.insert(HashableValue::Str("blame".into()), alloc_arc(blame_dict));
-
-    // Build materialization-span: spans[1] when its label is "evaluated here", {} when absent.
-    let mat_span_entry = err
-        .spans
-        .get(1)
-        .filter(|(_, label)| label == "evaluated here");
-    let mat_span_thunk = if let Some((ref s, _)) = mat_span_entry {
-        span_arc(s)
-    } else {
-        alloc_arc(Value::Dict(IndexMap::new()))
-    };
-    w.insert(
-        HashableValue::Str("materialization-span".into()),
-        mat_span_thunk,
-    );
-
-    // Build secondary-spans: note spans that are not the materialization span.
-    // These are spans in spans[1..] with a label other than "evaluated here".
-    let mut secondary_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-    let secondary_iter = err
-        .spans
-        .iter()
-        .skip(1)
-        .filter(|(_, label)| label != "evaluated here");
-    for (i, (ref span, ref label)) in secondary_iter.enumerate() {
-        let mut s: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-        s.insert(HashableValue::Str("span".into()), span_arc(span));
-        s.insert(
-            HashableValue::Str("label".into()),
-            alloc_arc(string_val(label)),
-        );
-        secondary_dict.insert(HashableValue::Int(i as i64), alloc_arc(Value::Dict(s)));
-    }
-    w.insert(
-        HashableValue::Str("secondary-spans".into()),
-        alloc_arc(Value::Dict(secondary_dict)),
-    );
-
-    alloc(Value::Dict(w))
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Global counter shared by all gensym call sites. A single counter guarantees
@@ -1899,171 +1754,6 @@ pub(crate) fn builtin_cap_identity(
     })
 }
 
-/// `builtin-scopes`: Return all scopes in the scope arena.
-///
-/// Takes 0 args. Returns Dict {scope_id_int: parent_id_int_or_empty_dict, ...}
-/// For each scope, if scope.parent is Some(id) return Int(id), else return empty dict (null).
-pub(crate) fn builtin_scopes(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx: _,
-            ..
-        } = ctx_arg;
-        crate::builtins::reject_named("builtin-scopes", named.as_ref(), call_span.clone())?;
-        if !args.is_empty() {
-            return Err(EvalError::arity_mismatch(0, args.len(), call_span).into());
-        }
-
-        // ScopeArena deleted — no scope metadata available; return empty dict.
-        ok_val(Value::Dict(IndexMap::new()), call_span)
-    })
-}
-
-/// `builtin-scope-new`: Create a new scope with the given parent and bindings.
-///
-/// Takes 2 args:
-/// - arg0: Int (parent scope-id) or empty Dict (null = create root, no parent)
-/// - arg1: Dict of string-keyed bindings to install
-///
-/// Non-string keys → type error (raise immediately).
-/// Returns Int(new_scope_id).
-pub(crate) fn builtin_scope_new(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-            ..
-        } = ctx_arg;
-        crate::builtins::reject_named("builtin-scope-new", named.as_ref(), call_span.clone())?;
-        if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
-        }
-
-        // arg0: parent scope-id (Int) or null (empty Dict)
-        let parent_val = args[0]
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
-        // ScopeArena deleted — scope-new is a no-op; return placeholder 0.
-        let _ = parent_val;
-        let _ = &args[1];
-        let _ = &ctx;
-        ok_val(Value::Int(0), call_span)
-    })
-}
-
-/// `builtin-scope-parent`: Return the parent scope-id of a scope.
-///
-/// Takes 1 arg: scope-id (Int).
-/// Returns Int(parent_id) if Some, empty Dict if None.
-pub(crate) fn builtin_scope_parent(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-            ..
-        } = ctx_arg;
-        crate::builtins::reject_named("builtin-scope-parent", named.as_ref(), call_span.clone())?;
-        if args.len() != 1 {
-            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
-        }
-
-        let scope_id_val = args[0]
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
-        let scope_id_n = match scope_id_val {
-            Value::Int(n) => n,
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "builtin-scope-parent".to_string(),
-                    "Int",
-                    other.type_name(),
-                    call_span,
-                )
-                .into());
-            }
-        };
-        if scope_id_n < 0 {
-            return Err(EvalError::type_mismatch_ctx(
-                "builtin-scope-parent scope-id must be non-negative Int".to_string(),
-                "non-negative Int",
-                &format!("{}", scope_id_n),
-                call_span,
-            )
-            .into());
-        }
-        // ScopeArena deleted — scope-parent always returns null (no parent).
-        let _ = scope_id_n;
-        let _ = &ctx;
-        ok_val(Value::Dict(IndexMap::new()), call_span)
-    })
-}
-
-/// `builtin-scope-frame`: Return the resolver frame for a single scope level.
-///
-/// Takes 1 arg: scope-id (Int).
-/// Returns Dict {String(name): Int(slot)} for all slots in the scope that carry a name
-/// on their thunk's span. Slots without a span name are omitted.
-/// Used by the loaders to reconstruct resolver frames from scope chains.
-pub(crate) fn builtin_scope_frame(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-            ..
-        } = ctx_arg;
-        crate::builtins::reject_named("builtin-scope-frame", named.as_ref(), call_span.clone())?;
-        if args.len() != 1 {
-            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
-        }
-        let scope_id_n = match args[0]
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone()
-        {
-            Value::Int(n) => n,
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "builtin-scope-frame".to_string(),
-                    "Int",
-                    other.type_name(),
-                    call_span,
-                )
-                .into())
-            }
-        };
-        if scope_id_n < 0 {
-            return Err(EvalError::user_error(
-                format!("scope-id must be non-negative, got {}", scope_id_n),
-                call_span,
-            )
-            .into());
-        }
-        // ScopeArena deleted — scope-frame always returns empty dict.
-        let _ = scope_id_n;
-        let _ = &ctx;
-        ok_val(Value::Dict(IndexMap::new()), call_span)
-    })
-}
-
 /// `builtin-parse`: Parse Bytes + path String → `{program, errors}`.
 ///
 /// Signature: `[builtin-parse bytes path]`
@@ -2225,18 +1915,20 @@ pub(crate) fn builtin_parse(
 
 /// `builtin-resolve`: Resolve a single `Value::Document` in-place.
 ///
-/// Takes 2 positional args: the document to resolve and a frames dict.
+/// Takes 2 positional args: the document to resolve and a name-set dict.
 ///
 /// **Arguments:**
 /// - arg0: `Value::Document` (only Document, not Program — error if Program)
-/// - arg1: Dict — frames in format `{0: {name-a: 0, name-b: 1}, 1: {name-c: 5}, ...}`
-///   - Outer dict: integer-keyed, each entry is one scope frame
-///   - Inner dict: String key → Int value as (name, slot)
+/// - arg1: Dict — name-set: `{name-a: 1, name-b: 1, ...}` (keys are in-scope names; values ignored)
+///   A single resolver frame is built from the name-set keys, with all slot values set to 0.
+///   The slot value does not matter for resolution — only the name presence matters for producing
+///   resolve errors on unbound references.
 ///
-/// **Returns** `{doc: Document, errors: Dict<Int, ErrorDict>}`.
+/// **Returns** `{doc: Document, diagnostics: Dict<Int, DiagnosticDict>}`.
 ///
 /// Writes De Bruijn coordinates into the inline `Resolution` OnceLocks on each `VarRef`/`DotAccess`
-/// node of the document's AST. After this call, `builtin-eval` lowers the resolved nodes directly.
+/// node of the document's AST. After this call, `builtin-lower` and `builtin-eval` process the
+/// resolved nodes.
 ///
 /// This is Stage 2 of the 4-stage pipeline (Stage 1 is parse from loader.llt).
 pub(crate) fn builtin_resolve(
@@ -2270,76 +1962,53 @@ pub(crate) fn builtin_resolve(
             .into());
         };
 
-        // arg1: Map[Int, Map[String, Int]] — structure enforced by TypeAssert on frames parameter.
-        let frames_val = args[1]
+        // arg1: Dict<String, Any> — name-set: keys are the in-scope names; values are ignored.
+        // Build a single resolver frame with all names mapped to slot 0.
+        // The slot value is irrelevant for the resolver — it only needs the name to determine
+        // whether a VarRef is in scope. Slot 0 is used as a placeholder.
+        let name_set_val = args[1]
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
-        let frames_dict = match frames_val {
+        let name_set_dict = match name_set_val {
             Value::Dict(d) => d,
             other => {
                 return Err(EvalError::internal(
-                    format!("frames is not a Dict: {}", other.type_name()),
+                    format!("name-set is not a Dict: {}", other.type_name()),
                     call_span,
                 )
                 .into())
             }
         };
 
-        // Sort frame entries by integer key so outermost (lowest index) comes first.
-        let mut frame_entries: Vec<(i64, Arc<Thunk>)> = frames_dict
-            .iter()
-            .map(|(k, v)| match k {
-                HashableValue::Int(i) => (*i, Arc::clone(v)),
-                other => panic!("frames outer key is not Int: {:?}", other),
-            })
-            .collect();
-        frame_entries.sort_by_key(|(i, _)| *i);
-
-        let mut initial_frames: Vec<indexmap::IndexMap<String, u32>> = Vec::new();
-        for (_, frame_thunk) in frame_entries {
-            let frame_val = crate::eval::materialize(&frame_thunk, Some(&call_span), &ctx).await?;
-            let inner = match frame_val {
-                Value::Dict(d) => d,
-                other => {
+        // Build one frame from the name-set keys (insertion order), slot=0 for all.
+        let mut frame: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
+        for (k, _v_thunk) in &name_set_dict {
+            let name = match k {
+                HashableValue::Str(s) => s,
+                HashableValue::Int(i) => {
                     return Err(EvalError::internal(
-                        format!("frame entry is not a Dict: {}", other.type_name()),
+                        format!("name-set key is not a String: Int({})", i),
                         call_span,
                     )
                     .into())
                 }
             };
-            let mut frame: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
-            for (k, v_thunk) in &inner {
-                let name = match k {
-                    HashableValue::Str(s) => s,
-                    other => panic!("frame inner key is not Str: {:?}", other),
-                };
-                let slot_val = crate::eval::materialize(v_thunk, Some(&call_span), &ctx).await?;
-                let slot = match slot_val {
-                    Value::Int(n) => n,
-                    other => {
-                        return Err(EvalError::internal(
-                            format!("slot index is not Int: {}", other.type_name()),
-                            call_span,
-                        )
-                        .into())
-                    }
-                };
-                frame.insert(name.to_string(), slot as u32);
-            }
-            initial_frames.push(frame);
+            // Slot value 0 is a placeholder — the resolver only needs the name for
+            // binding/reference checking. De Bruijn coordinates are written to VarRef
+            // nodes by the resolver walk itself, not read from this frame.
+            frame.insert(name.to_string(), 0u32);
         }
+        let initial_frames: Vec<indexmap::IndexMap<String, u32>> = vec![frame];
 
         // Resolve the document in-place.
         // _resolve_table: the full ResolutionTable mapping spans to de Bruijn coords. Intentionally
         //   discarded — the evaluator uses inline OnceLock resolutions written directly onto each
         //   SurfaceNode::VarRef during the resolve walk (see lower.rs: resolution.get()). The
         //   ResolutionTable is not read by the evaluator.
-        // _new_frames: the frames produced by this document's declarations (type aliases, etc.).
-        //   Intentionally discarded — the new scope-id returned by builtin-eval captures the
-        //   document's bindings in the ScopeArena, and tinct callers use scope-to-frames to
-        //   rebuild frames from the scope chain for the next document.
+        // _new_frames: the frames produced by this document's own declarations. Intentionally
+        //   discarded — callers accumulate bindings by inspecting the exports dict returned by
+        //   builtin-eval (env-dict protocol), not by querying scope chains.
         let (_resolve_table, resolve_diagnostics, _new_frames) =
             crate::resolve::resolve_surface_document_inplace(&doc_arc, &initial_frames);
 
@@ -3329,7 +2998,7 @@ pub(crate) fn builtin_doc_meta(
         for (key, node_arc) in &doc_arc.header {
             let nodes = vec![Arc::clone(node_arc)];
             let eval_result =
-                crate::eval::eval_document_exprs_with_env(&nodes, &ctx, scope_id).await;
+                crate::eval::eval_document_exprs_with_env(&nodes, &ctx, scope_id, None).await;
             match eval_result {
                 Ok((thunk, _)) => {
                     result.insert(HashableValue::Str(key.clone().into()), thunk);
@@ -3393,25 +3062,22 @@ pub(crate) fn builtin_builtin_module(
     })
 }
 
-/// `builtin-eval`: evaluate a `Value::Document` in a given scope.
+/// `builtin-eval`: Evaluate a `Value::CoreDocument` against an env-dict, returning the exports dict.
 ///
-/// Takes 2 positional args: the typed document and the parent scope-id.
+/// Takes 2 positional args:
+/// - arg0: `Value::CoreDocument` — fully lowered document (output of `builtin-lower`).
+///   Passing `Value::Document` is a type error: call `builtin-lower` first.
+/// - arg1: `Value::Dict` — env-dict: accumulated environment mapping names to thunks (in
+///   insertion order). Values become the initial accumulated group for
+///   `eval_core_document_exprs`, enabling `LetrecGroupMember(i)` references into the env.
+///   The insertion order of the env-dict must match the name-set order passed to `builtin-resolve`
+///   (i.e., the slot assignments from the resolver frame).
 ///
-/// Positional args:
-/// - arg0: `Value::Document` ONLY (Expr.* Dict path DELETED)
-/// - arg1: Int (scope-id — becomes parent of the document's internal scope)
+/// Returns `Value::Dict` — the exports dict produced by the document's last expression.
+/// Errors propagate via `EvalError` (raises on failure — no diagnostics wrapper).
 ///
-/// Returns: `Value::Dict` with keys:
-/// - `result:` — last expression's thunk (on success)
-/// - `scope-id:` (`Value::Int`) — the NEW child scope-id created for this document
-/// - `errors:` (`Value::Dict([])` = null on success, `Value::Dict({0: String(message)})` on failure)
-///
-/// On the error path, `scope-id` returns the unchanged input parent scope-id.
-///
-/// Callers MUST check `result.errors` before using `result.scope-id`. This design
-/// ensures Rust never prints errors — tinct code receives errors as data.
-/// Check for errors with `[null? ev.errors]` — empty dict (null) means success,
-/// non-empty dict means failure.
+/// B-553: accepts `Value::CoreDocument` (output of `builtin-lower`), not `Value::Document`.
+/// T-1775: env-dict protocol replaces the old scope-id Int parameter.
 pub(crate) fn builtin_eval(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -3428,17 +3094,28 @@ pub(crate) fn builtin_eval(
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
 
-        // arg0: Value::Document ONLY
+        // arg0: Value::CoreDocument — reject Value::Document with a descriptive type error.
         let doc_val = args[0]
             .try_get_value()
             .expect("pre-materialized by Strictness::Seq")
             .clone();
-        let doc_arc = match doc_val {
-            Value::Document(d) => d,
+        let (core_entries, doc_span) = match doc_val {
+            Value::CoreDocument { entries, span } => (entries, span),
+            Value::Document(_) => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-eval: expected CoreDocument (output of builtin-lower), got Document; \
+                     call builtin-lower before builtin-eval"
+                        .to_string(),
+                    "CoreDocument",
+                    "Document",
+                    call_span,
+                )
+                .into());
+            }
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-eval".to_string(),
-                    "Document",
+                    "CoreDocument",
                     other.type_name(),
                     call_span,
                 )
@@ -3446,20 +3123,21 @@ pub(crate) fn builtin_eval(
             }
         };
 
-        // arg1: Int (scope-id)
-        let scope_id_val = args[1]
+        // arg1: Value::Dict — env-dict: name → thunk.
+        // Extract thunks in insertion order; these become the initial accumulated_group
+        // for eval_document_exprs_with_env so that CoreExpr::LetrecGroupMember(i) references
+        // into the env resolve correctly. The env-dict keys must be in the same insertion order
+        // as the name-set passed to builtin-resolve, which determines the LGM slot assignments.
+        let env_val = args[1]
             .try_get_value()
             .expect("pre-materialized by Strictness::Seq")
             .clone();
-        let scope_id = match scope_id_val {
-            Value::Int(n) => {
-                // ScopeArena deleted — skip range validation
-                n as u32
-            }
+        let env_map = match env_val {
+            Value::Dict(d) => d,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
-                    "builtin-eval scope-id".to_string(),
-                    "Int",
+                    "builtin-eval env-dict".to_string(),
+                    "Dict",
                     other.type_name(),
                     call_span,
                 )
@@ -3467,63 +3145,41 @@ pub(crate) fn builtin_eval(
             }
         };
 
-        // Extract expression nodes from the document
-        let expression_nodes: Vec<std::sync::Arc<crate::ast::SurfaceNode>> = doc_arc
-            .items
+        // Convert env-dict to initial_group: string-keyed thunks in insertion order (LGM slot order).
+        // Integer-keyed entries are skipped — only string keys are LGM-addressable bindings.
+        let initial_group: Vec<Arc<Thunk>> = env_map
             .iter()
-            .filter_map(|item| {
-                if let crate::ast::SurfaceItem::Expr(node) = item {
-                    Some(std::sync::Arc::clone(node))
+            .filter_map(|(k, v)| {
+                if matches!(k, HashableValue::Str(_)) {
+                    Some(Arc::clone(v))
                 } else {
                     None
                 }
             })
             .collect();
 
-        // Evaluate the expression sequence
-        let eval_result =
-            crate::eval::eval_document_exprs_with_env(&expression_nodes, &ctx, Some(scope_id))
-                .await;
+        // Evaluate the pre-lowered CoreExpr entries with the env-dict as the initial group.
+        // Uses eval_core_document_exprs (not eval_document_exprs_with_env) to avoid calling
+        // lower() on already-lowered expressions. Errors propagate directly — no diagnostics
+        // wrapping.
+        let result_thunk =
+            crate::eval::eval_core_document_exprs(&core_entries[..], &ctx, initial_group).await?;
 
-        // Build result dict: {result, scope-id, diagnostics}
-        let mk = |v: Value| -> Arc<Thunk> { Arc::new(Thunk::value(v, call_span.clone())) };
-        let mut result_map: indexmap::IndexMap<HashableValue, Arc<Thunk>> =
-            indexmap::IndexMap::new();
-        match eval_result {
-            Ok((result_thunk, new_scope_id)) => {
-                result_map.insert(HashableValue::Str("result".into()), result_thunk);
-                result_map.insert(
-                    HashableValue::Str("scope-id".into()),
-                    mk(Value::Int(new_scope_id as i64)),
-                );
-                result_map.insert(
-                    HashableValue::Str("diagnostics".into()),
-                    mk(Value::Dict(indexmap::IndexMap::new())), // null = success
-                );
-            }
-            Err(e) => {
-                result_map.insert(
-                    HashableValue::Str("result".into()),
-                    mk(Value::Dict(indexmap::IndexMap::new())), // null on error
-                );
-                result_map.insert(
-                    HashableValue::Str("scope-id".into()),
-                    mk(Value::Int(scope_id as i64)), // unchanged input parent scope-id
-                );
-                // diagnostics: integer-keyed Dict<Int, ErrorDict> matching unified diagnostic schema.
-                // {0: {level, kind, message, span, ...}} — non-null Dict so callers can check [null? ev.diagnostics].
-                let err_thunk = eval_error_to_dict(&e, &ctx, &call_span);
-                let mut errors_map: indexmap::IndexMap<HashableValue, Arc<Thunk>> =
-                    indexmap::IndexMap::new();
-                errors_map.insert(HashableValue::Int(0), err_thunk);
-                result_map.insert(
-                    HashableValue::Str("diagnostics".into()),
-                    mk(Value::Dict(errors_map)),
-                );
-            }
+        // Materialize the result to a Dict (the exports).
+        // The last expression in a document is the exports dict — force it so callers receive
+        // a concrete Value::Dict they can iterate to build the next env-dict.
+        let result_val = materialize(&result_thunk, Some(&doc_span), &ctx).await?;
+        match result_val {
+            Value::Dict(_) => Ok(Arc::new(Thunk::value(result_val, call_span))),
+            other => Err(EvalError::internal(
+                format!(
+                    "builtin-eval: document last expression must evaluate to a Dict (the exports), got {}",
+                    other.type_name()
+                ),
+                call_span,
+            )
+            .into()),
         }
-
-        Ok(Arc::new(Thunk::value(Value::Dict(result_map), call_span)))
     })
 }
 
@@ -3674,9 +3330,13 @@ pub(crate) fn builtin_eval_expr(
             .collect();
 
         // Evaluate and return the result thunk directly.
-        let (result_thunk, _root_env_id) =
-            crate::eval::eval_document_exprs_with_env(&expression_nodes, &ctx, Some(scope_id))
-                .await?;
+        let (result_thunk, _root_env_id) = crate::eval::eval_document_exprs_with_env(
+            &expression_nodes,
+            &ctx,
+            Some(scope_id),
+            None,
+        )
+        .await?;
 
         Ok(result_thunk)
     })
@@ -3755,7 +3415,8 @@ pub(crate) fn builtin_eval_repr(
         };
 
         let (result_thunk, _root_env_id) =
-            crate::eval::eval_document_exprs_with_env(&expression_nodes, &ctx, scope_id).await?;
+            crate::eval::eval_document_exprs_with_env(&expression_nodes, &ctx, scope_id, None)
+                .await?;
 
         let result_val = materialize(&result_thunk, Some(&call_span), &ctx).await?;
         let repr = crate::value_to_display_string(&result_val, &ctx, call_span.clone())
@@ -3909,6 +3570,7 @@ pub(crate) fn builtin_eval_macro_ast(
             &expression_nodes,
             &ctx,
             Some(call_site_env_id),
+            None,
         )
         .await?;
 
@@ -3967,9 +3629,13 @@ pub(crate) fn builtin_eval_types(
                     }
                 })
                 .collect();
-            let (result_thunk, _root_env_id) =
-                crate::eval::eval_document_exprs_with_env(&expr_nodes, &ctx, type_stage_scope_id)
-                    .await?;
+            let (result_thunk, _root_env_id) = crate::eval::eval_document_exprs_with_env(
+                &expr_nodes,
+                &ctx,
+                type_stage_scope_id,
+                None,
+            )
+            .await?;
             return Ok(result_thunk);
         }
 
@@ -4864,226 +4530,6 @@ pub(crate) fn builtin_cap_env_has(
         // Return Int: 1 = found, 0 = not found.
         // The prelude wrapper converts Int → Boolean (prelude-agnostic protocol).
         ok_val(Value::Int(if found { 1 } else { 0 }), call_span)
-    })
-}
-
-/// `builtin-arena-new`: create a named evaluation scope (arena).
-///
-/// Takes 1 positional arg (String name). Returns `Value::Arena { name, start_env_id }`.
-/// The arena tracks a named scope starting at `start_env_id`; the dynamic end is always
-/// `scopes.len()` at drop/migrate time. Scope is created in the `ScopeArena` with
-/// zero initial slot capacity.
-pub(crate) fn builtin_arena_new(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-            ..
-        } = ctx_arg;
-        if args.len() != 1 {
-            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
-        }
-        reject_named("arena-new", named.as_ref(), call_span.clone())?;
-        let name_thunk = Arc::clone(&args[0]);
-        let name_val = materialize(&name_thunk, Some(&call_span), &ctx).await?;
-        let name: Arc<str> = match name_val {
-            Value::String {
-                ref source,
-                start,
-                end,
-            } => source[start..end].into(),
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "arena-new".to_string(),
-                    "String",
-                    other.type_name(),
-                    call_span,
-                )
-                .into())
-            }
-        };
-        // ScopeArena deleted — use placeholder start_env_id=0.
-        let start_env_id: u32 = 0;
-        Ok(Arc::new(Thunk::value(
-            Value::Arena { name, start_env_id },
-            call_span,
-        )))
-    })
-}
-
-/// `builtin-arena-drop`: drop all scopes in the arena range, freeing all their thunks.
-///
-/// Takes 1 positional arg (`Value::Arena`). Clears all slots in every FlatEnv in the range
-/// [start_env_id, envs.len()), releasing all `Arc<Thunk>` references. Returns empty dict `[]`.
-pub(crate) fn builtin_arena_drop(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-            ..
-        } = ctx_arg;
-        if args.len() != 1 {
-            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
-        }
-        reject_named("arena-drop", named.as_ref(), call_span.clone())?;
-        let arena_thunk = Arc::clone(&args[0]);
-        let arena_val = materialize(&arena_thunk, Some(&call_span), &ctx).await?;
-        let start_env_id = match arena_val {
-            Value::Arena { start_env_id, .. } => start_env_id,
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "arena-drop".to_string(),
-                    "Arena",
-                    other.type_name(),
-                    call_span,
-                )
-                .into())
-            }
-        };
-        // Drop all scopes from start_env_id up to the current arena length.
-        // The dynamic end is always envs.len() — this captures all FlatEnvs allocated
-        // during builtin-eval that belong to this arena. This matches how
-        // builtin_arena_migrate computes its src_end.
-        //
-        // Stack-top contract: the arena being dropped must be the most recently allocated
-        // arena; no other arenas may have been created after this one. For the standard
-        // usage pattern (arena-new → builtin-eval → arena-migrate → arena-drop), this
-        // always holds. The debug_assert below catches violations in debug builds.
-        // ScopeArena deleted — arena-drop is a no-op.
-        let _ = start_env_id;
-        let _ = &ctx;
-        Ok(Arc::new(Thunk::value(
-            Value::Dict(indexmap::IndexMap::new()),
-            call_span,
-        )))
-    })
-}
-
-/// `builtin-arena-stats`: return stats dict for an arena scope.
-///
-/// Takes 1 positional arg (`Value::Arena`). Returns a dict with:
-/// - `name`: String — the arena's name
-/// - `thunks-allocated`: Int — total thunks ever allocated across all scopes in [start_env_id, envs.len())
-/// - `thunks-live`: Int — thunks currently live (slot is Some) across the same range
-/// - `scopes`: Int — number of FlatEnv scopes in the arena's range
-/// - `heap-bytes`: Int — current process heap allocation in bytes
-pub(crate) fn builtin_arena_stats(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-            ..
-        } = ctx_arg;
-        if args.len() != 1 {
-            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
-        }
-        reject_named("arena-stats", named.as_ref(), call_span.clone())?;
-        let arena_thunk = Arc::clone(&args[0]);
-        let arena_val = materialize(&arena_thunk, Some(&call_span), &ctx).await?;
-        let (name, start_env_id) = match arena_val {
-            Value::Arena {
-                name, start_env_id, ..
-            } => (name, start_env_id),
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "arena-stats".to_string(),
-                    "Arena",
-                    other.type_name(),
-                    call_span,
-                )
-                .into())
-            }
-        };
-        // ScopeArena deleted — return zero stats.
-        let _ = start_env_id;
-        let _ = &ctx;
-        let (thunks_live, scope_count): (i64, u32) = (0, 0);
-        // memory_budget tracking removed (T-1770): thunks-allocated and heap-bytes return 0.
-        let thunks_allocated: i64 = 0;
-        let heap_bytes: i64 = 0;
-        let mk = |v: Value| -> Arc<Thunk> { Arc::new(Thunk::value(v, call_span.clone())) };
-        let mut result_map: indexmap::IndexMap<HashableValue, Arc<Thunk>> =
-            indexmap::IndexMap::new();
-        result_map.insert(
-            HashableValue::Str("name".into()),
-            mk(string_val(name.as_ref())),
-        );
-        result_map.insert(
-            HashableValue::Str("thunks-allocated".into()),
-            mk(Value::Int(thunks_allocated)),
-        );
-        result_map.insert(
-            HashableValue::Str("thunks-live".into()),
-            mk(Value::Int(thunks_live)),
-        );
-        result_map.insert(
-            HashableValue::Str("scopes".into()),
-            mk(Value::Int(scope_count as i64)),
-        );
-        result_map.insert(
-            HashableValue::Str("heap-bytes".into()),
-            mk(Value::Int(heap_bytes)),
-        );
-        Ok(Arc::new(Thunk::value(Value::Dict(result_map), call_span)))
-    })
-}
-
-/// `builtin-arena-migrate`: recursively migrate a thunk tree from source to destination arena.
-///
-/// Takes 3 positional args: value (any), source arena (`Value::Arena`), destination arena (`Value::Arena`).
-/// Recursively walks the value's structure, migrating all ThunkIds in the source arena's range
-/// [start_env_id, envs.len()) to the destination arena. ThunkIds outside this range are permanent
-/// and left unchanged. Materialized values are deeply copied; unevaluated thunks are shallow-copied
-/// (the Arc is cloned, preserving laziness). After migration, the caller can safely drop the source
-/// arena — all reachable thunks have been copied to the destination.
-pub(crate) fn builtin_arena_migrate(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-            ..
-        } = ctx_arg;
-        if args.len() != 3 {
-            return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
-        }
-        reject_named("arena-migrate", named.as_ref(), call_span.clone())?;
-        // Force the source arena (args[1]) to get its env_id range.
-        let src_arena_thunk = Arc::clone(&args[1]);
-        let src_arena_val = materialize(&src_arena_thunk, Some(&call_span), &ctx).await?;
-        let src_start = match src_arena_val {
-            Value::Arena { start_env_id, .. } => start_env_id,
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "arena-migrate".to_string(),
-                    "Arena (src)",
-                    other.type_name(),
-                    call_span,
-                )
-                .into())
-            }
-        };
-        // The source range is [start, current arena length) — captures all scopes allocated
-        // during evaluation in the source arena.
-        // ScopeArena deleted — migration is a no-op; thunks are not arena-scoped.
-        let _ = src_start;
-        let _ = &args[2];
-        Ok(Arc::clone(&args[0]))
     })
 }
 

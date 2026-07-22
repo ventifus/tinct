@@ -15,8 +15,8 @@
   builtin-make-type-ctx:     [fn@TypeContext [] ...]
   # fork-type-ctx: create child TypeContext inheriting parent; mutations don't propagate up.
   builtin-fork-type-ctx:     [fn@TypeContext [let ctx@TypeContext] ...]
-  # tc-with-scope: set the TypeContext's type-stage scope-id, return updated ctx.
-  builtin-tc-with-scope:     [fn@TypeContext [let ctx@TypeContext scope-id@Int] ...]
+  # tc-with-scope: wire env dict into TypeContext as the type-stage env, return updated ctx.
+  builtin-tc-with-scope:     [fn@TypeContext [let ctx@TypeContext env@Dict] ...]
   # validate: validate program AST structure; returns Program or error.
   builtin-validate:          [fn@Program    [let prog@Any ctx@TypeContext] ...]
 

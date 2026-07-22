@@ -76,10 +76,14 @@
 #   Control: match (keyword — always available)
 #   I/O:     builtin-file-read, builtin-file-open, builtin-write-stdout, builtin-write-stderr, builtin-channel, builtin-send
 #   Bytes:   builtin-bytes, builtin-bytes-concat, builtin-dict-length
-#   AST:     builtin-parse, builtin-resolve, builtin-typecheck-doc
+#   AST:     builtin-parse, builtin-resolve, builtin-lower, builtin-typecheck-doc
 #   Type:    builtin-make-type-ctx, builtin-fork-type-ctx,
 #            builtin-tc-with-scope
 #   Meta:    builtin-module, builtin-eval
+# Note: builtin-resolve now takes a name-set Dict<String,1> (not scope frames).
+#       builtin-eval now takes (lowered CoreDocument, env Dict) and returns
+#       the exports Dict directly (raises on error — no {result, scope-id, diags}).
+#       builtin-tc-with-scope now takes env Dict instead of scope-id Int.
 #   String:  builtin-str, builtin-str-bytes, builtin-str-hash, builtin-str-lt
 #   Dict:    builtin-reduce (Dict fold only — NOT Seq; Seq reduce is tinct),
 #            merge, builtin-get, builtin-keys, builtin-dict-length, builtin-build-dict
@@ -169,43 +173,17 @@
       0: default
       ...: [builtin-get key dict]]]
 
-  # _shift-keys: shift all integer keys in dict d by +1.
-  # {0: v} → {1: v}, {0: a, 1: b} → {1: a, 2: b}
-  # Used by _scope-to-frames-inner to make room for new outermost frame at key 0.
-  _shift-keys: [fn [let d@Dict n@Integer i@Integer builder@BuilderHandle]
+  # env-to-name-set: build name-set Dict<String,1> from env for builtin-resolve.
+  # builtin-resolve now takes a flat Dict<String,1> of all visible names (values ignored).
+  # Replaces the old scope-to-frames walk — env is already a flat dict of all bindings.
+  _env-to-name-set-loop: [fn [let keys n i builder]
     [match [builtin-eq-int i n]
-      0: [_shift-keys d n [builtin-int-add i 1]
-            [builtin-builder-set [builtin-int-add [builtin-dict-key-nth d i] 1]
-                                 [builtin-dict-nth d i]
-                                 builder]]
+      0: [_env-to-name-set-loop keys n [builtin-int-add i 1]
+            [builtin-builder-set [builtin-get i keys] 1 builder]]
       ...: [builtin-builder-finish builder]]]
-
-  # scope-to-frames: build frames array from scope-id for builtin-resolve.
-  # Walks from innermost to outermost via builtin-scope-parent, prepends each
-  # level's names, producing [outermost-names, ..., innermost-names].
-  # This matches resolve.rs ordering: initial_frames[0] = outermost (line 599).
-  _scope-to-frames-inner: [fn [let scope-id acc]
-    [acc-next: [merge [make-entry 0 [builtin-scope-frame scope-id]]
-                      [_shift-keys acc [builtin-dict-length acc] 0 [builtin-make-builder]]]]
-    [parent: [builtin-scope-parent scope-id]]
-    [match [null? parent]
-      0: [_scope-to-frames-inner parent acc-next]
-      ...: acc-next]]
-  scope-to-frames: [fn [let scope-id]
-    [_scope-to-frames-inner scope-id []]]
-
-  # object-map: map over dict values, preserving keys. Used by scope-to-frames
-  # to shift frame indices when prepending a new outermost frame.
-  _object-map-step: [fn [let obj f keys i n builder]
-    [match [builtin-eq-int i n]
-      0: [call [fn [let]
-            [k: [builtin-get i keys]]
-            [_object-map-step obj f keys [builtin-int-add i 1] n
-              [builtin-builder-set k [f k [builtin-get k obj]] builder]]]]
-      ...: [builtin-builder-finish builder]]]
-  object-map: [fn [let obj f]
-    [keys: [builtin-keys obj]]
-    [_object-map-step obj f keys 0 [builtin-dict-length keys] [builtin-make-builder]]]
+  env-to-name-set: [fn [let env]
+    [keys: [builtin-keys env]]
+    [_env-to-name-set-loop keys [builtin-dict-length keys] 0 [builtin-make-builder]]]
 ]
 
 # ============================================================================
@@ -269,8 +247,8 @@
   # Caller is responsible for building and passing it — no implicit global fallback.
   # DirCap, Boolean, etc. propagate only through this explicit parameter.
   #
-  # seed-scope-id: the root scope to use as parent for declaration file scopes.
-  uses-scope: [fn [let module-names seed-tc seed-scope-id]
+  # seed-env: the accumulated env dict to use for declaration file resolve/doc-meta.
+  uses-scope: [fn [let module-names seed-tc seed-env]
     [reduce
       [fn [let acc name]
         [decl-path:  [builtin-string-concat "builtin_" [builtin-string-concat name ".llt"]]]
@@ -280,12 +258,12 @@
             [parse-result:   [builtin-parse decl-bytes decl-path]]
             [desugared:      [builtin-desugar parse-result.program]]
             [docs:           [builtin-program-docs desugared]]
-            # Typecheck each document in the declaration file using the seed scope.
+            # Typecheck each document in the declaration file using the seed env.
             # No eval — just type-check to populate TypeContext with builtin signatures.
+            [name-set: [env-to-name-set seed-env]]
             [_:              [reduce
                                [fn [let _ doc]
-                                 [frames: [scope-to-frames seed-scope-id]]
-                                 [res:    [builtin-resolve doc frames]]
+                                 [res:    [builtin-resolve doc name-set]]
                                  [typed:  [builtin-typecheck-doc res.doc seed-tc]]
                                  []]
                                []
@@ -305,26 +283,9 @@
   # The builtin-dict-length data dependency forces uses-scope before returning
   # _fundamental-base-tc, ensuring core types are in place before any
   # downstream module type-checks run.
-  #
-  # Discover the root scope-id: the only scope with null parent in builtin-scopes.
-  _all-scopes: [builtin-scopes]
-  _root-scope-entries: [reduce
-    [fn [let acc entry]
-      [scope-id: [builtin-get 0 entry]]
-      [parent:   [builtin-get 1 entry]]
-      [match [null? parent]
-        0: [merge acc [make-entry [builtin-dict-length acc] scope-id]]
-        ...: acc]]
-    []
-    [reduce
-      [fn [let acc k]
-        [merge acc [make-entry [builtin-dict-length acc] [0: k  1: [builtin-get k _all-scopes]]]]]
-      []
-      [builtin-keys _all-scopes]]]
-  root-scope-id: [builtin-get 0 _root-scope-entries]
-
+  # Uses empty env as seed (no scope arena needed — env-dict protocol).
   _fundamental-base-tc: [builtin-make-type-ctx]
-  fundamental-tc: [match [builtin-int-gte [builtin-dict-length [uses-scope ["core"] _fundamental-base-tc root-scope-id]] 0]
+  fundamental-tc: [match [builtin-int-gte [builtin-dict-length [uses-scope ["core"] _fundamental-base-tc []]] 0]
     0: _fundamental-base-tc
     ...: _fundamental-base-tc]
 
@@ -382,103 +343,102 @@
     # Desugar the parsed program (expands $_ lambda, pipe, etc.)
     [desugared:     [builtin-desugar parse-result.program]]
     [docs:          [builtin-program-docs desugared]]
-    # Create a seed scope from the root scope + extras dict (e.g., %prelude for prelude.llt).
-    [seed-scope-id: [builtin-scope-new root-scope-id extras]]
+    # Seed env from extras dict (e.g., %prelude for prelude.llt) plus field-get/slot-get sentinels.
+    [seed-env: [merge extras [field-get: .field-get  slot-get: .slot-get]]]
     # Per-document reduce fn: unified for type-stage and runtime passes.
-    # acc is {scope-id: Int  tc: TypeContext}.
+    # acc is {env: Dict  tc: TypeContext}.
     [eval-doc: [fn [let acc doc]
-      [meta:    [builtin-doc-meta doc acc.scope-id]]
-      [uses:    [uses-scope [get-or [] "uses" meta] acc.tc acc.scope-id]]
-      [scope:   [builtin-scope-new acc.scope-id uses]]
-      [frames:  [scope-to-frames scope]]
-      [res:     [builtin-resolve doc frames]]
-      [n-re:    [builtin-dict-length res.diagnostics]]
-      [_re:     [builtin-dict-length [emit-diagnostics res.diagnostics]]]
+      [meta:     [builtin-doc-meta doc acc.env]]
+      [uses:     [uses-scope [get-or [] "uses" meta] acc.tc acc.env]]
+      [doc-env:  [merge acc.env uses]]
+      [name-set: [env-to-name-set doc-env]]
+      [res:      [builtin-resolve doc name-set]]
+      [n-re:     [builtin-dict-length res.diagnostics]]
+      [_re:      [builtin-dict-length [emit-diagnostics res.diagnostics]]]
       [match [builtin-eq-int [builtin-int-add n-re _re] 0]
         0: [builtin-raise [join "" [[builtin-int->string n-re] " resolve error(s) in " path]]]
         ...: []]
       [typed:   [builtin-typecheck-doc res.doc acc.tc]]
-      [ev:      [builtin-eval typed scope]]
-      [match [null? ev.diagnostics]
-        0: [builtin-raise ev.diagnostics.0.message]
-        ...: [call [fn [let]
-             [doc-name:   [get-or "" "name" meta]]
-             [next-scope: [builtin-scope-new ev.scope-id
-                            [match [builtin-eq-string doc-name ""]
-                              0: [%: ev.result]
-                              ...: [make-entry doc-name ev.result]]]]
-             [merge acc [scope-id: next-scope]]]]]]]
+      [lowered: [builtin-lower typed.doc]]
+      [exports: [builtin-eval lowered doc-env]]
+      [doc-name: [get-or "" "name" meta]]
+      [next-env: [merge doc-env
+                   [merge [%: exports]
+                     [match [builtin-eq-string doc-name ""]
+                       0: [make-entry doc-name exports]
+                       ...: []]]]]
+      [merge acc [env: next-env]]]]
     # Split documents by stage using reduce (filter is not available before prelude loads).
     [split: [reduce
       [fn [let acc doc]
-        [meta: [builtin-doc-meta doc seed-scope-id]]
+        [meta: [builtin-doc-meta doc seed-env]]
         [stage: [get-or "runtime" "stage" meta]]
         [match [builtin-eq-string stage "type"]
           0: [ts: [merge acc.ts [make-entry [builtin-dict-length acc.ts] doc]]  rt: acc.rt]
           ...: [ts: acc.ts  rt: [merge acc.rt [make-entry [builtin-dict-length acc.rt] doc]]]]]
       [ts: []  rt: []]
       docs]]
-    # Pass 1: evaluate type-stage documents to build ts scope (for mutual recursion in type stage).
-    [ts-acc: [reduce eval-doc [scope-id: seed-scope-id  tc: fundamental-tc] split.ts]]
-    # Wire ts scope into the TypeContext so type-stage functions (or, all, etc.) are visible
+    # Pass 1: evaluate type-stage documents to build ts env.
+    [ts-acc: [reduce eval-doc [env: seed-env  tc: fundamental-tc] split.ts]]
+    # Wire ts env into the TypeContext so type-stage functions are visible
     # during type-checking of runtime documents.
-    [tc: [builtin-tc-with-scope ts-acc.tc ts-acc.scope-id]]
+    [tc: [builtin-tc-with-scope ts-acc.tc ts-acc.env]]
     # Pass 2: evaluate runtime documents, starting from ts-acc so runtime docs see type-stage defs.
-    [final-acc: [reduce eval-doc [scope-id: ts-acc.scope-id  tc: tc] split.rt]]
-    # Return {scope-id} so callers can thread into subsequent calls.
-    [scope-id: final-acc.scope-id]]
+    [final-acc: [reduce eval-doc [env: ts-acc.env  tc: tc] split.rt]]
+    # Return {env} so callers can thread into subsequent calls.
+    [env: final-acc.env]]
 
   # ── Document-level evaluation ─────────────────────────────────────────────
-  # Builds the scope for one user document via builtin-scope-new layers.
+  # Builds the env dict for one user document via flat dict merges.
   # Known initial-env entries (%cwd, %libdir, %stdout, %args) are referenced
   # directly from the closure — they are in scope because this function is
   # defined in the initial environment.
   # %include-dir is threaded as a parameter because it changes per-file.
-  # Resolution is done per-document via builtin-resolve doc frames → {doc, errors}.
+  # Resolution is done per-document via builtin-resolve doc name-set → {doc, diagnostics}.
   #
-  # Scope construction order (each layer shadows the one below):
-  #   mod-scope    — module builtins from --- uses: header  [highest]
-  #   include      — ctx-include (prelude-aware version)
-  #   state.named  — named sections from --- %name headers
-  #   caps + emit  — %cwd, %libdir, %stdout, %stderr, %args, %include-dir, emit, %emit-channel
-  #   prelude      — standard library (lowest; shadowed by everything above)
+  # Env construction (later merges shadow earlier ones):
+  #   mod-scope   — module builtins from --- uses: header  [highest]
+  #   state.named — named sections from --- %name headers
+  #   emit/include/caps — loader-injected
+  #   prelude     — standard library (lowest; shadowed by everything above)
   #
   # mod-scope: Dict of module builtins from uses-scope.
-  # prelude-scope-id: scope-id from prelude evaluation.
+  # prelude-env: the accumulated env dict from prelude evaluation.
   # Computed once per file in eval-file and threaded into each document.
-  eval-document-runtime: [fn [let state mod-scope doc include-dir prelude-scope-id tc emit-ch]
+  eval-document-runtime: [fn [let state mod-scope doc include-dir prelude-env tc emit-ch]
     [emit-fn: [fn [let v] [builtin-send emit-ch v]]]
-    # Build full scope: start from prelude (scope-id), add per-doc bindings.
-    # Scope priority (highest → lowest):
-    #   mod-scope   — module builtins from --- uses: header
+    # Build full env: start from prelude env, add per-doc bindings.
+    # Env priority (later merges shadow earlier ones):
+    #   mod-scope   — module builtins from --- uses: header  (merged last = highest priority)
     #   state.named — named sections from --- %name headers
     #   emit/channel, include, %include-dir — loader-injected
     #   known caps  — %cwd, %libdir, %stdout, %stderr, %args from closure
-    #   prelude     — standard library (lowest; shadowed by everything above)
+    #   prelude     — standard library (merged first = lowest priority)
     #
     # ctx-include: a prelude-carrying version of include injected into document scope.
-    # Evaluates included files with prelude in scope. The bare include in loader dict 2
-    # evaluates in loader's closure (no prelude) — used only for bootstrapping.
+    # Evaluates included files with prelude env in scope.
     [ctx-include: [fn [let cap path]
       # Call the top-level include with %prelude in the extras dict so included
-      # files see the prelude scope. Capture prelude-scope-id from outer scope.
-      [include cap path [%prelude: prelude-scope-id]].scope-id]]
-    [full-scope: [builtin-scope-new prelude-scope-id
-                   [%:            state.percent
-                    %include-dir:  include-dir
-                    emit:          emit-fn
-                    %emit-channel: emit-ch
-                    %cwd:          %cwd
-                    %libdir:       %libdir
-                    %stdout:       %stdout
-                    %stderr:       %stderr
-                    %args:         %args
-                    include:       ctx-include]]]
-    [full-scope-r2: [builtin-scope-new full-scope state.named]]
-    [full-scope-r3: [builtin-scope-new full-scope-r2 mod-scope]]
-    # Per-document resolve against the fully-constructed scope for correct de Bruijn coords.
-    [frames: [scope-to-frames full-scope-r3]]
-    [doc-resolved: [builtin-resolve doc frames]]
+      # files see the prelude env. Capture prelude-env from outer scope.
+      [include cap path [%prelude: prelude-env]].env]]
+    # Env construction: merge in priority order (each merge shadows the previous).
+    # merge A B = right-biased, B wins. So later merges have higher priority.
+    [base-env:  [merge prelude-env state.named]]
+    [caps-env:  [merge base-env
+                  [%:            state.percent
+                   %include-dir:  include-dir
+                   emit:          emit-fn
+                   %emit-channel: emit-ch
+                   %cwd:          %cwd
+                   %libdir:       %libdir
+                   %stdout:       %stdout
+                   %stderr:       %stderr
+                   %args:         %args
+                   include:       ctx-include]]]
+    [full-env:  [merge caps-env mod-scope]]
+    # Per-document resolve against the fully-constructed env.
+    [name-set: [env-to-name-set full-env]]
+    [doc-resolved: [builtin-resolve doc name-set]]
     [n-re: [builtin-dict-length doc-resolved.diagnostics]]
     [_re:  [builtin-dict-length [emit-diagnostics doc-resolved.diagnostics]]]
     [match [builtin-eq-int [builtin-int-add n-re _re] 0]
@@ -486,37 +446,41 @@
       ...: []]
     # Type-check the document.
     [typed: [builtin-typecheck-doc doc-resolved.doc tc]]
+    # Lower to CoreDocument, then evaluate with env-dict protocol.
+    [lowered: [builtin-lower typed.doc]]
     # Per-document arena: allocate, evaluate, migrate result to root arena, then drop.
-    [meta: [builtin-doc-meta doc full-scope-r3]]
+    [meta: [builtin-doc-meta doc full-env]]
     [doc-arena-name: [get-or "doc" "name" meta]]
     [doc-arena: [builtin-arena-new doc-arena-name]]
-    [eval-result: [builtin-eval typed full-scope-r3]]
-    [match [null? eval-result.diagnostics]
+    # builtin-eval returns exports Dict directly; raises on error.
+    [try-eval: [builtin-try [call [fn [] [builtin-eval lowered full-env]]]]]
+    [match [builtin-has-key? "ok" try-eval]
       0: # Error path: drop per-doc arena, then raise error.
          [call [fn [let]
            [_drop: [builtin-arena-drop doc-arena]]
            [match [builtin-int-gte [builtin-dict-length [builtin-type-of _drop]] 0]
-             0: [builtin-raise eval-result.diagnostics.0.message]
-             ...: [builtin-raise eval-result.diagnostics.0.message]]]]]
+             0: [builtin-raise [builtin-get "error" try-eval]]
+             ...: [builtin-raise [builtin-get "error" try-eval]]]]]
       ...: # Success path: migrate result to root arena, drop per-doc arena, then validate.
          [call [fn [let]
-           [migrated-result: [builtin-arena-migrate eval-result.result doc-arena %arena]]
+           [exports: [builtin-get "ok" try-eval]]
+           [migrated-result: [builtin-arena-migrate exports doc-arena %arena]]
            # _migrated-forced ensures migrate completes before drop — data dependency via type-of.
            [_migrated-forced: [builtin-int-gte [builtin-dict-length [builtin-type-of migrated-result]] 0]]
            [_drop: [match _migrated-forced
              0: [builtin-arena-drop doc-arena]
              ...: [builtin-arena-drop doc-arena]]]
-           # Validate --- caps: declarations. Each declared cap must be present in scope.
+           # Validate --- caps: declarations. Each declared cap must be present in env.
            [caps-list: [get-or [] "caps" meta]]
            [_drop-forced: [builtin-int-gte [builtin-dict-length [builtin-type-of _drop]] 0]]
            [_caps-forced: [match _drop-forced
              0: [reduce [fn [let _ cap-name]
-                   [match [builtin-cap-env-has? cap-name full-scope-r3]
+                   [match [builtin-cap-env-has? cap-name full-env]
                      0: [builtin-raise [builtin-string-concat "missing required capability: " cap-name]]
                      ...: 0]]
                    0 [builtin-keys caps-list]]
              ...: [reduce [fn [let _ cap-name]
-                   [match [builtin-cap-env-has? cap-name full-scope-r3]
+                   [match [builtin-cap-env-has? cap-name full-env]
                      0: [builtin-raise [builtin-string-concat "missing required capability: " cap-name]]
                      ...: 0]]
                    0 [builtin-keys caps-list]]]]
@@ -529,12 +493,12 @@
 
   # ── Pipeline item dispatch ────────────────────────────────────────────────
 
-  eval-pipeline-item: [fn [let item prev include-dir prelude-scope-id tc emit-ch]
+  eval-pipeline-item: [fn [let item prev include-dir prelude-env tc emit-ch]
     [match item
-      [case [let p] [ProgramItem.File p] [eval-file p prev include-dir prelude-scope-id tc emit-ch]]
-      [case [let p] [ProgramItem.Expr p] [eval-expr p.src prev include-dir prelude-scope-id tc emit-ch]]]]
+      [case [let p] [ProgramItem.File p] [eval-file p prev include-dir prelude-env tc emit-ch]]
+      [case [let p] [ProgramItem.Expr p] [eval-expr p.src prev include-dir prelude-env tc emit-ch]]]]
 
-  eval-file: [fn [let item prev include-dir prelude-scope-id tc emit-ch]
+  eval-file: [fn [let item prev include-dir prelude-env tc emit-ch]
     # %include-dir for this file's documents = the directory containing item.path.
     # %cwd is fixed (CLI working directory) and comes from the closure unchanged.
     # builtin-path-dir: String → DirCap
@@ -556,11 +520,11 @@
     # Per-document reduce: each doc gets its own eval-document-runtime call.
     [reduce
       [fn [let state doc]
-        [eval-document-runtime state mod-scope doc file-include-dir prelude-scope-id tc emit-ch]]
+        [eval-document-runtime state mod-scope doc file-include-dir prelude-env tc emit-ch]]
       [percent: prev  named: []]
       docs].percent]
 
-  eval-expr: [fn [let src prev include-dir prelude-scope-id tc emit-ch]
+  eval-expr: [fn [let src prev include-dir prelude-env tc emit-ch]
     [bytes:        [builtin-str-bytes src]]
     [parse-result: [builtin-parse bytes "<expr>"]]
     # Emit parse errors as a data dependency (no >> needed).
@@ -576,22 +540,22 @@
     # Per-document reduce.
     [reduce
       [fn [let state doc]
-        [eval-document-runtime state mod-scope doc include-dir prelude-scope-id tc emit-ch]]
+        [eval-document-runtime state mod-scope doc include-dir prelude-env tc emit-ch]]
       [percent: prev  named: []]
       docs].percent]
 
   # ── CLI pipeline ──────────────────────────────────────────────────────────
-  # Threads include-dir, prelude-scope-id, tc, and emit-ch.
+  # Threads include-dir, prelude-env, tc, and emit-ch.
   # %cwd, %libdir, %stdout, %stderr, %args flow via closure, not as parameters.
   # The formatter is passed separately and run last.
 
-  cli-pipeline: [fn [let programs formatter initial include-dir prelude-scope-id tc emit-ch]
+  cli-pipeline: [fn [let programs formatter initial include-dir prelude-env tc emit-ch]
     [result: [reduce
       [fn [let prev item]
-        [eval-pipeline-item item prev include-dir prelude-scope-id tc emit-ch]]
+        [eval-pipeline-item item prev include-dir prelude-env tc emit-ch]]
       initial
       programs]]
-    [eval-pipeline-item formatter result include-dir prelude-scope-id tc emit-ch]]
+    [eval-pipeline-item formatter result include-dir prelude-env tc emit-ch]]
 ]
 
 # ============================================================================
@@ -604,13 +568,13 @@
 [
   # Thread Boolean/True/False from loader scope so prelude can use them unqualified.
   # %prelude is a lazy forward reference — safe because prelude only forces it at call time.
-  # include now returns {scope-id: Int}; extract scope-id field.
-  prelude-result:   [include %libdir "prelude.llt"
-                       [%prelude: prelude-result.scope-id  Boolean: Boolean  True: True  False: False]]
-  prelude-scope-id: prelude-result.scope-id
+  # include now returns {env: Dict}; extract env field.
+  prelude-result: [include %libdir "prelude.llt"
+                    [%prelude: prelude-env  Boolean: Boolean  True: True  False: False]]
+  prelude-env:    prelude-result.env
 
   # Create a TypeContext for runtime type-checking.
-  tc: [builtin-tc-with-scope fundamental-tc prelude-scope-id]
+  tc: [builtin-tc-with-scope fundamental-tc prelude-env]
 
   emit-ch: [builtin-channel]
 
@@ -627,5 +591,5 @@
 # No >> needed — the error branch raises, the success branch returns the pipeline result.
 
 [match [builtin-eq-int [builtin-dict-length %programs] 0]
-  0: [cli-pipeline %programs formatter [] %cwd prelude-scope-id tc emit-ch]
+  0: [cli-pipeline %programs formatter [] %cwd prelude-env tc emit-ch]
   ...: [builtin-raise "no input files or expressions specified"]]

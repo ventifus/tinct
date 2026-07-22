@@ -1,6 +1,8 @@
 # builtin-lower takes a resolved+typechecked Document and returns a CoreDocument.
 # Pipeline: parse -> desugar -> program-docs -> resolve -> typecheck-doc -> lower.
 # Verifies that builtin-lower returns a value of type "CoreDocument" without error.
+# Uses new env-dict protocol: builtin-resolve takes name-set, builtin-eval takes
+# (lowered, env) and returns the exports Dict directly.
 [call [fn [let]
   [src:     [builtin-str-bytes "[answer: 42]"]]
   [parsed:  [builtin-parse src "test.llt"]]

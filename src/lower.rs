@@ -125,16 +125,18 @@ pub(crate) fn process_escapes(content: &str, delimiter: &str) -> String {
 /// Convert de Bruijn (level, slot) coordinates to a `VarAddr`.
 ///
 /// Used for sources that still produce (level, slot) pairs rather than VarAddr directly:
-/// - `resolve_name_in_frames` results (scope frame lookups for spread-dict `merge` and call_dispatch)
-/// - `CallDispatch` coordinates written by the type checker
+/// - `resolve_name_in_frames` results (scope frame lookups for spread-dict `merge`)
+/// - `check_constraints_on_var` in `type_unify.rs` (converts before writing to `CallDispatch`)
 /// - Synthetic addresses for lowerer-generated nodes (constructor functions, builtin-make-annotated)
 ///
 /// Resolver-produced `Resolution` cells now store `VarAddr` directly and do not use this function.
+/// `CallDispatch` now stores `VarAddr` directly — the conversion happens in `type_unify.rs` at
+/// `call_dispatch.set(debruijn_to_var_addr(level, slot))`, not in the lowerer.
 ///
 /// Mapping:
 /// - level=0 → `VarAddr::LetrecGroupMember(slot)` (current letrec group)
 /// - level>0 → `VarAddr::ClosureCapture(slot)` (outer scope)
-fn debruijn_to_var_addr(level: u32, slot: u32) -> VarAddr {
+pub(crate) fn debruijn_to_var_addr(level: u32, slot: u32) -> VarAddr {
     if level == 0 {
         VarAddr::LetrecGroupMember(slot)
     } else {
@@ -782,20 +784,20 @@ fn lower_expr(
         } => {
             // Compile-time instance dispatch rewriting: if the VarRef node for the function
             // has a call_dispatch annotation set by the type checker, rewrite the function
-            // reference to use the direct (level, slot) coordinates.
+            // reference to use the resolved VarAddr directly.
             let lowered_func = if let SurfaceExpression::VarRef {
                 call_dispatch,
                 name,
                 ..
             } = &func.expr
             {
-                if let Some((level, slot)) = call_dispatch.get() {
+                if let Some(addr) = call_dispatch.get() {
                     // The type checker resolved this typeclass method call to a concrete instance
-                    // binding and recorded the direct coordinates. Use them directly.
+                    // binding and recorded the VarAddr directly. Use it without conversion.
                     Arc::new(Spanned::new(
                         CoreExpr::Var {
                             name: name.clone(),
-                            addr: debruijn_to_var_addr(level, slot),
+                            addr: addr.clone(),
                             annotation: None,
                         },
                         func.span.clone(),

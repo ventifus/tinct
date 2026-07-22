@@ -32,9 +32,10 @@
   [typed:   [builtin-typecheck-doc resolved.doc tc]]
   [lowered: [builtin-lower typed.doc]]
   [lower-type-ok: [builtin-eq-string [builtin-type-of lowered] "CoreDocument"]]
-  # Evaluate the document: Decl item must be skipped, Expr item [x: 42] must be eval'd.
-  [ev:      [builtin-eval typed.doc 0]]
-  [x-val:   [builtin-get "x" ev.result]]
+  # Evaluate the document using new env-dict protocol: builtin-eval lowered env.
+  # env is empty {} since the document only references its own bindings.
+  [exports: [builtin-eval lowered []]]
+  [x-val:   [builtin-get "x" exports]]
   [eval-ok: [builtin-eq-int x-val 42]]
   [builtin-int-add [builtin-int-add expr-count-ok lower-type-ok] eval-ok]]]
 === out

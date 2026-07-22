@@ -1,5 +1,0 @@
-# builtin-scope-parent on scope 0 (root) returns [] (null).
-# Root scopes have no parent — the null return distinguishes them from child scopes.
-[if [null? [builtin-scope-parent 0]] 1 0]
-=== out
-Int(1)

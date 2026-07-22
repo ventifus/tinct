@@ -1,10 +1,9 @@
-# Verifies builtin-cap-env-has? returns Int(1) when a cap IS present in scope.
-# Creates a child scope of root (scope 0) injecting %cwd from the environment.
-# The %cwd thunk carries span.name="%cwd" (set by the CLI injection), so the scope
-# lookup finds it by name. Tests the Rust-level Int(1) protocol for the present case.
+# Verifies builtin-cap-env-has? returns Int(1) when a cap IS present in the env dict.
+# Uses the new env-dict protocol: builtin-cap-env-has? takes a flat Dict<String, thunk>
+# directly (no scope arena needed).
 [call [fn [let]
-  [child-scope: [builtin-scope-new 0 [%cwd: %cwd]]]
-  [result: [builtin-cap-env-has? "%cwd" child-scope]]
+  [env: [%cwd: %cwd]]
+  [result: [builtin-cap-env-has? "%cwd" env]]
   result]]
 === out
 Int(1)
