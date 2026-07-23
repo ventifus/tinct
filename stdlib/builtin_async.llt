@@ -7,8 +7,6 @@
   builtin-task:            [fn@Any     [let body@Any] ...]
   builtin-await:           [fn@Any     [let t@Any] ...]
   builtin-par:             [fn@Any     [let a@Any b@Any] ...]
-  builtin-par-map:         [fn@Dict    [let f@Any xs@Any] ...]
-  builtin-par-filter:      [fn@Dict    [let pred@Any xs@Any] ...]
   builtin-exit-now:        [fn@Never   [let code@Integer] ...]
   builtin-non-cancellable: [fn@Any     [let body@Any] ...]
 

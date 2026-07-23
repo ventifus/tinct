@@ -4036,8 +4036,13 @@ CancelHandle: [type [child-ctx: Context  cancel: Context]]  # return value of wi
 # Single-arg [task e] passes through to builtin-task directly.
 await:         builtin-await
 par:           builtin-par
-par-map:       builtin-par-map
-par-filter:    builtin-par-filter
+par-map: [fn [let f xs]
+  [tasks: [map [fn [let x] [task [fn [] [f x]]]] xs]]
+  [map await tasks]]
+
+par-filter: [fn [let pred xs]
+  [pairs: [par-map [fn [let x] [x [pred x]]] xs]]
+  [map [fn [let p] p.0] [filter [fn [let p] p.1] pairs]]]
 
 # Channels
 channel:            builtin-channel

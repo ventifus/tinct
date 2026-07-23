@@ -1464,7 +1464,7 @@ pub async fn call_to_match_resolved(
 /// Pre-resolve the match-signal class instance binding name from a predicate function's
 /// return annotation.
 ///
-/// HOF builtins (sort, until, par-filter) call a predicate function on each element and then
+/// HOF builtins (sort, until) call a predicate function on each element and then
 /// need to convert the result to a match signal. The standard approach calls `call_to_match`
 /// on every result, which routes through the dispatch function on each iteration (two-hop
 /// call: `call_to_match` -> dispatch function -> specific instance).

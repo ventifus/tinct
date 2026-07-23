@@ -1,6 +1,8 @@
 //! Async concurrency primitives: task, await, channel, send, recv, select-once,
-//! broadcast-channel, oneshot-channel, try-send, par, par-map, par-filter, and cancellation
+//! broadcast-channel, oneshot-channel, try-send, par, and cancellation
 //! context primitives (context, with-cancel, with-timeout, with-deadline, cancelled?, cancel-task).
+//!
+//! par-map and par-filter are pure tinct in prelude.llt (S-896).
 //!
 //! Design notes (from doc/whatif/async-eval.md):
 //! - `task` spawns a concurrent evaluation via tokio::task::spawn_local
@@ -13,8 +15,6 @@
 //! - `oneshot-channel` creates a one-shot channel, returns [receiver sender]
 //! - `try-send chan value` sends without blocking; returns [Ok] or [Full] or [Closed]
 //! - `par expr` eagerly spawns a task (hint for parallel evaluation)
-//! - `par-map fn seq` applies fn to each element concurrently
-//! - `par-filter pred seq` filters sequence in parallel
 //!
 //! Cancellation context primitives (see §Cancellation and Contexts in async-eval.md):
 //! - `context` → Context — creates a root cancellation context (fresh CancellationToken)
@@ -125,7 +125,7 @@ fn take_three_thunks(
 /// Helper to collect a Seq into a Vec<Arc<Thunk>> by walking the linked list.
 /// Returns the thunks in order. Materializes each tail to check for continuation or termination.
 /// Collect elements from an integer-keyed Dict into a Vec of Arc<Thunk>.
-/// Used by par-map, par-filter, and select-once which now accept Dict input.
+/// Used by select-once which accepts Dict input.
 async fn collect_dict_to_vec(
     dict_val: Value,
     _ctx: &Arc<crate::eval::EvalContext>,
@@ -138,21 +138,6 @@ async fn collect_dict_to_vec(
     };
 
     Ok(map.into_values().collect())
-}
-
-/// Helper to build an integer-keyed Dict from a Vec<Arc<Thunk>>.
-/// Returns an Arc<Thunk> wrapping the resulting Dict value.
-fn build_dict_from_vec(
-    items: Vec<Arc<Thunk>>,
-    _ctx: &Arc<crate::eval::EvalContext>,
-    call_span: Span,
-) -> Arc<Thunk> {
-    let mut dict: indexmap::IndexMap<crate::value::HashableValue, Arc<Thunk>> =
-        indexmap::IndexMap::new();
-    for (i, thunk) in items.into_iter().enumerate() {
-        dict.insert(crate::value::HashableValue::Int(i as i64), thunk);
-    }
-    Arc::new(Thunk::value(Value::Dict(dict), call_span))
 }
 
 /// `task`: Spawn a concurrent evaluation.
@@ -1134,7 +1119,7 @@ pub(crate) fn builtin_select_once(
                             }
 
                             // T-1558: Use closure_env as call scope.
-                            // T-1555 gap: par-map closures skip bind_args_thunks — single-param function body evaluated
+                            // T-1555 gap: select-once handler closures skip bind_args_thunks — single-param function body evaluated
                             // directly in closure_env rather than a dedicated call frame. Pattern variables not bound
                             // in FlatEnv. Tracked as T-1555 match-arm-closures gap.
                             eval_core_expr(
@@ -1209,310 +1194,6 @@ pub(crate) fn builtin_par(
     // For now, par is just an alias for task
     // In a full multi-threaded implementation, this would use tokio::spawn instead of spawn_local
     builtin_task(ctx_arg)
-}
-
-/// `par-map`: Apply a function to each element of a sequence in parallel.
-///
-/// Signature: `[Fn@B [A]] → [Seq A] → [Seq B]`
-///
-/// Spawns concurrent tasks for each element, collects results in order.
-pub(crate) fn builtin_par_map(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-        ..
-    } = ctx_arg;
-    Box::pin(async move {
-        let (func_thunk, seq_thunk) =
-            take_two_thunks("par-map", &args, named.as_ref(), call_span.clone(), &ctx)?;
-
-        // Materialize the sequence
-        let seq_val = materialize(&seq_thunk, Some(&call_span), &ctx).await?;
-
-        // Collect sequence items
-        let item_ids = collect_dict_to_vec(seq_val, &ctx, call_span.clone(), "par-map").await?;
-
-        // Spawn a task for each item
-        let mut tasks = Vec::new();
-        for item_thunk in &item_ids {
-            let func_thunk_clone = Arc::clone(&func_thunk);
-            let item_thunk_clone = Arc::clone(item_thunk);
-            let ctx_clone = Arc::clone(&ctx);
-            let call_span_clone = call_span.clone();
-
-            let handle = crate::async_rt::spawn_local(async move {
-                // Materialize the function
-                let func_val =
-                    materialize(&func_thunk_clone, Some(&call_span_clone), &ctx_clone).await?;
-
-                // Materialize the item
-                let item_val =
-                    materialize(&item_thunk_clone, Some(&call_span_clone), &ctx_clone).await?;
-
-                // Call the function with the item
-                match func_val {
-                    Value::Function {
-                        params,
-                        body,
-                        closure_env,
-                        annotation: _,
-                        ..
-                    } => {
-                        if params.len() != 1 {
-                            return Err(EvalError::user_error(
-                                format!(
-                                    "par-map function expects 1 parameter, got {}",
-                                    params.len()
-                                ),
-                                call_span_clone,
-                            )
-                            .into());
-                        }
-
-                        // T-1558: Use closure_env as call scope.
-                        // T-1555 gap: par-map closures skip bind_args_thunks — single-param function body evaluated
-                        // directly in closure_env rather than a dedicated call frame. Pattern variables not bound
-                        // in FlatEnv. Tracked as T-1555 match-arm-closures gap.
-                        let result_thunk = eval_core_expr(
-                            &body,
-                            &crate::value::EvalFrame::for_function_call(
-                                Arc::clone(&closure_env),
-                                vec![],
-                            ),
-                            &ctx_clone,
-                        )
-                        .await?;
-                        materialize(&result_thunk, None, &ctx_clone).await
-                    }
-                    Value::Builtin(def) => {
-                        // Call builtin with the item
-                        let item_thunk_arg =
-                            Arc::new(Thunk::value(item_val, call_span_clone.clone()));
-                        let result = (def.func)(BuiltinArgs {
-                            args: vec![item_thunk_arg],
-                            named: None,
-                            call_span: call_span_clone,
-                            caller_env_id: None,
-                            ctx: ctx_clone.clone(),
-                        })
-                        .await?;
-                        materialize(&result, None, &ctx_clone).await
-                    }
-                    _ => Err(EvalError::type_mismatch(
-                        "Function",
-                        func_val.type_name(),
-                        call_span_clone,
-                    )
-                    .into()),
-                }
-            });
-
-            tasks.push(handle);
-        }
-
-        // Await all tasks and collect results, aborting remaining handles on cancellation.
-        let mut result_thunks: Vec<Arc<Thunk>> = Vec::new();
-        let mut remaining = tasks.into_iter();
-        for handle in remaining.by_ref() {
-            // Race each handle against context cancellation.
-            let result_val = tokio::select! {
-                join_result = handle => {
-                    join_result.map_err(|e| {
-                        EvalError::user_error(format!("par-map task panicked: {e}"), call_span.clone())
-                    })??
-                }
-                _ = ctx.cancel.cancelled() => {
-                    // Abort all handles that have not yet been awaited.
-                    for h in remaining {
-                        h.abort();
-                    }
-                    return Err(EvalError::user_error(
-                        "par-map: cancelled".to_string(),
-                        call_span,
-                    ).into());
-                }
-            };
-            result_thunks.push(Arc::new(Thunk::value(result_val, call_span.clone())));
-        }
-
-        // Build the result sequence
-        let result_seq = build_dict_from_vec(result_thunks, &ctx, call_span);
-        Ok(result_seq)
-    })
-}
-
-/// `par-filter`: Filter a sequence in parallel.
-///
-/// Signature: `[Fn@Bool [A]] → [Seq A] → [Seq A]`
-///
-/// Evaluates the predicate on all elements concurrently, returns sequence of passing elements.
-pub(crate) fn builtin_par_filter(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-        ..
-    } = ctx_arg;
-    Box::pin(async move {
-        let (pred_thunk, seq_thunk) =
-            take_two_thunks("par-filter", &args, named.as_ref(), call_span.clone(), &ctx)?;
-
-        // Pre-materialize the predicate to extract its return type annotation once.
-        // This lets us pre-resolve the Matchable binding name before spawning tasks,
-        // avoiding repeated runtime type derivation on every predicate invocation.
-        let pred_fn_val = materialize(&pred_thunk, Some(&call_span), &ctx).await?;
-        let pred_matchable_binding = crate::eval::resolve_matchable_binding_from_fn(&pred_fn_val);
-        // Re-wrap as a materialized thunk so tasks can still use the standard call path.
-        let pred_thunk = Arc::new(Thunk::value(pred_fn_val, call_span.clone()));
-
-        // Materialize the sequence
-        let seq_val = materialize(&seq_thunk, Some(&call_span), &ctx).await?;
-
-        // Collect sequence items
-        let item_ids = collect_dict_to_vec(seq_val, &ctx, call_span.clone(), "par-filter").await?;
-
-        // Spawn a task for each item to evaluate the predicate
-        let mut tasks = Vec::new();
-        for (idx, item_thunk) in item_ids.iter().enumerate() {
-            let pred_thunk_clone = Arc::clone(&pred_thunk);
-            let item_thunk_clone = Arc::clone(item_thunk);
-            let ctx_clone = Arc::clone(&ctx);
-            let call_span_clone = call_span.clone();
-            let item_thunk_copy = Arc::clone(item_thunk);
-            let matchable_binding_clone = pred_matchable_binding.clone();
-
-            let handle = crate::async_rt::spawn_local(async move {
-                // Materialize the predicate (already cached from pre-materialization above)
-                let pred_val =
-                    materialize(&pred_thunk_clone, Some(&call_span_clone), &ctx_clone).await?;
-
-                // Materialize the item
-                let item_val =
-                    materialize(&item_thunk_clone, Some(&call_span_clone), &ctx_clone).await?;
-
-                // Call the predicate
-                let result = match pred_val {
-                    Value::Function {
-                        params,
-                        body,
-                        closure_env,
-                        annotation: _,
-                        ..
-                    } => {
-                        if params.len() != 1 {
-                            return Err(Box::new(EvalError::user_error(
-                                format!(
-                                    "par-filter predicate expects 1 parameter, got {}",
-                                    params.len()
-                                ),
-                                call_span_clone,
-                            )));
-                        }
-
-                        // T-1558: Use closure_env as call scope.
-                        // T-1555 gap: par-filter closures skip bind_args_thunks — single-param function body evaluated
-                        // directly in closure_env rather than a dedicated call frame. Pattern variables not bound
-                        // in FlatEnv. Tracked as T-1555 match-arm-closures gap.
-                        let result_thunk = eval_core_expr(
-                            &body,
-                            &crate::value::EvalFrame::for_function_call(
-                                Arc::clone(&closure_env),
-                                vec![],
-                            ),
-                            &ctx_clone,
-                        )
-                        .await?;
-                        materialize(&result_thunk, None, &ctx_clone).await?
-                    }
-                    Value::Builtin(def) => {
-                        let arg_thunk =
-                            Arc::new(Thunk::value(item_val.clone(), call_span_clone.clone()));
-                        let result_thunk = (def.func)(BuiltinArgs {
-                            args: vec![arg_thunk],
-                            named: None,
-                            call_span: call_span_clone.clone(),
-                            caller_env_id: None,
-                            ctx: ctx_clone.clone(),
-                        })
-                        .await?;
-                        materialize(&result_thunk, None, &ctx_clone).await?
-                    }
-                    _ => {
-                        return Err(EvalError::type_mismatch(
-                            "Function",
-                            pred_val.type_name(),
-                            call_span_clone,
-                        )
-                        .into())
-                    }
-                };
-
-                // Check if result is truthy via Matchable dispatch.
-                // Use pre-resolved binding name if available (avoids runtime type derivation).
-                // call_to_match_opt_resolved ignores the env arg (B-515 tracks FlatEnv arm binding lookup).
-                let dummy_env = Arc::new(std::sync::RwLock::new(crate::value::Environment::new()));
-                if crate::eval::call_to_match_opt_resolved(
-                    &result,
-                    matchable_binding_clone.as_deref(),
-                    &dummy_env,
-                    &ctx_clone,
-                    &call_span_clone,
-                )
-                .await
-                {
-                    Ok(Some((idx, item_thunk_copy)))
-                } else {
-                    Ok(None)
-                }
-            });
-
-            tasks.push(handle);
-        }
-
-        // Await all tasks and collect passing items, aborting remaining handles on cancellation.
-        let mut results_with_idx = Vec::new();
-        let mut remaining = tasks.into_iter();
-        for handle in remaining.by_ref() {
-            // Race each handle against context cancellation.
-            let result = tokio::select! {
-                join_result = handle => {
-                    join_result.map_err(|e| {
-                        EvalError::user_error(format!("par-filter task panicked: {e}"), call_span.clone())
-                    })??
-                }
-                _ = ctx.cancel.cancelled() => {
-                    // Abort all handles that have not yet been awaited.
-                    for h in remaining {
-                        h.abort();
-                    }
-                    return Err(EvalError::user_error(
-                        "par-filter: cancelled".to_string(),
-                        call_span,
-                    ).into());
-                }
-            };
-            if let Some(item) = result {
-                results_with_idx.push(item);
-            }
-        }
-
-        // Sort by original index to preserve order
-        results_with_idx.sort_by_key(|(idx, _)| *idx);
-
-        // Extract Arc<Thunk>s
-        let result_thunks: Vec<Arc<Thunk>> = results_with_idx.into_iter().map(|(_, t)| t).collect();
-
-        // Build the result sequence
-        let result_seq = build_dict_from_vec(result_thunks, &ctx, call_span);
-        Ok(result_seq)
-    })
 }
 
 /// `signal-channel`: Create a channel that receives a `Signal` variant when a Unix signal fires.
@@ -2375,8 +2056,7 @@ pub(crate) fn builtin_cancel_root(
 /// Design note: user-spawned tasks (via `task`) store their JoinHandle<EvalResult<Value>>
 /// inside Value::Task so that `await` can retrieve the typed result. Background tasks store
 /// JoinHandle<()> in task_registry. These are different types, so task registry cannot hold
-/// both without architectural changes. The `par-map` and `par-filter` builtins spawn and await
-/// their handles inline, so they complete before the builtin returns and do not need registration.
+/// both without architectural changes.
 ///
 /// Per async-eval.md: includes cluster-local workers (Tokio tasks), excludes remote workers.
 pub(crate) fn builtin_drain(
@@ -2732,8 +2412,6 @@ pub fn async_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("builtin-task", builtin_task),
         builtin!("builtin-await", builtin_await),
         builtin!("builtin-par", builtin_par),
-        builtin!("builtin-par-map", builtin_par_map),
-        builtin!("builtin-par-filter", builtin_par_filter),
         builtin!(
             "builtin-exit-now",
             builtin_exit_now,
