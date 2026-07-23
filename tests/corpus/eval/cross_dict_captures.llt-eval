@@ -1,0 +1,11 @@
+# Cross-dict LGM resolution at multiple nesting depths (B-576/B-585).
+# flat accumulated_group — absolute LGM slots, no runtime frame traversal.
+[x: 10
+ level1: [y: [+ x 5]            # y=15: one-hop cross-dict ref to x
+           level2: [z: [+ y x]]]  # z=25: two-hop refs to y (level1) and x (top)
+ root: 100
+ mid: [val: 200
+       sum: [+ root val]]]        # sum=300: inner dict refs outer sibling
+[level1.y  level1.level2.z  mid.sum]
+=== out
+[0: 15  1: 25  2: 300]

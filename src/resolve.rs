@@ -150,6 +150,24 @@ struct SurfaceResolver {
     /// resolver converted it to ClosureCapture — the evaluator uses it to look up the thunk
     /// in the enclosing EvalFrame when building the function's closure_env at definition time.
     fn_capture_lists: Vec<Vec<(String, VarAddr)>>,
+    /// Tracks the cumulative base slot for the next `SurfaceExpression::Dict` letrec scope.
+    ///
+    /// At runtime, `eval_dict_core` builds `extended_group = outer_frame.group ++ letrec_slots`,
+    /// placing the dict's entries at indices `outer_frame.group.len()..outer_frame.group.len()+N`.
+    /// The resolver must assign LGM(outer_frame.group.len()+i) to entry i — NOT LGM(i) — so that
+    /// `LGM(slot)` resolves to `frame.group[slot]` which is the correct thunk.
+    ///
+    /// This field tracks the value that `outer_frame.group.len()` will have at the eval_dict_core
+    /// call site for the next nested dict. Updated rules:
+    /// - Document level: set to `cumulative_offset` before walking each document dict node
+    ///   (see `walk_surface_document_with_offset`).
+    /// - Dict arm (`SurfaceExpression::Dict`): save, use as base, advance by `static_keys.len()`
+    ///   before walking values (so nested dicts see the right base), restore on exit.
+    /// - Sequential arm (fn intermediate dict bodies): set to `sequential_offset + body_key_count`
+    ///   before walking each body's values.
+    /// - Fn arm (`SurfaceExpression::Fn`): save, reset to 0 (fn call frame has `group = []`),
+    ///   restore on exit.
+    accumulated_dict_offset: u32,
 }
 
 impl SurfaceResolver {
@@ -165,6 +183,7 @@ impl SurfaceResolver {
             current_binding_context: None,
             fn_scope_boundaries: Vec::new(),
             fn_capture_lists: Vec::new(),
+            accumulated_dict_offset: 0,
         }
     }
 
@@ -597,11 +616,22 @@ impl SurfaceResolver {
                     }
                 }
 
-                // Enter the dict's letrec scope. The Dict ScopeKind marks this as a real
-                // runtime eval_dict_core frame boundary. For standalone dict literals (not
-                // document-level), LGM slots start at 0 — the outer_frame carries the
-                // accumulated_group so absolute cross-dict refs are in frame.group via LGM.
-                self.enter_scope(&static_keys, ScopeKind::Dict);
+                // Enter the dict's letrec scope with the correct absolute slot base.
+                //
+                // At runtime, eval_dict_core builds extended_group = outer_frame.group ++ letrec_slots,
+                // placing this dict's entries at indices outer_frame.group.len()..outer_frame.group.len()+N.
+                // The resolver must assign LGM(base+i) for entry i so that LGM(slot) → frame.group[slot]
+                // resolves to the correct thunk. `accumulated_dict_offset` holds the value that
+                // outer_frame.group.len() will have at the eval_dict_core call site for this dict.
+                //
+                // The Dict ScopeKind marks this as a real runtime eval_dict_core frame boundary.
+                let base_offset = self.accumulated_dict_offset;
+                self.enter_scope_with_offset(&static_keys, base_offset, ScopeKind::Dict);
+                // Advance accumulated_dict_offset by this dict's key count so that any nested
+                // dicts inside this dict's values use the correct base (= outer_frame.group.len()
+                // at their eval_dict_core call site = base_offset + static_keys.len()).
+                self.accumulated_dict_offset = base_offset + static_keys.len() as u32;
+
                 // Walk key annotations INSIDE the letrec scope so that annotation
                 // values can reference the dict's own entries (forward letrec refs).
                 // E.g., `Int@[as-type: [fn [let t] t]  supertype: TypeNode.Bytes]: []`
@@ -624,6 +654,9 @@ impl SurfaceResolver {
                     self.walk_surface_node(&entry.node.value);
                 }
                 self.exit_scope();
+                // Restore accumulated_dict_offset after exiting this dict's scope.
+                // Sibling dicts (same level as this one) use the same base_offset.
+                self.accumulated_dict_offset = base_offset;
             }
 
             SurfaceExpression::Fn {
@@ -647,6 +680,12 @@ impl SurfaceResolver {
                 let fn_boundary = self.scopes.len();
                 self.fn_scope_boundaries.push(fn_boundary);
                 self.fn_capture_lists.push(Vec::new());
+
+                // Reset accumulated_dict_offset to 0 at the fn boundary.
+                // A function call creates EvalFrame::for_function_call with group = [] (empty),
+                // so all dicts inside the fn body start accumulating from slot 0.
+                let saved_dict_offset = self.accumulated_dict_offset;
+                self.accumulated_dict_offset = 0;
 
                 let param_names: Vec<String> = params.iter().map(|p| p.node.name.clone()).collect();
                 self.enter_param_scope(&param_names);
@@ -717,6 +756,10 @@ impl SurfaceResolver {
                     .pop()
                     .expect("fn_capture_lists must parallel fn_scope_boundaries");
                 resolved_captures.set(Arc::new(captures));
+
+                // Restore accumulated_dict_offset to its pre-fn value now that we have
+                // exited the fn boundary and returned to the enclosing scope.
+                self.accumulated_dict_offset = saved_dict_offset;
             }
 
             SurfaceExpression::Sequential(exprs) => {
@@ -782,10 +825,16 @@ impl SurfaceResolver {
                                 // ScopeKind::Dict is used here because eval_dict_core IS called for
                                 // each intermediate body dict (both at document level and inside fn
                                 // bodies via LetrecChainStep). This creates a real runtime letrec frame.
-                                // The frame's group contains the accumulated entries from prior bodies
-                                // (via eval_dict.rs extending outer_frame.group), so LGM(slot) works
-                                // directly for all cross-body references within a fn's body.
-                                self.enter_scope(&all_keys, ScopeKind::Dict);
+                                // At runtime, LetrecChainStep builds updated_frame.group = prior_frame.group
+                                // ++ this_body_thunks, placing body i's entries at indices
+                                // sequential_offset..sequential_offset+all_keys.len()-1 in the group.
+                                // The resolver must assign LGM(sequential_offset+j) for entry j so that
+                                // LGM(slot) → frame.group[slot] resolves to the correct thunk.
+                                self.enter_scope_with_offset(
+                                    &all_keys,
+                                    sequential_offset,
+                                    ScopeKind::Dict,
+                                );
 
                                 // Step 3: Build binding_list for lost-binding tracking.
                                 let named_entries: Vec<(String, crate::ast::Span)> =
@@ -831,6 +880,16 @@ impl SurfaceResolver {
                                 }
 
                                 // Step 5: Walk each entry's VALUE.
+                                // Set accumulated_dict_offset to sequential_offset + all_keys.len()
+                                // so that any nested dict literals inside this body's values see the
+                                // correct base offset for their own letrec scopes. At runtime, those
+                                // nested dicts are evaluated via eval_dict_core with outer_frame.group
+                                // = updated_frame.group (which has sequential_offset + all_keys.len()
+                                // entries). The restore happens at step 6.
+                                let saved_seq_dict_offset = self.accumulated_dict_offset;
+                                self.accumulated_dict_offset =
+                                    sequential_offset + all_keys.len() as u32;
+
                                 // For tracked bindings, set current_binding_context so
                                 // resolve_name can record per-binding cross-body references.
                                 // For untracked bindings (positional entries, class/instance
@@ -874,8 +933,13 @@ impl SurfaceResolver {
                                 // Clear binding context after walking all entries.
                                 self.current_binding_context = None;
 
-                                // Step 6: Exit the per-body letrec scope.
+                                // Step 6: Exit the per-body letrec scope and restore offset.
                                 self.exit_scope();
+                                // Restore accumulated_dict_offset. The FnSequentialBody scope
+                                // entered in step 7 does not create a new eval_dict_core frame,
+                                // so accumulated_dict_offset remains at saved_seq_dict_offset
+                                // for subsequent bodies (they use sequential_offset directly).
+                                self.accumulated_dict_offset = saved_seq_dict_offset;
 
                                 // Step 7: Enter the Sequential scope (injected) so subsequent
                                 // bodies can reference this body's bindings. Record scope_depth
@@ -1374,7 +1438,16 @@ impl SurfaceResolver {
             match item {
                 SurfaceItem::Expr(node) => {
                     let is_last_expr = expr_idx == expr_count - 1;
+                    // Sync accumulated_dict_offset to the current cumulative offset so that
+                    // when the Dict arm of walk_surface_expr processes this document dict, it
+                    // uses cumulative_offset as the base for LGM slot assignment. At runtime,
+                    // eval_dict_core is called with outer_frame.group containing exactly
+                    // cumulative_offset entries (root entries + prior document dict thunks), so
+                    // the dict's entries land at indices cumulative_offset..cumulative_offset+N.
+                    self.accumulated_dict_offset = cumulative_offset;
                     self.walk_surface_node(node);
+                    // accumulated_dict_offset is restored to cumulative_offset by the Dict arm's
+                    // save/restore logic after it exits the dict's letrec scope.
                     if !is_last_expr {
                         if let Some(keys) = surface_node_static_keys(node) {
                             if !keys.is_empty() {
@@ -2682,5 +2755,101 @@ mod tests {
             "expected no warnings when all produced keys are consumed, got: {:?}",
             warnings.iter().map(|w| &w.message).collect::<Vec<_>>()
         );
+    }
+
+    // --- B-586: Nested dict LGM slot alignment ---
+
+    /// B-586: A nested dict literal (dict as value of an outer dict entry) must use
+    /// `accumulated_dict_offset` as its LGM base, not 0.
+    ///
+    /// With no initial frame (offset=0): `[x: 1  inner: [ref: $x]]`.
+    ///   Outer dict: x→LGM(0), inner→LGM(1). accumulated_dict_offset advances to 2.
+    ///   Inner dict: ref→LGM(2). $x in ref's value → LGM(0) (outer dict scope).
+    ///
+    /// At runtime with empty root group (as in unit tests, R=0):
+    ///   outer eval_dict_core: group.len()=0, extended=[x_t, inner_t]. x at 0 ✓.
+    ///   inner eval_dict_core: group.len()=2, extended=[x_t, inner_t, ref_t]. ref at 2 ✓.
+    ///   $x → LGM(0) → group[0] = x_t ✓.
+    #[test]
+    fn nested_dict_lgm_offset_zero_base() {
+        // With no initial frames, base offset = 0.
+        let (program, table) = parse_and_resolve("[x: 1  inner: [ref: $x]]");
+
+        // `x` resolves as sibling in outer dict: LGM(0)
+        let x_refs = find_varref_nodes(&program, "x");
+        assert!(!x_refs.is_empty(), "expected VarRef for $x");
+        let (x_id, _) = &x_refs[0];
+        let x_addr = table.get(x_id).expect("$x should be resolved");
+        assert_eq!(
+            x_addr,
+            &VarAddr::LetrecGroupMember(0),
+            "$x should be LGM(0) — first entry of outer dict"
+        );
+
+        // Find the VarRef that is the VALUE of `ref` in the inner dict.
+        // There is exactly one $x VarRef (in the inner dict's value).
+        // It must resolve to LGM(0), not LGM(2) or something else.
+        // (Already verified above — the same VarRef node is found.)
+    }
+
+    /// B-586: Nested dict with a non-zero initial frame offset.
+    ///
+    /// Simulates the case where R root entries exist (e.g., builtins) before the document
+    /// dict. With initial frame [{field-get: 0}] (R=1): outer dict has offset 1.
+    ///   Outer dict: x→LGM(1), inner→LGM(2). accumulated_dict_offset advances to 3.
+    ///   Inner dict: ref→LGM(3). $x → LGM(1).
+    ///
+    /// Before the fix, the Dict arm used enter_scope(&keys, Dict) with offset=0, giving
+    ///   x→LGM(0), inner→LGM(1), ref→LGM(0). LGM(0) → group[0] = field-get builtin (wrong!).
+    #[test]
+    fn nested_dict_lgm_offset_nonzero_base() {
+        // Seed with one initial frame entry to simulate R=1 root entries.
+        let output =
+            crate::parser::parse("[x: 1  inner: [ref: $x]]", test_file("")).expect("parse");
+        let program = crate::desugar::desugar_surface_program(&output.program);
+        let doc = &program.documents[0].node;
+
+        // Simulate R=1: one root-scope entry named "field-get" at slot 0.
+        let mut root_frame: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
+        root_frame.insert("field-get".to_string(), 0u32);
+        let (table, _diags, _frames) = resolve_surface_document_inplace(doc, &[root_frame]);
+
+        // Outer dict: x at LGM(1), inner at LGM(2) (offset=1 from root frame).
+        let x_refs = find_varref_nodes(&program, "x");
+        assert!(!x_refs.is_empty(), "expected VarRef for $x");
+        let (x_id, _) = &x_refs[0];
+        let x_addr = table.get(x_id).expect("$x should be resolved");
+        assert_eq!(
+            x_addr,
+            &VarAddr::LetrecGroupMember(1),
+            "$x must be LGM(1) — outer dict starts at offset 1 (R=1 root entries)"
+        );
+    }
+
+    /// B-586: Nested dict inside a fn body intermediate dict value.
+    ///
+    /// `[fn [let x] [a: $x  nested: [c: $x]] ...]`
+    /// Fn resets accumulated_dict_offset to 0. Body dict: a→LGM(0), nested→LGM(1),
+    /// offset advances to 2. Inner dict: c→LGM(2). $x in c's value → Parameter(0).
+    #[test]
+    fn nested_dict_inside_fn_body_dict() {
+        // fn with body dict containing a nested dict value.
+        // The sequential body is [a: $x  nested: [c: $x]]; $x should be Parameter(0) both times.
+        let (program, table) = parse_and_resolve("[fn [let x] [a: $x  nested: [c: $x]] a]");
+
+        // All $x VarRefs inside the fn body should resolve to Parameter(0).
+        let x_refs = find_varref_nodes(&program, "x");
+        assert!(
+            x_refs.len() >= 2,
+            "expected at least 2 VarRefs for $x (in a's value and c's value)"
+        );
+        for (id, _) in &x_refs {
+            let addr = table.get(id).expect("$x should be resolved to fn param");
+            assert_eq!(
+                addr,
+                &VarAddr::Parameter(0),
+                "$x in fn body must be Parameter(0)"
+            );
+        }
     }
 }

@@ -1,0 +1,12 @@
+# B-586: Nested dict LGM slot alignment in fn body Sequential intermediate dicts.
+# A nested dict literal inside an fn body intermediate dict's value must use
+# sequential_offset as the base, not 0.
+[
+  make-pair: [fn [let a b]
+    [data: [first: a  second: b  nested: [sum: [+ a b]]]]
+    data]
+  result: [make-pair 3 7]
+]
+[result.first  result.second  result.nested.sum]
+=== out
+[0: 3  1: 7  2: 10]

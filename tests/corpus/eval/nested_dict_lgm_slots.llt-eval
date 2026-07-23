@@ -1,0 +1,12 @@
+# B-586: Nested dict LGM slot alignment.
+# Before the fix, the resolver used enter_scope(&keys, Dict) with offset=0 for
+# nested dict literals. At runtime, eval_dict_core builds extended_group =
+# outer_frame.group ++ letrec_slots, placing entries at outer_frame.group.len()+i.
+# With offset=0, LGM(0) resolved to the first builtin (field-get), not the entry.
+#
+# Case 1: Nested dict in a document-level dict value, referencing outer sibling.
+[x: 10
+ inner: [ref: x  doubled: [* x 2]]]
+[inner.ref  inner.doubled]
+=== out
+[0: 10  1: 20]

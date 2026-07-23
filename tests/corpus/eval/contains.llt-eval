@@ -1,0 +1,7 @@
+# contains? dispatch: dict true/false membership and seq true membership.
+# B-578: [if [seq? xs] [contains-seq? xs val] [any? [fn [let e] [= e val]] xs]]
+[[contains? "b" [a: 1  b: 2  c: 3]]   # Boolean.True  (dict, present)
+ [contains? "missing" [a: 1  b: 2  c: 3]]  # Boolean.False (dict, absent)
+ [contains? 2 [each [1 2 3]]]]             # Boolean.True  (seq, present)
+=== out
+[0: Boolean.True  1: Boolean.False  2: Boolean.True]

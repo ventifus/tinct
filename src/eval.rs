@@ -5094,8 +5094,9 @@ mod tests {
         let test_file: Arc<str> = Arc::from(file!());
         let parsed = crate::parse(source, Arc::clone(&test_file)).expect("parse should succeed");
         let surface_program = crate::desugar::desugar_program_full(&parsed.program);
-        // Resolve without env: dict siblings ($a, $b, $c) are resolved by scope tracking.
-        let (_table, _frames) = crate::resolve::resolve_surface_program(&surface_program, &[]);
+        // Resolve with the full root frame so dict sibling LGM slots match the runtime.
+        let root_frame = ctx.root_group_resolver_map();
+        let (_table, _frames) = crate::resolve::resolve_surface_program(&surface_program, &[root_frame]);
         let _ = env;
         let thunk = super::eval_surface_file(&surface_program, &ctx)
             .await
