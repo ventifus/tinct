@@ -60,7 +60,7 @@ pub(crate) mod value;
 pub(crate) mod imports;
 // Rust-native builtin functions (stdlib-1 sprint).
 pub(crate) mod builtins;
-// Dict/access builtins: keys, length, merge, append, get, each, each-key, each-kv.
+// Dict/access builtins: keys, length, append, get, each, each-key, each-kv.
 pub(crate) mod builtins_dict;
 // I/O builtins: open, builtin-read-line, builtin-read-chunk, write, connect, emit, env.
 pub(crate) mod builtins_io;
@@ -429,7 +429,7 @@ pub async fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
 // --- Value Serializer Visitor Pattern ---
 //
 // `visit_value` and `value_to_display_string` share the same structural traversal
-// (depth guard, Overlay flattening, Dict/Seq entry materialization) but diverge at
+// (depth guard, Dict/Seq entry materialization) but diverge at
 // leaf rendering. A `ValueVisitor` trait captures the shared traversal in `visit_value`
 // while each visitor impl handles the format-specific leaf rendering.
 
@@ -437,7 +437,7 @@ pub async fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
 ///
 /// Implement this trait to produce a format-specific output from a `Value`.
 /// The shared `visit_value` function handles structural traversal (depth limit,
-/// Overlay flattening, Dict/Seq entry materialization); visitor methods handle
+/// Dict/Seq entry materialization); visitor methods handle
 /// leaf rendering and container assembly.
 ///
 /// Dict entries are pre-converted to `Self::Output` before `visit_dict` is called,
@@ -493,7 +493,7 @@ type VisitValueFuture<'a, Output> = std::pin::Pin<
 
 /// Shared structural traversal for materialised `Value` trees.
 ///
-/// Handles depth limiting, `Overlay` flattening, and `Dict`/`Seq` entry
+/// Handles depth limiting and `Dict`/`Seq` entry
 /// materialisation. Leaf rendering is delegated to the provided [`ValueVisitor`].
 ///
 /// # Panics
@@ -549,12 +549,6 @@ pub fn visit_value<'a, V: ValueVisitor + 'a>(
                     ));
                 }
                 Ok(visitor.visit_dict(entries))
-            }
-            value::Value::Overlay(l, r) => {
-                // Flatten overlay to a concrete dict, then visit it.
-                let map = builtins::flatten_overlay(l, r, "value serialization", ctx, span.clone())
-                    .await?;
-                visit_value(&value::Value::Dict(map), ctx, depth, visitor, span).await
             }
             value::Value::Function { params, .. } => visitor.visit_function(params, span),
             value::Value::Builtin(def) => visitor.visit_builtin(def.name, span),

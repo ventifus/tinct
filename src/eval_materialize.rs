@@ -12,7 +12,6 @@ use std::sync::{Arc, Mutex, RwLock};
 use indexmap::IndexMap;
 
 use crate::ast::{Annotation, CoreExpr, Span, Spanned};
-use crate::builtins::flatten_overlay;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{
     as_record_row_merged, format_expected_label, format_field_path, format_got_label,
@@ -228,7 +227,7 @@ pub(crate) struct GuardedValidateData {
     pub(crate) origin: Option<Arc<str>>,
     pub(crate) thunk_span: Span,
     pub(crate) mat_span: Option<Span>,
-    /// EvalContext for flattening Value::Overlay results and allocating guard-wrapped field thunks.
+    /// EvalContext for allocating guard-wrapped field thunks.
     /// Always populated from force_step's ctx parameter (all thunks share one EvalContext).
     pub(crate) ctx: Arc<EvalContext>,
     pub(crate) blame_label: Option<crate::error::BlameLabel>,
@@ -907,9 +906,8 @@ async fn dispatch_state(
             let inner_thunk = inner;
             let inner_span = inner_thunk.span.clone();
             // Always use the outer force_step ctx for GuardedValidate. All thunks in a single
-            // evaluation share one EvalContext. The ctx is needed for:
-            //   1. Flattening Value::Overlay results (flatten_overlay requires ctx)
-            //   2. Allocating guard-wrapped field thunks (ctx.alloc_thunk in validate_and_wrap_record)
+            // evaluation share one EvalContext. The ctx is needed for
+            // allocating guard-wrapped field thunks (ctx.alloc_thunk in validate_and_wrap_record).
             let guard_ctx: Arc<EvalContext> = Arc::clone(ctx);
             stack.push(Cont::GuardedValidate(Box::new(GuardedValidateData {
                 thunk: Arc::clone(thunk),
@@ -1651,30 +1649,6 @@ pub(crate) async fn apply_cont(
 
             match result {
                 Ok(value) => {
-                    // Flatten Overlay to Dict before record validation.
-                    // Value::Overlay is produced by $merge; guard wrapping it needs flattened entries.
-                    // guard_ctx is Arc<EvalContext> (non-optional); destructured directly from the continuation.
-                    let value = match value {
-                        Value::Overlay(l, r) => {
-                            match flatten_overlay(
-                                &l,
-                                &r,
-                                "type guard",
-                                &guard_ctx,
-                                guard_span.clone(),
-                            )
-                            .await
-                            {
-                                Ok(map) => Value::Dict(map),
-                                Err(e) => {
-                                    let e = decorate(e);
-                                    thunk.settle(Err(Arc::new((*e).clone())));
-                                    return Action::Continue(Err(e));
-                                }
-                            }
-                        }
-                        other => other,
-                    };
                     // For Record types and Intersection-of-Records, apply proxy contract wrapping.
                     // as_record_row_merged handles both forms by merging fields into a single Row.
                     if let Some(row) = as_record_row_merged(&expected) {
@@ -2029,24 +2003,6 @@ pub(crate) async fn apply_cont(
                     // For Record types and Intersection-of-Records, apply proxy contract wrapping.
                     // as_record_row_merged merges all required fields from all members into a Row.
                     if let Some(row) = as_record_row_merged(&expected) {
-                        // Flatten Overlay to Dict before record type assertion.
-                        let value = match value {
-                            Value::Overlay(l, r) => {
-                                match flatten_overlay(
-                                    &l,
-                                    &r,
-                                    "type assert",
-                                    &ctx,
-                                    expr_span.clone(),
-                                )
-                                .await
-                                {
-                                    Ok(map) => Value::Dict(map),
-                                    Err(e) => return Action::Continue(Err(e)),
-                                }
-                            }
-                            other => other,
-                        };
                         if let Value::Dict(entries) = &value {
                             let default_opt = if let Some(node) =
                                 annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
@@ -2284,21 +2240,8 @@ pub(crate) async fn apply_cont(
                     };
 
                     if let Some(ref static_key_set) = static_keys {
-                        // Flatten Overlay to Dict for scope chain binding
                         let _map = match intermediate_value {
                             Value::Dict(map) => map,
-                            Value::Overlay(l, r) => match crate::builtins::flatten_overlay(
-                                &l,
-                                &r,
-                                "sequential expression",
-                                &ctx,
-                                current_expr.span.clone(),
-                            )
-                            .await
-                            {
-                                Ok(map) => map,
-                                Err(e) => return Action::Continue(Err(e)),
-                            },
                             Value::Variant {
                                 payload: Some(payload_thunk),
                                 ..
@@ -2325,7 +2268,7 @@ pub(crate) async fn apply_cont(
                                 return Action::Continue(Err(Box::new(
                                     EvalError::type_mismatch_ctx(
                                         format!("sequential expression #{}", idx + 1),
-                                        "Dict, Overlay, or Variant",
+                                        "Dict or Variant",
                                         intermediate_value.type_name(),
                                         current_expr.span.clone(),
                                     ),
@@ -4420,11 +4363,9 @@ mod cek_lifecycle_tests {
 /// are pre-materialized before processing (e.g., `dict_to_surface_node` expects
 /// all values reachable via `try_get_value`).
 ///
-/// Handles four container types:
+/// Handles two container types:
 /// - `Value::Dict` — materializes all entry thunks and recurses into each value
 /// - `Value::Variant` — materializes the payload thunk and recurses into it
-/// - `Value::Variant` (nominal types including Seq) — handled by the Variant arm above
-/// - `Value::Overlay` — flattens and recurses (same as Dict path after flatten)
 ///
 /// All other value types (Int, String, Float, Bool, Function, Channel, ReactiveCell,
 /// BroadcastChannel, OneshotSender, OneshotReceiver, etc.) are returned as-is
@@ -4491,14 +4432,6 @@ fn force_dict_tree_impl<'a>(
                 } else {
                     Ok(val.clone())
                 }
-            }
-            // Nominal variants (including Seq) handled by the Variant arm above.
-            Value::Overlay(left, right) => {
-                // Flatten the overlay to a dict, then recurse on the result
-                let flattened_map =
-                    flatten_overlay(left, right, "force_dict_tree", ctx, rust_span!()).await?;
-                let dict_val = Value::Dict(flattened_map);
-                force_dict_tree_impl(&dict_val, ctx, visited).await
             }
             // Primitives and other types are already fully materialized.
             // Includes: Int, Float, Bool, String, Function, Builtin, DirCap, NetCap,

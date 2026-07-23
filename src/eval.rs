@@ -121,21 +121,10 @@ pub(crate) async fn eval_document_exprs_with_env(
         // at the next cumulative slot indices. String keys are added in insertion order
         // (matching the resolver's cumulative offset assignment in walk_surface_document_with_offset).
         //
-        // B-592: Handle Overlay (from $merge) by flattening to Dict before extending.
-        // Reject non-Dict/non-Overlay intermediate values with a clear error rather than
+        // Reject non-Dict intermediate values with a clear error rather than
         // silently dropping them (which would misalign subsequent LGM slot references).
         let dict_map = match val {
             Value::Dict(ref dict_map) => dict_map.clone(),
-            Value::Overlay(ref l, ref r) => {
-                crate::builtins::flatten_overlay(
-                    l,
-                    r,
-                    "document expression",
-                    ctx,
-                    node_span.clone(),
-                )
-                .await?
-            }
             other => {
                 return Err(Box::new(crate::error::EvalError::type_mismatch_ctx(
                     "document expression".to_string(),
@@ -215,20 +204,10 @@ pub(crate) async fn eval_core_document_exprs(
         let entry_span = spanned_core.span.clone();
         let val = materialize(&thunk, Some(&entry_span), ctx).await?;
 
-        // B-592: Extend accumulated_group with string-keyed thunks from this dict.
-        // Handle Overlay by flattening; reject non-Dict/non-Overlay values.
+        // Extend accumulated_group with string-keyed thunks from this dict.
+        // Reject non-Dict values.
         let dict_map = match val {
             Value::Dict(ref dict_map) => dict_map.clone(),
-            Value::Overlay(ref l, ref r) => {
-                crate::builtins::flatten_overlay(
-                    l,
-                    r,
-                    "document expression",
-                    ctx,
-                    entry_span.clone(),
-                )
-                .await?
-            }
             other => {
                 return Err(Box::new(crate::error::EvalError::type_mismatch_ctx(
                     "document expression".to_string(),
@@ -1026,13 +1005,6 @@ pub fn ground_type_of(v: &Value) -> Type {
         Value::String { .. } => Type::Str,
         Value::Bytes { .. } => Type::Bytes,
         Value::Dict(map) => Type::Dict(extract_row(map)),
-        // Overlay is a lazy right-biased merge: key set cannot be read without forcing.
-        // Return a closed empty record — required-field checks correctly fail,
-        // consistent with Overlay field validation being static-only.
-        Value::Overlay(..) => Type::Dict(Row {
-            fields: indexmap::IndexMap::new(),
-            tail: crate::type_def::RowTail::Empty,
-        }),
         // Populate fixed params, typed variadics, and rest from CoreParam.resolved_type.
         // Classification mirrors bind_args_thunks BIND-SPLIT:
         //   - variadic + concrete resolved_type (not None/Unknown) → typed_variadics bucket
@@ -1990,26 +1962,6 @@ pub(crate) fn match_pattern<'a>(
                         }
 
                         Ok(Some(result_env))
-                    }
-                    Value::Overlay(l_id, r_id) => {
-                        // Flatten overlay and retry
-                        let flat_map = crate::builtins::flatten_overlay(
-                            l_id,
-                            r_id,
-                            "dict pattern match",
-                            ctx,
-                            value_span.clone(),
-                        )
-                        .await?;
-                        match_pattern(
-                            pattern,
-                            &Value::Dict(flat_map),
-                            env,
-                            value_span,
-                            env_id,
-                            ctx,
-                        )
-                        .await
                     }
                     Value::Variant {
                         payload: Some(payload_id),

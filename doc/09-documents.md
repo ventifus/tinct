@@ -287,13 +287,6 @@ Recursive case:
         k = String(s) ⟹ ρᵢ.B[s] ← get_thunk(thunk_id)   (lazy — not materialized at binding time)
         k = Int(_)    ⟹ no binding
 
-    vᵢ = Overlay(l, r)  ⟹                    (Overlay: flatten to Dict, then promote as above)
-      mapᵢ = flatten_overlay(l, r)
-      ρᵢ = ({}, Some(ρᵢ₋₁))
-      ∀(k, thunk_id) ∈ mapᵢ:
-        k = String(s) ⟹ ρᵢ.B[s] ← get_thunk(thunk_id)   (lazy — not materialized at binding time)
-        k = Int(_)    ⟹ no binding
-
     otherwise  ⟹  ρᵢ = ρᵢ₋₁                 (non-dict result: silently skip, no scope extension)
 
   θₙ = eval(eₙ, ρₙ₋₁, d)                     (last expression: lazy, any type)

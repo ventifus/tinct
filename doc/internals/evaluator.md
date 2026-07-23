@@ -588,8 +588,7 @@ The following must **not** force evaluation (laziness invariants):
 | Dict construction | Values in `Value::Dict` are `Arc<Thunk>`s, never materialized |
 | Function argument passing | Args are `Thunk::core_expr` until the callee forces them |
 | `%` at `---` boundaries | Last thunk passed as-is, no materialization |
-| `Value::Seq { head, tail }` | Both `head` and `tail` are `ThunkId`s |
-| `Value::Overlay(l, r)` | Neither side is materialized until the Overlay is flattened |
+| `Value::Seq { head, tail }` | Both `head` and `tail` are `Arc<Thunk>`s |
 | `Value::Function` body | Body is `Arc<Spanned<CoreExpr>>`, forced only on call |
 
 ---

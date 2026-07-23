@@ -1403,39 +1403,6 @@ impl Value {
             }
             Value::Timestamp(nanos) => Ok(format!("[timestamp-nanos {}]", nanos)),
             Value::Duration(nanos) => Ok(format!("[duration-nanos {}]", nanos)),
-            Value::Overlay(left, right) => {
-                // Flatten overlay to Dict before serialization.
-                // Right wins on conflicts (overlay semantics: right overlays left).
-
-                // Materialize left side
-                let left_value = left
-                    .try_get_value()
-                    .cloned()
-                    .ok_or("overlay left not materialized")?;
-                let left_dict = match left_value {
-                    Value::Dict(map) => map,
-                    _ => return Err("overlay left is not a Dict".to_string()),
-                };
-
-                // Materialize right side
-                let right_value = right
-                    .try_get_value()
-                    .cloned()
-                    .ok_or("overlay right not materialized")?;
-                let right_dict = match right_value {
-                    Value::Dict(map) => map,
-                    _ => return Err("overlay right is not a Dict".to_string()),
-                };
-
-                // Merge: start with left, then overlay right (right wins)
-                let mut merged = left_dict.clone();
-                for (k, v) in right_dict.iter() {
-                    merged.insert(k.clone(), Arc::clone(v));
-                }
-
-                // Serialize the merged dict
-                fmt_dict(&merged, ctx)
-            }
             // Non-serializable values — no tinct representation exists
             Value::DirCap { .. } => {
                 Err(format!("no tinct representation for {}", self.type_name()))

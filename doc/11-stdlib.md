@@ -609,8 +609,8 @@ Functions primarily used internally by other stdlib functions, but also availabl
 | `dict?` | Rust builtin | Return true if value is a Dict (includes lists, which are dicts with integer keys) |
 | `fn?` | Rust builtin | Return true if value is callable (Function or Builtin) |
 | `seq?` | Rust builtin | Return true if value is a Seq |
-| `record?` | LLT stdlib | Return true if value is a Dict/Overlay; alias for `dict?` (runtime has no key-type tracking) |
-| `map?` | LLT stdlib | Return true if value is a Dict/Overlay; alias for `dict?` (runtime has no key-type tracking) |
+| `record?` | LLT stdlib | Return true if value is a Dict; alias for `dict?` (runtime has no key-type tracking) |
+| `map?` | LLT stdlib | Return true if value is a Dict; alias for `dict?` (runtime has no key-type tracking) |
 | `list?` | LLT stdlib | Return true if value is a Dict whose keys are all integers (i.e., a list-shaped dict) |
 | `variant?` | LLT stdlib | Return true if value is a Variant |
 | `payload-of` | LLT stdlib | Extract the payload dict from a Variant value; returns `[]` for unit variants |
@@ -1197,9 +1197,9 @@ The divergence is intentional: `Value::PartialEq` uses Rust's native dispatch (n
 
 ## Merge — Formal Specification
 
-This section formalizes `merge`, the only builtin that allows key collision. The specification defines operational semantics (right-biased merge with insertion-order preservation), algebraic properties, interaction with record typing (closed records and row variables), and the lazy overlay compatibility invariant.
+This section formalizes `merge`, the only function that allows key collision. The specification defines operational semantics (right-biased merge with insertion-order preservation), algebraic properties, and interaction with record typing (closed records and row variables).
 
-`merge` is the composition primitive: it underlies shared base config (`[merge base overrides]`), `set` (single-key overlay), `from-entries` (construction from pairs), and `map` on dicts (per-entry rebuild). Its semantics propagate through these dependents.
+`merge` is the composition primitive: it underlies shared base config (`[merge base overrides]`), `set` (single-key update), `from-entries` (construction from pairs), and `map` on dicts (per-entry rebuild). Its semantics propagate through these dependents.
 
 ### Part 1: Notation
 
@@ -1247,7 +1247,7 @@ order(D) = order_L(L, R) ++ new(R, L)  where
 
 Left keys retain their positions. Right keys that collide replace the value at the left key's position. Right keys that are new are appended in their original order.
 
-**Strictness:** `S × S → D` (§Selective Materialization). Both operands are materialized eagerly to produce the result dict. Values are `Rc::clone` (thunk pointers copied, not materialized). See Part 5 for the lazy overlay design.
+**Strictness:** `S × S → D` (§Selective Materialization). Both operands are materialized eagerly to produce the result dict. Values are `Arc::clone` (thunk pointers copied, not materialized).
 
 When both operands are list-dicts (integer keys `0..n`), `merge` performs positional override, not concatenation: `merge([a b c], [x y])` produces `{0:x, 1:y, 2:c}`. Use `concat` for list concatenation.
 
@@ -1328,52 +1328,24 @@ Iteration-order proof: In `L ⊕ R`, the result order is `[keys from L in L's or
 
 **P5 — Non-commutativity:** `L ⊕ R ≠ R ⊕ L` in general. Counterexample: `{x↦1} ⊕ {x↦2} = {x↦2}`, but `{x↦2} ⊕ {x↦1} = {x↦1}`. Right-bias makes merge inherently directional.
 
-**P6 — Idempotence:** `D ⊕ D = D`. Merging a dict with itself produces the same dict (same keys, same thunks — `Rc::clone` of the same allocation).
+**P6 — Idempotence:** `D ⊕ D = D`. Merging a dict with itself produces the same dict (same keys, same thunks — `Arc::clone` of the same allocation).
 
 **P7 — Monoid structure:** `(Dict, ⊕, ∅)` forms a monoid over ordered maps: ⊕ is associative on both content and iteration order (P4) with identity element ∅ (P2, P3). It is not a commutative monoid (P5). This justifies n-ary merge as a left fold: `merge*(D₁, ..., Dₙ) = (...((D₁ ⊕ D₂) ⊕ D₃)... ⊕ Dₙ)`, where later operands take priority. By P4, any grouping produces the same result.
 
-**P8 — Value preservation:** `merge` never materializes, transforms, or copies values. It copies thunk pointers (`Rc::clone`). After `D = L ⊕ R`, for any key k, `D(k)` is the exact same `Rc<Thunk>` as `R(k)` or `L(k)` — not a new thunk wrapping the old one. This preserves sharing (§Thunk Lifecycle: evaluate-at-most-once).
+**P8 — Value preservation:** `merge` never materializes, transforms, or copies values. It copies thunk pointers (`Arc::clone`). After `D = L ⊕ R`, for any key k, `D(k)` is the exact same `Arc<Thunk>` as `R(k)` or `L(k)` — not a new thunk wrapping the old one. This preserves sharing (§Thunk Lifecycle: evaluate-at-most-once).
 
-### Part 5: Lazy Overlay Compatibility
-
-The `merge` implementation eagerly materializes both operands. The lazy overlay design defers the merge operation itself:
-
-```text
-Overlay(L, R) — O(1) construction
-  access(k): if k ∈ K(R) then R(k) else L(k) — O(1) per key
-  iterate:   flatten to concrete IndexMap — O(|L| + |R|)
-```
-
-The lazy overlay must satisfy **behavioral equivalence**: for any program P, replacing the eager `L ⊕ R` with `Overlay(L, R)` produces the same observable results (modulo documented error timing differences). Specifically:
-
-1. **Same values:** `Overlay(L, R)(k) = (L ⊕ R)(k)` for all `k ∈ dom(L) ∪ dom(R)`
-2. **Same iteration order:** When flattened, `iterate(Overlay(L, R))` produces keys in the same order as `L ⊕ R`
-3. **Same sharing:** Overlay access must preserve the `Rc::clone` contract from P8 — `Overlay(L, R)(k)` returns `Rc::clone` of `R(k)` or `L(k)`, the same `Rc<Thunk>` that eager merge would produce. This is pointer-level identity (`Rc::ptr_eq`), not just logical equivalence.
-
-The overlay introduces two observable differences, both intentional:
-
-**Error timing:** With the lazy overlay, materialization of both L and R is deferred until access or iteration. A dict that would fail materialization (e.g., contains a cycle) fails at access time rather than at merge time. This is an intentional behavior of the overlay design — see §Laziness Design.
-
-**Error ordering:** When both operands contain errors, eager merge reports L's error first (L is materialized before R at `builtins.rs:446-447`). Overlay reports whichever operand's error is triggered first by access patterns. Programs should not depend on which operand's error is reported when both are broken.
-
-**Chained overlays:** `Overlay(Overlay(A, B), C)` has O(k) access per key for k chained merges. Flattening on iteration prevents unbounded chain depth during traversal. Overlay chain traversal is structural (key lookup, not thunk materialization) and does not consume depth budget from `MAX_EVAL_DEPTH` — it is analogous to `$get` on a nested scope chain, not to recursive materialization.
-
-### Part 6: Implementation Correspondence
+### Part 5: Implementation Correspondence
 
 | Spec element | Implementation |
 |-------------|----------------|
-| MERGE rule | `builtin_merge` (`builtins.rs:425-454`) |
-| `materialize(θ_L, _, d)` | `materialize(&args[0], None, depth)` (line 437) |
-| `materialize(θ_R, _, d)` | `materialize(&args[1], None, depth)` (line 438) |
-| `require_dict` | `require_dict("merge", left_val, call_span)` (lines 439-440) |
-| LEFT-KEEP | First loop: `result.insert(key.clone(), Rc::clone(thunk))` (lines 446-448) |
-| RIGHT-BIAS | Second loop: `result.insert(key.clone(), Rc::clone(thunk))` (lines 450-452) |
-| Iteration order | IndexMap preserves insertion order; `insert` on existing key replaces value at existing position |
-| Value preservation (P8) | `Rc::clone(thunk)` — pointer copy, no materialization |
-| `reject_named` | `reject_named("merge", named, call_span)` (line 433) |
-| Arity check | `args.len() != 2` (line 434) |
+| MERGE rule | `dict-merge` in `stdlib/prelude.llt` (private dict, Dict 1) |
+| LEFT-KEEP | Builder iterates L entries first: `builtin-builder-set` for each L entry |
+| RIGHT-BIAS | Builder iterates R entries second: `builtin-builder-set` overwrites colliding keys |
+| Iteration order | Builder preserves insertion order; `builtin-builder-set` on existing key replaces value at existing position |
+| Value preservation (P8) | Builder stores `Arc::clone` of thunk pointers, no materialization |
+| Construction | `builtin-make-builder` + `builtin-builder-finish` (O(|L| + |R|)) |
 
-### Part 7: Worked Example
+### Part 6: Worked Example
 
 ```tinct
 base:  [timeout: 30  retries: 3  env: "staging"]

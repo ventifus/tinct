@@ -1025,32 +1025,6 @@ Tinct's evaluation model is lazy by default — values remain unevaluated until 
 
 4. ~~Sequential expression scope chain (SEQ-SCOPE) was previously listed as a strictness exception.~~ SEQ-SCOPE now uses lazy semantics: named entry values from intermediate expressions are inserted as thunks, not forced. This is no longer a strictness exception — it is consistent with tinct's lazy-everywhere model. See [Documents & Pipelines](09-documents.md) §Scope Chain Semantics for the updated formal specification.
 
-### Overlay Eagerness
-
-`$merge` constructs a `Value::Overlay(L, R)` in O(1) without materializing either argument — the merge is purely structural at call time. However, `flatten_overlay()` is called eagerly the moment any builtin receives an `Overlay` value (e.g., key lookup, `$keys`, `$map`, `$filter`, pattern matching). At that point the entire Overlay chain is walked synchronously: every L and R thunk is materialized, and all entries are merged into a concrete `IndexMap`. There is no incremental or demand-driven flattening.
-
-**Why flattening is eager.** `IndexMap` requires concrete `Key` values for insertion. There is no lazy map abstraction that can defer key materialization. When a builtin needs to look up a key, iterate entries, or compute the length of a dict, the full key set must be known. Flattening the entire tree at once (rather than level by level) also avoids re-traversing the chain on repeated access.
-
-**Space leak for accumulator patterns.** A pattern that repeatedly merges into an accumulating dict:
-
-```tinct
-[result: [$reduce items [fn [acc item]
-    [$merge acc [item-key item]: [item-val item]]
-] {}]]
-```
-
-builds an O(N)-deep `Overlay(Overlay(... Overlay({}, d₁) ..., dₙ₋₁), dₙ)` chain. Every intermediate dict is kept alive by the chain. Flattening at the end materializes all N intermediate dicts simultaneously, producing a temporary spike in memory proportional to the total size of all intermediate steps, not just the final dict.
-
-**Recommended pattern.** For accumulation, prefer `$collect` applied to a lazy sequence that produces `[key: value]` entries:
-
-```tinct
-[result: [$collect [$map items [fn [item]
-    [item-key item]: [item-val item]
-]]]]
-```
-
-`$collect` materializes the Seq spine and inserts entries into a single dict without building an Overlay chain. Each intermediate dict is allocated once, and no O(N) chain accumulates in memory.
-
 This table documents the laziness behavior of every operation and the rationale for each decision.
 
 | Operation | Behavior | Rationale |
@@ -1063,7 +1037,7 @@ This table documents the laziness behavior of every operation and the rationale 
 | `$when`, `$unless` | Materializes condition; body returned as thunk | Body returned lazy via `$if` |
 | `$cond` | Materializes conditions left-to-right; first matching branch returned as thunk | Delegates to `$if`; no code change needed |
 | **Dict Operations** | | |
-| `$merge` | Eagerly materializes both dicts; values pass through as thunks (Rc::clone) | See §Merge — Lazy Overlay Compatibility in doc/11-stdlib.md for the lazy overlay design |
+| `$merge` | Eagerly materializes both dicts; values pass through as thunks (Arc::clone) | Pure tinct function using builder API; see doc/11-stdlib.md §Merge |
 | `$get`, `$get-or` | Returns value thunk (structural) | Already lazy |
 | `$keys` | Keys always evaluated | Keys are never thunks |
 | `$values` | Returns list of thunks | Already lazy |

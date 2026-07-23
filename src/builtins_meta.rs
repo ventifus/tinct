@@ -1602,7 +1602,7 @@ fn type_name(val: &Value) -> String {
         Value::Float(_) => "Float",
         Value::String { .. } => "String",
         Value::Bytes { .. } => "Bytes",
-        Value::Dict(_) | Value::Overlay(..) => "Dict",
+        Value::Dict(_) => "Dict",
         Value::Function { .. } => "Function",
         Value::Builtin(_) => "Builtin",
         Value::Proxy { .. } => "Proxy",
@@ -3505,23 +3505,6 @@ pub(crate) fn builtin_validate(
         // Schema must be a Dict
         let schema_dict = match schema {
             Value::Dict(ref d) => d.clone(),
-            Value::Overlay(..) => {
-                // Materialize Overlay to Dict before validation
-                let schema_thunk =
-                    ctx.alloc_thunk(0, Arc::new(Thunk::value(schema.clone(), call_span.clone())));
-                let materialized = materialize(&schema_thunk, Some(&call_span), &ctx).await?;
-                match materialized {
-                    Value::Dict(d) => d,
-                    _ => {
-                        return Err(EvalError::type_mismatch(
-                            "Dict (schema)",
-                            &type_name(&materialized),
-                            call_span,
-                        )
-                        .into());
-                    }
-                }
-            }
             _ => {
                 return Err(EvalError::type_mismatch(
                     "Dict (schema)",
@@ -4231,7 +4214,7 @@ pub(crate) fn builtin_check_type(
             "String" | "Str" => matches!(value, Value::String { .. }),
             "Int" => matches!(value, Value::Int(_)),
             "Float" => matches!(value, Value::Float(_)),
-            "Dict" => matches!(value, Value::Dict(_) | Value::Overlay(_, _)),
+            "Dict" => matches!(value, Value::Dict(_)),
             "Null" => matches!(value, Value::Dict(ref d) if d.is_empty()),
             // Seq is not a distinct Value variant — sequences are Dict-like at runtime.
             // Checking "Seq" passes conservatively since a lazy sequence can't be

@@ -1,4 +1,4 @@
-//! Dict/access builtins: keys, length, merge, append, get, each, each-key, each-kv.
+//! Dict/access builtins: keys, length, append, get, each, each-key, each-kv.
 //!
 //! These builtins operate on dictionary (Dict) values, providing primitive
 //! operations for accessing and transforming key-value structures.
@@ -6,7 +6,6 @@
 //! **Dict primitives:**
 //! - `keys`: Extract dict keys as an auto-indexed dict
 //! - `length`: Count dict entries
-//! - `merge`: Lazy overlay of two dicts (O(1), right overrides left)
 //! - `append`: Insert value at next integer key
 //! - `builtin-get`: Primitive dict key lookup (errors on missing key)
 //! - `builtin-has-key?`: Returns Int 1 if key exists, Int 0 if not (O(1), no value force)
@@ -258,22 +257,15 @@ pub(crate) fn builtin_length(
     })
 }
 
-/// `merge`: Takes 2 args (both Dicts). Returns a lazy `Value::Overlay(L, R)` — R
-/// overrides L on key collision. Construction is O(1): neither L nor R is
-/// materialized at merge time. Flattening to an IndexMap is deferred until the
-/// overlay is actually accessed (via `require_dict`, `visit_value`, etc.).
-///
-/// Type validation (both args must be Dicts) is also deferred to flatten time.
-///
-/// `field-get`: Dot-access key lookup — the desugared form of `target.field`.
+/// `field-get`: Dot-access key lookup -- the desugared form of `target.field`.
 ///
 /// Takes 2 args: key (String or Int) and target (Dict, Proxy, Variant, Program, Document).
 /// Returns the value at `key` in `target`, following the same rules as dot-access:
-/// - Dict / Overlay: look up by HashableValue key
+/// - Dict: look up by HashableValue key
 /// - Proxy: invoke the proxy handler with the key string
 /// - Variant: auto-unpack the payload and retry
 /// - Program / Document: field dispatch to well-known field names
-/// - Environment: TYPE ERROR — should have been compiled to `slot-get` by the type checker
+/// - Environment: TYPE ERROR -- should have been compiled to `slot-get` by the type checker
 ///
 /// Registered at ROOT SCOPE SLOT 0 in `core_builtins()`. The lowerer hardcodes this slot.
 pub(crate) fn builtin_field_get(
@@ -324,21 +316,6 @@ async fn field_get_on_value(
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> EvalResult<Arc<Thunk>> {
     let key_str = key.to_string();
-
-    // Flatten Overlay to Dict before key lookup.
-    let target_val = match target_val {
-        Value::Overlay(l, r) => Value::Dict(
-            crate::builtins::flatten_overlay(
-                &l,
-                &r,
-                &format!(".{key_str}"),
-                ctx,
-                call_span.clone(),
-            )
-            .await?,
-        ),
-        other => other,
-    };
 
     match target_val {
         Value::Dict(map) => {
@@ -1098,7 +1075,7 @@ pub(crate) fn builtin_builder_get_or(
 ///
 /// - **Seq input:** Each element should be `[key: K, value: V]` (like what `each-kv` returns).
 ///   Forces the key (to extract it), keeps value lazy. Builds an IndexMap. O(n).
-/// - **Dict input:** Copies all entries into a new flat IndexMap (eliminates Overlay depth). O(n).
+/// - **Dict input:** Copies all entries into a new flat IndexMap. O(n).
 ///
 /// Pre-allocates the IndexMap when size is known.
 ///
@@ -1174,20 +1151,6 @@ pub(crate) fn builtin_build_dict(
                     result.insert(key, Arc::clone(value_thunk));
                 }
                 ok_val(Value::Dict(result), call_span)
-            }
-
-            // Overlay input: flatten to a new IndexMap (eliminates Overlay depth)
-            Value::Overlay(left_id, right_id) => {
-                let map = crate::builtins::require_dict(
-                    "build-dict",
-                    Value::Overlay(left_id, right_id),
-                    thunk0.span.clone(),
-                    &ctx,
-                    call_span.clone(),
-                )
-                .await?;
-                // map is already IndexMap<HashableValue, Arc<Thunk>>; just clone it
-                ok_val(Value::Dict(map), call_span)
             }
 
             other => Err(EvalError::type_mismatch_ctx(
@@ -1872,7 +1835,7 @@ pub(crate) fn builtin_take(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
         reject_named("take", named.as_ref(), call_span.clone())?;
@@ -1905,14 +1868,6 @@ pub(crate) fn builtin_take(
         if n_int <= 0 {
             return ok_val(Value::Dict(IndexMap::new()), call_span);
         }
-
-        // Flatten Overlay to Dict before dispatch.
-        let xs = match xs {
-            Value::Overlay(l, r) => Value::Dict(
-                crate::builtins::flatten_overlay(&l, &r, "take", &ctx, call_span.clone()).await?,
-            ),
-            other => other,
-        };
 
         match xs {
             Value::Dict(ref map) => {
@@ -1948,7 +1903,7 @@ pub(crate) fn builtin_drop(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
         reject_named("drop", named.as_ref(), call_span.clone())?;
@@ -1981,14 +1936,6 @@ pub(crate) fn builtin_drop(
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
-
-        // Flatten Overlay to Dict before dispatch.
-        let xs = match xs {
-            Value::Overlay(l, r) => Value::Dict(
-                crate::builtins::flatten_overlay(&l, &r, "drop", &ctx, call_span.clone()).await?,
-            ),
-            other => other,
-        };
 
         match xs {
             Value::Dict(ref map) => {
@@ -2046,13 +1993,6 @@ pub(crate) fn builtin_concat(
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
         let ys_thunk = thunk1;
-        // Flatten Overlay to Dict before dispatch.
-        let xs = match xs {
-            Value::Overlay(l, r) => Value::Dict(
-                crate::builtins::flatten_overlay(&l, &r, "concat", &ctx, call_span.clone()).await?,
-            ),
-            other => other,
-        };
 
         match xs {
             Value::Dict(ref xs_map) => {
@@ -2062,13 +2002,6 @@ pub(crate) fn builtin_concat(
                 }
 
                 let ys = materialize(&ys_thunk, None, &ctx).await?;
-                let ys = match ys {
-                    Value::Overlay(l, r) => Value::Dict(
-                        crate::builtins::flatten_overlay(&l, &r, "concat", &ctx, call_span.clone())
-                            .await?,
-                    ),
-                    other => other,
-                };
                 match ys {
                     Value::Dict(ref ys_map) => {
                         let mut result: IndexMap<HashableValue, Arc<Thunk>> =

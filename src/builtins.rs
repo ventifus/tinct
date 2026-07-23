@@ -208,117 +208,9 @@ pub(crate) fn check_float_result(val: f64, op: &str, span: Span) -> EvalResult<A
     }
 }
 
-/// Stringify a single materialized value for `str` builtin.
-///
-/// Flatten a `Value::Overlay(L, R)` into an `IndexMap` by materializing both sides.
-///
-/// L entries are inserted first, then R entries overwrite on key collision (R wins).
-/// Both L and R must materialize as `Value::Dict` or `Value::Overlay` (recursively).
-/// Errors if either side materializes to a non-dict value.
-///
-/// **Iterative implementation:** Uses an explicit work stack to unwind deeply nested
-/// `Overlay(Overlay(A, B), C)` chains without consuming Rust call stack depth.
-/// Chains arise from stdlib accumulator patterns (e.g., `$remove`, `$from-entries`,
-/// `$take-while`) that build a dict via repeated `$merge [acc] [entry]` calls.
-/// A chain of depth N no longer overflows the Rust stack.
-///
-/// `name` is the builtin name for error messages. `ctx` is for
-/// materialization. `call_span` is used as the materialization span.
-pub(crate) async fn flatten_overlay(
-    left: &Arc<Thunk>,
-    right: &Arc<Thunk>,
-    name: &str,
-    ctx: &Arc<crate::eval::EvalContext>,
-    call_span: Span,
-) -> EvalResult<IndexMap<HashableValue, Arc<crate::value::Thunk>>> {
-    // Work stack: each entry is a thunk to materialize and add as a layer.
-    // We push L before R so that when we pop, R is processed first (override wins).
-    // But to maintain correct left-to-right override order, we collect layers and reverse.
-    //
-    // Algorithm:
-    //   stack = [(left, false), (right, true)]  -- (thunk, is_override)
-    //   layers = []
-    //   while stack not empty:
-    //     (thunk, is_override) = stack.pop()
-    //     val = materialize(thunk)
-    //     if val is Dict: layers.push((map, is_override))
-    //     if val is Overlay(L, R): push (L, is_override) then (R, is_override)  [R on top → processed before L]
-    //   result = apply layers left-to-right (each layer overwrites previous on collision)
-    //
-    // Stack ordering: push L first (processed later = base), R second (processed sooner = override).
-    // We want final application order: L base first, R override second.
-    // So collect into layers stack: L pushed first, R pushed on top.
-    // When we pop for processing: R is processed first → appended to layers first.
-    // Then reverse layers to get [L_base, ..., R_override] order.
-
-    let mut work_stack: Vec<Arc<crate::value::Thunk>> = Vec::new();
-    // Push in reverse order: left first (processed last = base layer), right second (processed first = override).
-    work_stack.push(Arc::clone(left));
-    work_stack.push(Arc::clone(right));
-
-    // Collect flat layers in processing order (right to left).
-    let mut layers: Vec<IndexMap<HashableValue, Arc<crate::value::Thunk>>> = Vec::new();
-
-    while let Some(thunk) = work_stack.pop() {
-        let val = materialize(&thunk, Some(&call_span), ctx).await?;
-        match val {
-            Value::Dict(map) => {
-                layers.push(map);
-            }
-            Value::Overlay(l, r) => {
-                // Unwind: push L first (base, processed later), R second (override, processed sooner).
-                work_stack.push(l);
-                work_stack.push(r);
-            }
-            Value::Variant { payload, .. } => {
-                // Auto-unpack variant payload. This intentionally diverges from require_dict
-                // which errors on unit variants: flatten_overlay accepts unit variants as
-                // empty dict layers to support the [payload-of [unit-variant]] => [] idiom.
-                match payload {
-                    Some(payload_thunk) => {
-                        // Re-push the payload thunk for processing in the next iteration.
-                        // This handles recursive cases (payload is itself an Overlay).
-                        work_stack.push(payload_thunk);
-                    }
-                    None => {
-                        // Unit variant: contribute an empty dict layer.
-                        layers.push(IndexMap::new());
-                    }
-                }
-            }
-            other => {
-                let span = thunk.span.clone();
-                return Err(EvalError::type_mismatch_ctx(
-                    name.to_string(),
-                    "Dict",
-                    other.type_name(),
-                    span,
-                )
-                .into());
-            }
-        }
-    }
-
-    // layers is in processing order: [rightmost_override, ..., leftmost_base].
-    // Reverse to get [leftmost_base, ..., rightmost_override] for correct application.
-    layers.reverse();
-
-    let total_cap = layers.iter().map(|m| m.len()).sum();
-    let mut result: IndexMap<HashableValue, Arc<crate::value::Thunk>> =
-        IndexMap::with_capacity(total_cap);
-    for map in layers {
-        for (key, thunk) in map {
-            result.insert(key, thunk);
-        }
-    }
-    Ok(result)
-}
-
-/// Helper: require that a materialized value is a Dict (or Overlay), returning the inner IndexMap.
-/// Overlays are flattened on demand by materializing L and R and merging.
+/// Helper: require that a materialized value is a Dict, returning the inner IndexMap.
 ///
 /// `def_span` should be the thunk's span (where the value was defined), not call_span.
-/// `call_span` is used as the materialization site span for errors during flattening.
 pub(crate) async fn require_dict(
     name: &str,
     value: Value,
@@ -328,7 +220,6 @@ pub(crate) async fn require_dict(
 ) -> EvalResult<IndexMap<HashableValue, Arc<crate::value::Thunk>>> {
     match value {
         Value::Dict(map) => Ok(map),
-        Value::Overlay(l, r) => flatten_overlay(&l, &r, name, ctx, call_span).await,
         Value::Variant { payload, .. } => {
             // Auto-unpack variant payload — consistent with DotAccess behavior
             match payload {
@@ -444,7 +335,7 @@ pub(crate) use crate::builtins_math::{
     builtin_tan,
 };
 
-// Dict/access builtins: keys, length, merge, get, each, each-key, each-kv, build-dict.
+// Dict/access builtins: keys, length, get, each, each-key, each-kv, build-dict.
 // Implementations live in builtins_dict.rs; re-exported here so that
 // builtin_module() registration and unit tests (via `use super::*`) still work.
 #[allow(unused_imports)] // used in test modules via `use super::*`

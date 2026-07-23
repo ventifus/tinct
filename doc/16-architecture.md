@@ -586,7 +586,7 @@ S = Seq, I = Id, Sp = Spine
 | `iterate`, `unfold` | [I, I] | Function and seed deferred per-step |
 | `keys` | [Sp] | Dict spine materialized for key enumeration |
 | `length` | [Sp] | Spine materialized for count |
-| `merge` | [I, I] | Constructs Value::Overlay without materializing either arg; pre-materializing would change error-surfacing semantics (detectable via `$try`) |
+| `merge` | [S, S] | Pure tinct function (`dict-merge`): iterates both operands via builder API to produce a flat Dict |
 | `append` | [S, I] | arg[0] (target dict) materialized; arg[1] (value to append) inserted as thunk, preserving laziness |
 | `map`, `filter` | [I, Sp] | fn/pred lazy; collection spine materialized for type dispatch |
 | `take`, `drop` | [S, Sp] | n materialized; collection spine materialized for dispatch |

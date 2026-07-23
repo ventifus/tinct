@@ -719,9 +719,6 @@ pub enum Value {
     },
     /// Proxy object — field access calls the handler function with the field name
     Proxy { handler: std::sync::Arc<Thunk> },
-    /// Lazy overlay: R overrides L (right-biased merge). Flattened to Dict on demand.
-    /// Construction is O(1) — neither L nor R is materialized at merge time.
-    Overlay(std::sync::Arc<Thunk>, std::sync::Arc<Thunk>),
     /// Capability-bound directory handle (object capability model)
     DirCap {
         dir: cap_std::fs::Dir,
@@ -886,9 +883,6 @@ impl Clone for Value {
             Value::Proxy { handler } => Value::Proxy {
                 handler: std::sync::Arc::clone(handler),
             },
-            Value::Overlay(l, r) => {
-                Value::Overlay(std::sync::Arc::clone(l), std::sync::Arc::clone(r))
-            }
             Value::DirCap { dir, perms } => Value::DirCap {
                 // SAFETY: DirCap values are always created from valid OS file descriptors
                 // (main.rs and builtins_io.rs construction sites). try_clone() can fail with
@@ -1052,7 +1046,6 @@ impl Value {
             Value::Builtin(_) => "Builtin",
             Value::Seq { .. } => "Seq",
             Value::Proxy { .. } => "Proxy",
-            Value::Overlay(..) => "Dict",
             Value::DirCap { .. } => "DirCap",
             Value::NetCap(_) => "NetCap",
             Value::File(_) => "File",
@@ -1117,7 +1110,7 @@ impl Value {
             Value::QuicSession(_) => Some("QuicSession"),
             Value::Http2Session { .. } => Some("Http2Session"),
             Value::Http3Session(_) => Some("Http3Session"),
-            // All other values (Int, String, Float, Bool, Dict, Overlay, Seq, Function,
+            // All other values (Int, String, Float, Bool, Dict, Seq, Function,
             // Builtin, Variant, Bytes, Uri, Proxy, Annotated, etc.) are handled through
             // structural type checking or TyConDef constructor matching.
             _ => None,
@@ -1170,7 +1163,6 @@ impl fmt::Debug for Value {
             Value::Builtin(def) => write!(f, "Builtin({})", def.name),
             Value::Seq { .. } => write!(f, "Seq(...)"),
             Value::Proxy { .. } => write!(f, "Proxy"),
-            Value::Overlay(..) => write!(f, "Overlay(...)"),
             Value::DirCap { .. } => write!(f, "DirCap"),
             Value::NetCap(entries) => write!(f, "NetCap({} entries)", entries.len()),
             Value::File(_) => write!(f, "File"),
@@ -1272,7 +1264,6 @@ impl fmt::Display for Value {
             Value::Builtin(def) => write!(f, "<builtin {}>", def.name),
             Value::Seq { .. } => write!(f, "Seq(...)"),
             Value::Proxy { .. } => write!(f, "<proxy>"),
-            Value::Overlay(..) => write!(f, "[<overlay>]"),
             Value::DirCap { .. } => write!(f, "<DirCap>"),
             Value::NetCap(_) => write!(f, "<NetCap>"),
             Value::File(_) => write!(f, "<File>"),
