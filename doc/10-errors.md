@@ -224,7 +224,7 @@ See `src/error.rs` for the full set of `ErrorKind` variants and their constructo
 
 - **`ResourceLimitExceeded` is not catchable:** `try` does not catch `ResourceLimitExceeded` errors — they propagate to the runtime. Resource limit errors should not be suppressible by user code (follows GHC's `StackOverflow` and Racket's `exn:fail:resource` semantics). The `is_catchable()` method returns `false` for this variant, `true` for all others.
 
-- **All errors are cached in Failed thunk state:** When a thunk fails, the error is cached permanently via `OnceCell`. There are no non-cacheable errors — the old recursive evaluator's depth system (which had non-cacheable `DepthExceeded` errors) was replaced by the CEK machine.
+- **All errors are cached in Failed thunk state:** When a thunk fails, the error is cached permanently via `OnceCell`. There are no non-cacheable errors — the CEK machine always calls `settle()` on the result, including for `ResourceLimitExceeded`. (The `reset()` path in `eval_materialize.rs` applies only to `PendingBuiltin` lazy-arg re-dispatch — a normal CEK protocol step, not error recovery.)
 
 ### Part 3: Error Decoration
 

@@ -1420,7 +1420,7 @@ pub enum UnevaluatedState {
         /// Will be removed when T-1777 (EvalFrame migration) is complete.
         caller_env_id: u32,
         ctx: Arc<crate::eval::EvalContext>,
-        /// Original CoreExpr::Call node for DepthExceeded retry path.
+        /// Original CoreExpr::Call node for PendingBuiltin lazy-arg re-dispatch.
         original_call: Arc<Spanned<CoreExpr>>,
     },
     /// Type guard wrapping an inner thunk (was Guarded).

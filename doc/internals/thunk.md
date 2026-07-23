@@ -546,8 +546,6 @@ There is no `MAX_EVAL_DEPTH` counter or depth-exceeded error in the current impl
 
 The only depth-related limit is Rust's default stack size for async tasks. Deeply recursive tinct programs may exhaust the Rust stack if they create deeply nested synchronous call chains in Rust code, but this is an implementation artifact, not a semantic limit.
 
-**If your notes reference `MAX_EVAL_DEPTH` (256) or `DepthExceeded` errors from a non-cacheable depth limit:** these were present in an earlier (non-CEK, recursive) implementation. They no longer exist.
-
 ---
 
 ## Strictness Annotations

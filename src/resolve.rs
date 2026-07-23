@@ -126,6 +126,9 @@ struct SurfaceResolver {
     /// Names from the env-dict (name-set) that were referenced during this document's walk.
     /// Used to compute unreferenced env names returned by resolve_surface_document_with_env_dict.
     referenced_env_names: std::collections::HashSet<String>,
+    /// Depth of the env-dict scope in the scope stack (set by resolve_surface_document_with_env_dict).
+    /// When set, only names resolved at this depth are recorded in referenced_env_names.
+    env_scope_depth: Option<usize>,
     /// T-1743: Index into `self.intermediate_bodies` of the IntermediateBodyInfo for
     /// the body currently being walked, paired with the name of the specific binding
     /// whose value expression is being walked. Set by the Sequential handler before
@@ -178,6 +181,7 @@ impl SurfaceResolver {
             intermediate_bodies: Vec::new(),
             current_body_index: usize::MAX,
             referenced_env_names: std::collections::HashSet::new(),
+            env_scope_depth: None,
             current_binding_context: None,
             fn_scope_boundaries: Vec::new(),
             fn_capture_lists: Vec::new(),
@@ -269,7 +273,9 @@ impl SurfaceResolver {
 
         let (match_depth, addr) = found?;
 
-        self.referenced_env_names.insert(name.to_string());
+        if self.env_scope_depth.map_or(false, |d| match_depth == d) {
+            self.referenced_env_names.insert(name.to_string());
+        }
 
         // Lost-binding detection: mark the binding consumed if it belongs to an
         // intermediate body scope and we are walking a later body or the final expression.
@@ -494,7 +500,9 @@ impl SurfaceResolver {
 
         let (match_depth, addr) = found?;
 
-        self.referenced_env_names.insert(name.to_string());
+        if self.env_scope_depth.map_or(false, |d| match_depth == d) {
+            self.referenced_env_names.insert(name.to_string());
+        }
         // Also track consumption for leading-dot resolved names.
         for info in &mut self.intermediate_bodies {
             if info.scope_depth == match_depth {
@@ -1633,6 +1641,7 @@ pub fn resolve_surface_document_with_env_dict(
     // Env-dict name i gets LGM(root_group_len + i) to match the runtime accumulated_group
     // where env-dict thunks follow root_group entries.
     resolver.enter_scope_with_offset(env_names, root_group_len, ScopeKind::Other);
+    resolver.env_scope_depth = Some(resolver.scopes.len() - 1);
 
     // Walk the document with cumulative offset starting after root_group + env-dict slots.
     // Document dict entries start at LGM(root_group_len + env_names.len()) so they don't
@@ -2477,6 +2486,25 @@ mod tests {
         assert!(
             unreferenced.contains(&"x".to_string()),
             "expected 'x' in unreferenced, got: {:?}",
+            unreferenced
+        );
+    }
+
+    /// B-604: Shadowed env names must not be falsely marked as referenced.
+    #[test]
+    fn unreferenced_shadowed_env_name_not_falsely_marked() {
+        // Document declares local "x" that shadows env-dict "x".
+        // The local x is used, but the env-dict x is NOT — it should be unreferenced.
+        let env_names = vec!["x".to_string(), "%".to_string()];
+        let unreferenced = resolve_with_env_dict("[x: 42  result: $x]", &env_names);
+        assert!(
+            unreferenced.contains(&"x".to_string()),
+            "env-dict 'x' must be unreferenced when shadowed by local: {:?}",
+            unreferenced
+        );
+        assert!(
+            unreferenced.contains(&"%".to_string()),
+            "% must be unreferenced (never used): {:?}",
             unreferenced
         );
     }

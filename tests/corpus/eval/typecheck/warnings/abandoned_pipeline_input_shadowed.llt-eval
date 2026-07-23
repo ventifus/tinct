@@ -1,0 +1,12 @@
+# B-604: Two-document pipeline where stage 2 shadows the pipeline input % locally.
+# Stage 1 produces a value; stage 2 declares a local binding named % that shadows
+# the env-dict %, meaning the pipeline input is never actually used.
+# Expected: abandoned-input warning fires despite the shadowing local binding.
+42
+---
+[%: 99  result: %]
+=== out
+Int(99)
+
+=== warn
+does not reference pipeline input

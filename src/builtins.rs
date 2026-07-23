@@ -146,7 +146,7 @@ pub(crate) fn ok_val(v: Value, span: Span) -> EvalResult<Arc<Thunk>> {
 /// Helper: create a synthetic CoreExpr::Call for builtin-generated calls.
 ///
 /// Used when builtins construct PendingCall thunks (e.g., map, filter, until).
-/// The CoreExpr is needed for DepthExceeded restore but won't be re-evaluated.
+/// The CoreExpr is needed for PendingBuiltin re-dispatch but won't be re-evaluated.
 pub(crate) fn synthetic_call_expr(span: Span) -> Arc<Spanned<CoreExpr>> {
     Arc::new(Spanned {
         node: CoreExpr::Call {

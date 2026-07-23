@@ -258,17 +258,17 @@ pub async fn eval_surface_file(
     eval_surface_file_from_env(program, ctx, None).await
 }
 
-/// Evaluate a SurfaceProgram with an optional initial `%` value injected into the environment.
+/// Evaluate a SurfaceProgram with an optional initial value injected into the environment.
 ///
 /// See `eval_surface_file` for preconditions. When `initial_input` is `Some(thunk)`,
 /// that thunk is injected into `accumulated_group` at slot `root_group.len()` — the slot
-/// assigned to `%` by the resolver when seeded via `eval_surface_file_with_input_frame`.
+/// assigned to the caller's variable name by the resolver (e.g., `input-ast` for the formatter).
 ///
-/// The caller is responsible for ensuring the resolver was seeded with `%` at that slot
-/// (i.e., the program was resolved via `resolve_surface_program` with a seed frame that
-/// maps `"%"` to `ctx.root_group.len()`).
+/// The caller is responsible for ensuring the resolver was seeded with the correct variable
+/// name at that slot (i.e., the program was resolved via `resolve_surface_program` with a
+/// seed frame that maps the variable name to `ctx.root_group.len()`).
 ///
-/// Used by the formatter (which passes the AST dict as `%` and seeds the resolver accordingly).
+/// Used by the formatter (which passes the AST dict as `input-ast` and seeds the resolver accordingly).
 pub async fn eval_surface_file_with_input(
     program: &SurfaceProgram,
     ctx: &Arc<EvalContext>,

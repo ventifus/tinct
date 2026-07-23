@@ -319,14 +319,14 @@ The runtime distinguishes five `UnevaluatedState` variants internally: `AstField
 
 ### Part 1: State Transition Graph
 
-The valid state transitions form an almost-acyclic directed graph — nearly all transitions move strictly forward, with one backward edge exception: `InProgress → {any UnevaluatedState variant}`, which restores state when a non-cacheable error (typically `ResourceLimitExceeded`) occurs and the thunk must be retried (see Exception below).
+The valid state transitions form an almost-acyclic directed graph — nearly all transitions move strictly forward, with one backward edge exception: `InProgress → {any UnevaluatedState variant}`, which occurs during `PendingBuiltin` lazy-arg re-dispatch (the normal CEK protocol for builtins that need a forced argument before they can proceed).
 
 ```text
 UnevaluatedState present ──→ InProgress (try_claim) ──┬──→ Materialized (settle Ok)
                                                        └──→ Failed (settle Err) ⟲
 ```
 
-`try_claim()` atomically takes the `Option<UnevaluatedState>` from the `Mutex`, transitioning to InProgress. `settle()` writes the terminal result to the `OnceCell`. `reset()` restores state for non-cacheable error retry.
+`try_claim()` atomically takes the `Option<UnevaluatedState>` from the `Mutex`, transitioning to InProgress. `settle()` writes the terminal result to the `OnceCell`. `reset()` restores state for `PendingBuiltin` lazy-arg re-dispatch: when a builtin needs a strict argument forced before it can continue, `reset()` puts the `BuiltinCall` state back so `try_claim()` can re-dispatch once the argument is available.
 
 The transition graph governs state *transitions*, not construction. Thunks may be constructed with any `UnevaluatedState` variant, or directly in Materialized state (via `Thunk::value()`). The transition graph applies only to subsequent state changes.
 
@@ -337,11 +337,9 @@ Transition rules (each maps to `try_claim()`, `settle()`, or `reset()` in `src/v
 | {any UnevaluatedState} → InProgress | `try_claim()` | Atomic (`Option::take()` under `Mutex` lock; also records current `tokio::task::Id`) |
 | InProgress → Materialized | `settle(Ok(v))` | Writes `Ok(v)` to result `OnceCell`, clears task id, notifies waiters |
 | InProgress → Failed | `settle(Err(e))` | Writes `Err(e)` to result `OnceCell`, clears task id, notifies waiters |
-| InProgress → {original UnevaluatedState} | `reset(state)` | Restores `Option<UnevaluatedState>` under `Mutex` lock, clears task id — **backward edge**, non-cacheable errors only; restores original state for retry |
+| InProgress → {original UnevaluatedState} | `reset(state)` | Restores `Option<UnevaluatedState>` under `Mutex` lock, clears task id — **backward edge**, `PendingBuiltin` lazy-arg re-dispatch only; restores original state so strict-arg forcing can restart |
 
-**Monotonicity proof sketch:** The materialization graph has no cycles. One backward edge class exists (InProgress → UnevaluatedState via `reset()`), which is acyclic: InProgress cannot cycle back through a deferred state because the restored state transitions only to InProgress via `try_claim()`, and from there only to Materialized or Failed. Each UnevaluatedState variant transitions only to InProgress. InProgress transitions only to Materialized or Failed — with one exception: the backward edge for non-cacheable errors (see Exception below); these preserve semantic monotonicity because the thunk's observable meaning is unchanged between retries. Materialized is terminal (OnceCell is write-once). Failed is terminal for the same reason, though diagnostic refinement may enrich the error's stack frames. Therefore all transition sequences are finite, and the semantic content of a thunk is monotonically determined. ∎
-
-**Exception — retryable non-cacheable errors:** The backward edge (InProgress → UnevaluatedState via `reset()`) fires when evaluation fails with a non-cacheable error. This applies to all five UnevaluatedState variants uniformly. `DepthExceeded` can be raised by the continuation stack depth guard (`MAX_CONTINUATION_STACK = 2048` frames, `src/eval_materialize.rs`) inside the core CEK loop, and by individual builtins (e.g., `MAX_COLLECT_SIZE` in `$collect`). Because such errors are transient resource-bound conditions (not semantic errors), they are non-cacheable — `settle()` is skipped and the thunk is restored to its pre-InProgress state via `reset()` so the computation can be retried. This backward restoration means strict state-order monotonicity does not hold for the non-cacheable path. However, semantic monotonicity is preserved: the thunk's observable meaning is unchanged between attempts, and the error identity is not fixed. Every other error kind is cacheable and takes the normal `InProgress → Failed` forward edge. (`src/eval_materialize.rs`, in `force_step()`)
+**Monotonicity proof sketch:** The materialization graph has no cycles. One backward edge class exists (InProgress → UnevaluatedState via `reset()`), which is acyclic: InProgress cannot cycle back through a deferred state because the restored state transitions only to InProgress via `try_claim()`, and from there only to Materialized or Failed. Each UnevaluatedState variant transitions only to InProgress. InProgress transitions only to Materialized or Failed (all errors are cached via `settle(Err(e))` — there is no non-cacheable error path). Materialized is terminal (OnceCell is write-once). Failed is terminal for the same reason, though diagnostic refinement may enrich the error's stack frames. Therefore all transition sequences are finite, and the semantic content of a thunk is monotonically determined. ∎
 
 **Atomicity invariant:** `try_claim()` atomically takes the `UnevaluatedState` from the `Mutex<(Option<UnevaluatedState>, Option<tokio::task::Id>)>` via `Option::take()` and records the current task id. This ensures no observer can see the old state after the transition begins. The `Mutex` provides exclusive access across async tasks; `settle()` writes the result to the `OnceCell` (write-once) and notifies all waiters via `tokio::sync::Notify`.
 
@@ -351,7 +349,7 @@ Materialization dispatches on the `UnevaluatedState` variant to produce a value 
 
 **Notation:** The rules use an implementation-oriented notation mixing imperative state updates (`try_claim(θ) → state`) with declarative judgments (`eval(expr, env, Σ_θ) ⇒ θ'`). `Σ_θ` denotes the evaluation context (`EvalContext`) captured at thunk construction time — it carries context-dependent state (scope arena, include cache) that must reflect the thunk's definition site. A standard operational semantics would thread an explicit store σ mapping thunk IDs to states: `materialize(θ, σ) ⇒ (v, σ')`. The notation here maps directly to the `force_step()` implementation for ease of cross-checking.
 
-**Depth tracking:** The iterative CEK machine (see §Iterative Evaluator below) uses a heap-allocated continuation stack (`Vec<Cont>`) instead of the Rust call stack, bounded by `MAX_CONTINUATION_STACK = 2048` frames (`src/eval_materialize.rs`, ~192 KB). There is no `MAX_EVAL_DEPTH` in the core materialization loop. Sequence iteration guards in builtins use `MAX_COLLECT_SIZE` (1,000,000), a separate constant for preventing unbounded sequence collection.
+**Depth tracking:** The iterative CEK machine (see §Iterative Evaluator below) uses a heap-allocated continuation stack (`Vec<Cont>`) instead of the Rust call stack, bounded by `MAX_CONTINUATION_STACK = 8192` frames (`src/eval_materialize.rs`). There is no `MAX_EVAL_DEPTH` in the core materialization loop. Sequence iteration guards in builtins use `MAX_COLLECT_SIZE` (1,000,000), a separate constant for preventing unbounded sequence collection.
 
 **[MATERIALIZE-CACHED]**
 
@@ -407,31 +405,18 @@ v ∈ τ                                          (validate)
 materialize(θ) ⇒ v
 ```
 
-**[MATERIALIZE-GUARD-INNER-ERR]** — inner thunk materialization fails with a cacheable error:
+**[MATERIALIZE-GUARD-INNER-ERR]** — inner thunk materialization fails:
 
 ```text
 θ.state = Guarded(θ_inner, τ, path, span)
 θ.state ← InProgress
-materialize(θ_inner) ⇒ error(e)    where e.is_cacheable()
+materialize(θ_inner) ⇒ error(e)
 θ.state ← Failed(e)                           (memoize; propagation error, not type mismatch)
 ───────────────────────────
 materialize(θ) ⇒ error(e)
 ```
 
-**[MATERIALIZE-GUARD-NONCACHEABLE]** — inner thunk materialization fails with a non-cacheable error (e.g., ResourceLimitExceeded from a builtin):
-
-```text
-θ.state = Guarded(θ_inner, τ, path, span)
-θ.state ← InProgress
-materialize(θ_inner) ⇒ error(e)               where ¬e.is_cacheable()
-θ.state ← Guarded(θ_inner, τ, path, span)     (restore — retry possible)
-───────────────────────────
-materialize(θ) ⇒ error(e)
-```
-
-The continuation stack is bounded by `MAX_CONTINUATION_STACK = 2048` frames (`src/eval_materialize.rs`). Exceeding this limit produces a `ResourceLimitExceeded` error. Resource limits also come from individual builtins (e.g., `MAX_COLLECT_SIZE` in `$collect`) and OS memory constraints. The backward `InProgress → Guarded` edge handles non-cacheable errors from these sources.
-
-[MATERIALIZE-GUARD-NONCACHEABLE] fires when the inner thunk's materialization fails with a non-cacheable error (e.g., ResourceLimitExceeded from a builtin). The Guarded state is restored because non-cacheable errors are transient resource-bound conditions, not semantic errors. (`src/eval_materialize.rs`, in the `Guarded` arm of `force_step()`)
+The continuation stack is bounded by `MAX_CONTINUATION_STACK = 8192` frames (`src/eval_materialize.rs`). Exceeding this limit produces a `ResourceLimitExceeded` error. Resource limits also come from individual builtins (e.g., `MAX_COLLECT_SIZE` in `$collect`) and OS memory constraints.
 
 **[MATERIALIZE-GUARD-TYPE-ERR]** — inner thunk succeeds but value does not inhabit the expected type:
 
@@ -446,7 +431,7 @@ e = type_assert_failed(path, τ, typeof(v), span)
 materialize(θ) ⇒ error(e)
 ```
 
-Guarded thunks implement proxy contracts (Findler & Felleisen 2002) for TypeAssert record field validation. The inner thunk is materialized, the result is validated against the expected type τ, and the validated value is memoized. If validation fails, the thunk transitions to Failed with a type assertion error decorated with the field path. Guard memoization ensures each field is validated at most once. Computation errors (inner thunk fails for non-type reasons) propagate directly and are cached; they do not trigger the `default:` fallback — only type assertion failures do. Non-cacheable errors (from builtins) restore the Guarded state instead of transitioning to Failed, since they represent transient resource-bound conditions rather than semantic errors.
+Guarded thunks implement proxy contracts (Findler & Felleisen 2002) for TypeAssert record field validation. The inner thunk is materialized, the result is validated against the expected type τ, and the validated value is memoized. If validation fails, the thunk transitions to Failed with a type assertion error decorated with the field path. Guard memoization ensures each field is validated at most once. Computation errors (inner thunk fails for non-type reasons) propagate directly and are cached via `settle(Err(...))`, transitioning to Failed; they do not trigger the `default:` fallback — only type assertion failures do.
 
 **[MATERIALIZE-UNEVALUATED]**
 
@@ -532,7 +517,7 @@ Six properties essential for call-by-need soundness (Launchbury 1993, Ariola & F
 |----------|--------|---------------|
 | **Determinism** | Satisfied | Pure subset only; `$include` introduces external state dependence |
 | **Sharing (evaluate-at-most-once)** | Satisfied | Materialized and Failed are semantically terminal — subsequent materializations return cached result (Failed may refine diagnostic metadata) |
-| **Monotonicity** | Satisfied with exceptions | one backward edge class (`InProgress → {original UnevaluatedState}` via `reset()`) for non-cacheable errors (retry semantics); Failed is terminal (OnceCell write-once) |
+| **Monotonicity** | Satisfied | one backward edge class (`InProgress → {original UnevaluatedState}` via `reset()`) for `PendingBuiltin` lazy-arg re-dispatch only; all failures transition to Failed — no non-cacheable error path exists; Failed is terminal (OnceCell write-once) |
 | **Adequacy** | Holds for extensions | BuiltinCall/FnCall are observationally equivalent to CoreExpr (defunctionalization preserves semantics). Guarded is observationally equivalent to a CoreExpr thunk that materializes and validates (proxy contract). Failed extends the codomain from Value⊥ to Value + Error⊥ (absorbing, deterministic) |
 | **Confluence** | Pure subset only | `$include` makes evaluation order observable; in the pure subset, materialization order does not affect final values |
 | **Sharing preservation** | Satisfied | `Arc<Thunk>` ensures identity-based sharing; the CEK machine preserves thunk identity through continuation dispatch |
@@ -545,7 +530,7 @@ Implicit decisions in the current implementation, made explicit:
 
 **2. Confluence holds only in the pure subset.** `$include` introduces evaluation-order dependence: if file A includes file B and file B includes file A, the result depends on which is evaluated first (cycle detection fires on the second). All other tinct operations are confluent — materialization order does not affect the result. The pure subset of tinct (no `$include`) satisfies the diamond property of Ariola & Felleisen's (1997) call-by-need calculus.
 
-**3. No recursive depth limit in core evaluator.** The iterative CEK machine uses a heap-allocated continuation stack (`Vec<Cont>`), eliminating the `MAX_EVAL_DEPTH` bound that existed in the recursive evaluator. There is no depth parameter in `materialize()` or `eval()`. Individual builtins may impose their own limits (e.g., `MAX_COLLECT_SIZE` for sequence collection in `$collect`), but these are domain-specific bounds, not a global recursion limit. (Note: `CoreSurfaceExpression::Sequential` and `CoreExpr::Match` currently use async recursion rather than CEK continuations; see `cek-match-sequential-rust-stack` in TODO.md. Also: `DepthExceeded` as an `ErrorKind` still exists — see [Errors](10-errors.md) §Error Categories — because individual builtins may raise it for domain-specific resource limits. The eliminated limit is `MAX_EVAL_DEPTH` from the recursive evaluator call stack.)
+**3. No recursive depth limit in core evaluator.** The iterative CEK machine uses a heap-allocated continuation stack (`Vec<Cont>`), eliminating the `MAX_EVAL_DEPTH` bound that existed in the recursive evaluator. There is no depth parameter in `materialize()` or `eval()`. The continuation stack is bounded by `MAX_CONTINUATION_STACK = 8192` frames; exceeding this produces a `ResourceLimitExceeded` error. Individual builtins may impose their own limits (e.g., `MAX_COLLECT_SIZE` for sequence collection in `$collect`), but these are domain-specific bounds, not a global recursion limit. (Note: `CoreSurfaceExpression::Sequential` and `CoreExpr::Match` currently use async recursion rather than CEK continuations; see `cek-match-sequential-rust-stack` in TODO.md.)
 
 **4. Finite vs productive thunk lifecycles.** Dict-entry thunks have a **finite lifecycle**: they must eventually reach Materialized or Failed. Seq tail thunks have a **productive lifecycle**: materializing a tail yields a Seq value (containing a new tail thunk) or the terminal `[]`. The state machine is identical; the liveness obligation differs. This distinction is not enforced by the type system — it is a semantic contract between the sequence constructors and the programmer (see §Productivity Obligations).
 
@@ -1377,13 +1362,13 @@ Per execution context (deferred per-section model):
 
 ## Iterative Evaluator (CEK Machine)
 
-**Implementation:** The evaluator uses an iterative CEK machine (Control-Environment-Kontinuation) with a bounded continuation stack (`MAX_CONTINUATION_STACK = 2048` frames) in `src/eval_materialize.rs`. Exceeding the limit produces a non-catchable `ResourceLimitExceeded` error.
+**Implementation:** The evaluator uses an iterative CEK machine (Control-Environment-Kontinuation) with a bounded continuation stack (`MAX_CONTINUATION_STACK = 8192` frames) in `src/eval_materialize.rs`. Exceeding the limit produces a non-catchable `ResourceLimitExceeded` error.
 
 **Evaluation depth is bounded by:**
 
 - Parser depth limit: `MAX_PARSE_DEPTH = 256` (nested syntax depth)
 - Cycle detection: `InProgress` thunk state sentinel (catches circular references)
-- Continuation stack: `MAX_CONTINUATION_STACK = 2048` frames — exceeding this produces `ResourceLimitExceeded`
+- Continuation stack: `MAX_CONTINUATION_STACK = 8192` frames — exceeding this produces `ResourceLimitExceeded`
 - Rust stack bounds: the CEK machine runs iteratively on the heap, avoiding deep Rust recursion
 
 **Decision:** Replace the recursive `eval()` / `materialize()` call stack with an iterative CEK machine. Continuations are defunctionalized — each closure that CPS would create becomes a variant in a `Cont` enum, stored in a `Vec<Cont>` stack.

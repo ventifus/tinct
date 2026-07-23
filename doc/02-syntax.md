@@ -388,7 +388,6 @@ Only constructs that affect **binding structure** or **dict construction** are s
 | `quote` | Captures AST as data without evaluating |
 | `unquote` | Splices values into quoted templates |
 | `unquote-splice` | Splices sequence elements into quoted list positions |
-| `macro` | Registers compile-time AST transformation |
 | `syntax-class` | Declares a named syntactic pattern class with a diagnostic message |
 
 A keyword followed by `:` is a dict entry, not a special form: `[call: something]` is a dict with key `call`.
@@ -865,19 +864,6 @@ ast.fn                     # → "+" (field access on Expression values)
 
 `[unquote expr]` is valid only inside `[quote ...]`. `[unquote-splice expr]` splices a sequence into a list position inside `[quote ...]`.
 
-### Macro Definition
-
-`[macro name [let params] body]` registers a compile-time AST transformation.
-
-```tinct
-[macro my-when [let pred body]
-  [quote [if [unquote pred] [unquote body] []]]]
-
-[my-when [> x 0] [process x]]  # expands to: [if [> x 0] [process x] []]
-```
-
-Macro names cannot shadow registered Rust builtins. See `doc/08-evaluation.md` §Macro Expansion Pipeline for expansion semantics.
-
 ### `class` and `instance`
 
 Type class declaration:
@@ -1071,7 +1057,7 @@ bracket_expr = "[" ~ "]"
 special_form = call_form | fn_form | type_form | let_form | case_form | match_form
              | class_form | instance_form | pattern_form
              | quote_form | unquote_form | unquote_splice_form
-             | macro_form | syntax_class_form
+             | syntax_class_form
 
 call_form    = keyword_call ~ value ~ call_args
 call_implied = identifier ~ call_args     // identifier not a keyword, not followed by ":"
