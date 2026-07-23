@@ -94,7 +94,7 @@ pub fn surface_node_get_field(
             null()
         }
         (SurfaceExpression::Field { field: dot_key, .. }, "field") => {
-            dot_key_to_value(dot_key, ctx)
+            dot_key_to_value(dot_key)
         }
 
         // --- Pipe ---
@@ -238,10 +238,10 @@ fn surface_entries_to_list_dict(
         let entry_variant = Value::Variant {
             tycon: "Expr".into(),
             ctor: "Entry".into(),
-            payload: Some(ctx.alloc_thunk(
-                0,
-                Arc::new(Thunk::value(Value::Dict(payload), entry.span.clone())),
-            )),
+            payload: Some(Arc::new(Thunk::value(
+                Value::Dict(payload),
+                entry.span.clone(),
+            ))),
         };
         let thunk = Arc::new(Thunk::value(entry_variant, entry.span.clone()));
         map.insert(HashableValue::Int(i as i64), thunk);
@@ -273,10 +273,10 @@ fn named_args_to_list_dict(
         let na_variant = Value::Variant {
             tycon: "Expr".into(),
             ctor: "NamedArg".into(),
-            payload: Some(ctx.alloc_thunk(
-                0,
-                Arc::new(Thunk::value(Value::Dict(payload), na.span.clone())),
-            )),
+            payload: Some(Arc::new(Thunk::value(
+                Value::Dict(payload),
+                na.span.clone(),
+            ))),
         };
         let thunk = Arc::new(Thunk::value(na_variant, na.span.clone()));
         map.insert(HashableValue::Int(i as i64), thunk);
@@ -315,10 +315,7 @@ fn params_to_list_dict(
         let p_variant = Value::Variant {
             tycon: "Expr".into(),
             ctor: "Parameter".into(),
-            payload: Some(ctx.alloc_thunk(
-                0,
-                Arc::new(Thunk::value(Value::Dict(payload), p.span.clone())),
-            )),
+            payload: Some(Arc::new(Thunk::value(Value::Dict(payload), p.span.clone()))),
         };
         let thunk = Arc::new(Thunk::value(p_variant, p.span.clone()));
         map.insert(HashableValue::Int(i as i64), thunk);
@@ -367,7 +364,7 @@ fn match_arms_to_list_dict(
 }
 
 /// Convert a DotKey to a Value::Variant (Ident | Index) with payload containing the actual value.
-pub fn dot_key_to_value(key: &DotKey, ctx: &std::sync::Arc<crate::eval::EvalContext>) -> Value {
+pub fn dot_key_to_value(key: &DotKey) -> Value {
     use crate::value::HashableValue;
     use crate::value::{string_val, Thunk};
     use indexmap::IndexMap;
@@ -384,9 +381,7 @@ pub fn dot_key_to_value(key: &DotKey, ctx: &std::sync::Arc<crate::eval::EvalCont
             Value::Variant {
                 tycon: "DotKey".into(),
                 ctor: "Ident".into(),
-                payload: Some(
-                    ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(payload_dict), span))),
-                ),
+                payload: Some(Arc::new(Thunk::value(Value::Dict(payload_dict), span))),
             }
         }
         DotKey::Int(index) => {
@@ -398,9 +393,7 @@ pub fn dot_key_to_value(key: &DotKey, ctx: &std::sync::Arc<crate::eval::EvalCont
             Value::Variant {
                 tycon: "DotKey".into(),
                 ctor: "Index".into(),
-                payload: Some(
-                    ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(payload_dict), span))),
-                ),
+                payload: Some(Arc::new(Thunk::value(Value::Dict(payload_dict), span))),
             }
         }
     }
@@ -493,10 +486,10 @@ fn annotation_inner_to_value(
                         Value::Variant {
                             tycon: "Annotation".into(),
                             ctor: "Annotated".into(),
-                            payload: Some(ctx.alloc_thunk(
-                                0,
-                                Arc::new(Thunk::value(Value::Dict(p), pos_entry.span.clone())),
-                            )),
+                            payload: Some(Arc::new(Thunk::value(
+                                Value::Dict(p),
+                                pos_entry.span.clone(),
+                            ))),
                         }
                     }
                     SurfaceExpression::VarRef {
@@ -518,10 +511,10 @@ fn annotation_inner_to_value(
                         Value::Variant {
                             tycon: "Annotation".into(),
                             ctor: "Simple".into(),
-                            payload: Some(ctx.alloc_thunk(
-                                0,
-                                Arc::new(Thunk::value(Value::Dict(p), pos_entry.span.clone())),
-                            )),
+                            payload: Some(Arc::new(Thunk::value(
+                                Value::Dict(p),
+                                pos_entry.span.clone(),
+                            ))),
                         }
                     }
                     _ => {
@@ -537,10 +530,10 @@ fn annotation_inner_to_value(
                         Value::Variant {
                             tycon: "Annotation".into(),
                             ctor: "Unknown".into(),
-                            payload: Some(ctx.alloc_thunk(
-                                0,
-                                Arc::new(Thunk::value(Value::Dict(p), pos_entry.span.clone())),
-                            )),
+                            payload: Some(Arc::new(Thunk::value(
+                                Value::Dict(p),
+                                pos_entry.span.clone(),
+                            ))),
                         }
                     }
                 };
@@ -616,11 +609,10 @@ fn annotation_inner_to_value(
         }
     };
 
-    let payload_tid = ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Dict(payload_map), span)));
     Value::Variant {
         tycon: tycon.into(),
         ctor: ctor.into(),
-        payload: Some(payload_tid),
+        payload: Some(Arc::new(Thunk::value(Value::Dict(payload_map), span))),
     }
 }
 

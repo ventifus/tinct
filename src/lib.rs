@@ -264,19 +264,17 @@ pub async fn run_loader_pipeline(
                                 );
                             } else if matches!(val, crate::value::Value::Function { .. }) {
                                 // Function → keep as ThunkId for parameterized types
-                                let tid = eval_ctx_with_frames.alloc_thunk(0, Arc::clone(thunk));
                                 map.insert(
                                     name.to_string(),
-                                    crate::type_infer::TypeStageEntry::Function(tid),
+                                    crate::type_infer::TypeStageEntry::Function(Arc::clone(thunk)),
                                 );
                             } else {
                                 // Non-leaf TypeNode (e.g., complex record, union) — use typenode_leaf_to_type
                                 // fallback by trying again. If it's not a TypeNode variant at all, skip.
                                 // For now, treat unknown values as functions (conservative).
-                                let tid = eval_ctx_with_frames.alloc_thunk(0, Arc::clone(thunk));
                                 map.insert(
                                     name.to_string(),
-                                    crate::type_infer::TypeStageEntry::Function(tid),
+                                    crate::type_infer::TypeStageEntry::Function(Arc::clone(thunk)),
                                 );
                             }
                         }
@@ -1180,7 +1178,7 @@ mod tests {
         let ctx = test_ctx().await;
         let handler_thunk = Arc::new(Thunk::value(Value::Int(42), test_span(1, 1, 1, 1)));
         let proxy = Value::Proxy {
-            handler: ctx.alloc_thunk(0, handler_thunk),
+            handler: handler_thunk,
         };
         let display = value_to_display_string(&proxy, &ctx, rust_span!())
             .await

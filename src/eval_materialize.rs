@@ -909,7 +909,7 @@ async fn dispatch_state(
             let inner_span = inner_thunk.span.clone();
             // Always use the outer force_step ctx for GuardedValidate. All thunks in a single
             // evaluation share one EvalContext. The ctx is needed for
-            // allocating guard-wrapped field thunks (ctx.alloc_thunk in validate_and_wrap_record).
+            // allocating guard-wrapped field thunks in validate_and_wrap_record.
             let guard_ctx: Arc<EvalContext> = Arc::clone(ctx);
             stack.push(Cont::GuardedValidate(Box::new(GuardedValidateData {
                 thunk: Arc::clone(thunk),

@@ -317,25 +317,6 @@ impl Env {
     }
 
     // -----------------------------------------------------------------------
-    // COMBINED
-    // -----------------------------------------------------------------------
-
-    /// Insert a scheme into a slot (formerly also stored the value; after T-1557, type-only).
-    ///
-    /// Callers that previously supplied a `thunk` argument should switch to `insert_scheme`.
-    /// This signature is retained for callers that were already passing both; the thunk is
-    /// no longer stored here — values go into `FlatEnv` (B-515 tracks arm binding allocation).
-    #[allow(unused_variables)]
-    pub fn insert_both(
-        &mut self,
-        name: String,
-        thunk: std::sync::Arc<crate::value::Thunk>,
-        scheme: TypeScheme,
-    ) {
-        self.insert_scheme(name, scheme);
-    }
-
-    // -----------------------------------------------------------------------
     // CLASS / INSTANCE
     // -----------------------------------------------------------------------
 

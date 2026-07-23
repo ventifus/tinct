@@ -280,8 +280,8 @@ pub(crate) fn builtin_until(
 
         loop {
             // Create a pending call to pred(val) and materialize it.
-            let pred_id = ctx.alloc_thunk(0, Arc::clone(&pred_thunk));
-            let val_id = ctx.alloc_thunk(0, Arc::clone(&val_thunk));
+            let pred_id = Arc::clone(&pred_thunk);
+            let val_id = Arc::clone(&val_thunk);
             let pred_result = Arc::new(Thunk::fn_call(
                 pred_id,
                 vec![val_id],
@@ -312,8 +312,8 @@ pub(crate) fn builtin_until(
             } else {
                 // Predicate doesn't hold yet, apply f and materialize to get next value.
                 // T-1558: alloc ThunkIds for func and arg.
-                let f_id = ctx.alloc_thunk(0, Arc::clone(&f_thunk));
-                let val_id = ctx.alloc_thunk(0, Arc::clone(&val_thunk));
+                let f_id = Arc::clone(&f_thunk);
+                let val_id = Arc::clone(&val_thunk);
                 let f_result = Arc::new(Thunk::fn_call(
                     f_id,
                     vec![val_id],
@@ -4706,8 +4706,8 @@ mod tests {
     }
 
     /// Wrap a Value as an Arc<Thunk> for use in BuiltinArgs.args.
-    fn thunk_id(val: Value, ctx: &std::sync::Arc<crate::eval::EvalContext>) -> Arc<Thunk> {
-        ctx.alloc_thunk(0, thunk(val))
+    fn thunk_id(val: Value) -> Arc<Thunk> {
+        thunk(val)
     }
 
     fn call_span() -> crate::ast::Span {
@@ -4745,7 +4745,7 @@ mod tests {
         };
         let ctx = test_ctx();
         let result = run(builtin_tag_of(BuiltinArgs {
-            args: vec![thunk_id(variant, &ctx)],
+            args: vec![thunk_id(variant)],
             named: no_named(),
             call_span: call_span(),
             ctx: std::sync::Arc::clone(&ctx),
@@ -4773,7 +4773,7 @@ mod tests {
         };
         let ctx = test_ctx();
         let result = run(builtin_tag_of(BuiltinArgs {
-            args: vec![thunk_id(annotated, &ctx)],
+            args: vec![thunk_id(annotated)],
             named: no_named(),
             call_span: call_span(),
             ctx: std::sync::Arc::clone(&ctx),
@@ -4804,7 +4804,7 @@ mod tests {
         };
         let ctx = test_ctx();
         let result = run(builtin_tag_of(BuiltinArgs {
-            args: vec![thunk_id(outer_annotated, &ctx)],
+            args: vec![thunk_id(outer_annotated)],
             named: no_named(),
             call_span: call_span(),
             ctx: std::sync::Arc::clone(&ctx),
@@ -4840,7 +4840,7 @@ mod tests {
     async fn current_env_rejects_positional_args() {
         let ctx = test_ctx();
         let result = run(builtin_current_env(BuiltinArgs {
-            args: vec![thunk_id(Value::Int(1), &ctx)],
+            args: vec![thunk_id(Value::Int(1))],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -4868,7 +4868,7 @@ mod tests {
         };
         let ctx = test_ctx();
         let result = run(builtin_tag_of(BuiltinArgs {
-            args: vec![thunk_id(annotated, &ctx)],
+            args: vec![thunk_id(annotated)],
             named: no_named(),
             call_span: call_span(),
             ctx,

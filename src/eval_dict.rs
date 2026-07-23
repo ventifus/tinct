@@ -423,7 +423,7 @@ pub(crate) async fn eval_dict_core(
                         ))
                     } else {
                         let span = value_thunk.span.clone();
-                        let inner_id = ctx.alloc_thunk(0, value_thunk);
+                        let inner_id = value_thunk;
                         Arc::new(Thunk::annotated_wrap(
                             inner_id,
                             annotation_value,

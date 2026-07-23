@@ -4159,7 +4159,7 @@ async fn variant_payload_dict(
         } => id.clone(),
         _ => return None,
     };
-    let payload_thunk = ctx.get_thunk(payload_id);
+    let payload_thunk = payload_id;
     let payload_val = crate::eval::materialize(&payload_thunk, None, ctx)
         .await
         .ok()?;

@@ -816,25 +816,6 @@ impl EvalContext {
         })
     }
 
-    /// Allocate a thunk — returns the Arc<Thunk> unchanged.
-    ///
-    /// This is a compatibility shim for call sites that used the arena-based alloc_thunk.
-    /// The env_id parameter is no longer used (ScopeArena deleted); it is accepted to
-    /// minimize diff size at call sites during migration.
-    #[inline]
-    pub fn alloc_thunk(&self, _env_id: u32, thunk: Arc<Thunk>) -> Arc<Thunk> {
-        thunk
-    }
-
-    /// Get a cloned Arc<Thunk> — identity function.
-    ///
-    /// Compatibility shim for call sites that used the arena-based get_thunk(ThunkId).
-    /// With ScopeArena deleted, thunks are carried as Arc<Thunk> directly — no lookup needed.
-    #[inline]
-    pub fn get_thunk(&self, thunk: Arc<Thunk>) -> Arc<Thunk> {
-        thunk
-    }
-
     /// Create a child EvalContext with resolver scope frames attached.
     ///
     /// Called after `resolve_surface_program` to make the accumulated scope frames
@@ -4534,7 +4515,7 @@ mod tests {
         ));
         // Dict with the required field "x" AND the field type is Unknown (erased) which
         // is consistent with Int (Unknown ~<: T for all T). However this test requires
-        // alloc_thunk to build the dict — covered by TypeAssert corpus tests instead.
+        // building a dict with thunks — covered by TypeAssert corpus tests instead.
         // The key insight: value_matches_type is NOT the Record validation entry point
         // at runtime; TypeAssertCheck uses as_record_row_merged → validate_and_wrap_record.
     }
@@ -4548,7 +4529,7 @@ mod tests {
         // statically; at runtime, Unknown passes through any annotation.
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 5);
-        let handler = ctx.alloc_thunk(0, Arc::new(Thunk::value(Value::Int(42), span)));
+        let handler = Arc::new(Thunk::value(Value::Int(42), span));
         let proxy_val = Value::Proxy { handler };
 
         // Unknown ~<: any type, so Proxy values pass all annotations at runtime.
@@ -5149,11 +5130,10 @@ mod tests {
 
         // Inner thunk: a materialized Int(42) — passes the Int guard.
         let inner = Arc::new(Thunk::value(Value::Int(42), span.clone()));
-        let inner_id = ctx.alloc_thunk(0, inner);
 
         // Wrap it in a Guarded thunk expecting Int.
         let guarded = Arc::new(Thunk::guarded(
-            inner_id,
+            inner,
             Type::Int,
             vec!["value".to_string()],
             span,
@@ -5206,11 +5186,10 @@ mod tests {
 
         // Inner thunk: a String value — fails the Int guard.
         let inner = Arc::new(Thunk::value(string_val("hello".into()), span.clone()));
-        let inner_id = ctx.alloc_thunk(0, inner);
 
         // Wrap it in a Guarded thunk expecting Int.
         let guarded = Arc::new(Thunk::guarded(
-            inner_id,
+            inner,
             Type::Int,
             vec!["field".to_string()],
             span,
