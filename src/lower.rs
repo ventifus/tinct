@@ -16,7 +16,7 @@
 use std::sync::Arc;
 
 use crate::ast::{
-    CoreEntry, CoreExpr, CoreMatchArm, CoreNamedArg, CoreParam, Spanned, SurfaceEntry,
+    CoreEntry, CoreExpr, CoreMatchArm, CoreNamedArg, CoreParam, Span, Spanned, SurfaceEntry,
     SurfaceExpression, SurfaceNode, VarAddr,
 };
 use crate::rust_span;
@@ -1337,6 +1337,64 @@ fn extract_type_name_from_key(key: &Option<Arc<SurfaceNode>>) -> Option<String> 
 ///
 /// The type name (if present) qualifies the variant tags. When absent, uses unqualified tags.
 ///
+/// Build a `CoreExpr::Dict` representing field-annotations: `{field: {role: "Seq"}, ...}`.
+///
+/// Returns `None` if field_annotations is empty.
+fn build_field_annotations_core_entry(
+    field_annotations: &indexmap::IndexMap<String, String>,
+    span: &Span,
+) -> Option<Spanned<crate::ast::CoreEntry>> {
+    use crate::ast::CoreEntry;
+    if field_annotations.is_empty() {
+        return None;
+    }
+    // Build inner dicts: for each field, {role: "RoleName"}
+    let field_entries: Vec<Spanned<CoreEntry>> = field_annotations
+        .iter()
+        .map(|(field_name, role)| {
+            // Inner dict: {role: "Seq"}
+            let role_key = Some(Arc::new(Spanned::new(
+                CoreExpr::Str("role".to_string()),
+                span.clone(),
+            )));
+            let role_value = Arc::new(Spanned::new(CoreExpr::Str(role.clone()), span.clone()));
+            let role_entry = Spanned::new(
+                CoreEntry {
+                    key: role_key,
+                    value: role_value,
+                },
+                span.clone(),
+            );
+            let inner_dict = Arc::new(Spanned::new(CoreExpr::Dict(vec![role_entry]), span.clone()));
+            // Outer entry: field_name: {role: "Seq"}
+            let key = Some(Arc::new(Spanned::new(
+                CoreExpr::Str(field_name.clone()),
+                span.clone(),
+            )));
+            Spanned::new(
+                CoreEntry {
+                    key,
+                    value: inner_dict,
+                },
+                span.clone(),
+            )
+        })
+        .collect();
+    let field_ann_dict = Arc::new(Spanned::new(CoreExpr::Dict(field_entries), span.clone()));
+    // Wrap as "field-annotations": {field_name: {role: "..."}, ...}
+    let key = Some(Arc::new(Spanned::new(
+        CoreExpr::Str("field-annotations".to_string()),
+        span.clone(),
+    )));
+    Some(Spanned::new(
+        CoreEntry {
+            key,
+            value: field_ann_dict,
+        },
+        span.clone(),
+    ))
+}
+
 /// Produces `CoreExpr` nodes for each constructor entry in the runtime dict.
 fn lower_type_alias_to_constructor_dict(
     type_name_opt: Option<String>,
@@ -1509,10 +1567,14 @@ fn lower_type_alias_to_constructor_dict(
                 syn_span.clone(),
             ));
 
-            if let Some(ann_entries) = &ctor.annotation {
-                let ann_core_entries: Vec<Spanned<CoreEntry>> = ann_entries
-                    .iter()
-                    .map(|se| {
+            // Build annotation dict: combine explicit @[...] entries with field-annotations.
+            let has_ann = ctor.annotation.is_some();
+            let has_field_anns = !ctor.field_annotations.is_empty();
+            if has_ann || has_field_anns {
+                let mut ann_core_entries: Vec<Spanned<CoreEntry>> = Vec::new();
+                // Include explicit annotation entries.
+                if let Some(ann_entries) = &ctor.annotation {
+                    for se in ann_entries {
                         let key = se
                             .node
                             .key
@@ -1520,9 +1582,16 @@ fn lower_type_alias_to_constructor_dict(
                             .map(|k| Arc::new(lower_inner(k, diagnostics, scope_frames)));
                         let value =
                             Arc::new(lower_inner(&se.node.value, diagnostics, scope_frames));
-                        Spanned::new(CoreEntry { key, value }, se.span.clone())
-                    })
-                    .collect();
+                        ann_core_entries
+                            .push(Spanned::new(CoreEntry { key, value }, se.span.clone()));
+                    }
+                }
+                // Append field-annotations entry if present.
+                if let Some(fa_entry) =
+                    build_field_annotations_core_entry(&ctor.field_annotations, &syn_span)
+                {
+                    ann_core_entries.push(fa_entry);
+                }
                 let ann_dict = Arc::new(Spanned::new(
                     CoreExpr::Dict(ann_core_entries),
                     syn_span.clone(),
@@ -1562,6 +1631,52 @@ struct ConstructorInfo {
     annotation: Option<Vec<Spanned<SurfaceEntry>>>,
     /// Field names for named-field constructors (empty for unit constructors).
     fields: Vec<String>,
+    /// Per-field child role annotations from `@Child` on field keys.
+    /// Maps field name → role string ("Seq", "One", "MapValues").
+    /// Only populated for fields that carry `@Child` annotation.
+    field_annotations: indexmap::IndexMap<String, String>,
+}
+
+/// Infer the child role from a type expression in a constructor field.
+///
+/// Examines the surface AST of a field's type expression to determine the
+/// structural role for TypeNode's `children`/`map-children` protocol:
+///
+/// - `[Seq T]` → "Seq" (the field holds a sequence of children)
+/// - `[Map K V]` → "MapValues" (the field holds a map whose values are children)
+/// - Bare `T` (VarRef) → "One" (the field holds a single child)
+/// - Anything else → "One" (default for unrecognized forms)
+fn infer_child_role_from_type_expr(expr: &SurfaceExpression) -> &'static str {
+    match expr {
+        // [Seq T] or [Map K V] — Call with a known container type as head
+        SurfaceExpression::Call { func, .. } => match &func.expr {
+            SurfaceExpression::VarRef { name, .. } => match name.as_str() {
+                "Seq" => "Seq",
+                "Map" => "MapValues",
+                _ => "One",
+            },
+            _ => "One",
+        },
+        // Dict with positional entries: [Seq T] parses as Dict([VarRef("Seq"), ...])
+        SurfaceExpression::Dict(entries) if !entries.is_empty() => {
+            if let Some(first) = entries.first() {
+                if first.node.key.is_none() {
+                    if let SurfaceExpression::VarRef { name, .. } = &first.node.value.expr {
+                        return match name.as_str() {
+                            "Seq" => "Seq",
+                            "Map" => "MapValues",
+                            _ => "One",
+                        };
+                    }
+                }
+            }
+            "One"
+        }
+        // Bare VarRef → single child
+        SurfaceExpression::VarRef { .. } => "One",
+        // Anything else → default to single child
+        _ => "One",
+    }
 }
 
 /// Extract constructor information from a TypeAlias body.
@@ -1599,6 +1714,7 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
                     is_unit: true,
                     annotation: ann_entries,
                     fields: vec![],
+                    field_annotations: indexmap::IndexMap::new(),
                 });
             }
             // Call with uppercase func → unit or named-field constructor
@@ -1665,11 +1781,38 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
                             all_fields.extend(payload_named_fields);
                             all_fields
                         };
+                        // Extract @Child field annotations from named_args and annotated positional args.
+                        let mut field_anns = indexmap::IndexMap::new();
+                        for na in named_args.iter() {
+                            if let Some(ref ann) = na.node.annotation {
+                                if matches!(&ann.node, crate::ast::Annotation::Simple(s) if s == "Child")
+                                {
+                                    let role = infer_child_role_from_type_expr(&na.node.value.expr);
+                                    field_anns.insert(na.node.name.clone(), role.to_string());
+                                }
+                            }
+                        }
+                        for arg in args.iter() {
+                            if let SurfaceExpression::VarRef {
+                                name: field_name,
+                                annotation: Some(ref ann),
+                                ..
+                            } = &arg.expr
+                            {
+                                if matches!(&ann.node, crate::ast::Annotation::Simple(s) if s == "Child")
+                                {
+                                    // For annotated positional args, the "type expr" is not available
+                                    // in this form — default to "One".
+                                    field_anns.insert(field_name.clone(), "One".to_string());
+                                }
+                            }
+                        }
                         ctors.push(ConstructorInfo {
                             name: name.clone(),
                             is_unit,
                             annotation: None,
                             fields,
+                            field_annotations: field_anns,
                         });
                     }
                 }
@@ -1700,28 +1843,42 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
                 };
                 let is_unit =
                     entries[1..].is_empty() || entries[1..].iter().all(|e| e.node.key.is_none());
-                // Collect field names from keyed entries for named-field constructors.
-                let fields: Vec<String> = if is_unit {
-                    vec![]
-                } else {
-                    entries[1..]
-                        .iter()
-                        .filter_map(|e| {
-                            e.node.key.as_ref().and_then(|k| match &k.expr {
-                                SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
-                                SurfaceExpression::StringLiteral { content, .. } => {
-                                    Some(content.clone())
+                // Collect field names and @Child annotations from keyed entries.
+                let mut fields: Vec<String> = Vec::new();
+                let mut field_anns = indexmap::IndexMap::new();
+                if !is_unit {
+                    for e in &entries[1..] {
+                        if let Some(k) = &e.node.key {
+                            let (field_name, has_child_ann) = match &k.expr {
+                                SurfaceExpression::VarRef {
+                                    name, annotation, ..
+                                } => {
+                                    let is_child = annotation.as_ref().is_some_and(|ann| {
+                                        matches!(&ann.node, crate::ast::Annotation::Simple(s) if s == "Child")
+                                    });
+                                    (Some(name.clone()), is_child)
                                 }
-                                _ => None,
-                            })
-                        })
-                        .collect()
-                };
+                                SurfaceExpression::StringLiteral { content, .. } => {
+                                    (Some(content.clone()), false)
+                                }
+                                _ => (None, false),
+                            };
+                            if let Some(name) = field_name {
+                                if has_child_ann {
+                                    let role = infer_child_role_from_type_expr(&e.node.value.expr);
+                                    field_anns.insert(name.clone(), role.to_string());
+                                }
+                                fields.push(name);
+                            }
+                        }
+                    }
+                }
                 ctors.push(ConstructorInfo {
                     name: ctor_name,
                     is_unit,
                     annotation: ctor_annotation,
                     fields,
+                    field_annotations: field_anns,
                 });
             }
             _ => {}
@@ -1765,30 +1922,47 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
                                 }
                                 _ => None,
                             });
-                            // Collect field names from the payload dict.
-                            let fields: Vec<String> = match &entry.node.value.expr {
-                                SurfaceExpression::Dict(field_entries) => field_entries
-                                    .iter()
-                                    .filter_map(|fe| {
-                                        fe.node.key.as_ref().and_then(|k| match &k.expr {
-                                            SurfaceExpression::VarRef { name: fn_, .. } => {
-                                                Some(fn_.clone())
+                            // Collect field names and @Child annotations from the payload dict.
+                            let mut fields: Vec<String> = Vec::new();
+                            let mut field_anns = indexmap::IndexMap::new();
+                            if let SurfaceExpression::Dict(field_entries) = &entry.node.value.expr {
+                                for fe in field_entries {
+                                    if let Some(k) = &fe.node.key {
+                                        let (field_name, has_child_ann) = match &k.expr {
+                                            SurfaceExpression::VarRef {
+                                                name: fn_,
+                                                annotation,
+                                                ..
+                                            } => {
+                                                let is_child = annotation.as_ref().is_some_and(|ann| {
+                                                    matches!(&ann.node, crate::ast::Annotation::Simple(s) if s == "Child")
+                                                });
+                                                (Some(fn_.clone()), is_child)
                                             }
                                             SurfaceExpression::StringLiteral {
                                                 content, ..
-                                            } => Some(content.clone()),
-                                            _ => None,
-                                        })
-                                    })
-                                    .collect(),
-                                _ => vec![],
-                            };
+                                            } => (Some(content.clone()), false),
+                                            _ => (None, false),
+                                        };
+                                        if let Some(fn_) = field_name {
+                                            if has_child_ann {
+                                                let role = infer_child_role_from_type_expr(
+                                                    &fe.node.value.expr,
+                                                );
+                                                field_anns.insert(fn_.clone(), role.to_string());
+                                            }
+                                            fields.push(fn_);
+                                        }
+                                    }
+                                }
+                            }
                             let is_unit = fields.is_empty();
                             ctors.push(ConstructorInfo {
                                 name: name.clone(),
                                 is_unit,
                                 annotation: ann_entries,
                                 fields,
+                                field_annotations: field_anns,
                             });
                         }
                     } else {

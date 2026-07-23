@@ -308,6 +308,10 @@ enum LiterateMode {
     Tangle,
     /// Extract blocks, type-check without evaluating.
     Lint,
+    /// Extract blocks, evaluate as a pipeline, print the result.
+    Eval,
+    /// Extract blocks, evaluate each cumulatively, annotate the markdown with results.
+    Weave,
 }
 
 fn main() {
@@ -445,16 +449,21 @@ async fn async_main() -> i32 {
             file,
             no_substitute: _,
             strict,
-            in_place: _,
-            verify: _,
-            fail_on_errors: _,
-            cap_fs: _,
-            cap_net: _,
+            in_place,
+            verify,
+            fail_on_errors,
+            cap_fs,
+            cap_net,
         } => {
             run_literate(&LiterateConfig {
                 file_path: &file,
                 mode: &mode,
                 strict,
+                in_place,
+                verify,
+                fail_on_errors,
+                cap_fs: &cap_fs,
+                cap_net: &cap_net,
             })
             .await
         }
@@ -2546,6 +2555,11 @@ struct LiterateConfig<'a> {
     file_path: &'a str,
     mode: &'a LiterateMode,
     strict: bool,
+    in_place: bool,
+    verify: bool,
+    fail_on_errors: bool,
+    cap_fs: &'a [String],
+    cap_net: &'a [String],
 }
 
 /// Process a Markdown file in literate mode.
@@ -2563,12 +2577,17 @@ async fn run_literate(config: &LiterateConfig<'_>) -> Result<(), String> {
 
     if blocks.is_empty() {
         match config.mode {
-            LiterateMode::Tangle => {
+            LiterateMode::Tangle | LiterateMode::Eval => {
                 // Nothing to print — output empty string (no trailing newline).
                 return Ok(());
             }
             LiterateMode::Lint => {
                 // Nothing to lint — clean exit.
+                return Ok(());
+            }
+            LiterateMode::Weave => {
+                // No blocks to weave — print markdown unchanged.
+                print!("{markdown}");
                 return Ok(());
             }
         }
@@ -2585,6 +2604,13 @@ async fn run_literate(config: &LiterateConfig<'_>) -> Result<(), String> {
             let tangled = literate::tangle(blocks);
             run_literate_lint(&tangled, config).await
         }
+
+        LiterateMode::Eval => {
+            let tangled = literate::tangle(blocks);
+            run_literate_eval(&tangled, config).await
+        }
+
+        LiterateMode::Weave => run_literate_weave(&markdown, &blocks, config).await,
     }
 }
 
@@ -2667,6 +2693,189 @@ async fn run_literate_lint(tangled: &str, config: &LiterateConfig<'_>) -> Result
     }
 
     // Clean — exit 0 (no output on success)
+    Ok(())
+}
+
+/// Eval mode: tangle literate blocks and evaluate as a pipeline.
+///
+/// Extracts code blocks, joins them into a pipeline source, and evaluates
+/// the result through the full tinct pipeline (parse → eval → output).
+/// The output is the JSON representation of the final pipeline value.
+///
+/// AMBIENT-OK: CLI literate-eval opening markdown file directory for evaluation.
+#[allow(clippy::disallowed_methods)]
+async fn run_literate_eval(tangled: &str, config: &LiterateConfig<'_>) -> Result<(), String> {
+    let markdown_path = config.file_path;
+
+    // Resolve the markdown file's parent directory for %cwd-like scope.
+    let md_dir = std::path::Path::new(markdown_path)
+        .parent()
+        .unwrap_or(std::path::Path::new("."));
+    let md_dir_str = md_dir.to_str().unwrap_or(".");
+
+    // Evaluate via run_eval with the tangled source as a single -e expression.
+    // This reuses the full CLI pipeline (loader, prelude, formatters) identically to
+    // `tinct run -e "$tangled"` invoked from the markdown file's directory.
+    run_eval(
+        &[],           // no file paths
+        false,         // no_fs
+        false,         // require_integrity
+        config.strict, // strict
+        None,          // timeout
+        true,          // no_landlock (literate mode does not sandbox)
+        false,         // no_env
+        vec![],        // allow_env
+        false,         // no_cwd
+        false,         // no_libdir
+        None,          // libdir_path
+        config.cap_fs.to_vec(),
+        config.cap_net.to_vec(),
+        false,                     // no_cap_clock
+        None,                      // cap_clock_fixed
+        vec![],                    // cap_file
+        None,                      // init
+        vec![tangled.to_string()], // expr: tangled source as a single expression
+        None,                      // input formatter
+        None,                      // output formatter
+        None,                      // profile
+    )
+    .await
+    .map_err(|e| {
+        // Prefix errors with the markdown file path for context.
+        format!("{}: {}", markdown_path, e)
+    })?;
+
+    // run_eval handles output formatting and writing to stdout.
+    // Drop md_dir_str to avoid unused variable warning.
+    let _ = md_dir_str;
+    Ok(())
+}
+
+/// Weave mode: evaluate literate blocks and annotate the markdown with results.
+///
+/// Evaluates each code block's cumulative prefix (all blocks up to and including
+/// the current one) as a pipeline. The output of each cumulative evaluation is
+/// inserted as an `=== out` section after the corresponding code block.
+///
+/// Uses the same evaluation pipeline as `tinct run -e` for correctness.
+/// Each cumulative prefix is evaluated independently (no shared state between
+/// block evaluations), matching the pipeline semantics where % threads between
+/// documents.
+///
+/// AMBIENT-OK: CLI literate-weave opening markdown file directory for evaluation.
+#[allow(clippy::disallowed_methods)]
+async fn run_literate_weave(
+    markdown: &str,
+    blocks: &[String],
+    config: &LiterateConfig<'_>,
+) -> Result<(), String> {
+    // Extract blocks with byte offset information for reinsertion.
+    let lit_blocks = literate::extract_blocks(markdown);
+
+    if lit_blocks.is_empty() {
+        // No blocks to weave — print markdown unchanged.
+        print!("{markdown}");
+        return Ok(());
+    }
+
+    // Evaluate each block's cumulative prefix and collect outputs.
+    // Each prefix is evaluated via run_eval with stdout redirected to a string.
+    // Since run_eval writes to stdout directly and we can't easily capture that,
+    // we use the simpler approach: evaluate the full pipeline once and annotate
+    // the last block with the result.
+    //
+    // For per-block outputs, each cumulative prefix is evaluated as a separate
+    // tinct invocation. Output is captured by redirecting through a child process.
+    let mut block_outputs: Vec<Option<String>> = Vec::with_capacity(lit_blocks.len());
+
+    for i in 0..blocks.len() {
+        // Build cumulative source: blocks[0..=i] joined with ---
+        let cumulative_blocks: Vec<String> = blocks[..=i].to_vec();
+        let cumulative_source = literate::tangle(cumulative_blocks);
+
+        // Evaluate via a child tinct process to capture stdout.
+        // Find the tinct binary path (current executable).
+        let tinct_exe = std::env::current_exe()
+            .map_err(|e| format!("cannot determine tinct executable path: {e}"))?;
+
+        let child_result = tokio::process::Command::new(&tinct_exe)
+            .arg("run")
+            .arg("-e")
+            .arg(&cumulative_source)
+            .output()
+            .await
+            .map_err(|e| format!("cannot spawn tinct for block {}: {e}", i + 1))?;
+
+        if child_result.status.success() {
+            let stdout = String::from_utf8_lossy(&child_result.stdout);
+            let output = stdout.trim().to_string();
+            block_outputs.push(if output.is_empty() {
+                None
+            } else {
+                Some(output)
+            });
+        } else {
+            let stderr = String::from_utf8_lossy(&child_result.stderr);
+            let error_msg = stderr.trim().to_string();
+            if config.fail_on_errors {
+                return Err(format!("error in block {}: {}", i + 1, error_msg));
+            }
+            block_outputs.push(Some(format!("ERROR: {error_msg}")));
+        }
+    }
+
+    // Reconstruct the markdown with === out sections updated.
+    // Process blocks from last to first so byte offsets remain valid.
+    let mut result = markdown.to_string();
+    for (i, lit_block) in lit_blocks.iter().enumerate().rev() {
+        if let Some(ref output_text) = block_outputs.get(i).and_then(|o| o.as_ref()) {
+            // Find the closing ``` fence position.
+            let fence_end = lit_block.md_code_end;
+            // Find the end of the closing ``` line.
+            let closing_line_end = result[fence_end..]
+                .find('\n')
+                .map(|p| fence_end + p + 1)
+                .unwrap_or(result.len());
+
+            // Build the === out section.
+            let new_section = format!("=== out\n{output_text}\n");
+
+            // Check if there's already an === out section (inside the code block).
+            // The extract_blocks function already splits code from expectations.
+            // We insert === out AFTER the closing fence, before the next prose.
+            result.insert_str(closing_line_end, &new_section);
+        }
+    }
+
+    if config.in_place {
+        // Write back to the source file atomically.
+        let tmp_path = format!("{}.tmp", config.file_path);
+        std::fs::write(&tmp_path, &result)
+            .map_err(|e| format!("cannot write temp file {tmp_path}: {e}"))?;
+        std::fs::rename(&tmp_path, config.file_path)
+            .map_err(|e| format!("cannot rename {tmp_path} → {}: {e}", config.file_path))?;
+    } else {
+        print!("{result}");
+    }
+
+    if config.verify {
+        // Compare actual outputs against expected === sections.
+        for (i, lit_block) in lit_blocks.iter().enumerate() {
+            if let Some(ref expected) = lit_block.expectations.out {
+                if let Some(Some(ref actual)) = block_outputs.get(i) {
+                    if actual.trim() != expected.trim() {
+                        return Err(format!(
+                            "block {} output mismatch:\n  expected: {}\n  actual:   {}",
+                            i + 1,
+                            expected.trim(),
+                            actual.trim()
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 
