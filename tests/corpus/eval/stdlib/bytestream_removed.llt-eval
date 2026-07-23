@@ -1,0 +1,6 @@
+# ByteStream typeclass was removed in S-969 (T-1842): it had zero instances
+# and its read method duplicates Readable.read-chunk. Accessing ByteStream
+# from user code should produce an undefined-variable error.
+ByteStream
+=== error
+undefined variable: ByteStream

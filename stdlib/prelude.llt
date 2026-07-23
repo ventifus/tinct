@@ -5059,62 +5059,6 @@ Example: [ft-size [ft-from-seq [range 0 5]]] => 5
 ft-empty: FingerTree.FTEmpty
 
 # ============================================================================
-# IO Shape Typeclasses: ByteStream, Seekable (T-1359)
-# ============================================================================
-#
-# Three abstract IO shapes describe every I/O transport in tinct:
-#   ByteStream — ordered, reliable byte pipe (TCP, file, pipe)
-#   Seekable   — random-access extension of ByteStream (files only)
-#   Datagram   — unordered, unreliable packet socket (UDP) — declared in stdlib/net.llt
-#
-# ByteStream and Seekable live in prelude because they apply to any program
-# doing I/O, not just network code. Datagram is network-specific and lives in
-# stdlib/net.llt alongside Datagram/Codec instances.
-#
-# SeekFrom is the seek-position descriptor used by Seekable.seek.
-
-# SeekFrom: seek position descriptor for Seekable.seek.
-# Start   — absolute byte offset from the beginning of the stream
-# End     — offset relative to the end of the stream (0 = last byte + 1)
-# Current — offset relative to the current position
-SeekFrom@[doc: "Seek position descriptor for Seekable.seek."]:
-  [type
-    Start:   [pos: Int]
-    End:     [pos: Int]
-    Current: [pos: Int]]
-
-# ByteStream: ordered, reliable byte pipe (T-1359)
-#
-# Base instance: protocol dict handles (from `open`), backed by Value::File.
-# Protocol layers produce new ByteStream instances — tinct records wrapping
-# the layer below. All *-accept and *-layer functions are parametric over ByteStream.
-#
-# read  takes up to n bytes; may return fewer than n at end-of-stream.
-# write returns the handle (for chaining); side-effecting.
-ByteStream@[doc: "Ordered, reliable byte pipe. Protocol dict with read-chunk/write methods."]:
-  [class [let h]
-    read:  [Fn@Bytes [h Int]]
-    write: [Fn@h     [h Bytes]]]
-
-# ByteStreamHandle: Value::Handle removed. Protocol dicts (from `open`) are the stream type now.
-# Instances will be added by S-899 (type-foundations-bytes-io-shapes) when the type-foundations
-# infrastructure is complete. The class declarations are forward declarations from the design spec.
-
-# Seekable: random-access extension of ByteStream (T-1359)
-#
-# Only file handles support random access — network streams and pipes do not.
-# seek returns the new absolute position as Int.
-# tell = [seek h [SeekFrom.Current 0]]
-# size = [seek h [SeekFrom.End 0]]   (seek back after if needed)
-#
-# The Seekable typeclass is the authoritative definition of random-access capability.
-Seekable@[doc: "Random-access extension of ByteStream. Only seekable file handles."]:
-  [class [let h] [superclasses: [[ByteStream h]]]
-    seek: [Fn@Integer [h SeekFrom]]]
-
-# SeekableHandle: Value::Handle removed. Seekable instances await S-899.
-
-# ============================================================================
 # tmpl macro — string interpolation
 # ============================================================================
 #

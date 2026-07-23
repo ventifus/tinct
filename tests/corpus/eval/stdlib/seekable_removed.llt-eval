@@ -1,0 +1,6 @@
+# Seekable typeclass and SeekFrom type were removed in S-969 (T-1842): both
+# had zero instances, and builtin-file-seek only supports SeekFrom::Start (not
+# the full Start/End/Current enum). Accessing either name should be an error.
+Seekable
+=== error
+undefined variable: Seekable

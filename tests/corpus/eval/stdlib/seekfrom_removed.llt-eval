@@ -1,0 +1,5 @@
+# SeekFrom type was removed in S-969 (T-1842) along with Seekable.
+# It was only used as Seekable.seek's position argument — no callers existed.
+SeekFrom
+=== error
+undefined variable: SeekFrom
