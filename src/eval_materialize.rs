@@ -2451,14 +2451,12 @@ pub(crate) async fn apply_cont(
                         // here without block_on_anywhere — this keeps async state on the heap
                         // rather than the Rust stack, preventing stack overflow on deeply
                         // nested patterns.
-                        // B-515 transitional: match_pattern still uses FlatEnv env_id.
-                        // Pass 0 as placeholder; full EvalFrame migration tracked by B-515.
                         let matched_env = match match_pattern(
                             &arm.pattern,
                             &scrutinee_value,
                             &env,
                             &arm.pattern.span,
-                            0,
+                            &frame,
                             &ctx,
                         )
                         .await

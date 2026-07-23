@@ -262,20 +262,41 @@ pub async fn eval_surface_file(
 /// Evaluate a SurfaceProgram with an optional initial `%` value injected into the environment.
 ///
 /// See `eval_surface_file` for preconditions. When `initial_input` is `Some(thunk)`,
-/// that thunk is bound as `%` in the initial EvalFrame's closure_env.
-/// Used by the formatter (which passes the AST dict as `%`).
+/// that thunk is injected into `accumulated_group` at slot `root_group.len()` — the slot
+/// assigned to `%` by the resolver when seeded via `eval_surface_file_with_input_frame`.
 ///
-/// TODO: Wire initial_input into the EvalFrame closure_env once eval_document_exprs_with_env
-/// is fully migrated to EvalFrame-based variable lookup (B-515).
+/// The caller is responsible for ensuring the resolver was seeded with `%` at that slot
+/// (i.e., the program was resolved via `resolve_surface_program` with a seed frame that
+/// maps `"%"` to `ctx.root_group.len()`).
+///
+/// Used by the formatter (which passes the AST dict as `%` and seeds the resolver accordingly).
 pub async fn eval_surface_file_with_input(
     program: &SurfaceProgram,
     ctx: &Arc<EvalContext>,
     initial_input: Option<Arc<Thunk>>,
 ) -> EvalResult<Arc<Thunk>> {
-    // initial_input is accepted for API compatibility. The EvalFrame migration (B-515) will
-    // wire it into the frame's closure_env so that % is visible to document expressions.
-    let _ = initial_input;
-    eval_surface_file(program, ctx).await
+    let initial_group = initial_input.map(|thunk| vec![thunk]);
+    eval_surface_file_with_initial_group(program, ctx, initial_group).await
+}
+
+/// Evaluate a SurfaceProgram with an optional pre-built initial group extension.
+///
+/// `initial_group`: when `Some`, these thunks are appended to the root group at cumulative
+/// slots `root_group.len()..root_group.len()+initial_group.len()-1` before evaluating any
+/// document expression. The resolver must have been seeded with matching names at those slots.
+async fn eval_surface_file_with_initial_group(
+    program: &SurfaceProgram,
+    ctx: &Arc<EvalContext>,
+    initial_group: Option<Vec<Arc<Thunk>>>,
+) -> EvalResult<Arc<Thunk>> {
+    let mut last = EMPTY_DICT_THUNK.with(Arc::clone);
+    for surface_doc in &program.documents {
+        let expr_nodes: Vec<Arc<SurfaceNode>> = surface_doc.node.expressions().cloned().collect();
+        last = eval_document_exprs_with_env(&expr_nodes, ctx, None, initial_group.clone())
+            .await
+            .map(|(thunk, _env_id)| thunk)?;
+    }
+    Ok(last)
 }
 
 /// Evaluate a SurfaceProgram starting from the given parent env.
@@ -1782,11 +1803,11 @@ pub(crate) fn match_pattern<'a>(
     value: &'a Value,
     env: &'a Arc<RwLock<Env>>,
     value_span: &'a Span,
-    env_id: u32,
+    frame: &'a Arc<EvalFrame>,
     ctx: &'a Arc<EvalContext>,
 ) -> MatchPatternFuture<'a> {
     Box::pin(async move {
-        use crate::ast::SurfaceExpression;
+        use crate::ast::{SurfaceExpression, VarAddr};
 
         // Peel Value::Annotated wrappers once at the top — annotations are transparent for
         // pattern matching. This covers all arms: literals, pins, constructors, dicts.
@@ -1798,17 +1819,65 @@ pub(crate) fn match_pattern<'a>(
             // position every Placeholder is a wildcard.
             SurfaceExpression::Placeholder(..) => Ok(Some(Arc::clone(env))),
 
-            // VarRef: pin comparison (look up in scope, compare value)
-            // TODO(B-515): Migrate pin-pattern lookup to EvalFrame. ScopeArena deleted;
-            // env_id is a bridge placeholder. Pin patterns currently return no-match until
-            // match_pattern is migrated to accept Arc<EvalFrame> instead of env_id: u32.
+            // VarRef: pin comparison — look up the variable in the current EvalFrame,
+            // materialize it, and compare to the scrutinee for equality.
+            // A resolved address (Some(Some(addr))) is a pin pattern: `$val` in pattern position.
+            // Some(None) means the resolver could not find the name — arm does not match.
             SurfaceExpression::VarRef { resolution, .. } => {
                 match resolution.get() {
-                    Some(Some(_addr)) => {
-                        // Pin pattern lookup requires EvalFrame (ScopeArena deleted).
-                        // Return no-match as a safe fallback until B-515 migrates this path.
-                        let _ = (env_id, ctx);
-                        Ok(None)
+                    Some(Some(addr)) => {
+                        // Look up the pinned thunk using the resolver-assigned VarAddr.
+                        let pinned_thunk = match addr {
+                            VarAddr::LetrecGroupMember(slot) => {
+                                let slot = *slot as usize;
+                                if slot >= frame.group.len() {
+                                    return Err(EvalError::internal(
+                                        format!(
+                                            "pin pattern LGM slot {slot} out of range (group len {})",
+                                            frame.group.len()
+                                        ),
+                                        value_span.clone(),
+                                    )
+                                    .into());
+                                }
+                                Arc::clone(&frame.group[slot])
+                            }
+                            VarAddr::ClosureCapture(slot) => {
+                                let slot = *slot as usize;
+                                if slot >= frame.closure_env.len() {
+                                    return Err(EvalError::internal(
+                                        format!(
+                                            "pin pattern ClosureCapture slot {slot} out of range (closure_env len {})",
+                                            frame.closure_env.len()
+                                        ),
+                                        value_span.clone(),
+                                    )
+                                    .into());
+                                }
+                                Arc::clone(&frame.closure_env[slot])
+                            }
+                            VarAddr::Parameter(slot) => {
+                                let slot = *slot as usize;
+                                if slot >= frame.params.len() {
+                                    return Err(EvalError::internal(
+                                        format!(
+                                            "pin pattern Parameter slot {slot} out of range (params len {})",
+                                            frame.params.len()
+                                        ),
+                                        value_span.clone(),
+                                    )
+                                    .into());
+                                }
+                                Arc::clone(&frame.params[slot])
+                            }
+                        };
+                        // Materialize the pinned value and compare for equality.
+                        let pinned_val = materialize(&pinned_thunk, Some(value_span), ctx).await?;
+                        if primitive_eq(value, pinned_val) {
+                            Ok(Some(Arc::clone(env)))
+                        } else {
+                            Ok(None)
+                        }
                     }
                     Some(None) => {
                         // Name not found in scope (resolver may have suppressed the diagnostic
@@ -1948,7 +2017,7 @@ pub(crate) fn match_pattern<'a>(
                                                             &payload_val,
                                                             env,
                                                             &sub_pat.span,
-                                                            env_id,
+                                                            frame,
                                                             ctx,
                                                         )
                                                         .await
@@ -1984,7 +2053,7 @@ pub(crate) fn match_pattern<'a>(
                                                     &payload_val,
                                                     env,
                                                     &sub_pat.span,
-                                                    env_id,
+                                                    frame,
                                                     ctx,
                                                 )
                                                 .await
@@ -2048,7 +2117,7 @@ pub(crate) fn match_pattern<'a>(
                                 &field_val,
                                 &result_env,
                                 &na.node.value.span,
-                                env_id,
+                                frame,
                                 ctx,
                             )
                             .await?
@@ -2116,7 +2185,7 @@ pub(crate) fn match_pattern<'a>(
                                     &field_value,
                                     &result_env,
                                     &entry.node.value.span,
-                                    env_id,
+                                    frame,
                                     ctx,
                                 )
                                 .await?
@@ -2144,7 +2213,7 @@ pub(crate) fn match_pattern<'a>(
                         let payload_thunk = Arc::clone(payload_id);
                         let payload_val =
                             materialize(&payload_thunk, Some(value_span), ctx).await?;
-                        match_pattern(pattern, &payload_val, env, value_span, env_id, ctx).await
+                        match_pattern(pattern, &payload_val, env, value_span, frame, ctx).await
                     }
                     _ => Ok(None),
                 }
@@ -5600,6 +5669,117 @@ mod tests {
             matches!(err.kind, crate::error::ErrorKind::MatchExhaustion { .. }),
             "Expected MatchExhaustion, got: {:?}",
             err.kind
+        );
+    }
+
+    // B-597: Pin patterns in match — VarRef in pattern position looks up current scope and
+    // compares to scrutinee for equality. A resolved pin matches when values are equal.
+    #[tokio::test]
+    async fn test_b597_pin_pattern_match_succeeds() {
+        // `[x: 42  r: [match 42  $x: "hit"  ...: "miss"]]` — $x resolves to 42, scrutinee is 42.
+        // After B-597, the pin arm matches and r = "hit".
+        let thunk = eval_str(
+            "[x: 42  r: [match 42  $x: \"hit\"  ...: \"miss\"]]",
+            empty_env(),
+            &test_ctx(),
+        )
+        .await
+        .expect("eval_str must succeed");
+        let val = materialize(&thunk, None, &test_ctx())
+            .await
+            .expect("materialize must succeed");
+        let Value::Dict(ref d) = val else {
+            panic!("expected Dict, got {val:?}");
+        };
+        let r = d
+            .get(&HashableValue::Str(Arc::from("r")))
+            .expect("key 'r' must exist");
+        let r_val = super::materialize(r, None, &test_ctx())
+            .await
+            .expect("r must materialize");
+        assert_eq!(
+            r_val,
+            Value::String {
+                source: Arc::from("hit"),
+                start: 0,
+                end: 3
+            },
+            "pin pattern $x=42 should match scrutinee 42; got: {r_val:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_b597_pin_pattern_no_match_falls_through() {
+        // `[x: 42  r: [match 99  $x: "hit"  ...: "miss"]]` — $x=42, scrutinee=99, no match.
+        let thunk = eval_str(
+            "[x: 42  r: [match 99  $x: \"hit\"  ...: \"miss\"]]",
+            empty_env(),
+            &test_ctx(),
+        )
+        .await
+        .expect("eval_str must succeed");
+        let val = materialize(&thunk, None, &test_ctx())
+            .await
+            .expect("materialize must succeed");
+        let Value::Dict(ref d) = val else {
+            panic!("expected Dict, got {val:?}");
+        };
+        let r = d
+            .get(&HashableValue::Str(Arc::from("r")))
+            .expect("key 'r' must exist");
+        let r_val = super::materialize(r, None, &test_ctx())
+            .await
+            .expect("r must materialize");
+        assert_eq!(
+            r_val,
+            Value::String {
+                source: Arc::from("miss"),
+                start: 0,
+                end: 4
+            },
+            "pin pattern $x=42 should NOT match scrutinee 99; got: {r_val:?}"
+        );
+    }
+
+    // B-596: eval_surface_file_with_input injects initial_input thunk as % pipeline variable.
+    // The formatter calls this with the AST dict as Some(ast_thunk); % must be accessible.
+    #[tokio::test]
+    async fn test_b596_initial_input_accessible_as_percent() {
+        // Build a program that references % — after B-596, it should resolve to initial_input.
+        let ctx = test_ctx();
+        let source = "[result: %]";
+        let file: Arc<str> = Arc::from("<test>");
+        let parsed = crate::parser::parse(source, Arc::clone(&file)).expect("parse must succeed");
+        let program = crate::desugar::desugar_program_full(&parsed.program);
+
+        // Seed resolver with root_group + % at slot root_group.len().
+        let mut resolver_seed = ctx.root_group_resolver_map();
+        let percent_slot = ctx.root_group.len() as u32;
+        resolver_seed.insert("%".to_string(), percent_slot);
+        let (_table, _frames) = crate::resolve::resolve_surface_program(&program, &[resolver_seed]);
+
+        // Build a thunk for initial_input: Int(777).
+        let input_thunk = Arc::new(Thunk::value(Value::Int(777), rust_span!()));
+
+        let result_thunk = super::eval_surface_file_with_input(&program, &ctx, Some(input_thunk))
+            .await
+            .expect("eval_surface_file_with_input must succeed");
+        let val = super::materialize(&result_thunk, None, &ctx)
+            .await
+            .expect("materialize must succeed");
+        let Value::Dict(ref d) = val else {
+            panic!("expected Dict, got {val:?}");
+        };
+        let result_thunk_ref = d
+            .get(&HashableValue::Str(Arc::from("result")))
+            .expect("key 'result' must exist");
+        let result_val = super::materialize(result_thunk_ref, None, &ctx)
+            .await
+            .expect("result must materialize");
+        assert_eq!(
+            result_val,
+            Value::Int(777),
+            "% should resolve to initial_input Int(777); got: {result_val:?}"
         );
     }
 
