@@ -3225,10 +3225,9 @@ async fn test_expand_all_tycon_apps_app_tycyon() {
 /// because a bare TypeVar inside a Union is non-contractive (Rule 2 of is_contractive_type
 /// requires ALL union members to be contractive; TypeVar(binder, 0) is a bare self-ref).
 ///
-/// T-1172 tracks wiring expand_named into the annotation resolver (S-862).
-/// When T-1172 lands, the contractiveness rule for Union may also need revision
-/// (a Union member that is a bare recursive ref may need special handling for
-/// the equirecursive coinductive algorithm to work end-to-end).
+/// expand_named is wired into the annotation resolver via resolve_type_head (S-862 complete).
+/// The contractiveness rule for Union correctly rejects bare recursive refs as non-contractive
+/// (a Union member that is a bare self-ref is not guarded by a structural constructor).
 ///
 /// Current behavior: returns Some(Union([Int, TypeVar(binder, 0)])) — not Type::Recursive.
 /// The TypeVar sentinel IS present (proving cycle detection worked), but the Recursive
@@ -3300,7 +3299,7 @@ async fn test_expand_named_produces_recursive_wrapper() {
 /// Union([Int, TypeVar(binder_even)]) is non-contractive because the TypeVar is a bare
 /// self-reference inside a Union (Rule 1+2 of is_contractive_type).
 ///
-/// T-1172 tracks wiring expand_named into the annotation resolver (S-862).
+/// expand_named is wired into the annotation resolver via resolve_type_head (S-862 complete).
 /// Current behavior: Some(Union([Int, TypeVar(binder_even)])) — cycle detected (TypeVar
 /// present), Recursive wrapper absent (contractiveness check failed).
 #[tokio::test]
@@ -3584,7 +3583,7 @@ async fn test_unfold_once_basic() {
     }
 }
 
-// -- T-1165: Negative is_subtype tests for recursive types (S-862) --
+// -- T-1165: Negative is_subtype tests for recursive types --
 // These tests verify that is_subtype CORRECTLY RETURNS FALSE when recursive types
 // have incompatible structure or field types, ensuring S-Assum terminates with the
 // right answer (not just any answer).
@@ -3678,7 +3677,7 @@ async fn test_is_subtype_recursive_different_field_names_returns_false() {
     );
 }
 
-// -- T-1166: Negative is_contractive_type unit tests (S-862) --
+// -- T-1166: Negative is_contractive_type unit tests --
 // These tests verify the 3-rule contractiveness check for recursive type alias bodies.
 // The function is in src/typecheck_annot.rs; it's called at type alias construction time
 // to reject non-contractive definitions like `type Bad a = a` (infinite regress).

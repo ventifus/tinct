@@ -426,10 +426,8 @@ pub enum Type {
     ///
     /// The `var` name serves as the coinductive sigma key in S-Exp + S-Assum subtype checking.
     /// S-861 implemented `is_subtype` with S-Exp + S-Assum for Recursive types.
-    /// `expand_named` wiring into the annotation resolver is deferred to S-862.
-    ///
-    // S-861: equirecursive-checker — is_subtype done; expand_named wiring deferred to S-862
-    #[allow(dead_code)]
+    /// S-862 completed: `expand_named` is wired into the annotation resolver via
+    /// `resolve_type_head` (typecheck_annot.rs).
     Recursive {
         /// Globally unique μ-binder name (e.g., `"𝜇ꜱʏᴍ⧼IntList⧽42"`).
         var: String,

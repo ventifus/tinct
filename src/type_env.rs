@@ -1082,19 +1082,6 @@ pub fn generalize_with_doc(
 
 // Display impl for Type moved to type_normalize.rs
 
-/// Parameterized type alias declaration.
-///
-/// `[type [a b] [first: a second: b]]` stores `params: ["a", "b"]` and
-/// `body: Record({first: TypeVar(a), second: TypeVar(b)})`.
-///
-/// When instantiated (e.g., `[Pair Int String]`), build substitution
-/// `{a -> Int, b -> String}` and apply to body.
-#[derive(Debug, Clone)]
-pub struct TypeAlias {
-    pub params: Vec<String>,
-    pub body: Type,
-}
-
 // ClassDecl, InstanceDecl, ClassEnv, InstanceEnv moved to type_class.rs (chr-module-split)
 // Imported via façade: use super::* resolves through types.rs → type_class.rs
 
@@ -1109,7 +1096,6 @@ pub struct TypeEnv {
     /// NOT assigned a slot by the resolver (class-method injections, ADT constructor type
     /// information during Pass 2, narrowing overrides, etc.).  Looked up by name only.
     extras: HashMap<String, TypeScheme>,
-    type_aliases: HashMap<String, TypeAlias>,
     parent: Option<Arc<TypeEnv>>,
     /// Class declarations registered in this scope frame.
     /// Populated by `insert_class` during type-checking; walked by `get_class` and
@@ -1131,7 +1117,6 @@ impl TypeEnv {
         Self {
             slotted: IndexMap::new(),
             extras: HashMap::new(),
-            type_aliases: HashMap::new(),
             parent: None,
             classes: IndexMap::new(),
             instances: IndexMap::new(),
@@ -1143,7 +1128,6 @@ impl TypeEnv {
         Self {
             slotted: IndexMap::new(),
             extras: HashMap::new(),
-            type_aliases: HashMap::new(),
             parent: Some(Arc::clone(parent)),
             classes: IndexMap::new(),
             instances: IndexMap::new(),
@@ -1223,27 +1207,9 @@ impl TypeEnv {
         self.slotted.get(name).or_else(|| self.extras.get(name))
     }
 
-    pub fn get_type_alias(&self, name: &str) -> Option<&TypeAlias> {
-        self.lookup_type_alias(name).map(|(alias, _)| alias)
-    }
-
     #[allow(dead_code)]
     pub(crate) fn lookup(&self, name: &str) -> Option<&TypeScheme> {
         self.get(name)
-    }
-
-    fn lookup_type_alias(&self, name: &str) -> Option<(&TypeAlias, &HashMap<String, TypeAlias>)> {
-        if let Some(alias) = self.type_aliases.get(name) {
-            return Some((alias, &self.type_aliases));
-        }
-        let mut current = self.parent.as_deref();
-        while let Some(env) = current {
-            if let Some(alias) = env.type_aliases.get(name) {
-                return Some((alias, &env.type_aliases));
-            }
-            current = env.parent.as_deref();
-        }
-        None
     }
 
     /// Insert a type (monomorphic scheme) into the slotted IndexMap.
@@ -1273,10 +1239,6 @@ impl TypeEnv {
     /// `get_type_at(level, slot)`.
     pub fn insert_scheme_named_only(&mut self, name: String, scheme: TypeScheme) {
         self.extras.insert(name, scheme);
-    }
-
-    pub fn insert_type_alias(&mut self, name: String, alias: TypeAlias) {
-        self.type_aliases.insert(name, alias);
     }
 
     /// Look up a user-defined type constructor definition by name.
@@ -1354,10 +1316,6 @@ impl TypeEnv {
     ///
     /// Used by `imports::collect_names_above_baseline` to identify names introduced
     /// by the prelude (rather than inherited from the builtin baseline).
-    pub fn own_type_aliases(&self) -> impl Iterator<Item = (&str, &TypeAlias)> {
-        self.type_aliases.iter().map(|(k, v)| (k.as_str(), v))
-    }
-
     pub fn collect_own_names(&self, names: &mut std::collections::HashSet<String>) {
         for name in self.slotted.keys() {
             names.insert(name.clone());
@@ -1521,9 +1479,6 @@ impl TypeEnv {
         }
         for (name, scheme) in other.extras {
             self.extras.insert(name, scheme);
-        }
-        for (name, alias) in other.type_aliases {
-            self.type_aliases.insert(name, alias);
         }
         for (name, decl) in other.classes {
             self.classes.insert(name, decl);

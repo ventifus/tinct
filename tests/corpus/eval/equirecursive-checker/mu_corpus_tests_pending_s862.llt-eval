@@ -1,9 +1,17 @@
-# T-1159: mu combinator corpus tests — deferred to S-862
-# These tests require expand_named to be wired into the annotation resolver,
-# which happens in S-862. Once wired, inline mu annotations like:
-#   [fn [let xs@[mu [fn [let self] [record head: Int tail: self]]]] xs.head]
-# should typecheck and run correctly.
-# See T-1159 in the tracker for the specific test cases.
-[r: "pending-s862"]
+# T-1168: mu combinator tests — S-862 equirecursive-migration
+# All three test cases from T-1168 are implemented in equirecursive-core/:
+#   1. mu_contractive_record_body.llt-eval — contractive list type (passes)
+#   2. mu_non_contractive_bare_ref.llt-eval — μa.a rejected (errors)
+#   3. mu_non_contractive_union.llt-eval — μa.(a|Int) rejected (errors)
+# This file verifies that expand_named is wired into the annotation resolver
+# and recursive named type aliases work end-to-end at runtime.
+[
+  List: [type Cons: [val: Int  tail: List]  Nil]
+  xs:   [List.Cons val: 1 tail: [List.Cons val: 2 tail: List.Nil]]
+  r:    [match xs
+    [case [let p] [List.Cons p] p.val]
+    List.Nil:                   0]
+]
+r
 === out
-Dict({"r": String("pending-s862")})
+Int(1)

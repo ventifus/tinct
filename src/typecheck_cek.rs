@@ -29,7 +29,7 @@ use crate::type_def::{Row, RowTail, TyConDef};
 use crate::type_infer::Substitution;
 use crate::types::{
     generalize, generalize_with_doc, instantiate_at_level, instantiate_scheme, unify, Constraint,
-    InferState, Kind, Type, TypeAlias, TypeEnv, TypeScheme,
+    InferState, Kind, Type, TypeEnv, TypeScheme,
 };
 
 use super::{typecheck_annot, typecheck_call, typecheck_narrow, TypeMap};
@@ -4103,19 +4103,6 @@ pub(crate) async fn run_typecheck_dict(
                     let alias_ty = qualified_body;
 
                     if let Some(name) = key_name {
-                        let remapped_params: Vec<String> = params
-                            .iter()
-                            .map(|(p, _)| {
-                                alias_ann_map.get(p).cloned().unwrap_or_else(|| p.clone())
-                            })
-                            .collect();
-                        dict_env.write().unwrap().insert_type_alias(
-                            name.clone(),
-                            TypeAlias {
-                                params: remapped_params,
-                                body: alias_ty.clone(),
-                            },
-                        );
                         dict_env
                             .write()
                             .unwrap()

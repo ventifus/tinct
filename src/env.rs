@@ -14,7 +14,7 @@ use std::sync::{Arc, RwLock};
 use indexmap::IndexMap;
 
 use crate::type_class::{ClassDecl, InstanceDecl};
-use crate::types::{Type, TypeAlias, TypeScheme};
+use crate::types::{Type, TypeScheme};
 
 // ---------------------------------------------------------------------------
 // EnvSlot
@@ -53,8 +53,6 @@ pub struct Env {
     pub(crate) classes: IndexMap<String, ClassDecl>,
     /// Instance declarations keyed by mangled name (e.g., "ɪɴꜱᴛᴀɴᴄᴇ⧼Equatable∷=⟨Int⟩⧽").
     pub(crate) instances: IndexMap<String, InstanceDecl>,
-    /// Type alias declarations.
-    pub(crate) type_aliases: HashMap<String, TypeAlias>,
     /// Type constructor definitions registered in this scope frame.
     /// Populated alongside `InferState.tycon_env` during type-checking Pass 2.
     /// Enables scoped TyConDef lookup via the Env parent chain, complementing
@@ -76,7 +74,6 @@ impl Env {
             extras: HashMap::new(),
             classes: IndexMap::new(),
             instances: IndexMap::new(),
-            type_aliases: HashMap::new(),
             tycon_defs: HashMap::new(),
             parent: None,
         }
@@ -110,7 +107,6 @@ impl Env {
             extras: HashMap::new(),
             classes: IndexMap::new(),
             instances: IndexMap::new(),
-            type_aliases: HashMap::new(),
             tycon_defs: HashMap::new(),
             parent: Some(parent),
         }
@@ -435,34 +431,6 @@ impl Env {
     }
 
     // -----------------------------------------------------------------------
-    // TYPE ALIASES
-    // -----------------------------------------------------------------------
-
-    /// Insert a type alias declaration.
-    pub fn insert_type_alias(&mut self, name: String, alias: TypeAlias) {
-        self.type_aliases.insert(name, alias);
-    }
-
-    /// Look up a type alias by name, walking the parent chain.
-    ///
-    /// Returns a cloned `TypeAlias` because the parent chain is behind
-    /// `Arc<RwLock<Env>>`.
-    pub fn get_type_alias(&self, name: &str) -> Option<TypeAlias> {
-        if let Some(alias) = self.type_aliases.get(name) {
-            return Some(alias.clone());
-        }
-        let mut current = self.parent.as_ref().map(Arc::clone);
-        while let Some(env_arc) = current {
-            let env = env_arc.read().unwrap();
-            if let Some(alias) = env.type_aliases.get(name) {
-                return Some(alias.clone());
-            }
-            current = env.parent.as_ref().map(Arc::clone);
-        }
-        None
-    }
-
-    // -----------------------------------------------------------------------
     // TYCON DEFS
     // -----------------------------------------------------------------------
 
@@ -526,11 +494,6 @@ impl Env {
         }
     }
 
-    /// Iterate over type aliases defined in THIS frame only (no parent walk).
-    pub fn own_type_aliases(&self) -> impl Iterator<Item = (&str, &TypeAlias)> {
-        self.type_aliases.iter().map(|(k, v)| (k.as_str(), v))
-    }
-
     /// Register alias type schemes: for each `(alias, original)`, copy the scheme
     /// from `original` to `alias`. Aliases are inserted into extras (name-only, no slot).
     pub fn alias_types(&mut self, pairs: &[(&str, &str)]) {
@@ -541,9 +504,9 @@ impl Env {
         }
     }
 
-    /// Copy all bindings and type aliases from `other` into `self`.
+    /// Copy all bindings from `other` into `self`.
     ///
-    /// Copies only the own (non-parent) bindings and type aliases from `other`.
+    /// Copies only the own (non-parent) bindings from `other`.
     /// Parent chains are not traversed. Existing entries in `self` with the same
     /// name are overwritten by entries from `other`.
     pub fn merge(&mut self, other: Env) {
@@ -565,9 +528,6 @@ impl Env {
             } else {
                 self.extras.insert(name, slot);
             }
-        }
-        for (name, alias) in other.type_aliases {
-            self.type_aliases.insert(name, alias);
         }
         for (name, decl) in other.classes {
             self.classes.insert(name, decl);
@@ -595,7 +555,7 @@ impl Default for Env {
 /// shadowing: if frame A (inner) defines `x` and frame B (outer) also defines `x`,
 /// only frame A's scheme reaches `dst`.
 ///
-/// All six binding categories are merged: slots, extras, type_aliases, classes,
+/// All five binding categories are merged: slots, extras, classes,
 /// instances, and tycon_defs.
 ///
 /// `dst` must be an ancestor of `src` (or the walk stops at the root frame).
@@ -636,12 +596,6 @@ pub fn merge_env_chain_into(src: &Arc<RwLock<Env>>, dst: &Arc<RwLock<Env>>) {
                 .entry(name.clone())
                 .or_insert_with(|| slot.clone());
         }
-        for (name, alias) in &frame.type_aliases {
-            collected
-                .type_aliases
-                .entry(name.clone())
-                .or_insert_with(|| alias.clone());
-        }
         for (name, decl) in &frame.classes {
             collected
                 .classes
@@ -670,9 +624,6 @@ pub fn merge_env_chain_into(src: &Arc<RwLock<Env>>, dst: &Arc<RwLock<Env>>) {
     for (name, slot) in collected.extras {
         guard.extras.insert(name, slot);
     }
-    for (name, alias) in collected.type_aliases {
-        guard.type_aliases.insert(name, alias);
-    }
     for (name, decl) in collected.classes {
         guard.classes.insert(name, decl);
     }
@@ -691,7 +642,6 @@ impl std::fmt::Debug for Env {
             .field("extras", &self.extras.len())
             .field("classes", &self.classes.len())
             .field("instances", &self.instances.len())
-            .field("type_aliases", &self.type_aliases.len())
             .field("tycon_defs", &self.tycon_defs.len())
             .field("has_parent", &self.parent.is_some())
             .finish()

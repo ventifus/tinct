@@ -5334,8 +5334,8 @@ pub(crate) fn is_contractive_type(ty: &Type, var: &str) -> bool {
 /// Non-recursive aliases are returned as-is (no wrapper needed).
 ///
 /// The `Type::Recursive` produced here is consumed by `is_subtype` via the S-Exp + S-Assum
-/// coinductive algorithm implemented in S-861. Wiring `expand_named` into the annotation
-/// resolver (so that named recursive types reach `is_subtype` at runtime) is deferred to S-862.
+/// coinductive algorithm implemented in S-861. `expand_named` is wired into the annotation
+/// resolver via `resolve_type_head` (S-862 complete).
 pub(crate) fn expand_named(
     name: &str,
     args: &[Type],
@@ -5457,9 +5457,8 @@ pub(crate) fn expand_named(
     // entry whose fresh name appears in the expanded body."
     //
     // The S-Exp + S-Assum coinductive subtype algorithm that CONSUMES `Type::Recursive`
-    // was implemented in S-861 (`is_atom_subtype` in src/bas.rs). `Type::Recursive` is
-    // produced here and will be consumed by `is_subtype` once `expand_named` is wired into
-    // the annotation resolver in S-862.
+    // was implemented in S-861 (`is_atom_subtype` in src/bas.rs). `expand_named` is wired
+    // into the annotation resolver via `resolve_type_head` (S-862 complete).
     if contains_recvar(&expanded, &binder_name) {
         // T-1162: Contractiveness check BEFORE wrapping in Type::Recursive.
         // A recursive type must be contractive — the self-reference must appear under a

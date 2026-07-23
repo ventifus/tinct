@@ -7,14 +7,14 @@ use std::sync::{Arc, RwLock};
 
 // Pattern import deleted (T-1750)
 use crate::ast::{
-    Span, Spanned, SurfaceDeclaration, SurfaceDocument, SurfaceExpression, SurfaceItem,
+    Span, Spanned, SurfaceDocument, SurfaceExpression, SurfaceItem,
     SurfaceNode, SurfaceProgram, TypeAnnotationTable,
 };
 use crate::env::Env;
 use crate::error::TypeDiagnostic;
 #[cfg(test)]
 use crate::types::TypeEnv;
-use crate::types::{generalize, InferState, Row, Type, TypeAlias};
+use crate::types::{generalize, InferState, Row, Type};
 
 // Split modules — annotation resolution and dict inference
 #[path = "typecheck_annot.rs"]
@@ -375,9 +375,6 @@ fn merge_env_schemes_into_env(source_env: &Arc<RwLock<Env>>, target_env: &Arc<Rw
                 guard.insert_scheme_named_only(name.clone(), scheme.clone());
             }
         }
-        for (name, alias) in frame.own_type_aliases() {
-            guard.insert_type_alias(name.to_string(), alias.clone());
-        }
         for (_, decl) in &frame.classes {
             guard.insert_class(decl.clone());
         }
@@ -687,38 +684,22 @@ fn extract_doc_from_surface_node(
 
 /// Pre-register type aliases in `target_env` before Pass 1 inference.
 ///
-/// Scans a dict node for `Name: [type ...]` entries and inserts stub `TypeAlias` entries
-/// (with `body: Type::Unknown`) so that forward references within the same dict resolve
-/// correctly when Pass 2 fills in the real bodies.
+/// Previously inserted stub `TypeAlias` entries for forward-reference resolution.
+/// TypeAlias was dead data (never read back after insertion) and has been deleted.
+/// Type alias information is stored in `TyConDef` via `InferState.tycon_env` and
+/// `TypeEnv.tycon_defs`, which are the authoritative lookup paths used by
+/// `expand_named` and `resolve_type_head`.
+///
+/// This function is retained as a no-op for call-site compatibility; callers
+/// will be cleaned up in a future sprint.
+#[allow(unused_variables)]
 pub(crate) fn register_type_aliases_env(
     node: &Arc<SurfaceNode>,
     target_env: &mut Env,
     _state: &mut InferState,
     _errors: &mut Vec<TypeDiagnostic>,
 ) {
-    if let SurfaceExpression::Dict(entries) = &node.expr {
-        let mut alias_entries: Vec<(String, Vec<String>)> = Vec::new();
-        for entry in entries {
-            if let Some(ref key) = entry.node.key {
-                if let SurfaceExpression::StringLiteral { content: name, .. } = &key.expr {
-                    if let SurfaceExpression::Decl(decl_box) = &entry.node.value.expr {
-                        if let SurfaceDeclaration::TypeAlias { params, .. } = decl_box.as_ref() {
-                            let param_names: Vec<String> =
-                                params.iter().map(|(n, _)| n.clone()).collect();
-                            alias_entries.push((name.clone(), param_names.clone()));
-                            target_env.insert_type_alias(
-                                name.clone(),
-                                TypeAlias {
-                                    params: param_names,
-                                    body: Type::Unknown,
-                                },
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    }
+    // No-op: TypeAlias struct deleted; TyConDef registration handles forward references.
 }
 
 /// Map a resolved `Type` to the dispatch tag string used in instance binding names.

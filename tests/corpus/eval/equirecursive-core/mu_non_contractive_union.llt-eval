@@ -1,0 +1,8 @@
+# T-1168: mu combinator — non-contractive union body
+# A union containing a bare RecursiveRef μa.(a | Int) is non-contractive:
+# the Union wrapper is NOT a guarding constructor, so the self-reference
+# is not shielded. This must produce a type error (rejected at construction
+# time by the contractiveness check in mu).
+[@[mu a [or a Int]] 42]
+=== error
+non-contractive recursive type
