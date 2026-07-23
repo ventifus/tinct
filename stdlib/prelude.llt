@@ -1892,9 +1892,9 @@ str?@[doc: "Check if value is String"]: [fn@Boolean [let x@[is: String]] [match 
 bool?@[doc: "Check if value is Bool"]:  [fn@Boolean [let x@[is: Boolean]] [match x Boolean.True: Boolean.True  Boolean.False: Boolean.True  ...: Boolean.False]]
 null?@[doc: "Check if value is null (empty dict [])"]: [fn@Boolean [let x@[is: Null]] [if [dict? x] [match [builtin-eq-int [builtin-dict-length x] 0] 0: Boolean.False ...: Boolean.True] Boolean.False]]
 dict?@[doc: "Check if value is Dict"]:  [fn@Boolean [let x@[is: Dict]] [match x [@Dict _]:    Boolean.True  ...: Boolean.False]]
-fn?@[doc: "Check if value is a function (Function or Builtin)"]: [fn@Boolean [let x] [match x [@Fn _]: Boolean.True  ...: Boolean.False]]
+fn?@[doc: "Check if value is a function (Function or Builtin)"]: [fn@Boolean [let x@[is: Fn]] [match x [@Fn _]: Boolean.True  ...: Boolean.False]]
 proxy?@[doc: "Check if value is a Proxy"]: [fn@Boolean [let x] [match x [@Proxy _]: Boolean.True  ...: Boolean.False]]
-seq?@[doc: "Check if value is a Seq"]:  [fn@Boolean [let x] [match x [@Seq _]:     Boolean.True  ...: Boolean.False]]
+seq?@[doc: "Check if value is a Seq"]:  [fn@Boolean [let x@[is: Seq]] [match x [@Seq _]:     Boolean.True  ...: Boolean.False]]
 bytes?@[doc: "Check if value is Bytes"]: [fn@Boolean [let x@[is: Bytes]] [match x [@Bytes _]:  Boolean.True  ...: Boolean.False]]
 
 num?@[doc: "Check if value is numeric (Int or Float)"]: [fn@Boolean [let x] [or [int? x] [float? x]]]
@@ -3279,7 +3279,10 @@ read-chunk@[doc: "Read up to n bytes from a handle (size first, handle last)."]:
       [builtin-file-read h n]
       [h.read-chunk n h]]]
 
-# Meta primitives: resolve/eval for AST introspection and meta-programming.
+# Meta primitives: parse/desugar/resolve/eval for AST introspection and meta-programming.
+parse@[doc: "Parse source bytes into a Program. Args: bytes source-name. Returns {program, diagnostics}."]: builtin-parse
+desugar@[doc: "Desugar a parsed Program, expanding syntactic sugar. Args: program. Returns desugared Program."]: builtin-desugar
+program-docs@[doc: "Extract all documents from a desugared Program as a Dict of Document values."]: builtin-program-docs
 resolve@[doc: "Resolve a Document against a name-set, returning {doc, diagnostics}. name-set: flat Dict<String,1> of all visible names. diagnostics: errors only (undefined variables). Args: doc name-set."]: builtin-resolve
 lower@[doc: "Lower a resolved+typechecked Document to a CoreDocument. Must be called after typecheck-doc and before eval."]: builtin-lower
 program@[doc: "Construct a Program value from a sequence of Document values. Used for program transformation."]: builtin-program
@@ -3319,7 +3322,7 @@ uses-scope: [fn@Dict [let module-names]
 eval-program@[doc: """
 Evaluate all documents in a Program, threading % via env-dict accumulation.
 
-prog:          Program value (already desugared via builtin-desugar)
+prog:          Program value (already desugared via desugar)
 initial-input: initial % value for the first document
 env:           Dict — the accumulated env dict (e.g. from prelude loading)
 tc:            TypeContext — accumulated type state (from builtin-make-type-ctx)
@@ -3327,7 +3330,7 @@ tc:            TypeContext — accumulated type state (from builtin-make-type-ct
 Returns the final document's result.
 Named document sections (--- name: "foo") accumulate as %foo bindings in env.
 """]: [fn [let prog initial-input env tc]
-  [docs: [builtin-program-docs prog]]
+  [docs: [program-docs prog]]
   [state: [reduce
     [fn [let st doc]
       [meta:     [builtin-doc-meta doc st.env]]
@@ -3926,9 +3929,9 @@ Requires %prelude (env Dict) to be in scope — injected by the loader.
       [if [= actual-hash integrity-hash] []
         [raise [join "" ["hash mismatch for " path ": expected " integrity-hash " got " actual-hash]]]]]
     [blake3 source]]]]
-  [pr:        [builtin-parse [str-bytes-raw source] path]]
-  [desugared: [builtin-desugar pr.program]]
-  [docs:      [builtin-program-docs desugared]]
+  [pr:        [parse [str-bytes-raw source] path]]
+  [desugared: [desugar pr.program]]
+  [docs:      [program-docs desugared]]
   [tc:        [builtin-make-type-ctx]]
   [eval-program desugared [] %prelude tc]]
 
@@ -5001,13 +5004,20 @@ Seekable@[doc: "Random-access extension of ByteStream. Only seekable file handle
 #      - otherwise    → $name variable reference: parse ident up to stop char
 #   4. Return [quote [str-parts parts...]] for evaluation in the call-site scope
 
-# Approximate stop-character set for variable names in interpolated strings.
-# The desugar pass (src/desugar.rs build_interpolated_string_node) uses an allow-list
-# (alphanumeric | _ | -); this deny-list is an approximation that covers common cases.
-# Known gap: (, ), {, }, |, $, / are not in this list but would stop the desugar.
-# T-1619 tracks making the sets exactly equivalent.
+# Stop-character test for variable names in interpolated strings.
+# Complement of the allow-list in desugar.rs build_interpolated_string_node:
+#   allow = alphanumeric | _ | -
+#   stop  = NOT allow (any char that is not alphanumeric, _, or -)
+# The allow-list char-code ranges: a-z (97-122), A-Z (65-90), 0-9 (48-57),
+# _ (95), - (45). Any codepoint outside these ranges is a stop character.
+# This exactly mirrors the desugar pass (D-3 protocol contract).
 tmpl-is-stop: [fn [let c]
-  [str-contains? c " \t\r\n[]:#;\"@.,!?"]]
+  [code: [char-code c]]
+  [not [or [and [>= code 97] [<= code 122]]
+           [or [and [>= code 65] [<= code 90]]
+               [or [and [>= code 48] [<= code 57]]
+                   [or [= code 95]
+                       [= code 45]]]]]]]
 
 # Find the byte-length of the variable name at the start of string s.
 # Walks from index i until a stop char is found or end of string.

@@ -25,9 +25,11 @@
 //! **Predicate narrowing** (`@[is: T]`, `@[narrows: T]`) is entirely annotation-driven — no
 //! predicate names are hardcoded in Rust. A custom prelude can name predicates anything.
 //!
-//! **Structural pattern narrowing** (`=`, `and`, `has?`, `type-of`) still uses hardcoded
-//! function names (B-545). A protocol entry or annotation extension is needed to make these
-//! prelude-agnostic as well.
+//! **Structural pattern narrowing** (`=`, `and`, `has?`, `type-of`) uses four function names
+//! that are **Axiom 1 protocol entries** (D-8). Rust defines the protocol; the prelude
+//! implements it. Any compliant prelude must provide functions with these exact names for
+//! structural narrowing to work. This is analogous to `tmpl`/`unindent` (D-3) and
+//! `as-typenode` (D-7). See `doc/feature/narrowing.md` §Structural Narrowing Protocol Entries.
 
 use std::sync::{Arc, RwLock};
 
@@ -188,10 +190,12 @@ pub(crate) fn try_type_of(left: &Arc<SurfaceNode>, right: &Arc<SurfaceNode>) -> 
                                 "Int" => Some(Type::Int),
                                 "Float" => Some(Type::Float),
                                 "String" => Some(Type::Str),
-                                // B-547 / B-545: "Bool" and "Seq" are prelude-defined types;
-                                // Rust must not hardcode their TyCon names. Return None
+                                // "Bool" and "Seq" are prelude-defined types — Rust must
+                                // not hardcode their TyCon names (Axiom 4). Return None
                                 // (no narrowing) so the variable retains its original type.
                                 // Emitting Unknown would actively degrade type checking.
+                                // Predicate narrowing (@[is: T]) handles these via prelude
+                                // annotations instead (B-546).
                                 "Bool" | "Seq" => None,
                                 _ => None,
                             };

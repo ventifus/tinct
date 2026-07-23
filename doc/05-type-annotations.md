@@ -705,6 +705,14 @@ error: @ annotations outside type-assert or param contexts not yet supported
 
 **`TypeStageApp`** — when annotation brackets contain TypeVar arguments that are not yet ground, the resolver produces a lazy `TypeStageApp` node instead of evaluating eagerly. It reduces to a concrete type when the TypeVars are resolved during inference.
 
+#### `as-typenode` Protocol Entry (D-7)
+
+`as-typenode` is an **Axiom 1 protocol entry** — the Rust type checker requires that the active prelude provides a function named `as-typenode` in the type-stage scope. This function normalizes TypeNode values produced by type-stage expression evaluation using user-defined `as-type:` annotations on TypeNode constructors.
+
+**Protocol contract:** When the type checker's structural conversion (`typenode_value_to_type`) fails to recognize a TypeNode value, it dispatches through `as-typenode` to normalize the value before giving up. The lookup mechanism is `state.type_stage_scope` — the prelude registers the function under this exact name. Any custom prelude must export an `as-typenode` function that accepts a TypeNode value and returns a resolved Type.
+
+This follows the same pattern as `tmpl`/`unindent` for string interpolation (D-3) and the structural narrowing protocol entries `=`, `and`, `has?`, `type-of` (D-8). Rust defines the protocol name; the prelude implements the behavior.
+
 ### 15. Type Alias Declarations
 
 `[type ...]` declares a named type alias or nominal ADT. Four rules govern all `[type ...]` forms:

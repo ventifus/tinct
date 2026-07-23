@@ -2229,6 +2229,15 @@ async fn resolve_type_head(
                 }
                 crate::type_infer::TypeStageEntry::Function(thunk) => {
                     // Function thunk — parameterized type constructor (e.g., Seq, Result).
+                    if args.is_empty() {
+                        // Zero-arg reference to a parameterized type constructor (e.g.,
+                        // @[is: Seq] or @[narrows: Seq]). The caller wants the unapplied
+                        // type constructor — produce TyCon(name) which represents "any
+                        // application of this constructor" (Seq of any element type).
+                        // This enables annotation-based narrowing for parameterized types
+                        // without requiring a type argument (B-546).
+                        return Ok(Type::TyCon(name.to_string()));
+                    }
                     if let Some(eval_ctx) = &state.eval_ctx {
                         if let Some(ty) = crate::type_normalize::evaluate_resolver_with_thunk(
                             Arc::clone(thunk),

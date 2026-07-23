@@ -199,7 +199,20 @@ The semantics are identical: `[my-int? x]` being true narrows `x` to `Int`.
 
 **Mechanism:** Both forms store `TypeScheme.param_narrowings[0] = Some(T)` when the predicate's type scheme is constructed. `extract_narrowings` (in `src/typecheck_narrow.rs`) looks up the called function's type scheme in the environment and reads `param_narrowings`. The narrowing logic is fully annotation-driven — no predicate names are hardcoded in Rust.
 
-**Limitation (B-545):** Structural narrowing patterns (`=`, `has?`, `and`, `type-of`) still use hardcoded function name matching. A protocol or annotation extension is needed to make those prelude-agnostic as well.
+### Structural Narrowing Protocol Entries (D-8)
+
+Structural narrowing patterns use four function names that are **Axiom 1 protocol entries** — Rust defines the protocol; the prelude implements it. Any compliant prelude must provide functions with these exact names for structural narrowing to work:
+
+| Name | Pattern | Narrowing effect |
+|------|---------|-----------------|
+| `=` | `[= x literal]` | `x` narrows to the literal's type |
+| `type-of` | `[= [type-of x] "TypeName"]` | `x` narrows to the named type |
+| `has?` | `[has? "key" x]` | `x` narrows to a record with that key |
+| `and` | `[and cond1 cond2]` | Composes narrowings from both sub-conditions |
+
+These are analogous to the `tmpl`/`unindent` protocol entries for string interpolation (D-3) and `as-typenode` for type annotation resolution (D-7). A custom prelude that renames these functions will not get structural narrowing — by design. The names are part of the type checker's protocol contract.
+
+**Decision rationale (D-8):** Option (a) was chosen — declaring these as Axiom 1 protocol entries — over option (b) (annotation-based structural narrowing). The names `=`, `and`, `has?`, `type-of` represent fundamental structural patterns that any narrowing-capable type checker needs to recognize. Making them annotations would add complexity without correctness benefit, since any prelude providing these operations would use these names anyway.
 
 ### Limitations
 

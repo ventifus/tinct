@@ -71,16 +71,16 @@
   # Returns the evaluated value (not a Document) so callers receive tinct values.
   # Type: (String -> Any)
   parse-expr: [fn [let s]
-    [pr: [builtin-parse [builtin-str-bytes s] "<stream>"]]
-    [desugared: [builtin-desugar pr.program]]
-    [docs: [builtin-program-docs desugared]]
-    [doc: [builtin-get 0 docs]]
-    [resolved: [builtin-resolve doc []]]
-    [evout: [builtin-eval resolved.doc 0]]
+    [pr: [parse [str-bytes-raw s] "<stream>"]]
+    [desugared: [desugar pr.program]]
+    [docs: [program-docs desugared]]
+    [doc: [get 0 docs]]
+    [resolved: [resolve doc []]]
+    [evout: [eval resolved.doc 0]]
     evout.result]
 
   # program-exprs: extract all documents from a Value::Program.
   # Type: (Program -> Seq)
   program-exprs: [fn [let prog]
-    [each [builtin-program-docs prog]]]
+    [each [program-docs prog]]]
 ]
