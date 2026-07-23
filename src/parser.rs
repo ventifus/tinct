@@ -9343,10 +9343,7 @@ mod tests {
         // [fn [let x@Int y] body] — typed params via [let ...] form parse correctly.
         // Verifies parse_param_list recognises [let ...], extracts x (annotated @Int)
         // and y (unannotated) as SurfaceParam entries with correct annotation shapes.
-        //
-        // NOTE: Eval-level coverage (calling the function with args) is blocked by the
-        // ThunkStateGuard aliasing hazard (see TODO.md sprint-2b-shim-removal). When
-        // that hazard is resolved, add an eval integration test here.
+        // Eval-level coverage: tests/corpus/eval/typed_fn_params.llt-eval.
         let output = parse(
             "[fn [let x@Int y] [+ $x $y]]",
             test_file("[fn [let x@Int y] [+ $x $y]]"),

@@ -1,0 +1,5 @@
+# Typed fn params: [fn [let x@Int y@Int] [+ x y]] with Int args → Int result.
+# Previously blocked by ThunkStateGuard aliasing hazard (now deleted).
+[[fn [let x@Int y@Int] [+ x y]] 3 4]
+=== out
+7
