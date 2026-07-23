@@ -1545,14 +1545,44 @@ async fn run_eval(
         deferred_cap_thunks.push(("%cwd".to_string(), cwd_thunk));
     }
 
-    // %stdin: Handle/WriteHandle removed. When -i is specified, %stdin is not injected.
-    // The input formatter (cli/in/*.llt) must be updated to use builtin-read-stdin instead.
-    // TODO: Redesign %stdin injection using Value::File or builtin-read-stdin for each read.
-    // %stdin injection via Handle removed — network/stream redesign in progress.
-    // The -i flag sets input formatter; %stdin is not injected. Input format name flows via %args.input.
+    // Inject %stdin as a Value::File wrapping the real stdin file descriptor when -i is specified.
+    // Input formatters (cli/in/*.llt) read from %stdin via `lines %stdin` → `read-all` → `read-chunk`.
+    // %stdin is only injected when -i is provided: programs that don't need stdin must not acquire it.
+    // AMBIENT-OK: CLI bootstrap — stdin fd (0) is a process-level resource granted by the OS.
     if input.is_some() {
-        // No-op: %stdin was previously injected here as a Value::Handle. Now no-op.
-        // The input formatter name is passed via %args.input (see below).
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::FromRawFd;
+            use std::sync::Mutex;
+            // SAFETY: fd 0 is stdin, always valid at process startup.
+            // We duplicate it so the Value::File owns an independent fd and closing it
+            // does not close the process's stdin for other users (e.g. the shell).
+            let stdin_owned: std::fs::File = unsafe { std::fs::File::from_raw_fd(0) };
+            let stdin_dup = stdin_owned
+                .try_clone()
+                .map_err(|e| format!("cannot duplicate stdin fd for %stdin: {e}"))?;
+            // Prevent the original from being closed when stdin_owned drops.
+            std::mem::forget(stdin_owned);
+            let cap_file = cap_std::fs::File::from_std(stdin_dup);
+            let stdin_value = Value::File(Arc::new(Mutex::new(cap_file)));
+            let stdin_thunk = Arc::new(tinct::Thunk::value(stdin_value, tinct::rust_span!()));
+            env.write()
+                .unwrap()
+                .insert_slot_name_only("%stdin".to_string());
+            deferred_cap_thunks.push(("%stdin".to_string(), stdin_thunk));
+        }
+        #[cfg(not(unix))]
+        {
+            // On non-Unix platforms, inject %stdin as an empty dict so programs compile
+            // and fail gracefully at runtime when attempting to read, rather than failing
+            // at resolve time with "undefined variable: %stdin".
+            let stdin_value = Value::Dict(indexmap::IndexMap::new());
+            let stdin_thunk = Arc::new(tinct::Thunk::value(stdin_value, tinct::rust_span!()));
+            env.write()
+                .unwrap()
+                .insert_slot_name_only("%stdin".to_string());
+            deferred_cap_thunks.push(("%stdin".to_string(), stdin_thunk));
+        }
     }
 
     // NOTE: %stdout and %stderr are NOT injected here.
@@ -1716,11 +1746,14 @@ async fn run_eval(
     }
 
     // Inject --cap-file NAME=PATH[:MODE] entries into the root environment as `%NAME`.
+    // --cap-file injects a DirCap narrowed to the parent directory of PATH, granting the
+    // specified permissions (r/w/a) on that directory. This gives tinct programs scoped
+    // directory access for the single file path specified, using the DirCap mechanism.
     // --no-fs suppresses all cap-file entries (filesystem access is blocked globally).
     // AMBIENT-OK: CLI bootstrap — operator-specified file paths via --cap-file.
     #[allow(clippy::disallowed_types, clippy::disallowed_methods)]
     if !no_fs {
-        #[allow(clippy::never_loop)] // TODO: implement --cap-file; currently always returns Err
+        use tinct::DirPerms;
         for cap_file_entry in &cap_file {
             // Parse NAME=PATH[:MODE]
             let (name, rest) = cap_file_entry.split_once('=').ok_or_else(|| {
@@ -1739,7 +1772,7 @@ async fn run_eval(
 
             // Split PATH:MODE — mode is the suffix after the last ':'
             // PATH may contain ':' on Windows (e.g. C:\foo.txt); find the last ':' for the mode.
-            // If no ':', mode defaults to "rw" (read-write text).
+            // If no ':', mode defaults to "r" (readable).
             let (path_str, mode_str) = match rest.rsplit_once(':') {
                 Some((path, mode)) => (path.trim(), Some(mode.trim())),
                 None => (rest.trim(), None),
@@ -1800,7 +1833,7 @@ async fn run_eval(
                     }
                 }
             } else {
-                // No mode specified → r (readable text)
+                // No mode specified → r (readable)
                 (true, false, false, false)
             };
 
@@ -1812,13 +1845,56 @@ async fn run_eval(
                 ));
             }
 
-            // --cap-file: Handle/WriteHandle removed. Use DirCap (--cap-fs) instead.
-            // TODO: Redesign --cap-file to inject a DirCap or Value::File.
-            return Err(format!(
-                "--cap-file: file handle injection via Handle/WriteHandle is not available in this version. \
-                 Use --cap-fs NAME=PATH to inject a DirCap instead. Affected entry: {:?}",
-                cap_file_entry
-            ));
+            // Resolve the file path and open its parent directory as a DirCap.
+            // --cap-file grants access to the parent directory (narrowed to the specified
+            // permissions), not a single file — DirCap is the capability unit in tinct.
+            // Programs use `[open %cap-name "filename" mode]` to access the file within it.
+            let file_path = std::path::Path::new(path_str);
+            let parent_dir = file_path.parent().unwrap_or(std::path::Path::new("."));
+            // Resolve to an absolute path for clarity and reproducibility.
+            let abs_parent = if parent_dir.as_os_str().is_empty() {
+                std::path::Path::new(".").to_path_buf()
+            } else {
+                parent_dir.to_path_buf()
+            };
+
+            let cap_dir =
+                cap_std::fs::Dir::open_ambient_dir(&abs_parent, cap_std::ambient_authority())
+                    .map_err(|e| {
+                        format!(
+                            "--cap-file: cannot open parent directory {:?} for {:?}: {e}",
+                            abs_parent, cap_file_entry
+                        )
+                    })?;
+
+            let perms = DirPerms {
+                readable,
+                statable: readable,
+                listable: readable,
+                writable,
+                appendable,
+                deletable: writable,
+                renameable: writable,
+                symlinkable: false,
+                posix_permissions: false,
+                extended_attributes: false,
+            };
+
+            let cap_value = Value::DirCap {
+                dir: cap_dir,
+                perms,
+            };
+            let cap_thunk = Arc::new(tinct::Thunk::value(cap_value, tinct::rust_span!()));
+            // Inject as `%NAME` (auto-prefix %).
+            let scoped_name = if name.starts_with('%') {
+                name.to_string()
+            } else {
+                format!("%{name}")
+            };
+            env.write()
+                .unwrap()
+                .insert_slot_name_only(scoped_name.clone());
+            deferred_cap_thunks.push((scoped_name, cap_thunk));
         }
     }
 
