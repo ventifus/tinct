@@ -585,11 +585,7 @@ mod tests {
         let program = crate::desugar::desugar_program_full(&SurfaceProgram {
             documents: vec![Spanned::new(Arc::new(doc), span)],
         });
-        let root_frame: IndexMap<String, u32> = crate::builtins_core::core_builtins()
-            .iter()
-            .enumerate()
-            .map(|(i, def)| (def.name.to_string(), i as u32))
-            .collect();
+        let root_frame = ctx.root_group_resolver_map();
         let (_table, _frames) = resolve_surface_program(&program, &[root_frame]);
         crate::eval_surface_file(&program, ctx).await
     }

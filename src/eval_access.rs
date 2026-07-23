@@ -108,13 +108,8 @@ mod tests {
         let program = crate::desugar::desugar_program_full(&SurfaceProgram {
             documents: vec![Spanned::new(Arc::new(doc), span)],
         });
-        // Seed the resolver from the FlatEnv root scope so $field-get and $slot-get
-        // are available for dot-access desugaring (installed by build_core_env).
-        let root_frame: IndexMap<String, u32> = crate::builtins_core::core_builtins()
-            .iter()
-            .enumerate()
-            .map(|(i, def)| (def.name.to_string(), i as u32))
-            .collect();
+        // Seed resolver from the full root_group so all builtin slots match the runtime.
+        let root_frame = ctx.root_group_resolver_map();
         let _ = env; // env is legacy; real bindings live in FlatEnv
         let (_table, _frames) = resolve_surface_program(&program, &[root_frame]);
         crate::eval_surface_file(&program, ctx).await

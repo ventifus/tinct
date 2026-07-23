@@ -2137,14 +2137,8 @@ mod tests {
         let program = crate::desugar::desugar_program_full(&SurfaceProgram {
             documents: vec![Spanned::new(Arc::new(doc), span.clone())],
         });
-        // Seed resolver from FlatEnv so $name references resolve to de Bruijn coords.
-        // Type annotation names (String, Int, etc.) in test expressions are resolved
-        // by the type checker, not the runtime resolver — ignore resolve errors here.
-        let root_frame: indexmap::IndexMap<String, u32> = crate::builtins_core::core_builtins()
-            .iter()
-            .enumerate()
-            .map(|(i, def)| (def.name.to_string(), i as u32))
-            .collect();
+        // Seed resolver from the full root_group so all builtin slots match the runtime.
+        let root_frame = ctx.root_group_resolver_map();
         let (_table, _frames) = resolve_surface_program(&program, &[root_frame]);
         let _ = span;
         let _ = env;

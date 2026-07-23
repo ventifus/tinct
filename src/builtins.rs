@@ -802,12 +802,8 @@ mod tests {
         let parsed = crate::parser::parse(llt_src, test_file(llt_src))
             .unwrap_or_else(|e| panic!("parse_eval: parse failed for {:?}: {}", llt_src, e));
         let program = crate::desugar::desugar_program_full(&parsed.program);
-        // Seed resolver from FlatEnv so builtin names resolve to de Bruijn coords.
-        let root_frame: indexmap::IndexMap<String, u32> = crate::builtins_core::core_builtins()
-            .iter()
-            .enumerate()
-            .map(|(i, def)| (def.name.to_string(), i as u32))
-            .collect();
+        // Seed resolver from the full root_group so all builtin slots match the runtime.
+        let root_frame = ctx.root_group_resolver_map();
         let (_table, _frames) = crate::resolve::resolve_surface_program(&program, &[root_frame]);
         let thunk = crate::eval::eval_surface_file(&program, ctx)
             .await

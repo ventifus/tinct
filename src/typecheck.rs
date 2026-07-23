@@ -261,15 +261,18 @@ pub async fn typecheck_surface_program_with_env(
     for (name, def) in seed_tycon_env {
         state.tycon_env.entry(name).or_insert(def);
     }
-    // Seed the resolver from core_builtins() — ScopeArena has been deleted.
-    // Previously this read from scope_arena.scopes[0] to include host-injected names;
-    // with the EvalFrame migration, root_frame is built from the static builtin list.
-    let _ = &state.eval_ctx; // retained for future use
-    let root_frame: indexmap::IndexMap<String, u32> = crate::builtins_core::core_builtins()
-        .iter()
-        .enumerate()
-        .map(|(i, def)| (def.name.to_string(), i as u32))
-        .collect();
+    // Seed the resolver from the full root_group when an eval context is available,
+    // so all builtin slots match the runtime. Falls back to core_builtins() only when
+    // no eval context is provided (type-only paths without an evaluator).
+    let root_frame: indexmap::IndexMap<String, u32> = if let Some(ctx) = &state.eval_ctx {
+        ctx.root_group_resolver_map()
+    } else {
+        crate::builtins_core::core_builtins()
+            .iter()
+            .enumerate()
+            .map(|(i, def)| (def.name.to_string(), i as u32))
+            .collect()
+    };
     let (resolve_table, _frames) = crate::resolve::resolve_surface_program(program, &[root_frame]);
     state.resolution_table = Some(Arc::new(resolve_table));
 
