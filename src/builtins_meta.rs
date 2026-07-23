@@ -294,7 +294,7 @@ pub(crate) fn builtin_until(
 
             let pred_val = materialize(&pred_result, Some(&call_span), &ctx).await?;
 
-            // call_to_match_opt_resolved ignores legacy env (B-515 tracks FlatEnv arm binding lookup).
+            // call_to_match_opt_resolved ignores legacy env (T-1846/T-1847 track implementation).
             let dummy_env_for_match =
                 std::sync::Arc::new(std::sync::RwLock::new(crate::value::Environment::new()));
             if crate::eval::call_to_match_opt_resolved(

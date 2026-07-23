@@ -601,7 +601,7 @@ pub(crate) fn apply_predicate_to_subject(
 ) -> Arc<Thunk> {
     let subject_thunk = Arc::new(Thunk::value(subject, subj_span));
     let pred_thunk = Arc::new(Thunk::value(predicate, pred_span.clone()));
-    // The env parameter is retained for call_to_match compatibility (B-515 tracks full FlatEnv migration).
+    // The env parameter is a legacy stub retained for signature compatibility (T-1846/T-1847).
     let _ = env;
     Arc::new(Thunk::fn_call(
         pred_thunk,
@@ -2622,7 +2622,7 @@ pub(crate) async fn apply_cont(
                         }
                     }
 
-                    // call_to_match/call_to_match_resolved ignore legacy env (B-515 tracks FlatEnv arm binding).
+                    // call_to_match/call_to_match_resolved ignore legacy env (T-1846/T-1847 track implementation).
                     let dummy_env =
                         Arc::new(std::sync::RwLock::new(crate::value::Environment::new()));
                     let guard_passed = if let Some(ref binding_name) = guard_matchable_binding {
@@ -2713,7 +2713,7 @@ pub(crate) async fn apply_cont(
                         }
                     }
 
-                    // call_to_match ignores legacy env (returns false conservatively; B-515 tracks FlatEnv arm binding).
+                    // call_to_match ignores legacy env (returns false conservatively; T-1846/T-1847 track implementation).
                     let dummy_env =
                         Arc::new(std::sync::RwLock::new(crate::value::Environment::new()));
                     let pred_passed =
@@ -2978,7 +2978,7 @@ fn eval_structural_pattern_inner<'a>(
 
                     let pred_result = materialize(&pred_call_thunk, Some(&match_span), ctx).await?;
 
-                    // call_to_match ignores legacy env (B-515 tracks FlatEnv arm binding).
+                    // call_to_match ignores legacy env (T-1846/T-1847 track implementation).
                     let dummy_env =
                         Arc::new(std::sync::RwLock::new(crate::value::Environment::new()));
                     if !crate::eval::call_to_match(&pred_result, &dummy_env, ctx, &match_span).await
@@ -3173,7 +3173,7 @@ fn eval_structural_pattern_inner<'a>(
                             ));
                             let guard_result =
                                 materialize(&guard_thunk, Some(&match_span), ctx).await?;
-                            // call_to_match ignores legacy env (B-515 tracks FlatEnv arm binding).
+                            // call_to_match ignores legacy env (T-1846/T-1847 track implementation).
                             let dummy_env =
                                 Arc::new(std::sync::RwLock::new(crate::value::Environment::new()));
                             Ok(crate::eval::call_to_match(

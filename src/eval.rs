@@ -1466,13 +1466,12 @@ pub async fn call_to_match(
     _ctx: &Arc<EvalContext>,
     _span: &Span,
 ) -> bool {
-    // FlatEnv dispatch for named protocol lookups requires arm binding allocation (B-515).
-    // Name-based lookup of "to-match" via de Bruijn coordinates requires the resolver to
-    // have assigned coordinates and B-515 to fill the corresponding FlatEnv slots.
-    // Returns false conservatively until B-515 wires FlatEnv slot lookup — same behavior
-    // as pre-T-1557 bootstrap. The `env` parameter is retained for future compatibility.
+    // T-1846 (blocked on T-1847): implement by looking up "to-match" in scope_frames,
+    // indexing init_accumulated_group[slot] for the thunk, materializing, and calling it
+    // with `val`. Returns false conservatively until T-1847 stores init_accumulated_group
+    // in EvalContext so builtins can access prelude-level thunks by LGM slot.
+    // The `env` parameter is a legacy stub retained for signature compatibility.
     let _ = (env, val);
-    // B-515: Look up "to-match" via FlatEnv coordinates and call it.
     false
 }
 
@@ -1495,8 +1494,11 @@ pub async fn call_to_match_resolved(
     _ctx: &Arc<EvalContext>,
     span: &Span,
 ) -> bool {
-    // Current behavior looks up by name via the legacy env chain. B-515 tracks FlatEnv
-    // slot allocation for arm bindings, which will replace this name-based dispatch path.
+    // T-1846 (blocked on T-1847): look up binding_name in ctx.scope_frames to get its LGM
+    // slot, then retrieve the thunk from ctx.init_accumulated_group[slot], materialize it
+    // to get the to-match function value, call it with val, and return nonzero = true.
+    // Returns false conservatively until T-1847 stores init_accumulated_group in EvalContext.
+    // The `env` parameter is a legacy stub retained for signature compatibility.
     let _ = (val, binding_name, env, span);
     false
 }
@@ -1539,12 +1541,12 @@ pub fn resolve_matchable_binding_from_fn(pred: &Value) -> Option<String> {
         crate::ast::Annotation::Simple(name) => name.as_str(),
         _ => return None,
     };
-    // Scan the env for an instance binding for "to-match" on type_name.
+    // T-1846 (blocked on T-1847): scan ctx.scope_frames for a name matching the suffix
+    // ∷to-match⟨{type_name}⟩⧽ — the Rust-level protocol name "to-match" is fixed, and
+    // the class name is whatever class declared it in the prelude (typically Matchable).
     // Instance binding names have the form: ɪɴꜱᴛᴀɴᴄᴇ⧼{class}∷to-match⟨{type_name}⟩⧽
-    // We search for the suffix ∷to-match⟨{type_name}⟩⧽ to find the binding without
-    // needing to know the class name (which is defined by the prelude, not by Rust).
-    // FlatEnv name-based lookup for instance bindings requires arm binding allocation (B-515).
-    // Returns None until B-515 wires the FlatEnv slot lookup path.
+    // Returns None conservatively until T-1847 provides init_accumulated_group in EvalContext
+    // so the resolved name can be looked up as a thunk at call time.
     let _ = type_name;
     None
 }
