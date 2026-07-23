@@ -440,7 +440,22 @@
     [doc-resolved: [builtin-resolve doc name-set]]
     [n-re: [builtin-dict-length doc-resolved.diagnostics]]
     [_re:  [builtin-dict-length [emit-diagnostics doc-resolved.diagnostics]]]
-    [match [builtin-eq-int [builtin-int-add n-re _re] 0]
+    # T-1857: If % was in scope (non-first doc) but never referenced, emit abandoned-input warning.
+    [input-warn-diags: [match [builtin-int-gt [get-or 0 "doc-index" state] 0]
+      0: []
+      ...: [match [builtin-has-key? "%" doc-resolved.unreferenced]
+           0: []
+           ...: [make-entry 0 [level: "warning"
+                kind: "abandoned-input"
+                message: "document does not reference pipeline input %"
+                span: doc-resolved.doc-span
+                notes: []
+                help: []
+                call-stack: []
+                macro-expand: []
+                blame: []]]]]]
+    [_iw: [builtin-dict-length [emit-diagnostics input-warn-diags]]]
+    [match [builtin-eq-int [builtin-int-add [builtin-int-add n-re _re] _iw] 0]
       0: [builtin-raise "resolve error(s)"]
       ...: []]
     # Type-check the document.
@@ -460,7 +475,8 @@
                0 [builtin-keys caps-list]]]
     [_result: [merge state
       [percent: evaled
-       named:   [update-named state evaled meta]]]]
+       named:   [update-named state evaled meta]
+       doc-index: [builtin-int-add [get-or 0 "doc-index" state] 1]]]]
     [match [builtin-int-gte _caps 0]
       0: _result
       ...: _result]]
@@ -495,7 +511,7 @@
     [reduce
       [fn [let state doc]
         [eval-document-runtime state mod-scope doc file-include-dir prelude-env tc emit-ch]]
-      [percent: prev  named: []]
+      [percent: prev  named: []  doc-index: 0]
       docs].percent]
 
   eval-expr: [fn [let src prev include-dir prelude-env tc emit-ch]
@@ -515,7 +531,7 @@
     [reduce
       [fn [let state doc]
         [eval-document-runtime state mod-scope doc include-dir prelude-env tc emit-ch]]
-      [percent: prev  named: []]
+      [percent: prev  named: []  doc-index: 0]
       docs].percent]
 
   # ── CLI pipeline ──────────────────────────────────────────────────────────

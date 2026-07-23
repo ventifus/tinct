@@ -267,7 +267,7 @@ Resolves a single document. Also returns:
 - `errors` — `(name, span)` pairs for genuinely unresolved expression-position VarRefs.
 - `warnings` — `(message, span)` pairs for lost intermediate bindings and unused function parameters.
 
-Used by `builtin-resolve` in the meta API for per-document incremental resolution. The `builtin-resolve` function returns errors in `diagnostics` (preserving the existing error-only contract) and warnings in a separate `warnings` key.
+Used internally. The public `builtin-resolve` API uses `resolve_surface_document_with_env_dict` (not this function) and returns `{doc, diagnostics, unreferenced, doc-span}`.
 
 Both functions are purely functional with respect to the AST (no mutation visible to callers), but they do write to the inline `Resolution` OnceLocks on each VarRef node.
 
@@ -321,12 +321,15 @@ The type checker also writes `CallDispatch` OnceLocks on call-site VarRef nodes 
 
 ### The `builtin-resolve` meta API (`src/builtins_meta.rs`)
 
-`builtin-resolve` is the tinct-code-facing counterpart of `resolve_surface_document_inplace`. It takes a `Value::Document` and a frames dict (integer-keyed outer dict, string→int inner dict) and resolves the document in place. The frames dict is the tinct-level representation of `initial_frames`.
+`builtin-resolve` is the tinct-code-facing resolution API. It takes a `Value::Document` and a `Dict<String,1>` name-set (all visible names; values ignored) and resolves the document in place using `resolve_surface_document_with_env_dict`.
 
 Key behaviors:
 - Only accepts `Value::Document`, not `Value::Program` — one document at a time.
-- Returns `{doc: Document, errors: Dict<Int, ErrorDict>}`. **Does not return `new_frames`** — callers accumulate bindings via the exports Dict returned by `builtin-eval`, not by querying resolver frames.
-- `_new_frames` from `resolve_surface_document_inplace` is intentionally discarded in `builtin-resolve`. The rationale: `builtin-eval` returns the exports Dict directly; tinct callers accumulate env by merging exports into their running env dict.
+- Returns `{doc: Document, diagnostics: Dict, unreferenced: Dict<String,1>, doc-span: SpanDict}`.
+  - `diagnostics`: unified bag of resolve errors and warnings (callers read `d.level` to filter).
+  - `unreferenced`: env names from the name-set that were never referenced by any VarRef.
+  - `doc-span`: span of the first expression item (or call site for empty documents).
+- Does not return new scope frames — callers accumulate env by merging the exports Dict from `builtin-eval`.
 
 ### Macro expansion (`src/builtins_meta.rs`)
 

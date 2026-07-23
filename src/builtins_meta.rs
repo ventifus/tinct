@@ -1923,6 +1923,24 @@ pub(crate) fn builtin_parse(
     })
 }
 
+/// Compute the best available tinct source span for a document.
+///
+/// Returns the span of the first Expr item, falling back to the first header entry,
+/// then to `call_span` (the builtin call site). Never returns a rust_span.
+fn compute_doc_span(
+    doc: &crate::ast::SurfaceDocument,
+    call_span: &crate::ast::Span,
+) -> crate::ast::Span {
+    doc.items
+        .iter()
+        .find_map(|item| match item {
+            crate::ast::SurfaceItem::Expr(n) => Some(n.span.clone()),
+            crate::ast::SurfaceItem::Decl(_) => None,
+        })
+        .or_else(|| doc.header.values().next().map(|n| n.span.clone()))
+        .unwrap_or_else(|| call_span.clone())
+}
+
 /// `builtin-resolve`: Resolve a single `Value::Document` in-place.
 ///
 /// Takes 2 positional args: the document to resolve and a name-set dict.
@@ -2017,7 +2035,7 @@ pub(crate) fn builtin_resolve(
         //   discarded — the evaluator uses inline OnceLock resolutions written directly onto each
         //   SurfaceNode::VarRef during the resolve walk (see lower.rs: resolution.get()). The
         //   ResolutionTable is not read by the evaluator.
-        let (_resolve_table, resolve_diagnostics) =
+        let (_resolve_table, resolve_diagnostics, unreferenced_names) =
             crate::resolve::resolve_surface_document_with_env_dict(
                 &doc_arc,
                 &env_names,
@@ -2078,7 +2096,15 @@ pub(crate) fn builtin_resolve(
             diagnostics_dict.insert(HashableValue::Int(i as i64), mk(Value::Dict(w)));
         }
 
-        // Return {doc: Value::Document, diagnostics: Dict}.
+        // Build unreferenced dict: {name: 1} for each env name never referenced.
+        let mut unreferenced_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+        for name in &unreferenced_names {
+            unreferenced_dict.insert(HashableValue::Str(name.as_str().into()), mk(Value::Int(1)));
+        }
+
+        let doc_span = compute_doc_span(&doc_arc, &call_span);
+
+        // Return {doc: Value::Document, diagnostics: Dict, unreferenced: Dict, doc-span: SpanDict}.
         // diagnostics is a unified bag of all severities; callers read d.level to filter.
         let mut result_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         result_dict.insert(
@@ -2089,6 +2115,11 @@ pub(crate) fn builtin_resolve(
             HashableValue::Str("diagnostics".into()),
             mk(Value::Dict(diagnostics_dict)),
         );
+        result_dict.insert(
+            HashableValue::Str("unreferenced".into()),
+            mk(Value::Dict(unreferenced_dict)),
+        );
+        result_dict.insert(HashableValue::Str("doc-span".into()), mk_span(&doc_span));
         ok_val(Value::Dict(result_dict), call_span)
     })
 }
@@ -2098,10 +2129,12 @@ pub(crate) fn builtin_resolve(
 /// `builtin-lint-pipeline-docs`: Run the cross-document pipeline stage lint.
 ///
 /// Takes 1 positional arg: a Dict of `Value::Document` objects (integer-keyed, in order).
+/// Takes 1 required named arg: `pipeline-input` (String) — the variable name to track
+/// for field accesses between pipeline stages (e.g. `"%"`).
 ///
 /// For each consecutive pair of documents (doc[i], doc[i+1]):
 /// - Extracts the static produced keys from doc[i]'s final expression
-/// - Extracts the percent field accesses from doc[i+1]
+/// - Extracts field accesses on the `pipeline-input` variable from doc[i+1]
 /// - Checks whether all produced keys are consumed; warns on abandoned keys
 ///
 /// Returns `Dict[Int, DiagnosticDict]` using the same diagnostic format as `builtin-resolve`.
@@ -2117,14 +2150,29 @@ pub(crate) fn builtin_lint_pipeline_docs(
             ctx,
             ..
         } = ctx_arg;
-        crate::builtins::reject_named(
-            "builtin-lint-pipeline-docs",
-            named.as_ref(),
-            call_span.clone(),
-        )?;
         if args.len() != 1 {
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
+
+        // Extract required named arg: pipeline-input (String)
+        let pipeline_input_name = match named.as_ref().and_then(|n| n.get("pipeline-input")) {
+            Some(thunk) => {
+                let val = crate::eval::materialize(thunk, Some(&call_span), &ctx).await?;
+                crate::builtins::require_string(
+                    "builtin-lint-pipeline-docs (pipeline-input:)",
+                    val,
+                    call_span.clone(),
+                )?
+            }
+            None => {
+                return Err(EvalError::user_error(
+                    "builtin-lint-pipeline-docs: required named arg 'pipeline-input' missing"
+                        .to_string(),
+                    call_span,
+                )
+                .into())
+            }
+        };
 
         let docs_val = args[0]
             .try_get_value()
@@ -2173,13 +2221,14 @@ pub(crate) fn builtin_lint_pipeline_docs(
         }
 
         // Build lint_stages: for each consecutive pair (doc[i], doc[i+1]),
-        // collect produced keys of doc[i] and percent accesses of doc[i+1].
+        // collect produced keys of doc[i] and accesses on pipeline-input from doc[i+1].
         let mut lint_stages: Vec<(Vec<String>, Vec<String>, bool, crate::ast::Span)> = Vec::new();
         for i in 0..doc_arcs.len().saturating_sub(1) {
+            let doc_span_i = compute_doc_span(&doc_arcs[i], &call_span);
             let (produced_keys, span) =
-                crate::resolve::collect_document_produced_keys(&doc_arcs[i]);
+                crate::resolve::collect_document_produced_keys(&doc_arcs[i], &doc_span_i);
             let (field_accesses, dynamic_use) =
-                crate::resolve::collect_percent_accesses(&doc_arcs[i + 1]);
+                crate::resolve::collect_var_accesses(&doc_arcs[i + 1], &pipeline_input_name);
             lint_stages.push((produced_keys, field_accesses, dynamic_use, span));
         }
 

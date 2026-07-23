@@ -111,7 +111,6 @@ struct SurfaceResolver {
     ///   Populated only when suppress_depth == 0 (annotation, static key, declaration, and
     ///   method-name positions are suppressed — they are not runtime variable references).
     /// - `kind = "lost-binding"`, `level = Warn`: lost intermediate binding or unused param.
-    /// - `kind = "abandoned-input"`, `level = Warn`: document never references pipeline input %.
     diagnostics: Vec<TypeDiagnostic>,
     /// > 0 when inside a context where unresolved VarRefs are not errors
     /// > (annotation, static key, declaration position, etc.).
@@ -124,10 +123,9 @@ struct SurfaceResolver {
     /// `usize::MAX` means "final expression" — references during the final expression
     /// count as consumption for any enclosing intermediate body.
     current_body_index: usize,
-    /// Whether the pipeline input `%` was referenced during this document's walk.
-    /// Used for abandoned-input detection: if `%` was in the env but never resolved
-    /// by any VarRef, the document ignores its pipeline input.
-    percent_referenced: bool,
+    /// Names from the env-dict (name-set) that were referenced during this document's walk.
+    /// Used to compute unreferenced env names returned by resolve_surface_document_with_env_dict.
+    referenced_env_names: std::collections::HashSet<String>,
     /// T-1743: Index into `self.intermediate_bodies` of the IntermediateBodyInfo for
     /// the body currently being walked, paired with the name of the specific binding
     /// whose value expression is being walked. Set by the Sequential handler before
@@ -179,7 +177,7 @@ impl SurfaceResolver {
             suppress_depth: 0,
             intermediate_bodies: Vec::new(),
             current_body_index: usize::MAX,
-            percent_referenced: false,
+            referenced_env_names: std::collections::HashSet::new(),
             current_binding_context: None,
             fn_scope_boundaries: Vec::new(),
             fn_capture_lists: Vec::new(),
@@ -271,10 +269,7 @@ impl SurfaceResolver {
 
         let (match_depth, addr) = found?;
 
-        // Track pipeline input % reference for abandoned-input detection.
-        if name == "%" {
-            self.percent_referenced = true;
-        }
+        self.referenced_env_names.insert(name.to_string());
 
         // Lost-binding detection: mark the binding consumed if it belongs to an
         // intermediate body scope and we are walking a later body or the final expression.
@@ -499,10 +494,7 @@ impl SurfaceResolver {
 
         let (match_depth, addr) = found?;
 
-        // Track pipeline input % reference for abandoned-input detection.
-        if name == "%" {
-            self.percent_referenced = true;
-        }
+        self.referenced_env_names.insert(name.to_string());
         // Also track consumption for leading-dot resolved names.
         for info in &mut self.intermediate_bodies {
             if info.scope_depth == match_depth {
@@ -1547,7 +1539,6 @@ impl SurfaceResolver {
 /// - `diagnostics`: unified bag of resolve diagnostics (errors and warnings).
 ///   - `kind = "resolve-error"`, `level = Err`: undefined-variable VarRefs in expression position.
 ///   - `kind = "lost-binding"`, `level = Warn`: lost intermediate bindings and unused parameters.
-///   - `kind = "abandoned-input"`, `level = Warn`: document never references pipeline input %.
 /// - `new_frames`: scope frames ADDED by this document (not including `initial_frames`).
 pub fn resolve_surface_document_inplace(
     doc: &crate::ast::SurfaceDocument,
@@ -1576,30 +1567,6 @@ pub fn resolve_surface_document_inplace(
 
     let new_frames = resolver.walk_surface_document_with_offset(doc, initial_offset);
 
-    // T-1741: Abandoned pipeline input % detection.
-    // If `%` was provided in the initial_frames (meaning this is not the first
-    // document in the pipeline) but was never referenced by any VarRef during
-    // resolution, the document ignores its pipeline input — emit a warning.
-    if !resolver.percent_referenced {
-        let percent_in_env = initial_frames.iter().any(|frame| frame.contains_key("%"));
-        if percent_in_env {
-            // Use the first item's span for the warning, or a synthetic span.
-            let span = doc
-                .items
-                .first()
-                .map(|item| item.span())
-                .unwrap_or_else(|| crate::rust_span!());
-            resolver.diagnostics.push(TypeDiagnostic {
-                level: DiagnosticLevel::Warn,
-                kind: "abandoned-input",
-                message: "document does not reference pipeline input %".to_string(),
-                spans: vec![(span, String::new())],
-                notes: vec![],
-                help: vec![],
-            });
-        }
-    }
-
     // Exit seeded scopes
     for _ in initial_frames {
         resolver.exit_scope();
@@ -1623,9 +1590,14 @@ pub fn resolve_surface_document_inplace(
 /// `env_names`: ordered list of in-scope names from the env-dict (insertion order from
 /// the name-set passed to `builtin-resolve`).  The i-th name gets `LetrecGroupMember(i)`.
 ///
-/// Returns `(ResolutionTable, diagnostics)`.  New frames (produced by the document's
-/// own declarations) are discarded — callers accumulate bindings via the exports dict
-/// returned by `builtin-eval`, not by querying resolver frames.
+/// Returns `(ResolutionTable, diagnostics, unreferenced)`.  New frames (produced by the
+/// document's own declarations) are discarded — callers accumulate bindings via the exports
+/// dict returned by `builtin-eval`, not by querying resolver frames.
+///
+/// The third return value (`unreferenced`) lists env-dict names that were never referenced
+/// by any VarRef during the document's resolution walk. Callers (e.g., `loader.llt`) use
+/// this to emit domain-specific warnings (e.g., abandoned pipeline input).
+///
 /// `root_group_len`: the number of root-scope entries (builtins + capabilities) in
 /// the runtime accumulated_group. Env-dict entries start at this offset so their
 /// LGM(root_group_len + i) slots match the runtime group ordering.
@@ -1633,7 +1605,7 @@ pub fn resolve_surface_document_with_env_dict(
     doc: &crate::ast::SurfaceDocument,
     env_names: &[String],
     root_group_len: u32,
-) -> (ResolutionTable, Vec<TypeDiagnostic>) {
+) -> (ResolutionTable, Vec<TypeDiagnostic>, Vec<String>) {
     let mut resolver = SurfaceResolver::new();
 
     // Seed with LetrecGroupMember(root_group_len + i) for the i-th env-dict name.
@@ -1668,31 +1640,19 @@ pub fn resolve_surface_document_with_env_dict(
     let initial_offset = root_group_len + env_names.len() as u32;
     let _new_frames = resolver.walk_surface_document_with_offset(doc, initial_offset);
 
-    // T-1741: Abandoned pipeline input % detection.
-    if !resolver.percent_referenced {
-        let percent_in_env = env_names.contains(&"%".to_string());
-        if percent_in_env {
-            let span = doc
-                .items
-                .first()
-                .map(|item| item.span())
-                .unwrap_or_else(|| crate::rust_span!());
-            resolver.diagnostics.push(TypeDiagnostic {
-                level: DiagnosticLevel::Warn,
-                kind: "abandoned-input",
-                message: "document does not reference pipeline input %".to_string(),
-                spans: vec![(span, String::new())],
-                notes: vec![],
-                help: vec![],
-            });
-        }
-    }
+    // Compute unreferenced env names: names from env_names that were never resolved
+    // by any VarRef during the walk. Callers use this for domain-specific warnings.
+    let unreferenced: Vec<String> = env_names
+        .iter()
+        .filter(|n| !resolver.referenced_env_names.contains(*n))
+        .cloned()
+        .collect();
 
     // Exit the seeded scope.
     resolver.exit_scope();
 
     let (table, diagnostics) = resolver.finish_with_errors();
-    (table, diagnostics)
+    (table, diagnostics, unreferenced)
 }
 
 /// Resolve all VarRef nodes in a SurfaceProgram and return a ResolutionTable.
@@ -1749,6 +1709,7 @@ pub fn resolve_surface_program(
 /// Also returns the span of the final expression for use in pipeline lint warnings.
 pub fn collect_document_produced_keys(
     doc: &crate::ast::SurfaceDocument,
+    doc_span: &crate::ast::Span,
 ) -> (Vec<String>, crate::ast::Span) {
     // Find the last Expr item.
     let last_expr = doc.items.iter().rev().find_map(|item| match item {
@@ -1756,7 +1717,7 @@ pub fn collect_document_produced_keys(
         SurfaceItem::Decl(_) => None,
     });
     let Some(expr_node) = last_expr else {
-        return (Vec::new(), crate::rust_span!());
+        return (Vec::new(), doc_span.clone());
     };
     let span = expr_node.span.clone();
     match &expr_node.expr {
@@ -1771,21 +1732,21 @@ pub fn collect_document_produced_keys(
 /// non-final stages are consumed by the subsequent document. Keys produced but
 /// not consumed generate `abandoned-output` warnings.
 ///
-/// If the subsequent document uses dynamic access to `%` (e.g. `[get key %]`
+/// If the subsequent document uses dynamic access to the pipeline variable (e.g. `[get key var]`
 /// with a variable key), the warning is suppressed for that stage because the
 /// accessed keys cannot be statically determined.
 ///
-/// `stages` is a slice of `(produced_keys, percent_field_accesses, uses_dynamic_percent)`:
+/// `stages` is a slice of `(produced_keys, var_field_accesses, uses_dynamic_var)`:
 /// - `produced_keys`: static key names from the stage's final expression.
-/// - `percent_field_accesses`: static `%.key` field access names from the stage's document.
-/// - `uses_dynamic_percent`: whether the stage uses `%` in a non-field context (dynamic access).
+/// - `var_field_accesses`: static `var.key` field access names from the stage's document.
+/// - `uses_dynamic_var`: whether the stage uses the pipeline variable in a non-field context.
 ///
 /// Returns a vec of `TypeDiagnostic` warnings for abandoned outputs.
 pub fn lint_pipeline_stages(
     stages: &[(
         Vec<String>,      // produced keys
-        Vec<String>,      // percent field accesses from next doc
-        bool,             // next doc uses dynamic percent access
+        Vec<String>,      // field accesses on the pipeline variable from next doc
+        bool,             // next doc uses pipeline variable in non-field (dynamic) context
         crate::ast::Span, // span of the producing document's final expression
     )],
 ) -> Vec<TypeDiagnostic> {
@@ -1816,26 +1777,31 @@ pub fn lint_pipeline_stages(
     diagnostics
 }
 
-/// Collect all static `%.key` field accesses from a document.
+/// Collect all static `var.key` field accesses on the named variable from a document.
 ///
 /// Walks the document's AST and returns the set of string field names accessed
-/// on `%` (the pipeline input). Also returns whether `%` is used in a non-field
-/// context (e.g., passed to a function, used as a match scrutinee), which
-/// indicates dynamic access that prevents static key analysis.
-pub fn collect_percent_accesses(doc: &crate::ast::SurfaceDocument) -> (Vec<String>, bool) {
+/// on the named variable (e.g. the pipeline input). Also returns whether the
+/// variable is used in a non-field context (e.g., passed to a function, used as
+/// a match scrutinee), which indicates dynamic access that prevents static key
+/// analysis.
+pub fn collect_var_accesses(
+    doc: &crate::ast::SurfaceDocument,
+    var_name: &str,
+) -> (Vec<String>, bool) {
     let mut field_accesses = Vec::new();
     let mut dynamic_use = false;
     for item in &doc.items {
         if let SurfaceItem::Expr(node) = item {
-            collect_percent_accesses_node(node, &mut field_accesses, &mut dynamic_use);
+            collect_var_accesses_node(node, var_name, &mut field_accesses, &mut dynamic_use);
         }
     }
     (field_accesses, dynamic_use)
 }
 
-/// Recursive helper: collect %.key accesses and detect dynamic % usage.
-fn collect_percent_accesses_node(
+/// Recursive helper: collect var.key accesses and detect dynamic usage of the named variable.
+fn collect_var_accesses_node(
     node: &Arc<SurfaceNode>,
+    var_name: &str,
     accesses: &mut Vec<String>,
     dynamic_use: &mut bool,
 ) {
@@ -1845,38 +1811,38 @@ fn collect_percent_accesses_node(
             field,
             ..
         } => {
-            // Check if target is VarRef("%")
-            if matches!(&target.expr, SurfaceExpression::VarRef { name, .. } if name == "%") {
-                // %.key — target is VarRef("%"), no need to recurse into it.
+            // Check if target is VarRef for the named variable
+            if matches!(&target.expr, SurfaceExpression::VarRef { name, .. } if name == var_name) {
+                // var.key — target is VarRef(var_name), no need to recurse into it.
                 // For Ident keys: record the key name as a consumed pipeline key.
-                // For Int keys: % used as an indexed sequence — no named key to record.
+                // For Int keys: variable used as an indexed sequence — no named key to record.
                 if let crate::ast::DotKey::Ident(key) = field {
                     accesses.push(key.clone());
                 }
-                // DotKey::Int: % used as an indexed sequence — treat as dynamic access
+                // DotKey::Int: variable used as an indexed sequence — treat as dynamic access
                 // because the pipeline lint operates on named keys only.
                 else {
                     *dynamic_use = true;
                 }
             } else {
-                collect_percent_accesses_node(target, accesses, dynamic_use);
+                collect_var_accesses_node(target, var_name, accesses, dynamic_use);
             }
         }
-        SurfaceExpression::VarRef { name, .. } if name == "%" => {
-            // % used in a non-field context — dynamic access
+        SurfaceExpression::VarRef { name, .. } if name == var_name => {
+            // Variable used in a non-field context — dynamic access
             *dynamic_use = true;
         }
         // Recurse into child expressions
         SurfaceExpression::Dict(entries) => {
             for entry in entries {
                 if let Some(key) = &entry.node.key {
-                    collect_percent_accesses_node(key, accesses, dynamic_use);
+                    collect_var_accesses_node(key, var_name, accesses, dynamic_use);
                 }
-                collect_percent_accesses_node(&entry.node.value, accesses, dynamic_use);
+                collect_var_accesses_node(&entry.node.value, var_name, accesses, dynamic_use);
             }
         }
         SurfaceExpression::Fn { body, .. } => {
-            collect_percent_accesses_node(body, accesses, dynamic_use);
+            collect_var_accesses_node(body, var_name, accesses, dynamic_use);
         }
         SurfaceExpression::Call {
             func,
@@ -1884,44 +1850,44 @@ fn collect_percent_accesses_node(
             named_args,
             ..
         } => {
-            collect_percent_accesses_node(func, accesses, dynamic_use);
+            collect_var_accesses_node(func, var_name, accesses, dynamic_use);
             for arg in args {
-                collect_percent_accesses_node(arg, accesses, dynamic_use);
+                collect_var_accesses_node(arg, var_name, accesses, dynamic_use);
             }
             for na in named_args {
-                collect_percent_accesses_node(&na.node.value, accesses, dynamic_use);
+                collect_var_accesses_node(&na.node.value, var_name, accesses, dynamic_use);
             }
         }
         SurfaceExpression::Sequential(exprs) => {
             for e in exprs {
-                collect_percent_accesses_node(e, accesses, dynamic_use);
+                collect_var_accesses_node(e, var_name, accesses, dynamic_use);
             }
         }
         SurfaceExpression::Pipe { lhs, rhs, .. } => {
-            collect_percent_accesses_node(lhs, accesses, dynamic_use);
-            collect_percent_accesses_node(rhs, accesses, dynamic_use);
+            collect_var_accesses_node(lhs, var_name, accesses, dynamic_use);
+            collect_var_accesses_node(rhs, var_name, accesses, dynamic_use);
         }
         SurfaceExpression::TypeAssert { expr, .. } => {
-            collect_percent_accesses_node(expr, accesses, dynamic_use);
+            collect_var_accesses_node(expr, var_name, accesses, dynamic_use);
         }
         SurfaceExpression::Match { scrutinee, arms } => {
-            collect_percent_accesses_node(scrutinee, accesses, dynamic_use);
+            collect_var_accesses_node(scrutinee, var_name, accesses, dynamic_use);
             for arm in arms {
-                collect_percent_accesses_node(&arm.pattern, accesses, dynamic_use);
+                collect_var_accesses_node(&arm.pattern, var_name, accesses, dynamic_use);
                 if let Some(guard) = &arm.guard {
-                    collect_percent_accesses_node(guard, accesses, dynamic_use);
+                    collect_var_accesses_node(guard, var_name, accesses, dynamic_use);
                 }
                 for body_expr in &arm.body {
-                    collect_percent_accesses_node(body_expr, accesses, dynamic_use);
+                    collect_var_accesses_node(body_expr, var_name, accesses, dynamic_use);
                 }
             }
         }
         SurfaceExpression::CaseArm { pattern, body, .. } => {
-            collect_percent_accesses_node(pattern, accesses, dynamic_use);
-            collect_percent_accesses_node(body, accesses, dynamic_use);
+            collect_var_accesses_node(pattern, var_name, accesses, dynamic_use);
+            collect_var_accesses_node(body, var_name, accesses, dynamic_use);
         }
         SurfaceExpression::Unquote(inner) | SurfaceExpression::UnquoteSplice(inner) => {
-            collect_percent_accesses_node(inner, accesses, dynamic_use);
+            collect_var_accesses_node(inner, var_name, accesses, dynamic_use);
         }
         _ => {}
     }
@@ -2453,68 +2419,65 @@ mod tests {
         );
     }
 
-    /// Helper: parse a single document and resolve with given initial frames.
-    /// Returns (program, diagnostics).
-    fn parse_and_resolve_doc_with_frames(
-        src: &str,
-        initial_frames: &[indexmap::IndexMap<String, u32>],
-    ) -> (crate::ast::SurfaceProgram, Vec<TypeDiagnostic>) {
+    // --- B-600: Unreferenced env-name tracking ---
+
+    /// Helper: parse, desugar, and resolve via the env-dict protocol,
+    /// returning the unreferenced env names (third return value).
+    fn resolve_with_env_dict(src: &str, env_names: &[String]) -> Vec<String> {
         let output = crate::parser::parse(src, test_file(src)).expect("parse failed");
-        let program = crate::desugar::desugar_surface_program(&output.program);
+        let program = crate::desugar::desugar_program_full(&output.program);
         let doc = &program.documents[0].node;
-        let (_, diagnostics, _) = resolve_surface_document_inplace(doc, initial_frames);
-        (program, diagnostics)
+        let (_table, _diagnostics, unreferenced) =
+            resolve_surface_document_with_env_dict(doc, env_names, 0);
+        unreferenced
     }
 
-    // --- T-1741: Abandoned pipeline input % ---
-
-    /// T-1741: When % is in the env but the document never references it,
-    /// emit an abandoned-input warning.
+    /// B-600: When some env names are unused, they appear in the unreferenced list.
     #[test]
-    fn abandoned_input_warns_when_percent_unused() {
-        let mut frame = indexmap::IndexMap::new();
-        frame.insert("%".to_string(), 0u32);
-        let (_, diagnostics) = parse_and_resolve_doc_with_frames("[+ 1 2]", &[frame]);
-        let abandoned = diagnostics
-            .iter()
-            .filter(|d| d.kind == "abandoned-input")
-            .count();
-        assert_eq!(
-            abandoned, 1,
-            "expected 1 abandoned-input warning when % is unused"
+    fn unreferenced_includes_unused_env_name() {
+        // source: "[result: %]" — references % but not x
+        let env_names = vec!["%".to_string(), "x".to_string()];
+        let unreferenced = resolve_with_env_dict("[result: $%]", &env_names);
+        assert!(
+            unreferenced.contains(&"x".to_string()),
+            "expected 'x' in unreferenced, got: {:?}",
+            unreferenced
+        );
+        assert!(
+            !unreferenced.contains(&"%".to_string()),
+            "expected '%' NOT in unreferenced, got: {:?}",
+            unreferenced
         );
     }
 
-    /// T-1741: When % is in the env and the document DOES reference it,
-    /// no abandoned-input warning.
+    /// B-600: When all env names are referenced, unreferenced is empty.
     #[test]
-    fn abandoned_input_no_warn_when_percent_used() {
-        let mut frame = indexmap::IndexMap::new();
-        frame.insert("%".to_string(), 0u32);
-        // $% is an escaped VarRef that references %
-        let (_, diagnostics) = parse_and_resolve_doc_with_frames("$%", &[frame]);
-        let abandoned = diagnostics
-            .iter()
-            .filter(|d| d.kind == "abandoned-input")
-            .count();
-        assert_eq!(
-            abandoned, 0,
-            "expected no abandoned-input warning when % is used"
+    fn unreferenced_empty_when_all_used() {
+        // source: "[result: %]" — references %
+        let env_names = vec!["%".to_string()];
+        let unreferenced = resolve_with_env_dict("[result: $%]", &env_names);
+        assert!(
+            unreferenced.is_empty(),
+            "expected empty unreferenced when all env names used, got: {:?}",
+            unreferenced
         );
     }
 
-    /// T-1741: When % is NOT in the env (first document in pipeline),
-    /// no abandoned-input warning regardless of usage.
+    /// B-600: When no env names are referenced, all appear in unreferenced.
     #[test]
-    fn abandoned_input_no_warn_when_percent_not_in_env() {
-        let (_, diagnostics) = parse_and_resolve_doc_with_frames("[+ 1 2]", &[]);
-        let abandoned = diagnostics
-            .iter()
-            .filter(|d| d.kind == "abandoned-input")
-            .count();
-        assert_eq!(
-            abandoned, 0,
-            "expected no abandoned-input warning when % is not in env"
+    fn unreferenced_lists_all_when_none_used() {
+        // source: "[result: 42]" — references neither % nor x
+        let env_names = vec!["%".to_string(), "x".to_string()];
+        let unreferenced = resolve_with_env_dict("[result: 42]", &env_names);
+        assert!(
+            unreferenced.contains(&"%".to_string()),
+            "expected '%' in unreferenced, got: {:?}",
+            unreferenced
+        );
+        assert!(
+            unreferenced.contains(&"x".to_string()),
+            "expected 'x' in unreferenced, got: {:?}",
+            unreferenced
         );
     }
 
@@ -3086,5 +3049,47 @@ mod tests {
             VarAddr::ClosureCapture(b_x_pos),
             "fn_C captures x via ClosureCapture from fn_B"
         );
+    }
+
+    #[test]
+    fn collect_var_accesses_works_with_non_percent_var_name() {
+        // Verifies collect_var_accesses is truly generic: it works with any var_name,
+        // not just "%". Source accesses "input" field on the named variable "src".
+        let output = crate::parser::parse("[result: src.input]", test_file("[result: src.input]"))
+            .expect("parse failed");
+        let program = crate::desugar::desugar_program_full(&output.program);
+        let doc = &program.documents[0].node;
+        let (accesses, dynamic) = super::collect_var_accesses(doc, "src");
+        assert!(
+            accesses.contains(&"input".to_string()),
+            "expected 'input' access on 'src'"
+        );
+        assert!(!dynamic, "field access should not be dynamic");
+        // Verify % is not mistakenly tracked when it's not in the source.
+        let (pct_accesses, _) = super::collect_var_accesses(doc, "%");
+        assert!(
+            pct_accesses.is_empty(),
+            "% should have no accesses in this doc"
+        );
+    }
+
+    #[test]
+    fn collect_document_produced_keys_empty_doc_returns_doc_span() {
+        // Build a SurfaceDocument with no Expr items — only an empty header.
+        let doc = crate::ast::SurfaceDocument {
+            header: indexmap::IndexMap::new(),
+            items: Vec::new(),
+        };
+        let doc_span = crate::ast::Span::new(10, 5, 20, 15, std::sync::Arc::from("test-file.llt"));
+        let (keys, span) = super::collect_document_produced_keys(&doc, &doc_span);
+        assert!(keys.is_empty(), "empty doc should produce no keys");
+        assert_eq!(
+            span, doc_span,
+            "returned span must be the passed doc_span, not a Rust source location"
+        );
+        // Verify the span points to test-file.llt, not a Rust source file.
+        assert_eq!(&*span.file, "test-file.llt");
+        assert_eq!(span.start_line, 10);
+        assert_eq!(span.start_col, 5);
     }
 }

@@ -701,7 +701,7 @@
   # abandoned-output warnings for pipeline keys not consumed by the next stage.
   typecheck-docs: [fn [let tc base-env state]
     # doc-results from eval-docs: dict of {doc-index → result}. Used to inject % per-document
-    # so T-1741 (abandoned-input) only fires when the CORRECT document ignores its pipeline %.
+    # so T-1857 (abandoned-input) only fires when the CORRECT document ignores its pipeline %.
     [doc-results: [get-or [] "doc-results" state]]
     [per-doc-diags: [match [builtin-has-key? "env" state]
       0: []
@@ -717,12 +717,30 @@
              [name-set: [env-to-name-set resolve-env]]
              [res: [builtin-resolve doc name-set]]
              [typed: [builtin-typecheck-doc res.doc tc]]
+             # T-1857: If % was in scope (non-first doc) but never referenced, emit abandoned-input warning.
+             [input-warn-diags: [match [builtin-int-gt doc-index 0]
+               0: []
+               ...: [match [builtin-has-key? "%" res.unreferenced]
+                    0: []
+                    ...: [make-entry 0 [level: "warning"
+                         kind: "abandoned-input"
+                         message: "document does not reference pipeline input %"
+                         span: res.doc-span
+                         notes: []
+                         help: []
+                         call-stack: []
+                         macro-expand: []
+                         blame: []]]]]]
              # Collect all resolver diagnostics (res.diagnostics: errors + warnings) AND
              # typecheck diagnostics into a single list for this document.
              # res.diagnostics is the unified bag; callers read d.level to filter by severity.
-             [doc-diags: [reduce
+             [base-diags: [reduce
                [fn [let wacc w] [merge wacc [make-entry [builtin-dict-length wacc] w]]]
                res.diagnostics
+               input-warn-diags]]
+             [doc-diags: [reduce
+               [fn [let wacc w] [merge wacc [make-entry [builtin-dict-length wacc] w]]]
+               base-diags
                typed.diagnostics]]
              [merge acc [make-entry [builtin-dict-length acc] doc-diags]]]
            []
@@ -738,7 +756,7 @@
     # T-1742: Run the cross-document pipeline stage lint after per-doc resolution.
     # builtin-lint-pipeline-docs examines consecutive document pairs to detect
     # produced keys that the next stage never consumes (abandoned-output warnings).
-    [pipeline-lint-diags: [builtin-lint-pipeline-docs state.documents]]
+    [pipeline-lint-diags: [builtin-lint-pipeline-docs state.documents pipeline-input: "%"]]
     [all-with-lint: [reduce
       [fn [let acc w] [merge acc [make-entry [builtin-dict-length acc] w]]]
       all-diagnostics

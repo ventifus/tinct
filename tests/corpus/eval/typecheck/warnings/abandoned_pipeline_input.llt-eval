@@ -1,4 +1,4 @@
-# T-1741: abandoned pipeline input % — negative test (single-document pipeline).
+# T-1857: abandoned pipeline input % — negative test (single-document pipeline).
 # Verifies that the abandoned-input warning does NOT fire for a single document
 # (where % is not injected — there is no upstream pipeline stage).
 # The positive case is in abandoned_pipeline_input_positive.llt-eval.
