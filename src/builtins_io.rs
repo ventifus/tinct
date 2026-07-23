@@ -2,13 +2,14 @@
 //!
 //! **Design principle**: Rust exposes raw OS primitives as thinly as possible. tinct builds
 //! abstractions. No buffering in Rust, no protocol in Rust. The `open` function in prelude.llt
-//! wraps `builtin-file-open` in a protocol dict. `%stdout`/`%stderr` are protocol dicts in
-//! loader.llt Dict 2 that call `builtin-write-stdout`/`builtin-write-stderr`.
+//! wraps `builtin-file-open` and returns `Value::File` directly. `%stdout`/`%stderr` are
+//! nominal type values (`Stdout.Stdout`, `Stderr.Stderr`) in loader.llt Dict 2; Writable
+//! instances in prelude.llt dispatch to `builtin-write-stdout`/`builtin-write-stderr`.
 //!
 //! **File primitives (Value::File — thin OS wrappers, no buffering):**
 //! - `builtin-file-open cap path mode` → `Value::File` (opens via cap_std::fs::Dir)
 //! - `builtin-file-read f n` → `Value::Bytes` (reads up to n bytes, empty on EOF)
-//! - `builtin-file-write f s` → `Value::Dict([])` (writes string bytes, no buffering)
+//! - `builtin-file-write f s` → `Value::File` (writes string bytes, returns file handle)
 //! - `builtin-file-flush f` → `Value::Dict([])` (flush)
 //! - `builtin-file-close f` → `Value::Dict([])` (drops file)
 //! - `builtin-file-seek f pos` → `Value::Dict([])` (seek from start)
@@ -2502,7 +2503,7 @@ pub(crate) fn builtin_file_read(
 /// `builtin-file-write`: Write a String to a `Value::File`.
 ///
 /// Calls `std::io::Write::write_all()` directly — no buffering.
-/// Returns empty dict `[]` (null).
+/// Returns the same `Value::File` it received, enabling handle threading.
 pub(crate) fn builtin_file_write(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {

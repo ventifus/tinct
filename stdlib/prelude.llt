@@ -2196,9 +2196,37 @@ Readable@[doc: "Typeclass for readable handles: read-chunk and close."]:
 
 Writable@[doc: "Typeclass for writable handles: write, flush, and close."]:
   [class [let h]
-    write: [Fn@h [h String]]
+    write: [Fn@h [String h]]
     flush: [Fn@h [h]]
     close: [Fn@h [h]]]
+# Writable instance for File (opaque Rust type — TypeNode.File registered via imports.rs).
+[instance Writable
+  [let h@File]: [write: [fn [let s h] [builtin-file-write h s]]
+                 flush: [fn [let h] [if [builtin-file-flush h] h h]]
+                 close: [fn [let h] [if [builtin-file-close h] h h]]]]
+
+# Readable instance for File.
+[instance Readable
+  [let h@File]: [read-chunk: [fn [let n h] [builtin-file-read h n]]
+                 close:      [fn [let h] [if [builtin-file-close h] h h]]]]
+
+# Writable instance for Stdout (nominal type declared in loader.llt).
+[instance Writable
+  [let h@Stdout]: [write: [fn [let s h] [builtin-write-stdout s h]]
+                   flush: [fn [let h] h]
+                   close: [fn [let h] h]]]
+
+# Writable instance for Stderr (nominal type declared in loader.llt).
+[instance Writable
+  [let h@Stderr]: [write: [fn [let s h] [builtin-write-stderr s h]]
+                   flush: [fn [let h] h]
+                   close: [fn [let h] h]]]
+
+# Readable instance for Stdin (nominal type declared in loader.llt).
+[instance Readable
+  [let h@Stdin]: [read-chunk: [fn [let n h] [builtin-read-stdin n]]
+                  close:      [fn [let h] h]]]
+
 CreateNew: "create-new"
 Binary:    "binary"
 
@@ -3216,27 +3244,10 @@ read-all@[doc: "Read all content from a file handle into a String (UTF-8)."]:
 # Filesystem operations
 write-file@[doc: "Write a string to a file under a DirCap"]: builtin-write
 write-file-atomic@[doc: "Atomically write a string to a file (via temp file + rename)"]: builtin-write-atomic
-write-handle@[doc: "Write bytes to a protocol dict handle (legacy). Prefer write for text I/O."]:
-  [fn@Any [let h s@String] [h.write s]]
-flush@[doc: "Flush a handle. Returns handle for chaining."]:
-  [fn [let h]
-    [if [= [builtin-type-of h] "File"]
-      [if [builtin-file-flush h] h h]
-      [h.flush h]]]
-close@[doc: "Close a handle. Returns handle for chaining."]:
-  [fn [let h]
-    [if [= [builtin-type-of h] "File"]
-      [if [builtin-file-close h] h h]
-      [h.close h]]]
-write@[doc: "Write content to a handle (content first, handle last). Returns handle for chaining."]:
-  [fn [let s h]
-    [if [= [builtin-type-of h] "File"]
-      [builtin-file-write h s]
-      [if [dict? h]
-        [h.write s h]
-        [match h
-          [StringWriter.Writer _]: [StringWriter.Writer cells: [builtin-string-concat h.cells s]]
-          ...: [raise [join "" ["write: unsupported handle: " [builtin-type-of h]]]]]]]]
+# write, flush, close are Writable typeclass methods — injected by the class declaration.
+# read-chunk, close are Readable typeclass methods — injected by the class declaration.
+# Instances for File, StringWriter.Writer, Stdout, Stderr defined alongside their types.
+# write-handle removed — replaced by typeclass-dispatched write (content first, handle last).
 seek@[doc: "Seek to a position in a seekable file handle."]:
   [fn [let pos h]
     [if [= [builtin-type-of h] "File"]
@@ -3272,11 +3283,7 @@ recv-datagram@[doc: "Receive a datagram packet"]: [fn@Never [let ...args] [raise
 
 # Handle utilities
 # string-handle removed — created Value::Handle which no longer exists.
-read-chunk@[doc: "Read up to n bytes from a handle (size first, handle last)."]:
-  [fn [let n h]
-    [if [= [builtin-type-of h] "File"]
-      [builtin-file-read h n]
-      [h.read-chunk n h]]]
+# read-chunk is a Readable typeclass method — injected by the class declaration.
 
 # Meta primitives: parse/desugar/resolve/eval for AST introspection and meta-programming.
 parse@[doc: "Parse source bytes into a Program. Args: bytes source-name. Returns {program, diagnostics}."]: builtin-parse
@@ -3850,6 +3857,11 @@ StringWriter: [type Writer: [cells: String]]
 make-string-writer@[doc: "Create an empty StringWriter for accumulating string output."]:
   [fn [] [StringWriter.Writer cells: ""]]
 
+# Writable instance for StringWriter.Writer — purely functional accumulation.
+[instance Writable
+  [let h@StringWriter.Writer]: [write: [fn [let s h] [StringWriter.Writer cells: [builtin-string-concat h.cells s]]]
+                                flush: [fn [let h] h]
+                                close: [fn [let h] h]]]
 
 wrap-in-let: [fn@[return: Unknown  doc: """
 Wrap a list of expressions in a LetDecl AST node.

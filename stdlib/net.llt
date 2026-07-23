@@ -1,6 +1,6 @@
 # Network utilities — depends on io-phase2 builtins
 # Requires: net-cap, connect, http2-session, http-request (io-phase2)
-# Requires: write-handle, str-bytes, bytes-str, bytes-concat, chunks (io-phase1 + prelude)
+# Requires: write, str-bytes, bytes-str, bytes-concat, chunks (io-phase1 + prelude)
 # Requires prelude: make-entry, set, null? (prelude functions, not raw builtins)
 # Uses prelude wrapper names for all Rust primitives (per builtin-privacy design).
 #
@@ -77,9 +77,9 @@
         [try [fn [let]
           [parse-http-response
             [bytes-str [bytes-concat [collect [chunks
-              [write-handle
-                [connect cap Transport.Tcp url.host url.port]
-                [str-bytes [build-http-request "GET" url.path url.host]]]
+              [write
+                [str-bytes [build-http-request "GET" url.path url.host]]
+                [connect cap Transport.Tcp url.host url.port]]
               65536]]]]]]]
         [Error [str "http-get: unsupported scheme: " url.scheme]]]]]
 

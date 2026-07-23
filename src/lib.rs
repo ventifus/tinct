@@ -143,7 +143,7 @@ pub use value::{
 /// - Create the initial env via [`builtins::build_core_env`]
 /// - Build and inject all capability thunks into `env`:
 ///   `%programs`, `%args`, `%cwd`, `%libdir`, `%clock`, `%cap-fs`, etc.
-///   Note: `%stdout` and `%stderr` are defined by loader.llt Dict 2, not injected here.
+///   Note: `%stdout` and `%stderr` are nominal type values defined by loader.llt Dict 2, not injected here.
 /// - Create `eval_ctx` via [`eval::EvalContext::new_empty`] with the correct options
 ///   (`no_fs`, `require_integrity`, `env_allowed`, `profiling`, `libdir_dir`, etc.)
 ///
@@ -346,7 +346,7 @@ pub async fn run_loader_pipeline(
 
     // Evaluate loader.llt. env already contains all stdlib builtins, %programs, %args,
     // %cwd, %libdir, and any other caps injected by the caller.
-    // %stdout and %stderr are defined in loader.llt Dict 2 as protocol dicts.
+    // %stdout and %stderr are nominal type values (Stdout.Stdout, Stderr.Stderr) in loader.llt Dict 2.
     let loader_thunk = eval::eval_surface_file(&loader_program, &eval_ctx_with_frames)
         .await
         .map_err(|e| format!("{e}"))?;

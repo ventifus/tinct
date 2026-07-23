@@ -58,7 +58,7 @@
 #
 # Known initial-env entries (%cwd, %libdir, %args) are included in every
 # user document's scope by eval-document-runtime referencing them from its closure.
-# %stdout and %stderr are protocol dicts defined in Dict 2 (not injected by invoker).
+# %stdout and %stderr are nominal type values (Stdout.Stdout, Stderr.Stderr) defined in Dict 2.
 # User-specified caps declared via --- caps: headers are handled during that
 # processing step — not threaded here.
 #
@@ -193,17 +193,15 @@
 # environment — %cwd, %libdir, %stdout, %args etc. are bare names here.
 
 [
-  # ── stdio protocol dicts ──────────────────────────────────────────────────
-  # %stdout and %stderr are protocol dicts built from stateless builtins.
-  # The `write` method on each calls the stateless builtin directly.
-  # `flush` and `close` are no-ops (stateless stdio doesn't buffer or own FDs).
-  # These shadow any %stdout/%stderr injected by the invoker (main.rs, lib.rs).
-  %stdout: [write:  [fn [let s h] [builtin-write-stdout s h]]
-            flush:  [fn [let h] h]
-            close:  [fn [let h] h]]
-  %stderr: [write:  [fn [let s h] [builtin-write-stderr s h]]
-            flush:  [fn [let h] h]
-            close:  [fn [let h] h]]
+  # ── stdio nominal types ──────────────────────────────────────────────────
+  # Stdout, Stderr, Stdin are tinct nominal types — not opaque Rust types.
+  # Writable/Readable instances in prelude.llt dispatch to stateless builtins.
+  # %stdout/%stderr are unit variant values, not protocol dicts.
+  Stdout: [type Stdout]
+  Stderr: [type Stderr]
+  Stdin:  [type Stdin]
+  %stdout: Stdout.Stdout
+  %stderr: Stderr.Stderr
 
   # ── Foundation ────────────────────────────────────────────────────────────
   # Boolean is declared here (loader.llt dict 2), before prelude loads.
@@ -315,7 +313,7 @@
     # Use builtin-try per diagnostic so a formatting failure doesn't suppress remaining errors.
     [reduce
       [fn [let _ d]
-        [builtin-try [%stderr.write [format-diagnostic d] %stderr]]
+        [builtin-try [builtin-write-stderr [format-diagnostic d] %stderr]]
         _]
       []
       diagnostics]]
@@ -537,7 +535,7 @@
 # Dict 3 — Intermediate bindings (prelude, channels, formatter)
 # ============================================================================
 # %cwd, %libdir, %stdout, %stderr, %args, %programs and any invoker-defined names are
-# all in scope here. %stdout and %stderr come from Dict 2 (defined above).
+# all in scope here. %stdout and %stderr are Stdout.Stdout and Stderr.Stderr from Dict 2.
 # This dict creates bindings visible to the final expression below.
 
 [

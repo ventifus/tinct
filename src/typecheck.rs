@@ -7,8 +7,8 @@ use std::sync::{Arc, RwLock};
 
 // Pattern import deleted (T-1750)
 use crate::ast::{
-    Span, Spanned, SurfaceDocument, SurfaceExpression, SurfaceItem,
-    SurfaceNode, SurfaceProgram, TypeAnnotationTable,
+    Span, Spanned, SurfaceDocument, SurfaceExpression, SurfaceItem, SurfaceNode, SurfaceProgram,
+    TypeAnnotationTable,
 };
 use crate::env::Env;
 use crate::error::TypeDiagnostic;

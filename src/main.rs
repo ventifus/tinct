@@ -1559,8 +1559,8 @@ async fn run_eval(
     }
 
     // NOTE: %stdout and %stderr are NOT injected here.
-    // They are defined as protocol dicts in loader.llt Dict 2, using
-    // builtin-write-stdout and builtin-write-stderr (stateless builtins).
+    // They are defined as nominal type values (Stdout.Stdout, Stderr.Stderr) in loader.llt
+    // Dict 2. Writable instances in prelude.llt dispatch to builtin-write-stdout/stderr.
 
     // Inject `%libdir` DirCap for the stdlib directory (unless --no-libdir is set).
     // --no-libdir enforcement: when the flag is set, `%libdir` is NOT injected, so
