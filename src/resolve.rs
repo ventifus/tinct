@@ -2895,8 +2895,7 @@ mod tests {
                 resolved_captures,
                 ..
             } => {
-                let param_names: Vec<String> =
-                    params.iter().map(|p| p.node.name.clone()).collect();
+                let param_names: Vec<String> = params.iter().map(|p| p.node.name.clone()).collect();
                 if let Some(captures) = resolved_captures.get() {
                     out.push((param_names, Arc::clone(captures)));
                 }

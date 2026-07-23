@@ -2287,7 +2287,9 @@ pub(crate) fn builtin_typecheck_doc(
             // Ensure an innermost frame exists for declarations discovered during this typecheck.
             state.type_stage_scope = guard.type_stage_scope.clone();
             if state.type_stage_scope.is_empty() {
-                state.type_stage_scope.push(std::collections::HashMap::new());
+                state
+                    .type_stage_scope
+                    .push(std::collections::HashMap::new());
             }
 
             let type_map = crate::ast::TypeAnnotationTable::new();
@@ -3398,13 +3400,9 @@ pub(crate) fn builtin_eval_types(
                     }
                 })
                 .collect();
-            let (result_thunk, _root_env_id) = crate::eval::eval_document_exprs_with_env(
-                &expr_nodes,
-                &ctx,
-                parent_env_id,
-                None,
-            )
-            .await?;
+            let (result_thunk, _root_env_id) =
+                crate::eval::eval_document_exprs_with_env(&expr_nodes, &ctx, parent_env_id, None)
+                    .await?;
             return Ok(result_thunk);
         }
 
