@@ -1236,6 +1236,7 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type, ctx: &EvalConte
                         "Decimal" => matches!(value, Value::Decimal(_)),
                         "BigInt" => matches!(value, Value::BigInt(_)),
                         "QuicSession" => matches!(value, Value::QuicSession(_)),
+                        "QuicDatagramHandle" => matches!(value, Value::QuicDatagramHandle(_)),
                         "Http2Session" => matches!(value, Value::Http2Session { .. }),
                         "Http3Session" => matches!(value, Value::Http3Session(_)),
                         "Uri" | "Urn" => matches!(value, Value::Uri { .. }),

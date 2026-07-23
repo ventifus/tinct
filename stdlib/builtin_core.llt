@@ -42,6 +42,7 @@
     Decimal
     BigInt
     QuicSession
+    QuicDatagramHandle
     Http2Session
     Http3Session
     Uri
@@ -73,7 +74,8 @@
   Timezone:     TypeNode.Timezone
   Decimal:      TypeNode.Decimal
   BigInt:       TypeNode.BigInt
-  QuicSession:  TypeNode.QuicSession
+  QuicSession:        TypeNode.QuicSession
+  QuicDatagramHandle: TypeNode.QuicDatagramHandle
   Http2Session: TypeNode.Http2Session
   Http3Session: TypeNode.Http3Session
   Uri:          TypeNode.Uri

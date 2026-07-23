@@ -125,6 +125,7 @@ async fn build_builtin_core_type_env_inner() -> Option<Arc<RwLock<Env>>> {
         ("Decimal", "Decimal"),
         ("BigInt", "BigInt"),
         ("QuicSession", "QuicSession"),
+        ("QuicDatagramHandle", "QuicDatagramHandle"),
         ("Http2Session", "Http2Session"),
         ("Http3Session", "Http3Session"),
         ("Uri", "Uri"),

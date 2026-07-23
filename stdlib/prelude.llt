@@ -3364,8 +3364,8 @@ list-xattrs@[doc: "List all extended attribute names"]: builtin-list-xattrs
 connect@[doc: "Open a TCP/UDP connection under a NetCap"]: [fn@Never [let ...args] [raise "connect: not implemented"]]
 tls-layer@[doc: "Layer TLS over a connection"]: [fn@Never [let ...args] [raise "tls-layer: not implemented"]]
 tls-peer-cert@[doc: "Extract TLS peer certificate metadata"]: [fn@Never [let ...args] [raise "tls-peer-cert: not implemented"]]
-send-datagram@[doc: "Send a datagram packet (UDP/Unix datagram)"]: [fn@Never [let ...args] [raise "send-datagram: not implemented"]]
-recv-datagram@[doc: "Receive a datagram packet"]: [fn@Never [let ...args] [raise "recv-datagram: not implemented"]]
+send-datagram@[doc: "Send a QUIC unreliable datagram (RFC 9221). Args: data handle. Returns [] on success."]: builtin-send-datagram
+recv-datagram@[doc: "Receive a QUIC unreliable datagram (RFC 9221). Args: handle. Returns {data: Bytes}."]: builtin-recv-datagram
 
 # Handle utilities
 # string-handle removed — created Value::Handle which no longer exists.

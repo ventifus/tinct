@@ -75,8 +75,10 @@
   builtin-tls-layer:     [fn@Handle  [let stream@Handle host@String opts@Dict] ...]
   # tls-peer-cert: extract the peer certificate from a TLS stream (as a Dict).
   builtin-tls-peer-cert: [fn@Dict    [let stream@Handle] ...]
-  # send-datagram: send bytes as a UDP datagram; return bytes sent.
-  builtin-send-datagram: [fn@Integer [let sock@Handle data@Bytes] ...]
-  # recv-datagram: receive a UDP datagram; return its bytes payload.
-  builtin-recv-datagram: [fn@Bytes   [let sock@Handle] ...]
+  # send-datagram: send a QUIC unreliable datagram (RFC 9221); returns null [] on success.
+  # data: String or Bytes payload; handle: QuicDatagramHandle from quic-open-datagram.
+  builtin-send-datagram: [fn@Dict [let data@Any  handle@Any] ...]
+  # recv-datagram: receive a QUIC unreliable datagram; returns {data: Bytes}.
+  # handle: QuicDatagramHandle from quic-open-datagram.
+  builtin-recv-datagram: [fn@Dict [let handle@Any] ...]
 ]

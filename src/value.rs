@@ -1100,6 +1100,7 @@ impl Value {
             Value::Decimal(_) => Some("Decimal"),
             Value::BigInt(_) => Some("BigInt"),
             Value::QuicSession(_) => Some("QuicSession"),
+            Value::QuicDatagramHandle(_) => Some("QuicDatagramHandle"),
             Value::Http2Session { .. } => Some("Http2Session"),
             Value::Http3Session(_) => Some("Http3Session"),
             // All other values (Int, String, Float, Bool, Dict, Seq, Function,

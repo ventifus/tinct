@@ -346,6 +346,7 @@ pub(crate) fn typenode_leaf_to_type(val: &Value) -> Option<Type> {
         "TypeNode.Decimal" => Some(Type::TyCon("Decimal".to_string())),
         "TypeNode.BigInt" => Some(Type::TyCon("BigInt".to_string())),
         "TypeNode.QuicSession" => Some(Type::TyCon("QuicSession".to_string())),
+        "TypeNode.QuicDatagramHandle" => Some(Type::TyCon("QuicDatagramHandle".to_string())),
         "TypeNode.Http2Session" => Some(Type::TyCon("Http2Session".to_string())),
         "TypeNode.Http3Session" => Some(Type::TyCon("Http3Session".to_string())),
         "TypeNode.Uri" => Some(Type::TyCon("Uri".to_string())),
