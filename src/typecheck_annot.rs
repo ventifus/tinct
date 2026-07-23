@@ -1,5 +1,4 @@
 //! Type annotation resolution and type expression parsing.
-#![allow(dead_code)]
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
@@ -15,25 +14,6 @@ use crate::type_def::Variance;
 use crate::types::{Constraint, InferState, Kind, Row, Type};
 use crate::value::{HashableValue, Thunk, Value};
 
-/// Convert a variance annotation name to a `Variance` value (T-953).
-///
-/// Used in `[let a@Covariant b@Contravariant c]` type parameter processing:
-/// before checking if the annotation is a typeclass name in ClassEnv, call
-/// this function to handle variance annotations first.
-///
-/// Returns `Some(v)` for known variance names, `None` for everything else
-/// (which is then checked against ClassEnv as a typeclass constraint).
-#[allow(dead_code)]
-pub(crate) fn annotation_to_variance(name: &str) -> Option<Variance> {
-    match name {
-        "Covariant" => Some(Variance::Covariant),
-        "Contravariant" => Some(Variance::Contravariant),
-        "Invariant" => Some(Variance::Invariant),
-        "Phantom" => Some(Variance::Phantom),
-        _ => None,
-    }
-}
-
 /// Polarity context for variance analysis (T-952, Dolan 2017 §4).
 #[allow(dead_code)]
 #[derive(Clone, Copy)]
@@ -43,6 +23,7 @@ enum Polarity {
 }
 
 impl Polarity {
+    #[allow(dead_code)]
     fn flip(self) -> Self {
         match self {
             Polarity::Positive => Polarity::Negative,
@@ -94,6 +75,7 @@ pub(crate) fn infer_variance(
 }
 
 /// Recursive polarity walker for variance inference.
+#[allow(dead_code)]
 fn walk_polarity(
     ty: &Type,
     pol: Polarity,
@@ -242,6 +224,7 @@ fn walk_polarity(
     }
 }
 
+#[allow(dead_code)]
 pub(crate) async fn resolve_type_assert(
     annotation: &Spanned<Annotation>,
     inner: &Arc<SurfaceNode>,
@@ -389,6 +372,7 @@ pub(crate) async fn resolve_type_assert(
 /// - `[@Fn@RetType]` (no param list) → zero-parameter function returning RetType
 ///
 /// Otherwise, resolves `$annotation` as a regular type annotation.
+#[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn resolve_annotated(
     name: &str,
@@ -1975,6 +1959,7 @@ fn apply_type_alias_substitution(
 }
 
 /// Resolve a type name with recursion guard (used during alias registration).
+#[allow(dead_code)]
 #[allow(clippy::too_many_arguments)] // Internal helper for type alias expansion
 pub(crate) async fn resolve_type_name_with_guard(
     name: &str,
@@ -2433,6 +2418,7 @@ pub(crate) async fn resolve_type_name(
 /// Expand an alias body type, recursively expanding any nested type alias references.
 /// Uses equi-recursive semantics (Amadio & Cardelli 1993) with a depth guard to prevent infinite unfolding.
 /// The guard tracks aliases currently being expanded to detect cycles.
+#[allow(dead_code)]
 #[allow(clippy::too_many_arguments)] // Recursive helper with state threading
 #[allow(clippy::only_used_in_recursion)] // state, ann_mapping, row_ann_mapping needed for recursive expansion
 fn expand_alias_body_guarded(
@@ -2635,6 +2621,7 @@ fn expand_alias_body_guarded(
 
 /// Resolve a type expression with recursion guard for recursive type aliases.
 /// This is the internal version used during alias registration.
+#[allow(dead_code)]
 #[allow(clippy::too_many_arguments)] // Internal helper for recursive type resolution
 pub(crate) async fn resolve_type_expr_with_guard(
     node: &Arc<SurfaceNode>,
@@ -2710,6 +2697,7 @@ pub(crate) async fn resolve_type_expr_with_guard(
 }
 
 /// Resolve a dict in type position with recursion guard.
+#[allow(dead_code)]
 #[allow(clippy::too_many_arguments)] // Internal helper for recursive type resolution
 async fn resolve_type_dict_with_guard(
     entries: &[Spanned<SurfaceEntry>],
@@ -4238,6 +4226,7 @@ async fn collect_typenode_seq(
 /// Record, Arrow, TypeConstructor, TypeApplication, TypeVar, Recursive, RecursiveRef.
 ///
 /// Public (crate-internal) re-export; the implementation is `typenode_value_to_type`.
+#[allow(dead_code)]
 pub(crate) async fn typenode_value_to_type_pub(
     val: &Value,
     ctx: &Arc<crate::eval::EvalContext>,
@@ -4588,6 +4577,7 @@ fn typenode_value_to_type<'a>(
 /// Returns `None` for `Type` variants that cannot be faithfully round-tripped through the
 /// TypeNode ADT (e.g., complex structural types not yet fully supported). Callers should fall
 /// back to the Union interpretation when `None` is returned.
+#[allow(dead_code)]
 fn type_to_typenode_value<'a>(
     ty: &'a Type,
     ctx: &'a Arc<crate::eval::EvalContext>,
@@ -4735,6 +4725,7 @@ fn type_to_typenode_value<'a>(
 ///
 /// Callable when a type-stage function value is already in hand (e.g., an `as-type:` fn
 /// extracted from a constructor annotation).
+#[allow(dead_code)]
 pub(crate) async fn eval_type_stage_value(
     fn_val: &Value,
     args: &[Value],
@@ -5052,6 +5043,7 @@ pub(crate) async fn eval_type_stage_expr(
 /// The binder name is generated via `gensym_fresh('𝜇', alias_name)` before the body
 /// is expanded, so that any self-reference in the body can return the pre-assigned name
 /// rather than an uninitialized one.
+#[allow(dead_code)]
 pub(crate) type ExpansionStack = Vec<(Arc<crate::type_def::TyConDef>, String)>;
 
 /// Returns `true` if `ty` contains any bare (unexpanded) type constructor references.

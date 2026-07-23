@@ -1182,6 +1182,7 @@ pub(crate) fn contains_unknown_or_top(ty: &Type) -> bool {
 /// `expected` is a concrete `Function` type, arity is checked before synthesis.
 /// Used at checking positions where the expected type is fully concrete: TypeAssert and
 /// default-value validation. Called from `typecheck_annot::resolve_type_assert`.
+#[allow(dead_code)]
 pub(crate) async fn check_surface_expr(
     node: &Arc<SurfaceNode>,
     expected: &Type,

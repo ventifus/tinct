@@ -8,7 +8,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
-use indexmap::{Equivalent, IndexMap};
+use indexmap::IndexMap;
 
 use crate::ast::{CoreExpr, Param, Span, Spanned, SurfaceDocument, SurfaceNode};
 use crate::error::{EvalError, EvalResult};
@@ -239,9 +239,7 @@ impl PartialOrd for HashableValue {
 
 impl Hash for HashableValue {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        // Use explicit u8 discriminants instead of std::mem::discriminant
-        // so that StrHashableValue::hash can use the same literal (2u8)
-        // without allocating a temporary Arc<str>.
+        // Use explicit u8 discriminants instead of std::mem::discriminant.
         // Discriminants: Int=0, Bool=1, Str=2, Dict=3, Variant=4
         match self {
             HashableValue::Int(n) => {
@@ -315,32 +313,6 @@ impl fmt::Display for HashableValue {
                 None => write!(f, "{tag}"),
                 Some(p) => write!(f, "[{tag} {p}]"),
             },
-        }
-    }
-}
-
-/// A wrapper type for `&str` that hashes the same way as `HashableValue::Str`.
-/// This enables zero-allocation lookups in `IndexMap<HashableValue, V>`.
-#[derive(Debug)]
-#[allow(dead_code)]
-pub(crate) struct StrHashableValue<'a>(pub &'a str);
-
-impl Hash for StrHashableValue<'_> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        // HashableValue::Str is discriminant 2u8 (Int=0, Str=2).
-        // Using 2u8 directly avoids the Arc::from("") allocation that the
-        // std::mem::discriminant approach required on every hash call.
-        2u8.hash(state);
-        // Then hash the string content
-        self.0.hash(state);
-    }
-}
-
-impl Equivalent<HashableValue> for StrHashableValue<'_> {
-    fn equivalent(&self, key: &HashableValue) -> bool {
-        match key {
-            HashableValue::Str(s) => self.0 == s.as_ref(),
-            _ => false,
         }
     }
 }
@@ -2370,29 +2342,6 @@ mod tests {
             compute_hash(&a),
             compute_hash(&b),
             "Str(\"foo\") and Str(\"bar\") should have different hashes"
-        );
-    }
-
-    #[test]
-    fn hashable_value_str_hashable_value_equivalence() {
-        // StrHashableValue must hash the same as HashableValue::Str for zero-allocation lookups
-        let hv = HashableValue::Str("test".into());
-        let shv = StrHashableValue("test");
-
-        let mut h1 = DefaultHasher::new();
-        hv.hash(&mut h1);
-
-        let mut h2 = DefaultHasher::new();
-        shv.hash(&mut h2);
-
-        assert_eq!(
-            h1.finish(),
-            h2.finish(),
-            "StrHashableValue and HashableValue::Str must produce identical hashes"
-        );
-        assert!(
-            shv.equivalent(&hv),
-            "StrHashableValue must be equivalent to matching HashableValue::Str"
         );
     }
 
