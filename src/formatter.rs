@@ -61,21 +61,20 @@ pub async fn format_source_tinct_with_dir(
     // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
     let formatter_program = desugar::desugar_program_full(&formatter_parsed.program);
 
-    // Create ctx first so root_group_resolver_map() can seed the resolver with correct LGM slots.
-    // This ensures builtin names resolve to correct de Bruijn coordinates and % resolves to the
-    // slot immediately after the root group (where eval_surface_file_with_input injects it).
     let ctx = EvalContext::new_empty(base_dir, false);
 
-    // Build the resolver seed: root-scope builtins at their canonical slots, plus % at
-    // slot root_group.len() (the first slot after the root group, where the initial_group thunk
-    // will be injected by eval_surface_file_with_input).
-    let mut resolver_seed = ctx.root_group_resolver_map();
-    let percent_slot = ctx.root_group.len() as u32;
-    resolver_seed.insert("%".to_string(), percent_slot);
-
-    // Variable resolution pass — builds ResolutionTable (NodeId → de Bruijn coordinates).
-    // Seeded with root builtins + % so all references resolve to correct LGM slots.
-    let (_table, _frames) = resolve::resolve_surface_program(&formatter_program, &[resolver_seed]);
+    // Resolve the formatter program using the env-dict protocol.
+    // "input-ast" is the formatter's own input variable name (not the loader's % convention).
+    // The env-dict protocol assigns input-ast to LGM(root_group_len + 0), which is the slot
+    // where eval_surface_file_with_input injects the AST thunk.
+    let root_group_len = ctx.root_group.len() as u32;
+    for doc_spanned in &formatter_program.documents {
+        let _ = resolve::resolve_surface_document_with_env_dict(
+            &doc_spanned.node,
+            &["input-ast".to_string()],
+            root_group_len,
+        );
+    }
     // Typecheck the desugared formatter (writes inline type annotations).
     let _ = typecheck::typecheck_surface_program_annotation_table(&formatter_program).await;
 

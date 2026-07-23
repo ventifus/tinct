@@ -347,4 +347,4 @@ format-doc-header: [fn@[return: String  doc: """Format document section header (
 
 ]
 
-[format-file %]
+[format-file input-ast]
