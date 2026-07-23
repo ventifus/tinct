@@ -542,7 +542,7 @@
   Boolean: [type True False]
 
   ProgramItem: [type
-    File: [path: String  handle: File]
+    File: [path: String  cap: DirCap]
     Expr: [src:  String]
   ]
 
@@ -823,7 +823,7 @@
   # run-test-file: execute a single file ProgramItem. Takes stderr-h from run-test.
   # Returns result dict including stderr: pipe-result.stderr so the cascade continues.
   run-test-file: [fn [let p prelude-env prelude-tc stderr-h]
-    [bytes:          [read-file p.handle [builtin-bytes]]]
+    [bytes:          [read-file [builtin-file-open p.cap p.path "read"] [builtin-bytes]]]
     [content:        [builtin-bytes-str bytes]]
     [source:         [extract-source content]]
     [expected-out:   [extract-section content "out"]]
@@ -937,7 +937,7 @@
         [match [builtin-eq-string entry.type "dir"]
           0: [match [check-llt-eval entry.name]
                0: st
-               ...: [merge st [make-entry [builtin-dict-length st] [ProgramItem.File path: full  handle: [builtin-file-open cap full "read"]]]]]
+               ...: [merge st [make-entry [builtin-dict-length st] [ProgramItem.File path: full  cap: cap]]]]
           ...: [find-corpus-files cap full st]]]
       state
       entries]]

@@ -603,6 +603,8 @@ Default evaluation errors (from `eval(default(pᵢ), env_d)` in BIND-POSITIONAL)
 
 **Implementation note:** The evaluator uses per-parameter coverage (C-COVERAGE) and accepts named args for any parameter, not just `default:` params.
 
+**Default scope restriction (T-1828):** Default expressions are currently evaluated with an empty scope frame (`EvalFrame::empty()`). This means default expressions cannot reference the function's closure captures, other parameters, or outer scope bindings. Only constant expressions (literals, builtins resolved at lower time) work as defaults. For example, `[fn [let x n@[default: x]] body]` would fail at runtime because `x` is not in scope during default evaluation. This is a known restriction; threading the closure environment into default evaluation is tracked for a future sprint.
+
 ### Part 5: `$apply` and the Default Environment
 
 **Dict-splitting.** `$apply` takes a function `f` and a single dict argument `D`. Before invoking the binding algorithm, it splits `D` into positional and named argument lists:

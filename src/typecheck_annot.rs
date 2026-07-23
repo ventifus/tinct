@@ -2213,6 +2213,9 @@ async fn resolve_type_head(
     }
 
     // Step 3: type_stage_scope — walk the scope chain for pre-computed types.
+    // B-588: TypeVar/Class entries require mutable state access (fresh_type_var_with),
+    // so we clone the entry and break, then resolve after the immutable borrow ends.
+    let mut found_type_stage: Option<crate::type_infer::TypeStageEntry> = None;
     for scope in &state.type_stage_scope {
         if let Some(entry) = scope.get(name) {
             match entry {
@@ -2251,11 +2254,52 @@ async fn resolve_type_head(
                     }
                     // eval_ctx unavailable — continue to next scope or Step 4.
                 }
-                // TypeVar and Class are handled by T-1804 (resolve_type_head rewrite).
-                // For now, skip them in the scope chain walk.
-                _ => {}
+                crate::type_infer::TypeStageEntry::TypeVar(kind) => {
+                    // B-588: TypeVar entry — clone kind and break to resolve after loop
+                    // (avoids borrow conflict: loop borrows state.type_stage_scope immutably,
+                    // fresh_type_var_with borrows state mutably).
+                    found_type_stage = Some(crate::type_infer::TypeStageEntry::TypeVar(kind.clone()));
+                    break;
+                }
+                crate::type_infer::TypeStageEntry::Class(class_decl) => {
+                    // B-588: Class entry — clone decl and break to resolve after loop.
+                    found_type_stage = Some(crate::type_infer::TypeStageEntry::Class(class_decl.clone()));
+                    break;
+                }
             }
         }
+    }
+
+    // B-588: Resolve TypeVar/Class entries found in the scope chain (after loop ends,
+    // so the immutable borrow of state.type_stage_scope is released).
+    match found_type_stage {
+        Some(crate::type_infer::TypeStageEntry::TypeVar(kind)) => {
+            let level = state.level;
+            let (_fresh, fresh_ty) =
+                state.fresh_type_var_with(Some(name), Some(level), kind, &span);
+            return Ok(fresh_ty);
+        }
+        Some(crate::type_infer::TypeStageEntry::Class(class_decl)) => {
+            let level = state.level;
+            let (fresh, fresh_ty) = state.fresh_type_var_with(
+                Some(name),
+                Some(level),
+                crate::type_def::Kind::Type,
+                &span,
+            );
+            let mut vars = vec![crate::type_class::ConstraintArg::Var(fresh)];
+            for arg in args {
+                vars.push(crate::type_class::ConstraintArg::Ground(arg.clone()));
+            }
+            constraints.push(crate::type_class::Constraint::Class {
+                class: std::sync::Arc::new(class_decl),
+                vars,
+                origin_name: None,
+                origin_span: Some(span),
+            });
+            return Ok(fresh_ty);
+        }
+        _ => {} // Resolved/Function handled inside the loop; None = not found
     }
 
     // Step 4: tycon_env — user-defined nominal types ([type ...] declarations) and

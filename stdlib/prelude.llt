@@ -4968,7 +4968,8 @@ ByteStream@[doc: "Ordered, reliable byte pipe. Protocol dict with read-chunk/wri
     write: [Fn@h     [h Bytes]]]
 
 # ByteStreamHandle: Value::Handle removed. Protocol dicts (from `open`) are the stream type now.
-# The ByteStream typeclass is now implemented by protocol dict handles (from `open`).
+# Instances will be added by S-899 (type-foundations-bytes-io-shapes) when the type-foundations
+# infrastructure is complete. The class declarations are forward declarations from the design spec.
 
 # Seekable: random-access extension of ByteStream (T-1359)
 #
@@ -4982,7 +4983,7 @@ Seekable@[doc: "Random-access extension of ByteStream. Only seekable file handle
   [class [let h] [superclasses: [[ByteStream h]]]
     seek: [Fn@Integer [h SeekFrom]]]
 
-# SeekableHandle: Value::Handle removed.
+# SeekableHandle: Value::Handle removed. Seekable instances await S-899.
 
 # ============================================================================
 # tmpl macro — string interpolation

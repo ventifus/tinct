@@ -184,7 +184,7 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 | `type-of` | **Materializing** — must evaluate to determine type. Returns `"Function"` for both user-defined functions and Rust-native builtins (intentionally indistinguishable to user code). |
 | `assert` | **Materializing** — must evaluate condition |
 | `error` | Structural — constructs error value, not materialized until propagated |
-| `try`, `try-or` | **Materializing** — materializes body, catches exceptions. `$try` returns `[Ok value]` on success or `[Error message]` on failure (ADT variants, destructured with `match`). |
+| `try`, `try-or` | **Materializing** — materializes body, catches exceptions. `$try` returns `[Result.Ok value: v]` on success or `[Result.Error msg: m]` on failure (ADT variants, destructured with `match`). |
 
 **Materialization** (runtime-supported):
 
@@ -320,7 +320,7 @@ The prelude wraps builtins with stable `builtin-*` aliases (`builtin-add`, `buil
 | `strings.llt` | `pad-left`, `pad-right`, `str-reverse`, `upper`, `lower` | String formatting, reversal, and case conversion (`str-find`, `str-repeat` are in prelude) |
 | `math.llt` | `pi`, `e`, `phi`, `hypot`, `deg->rad`, `rad->deg`, `log-base` | Math constants, derived trig/log functions |
 | `encoding.llt` | `base64-encode`, `base64-decode`, `hex-encode`, `hex-decode`, `mask-apply`, `bytes-reverse`, `bytes-repeat` | Binary encoding/decoding |
-| `datetime.llt` | `parse-timestamp`, `format-timestamp`, `timestamp-add`, etc. | Date/time formatting |
+| `datetime.llt` | `parse-timestamp`, `format-timestamp`, `timestamp-add`, etc. | Date/time formatting (also available via prelude wrappers — no include needed) |
 | `regex.llt` | `regex-match`, `regex-find-all`, `regex-replace` | Pattern matching |
 | `path.llt` | `basename`, `dirname`, `path-join`, `path-ext` | File path manipulation |
 | `io.llt` | `write-line`, `write-file`, `write-file-atomic`, `read-file` | File I/O helpers |
@@ -740,10 +740,10 @@ Instances: `Str`, `[Seq b]`, `Record`.
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `and-then` | `fn@Unknown [f result]` | Monadic bind for Result: if `res` is `[Ok v]`, apply `f(v)` (which must return a Result); if `[Error e]`, propagate the error |
-| `result-map` | `fn@Unknown [f result]` | Map over Result: if `res` is `[Ok v]`, return `[Ok [f v]]`; if `[Error e]`, propagate the error |
-| `result-or` | `fn@Unknown [default result]` | Extract value from Result with fallback: if `res` is `[Ok v]`, return `v`; if `[Error e]`, return `default` |
-| `result` | Dict (monad dict) | Result monad dict with fields: `[bind: and-then  pure: Ok]`. Use `[Ok v]` directly to lift a plain value into Result. |
+| `and-then` | `fn@Unknown [f result]` | Monadic bind for Result: if `res` is `[Result.Ok ...]`, apply `f(v)` (which must return a Result); if `[Result.Error ...]`, propagate the error |
+| `result-map` | `fn@Unknown [f result]` | Map over Result: if `res` is `[Result.Ok ...]`, return `[Result.Ok value: [f v]]`; if `[Result.Error ...]`, propagate the error |
+| `result-or` | `fn@Unknown [default result]` | Extract value from Result with fallback: if `res` is `[Result.Ok ...]`, return `v`; if `[Result.Error ...]`, return `default` |
+| `result` | Dict (monad dict) | Result monad dict with fields: `[bind: and-then  pure: Result.Ok]`. Use `[Result.Ok value: v]` directly to lift a plain value into Result. |
 
 **Error Handling:**
 

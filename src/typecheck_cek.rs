@@ -1433,7 +1433,8 @@ async fn infer_var_ref(
                 let (level, slot) = match addr {
                     crate::ast::VarAddr::LetrecGroupMember(i) => (0u32, *i),
                     crate::ast::VarAddr::ClosureCapture(i) => (1u32, *i),
-                    crate::ast::VarAddr::Parameter(i) => (0u32, *i),
+                    // B-593: Parameter maps to level=2 to avoid collision with LGM at level=0.
+                    crate::ast::VarAddr::Parameter(i) => (2u32, *i),
                 };
                 slot_scheme = env.read().unwrap().get_scheme_at(level, slot);
             }

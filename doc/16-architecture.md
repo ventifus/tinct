@@ -44,7 +44,7 @@
 
 **Key contracts:**
 
-- `BuiltinFn` signature: `fn(BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>>` (no `+ Send` — futures are `!Send`); `BuiltinArgs` carries owned `args: Vec<ThunkId>`, `named: Option<IndexMap<String, ThunkId>>`, `call_span: Span`, `ctx: Arc<EvalContext>`
+- `BuiltinFn` signature: `fn(BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>>` (no `+ Send` — futures are `!Send`); `BuiltinArgs` carries owned `args: Vec<Arc<Thunk>>`, `named: Option<IndexMap<String, Arc<Thunk>>>`, `call_span: Span`, `ctx: Arc<EvalContext>`, `caller_env_id: Option<u32>` (for scope-introspecting builtins)
 - `Value` serialization: every `Value` variant must have handlers in both `JsonVisitor` (via `visit_value`) and `value_to_display_string()` (src/lib.rs)
 - Type checker role: advisory only — type errors are warnings, evaluation proceeds regardless
 - AST coverage: every `SurfaceExpression` variant requires both a `lower` handler (src/lower.rs producing `CoreExpr`) and a `typecheck` handler (src/typecheck.rs); every `CoreExpr` variant requires an `eval_core_expr` handler (src/eval.rs)
@@ -345,8 +345,9 @@ enum Value {
         env: Environment,
     },
     Builtin(fn(BuiltinArgs) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Error>>>>),
-    // BuiltinArgs { args: Vec<ThunkId>, named: Option<IndexMap<String, ThunkId>>,
-    //               call_span: Span, ctx: Arc<EvalContext> }
+    // BuiltinArgs { args: Vec<Arc<Thunk>>, named: Option<IndexMap<String, Arc<Thunk>>>,
+    //               call_span: Span, ctx: Arc<EvalContext>,
+    //               caller_env_id: Option<u32> }
     // (see src/value.rs for current type alias)
 }
 
@@ -503,8 +504,8 @@ enum Value {
 // UnevaluatedState (in ThunkInner.unevaluated):
 UnevaluatedState::BuiltinCall {
     def: BuiltinDef,              // replaces separate name + func fields
-    args: Vec<ThunkId>,
-    named: Option<IndexMap<String, ThunkId>>,
+    args: Vec<Arc<Thunk>>,
+    named: Option<IndexMap<String, Arc<Thunk>>>,
     call_span: Span,
     caller_env_id: u32,
     ctx: Arc<EvalContext>,

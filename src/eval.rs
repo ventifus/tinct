@@ -117,14 +117,37 @@ pub(crate) async fn eval_document_exprs_with_env(
         let thunk = crate::eval_core::eval_core_expr(&core_spanned, &frame, ctx).await?;
         let val = materialize(&thunk, Some(&node_span), ctx).await?;
 
-        // If the result is a Dict, extend accumulated_group with its string-keyed thunks
+        // Extend accumulated_group with the intermediate value's string-keyed thunks
         // at the next cumulative slot indices. String keys are added in insertion order
         // (matching the resolver's cumulative offset assignment in walk_surface_document_with_offset).
-        if let Value::Dict(ref dict_map) = val {
-            for (k, v) in dict_map.iter() {
-                if matches!(k, crate::value::HashableValue::Str(_)) {
-                    accumulated_group.push(Arc::clone(v));
-                }
+        //
+        // B-592: Handle Overlay (from $merge) by flattening to Dict before extending.
+        // Reject non-Dict/non-Overlay intermediate values with a clear error rather than
+        // silently dropping them (which would misalign subsequent LGM slot references).
+        let dict_map = match val {
+            Value::Dict(ref dict_map) => dict_map.clone(),
+            Value::Overlay(ref l, ref r) => {
+                crate::builtins::flatten_overlay(
+                    l,
+                    r,
+                    "document expression",
+                    ctx,
+                    node_span.clone(),
+                )
+                .await?
+            }
+            other => {
+                return Err(Box::new(crate::error::EvalError::type_mismatch_ctx(
+                    "document expression".to_string(),
+                    "Dict",
+                    other.type_name(),
+                    node_span,
+                )));
+            }
+        };
+        for (k, v) in dict_map.iter() {
+            if matches!(k, crate::value::HashableValue::Str(_)) {
+                accumulated_group.push(Arc::clone(v));
             }
         }
     }
@@ -192,12 +215,32 @@ pub(crate) async fn eval_core_document_exprs(
         let entry_span = spanned_core.span.clone();
         let val = materialize(&thunk, Some(&entry_span), ctx).await?;
 
-        // Extend accumulated_group with string-keyed thunks from this dict.
-        if let Value::Dict(ref dict_map) = val {
-            for (k, v) in dict_map.iter() {
-                if matches!(k, HashableValue::Str(_)) {
-                    accumulated_group.push(Arc::clone(v));
-                }
+        // B-592: Extend accumulated_group with string-keyed thunks from this dict.
+        // Handle Overlay by flattening; reject non-Dict/non-Overlay values.
+        let dict_map = match val {
+            Value::Dict(ref dict_map) => dict_map.clone(),
+            Value::Overlay(ref l, ref r) => {
+                crate::builtins::flatten_overlay(
+                    l,
+                    r,
+                    "document expression",
+                    ctx,
+                    entry_span.clone(),
+                )
+                .await?
+            }
+            other => {
+                return Err(Box::new(crate::error::EvalError::type_mismatch_ctx(
+                    "document expression".to_string(),
+                    "Dict",
+                    other.type_name(),
+                    entry_span,
+                )));
+            }
+        };
+        for (k, v) in dict_map.iter() {
+            if matches!(k, HashableValue::Str(_)) {
+                accumulated_group.push(Arc::clone(v));
             }
         }
     }

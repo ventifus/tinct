@@ -41,12 +41,11 @@ const MAX_ATOM_SUBTYPE_DEPTH: usize = 256;
 /// nested intersections of unions, this can grow exponentially. This limit prevents
 /// pathological blowup.
 ///
-/// When exceeded, `distribute()` returns `vec![]` (empty RDNF = uninhabited). This is
+/// When exceeded, `distribute()` returns `vec![vec![]]` (Top RDNF = inhabited). This is
 /// conservative-safe for the subtyping judgment: `A <: B` iff `A & ~B` is uninhabited.
-/// Returning "uninhabited" means `is_subtype` returns true, which is the conservative
-/// direction (accepting a subtyping relationship that may not hold is safer than rejecting
-/// one that does, because rejection causes type errors visible to the user while acceptance
-/// is silent).
+/// Returning "inhabited" means `is_subtype` returns false (rejects the subtyping claim),
+/// which is the safe direction for a type checker: when uncertain, reject. Accepting a
+/// potentially ill-typed program (the previous behavior, B-590) is unsound.
 const MAX_RDNF_CONJUNCTIONS: usize = 1024;
 
 // ---------------------------------------------------------------------------
@@ -379,8 +378,11 @@ pub fn to_rdnf(ty: &Type) -> Rdnf {
 /// (A1 | A2) & (B1 | B2) = (A1 & B1) | (A1 & B2) | (A2 & B1) | (A2 & B2)
 ///
 /// Guarded by `MAX_RDNF_CONJUNCTIONS`: if the result would exceed the limit, returns
-/// `vec![]` (empty RDNF = uninhabited). See the constant's doc comment for why this is
-/// the conservative-safe direction.
+/// `vec![vec![]]` (Top RDNF = inhabited). This is the conservative-safe direction for
+/// a type checker: when uncertain, assume the type IS inhabited (i.e., the difference
+/// A & ~B is non-empty), causing `is_subtype` to return false (reject). The alternative
+/// (returning empty = uninhabited) would cause `is_subtype` to return true, accepting
+/// potentially ill-typed programs. B-590.
 fn distribute(left: &Rdnf, right: &Rdnf) -> Rdnf {
     // Special cases for empty disjunctions
     if left.is_empty() || right.is_empty() {
@@ -389,8 +391,10 @@ fn distribute(left: &Rdnf, right: &Rdnf) -> Rdnf {
     }
     let product_size = left.len().saturating_mul(right.len());
     if product_size > MAX_RDNF_CONJUNCTIONS {
-        // Cross-product would exceed limit — return empty (conservative: "uninhabited")
-        return vec![];
+        // B-590: Cross-product would exceed limit — return Top (conservative: "inhabited").
+        // This causes is_subtype to reject (return false) when uncertain, which is the
+        // safe direction for a type checker.
+        return vec![vec![]];
     }
     let mut result = Vec::with_capacity(product_size);
     for l in left {
@@ -429,12 +433,10 @@ fn negate_rdnf(rdnf: &Rdnf) -> Rdnf {
         // Each negated atom becomes a single-element conjunction in a disjunction
         let negated_conj: Rdnf = conjunction.iter().map(|atom| vec![atom.negate()]).collect();
         // Distribute: result & negated_conj.
-        // distribute() may trigger MAX_RDNF_CONJUNCTIONS and return empty (Never). In this
-        // context empty = Never means ~A = Never, treating A as Top. This is the same
-        // conservative-safe direction as the top-level emptiness check: when the conjunction
-        // count explodes we over-approximate A as Top, so ~A = Never (everything is a subtype
-        // of A). Subtype checks remain sound in the permissive direction — no false positives
-        // for type errors.
+        // distribute() may trigger MAX_RDNF_CONJUNCTIONS and return Top (vec![vec![]]).
+        // B-590: Top in this context means the negation result is inhabited (non-empty),
+        // which causes is_subtype to return false — rejecting uncertain subtyping claims.
+        // This is the conservative-safe direction for a type checker.
         result = distribute(&result, &negated_conj);
     }
 
@@ -2055,9 +2057,9 @@ mod tests {
 
     // --- B-467: MAX_RDNF_CONJUNCTIONS limit in distribute() ---
 
-    /// distribute() returns empty RDNF when cross-product would exceed MAX_RDNF_CONJUNCTIONS.
-    ///
-    /// The conservative-safe direction: empty RDNF = uninhabited = is_subtype returns true.
+    /// distribute() returns Top RDNF (single empty conjunction) when cross-product would
+    /// exceed MAX_RDNF_CONJUNCTIONS. B-590: this is the conservative-safe direction —
+    /// Top = inhabited = is_subtype returns false (rejects uncertain subtyping claims).
     #[test]
     fn test_b467_distribute_respects_limit() {
         // Create two RDNFs each with enough conjunctions that their product exceeds 1024.
@@ -2070,9 +2072,12 @@ mod tests {
             .collect();
 
         let result = distribute(&left, &right);
-        assert!(
-            result.is_empty(),
-            "B-467: distribute() must return empty RDNF when product ({}) exceeds MAX_RDNF_CONJUNCTIONS ({})",
+        // B-590: Must return Top (vec![vec![]]) not Never (vec![]).
+        // Top = inhabited = is_subtype returns false = reject when uncertain.
+        assert_eq!(
+            result,
+            vec![vec![]],
+            "B-590: distribute() must return Top RDNF when product ({}) exceeds MAX_RDNF_CONJUNCTIONS ({})",
             33 * 33,
             MAX_RDNF_CONJUNCTIONS
         );
@@ -2368,8 +2373,9 @@ mod tests {
         );
     }
 
-    /// End-to-end: deeply nested intersection-of-unions triggers the limit in to_rdnf,
-    /// and the result is conservatively treated as uninhabited.
+    /// End-to-end: deeply nested intersection-of-unions triggers the limit in to_rdnf.
+    /// B-590: the result is now Top (inhabited), not Never (uninhabited). This causes
+    /// is_subtype to reject uncertain subtyping claims, which is the safe direction.
     #[test]
     fn test_b467_to_rdnf_exponential_intersection() {
         // Build a type: (A0 | B0) & (A1 | B1) & ... & (A10 | B10)
@@ -2380,10 +2386,10 @@ mod tests {
         let ty = Type::Intersection(members);
         let rdnf = to_rdnf(&ty);
 
-        // The RDNF should be empty (limit exceeded → conservative uninhabited)
+        // B-590: The RDNF must NOT be empty — overflow returns Top (inhabited = non-empty).
         assert!(
-            rdnf.is_empty(),
-            "B-467: to_rdnf on exponential intersection must return empty RDNF (limit exceeded)"
+            !rdnf.is_empty(),
+            "B-590: to_rdnf on exponential intersection must return non-empty RDNF (Top, not Never)"
         );
     }
 }

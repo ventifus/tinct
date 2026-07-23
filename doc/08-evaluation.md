@@ -274,10 +274,10 @@ Corpus tests are required for each sequence constructor (`$range`, `$repeat`, `$
 
 | Input | `$map` result | `$filter` result |
 |-------|--------------|-----------------|
-| Dict | Dict (lazy values via PendingCall thunks) | Seq (must evaluate predicates) |
+| Dict | Dict (lazy values via FnCall thunks) | Seq (must evaluate predicates) |
 | Seq | Seq (lazy) | Seq (lazy) |
 
-`$map` on a dict is the key insight: it returns a dict with the **same keys** but each value wrapped in a `PendingCall` thunk. No computation happens until a specific value is accessed. This gives `[map f big-dict]` O(n) construction and O(1) per-element access.
+`$map` on a dict is the key insight: it returns a dict with the **same keys** but each value wrapped in a `FnCall` thunk. No computation happens until a specific value is accessed. This gives `[map f big-dict]` O(n) construction and O(1) per-element access.
 
 `$filter` on a dict must return a Seq because the output keys are unknown without evaluating predicates. Use `$collect` to get a dict back.
 
@@ -391,7 +391,7 @@ The cycle error is discovered lazily — only when something tries to access `x`
 
 **Cycle detection recovery strategy:** When a thunk in `InProgress` state is re-encountered during materialization (indicating a circular dependency), the evaluator constructs a `CircularDependency` error, decorates it with the materialization span (if provided), and transitions the thunk to `Failed` state via `cache_failure()` before propagating the error (in `materialize()` InProgress case in `src/eval.rs`). The `InProgress → Failed` transition is permanent — subsequent access to the same thunk returns the cached error without re-detecting the cycle. The error caching happens *before* propagation to ensure that all references to the cyclic thunk see the same error.
 
-**State management after cycle detection:** The thunk is left in `Failed` state, not restored to its original state (`Unevaluated`, `PendingBuiltin`, etc.). This is correct because circular dependencies are semantic errors, not transient resource exhaustion — retrying the same thunk will always produce the same cycle. The cached error may be refined with additional materialization spans as the error propagates through the call stack (via the `Failed → Failed` diagnostic self-edge), but the error identity is fixed.
+**State management after cycle detection:** The thunk is left in `Failed` state, not restored to its original state (`Unevaluated`, `BuiltinCall`, etc.). This is correct because circular dependencies are semantic errors, not transient resource exhaustion — retrying the same thunk will always produce the same cycle. The cached error may be refined with additional materialization spans as the error propagates through the call stack (via the `Failed → Failed` diagnostic self-edge), but the error identity is fixed.
 
 **Error propagation path:** After transitioning to `Failed`, the error is returned via `Err(err_boxed)`. Callers higher in the materialization stack see the error and propagate it upward. If the same thunk is accessed from a different call site later, the `Failed` case (in `materialize()` in `src/eval.rs`) fires immediately, returning the cached error (potentially with an updated materialization span for the new access site).
 
@@ -477,7 +477,7 @@ materialize(θ) ⇒ error(e)
 **[MATERIALIZE-BUILTIN]**
 
 ```text
-θ.state = PendingBuiltin(f, args, named, cs, Σ_θ)
+θ.state = BuiltinCall(f, args, named, cs, Σ_θ)
 θ.state ← InProgress
 f(args, named, Σ_θ, cs) ⇒ θ'
 materialize(θ') ⇒ v
@@ -491,7 +491,7 @@ The builtin receives `BuiltinArgs { args, named, call_span, ctx }` — no depth 
 **[MATERIALIZE-CALL]**
 
 ```text
-θ.state = PendingCall(f_θ, args, named, cs, caller_env, Σ_θ)
+θ.state = FnCall(f_θ, args, named, cs, caller_env, Σ_θ)
 θ.state ← InProgress
 materialize(f_θ) ⇒ Function(params, body, env)
 invoke(params, body, env, args, named, caller_env) ⇒ θ'
@@ -504,7 +504,7 @@ materialize(θ) ⇒ v
 **[MATERIALIZE-CALL-BUILTIN]**
 
 ```text
-θ.state = PendingCall(f_θ, args, named, cs, caller_env, Σ_θ)
+θ.state = FnCall(f_θ, args, named, cs, caller_env, Σ_θ)
 θ.state ← InProgress
 materialize(f_θ) ⇒ Builtin(func)
 func(args, named, Σ_θ, cs) ⇒ θ'
@@ -514,13 +514,13 @@ materialize(θ') ⇒ v
 materialize(θ) ⇒ v
 ```
 
-If `materialize(f_θ)` produces a value that is neither Function nor Builtin, the materialization fails with a type mismatch error (in `force_step()` PendingCall case in `src/eval_materialize.rs`), which is cached in Failed state.
+If `materialize(f_θ)` produces a value that is neither Function nor Builtin, the materialization fails with a type mismatch error (in `force_step()` FnCall case in `src/eval_materialize.rs`), which is cached in Failed state.
 
 Error variants for MATERIALIZE-BUILTIN, MATERIALIZE-CALL, and MATERIALIZE-CALL-BUILTIN follow MATERIALIZE-UNEVALUATED-ERR: on any error, `θ.state ← Failed(e)` before propagation.
 
 **Error decoration:** All errors are decorated via `attach_materialization_context` (in `src/eval.rs`) before caching, adding the materialization span (if not already set) and origin stack frames. The decoration happens in the `map_err(&decorate)` chain before `cache_failure` is called.
 
-**Fast path:** In MATERIALIZE-BUILTIN, MATERIALIZE-CALL, and MATERIALIZE-CALL-BUILTIN, if θ' is already Materialized, skip the recursive `materialize` and extract the value directly. This is observationally equivalent to the general rule — MATERIALIZE-CACHED fires immediately on the recursive `materialize(θ')` — but avoids the function call overhead (in `force_step()` PendingBuiltin and PendingCall cases in `src/eval_materialize.rs`).
+**Fast path:** In MATERIALIZE-BUILTIN, MATERIALIZE-CALL, and MATERIALIZE-CALL-BUILTIN, if θ' is already Materialized, skip the recursive `materialize` and extract the value directly. This is observationally equivalent to the general rule — MATERIALIZE-CACHED fires immediately on the recursive `materialize(θ')` — but avoids the function call overhead (in `force_step()` BuiltinCall and FnCall cases in `src/eval_materialize.rs`).
 
 **Value::Proxy access dispatch.** Dot access (`$proxy.field`) on a `Value::Proxy` is not part of the thunk lifecycle — it occurs *after* materialization produces a Proxy value. The evaluator dispatches to `invoke_proxy_handler`, which materializes the handler thunk (sharing-preserving via Launchbury memoization) and invokes it with the key. Under the iterative CEK machine, proxy chains do not consume recursion depth — they are processed iteratively via continuation dispatch.
 
@@ -567,7 +567,7 @@ The iterative evaluator (§Iterative Evaluator) uses explicit `Cont` variants on
 
 - **BuiltinCall** (formerly PendingBuiltin) stores deferred builtin calls for lazy sequences (`$map`, `$filter`, `$fold_step`, etc.) and proxy handler dispatch. Cannot be replaced by CoreExpr because builtin function pointers (`BuiltinFn`) have no AST representation. Lazy sequences need persistent storage for deferred steps.
 - **FnCall** (formerly PendingCall) stores deferred function calls for lazy dispatch and tail-call optimization. Represents work already done by `eval_call` (evaluated func_expr, wrapped args) that CoreExpr would duplicate.
-- The monotonicity proof and semantic properties remain unchanged — the `UnevaluatedState` (5-variant) + `OnceCell` design is the stable architecture.
+- The monotonicity proof and semantic properties remain unchanged — the `UnevaluatedState` (6-variant: AstField, CoreExpr, BuiltinCall, FnCall, Guarded, AnnotatedWrap) + `OnceCell` design is the stable architecture.
 - **Sharing preservation is the critical migration invariant**: thunk identity (`Arc<Thunk>` pointer) must be preserved through continuation dispatch. A materialized thunk must be the same allocation that was created at the definition site.
 - The iterative CEK machine uses heap-allocated continuations with no hardcoded depth bound
 
@@ -608,8 +608,8 @@ Each builtin receives a per-argument strictness annotation and a result classifi
 |--------|---------|-------------|
 | `→ V` | Value result | Result is a fully computed atomic value (Int, Float, String, Bool) |
 | `→ D` | Container result | Result is a Dict or Seq; values within may be thunks from inputs (structural preservation) |
-| `→ Θ` | Thunk result | Result is a thunk (Rc::clone of an input, or a new PendingBuiltin/PendingCall) |
-| `→ LT` | Lazy-transforming result | Result is a Dict or Seq containing *new* PendingCall/PendingBuiltin thunks wrapping inputs |
+| `→ Θ` | Thunk result | Result is a thunk (Rc::clone of an input, or a new BuiltinCall/FnCall) |
+| `→ LT` | Lazy-transforming result | Result is a Dict or Seq containing *new* FnCall/BuiltinCall thunks wrapping inputs |
 | `→ ⊥` | Divergent | Always raises an error; never returns a value |
 
 For dual-dispatch builtins, the result classification refers to the more interesting path (typically Seq). Notes indicate when the Dict path differs.
@@ -618,7 +618,7 @@ For dual-dispatch builtins, the result classification refers to the more interes
 
 - **Structural** — all args are `L` and result preserves input thunks without new computation
 - **Materializing** — all args are `S` and result contains no deferred computation from inputs
-- **Lazy-transforming** — result is `→ LT` (contains new PendingCall/PendingBuiltin thunks)
+- **Lazy-transforming** — result is `→ LT` (contains new FnCall/BuiltinCall thunks)
 - **Selective** — any arg is `Sc`
 
 **Identity strictness (`I`):** Used by `ast-of` (see §Runtime Reflection) to inspect thunk state without forcing. The CEK machine does not auto-materialize `I`-annotated arguments — the builtin receives the raw thunk and branches on its state (Materialized, Unevaluated, or Pending). This enables runtime reflection without triggering side effects.
@@ -719,11 +719,11 @@ All 59 Rust-native builtins. Builtins marked `†` have dual dispatch on Dict/Se
 | Builtin | Signature | Category | Notes |
 |---------|-----------|----------|-------|
 | `seq` ‡ | `L × L → D` | Structural | Both args pass through as thunks inside the Seq value |
-| `range` | `S (× S)? → LT` | Lazy-transforming | Materializes bounds; constructs Seq with PendingBuiltin tail |
-| `repeat` | `L → LT` | Lazy-transforming | Arg passes through; PendingBuiltin tail for infinite repetition |
-| `cycle` | `S → LT` | Lazy-transforming | Materializes dict; PendingBuiltin step for cycling |
-| `iterate` ‡ | `L × L → LT` | Lazy-transforming | Both args pass through; PendingCall + PendingBuiltin for co-recursion |
-| `unfold` | `L × L → Θ` | Lazy-transforming | Both args pass through; returns PendingBuiltin thunk |
+| `range` | `S (× S)? → LT` | Lazy-transforming | Materializes bounds; constructs Seq with BuiltinCall tail |
+| `repeat` | `L → LT` | Lazy-transforming | Arg passes through; BuiltinCall tail for infinite repetition |
+| `cycle` | `S → LT` | Lazy-transforming | Materializes dict; BuiltinCall step for cycling |
+| `iterate` ‡ | `L × L → LT` | Lazy-transforming | Both args pass through; FnCall + BuiltinCall for co-recursion |
+| `unfold` | `L × L → Θ` | Lazy-transforming | Both args pass through; returns BuiltinCall thunk |
 
 **Sequence destructors:**
 
@@ -739,8 +739,8 @@ All 59 Rust-native builtins. Builtins marked `†` have dual dispatch on Dict/Se
 |---------|-----------|----------|-------|
 | `map` † ‡ | `L × S → LT` | Lazy-transforming | Function arg lazy; collection strict for dispatch |
 | `filter` † ‡ | `L × S → LT` | Lazy-transforming | Predicate lazy at top level; collection strict for dispatch |
-| `take` † | `S × S → LT` | Lazy-transforming | Both strict; Seq result has PendingBuiltin tail |
-| `drop` † | `S × S → LT` | Lazy-transforming | Both strict; Seq result via PendingBuiltin step |
+| `take` † | `S × S → LT` | Lazy-transforming | Both strict; Seq result has BuiltinCall tail |
+| `drop` † | `S × S → LT` | Lazy-transforming | Both strict; Seq result via BuiltinCall step |
 | `reduce` † ‡ | `L × L × S → LT` | Lazy-transforming | Function and init lazy; collection strict for dispatch |
 | `join` † | `S × S → V` | Materializing | Both strict; materializes all elements for concatenation |
 | `concat` † | `S × L → LT` | Lazy-transforming | First arg strict for dispatch; second lazy; Seq path lazy chain, Dict path eager merge |
@@ -757,7 +757,7 @@ Delta rules specify the materialization behavior for builtins marked ‡ in the 
 
 Rules use the judgment form `δ(f, [θ₁, ..., θₙ], cs) ⇒ r` where f is the builtin, θᵢ are argument thunks, cs is the call span, and r is the result (a thunk or error). All current delta rules use positional args only; named args are empty (`∅`) and omitted from rules for brevity.
 
-**PendingBuiltin construction:** Builtins that defer computation (e.g., `$iterate`, `$map` on Seq, `$filter` step) construct PendingBuiltin thunks that capture the builtin function pointer and argument thunks. These are materialized later by the CEK machine's MATERIALIZE-BUILTIN rule (see §Thunk Lifecycle).
+**BuiltinCall construction:** Builtins that defer computation (e.g., `$iterate`, `$map` on Seq, `$filter` step) construct BuiltinCall thunks that capture the builtin function pointer and argument thunks. These are materialized later by the CEK machine's MATERIALIZE-BUILTIN rule (see §Thunk Lifecycle).
 
 **[DELTA-IF-TRUE]**
 
@@ -802,7 +802,7 @@ materialize(θ_xs) ⇒ Seq(θ_h, θ_t)
 δ(tail, [θ_xs], cs) ⇒ θ_t
 ```
 
-DELTA-HEAD and DELTA-TAIL materialize the container to verify it is a Seq, but return the extracted thunk *without materializing it*. The head/tail thunk retains its original state (Unevaluated, PendingCall, etc.). Empty dict `[]` as input produces a specific error (`"head/tail on empty sequence"`).
+DELTA-HEAD and DELTA-TAIL materialize the container to verify it is a Seq, but return the extracted thunk *without materializing it*. The head/tail thunk retains its original state (Unevaluated, FnCall, etc.). Empty dict `[]` as input produces a specific error (`"head/tail on empty sequence"`).
 
 **[DELTA-COLLECT-EMPTY]**
 
@@ -831,11 +831,11 @@ Collect materializes the Seq *spine* (all tail thunks) but head thunks pass thro
 ───────────────────────────
 δ(iterate, [θ_f, θ_x], cs) ⇒ Materialized(Seq(
     Rc::clone(θ_x),
-    PendingBuiltin(iterate, [Rc::clone(θ_f), PendingCall(θ_f, [θ_x])], cs)
+    BuiltinCall(iterate, [Rc::clone(θ_f), FnCall(θ_f, [θ_x])], cs)
 ))
 ```
 
-Fully lazy: neither f nor x is materialized. The result Seq's head is x (unchanged thunk), and the tail is a PendingBuiltin that will produce `iterate(f, f(x))` when materialized. The `f(x)` is itself a PendingCall — computation unfolds one step at a time. When the tail PendingBuiltin is materialized, DELTA-ITERATE applies again with `f(x)` as the new seed, enabling corecursive unfolding of the infinite sequence.
+Fully lazy: neither f nor x is materialized. The result Seq's head is x (unchanged thunk), and the tail is a BuiltinCall that will produce `iterate(f, f(x))` when materialized. The `f(x)` is itself a FnCall — computation unfolds one step at a time. When the tail BuiltinCall is materialized, DELTA-ITERATE applies again with `f(x)` as the new seed, enabling corecursive unfolding of the infinite sequence.
 
 **[DELTA-TRY]**
 
@@ -859,30 +859,30 @@ materialize(θ_body) ⇒ error(e)
 
 ```text
 materialize(θ_xs) ⇒ Dict({k₁↦θ₁, ..., kₙ↦θₙ})
-∀i. θ'ᵢ = PendingCall(θ_f, [θᵢ], ∅, cs)
+∀i. θ'ᵢ = FnCall(θ_f, [θᵢ], ∅, cs)
 ───────────────────────────
 δ(map, [θ_f, θ_xs], cs) ⇒ Materialized(Dict({k₁↦θ'₁, ..., kₙ↦θ'ₙ}))
 ```
 
-`θ_f` is never materialized — it is captured by reference (`Rc::clone`) in each PendingCall. No values are computed; the result Dict is O(n) to construct and O(1) per element access.
+`θ_f` is never materialized — it is captured by reference (`Rc::clone`) in each FnCall. No values are computed; the result Dict is O(n) to construct and O(1) per element access.
 
 **[DELTA-MAP-SEQ]**
 
 ```text
 materialize(θ_xs) ⇒ Seq(θ_h, θ_t)
-θ'_h = PendingCall(θ_f, [θ_h], ∅, cs)
-θ'_t = PendingBuiltin(map, [Rc::clone(θ_f), θ_t], ∅, cs)
+θ'_h = FnCall(θ_f, [θ_h], ∅, cs)
+θ'_t = BuiltinCall(map, [Rc::clone(θ_f), θ_t], ∅, cs)
 ───────────────────────────
 δ(map, [θ_f, θ_xs], cs) ⇒ Materialized(Seq(θ'_h, θ'_t))
 ```
 
-Recursive structure: head is a PendingCall, tail is a PendingBuiltin that will apply DELTA-MAP-DICT or DELTA-MAP-SEQ when materialized.
+Recursive structure: head is a FnCall, tail is a BuiltinCall that will apply DELTA-MAP-DICT or DELTA-MAP-SEQ when materialized.
 
 **[DELTA-FILTER-DICT]**
 
 ```text
 materialize(θ_xs) ⇒ Dict({k₁↦θ₁, ..., kₙ↦θₙ})
-θ_step = PendingBuiltin(filter_dict_step, [θ_pred, θ_xs_mat, θ_keys, θ_idx], ∅, cs)
+θ_step = BuiltinCall(filter_dict_step, [θ_pred, θ_xs_mat, θ_keys, θ_idx], ∅, cs)
     where θ_xs_mat, θ_keys, θ_idx are pre-computed materialized thunks
 ───────────────────────────
 δ(filter, [θ_pred, θ_xs], cs) ⇒ θ_step
@@ -894,7 +894,7 @@ The predicate `θ_pred` is not materialized at the top level — it is captured 
 
 ```text
 materialize(θ_xs) ⇒ Seq(_, _)
-θ_step = PendingBuiltin(filter_seq_step, [θ_pred, θ_xs], cs)
+θ_step = BuiltinCall(filter_seq_step, [θ_pred, θ_xs], cs)
 ───────────────────────────
 δ(filter, [θ_pred, θ_xs], cs) ⇒ θ_step
 ```
@@ -906,18 +906,18 @@ The step function receives the *original seq thunk* (not destructured head/tail)
 ```text
 materialize(θ_xs) ⇒ Dict({k₁↦θ₁, ..., kₙ↦θₙ})
 acc₀ = θ_init
-∀i. accᵢ = PendingCall(θ_f, [accᵢ₋₁, θᵢ], ∅, cs)
+∀i. accᵢ = FnCall(θ_f, [accᵢ₋₁, θᵢ], ∅, cs)
 ───────────────────────────
 δ(reduce, [θ_f, θ_init, θ_xs], cs) ⇒ accₙ
 ```
 
-Builds a chain of PendingCall thunks without materializing any values. The entire reduction is deferred — nothing computes until the result thunk is materialized. At that point, the chain unwinds from the inside out.
+Builds a chain of FnCall thunks without materializing any values. The entire reduction is deferred — nothing computes until the result thunk is materialized. At that point, the chain unwinds from the inside out.
 
 **[DELTA-REDUCE-SEQ]**
 
 ```text
 materialize(θ_xs) ⇒ Seq(θ_h, θ_t)
-θ_step = PendingBuiltin(reduce_seq_step, [θ_f, θ_init, θ_h, θ_t], ∅, cs)
+θ_step = BuiltinCall(reduce_seq_step, [θ_f, θ_init, θ_h, θ_t], ∅, cs)
 ───────────────────────────
 δ(reduce, [θ_f, θ_init, θ_xs], cs) ⇒ θ_step
 ```
@@ -1019,7 +1019,7 @@ Tinct's evaluation model is lazy by default — values remain unevaluated until 
 
 1. **TypeAssert validation via continuation:** `[@Type expr]` evaluates `expr` and schedules validation via `Cont::TypeAssertCheck` continuation. For structural types (record shapes), validation is deferred via `Guarded` thunks that check field types lazily at first access. For primitive types, validation is immediate. This ensures type errors are caught at annotation sites (for primitives) or field access sites (for records), providing clear error reporting. See [Type System Extensions](07-type-extensions.md) §TypeAssert Runtime Validation.
 
-2. **reduce eager iteration (Seq path only):** `$reduce` (and `$fold`) on Seq inputs materialize each accumulator step to prevent O(N) Rust stack depth from nested PendingCall thunks. The accumulator chain is still lazy (each step is a PendingCall thunk), but the Seq iteration itself materializes tails at each step to detect sequence end without building deep call chains. (Dict path: fully lazy PendingCall chain — see §Laziness Design table below.)
+2. **reduce eager iteration (Seq path only):** `$reduce` (and `$fold`) on Seq inputs materialize each accumulator step to prevent O(N) Rust stack depth from nested FnCall thunks. The accumulator chain is still lazy (each step is a FnCall thunk), but the Seq iteration itself materializes tails at each step to detect sequence end without building deep call chains. (Dict path: fully lazy FnCall chain — see §Laziness Design table below.)
 
 3. **Guarded default fallback:** When a guard fails and a `default:` value is provided, the default is evaluated and materialized immediately. This prevents deferred errors from propagating when the guard explicitly signals a fallback path should be taken.
 
@@ -1075,13 +1075,13 @@ This table documents the laziness behavior of every operation and the rationale 
 | `$length` | Materializes dict to count entries | Must count entries |
 | `$empty?` | Calls `$length` then compares to 0 | Depends on `$length` |
 | **Universal Collection Ops** | | |
-| `$map` on dict | Returns dict with PendingCall thunks, O(n) construct / O(1) per access | Enables lazy dict transforms |
+| `$map` on dict | Returns dict with FnCall thunks, O(n) construct / O(1) per access | Enables lazy dict transforms |
 | `$map` on seq | Returns seq applying function to each element (lazy) | Enables infinite sequence transforms |
 | `$filter` on dict | Returns Seq (must evaluate predicates) | Predicates must run to know which keys to keep |
 | `$filter` on seq | Returns seq filtering elements (lazy) | Lazy sequence filtering |
-| `$reduce`, `$fold` on dict | Builds lazy PendingCall chain (acc₀=init, acc₁=PendingCall(f,[acc₀,v₀]), ...) | Fully lazy — no materialization during chain construction |
-| `$reduce`, `$fold` on seq | Builds lazy PendingCall accumulator chain; materializes tail at each step for Seq path only | Must check tail to detect sequence end, but accumulator builds same lazy chain as Dict path |
-| `$map-entries` | Returns dict with PendingCall thunks on transformed entries | Same as `$map` on dicts |
+| `$reduce`, `$fold` on dict | Builds lazy FnCall chain (acc₀=init, acc₁=FnCall(f,[acc₀,v₀]), ...) | Fully lazy — no materialization during chain construction |
+| `$reduce`, `$fold` on seq | Builds lazy FnCall accumulator chain; materializes tail at each step for Seq path only | Must check tail to detect sequence end, but accumulator builds same lazy chain as Dict path |
+| `$map-entries` | Returns dict with FnCall thunks on transformed entries | Same as `$map` on dicts |
 | `$from-entries` | Eagerly reduces entry pairs into dict | Must construct concrete dict |
 | `$any?`, `$all?` | Short-circuit: materializes elements until condition met/failed | Predicates must run |
 | `$until` | Iterates until predicate holds | Must evaluate predicate each step |
@@ -1319,7 +1319,7 @@ The `ValueVisitor` trait (in `src/lib.rs`) provides a visitor pattern for struct
 - **Dict literal fast-path** (Nix `maybeThunk`): In `eval_dict`, when `entry.value.node` is `Int|Float|Bool|Str`, create `Materialized` thunks directly instead of wrapping in `Unevaluated`. Eliminates ~40-60% of thunk allocations for config-heavy files. Safe because literals are side-effect-free, deterministic, and don't participate in letrec cycles.
 - **String interning**: `HashSet<Arc<str>>` with `Borrow<str>` lookup. Interns *structural identifiers only* — `Key::String`, variable names, builtin names, and thunk origins. Does NOT intern user data strings (may be large and unique). Reduces key cloning to `Arc::clone` and enables O(1) pointer-equality comparison. Scoped to evaluation session lifetime (lives in `EvalContext`, cleared per `eval_file()`). Production alternative: `lasso::Rodeo` for zero-copy Spur handles.
 - **Key cloning reduction**: Eliminate the 2× `String` clone per dict entry in `eval_dict` (once into `dict_env` bindings, once into `dict_map`). Use `entry_mut()` pattern or restructure insert order. ~30% of dict allocation cost.
-- **func_label allocation reduction**: `format!("${name}")` on every PendingCall creation → `Cow<'static, str>` for the common VarRef case (most calls). Only allocate for DotAccess labels. ~5-10% of call overhead.
+- **func_label allocation reduction**: `format!("${name}")` on every FnCall creation → `Cow<'static, str>` for the common VarRef case (most calls). Only allocate for DotAccess labels. ~5-10% of call overhead.
 - **Capacity hints**: `IndexMap::with_capacity(entries.len())` on all dict construction paths (`eval_dict`, `builtin_drop` Dict path, `builtin_split`).
 - **SmallVec**: `SmallVec<[Arc<Thunk>; 4]>` for call args (most calls have ≤4 args), `SmallVec<[StackFrame; 8]>` for error stacks.
 - **Origin optimization**: `origin: String` → `Arc<str>` via string interner, with static empty sentinel for the common case.
@@ -1352,8 +1352,8 @@ migrate(value, arena, thunk_table, env_table) → Arc<Thunk>:
     arc.fill(match thunk.state:
       Materialized(v)            → Materialized(migrate_value(v, arena, thunk_table, env_table))
       Unevaluated(node, env)     → Unevaluated(node, migrate_env(env, arena, thunk_table, env_table))
-      PendingBuiltin(f, args, …) → PendingBuiltin(f, migrate_args(args, …), …)
-      PendingCall(f_θ, args, …)  → PendingCall(migrate(f_θ, …), migrate_args(…), …)
+      BuiltinCall(f, args, …) → BuiltinCall(f, migrate_args(args, …), …)
+      FnCall(f_θ, args, …)  → FnCall(migrate(f_θ, …), migrate_args(…), …)
       Failed(e)                  → Failed(e)
       InProgress                 → unreachable at --- boundary
     )
@@ -1434,7 +1434,7 @@ enum Action {
 enum Cont {
     // materialize() continuations
     Memoize(Box<MemoizeData>),                       // cache result/error in thunk
-    PendingCallDispatch(Box<PendingCallDispatchData>),// force callee, then invoke
+    FnCallDispatch(Box<FnCallDispatchData>),// force callee, then invoke
     GuardedValidate(Box<GuardedValidateData>),        // validate against type annotation
     BuiltinForceArg(Box<BuiltinForceArgData>),        // force args[0..force_count] then W1 Seq/Spine positions
 
@@ -1492,7 +1492,7 @@ pub(crate) async fn run(initial: Action, ctx: &Arc<EvalContext>) -> EvalResult<V
 
 **Memoize error handling:** On `Err`, `Cont::Memoize` must call `cache_failure()` (transition thunk to Failed) before propagating the error up the continuation stack. This ensures failed thunks cache their error and don't retry on every access.
 
-**Builtin return dispatch:** Builtins return `Arc<Thunk>`, not `Value`. After a builtin call, the CEK machine inspects the result: if the thunk is already `Materialized`, extract the value and produce `Action::Continue(Ok(value))`. If it is `Unevaluated` or `PendingBuiltin`, the dispatch depends on the **continuation context**, not a dynamic inference:
+**Builtin return dispatch:** Builtins return `Arc<Thunk>`, not `Value`. After a builtin call, the CEK machine inspects the result: if the thunk is already `Materialized`, extract the value and produce `Action::Continue(Ok(value))`. If it is `Unevaluated` or `BuiltinCall`, the dispatch depends on the **continuation context**, not a dynamic inference:
 
 - If the top of the continuation stack is `Cont::Memoize` (the builtin was called during materialization of a parent thunk), the result must be materialized — produce `Action::Materialize { thunk: result_thunk, ... }`.
 - Otherwise (any other continuation context), the result stays lazy — produce `Action::Continue(Ok(Value::from_thunk(result_thunk)))`.
@@ -1501,13 +1501,13 @@ This is **structurally determined** by the `Cont` variant on the stack, not infe
 
 **Output serialization:** Value serialization (e.g., JSON output) uses the `visit_value` visitor pattern in `src/lib.rs`. The `ValueVisitor` trait defines callbacks for each value variant (`visit_int`, `visit_dict`, `visit_seq_head`, etc.), and `visit_value` recursively traverses the value tree, materializing thunks as needed and dispatching to the visitor callbacks. Each output format implements the `ValueVisitor` trait. This replaced the old `deep_materialize` approach which used a separate recursive function to pre-materialize the entire value tree before serialization.
 
-**Tail-call optimization:** TCO via `Memoize`-reuse was investigated but reverted due to `EvalStackGuard` invariant violations — reusing the memoize frame caused guard bookkeeping to go out of sync, producing double-cache-writes and incorrect failure propagation. Proper TCO is tracked in the issue tracker. Until that sprint lands, recursive calls always push a fresh `Cont::Memoize` frame. Builtin calls likewise always push a continuation — builtins rely on `PendingBuiltin` thunk deferral for lazy behavior, not tail-call elimination.
+**Tail-call optimization:** TCO via `Memoize`-reuse was investigated but reverted due to `EvalStackGuard` invariant violations — reusing the memoize frame caused guard bookkeeping to go out of sync, producing double-cache-writes and incorrect failure propagation. Proper TCO is tracked in the issue tracker. Until that sprint lands, recursive calls always push a fresh `Cont::Memoize` frame. Builtin calls likewise always push a continuation — builtins rely on `BuiltinCall` thunk deferral for lazy behavior, not tail-call elimination.
 
 **TCO and infinite loops.** Tail-recursive functions without a base case run as infinite loops under TCO — the continuation stack stays bounded but the function runs indefinitely. This is intentional: infinite loops are valid programs in tinct (event loops, streaming pipelines). The `--timeout`/`--max-cpu` flags provide external resource limits.
 
 **Error stack traces:** Walk `Vec<Cont>` to reconstruct the call stack, using each variant's stored span and label to produce precise "materialized at" context for every frame. This replaces the current `EvalError::stack` vector with a continuation-derived trace.
 
-**Cont variant count:** 11 variants — `Memoize`, `PendingCallDispatch`, `GuardedValidate`, `BuiltinForceArg`, `TypeAssertCheck`, `LetrecChainStep`, `ForceAndBind`, `MatchDispatch`, `CaseArmExactValueCheck`, `MatchGuardCheck`, `PredicateCheck`. (`DotAccessForce` was removed — dot access desugars to `Call(field-get/slot-get, ...)` before evaluation.) Each variant stores only its specific continuation data (Arc pointers + Span + small fields). Frame size: ≤96 bytes per Cont (enforced by the compile-time assertion at `src/eval_materialize.rs:501`).
+**Cont variant count:** 11 variants — `Memoize`, `FnCallDispatch`, `GuardedValidate`, `BuiltinForceArg`, `TypeAssertCheck`, `LetrecChainStep`, `ForceAndBind`, `MatchDispatch`, `CaseArmExactValueCheck`, `MatchGuardCheck`, `PredicateCheck`. (`DotAccessForce` was removed — dot access desugars to `Call(field-get/slot-get, ...)` before evaluation.) Each variant stores only its specific continuation data (Arc pointers + Span + small fields). Frame size: ≤96 bytes per Cont (enforced by the compile-time assertion at `src/eval_materialize.rs:501`).
 
 **Relationship to allocation strategy:** Arena allocation and flat environments integrate naturally with the CEK machine: `Cont` variants hold `ThunkId` handles into the arena, and the `Vec<Cont>` stack's lifetime defines the arena's lifetime scope.
 
@@ -1593,7 +1593,7 @@ Thunks are allocated in a `ThunkArena` (global bulk deallocation boundary) but s
 |----------------------|---------|
 | TypeAssert validation | `Action::EvalCore` (inner expr) + `Cont::TypeAssertCheck` |
 | Dot access (field extraction) | Lowered to `Call(field-get/slot-get, ...)` before eval — no continuation needed |
-| Function/builtin call dispatch | `Action::Materialize` (callee) + `Cont::PendingCallDispatch` |
+| Function/builtin call dispatch | `Action::Materialize` (callee) + `Cont::FnCallDispatch` |
 | Sequential expression chain | `Action::EvalCore` (current expr) + `Cont::LetrecChainStep` (for next) |
 | Match expression dispatch | `Action::Materialize` (scrutinee) + `Cont::MatchDispatch` |
 | Match guard check | `Action::EvalCore` (guard expr) + `Cont::MatchGuardCheck` |

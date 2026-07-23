@@ -1445,21 +1445,13 @@ impl EvalError {
 }
 
 /// All stack frames appear in user-facing error output.
-/// Every frame has a real source location — either a user source span or a Rust
-/// source span from `rust_span!()`. There is no legitimate reason to suppress a frame.
-#[inline(always)]
-fn should_display_frame(_frame: &StackFrame) -> bool {
-    true
-}
-
-/// Write a source snippet for a stack frame's span.
-///
-/// Source text is no longer embedded in spans (compact Span layout, T-1771).
-/// Snippet rendering requires the caller to supply source text; the Display impl
-/// cannot render snippets without it, so this function is a no-op.
-fn write_frame_snippet(_f: &mut fmt::Formatter<'_>, _span: &Span) -> fmt::Result {
-    Ok(())
-}
+// T-1824: should_display_frame removed — all frames are always displayed.
+// Every frame has a real source location (user span or Rust rust_span!()).
+// There is no filtering policy and no legitimate reason to suppress a frame.
+//
+// T-1824: write_frame_snippet removed — source text is not embedded in spans
+// (compact Span layout, T-1771). Snippet rendering requires the caller to supply
+// source text, which the Display impl cannot provide.
 
 impl fmt::Display for EvalError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1482,17 +1474,11 @@ impl fmt::Display for EvalError {
         // Covers both materialization spans ("evaluated here") and secondary spans.
         for (ref span, ref label) in self.spans.iter().skip(1) {
             write!(f, "\n  note: {label} at {}", span)?;
-            write_frame_snippet(f, span)?;
         }
 
-        // Display all visible stack frames
+        // Display all stack frames (all frames are always shown — no filtering)
         for frame in &self.stack {
-            if !should_display_frame(frame) {
-                continue;
-            }
-
             write!(f, "\n  in {} at {}", frame.label, frame.definition_span)?;
-            write_frame_snippet(f, &frame.definition_span)?;
         }
 
         // Macro expansion provenance: shows "in expansion of `<name>` at line:col"
@@ -2951,72 +2937,9 @@ bad value (defined at src/test_util.rs:3:5-3:10)
         );
     }
 
-    #[test]
-    fn test_should_display_frame_all_real_spans_visible() {
-        // All frames with real spans must return true, regardless of label suffix.
-        let real_span = test_span(5, 1, 5, 10);
-        let impl_frame = StackFrame {
-            label: "map-impl".to_string(),
-            definition_span: real_span.clone(),
-        };
-        assert!(
-            should_display_frame(&impl_frame),
-            "frame with -impl suffix and real span must return true"
-        );
-        let step_frame = StackFrame {
-            label: "remove-step".to_string(),
-            definition_span: real_span.clone(),
-        };
-        assert!(
-            should_display_frame(&step_frame),
-            "frame with -step suffix and real span must return true"
-        );
-        let check_frame = StackFrame {
-            label: "validate-check".to_string(),
-            definition_span: real_span.clone(),
-        };
-        assert!(
-            should_display_frame(&check_frame),
-            "frame with -check suffix and real span must return true"
-        );
-        let merge_frame = StackFrame {
-            label: "sort-merge".to_string(),
-            definition_span: real_span.clone(),
-        };
-        assert!(
-            should_display_frame(&merge_frame),
-            "frame with -merge suffix and real span must return true"
-        );
-        let user_frame = StackFrame {
-            label: "map".to_string(),
-            definition_span: real_span,
-        };
-        assert!(
-            should_display_frame(&user_frame),
-            "user-facing frame with real span must return true"
-        );
-    }
-
-    #[test]
-    fn test_should_display_frame_all_spans() {
-        // should_display_frame returns true for all frames — no suppression.
-        let rust_frame = StackFrame {
-            label: "builtin-fn".to_string(),
-            definition_span: rust_span!(),
-        };
-        assert!(
-            should_display_frame(&rust_frame),
-            "frame with rust_span!() must return true"
-        );
-        let real_frame = StackFrame {
-            label: "user-fn".to_string(),
-            definition_span: test_span(3, 1, 3, 10),
-        };
-        assert!(
-            should_display_frame(&real_frame),
-            "frame with user source span must return true"
-        );
-    }
+    // T-1824: test_should_display_frame_* tests removed — should_display_frame was
+    // deleted because it unconditionally returned true. All frames are always displayed.
+    // The Display impl for EvalError iterates all stack frames without filtering.
 
     #[test]
     fn test_with_materialization_span_label() {

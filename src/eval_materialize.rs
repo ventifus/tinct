@@ -30,7 +30,7 @@ tokio::task_local! {
 }
 
 /// Maximum continuation stack depth. Prevents unbounded stack growth in the CEK machine.
-/// Documented in doc/08-evaluation.md §Iterative Evaluator.
+/// Documented in doc/16-architecture.md §Iterative Evaluator.
 const MAX_CONTINUATION_STACK: usize = 2048;
 
 // Thread-local singleton empty Env for MatchDispatchData. Avoids allocating a new
@@ -2415,7 +2415,7 @@ pub(crate) async fn apply_cont(
                 }
                 Ok(payload_val) => {
                     // Unpack the payload dict using require_dict
-                    let _map = match crate::builtins::require_dict(
+                    let payload_map = match crate::builtins::require_dict(
                         "sequential expression",
                         payload_val,
                         current_expr_span.clone(),
@@ -2428,20 +2428,53 @@ pub(crate) async fn apply_cont(
                         Err(e) => return Action::Continue(Err(e)),
                     };
 
-                    // Scope advancement is handled by EvalFrame — no arena-len tracking needed.
-                    let _ = static_key_set;
+                    // B-591: Extend frame group with payload dict's string-keyed thunks,
+                    // mirroring the Dict path in LetrecChainStep (lines above). Without
+                    // this, subsequent LGM references would resolve to wrong thunks.
                     let next_expr = &exprs[next_idx];
-                    stack.push(Cont::LetrecChainStep(Box::new(LetrecChainStepData {
-                        idx: next_idx,
-                        letrec_chain_expr: Arc::clone(&letrec_chain_expr),
-                        frame: Arc::clone(&frame),
-                        ctx: Arc::clone(&ctx),
-                        seq_span,
-                    })));
-                    Action::EvalCore {
-                        expr: Arc::clone(next_expr),
-                        frame,
-                        ctx,
+                    if !static_key_set.is_empty() {
+                        let new_thunks: Vec<std::sync::Arc<crate::value::Thunk>> = payload_map
+                            .iter()
+                            .filter_map(|(k, v)| {
+                                if matches!(k, crate::value::HashableValue::Str(_)) {
+                                    Some(std::sync::Arc::clone(v))
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        let updated_group: Vec<std::sync::Arc<crate::value::Thunk>> =
+                            frame.group.iter().cloned().chain(new_thunks).collect();
+                        let updated_frame = std::sync::Arc::new(crate::value::EvalFrame {
+                            group: std::sync::Arc::new(updated_group),
+                            closure_env: std::sync::Arc::clone(&frame.closure_env),
+                            params: std::sync::Arc::clone(&frame.params),
+                        });
+                        stack.push(Cont::LetrecChainStep(Box::new(LetrecChainStepData {
+                            idx: next_idx,
+                            letrec_chain_expr: Arc::clone(&letrec_chain_expr),
+                            frame: Arc::clone(&updated_frame),
+                            ctx: Arc::clone(&ctx),
+                            seq_span,
+                        })));
+                        Action::EvalCore {
+                            expr: Arc::clone(next_expr),
+                            frame: updated_frame,
+                            ctx,
+                        }
+                    } else {
+                        stack.push(Cont::LetrecChainStep(Box::new(LetrecChainStepData {
+                            idx: next_idx,
+                            letrec_chain_expr: Arc::clone(&letrec_chain_expr),
+                            frame: Arc::clone(&frame),
+                            ctx: Arc::clone(&ctx),
+                            seq_span,
+                        })));
+                        Action::EvalCore {
+                            expr: Arc::clone(next_expr),
+                            frame,
+                            ctx,
+                        }
                     }
                 }
             }
