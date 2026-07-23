@@ -435,12 +435,49 @@ format-class: [fn@[return: String  doc: """Format class declaration."""] [let no
       ""]
     "]"]]
 
-format-instance: [fn@[return: String  doc: """Format instance declaration. Emits class name and arms count; full arm formatting is a TODO."""] [let node]
+format-instance-pattern: [fn@[return: String  doc: """Format an instance arm pattern (a LetDecl node) as [let binding ...].
+The pattern node is an Expr.LetDecl with a 'bindings' field: list of Expr.* nodes."""] [let pat]
+  [str
+    "[let"
+    [if [> [length [get "bindings" pat]] 0]
+      [str " " [join-strings " " [map-list [fn [let b] [render-inline b]] [get "bindings" pat]]]]
+      ""]
+    "]"]]
+
+format-instance-methods: [fn@[return: String  doc: """Format an instance arm methods dict as [key: val ...].
+Methods is a string-keyed dict of method-name -> Expr.* value nodes."""] [let methods]
+  [if [= [length methods] 0]
+    "[]"
+    [str
+      "["
+      [join-strings "  " [map-list [fn [let k] [str k ": " [render-inline [get k methods]]]] [keys methods]]]
+      "]"]]]
+
+format-instance-arm: [fn@[return: String  doc: """Format one instance arm as '[let ...]: [methods...]'."""] [let arm indent]
+  [str
+    [format-instance-pattern [get "pattern" arm]]
+    ": "
+    [format-instance-methods [get "methods" arm]]]]
+
+format-instance-arms-impl: [fn@[return: String] [let arms indent i acc]
+  [if [>= i [length arms]]
+    acc
+    [format-instance-arms-impl
+      arms
+      indent
+      [+ i 1]
+      [str
+        acc
+        "\n"
+        [str-repeat [+ indent indent-size] " "]
+        [format-instance-arm [get i arms] [+ indent indent-size]]]]]]
+
+format-instance: [fn@[return: String  doc: """Format instance declaration, rendering each arm as '[let pat]: [methods...]'."""] [let node]
   [str
     "[instance "
     [get "class" node]
     [if [> [length [get "arms" node]] 0]
-      [str " <" [str [length [get "arms" node]]] " arm(s)>"]
+      [format-instance-arms-impl [get "arms" node] 0 0 ""]
       ""]
     "]"]]
 

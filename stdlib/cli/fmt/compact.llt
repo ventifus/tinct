@@ -269,12 +269,43 @@ format-class: [fn@[return: String  doc: """Format class declaration."""] [let no
       ""]
     "]"]]
 
-format-instance: [fn@[return: String  doc: """Format instance declaration. Emits class name and arms count; full arm formatting is a TODO."""] [let node]
+format-instance-pattern: [fn@[return: String  doc: """Format an instance arm pattern (a LetDecl node) as [let binding ...].
+The pattern node is an Expr.LetDecl with a 'bindings' field: list of Expr.* nodes."""] [let pat]
+  [str
+    "[let"
+    [if [> [length [get "bindings" pat]] 0]
+      [str " " [join-strings " " [map-list format-node [get "bindings" pat]]]]
+      ""]
+    "]"]]
+
+format-instance-methods: [fn@[return: String  doc: """Format an instance arm methods dict as [key: val ...].
+Methods is a string-keyed dict of method-name -> Expr.* value nodes."""] [let methods]
+  [if [= [length methods] 0]
+    "[]"
+    [str
+      "["
+      [join-strings " " [map-list [fn [let k] [str k ": " [format-node [get k methods]]]] [keys methods]]]
+      "]"]]]
+
+format-instance-arms-impl: [fn@[return: String] [let arms i acc]
+  [if [>= i [length arms]]
+    acc
+    [format-instance-arms-impl
+      arms
+      [+ i 1]
+      [str
+        acc
+        " "
+        [format-instance-pattern [get "pattern" [get i arms]]]
+        ": "
+        [format-instance-methods [get "methods" [get i arms]]]]]]]
+
+format-instance: [fn@[return: String  doc: """Format instance declaration, rendering each arm as '[let pat]: [methods...]'."""] [let node]
   [str
     "[instance "
     [get "class" node]
     [if [> [length [get "arms" node]] 0]
-      [str " <" [str [length [get "arms" node]]] " arm(s)>"]
+      [format-instance-arms-impl [get "arms" node] 0 ""]
       ""]
     "]"]]
 
