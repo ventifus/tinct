@@ -71,6 +71,16 @@ pub fn fmt_dict(
                     out.push_str("]:");
                 }
             },
+            HashableValue::Float(bits) => {
+                // Display float key using the canonical float formatter.
+                // f64::from_bits reconstructs the value; fmt_float produces
+                // the surface representation (e.g. "1.5", "3.14").
+                // NaN and Inf have no tinct literal syntax — fall back to Display.
+                let f = f64::from_bits(*bits);
+                let s = fmt_float(f).unwrap_or_else(|_| f.to_string());
+                out.push_str(&s);
+                out.push(':');
+            }
             HashableValue::Dict(pairs) => {
                 out.push('[');
                 for (j, (k, v)) in pairs.iter().enumerate() {

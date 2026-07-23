@@ -165,6 +165,12 @@ pub enum HashableValue {
     Int(i64),
     Str(Arc<str>),
     Bool(bool),
+    /// Float key stored as raw IEEE 754 bits (u64) for bitwise equality and hashing.
+    /// TotalF64 semantics: NaN == NaN iff both have the same bit pattern. Two floats that
+    /// represent different bit patterns are unequal as keys even if they would compare equal
+    /// under IEEE 754 (e.g. -0.0 and +0.0 have different bits and are distinct keys).
+    /// This is sound for HashMap semantics: reflexive, symmetric, transitive.
+    Float(u64),
     /// Pairs in insertion order. Equality is order-insensitive.
     Dict(Vec<(HashableValue, HashableValue)>),
     Variant {
@@ -190,6 +196,9 @@ impl PartialEq for HashableValue {
             (HashableValue::Int(a), HashableValue::Int(b)) => a == b,
             (HashableValue::Str(a), HashableValue::Str(b)) => a == b,
             (HashableValue::Bool(a), HashableValue::Bool(b)) => a == b,
+            // Bitwise equality: Float(a) == Float(b) iff their bit representations are identical.
+            // This makes NaN == NaN when both have the same bit pattern (TotalF64 semantics).
+            (HashableValue::Float(a), HashableValue::Float(b)) => a == b,
             (HashableValue::Dict(a), HashableValue::Dict(b)) => {
                 if a.len() != b.len() {
                     return false;
@@ -232,6 +241,10 @@ impl PartialOrd for HashableValue {
             (HashableValue::Int(a), HashableValue::Int(b)) => a.partial_cmp(b),
             (HashableValue::Str(a), HashableValue::Str(b)) => a.partial_cmp(b),
             (HashableValue::Bool(a), HashableValue::Bool(b)) => a.partial_cmp(b),
+            // Float keys are ordered by their bit representation (not by f64 value order).
+            // This is not meaningful as a numeric ordering, but provides a total order
+            // over Float keys so that IndexMap can sort them if needed.
+            (HashableValue::Float(a), HashableValue::Float(b)) => a.partial_cmp(b),
             _ => None, // mixed types and complex types are incomparable
         }
     }
@@ -240,7 +253,7 @@ impl PartialOrd for HashableValue {
 impl Hash for HashableValue {
     fn hash<H: Hasher>(&self, state: &mut H) {
         // Use explicit u8 discriminants instead of std::mem::discriminant.
-        // Discriminants: Int=0, Bool=1, Str=2, Dict=3, Variant=4
+        // Discriminants: Int=0, Bool=1, Str=2, Dict=3, Variant=4, Float=5
         match self {
             HashableValue::Int(n) => {
                 0u8.hash(state);
@@ -253,6 +266,10 @@ impl Hash for HashableValue {
             HashableValue::Str(s) => {
                 2u8.hash(state);
                 s.hash(state);
+            }
+            HashableValue::Float(bits) => {
+                5u8.hash(state);
+                bits.hash(state);
             }
             HashableValue::Dict(pairs) => {
                 3u8.hash(state);
@@ -292,6 +309,7 @@ impl fmt::Display for HashableValue {
         match self {
             HashableValue::Int(n) => write!(f, "{n}"),
             HashableValue::Str(s) => write!(f, "{s}"),
+            HashableValue::Float(bits) => write!(f, "{}", f64::from_bits(*bits)),
             HashableValue::Bool(b) => {
                 if *b {
                     write!(f, "Boolean.True")
@@ -2483,5 +2501,64 @@ mod tests {
         assert_ne!(d_with_dupes, d_normal);
         // Self-comparison with dupes also returns false (duplicate key detected)
         assert_ne!(d_with_dupes, d_with_dupes.clone());
+    }
+
+    // =========================================================================
+    // HashableValue::Float tests (D-9 / S-972: TotalF64 bitwise equality)
+    // =========================================================================
+
+    #[test]
+    fn hashable_value_float_eq_implies_hash_eq() {
+        // Same bit pattern → equal and same hash.
+        let a = HashableValue::Float(3.14f64.to_bits());
+        let b = HashableValue::Float(3.14f64.to_bits());
+        assert_eq!(a, b);
+        assert_eq!(compute_hash(&a), compute_hash(&b));
+    }
+
+    #[test]
+    fn hashable_value_float_different_values_not_equal() {
+        let a = HashableValue::Float(1.0f64.to_bits());
+        let b = HashableValue::Float(2.0f64.to_bits());
+        assert_ne!(a, b);
+        assert_ne!(compute_hash(&a), compute_hash(&b));
+    }
+
+    #[test]
+    fn hashable_value_float_nan_eq_same_bits() {
+        // TotalF64: NaN == NaN when they share the same bit pattern.
+        let nan_bits = f64::NAN.to_bits();
+        let a = HashableValue::Float(nan_bits);
+        let b = HashableValue::Float(nan_bits);
+        assert_eq!(a, b, "NaN with same bit pattern must be equal as key");
+        assert_eq!(compute_hash(&a), compute_hash(&b));
+    }
+
+    #[test]
+    fn hashable_value_float_neg_zero_and_pos_zero_distinct() {
+        // -0.0 and +0.0 have different bit patterns and are distinct keys.
+        let pos_zero = HashableValue::Float(0.0f64.to_bits());
+        let neg_zero = HashableValue::Float((-0.0f64).to_bits());
+        assert_ne!(pos_zero, neg_zero, "-0.0 and +0.0 must be distinct keys");
+    }
+
+    #[test]
+    fn hashable_value_float_cross_type_not_equal_to_int() {
+        // Float(1.0) is not equal to Int(1) — different types.
+        let float_one = HashableValue::Float(1.0f64.to_bits());
+        let int_one = HashableValue::Int(1);
+        assert_ne!(float_one, int_one);
+        // Hashes differ because discriminants differ (Float=5, Int=0).
+        assert_ne!(compute_hash(&float_one), compute_hash(&int_one));
+    }
+
+    #[test]
+    fn hashable_value_float_display() {
+        // Display shows the f64 value, not the raw bits.
+        let v = HashableValue::Float(3.14f64.to_bits());
+        assert_eq!(v.to_string(), "3.14");
+
+        let nan = HashableValue::Float(f64::NAN.to_bits());
+        assert_eq!(nan.to_string(), "NaN");
     }
 }

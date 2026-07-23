@@ -1,8 +1,10 @@
-# What If: Float Dict Keys for tinct
+# Float Dict Keys for tinct
 
-What would it take to allow floating-point numbers as dict keys?
-
-TODO: make this be "any Hashable" as dict keys. But that definition excludes Float. What do do?
+**Decision (D-9, S-972):** Float dict keys are allowed via bitwise equality (TotalF64 semantics).
+`HashableValue::Float(u64)` stores the raw IEEE 754 bits of the f64. NaN == NaN when both keys
+have the same bit pattern; -0.0 and +0.0 are distinct keys (different bits). This is sound for
+HashMap semantics: reflexive, symmetric, transitive. The Sortable/Comparable restriction applies to
+ordered collections, not to dict keys — any value that can be compared for equality can be a key.
 
 ## Current State
 

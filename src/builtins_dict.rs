@@ -56,6 +56,7 @@ fn value_to_hashable_key(
 ) -> EvalResult<HashableValue> {
     match val {
         Value::Int(n) => Ok(HashableValue::Int(*n)),
+        Value::Float(f) => Ok(HashableValue::Float(f.to_bits())),
         Value::String { source, start, end } => {
             let s = &source[*start..*end];
             Ok(HashableValue::Str(s.into()))
@@ -100,7 +101,7 @@ fn value_to_hashable_key(
         }
         other => Err(EvalError::type_mismatch_ctx(
             builtin_name.to_string(),
-            "Int, String, Boolean, or Variant",
+            "Int, Float, String, Boolean, or Variant",
             other.type_name(),
             span,
         )
@@ -112,6 +113,7 @@ fn value_to_hashable_key(
 fn hashable_value_to_value(hv: &HashableValue) -> Value {
     match hv {
         HashableValue::Int(n) => Value::Int(*n),
+        HashableValue::Float(bits) => Value::Float(f64::from_bits(*bits)),
         HashableValue::Str(s) => string_val(s),
         HashableValue::Bool(b) => Value::Variant {
             tycon: "Boolean".into(),
@@ -883,6 +885,7 @@ pub(crate) fn builtin_builder_get_or(
             .clone();
         let key = match key_val {
             Value::Int(n) => HashableValue::Int(n),
+            Value::Float(f) => HashableValue::Float(f.to_bits()),
             Value::String {
                 ref source,
                 start,
@@ -894,7 +897,7 @@ pub(crate) fn builtin_builder_get_or(
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builder-get-or".to_string(),
-                    "Int or String (for key)",
+                    "Int, Float, or String (for key)",
                     other.type_name(),
                     thunk0.span.clone(),
                 )
@@ -998,6 +1001,7 @@ pub(crate) fn builtin_build_dict(
                     let key_val = materialize(key_thunk, None, &ctx).await?;
                     let key = match key_val {
                         Value::Int(n) => HashableValue::Int(n),
+                        Value::Float(f) => HashableValue::Float(f.to_bits()),
                         Value::String {
                             ref source,
                             start,
@@ -1006,7 +1010,7 @@ pub(crate) fn builtin_build_dict(
                         other => {
                             return Err(EvalError::type_mismatch_ctx(
                                 "build-dict".to_string(),
-                                "Int or String (for key)",
+                                "Int, Float, or String (for key)",
                                 other.type_name(),
                                 key_thunk.span.clone(),
                             )
@@ -1123,6 +1127,7 @@ pub(crate) fn builtin_builder_set(
             .clone();
         let key = match key_val {
             Value::Int(n) => HashableValue::Int(n),
+            Value::Float(f) => HashableValue::Float(f.to_bits()),
             Value::String {
                 ref source,
                 start,
@@ -1134,7 +1139,7 @@ pub(crate) fn builtin_builder_set(
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builder-set".to_string(),
-                    "Int or String (for key)",
+                    "Int, Float, or String (for key)",
                     other.type_name(),
                     thunk0.span.clone(),
                 )
@@ -1201,6 +1206,7 @@ pub(crate) fn builtin_builder_delete(
             .clone();
         let key = match key_val {
             Value::Int(n) => HashableValue::Int(n),
+            Value::Float(f) => HashableValue::Float(f.to_bits()),
             Value::String {
                 ref source,
                 start,
@@ -1212,7 +1218,7 @@ pub(crate) fn builtin_builder_delete(
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builder-delete".to_string(),
-                    "Int or String (for key)",
+                    "Int, Float, or String (for key)",
                     other.type_name(),
                     thunk0.span.clone(),
                 )
@@ -1369,6 +1375,7 @@ pub(crate) fn builtin_builder_has(
             .clone();
         let key = match key_val {
             Value::Int(n) => HashableValue::Int(n),
+            Value::Float(f) => HashableValue::Float(f.to_bits()),
             Value::String {
                 ref source,
                 start,
@@ -1380,7 +1387,7 @@ pub(crate) fn builtin_builder_has(
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builder-has?".to_string(),
-                    "Int or String (for key)",
+                    "Int, Float, or String (for key)",
                     other.type_name(),
                     thunk0.span.clone(),
                 )
@@ -1446,6 +1453,7 @@ pub(crate) fn builtin_builder_get(
             .clone();
         let key = match key_val {
             Value::Int(n) => HashableValue::Int(n),
+            Value::Float(f) => HashableValue::Float(f.to_bits()),
             Value::String {
                 ref source,
                 start,
@@ -1457,7 +1465,7 @@ pub(crate) fn builtin_builder_get(
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builder-get".to_string(),
-                    "Int or String (for key)",
+                    "Int, Float, or String (for key)",
                     other.type_name(),
                     thunk0.span.clone(),
                 )

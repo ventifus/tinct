@@ -25,6 +25,7 @@ fn value_to_key(value: &Value, span: &Span) -> EvalResult<HashableValue> {
             end,
         } => Ok(HashableValue::Str(Arc::from(&source[*start..*end]))),
         Value::Int(n) => Ok(HashableValue::Int(*n)),
+        Value::Float(f) => Ok(HashableValue::Float(f.to_bits())),
         Value::Variant {
             tycon,
             ctor,
@@ -56,7 +57,7 @@ fn value_to_key(value: &Value, span: &Span) -> EvalResult<HashableValue> {
             })
         }
         _ => Err(EvalError::type_mismatch(
-            "String, Int, Boolean, or Variant",
+            "String, Int, Float, Boolean, or Variant",
             value.type_name(),
             span.clone(),
         )
@@ -112,6 +113,7 @@ async fn eval_annotation_property_dict(
                     HashableValue::Str(Arc::from(processed.as_str()))
                 }
                 SurfaceExpression::Int(n) => HashableValue::Int(*n),
+                SurfaceExpression::Float(f) => HashableValue::Float(f.to_bits()),
                 // U64 values that fit in i64 are used as integer keys; larger values error.
                 SurfaceExpression::U64(n) => {
                     if let Ok(i) = i64::try_from(*n) {
@@ -559,6 +561,7 @@ pub(crate) async fn eval_key_core(
     match &key_expr.node {
         CoreExpr::Str(s) => return Ok(HashableValue::Str(Arc::from(s.as_str()))),
         CoreExpr::Int(n) => return Ok(HashableValue::Int(*n)),
+        CoreExpr::Float(f) => return Ok(HashableValue::Float(f.to_bits())),
         // U64 keys that fit in i64 are used as integer keys; larger values error.
         CoreExpr::U64(n) => {
             if let Ok(i) = i64::try_from(*n) {

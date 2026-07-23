@@ -1,0 +1,8 @@
+# Float dict keys are valid via bitwise equality (TotalF64 semantics, D-9 / S-972).
+# Use builder-set with a computed float key, builder-finish, then get to look it up.
+[k: [/ 3.0 2.0]
+ tbl: [builder-finish [builder-set k 42 [make-builder]]]]
+---
+[get %.k %.tbl]
+=== out
+Int(42)

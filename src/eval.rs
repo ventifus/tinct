@@ -304,8 +304,9 @@ pub(crate) const IS_ANNOTATION_KEY: &str = "is";
 type GuardDefault = (Arc<Spanned<crate::ast::CoreExpr>>, u32);
 
 /// Type alias for the return type of `match_pattern` — an async fn returning an optional env.
-type MatchPatternFuture<'a> =
-    std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Option<Arc<RwLock<Env>>>>> + Send + 'a>>;
+type MatchPatternFuture<'a> = std::pin::Pin<
+    Box<dyn std::future::Future<Output = EvalResult<Option<Arc<RwLock<Env>>>>> + Send + 'a>,
+>;
 
 // ValuesEqualFuture removed — primitive_eq is synchronous (no async needed).
 
@@ -3104,35 +3105,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_value_to_key_invalid_type_variant() {
-        // A dict with a Float key expression should fail in eval_key -> value_to_key.
-        // Float is not a valid key type (not hashable).
+    async fn test_value_to_key_float_1_5() {
+        // Float keys are valid via bitwise equality (TotalF64). 1.5 as a dict key.
+        let ctx = test_ctx();
         let z = rust_span!();
         let zz = z.clone();
         let mk = move |expr: SurfaceExpression| Arc::new(SurfaceNode::new(expr, zz.clone()));
         let node = mk(SurfaceExpression::Dict(vec![Spanned::new(
             SurfaceEntry {
                 key: Some(mk(SurfaceExpression::Float(1.5))),
-                value: mk(SurfaceExpression::Int(1)),
+                value: mk(SurfaceExpression::Int(42)),
             },
             z,
         )]));
-        let err = eval_for_test(node, empty_env(), &test_ctx())
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("type mismatch"), "got: {}", err);
-        assert!(
-            err.to_string()
-                .contains("expected String, Int, Boolean, or Variant"),
-            "got: {}",
-            err
-        );
+        let thunk = eval_for_test(node, empty_env(), &ctx).await.unwrap();
+        let val = materialize(&thunk, None, &ctx).await.unwrap();
+        match val {
+            Value::Dict(map) => {
+                assert_eq!(map.len(), 1);
+                let key = HashableValue::Float(1.5f64.to_bits());
+                let entry_thunk = map.get(&key).expect("Float(1.5) key must exist");
+                let inner = materialize(entry_thunk, None, &ctx).await.unwrap();
+                assert_eq!(inner, Value::Int(42));
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
     }
 
     #[tokio::test]
-    async fn test_value_to_key_invalid_type_float() {
-        // A dict with a Float key expression should fail in eval_key -> value_to_key.
-        // Build via SurfaceNode since surface text [3.14: 1] would parse differently.
+    async fn test_value_to_key_float_3_14() {
+        // Float keys are valid via bitwise equality (TotalF64). 3.14 as a dict key.
+        let ctx = test_ctx();
         let z = rust_span!();
         let zz = z.clone();
         let mk = move |expr: SurfaceExpression| Arc::new(SurfaceNode::new(expr, zz.clone()));
@@ -3143,17 +3146,18 @@ mod tests {
             },
             z,
         )]));
-        let err = eval_for_test(node, empty_env(), &test_ctx())
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("type mismatch"), "got: {}", err);
-        assert!(
-            err.to_string()
-                .contains("expected String, Int, Boolean, or Variant"),
-            "got: {}",
-            err
-        );
-        assert!(err.to_string().contains("got Float"), "got: {}", err);
+        let thunk = eval_for_test(node, empty_env(), &ctx).await.unwrap();
+        let val = materialize(&thunk, None, &ctx).await.unwrap();
+        match val {
+            Value::Dict(map) => {
+                assert_eq!(map.len(), 1);
+                let key = HashableValue::Float(3.14f64.to_bits());
+                let entry_thunk = map.get(&key).expect("Float(3.14) key must exist");
+                let inner = materialize(entry_thunk, None, &ctx).await.unwrap();
+                assert_eq!(inner, Value::Int(1));
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
     }
 
     // ── Stack trace / call stack reconstruction tests ──────────────────
@@ -3296,7 +3300,8 @@ mod tests {
         // Create a PendingCall thunk where the function is a Builtin
         fn multiply_builtin(
             ctx: crate::value::BuiltinArgs,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>> + Send>>
+        {
             Box::pin(async move {
                 let a = materialize(&ctx.args[0], None, &ctx.ctx).await?;
                 let b = materialize(&ctx.args[1], None, &ctx.ctx).await?;
