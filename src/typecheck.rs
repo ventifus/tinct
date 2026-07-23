@@ -845,9 +845,7 @@ pub(crate) fn infer_class_decl_from_surface(
     }
     state.type_stage_scope[0]
         .entry(class_decl.name.clone())
-        .or_insert(crate::type_infer::TypeStageEntry::Class(
-            class_decl.clone(),
-        ));
+        .or_insert(crate::type_infer::TypeStageEntry::Class(class_decl.clone()));
     for (param_name, kind) in &class_decl.params {
         if *kind == Kind::Operator {
             state.kind_env.insert(param_name.clone(), Kind::Operator);

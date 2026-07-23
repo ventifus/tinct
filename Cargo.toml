@@ -60,6 +60,9 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1" }
 strsim = "0.11"
 
+[lints.clippy]
+arc_with_non_send_sync = "deny"
+
 [dev-dependencies]
 walkdir = "2"
 criterion = "0.5"

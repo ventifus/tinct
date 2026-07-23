@@ -3305,6 +3305,23 @@ fn compute_type_assert_mismatch(
 ///
 /// Returns `(Type::Unknown, None)` for TypeVar / Unknown / open-tail bases — the caller
 /// emits a diagnostic separately.
+/// Resolve the type of a field access `base_ty.field`.
+///
+/// Returns `(field_type, slot_opt)` where `slot_opt` is `Some(i)` only for closed
+/// (Empty-tailed) Dict rows where the field is known — used for O(1) `slot-get` lowering.
+///
+/// ## Why Unknown is correct for missing fields
+///
+/// Under BAS (Bounded Abstraction Subtyping, Parreaux & Chau 2022) and gradual typing
+/// (Siek & Taha 2006), the annotated record type `{x: Int}` is a LOWER BOUND on field
+/// types, not an exhaustive declaration. A value typed `{x: Int}` may carry additional
+/// fields at runtime — the annotation only constrains that field `x` is `Int`. Accessing
+/// an unannotated field returns `Type::Unknown` (the dynamic type `?`), which is
+/// consistent with all types. This is correct, not a misuse: it preserves the BAS
+/// invariant that annotations are subsumption constraints, not closed-world specifications.
+///
+/// The `other` arm at the bottom of this function handles genuinely-wrong base types
+/// (e.g., accessing `.field` on an `Int` or `Str` base) where a type error IS correct.
 fn field_type_from_base(
     base_ty: &Type,
     field: &crate::ast::DotKey,
@@ -3329,9 +3346,14 @@ fn field_type_from_base(
                     };
                     (ty.clone(), slot_opt)
                 }
+                // Field not found in the named fields — return Unknown (see doc comment above).
+                // BAS width subtyping: the value may carry this field at runtime even if the
+                // annotated type does not list it. Unknown is the correct gradual type here.
                 None => (Type::Unknown, None),
             }
         }
+        // Intersection: try each member. If no member has the field, return Unknown.
+        // The intersection may be partially resolved; Unknown defers the constraint.
         Type::Intersection(members) => {
             for m in members {
                 if let Type::Dict(row) = m {
@@ -3346,12 +3368,19 @@ fn field_type_from_base(
             }
             (Type::Unknown, None)
         }
+        // Gradual: Unknown/Any base → Unknown field (consistency, not subtyping).
+        // TypeVar: the base type is not yet resolved — defer field type to Unknown.
         Type::Unknown | Type::Any | Type::TypeVar(_, _) => (Type::Unknown, None),
+        // Negation, Union, NominalVariant, TyCon: structural field access is not defined
+        // for these types in the static type system. Return Unknown (gradual) rather than
+        // an error — these types may be refined by later unification or narrowing.
         Type::Negation(_) => (Type::Unknown, None),
         Type::Union(_) => (Type::Unknown, None),
         Type::NominalVariant { .. } => (Type::Unknown, None),
         Type::TyCon(_) | Type::TyConResolved(_, _) | Type::App(_, _) => (Type::Unknown, None),
+        // Error propagation: absorb silently (cascade prevention).
         Type::Error(payload) => (Type::Error(payload.clone()), None),
+        // Concrete non-record types: field access is definitely wrong — emit type error.
         other => {
             let err = TypeDiagnostic::error(
                 "type-error",
@@ -4099,11 +4128,11 @@ pub(crate) async fn run_typecheck_dict(
                                 .type_stage_scope
                                 .push(std::collections::HashMap::new());
                         }
-                        state.type_stage_scope[0]
-                            .entry(name.clone())
-                            .or_insert(crate::type_infer::TypeStageEntry::Resolved(
-                                crate::types::Type::TyCon(name.clone()),
-                            ));
+                        state.type_stage_scope[0].entry(name.clone()).or_insert(
+                            crate::type_infer::TypeStageEntry::Resolved(crate::types::Type::TyCon(
+                                name.clone(),
+                            )),
+                        );
                         if params.is_empty() {
                             let value_scheme_ty = adt_value_type(&alias_ty);
                             if let Type::Dict(ref row) = value_scheme_ty {
@@ -5092,16 +5121,27 @@ mod tests {
         assert_eq!(slot_y, Some(1u32), ".y should have slot index 1");
         assert!(errors.is_empty(), "No errors expected for .y");
 
-        // Accessing an absent field — no slot, Unknown type
+        // Accessing an absent field — no slot, Unknown type.
+        // Under BAS width subtyping, an annotated record type {x: Int} (Empty tail) does NOT
+        // mean "exactly these fields" — it means "at least these fields." A value at this type
+        // may have additional fields at runtime. Returning Unknown (not an error) is correct:
+        // the field may exist, we just don't statically know its type.
         let (ty_z, slot_z) = field_type_from_base(
             &base_ty,
             &DotKey::Ident("z".to_string()),
             &span,
             &mut errors,
         );
-        assert_eq!(ty_z, Type::Unknown, ".z absent from row → Unknown");
+        assert_eq!(
+            ty_z,
+            Type::Unknown,
+            ".z absent from row → Unknown (BAS width subtyping)"
+        );
         assert_eq!(slot_z, None, ".z absent from row → no slot");
-        assert!(errors.is_empty(), "No errors expected for absent field");
+        assert!(
+            errors.is_empty(),
+            "No errors expected for absent field — BAS allows extra fields"
+        );
     }
 
     /// T-1490: Open Dict rows (Uniform tail) must NOT produce slot annotations.

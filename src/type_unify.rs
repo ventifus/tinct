@@ -1619,6 +1619,10 @@ async fn unify_rows(
                 if let Type::TypeVar(alpha, _) = &v_fixed {
                     // Step 2: V is still an unbound TypeVar α — compute join of all named
                     // field types and unify α with that join.
+                    //
+                    // The occurs check for α ∈ join is handled by the TypeVar arm of
+                    // unify() via lower_levels_check_occurs (lines ~2295-2305). If α
+                    // appears in join, unify() returns Err("infinite type") before binding.
                     let join = Type::normalize_union(all_fields);
                     Box::pin(unify(
                         &Type::TypeVar(alpha.clone(), 0),
@@ -1682,6 +1686,8 @@ async fn unify_rows(
 
             if let Type::TypeVar(alpha, _) = &v_fixed {
                 // V is an unbound TypeVar α: compute join of all named field types and unify.
+                // The occurs check for α ∈ join is handled by the TypeVar arm of unify()
+                // via lower_levels_check_occurs, which fires before any binding is made.
                 let join = Type::normalize_union(field_types);
                 Box::pin(unify(
                     &Type::TypeVar(alpha.clone(), 0),
@@ -2219,9 +2225,20 @@ pub async fn unify(
         // Error carries no information that should propagate to type variables.
         (Type::Error(_), _) | (_, Type::Error(_)) => Ok(()),
 
-        // Unknown-consistency with level zeroing: prevent generalization of Unknown-touched vars.
-        // Unknown relates to other types via consistency, not unification. When Unknown meets
-        // a type variable, we zero the variable's level to prevent generalization (Siek & Taha 2006).
+        // Unknown-consistency: gradual typing treatment (Siek & Taha 2006, §3).
+        //
+        // Unknown is the dynamic type `?` in gradual typing — it is CONSISTENT with all types,
+        // not equal to them. Consistency is not unification: unify(?, T) succeeds for all T
+        // without binding any type variable. No occurs check is needed because Unknown never
+        // creates a new TypeVar binding — it is a terminal type that simply propagates.
+        //
+        // When Unknown meets a TypeVar, we zero the variable's level to prevent
+        // over-generalization: if α were later unified with ?, it should not escape its scope.
+        // When Unknown meets a non-TypeVar, we zero all vars in the non-Unknown side for the
+        // same reason — any TypeVar "touched" by Unknown must not be generalized.
+        //
+        // This behavior is SOUND and CORRECT for gradual typing. Do not change it to fail
+        // or emit a diagnostic — that would break the gradual type system.
         (Type::Unknown, Type::TypeVar(name, _)) => {
             state.set_level(name.clone(), 0);
             Ok(())
@@ -2233,7 +2250,7 @@ pub async fn unify(
         (Type::Unknown, other) | (other, Type::Unknown) => {
             // Zero levels of all type/row vars in the non-Unknown side to prevent
             // over-generalization. E.g., unify(Unknown, Fn(TypeVar("b",3) -> Int))
-            // must zero b's level so it won't be generalized.
+            // must zero b's level so b will not be generalized at its binding site.
             let mut type_vars = HashSet::new();
             other.collect_all_vars(&mut type_vars);
             for var in &type_vars {
@@ -2242,8 +2259,10 @@ pub async fn unify(
             Ok(())
         }
 
-        // Top unification: Top should not appear in unification positions (it's for checking only).
-        // If it does appear, treat it like Unknown for now (accepting unification with anything).
+        // Top (Any) unification: Any is the top type, consistent with all types.
+        // Treat symmetrically with Unknown: zero levels to prevent over-generalization.
+        // Any should not appear in unification positions in well-typed programs; when it does
+        // (e.g., from explicit @Any annotations), this is the correct conservative treatment.
         (Type::Any, Type::TypeVar(name, _)) => {
             state.set_level(name.clone(), 0);
             Ok(())

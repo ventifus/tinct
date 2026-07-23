@@ -2677,11 +2677,7 @@ pub(crate) fn builtin_tc_update_type_stage_env(
         }
 
         // Extract TypeContext — same pattern as builtin_typecheck_doc
-        let tc_arc = match args[0]
-            .try_get_value()
-            .expect("Strictness::Seq")
-            .clone()
-        {
+        let tc_arc = match args[0].try_get_value().expect("Strictness::Seq").clone() {
             Value::TypeContext(arc) => arc,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
@@ -2695,11 +2691,7 @@ pub(crate) fn builtin_tc_update_type_stage_env(
         };
 
         // Extract Dict
-        let dict_entries = match args[1]
-            .try_get_value()
-            .expect("Strictness::Seq")
-            .clone()
-        {
+        let dict_entries = match args[1].try_get_value().expect("Strictness::Seq").clone() {
             Value::Dict(d) => d,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
@@ -2728,14 +2720,13 @@ pub(crate) fn builtin_tc_update_type_stage_env(
         let mut new_frame = std::collections::HashMap::new();
         for (name, thunk) in to_process {
             let val = materialize(&thunk, None, &ctx).await?;
-            let entry =
-                if let Some(ty) = crate::type_normalize::typenode_leaf_to_type(&val) {
-                    crate::type_infer::TypeStageEntry::Resolved(ty)
-                } else if matches!(val, Value::Function { .. }) {
-                    crate::type_infer::TypeStageEntry::Function(Arc::clone(&thunk))
-                } else {
-                    continue; // not a type-stage value — skip
-                };
+            let entry = if let Some(ty) = crate::type_normalize::typenode_leaf_to_type(&val) {
+                crate::type_infer::TypeStageEntry::Resolved(ty)
+            } else if matches!(val, Value::Function { .. }) {
+                crate::type_infer::TypeStageEntry::Function(Arc::clone(&thunk))
+            } else {
+                continue; // not a type-stage value — skip
+            };
             new_frame.insert(name, entry);
         }
 

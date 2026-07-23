@@ -1,9 +1,6 @@
 //! LLT command-line tool: parses and evaluates `.llt` files, outputs JSON or LLT display format.
 
 #![deny(clippy::disallowed_types, clippy::disallowed_methods)]
-// Arc<Thunk> and related types are !Send because Thunk contains Rc<...>. LLT uses
-// tokio::task::LocalSet with a current_thread runtime — values never cross threads.
-#![allow(clippy::arc_with_non_send_sync)]
 
 use clap::{Parser, Subcommand, ValueEnum};
 use std::io::{self, Read};

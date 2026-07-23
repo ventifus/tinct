@@ -436,6 +436,9 @@ pub struct EvalContext {
     /// without calling `open_ambient_dir` again. `None` in contexts where libdir was not
     /// opened (e.g., --no-libdir, bootstrap contexts, tests).
     /// Propagated through `with_base_dir` so nested includes see the same Dir.
+    ///
+    /// Note: `cap_std::fs::Dir` is `Send` on Linux (wraps `std::fs::File`, which is Send).
+    /// The `Arc<Dir>` wrapper enables sharing across child contexts without dup-ing the fd.
     pub libdir_dir: Mutex<Option<Arc<cap_std::fs::Dir>>>,
     /// Cancellation token for this evaluation scope. Blocking async builtins (`await`,
     /// `recv`, `send`, `select-once`) select! against this token so they return early when
@@ -984,6 +987,17 @@ impl EvalContext {
     }
 }
 
+/// Static assertions: verify EvalContext Send+Sync bounds.
+/// After T-1768 (Value: Send), T-1774 (ScopeArena eliminated), and T-1769 (BuiltinFn + Send),
+/// EvalContext must be Send+Sync so Arc<EvalContext>: Send+Sync.
+#[allow(dead_code)]
+fn _assert_eval_context_send_sync() {
+    fn assert_send<T: Send>() {}
+    fn assert_sync<T: Sync>() {}
+    assert_send::<crate::eval::EvalContext>();
+    assert_sync::<crate::eval::EvalContext>();
+}
+
 /// Extract the ground type of a runtime value for consistent subtyping validation.
 ///
 /// Maps runtime `Value` variants to their ground `Type`. Erased positions (Seq elements,
@@ -1389,6 +1403,30 @@ pub(crate) fn validate_and_wrap_record(
 }
 
 /// Check if an identifier starts with an uppercase letter.
+///
+/// This heuristic is used to distinguish constructor names from type variables and
+/// function names in two distinct contexts:
+///
+/// 1. **Declaration context** (in `[type ...]` bodies, lower.rs, resolve.rs): When a
+///    `[type Color Red Green Blue]` body is being parsed, the constructors (`Red`, `Green`,
+///    `Blue`) don't exist in `state.tycon_env` yet — they are being declared. There is no
+///    way to replace this check with an env lookup in declaration contexts. The uppercase
+///    convention IS the syntax for introducing new constructors.
+///
+/// 2. **Reference context** (in typecheck_annot.rs): When referencing an existing
+///    constructor in a type annotation. These sites partially combine this check with
+///    `state.tycon_env` lookups for builtin types (see `is_builtin_type` checks near
+///    each call site).
+///
+/// ## Replacing this heuristic
+///
+/// Fully eliminating the uppercase convention would require a new syntax for constructor
+/// declarations (e.g., an explicit keyword). Until then, this function is the authoritative
+/// discriminator for constructor names vs. type variables/function names.
+///
+/// Call sites in resolve.rs and lower.rs run BEFORE tycon_env is populated and CANNOT
+/// use env lookup. Call sites in typecheck_annot.rs run during type checking but are in
+/// declaration contexts where the constructors are being registered, not referenced.
 pub(crate) fn is_constructor_name(name: &str) -> bool {
     name.chars().next().is_some_and(|c| c.is_uppercase())
 }

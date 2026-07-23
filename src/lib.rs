@@ -12,12 +12,6 @@
 //! - [`value_to_display_string`] -- render a materialized `Value` as a human-readable string
 
 #![deny(clippy::disallowed_types, clippy::disallowed_methods)]
-// Arc<Thunk> and related types are !Send because EvalContext contains Rc<RefCell<...>>
-// (e.g. Rc<RefCell<ScopeArena>> for single-threaded arena sharing). LLT uses
-// tokio::task::LocalSet with a current_thread runtime, so values never cross thread
-// boundaries. The !Send constraint is intentional and correct; Rc-based sharing is
-// cheaper and simpler than Arc<Mutex<...>> for data that never leaves the local thread.
-#![allow(clippy::arc_with_non_send_sync)]
 // TypeDiagnostic is a large struct used pervasively as the Err type across the type checker.
 // Boxing it at every return site would be invasive and would hurt readability for marginal
 // runtime benefit (errors are cold paths).
