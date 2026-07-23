@@ -12,7 +12,7 @@ use crate::rust_span;
 use crate::type_class::ConstraintArg;
 use crate::type_def::TyConDef;
 use crate::type_def::Variance;
-use crate::types::{Constraint, InferState, Kind, Row, Type, TypeEnv};
+use crate::types::{Constraint, InferState, Kind, Row, Type};
 use crate::value::{HashableValue, Thunk, Value};
 
 /// Convert a variance annotation name to a `Variance` value (T-953).
@@ -63,7 +63,11 @@ impl Polarity {
 /// `params` are the FRESH TypeVar names (e.g., `?a₀`, `?b₁`) that params were remapped to.
 /// Called after alias body resolution so we operate on real `Type` values.
 #[allow(dead_code)]
-pub(crate) fn infer_variance(body: &Type, params: &[String], type_env: &TypeEnv) -> Vec<Variance> {
+pub(crate) fn infer_variance(
+    body: &Type,
+    params: &[String],
+    tycon_env: &HashMap<String, Arc<TyConDef>>,
+) -> Vec<Variance> {
     let n = params.len();
     let mut pos_seen = vec![false; n];
     let mut neg_seen = vec![false; n];
@@ -74,7 +78,7 @@ pub(crate) fn infer_variance(body: &Type, params: &[String], type_env: &TypeEnv)
         params,
         &mut pos_seen,
         &mut neg_seen,
-        type_env,
+        tycon_env,
     );
 
     pos_seen
@@ -96,7 +100,7 @@ fn walk_polarity(
     params: &[String],
     pos_seen: &mut Vec<bool>,
     neg_seen: &mut Vec<bool>,
-    type_env: &TypeEnv,
+    tycon_env: &HashMap<String, Arc<TyConDef>>,
 ) {
     match ty {
         Type::TypeVar(name, _) => {
@@ -110,16 +114,16 @@ fn walk_polarity(
         Type::Dict(row) => {
             // Record fields are in covariant (positive) position.
             for t in row.fields.values() {
-                walk_polarity(t, pol, params, pos_seen, neg_seen, type_env);
+                walk_polarity(t, pol, params, pos_seen, neg_seen, tycon_env);
             }
             // Uniform tail key and value types also in covariant position.
             // The key type can be a TypeVar (e.g. `[type [let k v] {_@k: v}]`), so both must
             // be visited. Mirrors the B-328 fix in type_unify.rs (lower_levels_check_occurs).
             if let crate::type_def::RowTail::Uniform { key, value } = &row.tail {
                 if let Some(k) = key {
-                    walk_polarity(k, pol, params, pos_seen, neg_seen, type_env);
+                    walk_polarity(k, pol, params, pos_seen, neg_seen, tycon_env);
                 }
-                walk_polarity(value, pol, params, pos_seen, neg_seen, type_env);
+                walk_polarity(value, pol, params, pos_seen, neg_seen, tycon_env);
             }
         }
         Type::Function {
@@ -129,15 +133,15 @@ fn walk_polarity(
         } => {
             // Function parameters are contravariant (flip polarity).
             for (_, pt) in fn_params {
-                walk_polarity(pt, pol.flip(), params, pos_seen, neg_seen, type_env);
+                walk_polarity(pt, pol.flip(), params, pos_seen, neg_seen, tycon_env);
             }
             // Return type is covariant.
-            walk_polarity(ret, pol, params, pos_seen, neg_seen, type_env);
+            walk_polarity(ret, pol, params, pos_seen, neg_seen, tycon_env);
         }
         Type::App(f, arg) => {
             // Check if f is a TyCon with known variance for the argument.
             if let Type::TyCon(tcon_name) = f.as_ref() {
-                if let Some(def) = type_env.lookup_tycon_def(tcon_name) {
+                if let Some(def) = tycon_env.get(tcon_name).cloned() {
                     // Single-argument application: use the first declared variance.
                     if let Some(var) = def.variance.first() {
                         let effective_pol = match var {
@@ -151,7 +155,7 @@ fn walk_polarity(
                                     params,
                                     pos_seen,
                                     neg_seen,
-                                    type_env,
+                                    tycon_env,
                                 );
                                 walk_polarity(
                                     arg,
@@ -159,13 +163,13 @@ fn walk_polarity(
                                     params,
                                     pos_seen,
                                     neg_seen,
-                                    type_env,
+                                    tycon_env,
                                 );
                                 return;
                             }
                             Variance::Phantom => return, // Phantom: argument is not used.
                         };
-                        walk_polarity(arg, effective_pol, params, pos_seen, neg_seen, type_env);
+                        walk_polarity(arg, effective_pol, params, pos_seen, neg_seen, tycon_env);
                         return;
                     }
                 }
@@ -173,15 +177,15 @@ fn walk_polarity(
             // Unknown constructor or multi-arg App(App(..)) chain — conservative: treat as invariant.
             // Walk both f and arg so that TypeVars inside f (e.g., App(App(TyCon("Map"), a), b)
             // where f = App(TyCon("Map"), a)) are visited and do not register as Phantom.
-            walk_polarity(f, Polarity::Positive, params, pos_seen, neg_seen, type_env);
-            walk_polarity(f, Polarity::Negative, params, pos_seen, neg_seen, type_env);
+            walk_polarity(f, Polarity::Positive, params, pos_seen, neg_seen, tycon_env);
+            walk_polarity(f, Polarity::Negative, params, pos_seen, neg_seen, tycon_env);
             walk_polarity(
                 arg,
                 Polarity::Positive,
                 params,
                 pos_seen,
                 neg_seen,
-                type_env,
+                tycon_env,
             );
             walk_polarity(
                 arg,
@@ -189,18 +193,18 @@ fn walk_polarity(
                 params,
                 pos_seen,
                 neg_seen,
-                type_env,
+                tycon_env,
             );
         }
         Type::Union(members) | Type::Intersection(members) => {
             // Union/Intersection members preserve the current polarity (join/meet).
             for m in members {
-                walk_polarity(m, pol, params, pos_seen, neg_seen, type_env);
+                walk_polarity(m, pol, params, pos_seen, neg_seen, tycon_env);
             }
         }
         Type::Negation(inner) => {
             // Negation flips polarity.
-            walk_polarity(inner, pol.flip(), params, pos_seen, neg_seen, type_env);
+            walk_polarity(inner, pol.flip(), params, pos_seen, neg_seen, tycon_env);
         }
         // NominalVariant fields are in covariant position — values stored in a variant
         // constructor are accessible (read), so they vary covariantly.
@@ -211,7 +215,7 @@ fn walk_polarity(
             fields,
         } => {
             for t in fields.fields.values() {
-                walk_polarity(t, pol, params, pos_seen, neg_seen, type_env);
+                walk_polarity(t, pol, params, pos_seen, neg_seen, tycon_env);
             }
             // Also traverse RowTail::Uniform key and value types (T-1032).
             // The key type can be a TypeVar (e.g. `[type [let k v] {_@k: v}]`), so both must
@@ -222,16 +226,16 @@ fn walk_polarity(
             } = &fields.tail
             {
                 if let Some(k) = key {
-                    walk_polarity(k, pol, params, pos_seen, neg_seen, type_env);
+                    walk_polarity(k, pol, params, pos_seen, neg_seen, tycon_env);
                 }
-                walk_polarity(value_ty, pol, params, pos_seen, neg_seen, type_env);
+                walk_polarity(value_ty, pol, params, pos_seen, neg_seen, tycon_env);
             }
         }
         // S-860: equirecursive-types-core — recurse into the body.
         // The `var` binder is the μ-binder name, not a type parameter; only the body is walked.
         // Variance of type parameters inside the body is unchanged by the μ-binder.
         Type::Recursive { var: _, body } => {
-            walk_polarity(body, pol, params, pos_seen, neg_seen, type_env);
+            walk_polarity(body, pol, params, pos_seen, neg_seen, tycon_env);
         }
         // Concrete types (Int, Str, Bool, etc.), TyCon, Unknown, Top, Error — no TypeVar involvement.
         _ => {}
@@ -254,10 +258,8 @@ pub(crate) async fn resolve_type_assert(
     let mut ann_mapping_opt = ann_mapping.as_mut();
     let mut row_ann_mapping_opt: Option<&mut HashMap<String, String>> = None;
 
-    let stub_type_env = TypeEnv::new();
     let expected = resolve_annotation(
         &annotation.node,
-        &stub_type_env,
         annotation.span.clone(),
         state,
         constraints,
@@ -399,11 +401,9 @@ pub(crate) async fn resolve_annotated(
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
     type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
 ) -> Result<Type, TypeDiagnostic> {
-    let stub_type_env = TypeEnv::new();
     if name == "Fn" {
         resolve_fn_type(
             &annotation.node,
-            &stub_type_env,
             annotation.span.clone(),
             state,
             constraints,
@@ -424,7 +424,6 @@ pub(crate) async fn resolve_annotated(
         // Resolve the inner annotation as a type and wrap in Handle.
         let cap_type = resolve_annotation(
             &annotation.node,
-            &stub_type_env,
             span,
             state,
             constraints,
@@ -437,7 +436,6 @@ pub(crate) async fn resolve_annotated(
     } else {
         resolve_annotation(
             &annotation.node,
-            &stub_type_env,
             span,
             state,
             constraints,
@@ -463,7 +461,6 @@ pub(crate) async fn resolve_annotated(
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn resolve_fn_metadata(
     entries: &[Spanned<SurfaceEntry>],
-    env: &TypeEnv,
     span: Span,
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
@@ -1104,7 +1101,6 @@ pub(crate) async fn resolve_fn_metadata(
                 if key_name == "return" {
                     let ret = resolve_type_expr(
                         &entry.node.value,
-                        env,
                         state,
                         constraints,
                         ann_mapping,
@@ -1207,7 +1203,6 @@ pub(crate) async fn resolve_fn_metadata(
 #[allow(clippy::too_many_arguments)]
 async fn resolve_fn_type(
     ann: &Annotation,
-    env: &TypeEnv,
     span: Span,
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
@@ -1246,7 +1241,6 @@ async fn resolve_fn_type(
                 }
                 let (ret, _doc) = resolve_fn_metadata(
                     surface_entries,
-                    env,
                     span.clone(),
                     state,
                     constraints,
@@ -1270,7 +1264,6 @@ async fn resolve_fn_type(
                 // record types, and type constructors.
                 resolve_type_dict(
                     surface_entries,
-                    env,
                     span,
                     state,
                     constraints,
@@ -1286,7 +1279,6 @@ async fn resolve_fn_type(
             // Simple(name) path: fn@Int, fn@a, etc.
             let ret = resolve_annotation_as_type(
                 ann,
-                env,
                 span.clone(),
                 state,
                 constraints,
@@ -1314,7 +1306,6 @@ async fn resolve_fn_type(
 #[allow(clippy::too_many_arguments)]
 async fn resolve_annotation_as_type(
     ann: &Annotation,
-    env: &TypeEnv,
     span: Span,
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
@@ -1327,7 +1318,6 @@ async fn resolve_annotation_as_type(
             let row_ref: Option<&HashMap<String, String>> = row_ann_mapping.as_ref().map(|m| &**m);
             resolve_type_name(
                 name,
-                env,
                 span,
                 state,
                 constraints,
@@ -1382,7 +1372,6 @@ async fn resolve_annotation_as_type(
                 }) {
                     return Box::pin(resolve_type_expr(
                         type_node,
-                        env,
                         state,
                         constraints,
                         ann_mapping,
@@ -1396,7 +1385,6 @@ async fn resolve_annotation_as_type(
             // type constructor application. Delegate to resolve_type_dict.
             resolve_type_dict(
                 surface_entries,
-                env,
                 span,
                 state,
                 constraints,
@@ -1412,7 +1400,6 @@ async fn resolve_annotation_as_type(
             // (e.g., fn@Seq@Int should resolve the Annotated properly)
             resolve_annotation(
                 &Annotation::Annotated(outer.clone(), inner.clone()),
-                env,
                 span,
                 state,
                 constraints,
@@ -1428,7 +1415,6 @@ async fn resolve_annotation_as_type(
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn resolve_annotation(
     ann: &Annotation,
-    env: &TypeEnv,
     span: Span,
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
@@ -1441,7 +1427,6 @@ pub(crate) async fn resolve_annotation(
             let row_ref: Option<&HashMap<String, String>> = row_ann_mapping.as_ref().map(|m| &**m);
             resolve_type_name(
                 name,
-                env,
                 span,
                 state,
                 constraints,
@@ -1464,7 +1449,6 @@ pub(crate) async fn resolve_annotation(
             // which handles TyCons, type-stage functions, classes, and kind constructors uniformly.
             let arg = Box::pin(resolve_annotation(
                 inner,
-                env,
                 span.clone(),
                 state,
                 constraints,
@@ -1479,21 +1463,12 @@ pub(crate) async fn resolve_annotation(
             // resolve the outer to a type and produce App(outer_ty, arg).
             match outer.as_ref() {
                 Annotation::Simple(name) => {
-                    Box::pin(resolve_type_head(
-                        name,
-                        &[arg],
-                        env,
-                        state,
-                        constraints,
-                        span,
-                    ))
-                    .await
+                    Box::pin(resolve_type_head(name, &[arg], state, constraints, span)).await
                 }
                 _ => {
                     // Non-Simple outer: resolve outer as a type then apply arg to it.
                     let outer_ty = Box::pin(resolve_annotation(
                         outer,
-                        env,
                         span.clone(),
                         state,
                         constraints,
@@ -1569,7 +1544,6 @@ pub(crate) async fn resolve_annotation(
                 // @[type: T ...] shorthand — resolve the type: value as a type expression.
                 resolve_type_expr(
                     type_node,
-                    env,
                     state,
                     constraints,
                     ann_mapping,
@@ -1661,7 +1635,6 @@ pub(crate) async fn resolve_annotation(
                 // No "type:" key (or has non-metadata keys) — treat as structural type or metadata.
                 Box::pin(resolve_property_dict_as_record(
                     surface_entries,
-                    env,
                     span,
                     state,
                     constraints,
@@ -1678,7 +1651,6 @@ pub(crate) async fn resolve_annotation(
 #[allow(clippy::too_many_arguments)]
 async fn resolve_property_dict_as_record(
     entries: &[Spanned<SurfaceEntry>],
-    env: &TypeEnv,
     span: Span,
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
@@ -1688,7 +1660,6 @@ async fn resolve_property_dict_as_record(
 ) -> Result<Type, TypeDiagnostic> {
     let dict_result = resolve_type_dict(
         entries,
-        env,
         span.clone(),
         state,
         constraints,
@@ -1705,7 +1676,7 @@ async fn resolve_property_dict_as_record(
             let is_tycon_error = entries.first().is_some_and(|first| {
                 first.node.key.is_none()
                     && matches!(&first.node.value.expr, SurfaceExpression::VarRef { name, .. }
-                        if env.lookup_tycon_def(name).is_some())
+                        if state.tycon_env.contains_key(name.as_str()))
             });
             if entries_look_like_type_dict(entries) || is_tycon_error {
                 Err(e)
@@ -2007,7 +1978,6 @@ fn apply_type_alias_substitution(
 #[allow(clippy::too_many_arguments)] // Internal helper for type alias expansion
 pub(crate) async fn resolve_type_name_with_guard(
     name: &str,
-    env: &TypeEnv,
     span: Span,
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
@@ -2024,7 +1994,6 @@ pub(crate) async fn resolve_type_name_with_guard(
         let row_ref: Option<&HashMap<String, String>> = row_ann_mapping.as_ref().map(|m| &**m);
         return resolve_type_name(
             name,
-            env,
             span,
             state,
             constraints,
@@ -2035,11 +2004,8 @@ pub(crate) async fn resolve_type_name_with_guard(
         .await;
     }
 
-    // Uppercase type name — check for type alias (TypeEnv first, then state.tycon_env)
-    if let Some(alias) = env
-        .lookup_tycon_def(name)
-        .or_else(|| state.tycon_env.get(name).cloned())
-    {
+    // Uppercase type name — check for type alias in state.tycon_env
+    if let Some(alias) = state.tycon_env.get(name).cloned() {
         // Check if we're in a recursive expansion
         if recursion_guard.contains(name) {
             // Recursive reference detected — return a fresh type variable as the mu-variable
@@ -2068,7 +2034,6 @@ pub(crate) async fn resolve_type_name_with_guard(
         // Expand the alias body (which is already a resolved Type)
         let result = expand_alias_body_guarded(
             &alias.body,
-            env,
             state,
             ann_mapping,
             row_ann_mapping,
@@ -2127,7 +2092,6 @@ pub(crate) async fn resolve_type_name_with_guard(
 async fn resolve_type_head(
     name: &str,
     args: &[Type],
-    _env: &TypeEnv,
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     span: Span,
@@ -2334,7 +2298,7 @@ async fn resolve_type_head(
             }
             return Box::pin(instantiate_tycon_def(def.as_ref(), args, state)).await;
         }
-        return Ok(expand_named(name, args, _env, state).unwrap_or_else(|| {
+        return Ok(expand_named(name, args, state).unwrap_or_else(|| {
             let mut result = Type::TyCon(name.to_string());
             for arg in args {
                 result = Type::App(Box::new(result), Box::new(arg.clone()));
@@ -2354,7 +2318,6 @@ async fn resolve_type_head(
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn resolve_type_name(
     name: &str,
-    env: &TypeEnv,
     span: Span,
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
@@ -2401,7 +2364,7 @@ pub(crate) async fn resolve_type_name(
                     let in_params = ann_mapping.as_ref().is_some_and(|m| m.contains_key(name));
                     if strict && !in_params && !params.contains_key(name) {
                         // Name not declared as a type parameter — check if it's a scope reference.
-                        if env.lookup_tycon_def(name).is_none() {
+                        if !state.tycon_env.contains_key(name) {
                             return Err(TypeDiagnostic::error("type-error",
                                 format!(
                                     "undefined name '{name}' in type alias body — \
@@ -2461,7 +2424,7 @@ pub(crate) async fn resolve_type_name(
                 // Uppercase type name — route through the unified resolve_type_head.
                 // resolve_type_head checks class_env BEFORE tycon_env (the correct order),
                 // then scope-chain lookup, then errors.
-                Box::pin(resolve_type_head(name, &[], env, state, constraints, span)).await
+                Box::pin(resolve_type_head(name, &[], state, constraints, span)).await
             }
         }
     }
@@ -2471,10 +2434,9 @@ pub(crate) async fn resolve_type_name(
 /// Uses equi-recursive semantics (Amadio & Cardelli 1993) with a depth guard to prevent infinite unfolding.
 /// The guard tracks aliases currently being expanded to detect cycles.
 #[allow(clippy::too_many_arguments)] // Recursive helper with state threading
-#[allow(clippy::only_used_in_recursion)] // env, state, ann_mapping, row_ann_mapping needed for recursive expansion
+#[allow(clippy::only_used_in_recursion)] // state, ann_mapping, row_ann_mapping needed for recursive expansion
 fn expand_alias_body_guarded(
     ty: &Type,
-    env: &TypeEnv,
     state: &mut InferState,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
@@ -2508,7 +2470,6 @@ fn expand_alias_body_guarded(
                     k.clone(),
                     expand_alias_body_guarded(
                         v,
-                        env,
                         state,
                         ann_mapping,
                         row_ann_mapping,
@@ -2538,7 +2499,6 @@ fn expand_alias_body_guarded(
                         name.clone(),
                         expand_alias_body_guarded(
                             p_ty,
-                            env,
                             state,
                             ann_mapping,
                             row_ann_mapping,
@@ -2557,7 +2517,6 @@ fn expand_alias_body_guarded(
                         name.clone(),
                         expand_alias_body_guarded(
                             ty,
-                            env,
                             state,
                             ann_mapping,
                             row_ann_mapping,
@@ -2576,7 +2535,6 @@ fn expand_alias_body_guarded(
                         boxed.0.clone(),
                         expand_alias_body_guarded(
                             &boxed.1,
-                            env,
                             state,
                             ann_mapping,
                             row_ann_mapping,
@@ -2590,7 +2548,6 @@ fn expand_alias_body_guarded(
                 .transpose()?;
             let new_ret = Box::new(expand_alias_body_guarded(
                 ret,
-                env,
                 state,
                 ann_mapping,
                 row_ann_mapping,
@@ -2613,7 +2570,6 @@ fn expand_alias_body_guarded(
                 .map(|m| {
                     expand_alias_body_guarded(
                         m,
-                        env,
                         state,
                         ann_mapping,
                         row_ann_mapping,
@@ -2632,7 +2588,6 @@ fn expand_alias_body_guarded(
                 .map(|m| {
                     expand_alias_body_guarded(
                         m,
-                        env,
                         state,
                         ann_mapping,
                         row_ann_mapping,
@@ -2648,7 +2603,6 @@ fn expand_alias_body_guarded(
         Type::App(f, arg) => {
             let new_f = expand_alias_body_guarded(
                 f,
-                env,
                 state,
                 ann_mapping,
                 row_ann_mapping,
@@ -2659,7 +2613,6 @@ fn expand_alias_body_guarded(
             )?;
             let new_arg = expand_alias_body_guarded(
                 arg,
-                env,
                 state,
                 ann_mapping,
                 row_ann_mapping,
@@ -2685,7 +2638,6 @@ fn expand_alias_body_guarded(
 #[allow(clippy::too_many_arguments)] // Internal helper for recursive type resolution
 pub(crate) async fn resolve_type_expr_with_guard(
     node: &Arc<SurfaceNode>,
-    env: &TypeEnv,
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
@@ -2712,7 +2664,6 @@ pub(crate) async fn resolve_type_expr_with_guard(
         SurfaceExpression::VarRef { name, .. } => {
             resolve_type_name_with_guard(
                 name,
-                env,
                 node.span.clone(),
                 state,
                 constraints,
@@ -2728,7 +2679,6 @@ pub(crate) async fn resolve_type_expr_with_guard(
         SurfaceExpression::Dict(entries) => {
             Box::pin(resolve_type_dict_with_guard(
                 entries,
-                env,
                 node.span.clone(),
                 state,
                 constraints,
@@ -2748,7 +2698,6 @@ pub(crate) async fn resolve_type_expr_with_guard(
             // we can expand this match to handle them explicitly.
             Box::pin(resolve_type_expr(
                 node,
-                env,
                 state,
                 constraints,
                 ann_mapping,
@@ -2764,7 +2713,6 @@ pub(crate) async fn resolve_type_expr_with_guard(
 #[allow(clippy::too_many_arguments)] // Internal helper for recursive type resolution
 async fn resolve_type_dict_with_guard(
     entries: &[Spanned<SurfaceEntry>],
-    env: &TypeEnv,
     span: Span,
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
@@ -2814,7 +2762,6 @@ async fn resolve_type_dict_with_guard(
                     // Mixed keyed+positional dict — fall back to the full resolver.
                     return resolve_type_dict(
                         entries,
-                        env,
                         span,
                         state,
                         constraints,
@@ -2828,7 +2775,6 @@ async fn resolve_type_dict_with_guard(
             };
             let ty = Box::pin(resolve_type_expr_with_guard(
                 &entry.node.value,
-                env,
                 state,
                 constraints,
                 ann_mapping,
@@ -2890,7 +2836,6 @@ async fn resolve_type_dict_with_guard(
     // resolver which has the full dispatch logic for those forms.
     resolve_type_dict(
         entries,
-        env,
         span,
         state,
         constraints,
@@ -2904,7 +2849,6 @@ async fn resolve_type_dict_with_guard(
 
 pub(crate) async fn resolve_type_expr(
     node: &Arc<SurfaceNode>,
-    env: &TypeEnv,
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
@@ -2925,7 +2869,6 @@ pub(crate) async fn resolve_type_expr(
             if name == "Fn" {
                 Box::pin(resolve_fn_type(
                     &annotation.node,
-                    env,
                     annotation.span.clone(),
                     state,
                     constraints,
@@ -2945,7 +2888,6 @@ pub(crate) async fn resolve_type_expr(
                 );
                 Box::pin(resolve_annotation(
                     &full_ann,
-                    env,
                     node.span.clone(),
                     state,
                     constraints,
@@ -2977,7 +2919,6 @@ pub(crate) async fn resolve_type_expr(
             let row_ref: Option<&HashMap<String, String>> = row_ann_mapping.as_ref().map(|m| &**m);
             match resolve_type_name(
                 name,
-                env,
                 node.span.clone(),
                 state,
                 constraints,
@@ -3005,7 +2946,6 @@ pub(crate) async fn resolve_type_expr(
         SurfaceExpression::Dict(entries) => {
             Box::pin(resolve_type_dict(
                 entries,
-                env,
                 node.span.clone(),
                 state,
                 constraints,
@@ -3045,7 +2985,6 @@ pub(crate) async fn resolve_type_expr(
                     // then resolve each arg as a parameter type. For zero params, args is empty.
                     let ret = Box::pin(resolve_annotation_as_type(
                         &annotation.node,
-                        env,
                         annotation.span.clone(),
                         state,
                         constraints,
@@ -3076,7 +3015,6 @@ pub(crate) async fn resolve_type_expr(
                                     };
                                     let param_ty = Box::pin(resolve_type_expr(
                                         &entry.node.value,
-                                        env,
                                         state,
                                         constraints,
                                         ann_mapping,
@@ -3096,7 +3034,6 @@ pub(crate) async fn resolve_type_expr(
                                 // Param list itself is an implied call: [a b c] → VarRef("a") + args
                                 let param_ty = Box::pin(resolve_type_expr(
                                     inner_func,
-                                    env,
                                     state,
                                     constraints,
                                     ann_mapping,
@@ -3108,7 +3045,6 @@ pub(crate) async fn resolve_type_expr(
                                 for a in inner_args.iter() {
                                     let param_ty = Box::pin(resolve_type_expr(
                                         a,
-                                        env,
                                         state,
                                         constraints,
                                         ann_mapping,
@@ -3123,7 +3059,6 @@ pub(crate) async fn resolve_type_expr(
                                 // Single param that's not a Dict
                                 let param_ty = Box::pin(resolve_type_expr(
                                     param_list,
-                                    env,
                                     state,
                                     constraints,
                                     ann_mapping,
@@ -3160,7 +3095,7 @@ pub(crate) async fn resolve_type_expr(
             // Primary path: look up via TyConDef (covers user-defined types and builtin TyCons
             // registered in T-1018: Seq, Map, Handle). Falls through to kind_env for unregistered names.
             if let SurfaceExpression::VarRef { name, .. } = &func.expr {
-                if let Some(def) = env.lookup_tycon_def(name) {
+                if let Some(def) = state.tycon_env.get(name).cloned() {
                     let arity = def.arity();
                     if arity > 0 {
                         let mut result = Type::TyCon(name.clone());
@@ -3168,7 +3103,6 @@ pub(crate) async fn resolve_type_expr(
                         for arg_node in args.iter().take(arg_count) {
                             let arg = Box::pin(resolve_type_expr(
                                 arg_node,
-                                env,
                                 state,
                                 constraints,
                                 ann_mapping,
@@ -3185,14 +3119,13 @@ pub(crate) async fn resolve_type_expr(
 
             // Check if this is a parameterized type alias application: [AliasName Arg1 Arg2]
             if let SurfaceExpression::VarRef { name, .. } = &func.expr {
-                if let Some(alias) = env.lookup_tycon_def(name) {
+                if let Some(alias) = state.tycon_env.get(name).cloned() {
                     // Resolve all type arguments
                     let mut type_args = Vec::new();
                     for arg in args {
                         type_args.push(
                             Box::pin(resolve_type_expr(
                                 arg,
-                                env,
                                 state,
                                 constraints,
                                 ann_mapping,
@@ -3293,7 +3226,6 @@ pub(crate) async fn resolve_type_expr(
                         for named_arg in &payload_named {
                             let field_ty = Box::pin(resolve_type_expr(
                                 &named_arg.node.value,
-                                env,
                                 state,
                                 constraints,
                                 ann_mapping,
@@ -3309,7 +3241,6 @@ pub(crate) async fn resolve_type_expr(
                         for (field_name, annotation, ann_span) in &payload_annotated {
                             let field_ty = Box::pin(resolve_annotation(
                                 &annotation.node,
-                                env,
                                 ann_span.clone(),
                                 state,
                                 constraints,
@@ -3388,7 +3319,6 @@ pub(crate) async fn resolve_type_expr(
                             }
                             let inner = Box::pin(resolve_type_expr(
                                 &args[0],
-                                env,
                                 state,
                                 constraints,
                                 ann_mapping,
@@ -3402,7 +3332,6 @@ pub(crate) async fn resolve_type_expr(
                             for arg in args {
                                 let ty = Box::pin(resolve_type_expr(
                                     arg,
-                                    env,
                                     state,
                                     constraints,
                                     ann_mapping,
@@ -3467,7 +3396,6 @@ fn lookup_tycon_for_ctor(state: &InferState, ctor_name: &str) -> String {
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn resolve_type_dict(
     entries: &[Spanned<SurfaceEntry>],
-    env: &TypeEnv,
     span: Span,
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
@@ -3478,7 +3406,6 @@ pub(crate) async fn resolve_type_dict(
 ) -> Result<Type, TypeDiagnostic> {
     if let Some(fn_type) = Box::pin(try_resolve_fn_type_expr(
         entries,
-        env,
         span.clone(),
         state,
         constraints,
@@ -3524,7 +3451,6 @@ pub(crate) async fn resolve_type_dict(
                             }
                             let inner = Box::pin(resolve_type_expr(
                                 &rest[0].node.value,
-                                env,
                                 state,
                                 constraints,
                                 ann_mapping,
@@ -3539,7 +3465,6 @@ pub(crate) async fn resolve_type_dict(
                             for entry in rest {
                                 let ty = Box::pin(resolve_type_expr(
                                     &entry.node.value,
-                                    env,
                                     state,
                                     constraints,
                                     ann_mapping,
@@ -3591,8 +3516,7 @@ pub(crate) async fn resolve_type_dict(
                         let env_guard = state.env.read().unwrap();
                         env_guard.get_class(name).is_some()
                     };
-                    let in_tycon_env = state.tycon_env.contains_key(name.as_str())
-                        || env.lookup_tycon_def(name).is_some();
+                    let in_tycon_env = state.tycon_env.contains_key(name.as_str());
                     let in_kind_env = state.get_kind(name.as_str()).is_some_and(|k| k.arity() > 0);
                     let is_kind_keyword = name == "Operator" || name == "Label";
 
@@ -3607,7 +3531,6 @@ pub(crate) async fn resolve_type_dict(
                             resolved_args.push(
                                 resolve_type_expr(
                                     &entry.node.value,
-                                    env,
                                     state,
                                     constraints,
                                     ann_mapping,
@@ -3622,7 +3545,6 @@ pub(crate) async fn resolve_type_dict(
                         return Box::pin(resolve_type_head(
                             name,
                             &resolved_args,
-                            env,
                             state,
                             constraints,
                             span,
@@ -3713,7 +3635,6 @@ pub(crate) async fn resolve_type_dict(
                                         };
                                     let field_ty = Box::pin(resolve_type_expr(
                                         &fe.node.value,
-                                        env,
                                         state,
                                         constraints,
                                         ann_mapping,
@@ -3729,7 +3650,6 @@ pub(crate) async fn resolve_type_dict(
                                 // Single non-dict value as payload — resolve as positional field "0".
                                 let payload_ty = Box::pin(resolve_type_expr(
                                     &entry.node.value,
-                                    env,
                                     state,
                                     constraints,
                                     ann_mapping,
@@ -3825,7 +3745,6 @@ pub(crate) async fn resolve_type_dict(
                             row_ann_mapping.as_ref().map(|m| &**m);
                         if let Ok(ty) = resolve_type_name(
                             &tag,
-                            env,
                             span.clone(),
                             state,
                             constraints,
@@ -3878,7 +3797,6 @@ pub(crate) async fn resolve_type_dict(
                                     // Single-payload constructor: [Ok a]
                                     let payload_ty = resolve_type_expr(
                                         &entries[1].node.value,
-                                        env,
                                         state,
                                         constraints,
                                         ann_mapping,
@@ -3930,7 +3848,6 @@ pub(crate) async fn resolve_type_dict(
                                         };
                                         let field_ty = resolve_type_expr(
                                             &field_entry.node.value,
-                                            env,
                                             state,
                                             constraints,
                                             ann_mapping,
@@ -4005,7 +3922,6 @@ pub(crate) async fn resolve_type_dict(
             {
                 return resolve_type_expr(
                     &first.node.value,
-                    env,
                     state,
                     constraints,
                     ann_mapping,
@@ -4049,7 +3965,6 @@ pub(crate) async fn resolve_type_dict(
             }
             let value_ty = resolve_type_expr(
                 &entry.node.value,
-                env,
                 state,
                 constraints,
                 ann_mapping,
@@ -4067,7 +3982,6 @@ pub(crate) async fn resolve_type_dict(
                     // `_@K`: resolve K as the key type constraint.
                     let key_t = resolve_annotation(
                         &annotation.node,
-                        env,
                         annotation.span.clone(),
                         state,
                         constraints,
@@ -4111,7 +4025,6 @@ pub(crate) async fn resolve_type_dict(
         };
         let ty = resolve_type_expr(
             &entry.node.value,
-            env,
             state,
             constraints,
             ann_mapping,
@@ -5312,7 +5225,7 @@ pub(crate) fn is_contractive_type(ty: &Type, var: &str) -> bool {
 ///
 /// Implements the 6-step algorithm from the equirecursive-types design (§Annotation Resolver):
 ///
-/// 1. Look up the `TyConDef` for `name` from the `TypeEnv`.
+/// 1. Look up the `TyConDef` for `name` from `state.tycon_env`.
 /// 2. Fast path: if the body is a primitive type and contains no `TyCon` references,
 ///    return the body directly (no expansion needed).
 /// 3. Builtin-opaque path: if `builtin_type` is `Some`, return
@@ -5326,7 +5239,7 @@ pub(crate) fn is_contractive_type(ty: &Type, var: &str) -> bool {
 /// 6. Recursive expansion: push a new stack entry (with a fresh gensym'd binder name),
 ///    call `expand_all_tycon_apps` on the substituted body, then pop.
 ///
-/// Returns `None` if the name is not registered in the `TypeEnv`.
+/// Returns `None` if the name is not registered in `state.tycon_env`.
 ///
 /// **Cycle origin detection (wrap rule):** after expansion, if the expanded
 /// body contains a `TypeVar` matching the pre-assigned binder name, this alias IS the
@@ -5336,21 +5249,11 @@ pub(crate) fn is_contractive_type(ty: &Type, var: &str) -> bool {
 /// The `Type::Recursive` produced here is consumed by `is_subtype` via the S-Exp + S-Assum
 /// coinductive algorithm implemented in S-861. `expand_named` is wired into the annotation
 /// resolver via `resolve_type_head` (S-862 complete).
-pub(crate) fn expand_named(
-    name: &str,
-    args: &[Type],
-    env: &TypeEnv,
-    state: &mut InferState,
-) -> Option<Type> {
+pub(crate) fn expand_named(name: &str, args: &[Type], state: &mut InferState) -> Option<Type> {
     // Step 1: look up the TyConDef.
-    // Primary lookup: env.lookup_tycon_def — local-only lookup within the TypeEnv (does not
-    // walk the parent chain; TypeEnv.lookup_tycon_def is a flat hashmap get).
-    // Fallback: state.tycon_env — global flat store, populated by typecheck_cek.rs Pass 2 and
-    // builtins registration. The fallback provides global scope for TyConDefs registered
-    // outside the local TypeEnv (e.g. from outer scopes or builtins).
-    let def_arc = env
-        .lookup_tycon_def(name)
-        .or_else(|| state.tycon_env.get(name).cloned())?;
+    // Lookup in state.tycon_env — the authoritative flat store, populated by typecheck_cek.rs
+    // Pass 2 and builtins registration.
+    let def_arc = state.tycon_env.get(name).cloned()?;
     let def = Arc::clone(&def_arc);
 
     // Arity check: number of args must match declared params.
@@ -5441,7 +5344,7 @@ pub(crate) fn expand_named(
     let binder_name = crate::builtins_meta::gensym_fresh('𝜇', name);
     state.expansion_stack.push((def, binder_name.clone()));
 
-    let expanded = expand_all_tycon_apps(&body_substituted, env, state);
+    let expanded = expand_all_tycon_apps(&body_substituted, state);
 
     state.expansion_stack.pop();
 
@@ -5495,27 +5398,27 @@ pub(crate) fn expand_named(
 /// for each named type constructor it encounters, passing the current expansion stack
 /// for cycle detection.
 ///
-/// - `Type::TyCon(name)` → `expand_named(name, &[], stack, env, state)`
+/// - `Type::TyCon(name)` → `expand_named(name, &[], stack, state)`
 /// - `Type::App(Type::TyCon(name), arg)` → expand arg first, then
-///   `expand_named(name, &[expanded_arg], stack, env, state)`
+///   `expand_named(name, &[expanded_arg], stack, state)`
 /// - Nested `Type::App(Type::App(TyCon, a), b)` chains → collect all args in order,
-///   call `expand_named(name, &[a, b, ...], stack, env, state)` (curried left-assoc)
+///   call `expand_named(name, &[a, b, ...], stack, state)` (curried left-assoc)
 /// - All other type forms → recurse structurally into children
 ///
 /// Returns the expanded type. Falls back to the original type node when expansion
 /// fails (e.g., unknown alias name — the TyCon is preserved for downstream error
 /// reporting).
-pub(crate) fn expand_all_tycon_apps(ty: &Type, env: &TypeEnv, state: &mut InferState) -> Type {
+pub(crate) fn expand_all_tycon_apps(ty: &Type, state: &mut InferState) -> Type {
     match ty {
         // Bare TyCon — zero-arg application.
-        Type::TyCon(name) => expand_named(name, &[], env, state).unwrap_or_else(|| ty.clone()),
+        Type::TyCon(name) => expand_named(name, &[], state).unwrap_or_else(|| ty.clone()),
 
         // App chain: collect the root TyCon name and all args, then expand.
         // App is left-associative: App(App(TyCon("Map"), Str), Int) = Map[Str][Int].
         // We collect args right-to-left while peeling left-associative Apps, then reverse.
         Type::App(f, arg) => {
             // Expand the argument first (args are always expanded before the ctor).
-            let expanded_arg = expand_all_tycon_apps(arg, env, state);
+            let expanded_arg = expand_all_tycon_apps(arg, state);
 
             // Check whether `f` is a TyCon or another App(TyCon, ...) chain.
             // Collect the root name and all preceding args by peeling the App spine.
@@ -5526,11 +5429,11 @@ pub(crate) fn expand_all_tycon_apps(ty: &Type, env: &TypeEnv, state: &mut InferS
                     // Expand preceding args first, then append the current expanded_arg.
                     let mut all_args: Vec<Type> = preceding_args
                         .iter()
-                        .map(|a| expand_all_tycon_apps(a, env, state))
+                        .map(|a| expand_all_tycon_apps(a, state))
                         .collect();
                     all_args.push(expanded_arg);
 
-                    expand_named(name, &all_args, env, state).unwrap_or_else(|| {
+                    expand_named(name, &all_args, state).unwrap_or_else(|| {
                         // Unknown alias — rebuild the App chain with the expanded args.
                         let base = Type::TyCon(name.to_string());
                         all_args
@@ -5540,7 +5443,7 @@ pub(crate) fn expand_all_tycon_apps(ty: &Type, env: &TypeEnv, state: &mut InferS
                 }
                 None => {
                     // `f` is not a TyCon chain (e.g., App(TypeVar, arg)) — recurse into f.
-                    let expanded_f = expand_all_tycon_apps(f, env, state);
+                    let expanded_f = expand_all_tycon_apps(f, state);
                     Type::App(Box::new(expanded_f), Box::new(expanded_arg))
                 }
             }
@@ -5551,15 +5454,15 @@ pub(crate) fn expand_all_tycon_apps(ty: &Type, env: &TypeEnv, state: &mut InferS
             let new_fields: indexmap::IndexMap<String, Type> = row
                 .fields
                 .iter()
-                .map(|(k, v)| (k.clone(), expand_all_tycon_apps(v, env, state)))
+                .map(|(k, v)| (k.clone(), expand_all_tycon_apps(v, state)))
                 .collect();
             let new_tail = match &row.tail {
                 crate::type_def::RowTail::Uniform { key, value } => {
                     crate::type_def::RowTail::Uniform {
                         key: key
                             .as_ref()
-                            .map(|k| Box::new(expand_all_tycon_apps(k, env, state))),
-                        value: Box::new(expand_all_tycon_apps(value, env, state)),
+                            .map(|k| Box::new(expand_all_tycon_apps(k, state))),
+                        value: Box::new(expand_all_tycon_apps(value, state)),
                     }
                 }
                 other => other.clone(),
@@ -5579,34 +5482,34 @@ pub(crate) fn expand_all_tycon_apps(ty: &Type, env: &TypeEnv, state: &mut InferS
         } => Type::Function {
             params: params
                 .iter()
-                .map(|(name, p)| (name.clone(), expand_all_tycon_apps(p, env, state)))
+                .map(|(name, p)| (name.clone(), expand_all_tycon_apps(p, state)))
                 .collect(),
             typed_variadics: typed_variadics
                 .iter()
-                .map(|(name, p)| (name.clone(), expand_all_tycon_apps(p, env, state)))
+                .map(|(name, p)| (name.clone(), expand_all_tycon_apps(p, state)))
                 .collect(),
-            rest: rest.as_ref().map(|boxed| {
-                Box::new((boxed.0.clone(), expand_all_tycon_apps(&boxed.1, env, state)))
-            }),
-            ret: Box::new(expand_all_tycon_apps(ret, env, state)),
+            rest: rest
+                .as_ref()
+                .map(|boxed| Box::new((boxed.0.clone(), expand_all_tycon_apps(&boxed.1, state)))),
+            ret: Box::new(expand_all_tycon_apps(ret, state)),
             required_count: *required_count,
         },
 
         Type::Union(members) => Type::normalize_union(
             members
                 .iter()
-                .map(|m| expand_all_tycon_apps(m, env, state))
+                .map(|m| expand_all_tycon_apps(m, state))
                 .collect(),
         ),
 
         Type::Intersection(members) => Type::normalize_intersection(
             members
                 .iter()
-                .map(|m| expand_all_tycon_apps(m, env, state))
+                .map(|m| expand_all_tycon_apps(m, state))
                 .collect(),
         ),
 
-        Type::Negation(inner) => Type::Negation(Box::new(expand_all_tycon_apps(inner, env, state))),
+        Type::Negation(inner) => Type::Negation(Box::new(expand_all_tycon_apps(inner, state))),
 
         Type::NominalVariant {
             tycon,
@@ -5616,15 +5519,15 @@ pub(crate) fn expand_all_tycon_apps(ty: &Type, env: &TypeEnv, state: &mut InferS
             let new_fields: indexmap::IndexMap<String, Type> = fields
                 .fields
                 .iter()
-                .map(|(k, v)| (k.clone(), expand_all_tycon_apps(v, env, state)))
+                .map(|(k, v)| (k.clone(), expand_all_tycon_apps(v, state)))
                 .collect();
             let new_tail = match &fields.tail {
                 crate::type_def::RowTail::Uniform { key, value } => {
                     crate::type_def::RowTail::Uniform {
                         key: key
                             .as_ref()
-                            .map(|k| Box::new(expand_all_tycon_apps(k, env, state))),
-                        value: Box::new(expand_all_tycon_apps(value, env, state)),
+                            .map(|k| Box::new(expand_all_tycon_apps(k, state))),
+                        value: Box::new(expand_all_tycon_apps(value, state)),
                     }
                 }
                 other => other.clone(),
@@ -5645,7 +5548,7 @@ pub(crate) fn expand_all_tycon_apps(ty: &Type, env: &TypeEnv, state: &mut InferS
         // is preserved unchanged — it is a μ-binder name, not a type alias reference.
         Type::Recursive { var, body } => Type::Recursive {
             var: var.clone(),
-            body: Box::new(expand_all_tycon_apps(body, env, state)),
+            body: Box::new(expand_all_tycon_apps(body, state)),
         },
 
         // Atomic types (primitives, TypeVar, Unknown, Top, etc.) — no TyCon children.
@@ -5680,7 +5583,6 @@ fn collect_app_spine(ty: &Type) -> (Option<&str>, Vec<&Type>) {
 #[allow(clippy::too_many_arguments)]
 async fn try_resolve_fn_type_expr(
     entries: &[Spanned<SurfaceEntry>],
-    env: &TypeEnv,
     span: Span,
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
@@ -5725,7 +5627,6 @@ async fn try_resolve_fn_type_expr(
 
     let ret = resolve_annotation_as_type(
         ann_node,
-        env,
         ann_span,
         state,
         constraints,
@@ -5756,7 +5657,6 @@ async fn try_resolve_fn_type_expr(
                 };
                 let param_ty = resolve_type_expr(
                     &entry.node.value,
-                    env,
                     state,
                     constraints,
                     ann_mapping,
@@ -5777,7 +5677,6 @@ async fn try_resolve_fn_type_expr(
             // Treat func as the first param, args as remaining params.
             let param_ty = resolve_type_expr(
                 func,
-                env,
                 state,
                 constraints,
                 ann_mapping,
@@ -5789,7 +5688,6 @@ async fn try_resolve_fn_type_expr(
             for arg in args.iter() {
                 let param_ty = resolve_type_expr(
                     arg,
-                    env,
                     state,
                     constraints,
                     ann_mapping,

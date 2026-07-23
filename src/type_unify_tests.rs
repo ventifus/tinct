@@ -18,7 +18,7 @@ async fn unify_sync<'a>(
 use crate::rust_span;
 use crate::type_class::ConstraintArg;
 use crate::type_def::{TyConDef, Variance};
-use crate::types::{Constraint, InferState, Kind, Label, Row, Type, TypeEnv};
+use crate::types::{Constraint, InferState, Kind, Label, Row, Type};
 use indexmap::IndexMap;
 use std::collections::HashMap;
 
@@ -1974,8 +1974,7 @@ async fn test_tycondef_partialeq_different_variance() {
 /// should report the value type param as Covariant (positive position).
 #[tokio::test]
 async fn test_infer_variance_uniform_tail_covariant() {
-    use std::sync::Arc;
-    let env = Arc::new(TypeEnv::new());
+    let tycon_env = std::collections::HashMap::new();
 
     // Type alias body: {x: a, _: a} — both named field and Uniform tail use param "a"
     // in positive position, so inferred variance should be Covariant.
@@ -1990,7 +1989,7 @@ async fn test_infer_variance_uniform_tail_covariant() {
     });
 
     let variances =
-        crate::typecheck::typecheck_annot::infer_variance(&body, &["_t0".to_string()], &env);
+        crate::typecheck::typecheck_annot::infer_variance(&body, &["_t0".to_string()], &tycon_env);
     assert_eq!(variances.len(), 1);
     assert_eq!(
         variances[0],

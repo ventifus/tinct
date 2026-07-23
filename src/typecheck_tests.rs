@@ -696,7 +696,6 @@ async fn test_intermediate_non_dict_error() {
 
 #[tokio::test]
 async fn test_annotation_type_var() {
-    let env = Arc::new(TypeEnv::new());
     let span = crate::test_util::test_span(1, 1, 1, 5);
     // With explicit bind: required, lowercase names outside a function scope (ann_mapping=None)
     // now produce a TypeDiagnostic — implicit TypeVar creation was removed.
@@ -704,7 +703,6 @@ async fn test_annotation_type_var() {
     let mut c = Vec::new();
     let result = resolve_annotation(
         &Annotation::Simple("a".into()),
-        &env,
         span,
         &mut state,
         &mut c,
@@ -723,13 +721,11 @@ async fn test_annotation_type_var() {
 async fn test_resolve_type_name_outside_function_scope_monotonicity() {
     // With explicit bind: required, resolve_type_name for a lowercase name without a prior
     // bind: declaration now produces a TypeDiagnostic at any scope level.
-    let env = Arc::new(TypeEnv::new());
     let span = crate::test_util::test_span(1, 1, 1, 5);
     let mut state = InferState::new();
     state.level = 1;
     let result = resolve_type_name(
         "a",
-        &env,
         span.clone(),
         &mut state,
         &mut Vec::new(),
@@ -756,7 +752,6 @@ async fn test_resolve_type_name_outside_function_scope_monotonicity() {
 
 #[tokio::test]
 async fn test_property_dict_non_str_key_falls_back_to_any() {
-    let env = Arc::new(TypeEnv::new());
     let span = crate::test_util::test_span(1, 1, 1, 10);
     let ann = Annotation::PropertyDict(vec![surf_ann_entry_tc(
         Some(SurfaceExpression::Int(42)),
@@ -770,7 +765,6 @@ async fn test_property_dict_non_str_key_falls_back_to_any() {
     assert_eq!(
         resolve_annotation(
             &ann,
-            &env,
             span,
             &mut InferState::new(),
             &mut c,
@@ -799,7 +793,6 @@ async fn test_hkt_rank1_restriction_rejects_nested_operator() {
 
 #[tokio::test]
 async fn test_property_dict_unresolvable_type_propagates_error() {
-    let env = Arc::new(TypeEnv::new());
     let span = crate::test_util::test_span(1, 1, 1, 10);
     // Lowercase unresolvable type names produce an "undefined type" error.
     // (Uppercase names like "NoSuchType" are treated as nominal variant constructors
@@ -822,7 +815,6 @@ async fn test_property_dict_unresolvable_type_propagates_error() {
     let mut c = Vec::new();
     let result = resolve_annotation(
         &ann,
-        &env,
         span,
         &mut InferState::new(),
         &mut c,
@@ -841,7 +833,6 @@ async fn test_property_dict_unresolvable_type_propagates_error() {
 
 #[tokio::test]
 async fn test_property_dict_literal_value_falls_back_to_any() {
-    let env = Arc::new(TypeEnv::new());
     let span = crate::test_util::test_span(1, 1, 1, 10);
     let ann = Annotation::PropertyDict(vec![surf_ann_entry_tc(
         Some(SurfaceExpression::StringLiteral {
@@ -855,7 +846,6 @@ async fn test_property_dict_literal_value_falls_back_to_any() {
     assert_eq!(
         resolve_annotation(
             &ann,
-            &env,
             span,
             &mut InferState::new(),
             &mut c,
@@ -871,7 +861,6 @@ async fn test_property_dict_literal_value_falls_back_to_any() {
 
 #[tokio::test]
 async fn test_property_dict_fn_type_error_propagates() {
-    let env = Arc::new(TypeEnv::new());
     let span = crate::test_util::test_span(1, 1, 1, 10);
     // [Fn@Integer] -- function type pattern detected (Fn@ prefix) but wrong
     // number of entries: should propagate, not fall back to Any.
@@ -888,7 +877,6 @@ async fn test_property_dict_fn_type_error_propagates() {
     let mut c = Vec::new();
     let result = resolve_annotation(
         &ann,
-        &env,
         span,
         &mut InferState::new(),
         &mut c,
@@ -2811,8 +2799,8 @@ async fn test_do_infer_resolve_monad_from_expr_qualified_constructor() {
     // Unit test for resolve_monad_from_surface (T-956): [Result.Ok x] → "Result".
     // Qualified dot-access constructors are resolved by extracting the TyCon name.
     let node = crate::parser::parse_surface_expression("[Result.Ok 1]").expect("parse failed");
-    let env = crate::types::TypeEnv::new();
-    let resolved = resolve_monad_from_surface(&node, &env);
+    let tycon_env = std::collections::HashMap::new();
+    let resolved = resolve_monad_from_surface(&node, &tycon_env);
     assert_eq!(
         resolved,
         Some("result".to_string()),
@@ -2824,8 +2812,8 @@ async fn test_do_infer_resolve_monad_from_expr_qualified_constructor() {
 async fn test_do_infer_resolve_monad_from_expr_qualified_error_constructor() {
     // Unit test for resolve_monad_from_surface (T-956): [Result.Error "msg"] → "Result".
     let node = crate::parser::parse_surface_expression("[Result.Error msg]").expect("parse failed");
-    let env = crate::types::TypeEnv::new();
-    let resolved = resolve_monad_from_surface(&node, &env);
+    let tycon_env = std::collections::HashMap::new();
+    let resolved = resolve_monad_from_surface(&node, &tycon_env);
     assert_eq!(
         resolved,
         Some("result".to_string()),
@@ -2840,8 +2828,8 @@ async fn test_do_infer_resolve_monad_from_expr_unqualified_empty_env_returns_non
     // is purely driven by type_env.resolve_constructor_tag.  With an empty env, "Ok" is
     // not registered as a constructor in any TyCon, so None is returned.
     let node = crate::parser::parse_surface_expression("[Ok 1]").expect("parse failed");
-    let env = crate::types::TypeEnv::new();
-    let resolved = resolve_monad_from_surface(&node, &env);
+    let tycon_env = std::collections::HashMap::new();
+    let resolved = resolve_monad_from_surface(&node, &tycon_env);
     assert_eq!(
         resolved, None,
         "[Ok ...] with empty TypeEnv must return None — no hardcoded fallback (B-449)"
@@ -2855,8 +2843,8 @@ async fn test_do_infer_resolve_monad_from_expr_unqualified_registered_result() {
     // type_env.resolve_constructor_tag("Ok"), which finds "Result.Ok" when Result is visible.
     let node = crate::parser::parse_surface_expression("[Ok 1]").expect("parse failed");
 
-    // Seed a TypeEnv with a minimal Result TyCon that has an "Ok" constructor.
-    let mut env = TypeEnv::new();
+    // Seed a tycon_env with a minimal Result TyCon that has an "Ok" constructor.
+    let mut tycon_env = std::collections::HashMap::new();
     let result_tycon = Arc::new(TyConDef {
         params: vec!["a".to_string()],
         body: Type::Unknown,
@@ -2872,9 +2860,9 @@ async fn test_do_infer_resolve_monad_from_expr_unqualified_registered_result() {
         constructor_constants: indexmap::IndexMap::new(),
         definition_span: None,
     });
-    env.insert_tycon_def("Result".to_string(), result_tycon);
+    tycon_env.insert("Result".to_string(), result_tycon);
 
-    let resolved = resolve_monad_from_surface(&node, &env);
+    let resolved = resolve_monad_from_surface(&node, &tycon_env);
     assert_eq!(
         resolved,
         Some("result".to_string()),
@@ -2886,8 +2874,8 @@ async fn test_do_infer_resolve_monad_from_expr_unqualified_registered_result() {
 async fn test_do_infer_resolve_monad_from_expr_non_constructor() {
     // Unit test for resolve_monad_from_surface: bare VarRef → None.
     let node = crate::parser::parse_surface_expression("$Ok").expect("parse failed");
-    let env = crate::types::TypeEnv::new();
-    let resolved = resolve_monad_from_surface(&node, &env);
+    let tycon_env = std::collections::HashMap::new();
+    let resolved = resolve_monad_from_surface(&node, &tycon_env);
     assert_eq!(
         resolved, None,
         "Bare VarRef (not a constructor call) should not resolve"
@@ -2902,8 +2890,8 @@ async fn test_do_infer_resolve_monad_from_expr_explicit_call_no_match() {
     // Explicit call form ([call $Ok 1] → implied: false) must not trigger monad resolution —
     // it is a lower-level construct that should not be pattern-matched heuristically.
     let node = crate::parser::parse_surface_expression("[call $Ok 1]").expect("parse failed");
-    let env = crate::types::TypeEnv::new();
-    let resolved = resolve_monad_from_surface(&node, &env);
+    let tycon_env = std::collections::HashMap::new();
+    let resolved = resolve_monad_from_surface(&node, &tycon_env);
     assert_eq!(
         resolved, None,
         "[call $Ok 1] (explicit call, implied: false) must not resolve — only implied constructor syntax triggers surface fallback"
@@ -2914,11 +2902,9 @@ async fn test_do_infer_resolve_monad_from_expr_explicit_call_no_match() {
 // T-1066 / T-1067: expand_named / expand_all_tycon_apps unit tests
 // ============================================================================
 
-/// Build a minimal InferState and TypeEnv for expansion tests.
-fn make_expand_env() -> (crate::types::TypeEnv, crate::types::InferState) {
-    let env = crate::types::TypeEnv::new();
-    let state = crate::types::InferState::new();
-    (env, state)
+/// Build a minimal InferState for expansion tests.
+fn make_expand_env() -> crate::types::InferState {
+    crate::types::InferState::new()
 }
 
 /// Helper: construct a zero-param TyConDef with a given body type.
@@ -3033,27 +3019,27 @@ async fn test_contains_recvar_nested() {
 /// T-1066g: expand_named returns None for unknown type name.
 #[tokio::test]
 async fn test_expand_named_unknown_type() {
-    let (env, mut state) = make_expand_env();
-    let result = expand_named("UnknownType", &[], &env, &mut state);
+    let mut state = make_expand_env();
+    let result = expand_named("UnknownType", &[], &mut state);
     assert!(result.is_none(), "Unknown type name should return None");
 }
 
 /// T-1066h: expand_named returns the body directly for a zero-param, no-TyCon alias.
 #[tokio::test]
 async fn test_expand_named_zero_param_primitive_body() {
-    let (env, mut state) = make_expand_env();
+    let mut state = make_expand_env();
     // Register "MyInt" as an alias for Type::Int in state.tycon_env (the canonical store).
     let def = make_tycon_def_zero(Type::Int);
     state.tycon_env.insert("MyInt".to_string(), def);
 
-    let result = expand_named("MyInt", &[], &env, &mut state);
+    let result = expand_named("MyInt", &[], &mut state);
     assert_eq!(result, Some(Type::Int), "MyInt should expand to Int");
 }
 
 /// T-1066i: expand_named expands a zero-param alias with a TyCon body.
 #[tokio::test]
 async fn test_expand_named_zero_param_tycyon_body() {
-    let (env, mut state) = make_expand_env();
+    let mut state = make_expand_env();
     // Register "Wrapper" as an alias for Int (via a TyCon body that resolves)
     // Register "Inner" as alias for Int in state.tycon_env (the canonical store).
     let inner_def = make_tycon_def_zero(Type::Int);
@@ -3063,7 +3049,7 @@ async fn test_expand_named_zero_param_tycyon_body() {
     let wrapper_def = make_tycon_def_zero(Type::TyCon("Inner".to_string()));
     state.tycon_env.insert("Wrapper".to_string(), wrapper_def);
 
-    let result = expand_named("Wrapper", &[], &env, &mut state);
+    let result = expand_named("Wrapper", &[], &mut state);
     // Wrapper's body is TyCon("Inner"), which expands to Int
     assert_eq!(
         result,
@@ -3075,7 +3061,7 @@ async fn test_expand_named_zero_param_tycyon_body() {
 /// T-1066j: expand_named handles builtin-opaque types (no structural expansion).
 #[tokio::test]
 async fn test_expand_named_builtin_opaque() {
-    let (env, mut state) = make_expand_env();
+    let mut state = make_expand_env();
     let def = make_builtin_tycon("a", "Coll");
     // Keep a clone of the Arc so we can build the expected value with the same pointer.
     let def_for_expected = Arc::clone(&def);
@@ -3084,7 +3070,7 @@ async fn test_expand_named_builtin_opaque() {
     // Coll[Int] — builtin opaque, returns App(TyConResolved("Coll", arc), Int)
     // After S-919 (T-1206), expand_named produces TyConResolved (not TyCon) for
     // builtin-opaque types so that UNIFY-TYCON can use Arc::ptr_eq for identity checking.
-    let result = expand_named("Coll", &[Type::Int], &env, &mut state);
+    let result = expand_named("Coll", &[Type::Int], &mut state);
     let expected = Type::App(
         Box::new(Type::TyConResolved("Coll".to_string(), def_for_expected)),
         Box::new(Type::Int),
@@ -3099,7 +3085,7 @@ async fn test_expand_named_builtin_opaque() {
 /// T-1066k: expand_named detects cycles via Arc::ptr_eq and returns TypeVar sentinel.
 #[tokio::test]
 async fn test_expand_named_cycle_detection() {
-    let (env, mut state) = make_expand_env();
+    let mut state = make_expand_env();
 
     // Register "List" as alias for Union([Int, TyCon("List")])
     // This is a self-referential type: List = Int | List
@@ -3133,7 +3119,7 @@ async fn test_expand_named_cycle_detection() {
         .push((Arc::clone(&registered_arc), binder_name.clone()));
 
     // Now expand "List" — should detect the cycle and return TypeVar(binder_name)
-    let result = expand_named("List", &[], &env, &mut state);
+    let result = expand_named("List", &[], &mut state);
     assert_eq!(
         result,
         Some(Type::TypeVar(binder_name, 0)),
@@ -3144,7 +3130,7 @@ async fn test_expand_named_cycle_detection() {
 /// T-1066l: expand_named with one param substitution.
 #[tokio::test]
 async fn test_expand_named_one_param() {
-    let (env, mut state) = make_expand_env();
+    let mut state = make_expand_env();
 
     // Register "Box" as alias for param "a" — i.e., `type Box = [let a] a`
     // In the current representation, param "a" appears as TypeVar("a", 0) in the body
@@ -3152,25 +3138,19 @@ async fn test_expand_named_one_param() {
     state.tycon_env.insert("Box".to_string(), def);
 
     // Box[Int] should expand to Int (param "a" substituted with Int)
-    let result = expand_named("Box", &[Type::Int], &env, &mut state);
+    let result = expand_named("Box", &[Type::Int], &mut state);
     assert_eq!(result, Some(Type::Int), "Box[Int] should expand to Int");
 }
 
 /// T-1067a: expand_all_tycon_apps is a no-op for primitive types.
 #[tokio::test]
 async fn test_expand_all_tycon_apps_primitive() {
-    let (env, mut state) = make_expand_env();
+    let mut state = make_expand_env();
 
+    assert_eq!(expand_all_tycon_apps(&Type::Int, &mut state), Type::Int);
+    assert_eq!(expand_all_tycon_apps(&Type::Str, &mut state), Type::Str);
     assert_eq!(
-        expand_all_tycon_apps(&Type::Int, &env, &mut state),
-        Type::Int
-    );
-    assert_eq!(
-        expand_all_tycon_apps(&Type::Str, &env, &mut state),
-        Type::Str
-    );
-    assert_eq!(
-        expand_all_tycon_apps(&Type::TyCon("Boolean".to_string()), &env, &mut state),
+        expand_all_tycon_apps(&Type::TyCon("Boolean".to_string()), &mut state),
         Type::TyCon("Boolean".to_string())
     );
 }
@@ -3178,28 +3158,28 @@ async fn test_expand_all_tycon_apps_primitive() {
 /// T-1067b: expand_all_tycon_apps expands a TyCon that is registered.
 #[tokio::test]
 async fn test_expand_all_tycon_apps_registered_tycyon() {
-    let (env, mut state) = make_expand_env();
+    let mut state = make_expand_env();
     let def = make_tycon_def_zero(Type::Int);
     state.tycon_env.insert("MyInt".to_string(), def);
 
-    let result = expand_all_tycon_apps(&Type::TyCon("MyInt".to_string()), &env, &mut state);
+    let result = expand_all_tycon_apps(&Type::TyCon("MyInt".to_string()), &mut state);
     assert_eq!(result, Type::Int, "TyCon(MyInt) should expand to Int");
 }
 
 /// T-1067c: expand_all_tycon_apps preserves unknown TyCon (fallback).
 #[tokio::test]
 async fn test_expand_all_tycon_apps_unknown_tycyon_preserved() {
-    let (env, mut state) = make_expand_env();
+    let mut state = make_expand_env();
     // UnknownType not in env — should be preserved as-is
     let ty = Type::TyCon("UnknownType".to_string());
-    let result = expand_all_tycon_apps(&ty, &env, &mut state);
+    let result = expand_all_tycon_apps(&ty, &mut state);
     assert_eq!(result, ty, "Unknown TyCon should be preserved");
 }
 
 /// T-1067d: expand_all_tycon_apps expands App(TyCon, arg).
 #[tokio::test]
 async fn test_expand_all_tycon_apps_app_tycyon() {
-    let (env, mut state) = make_expand_env();
+    let mut state = make_expand_env();
 
     // Register "Wrapper" as a one-param alias for the param itself
     let def = make_tycon_def_one("a", Type::TypeVar("a".to_string(), 0));
@@ -3210,7 +3190,7 @@ async fn test_expand_all_tycon_apps_app_tycyon() {
         Box::new(Type::Int),
     );
     // Wrapper[Int] should expand to Int
-    let result = expand_all_tycon_apps(&ty, &env, &mut state);
+    let result = expand_all_tycon_apps(&ty, &mut state);
     assert_eq!(result, Type::Int, "App(Wrapper, Int) should expand to Int");
 }
 
@@ -3234,7 +3214,7 @@ async fn test_expand_all_tycon_apps_app_tycyon() {
 /// wrapper is absent (contractiveness check prevented it).
 #[tokio::test]
 async fn test_expand_named_produces_recursive_wrapper() {
-    let (env, mut state) = make_expand_env();
+    let mut state = make_expand_env();
 
     // Register "Self" as an alias with body Union([Int, TyCon("Self")]).
     // This creates a self-referential type: Self = Int | Self.
@@ -3255,7 +3235,7 @@ async fn test_expand_named_produces_recursive_wrapper() {
         .tycon_env
         .insert("Self".to_string(), Arc::clone(&arc_self));
 
-    let result = expand_named("Self", &[], &env, &mut state);
+    let result = expand_named("Self", &[], &mut state);
 
     // Current behavior: cycle is detected (TypeVar sentinel present), but
     // is_contractive_type returns false for Union([Int, TypeVar(binder)]) because
@@ -3304,7 +3284,7 @@ async fn test_expand_named_produces_recursive_wrapper() {
 /// present), Recursive wrapper absent (contractiveness check failed).
 #[tokio::test]
 async fn test_expand_named_mutual_recursion_wraps_at_origin() {
-    let (env, mut state) = make_expand_env();
+    let mut state = make_expand_env();
 
     // Register two mutually-recursive aliases:
     //   EvenList = Int | TyCon("OddList")
@@ -3341,7 +3321,7 @@ async fn test_expand_named_mutual_recursion_wraps_at_origin() {
         .tycon_env
         .insert("OddList".to_string(), Arc::clone(&odd_arc));
 
-    let result = expand_named("EvenList", &[], &env, &mut state);
+    let result = expand_named("EvenList", &[], &mut state);
 
     // Current behavior: mutual cycle is detected — OddList expansion encounters EvenList
     // on the stack (Arc::ptr_eq), returns TypeVar(binder_even, 0). OddList's expansion
@@ -3379,27 +3359,16 @@ async fn test_expand_named_mutual_recursion_wraps_at_origin() {
 
 #[tokio::test]
 async fn test_cond_impl_type_in_prelude_env() {
-    let env = Arc::new(crate::types::TypeEnv::new()) /* TODO(type-foundations): build_prelude_env() deleted */;
-    let cond_impl_scheme = env.get("cond-impl");
-    let cond_check_scheme = env.get("cond-check");
-    eprintln!(
-        "cond-impl type: {:?}",
-        cond_impl_scheme.map(|s| format!("{}", s.body))
+    // TypeEnv deleted in S-921. This test was always a no-op with empty env.
+    // Retained as a placeholder — proper prelude env test requires a full pipeline.
+    let state = crate::types::InferState::new();
+    let env_guard = state.env.read().unwrap();
+    let cond_impl_scheme = env_guard.get_scheme("cond-impl");
+    // cond-impl is a prelude private — not expected in an empty env
+    assert!(
+        cond_impl_scheme.is_none(),
+        "cond-impl should not exist in empty env"
     );
-    eprintln!(
-        "cond-check type: {:?}",
-        cond_check_scheme.map(|s| format!("{}", s.body))
-    );
-    // cond-impl should be in env and not Error
-    if let Some(scheme) = cond_impl_scheme {
-        assert!(
-            !matches!(scheme.body, crate::types::Type::Error(_)),
-            "cond-impl must not be Error"
-        );
-    } else {
-        // cond-impl is private and might not be exported
-        eprintln!("cond-impl not found in user-facing prelude env (may be private)");
-    }
 }
 
 // -- Appendable constraint regression test (S-783) --

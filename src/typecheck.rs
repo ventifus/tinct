@@ -12,8 +12,6 @@ use crate::ast::{
 };
 use crate::env::Env;
 use crate::error::TypeDiagnostic;
-#[cfg(test)]
-use crate::types::TypeEnv;
 use crate::types::{generalize, InferState, Row, Type};
 
 // Split modules — annotation resolution and dict inference
@@ -1363,7 +1361,7 @@ pub(crate) fn resolve_monad_from_type(ty: &Type, _state: &InferState) -> Option<
 #[cfg(test)]
 pub(crate) fn resolve_monad_from_surface(
     node: &std::sync::Arc<SurfaceNode>,
-    type_env: &TypeEnv,
+    tycon_env: &std::collections::HashMap<String, std::sync::Arc<crate::type_def::TyConDef>>,
 ) -> Option<String> {
     let SurfaceExpression::Call {
         func,
@@ -1382,12 +1380,19 @@ pub(crate) fn resolve_monad_from_surface(
         }
     }
 
-    // Rule 3: plain VarRef like `Ok` — resolve via type_env
+    // Rule 3: plain VarRef like `Ok` — resolve via tycon_env
     if let SurfaceExpression::VarRef { name, .. } = &func.expr {
-        if let Some(qualified) = type_env.resolve_constructor_tag(name) {
-            if let Some(dot_pos) = qualified.find('.') {
-                let tycon = &qualified[..dot_pos];
-                return Some(tycon.to_lowercase());
+        // Inline resolve_constructor_tag: search tycon_defs for a matching ctor
+        for (_tycon_name, def) in tycon_env {
+            for (ctor_tag, _arity) in &def.constructors {
+                if let Some(unqualified) = ctor_tag.rfind('.').map(|pos| &ctor_tag[pos + 1..]) {
+                    if unqualified == name {
+                        if let Some(dot_pos) = ctor_tag.find('.') {
+                            let tycon = &ctor_tag[..dot_pos];
+                            return Some(tycon.to_lowercase());
+                        }
+                    }
+                }
             }
         }
     }

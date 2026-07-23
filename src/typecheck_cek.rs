@@ -29,7 +29,7 @@ use crate::type_def::{Row, RowTail, TyConDef};
 use crate::type_infer::Substitution;
 use crate::types::{
     generalize, generalize_with_doc, instantiate_at_level, instantiate_scheme, unify, Constraint,
-    InferState, Kind, Type, TypeEnv, TypeScheme,
+    InferState, Kind, Type, TypeScheme,
 };
 
 use super::{typecheck_annot, typecheck_call, typecheck_narrow, TypeMap};
@@ -413,11 +413,9 @@ async fn infer_step(
             let default_node = annotation.node.get_property("default").map(Arc::clone);
 
             // Resolve annotation asynchronously before evaluating inner.
-            let stub_env = TypeEnv::new();
             let mut constraints: Vec<Constraint> = Vec::new();
             let annotation_result = typecheck_annot::resolve_annotation(
                 &annotation.node,
-                &stub_env,
                 annotation.span.clone(),
                 state,
                 &mut constraints,
@@ -1532,12 +1530,10 @@ async fn infer_var_ref(
 
         // Gradual typing: use inline annotation if present
         if let Some(ann) = annotation {
-            let stub_env = TypeEnv::new();
             let mut constraints: Vec<Constraint> = Vec::new();
             if name == "Fn" || name == "Function" {
                 let ret_ty = match typecheck_annot::resolve_annotation(
                     &ann.node,
-                    &stub_env,
                     ann.span.clone(),
                     state,
                     &mut constraints,
@@ -1566,7 +1562,6 @@ async fn infer_var_ref(
             } else {
                 let ty = match typecheck_annot::resolve_annotation(
                     &ann.node,
-                    &stub_env,
                     ann.span.clone(),
                     state,
                     &mut constraints,
@@ -2851,7 +2846,6 @@ async fn infer_fn_push_cont(
     stack: &mut Vec<TypeCheckCont>,
 ) -> TypeCheckAction {
     let mut ann_mapping_str: HashMap<String, String> = HashMap::new();
-    let stub_type_env = TypeEnv::new();
     let mut constraints: Vec<Constraint> = Vec::new();
     let mut ann_mapping_opt = Some(&mut ann_mapping_str);
     let mut row_ann_mapping_str: HashMap<String, String> = HashMap::new();
@@ -2871,7 +2865,6 @@ async fn infer_fn_push_cont(
             {
                 let result = typecheck_annot::resolve_fn_metadata(
                     entries,
-                    &stub_type_env,
                     ret_ann.span.clone(),
                     state,
                     &mut constraints,
@@ -2890,7 +2883,6 @@ async fn infer_fn_push_cont(
             }
             _ => match typecheck_annot::resolve_annotation(
                 &ret_ann.node,
-                &stub_type_env,
                 ret_ann.span.clone(),
                 state,
                 &mut constraints,
@@ -2924,7 +2916,6 @@ async fn infer_fn_push_cont(
                 // Annotated variadic (e.g., ...xs@[Seq Int]): resolve annotation for the bucket type.
                 match typecheck_annot::resolve_annotation(
                     &ann.node,
-                    &stub_type_env,
                     ann.span.clone(),
                     state,
                     &mut constraints,
@@ -2951,7 +2942,6 @@ async fn infer_fn_push_cont(
         } else if let Some(ann) = &p.node.annotation {
             match typecheck_annot::resolve_annotation(
                 &ann.node,
-                &stub_type_env,
                 ann.span.clone(),
                 state,
                 &mut constraints,
@@ -3971,14 +3961,12 @@ pub(crate) async fn run_typecheck_dict(
                     }
 
                     let alias_name = key_name.as_deref().unwrap_or("");
-                    let stub_env = TypeEnv::new();
                     let mut alias_constraints: Vec<Constraint> = Vec::new();
                     let mut ann_map_for_body = alias_ann_map.clone();
                     let resolved_body: Type = match &body.expr {
                         SurfaceExpression::Dict(entries) => {
                             super::typecheck_annot::resolve_type_dict(
                                 entries,
-                                &stub_env,
                                 body.span.clone(),
                                 state,
                                 &mut alias_constraints,
@@ -3992,7 +3980,6 @@ pub(crate) async fn run_typecheck_dict(
                         }
                         _ => super::typecheck_annot::resolve_type_expr(
                             body,
-                            &stub_env,
                             state,
                             &mut alias_constraints,
                             &mut Some(&mut ann_map_for_body),
@@ -4252,7 +4239,6 @@ pub(crate) async fn run_typecheck_dict(
                                     if let Some(method_name) = method_name {
                                         // Parse method type from entry value expression.
                                         // The value IS the type expression (e.g., [Fn@c [a b]]).
-                                        let stub_env = crate::types::TypeEnv::new();
                                         let mut constraints = Vec::new();
                                         // Fresh ann_map per method: prevents TypeVars from one method's
                                         // resolution leaking into the next (which would panic if those
@@ -4266,7 +4252,6 @@ pub(crate) async fn run_typecheck_dict(
                                         let method_type_result =
                                             Box::pin(super::typecheck_annot::resolve_type_expr(
                                                 &method_entry.node.value,
-                                                &stub_env,
                                                 state,
                                                 &mut constraints,
                                                 &mut ann_map_mut,
@@ -4691,11 +4676,9 @@ pub(crate) async fn run_typecheck_dict(
                                             node: Annotation::Simple(type_name.clone()),
                                             span: narrows_node.span.clone(),
                                         };
-                                        let stub_env = TypeEnv::new();
                                         let mut constraints: Vec<Constraint> = Vec::new();
                                         let narrow_ty = typecheck_annot::resolve_annotation(
                                             &ann_span.node,
-                                            &stub_env,
                                             ann_span.span.clone(),
                                             state,
                                             &mut constraints,
@@ -4723,11 +4706,9 @@ pub(crate) async fn run_typecheck_dict(
                                                 node: Annotation::Simple(type_name.clone()),
                                                 span: is_node.span.clone(),
                                             };
-                                            let stub_env = TypeEnv::new();
                                             let mut constraints: Vec<Constraint> = Vec::new();
                                             let narrow_ty = typecheck_annot::resolve_annotation(
                                                 &ann_span.node,
-                                                &stub_env,
                                                 ann_span.span.clone(),
                                                 state,
                                                 &mut constraints,

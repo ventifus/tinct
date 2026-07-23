@@ -37,7 +37,7 @@ use super::typecheck_annot;
 use crate::ast::{Span, SurfaceExpression, SurfaceNode};
 use crate::env::Env;
 use crate::error::TypeDiagnostic;
-use crate::types::{Constraint, InferState, Row, Type, TypeEnv, TypeScheme};
+use crate::types::{Constraint, InferState, Row, Type, TypeScheme};
 
 /// Narrowing constraints extracted from conditional expressions.
 /// Each constraint refines the type of a variable in the true branch of an `if`.
@@ -358,11 +358,9 @@ pub(crate) fn extract_binding_types<'a>(
                 annotation: Some(ann),
                 ..
             } => {
-                let stub_env = TypeEnv::new();
                 let mut constraints: Vec<Constraint> = Vec::new();
                 let ty = match typecheck_annot::resolve_annotation(
                     &ann.node,
-                    &stub_env,
                     ann.span.clone(),
                     state,
                     &mut constraints,
