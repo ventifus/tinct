@@ -27,7 +27,6 @@ use crate::types::{Row, Type};
 // Circular module dependency: this module calls builtins via function pointers stored in `Value::Builtin`.
 // builtins.rs imports `invoke_function` and `materialize` from this module.
 // This bidirectional dependency is safe because neither module's initialization depends on the other.
-use crate::env::Env;
 use crate::value::{EvalFrame, HashableValue, Thunk, Value};
 
 // ============================================================================
@@ -331,10 +330,9 @@ pub(crate) const IS_ANNOTATION_KEY: &str = "is";
 /// The u32 is a bridge placeholder (was EnvId in the arena model; now unused in EvalFrame model).
 type GuardDefault = (Arc<Spanned<crate::ast::CoreExpr>>, u32);
 
-/// Type alias for the return type of `match_pattern` — an async fn returning an optional env.
-type MatchPatternFuture<'a> = std::pin::Pin<
-    Box<dyn std::future::Future<Output = EvalResult<Option<Arc<RwLock<Env>>>>> + Send + 'a>,
->;
+/// Type alias for the return type of `match_pattern` — an async fn returning whether the pattern matched.
+type MatchPatternFuture<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<bool>> + Send + 'a>>;
 
 // ValuesEqualFuture removed — primitive_eq is synchronous (no async needed).
 
@@ -1774,15 +1772,14 @@ pub fn materialize<'a>(
     })
 }
 
-/// Match a pattern against a value, returning the extended environment if the pattern matches.
+/// Match a pattern against a value, returning true if the pattern matches.
 ///
-/// Returns Ok(Some(env)) if the pattern matches (env contains any bindings from the pattern).
-/// Returns Ok(None) if the pattern does not match.
+/// Returns Ok(true) if the pattern matches.
+/// Returns Ok(false) if the pattern does not match.
 /// Returns Err if there's an evaluation error (e.g., undefined pin variable).
 pub(crate) fn match_pattern<'a>(
     pattern: &'a Arc<SurfaceNode>,
     value: &'a Value,
-    env: &'a Arc<RwLock<Env>>,
     value_span: &'a Span,
     frame: &'a Arc<EvalFrame>,
     ctx: &'a Arc<EvalContext>,
@@ -1798,7 +1795,7 @@ pub(crate) fn match_pattern<'a>(
             // Wildcard: all Placeholder forms (bare `...`, `...name`, `...name@Type`) match
             // unconditionally. The name/annotation are declaration-layer concerns; in pattern
             // position every Placeholder is a wildcard.
-            SurfaceExpression::Placeholder(..) => Ok(Some(Arc::clone(env))),
+            SurfaceExpression::Placeholder(..) => Ok(true),
 
             // VarRef: pin comparison — look up the variable in the current EvalFrame,
             // materialize it, and compare to the scrutinee for equality.
@@ -1855,15 +1852,15 @@ pub(crate) fn match_pattern<'a>(
                         // Materialize the pinned value and compare for equality.
                         let pinned_val = materialize(&pinned_thunk, Some(value_span), ctx).await?;
                         if primitive_eq(value, pinned_val) {
-                            Ok(Some(Arc::clone(env)))
+                            Ok(true)
                         } else {
-                            Ok(None)
+                            Ok(false)
                         }
                     }
                     Some(None) => {
                         // Name not found in scope (resolver may have suppressed the diagnostic
                         // in pattern position via suppress_depth); arm does not match.
-                        Ok(None)
+                        Ok(false)
                     }
                     None => Err(EvalError::internal(
                         "resolver did not run on pattern VarRef".to_string(),
@@ -1877,27 +1874,27 @@ pub(crate) fn match_pattern<'a>(
             SurfaceExpression::Int(n) => {
                 let matches = matches!(value, Value::Int(v) if v == *n);
                 if matches {
-                    Ok(Some(Arc::clone(env)))
+                    Ok(true)
                 } else {
-                    Ok(None)
+                    Ok(false)
                 }
             }
 
             SurfaceExpression::U64(n) => {
                 let matches = matches!(value, Value::U64(v) if v == *n);
                 if matches {
-                    Ok(Some(Arc::clone(env)))
+                    Ok(true)
                 } else {
-                    Ok(None)
+                    Ok(false)
                 }
             }
 
             SurfaceExpression::Float(f) => {
                 let matches = matches!(value, Value::Float(v) if v == *f);
                 if matches {
-                    Ok(Some(Arc::clone(env)))
+                    Ok(true)
                 } else {
-                    Ok(None)
+                    Ok(false)
                 }
             }
 
@@ -1911,9 +1908,9 @@ pub(crate) fn match_pattern<'a>(
                     _ => false,
                 };
                 if matches {
-                    Ok(Some(Arc::clone(env)))
+                    Ok(true)
                 } else {
-                    Ok(None)
+                    Ok(false)
                 }
             }
 
@@ -1926,12 +1923,12 @@ pub(crate) fn match_pattern<'a>(
                         Value::Variant { tycon, ctor, .. } => {
                             let variant_tag = format!("{}.{}", tycon, ctor);
                             if tag == variant_tag {
-                                Ok(Some(Arc::clone(env)))
+                                Ok(true)
                             } else {
-                                Ok(None)
+                                Ok(false)
                             }
                         }
-                        _ => Ok(None),
+                        _ => Ok(false),
                     }
                 } else {
                     Err(EvalError::user_error(
@@ -1960,11 +1957,11 @@ pub(crate) fn match_pattern<'a>(
                             } => {
                                 let variant_tag = format!("{}.{}", tycon, ctor);
                                 if tag != variant_tag {
-                                    return Ok(None);
+                                    return Ok(false);
                                 }
                                 if args.is_empty() {
                                     // [Tag] — no payload sub-pattern: tag match only
-                                    return Ok(Some(Arc::clone(env)));
+                                    return Ok(true);
                                 }
                                 if args.len() > 1 {
                                     return Err(EvalError::user_error(
@@ -1978,7 +1975,7 @@ pub(crate) fn match_pattern<'a>(
                                 match &sub_pat.expr {
                                     SurfaceExpression::Placeholder(..) => {
                                         // [Tag ...] — wildcard payload: tag matched, ignore payload
-                                        Ok(Some(Arc::clone(env)))
+                                        Ok(true)
                                     }
                                     SurfaceExpression::VarRef { resolution, .. } => {
                                         match resolution.get() {
@@ -1996,19 +1993,18 @@ pub(crate) fn match_pattern<'a>(
                                                         match_pattern(
                                                             sub_pat,
                                                             &payload_val,
-                                                            env,
                                                             &sub_pat.span,
                                                             frame,
                                                             ctx,
                                                         )
                                                         .await
                                                     }
-                                                    None => Ok(None),
+                                                    None => Ok(false),
                                                 }
                                             }
                                             Some(None) => {
                                                 // Not in scope — resolver warned; arm does not match
-                                                Ok(None)
+                                                Ok(false)
                                             }
                                             None => Err(EvalError::internal(
                                                 "resolver did not run on Call pattern VarRef"
@@ -2032,19 +2028,18 @@ pub(crate) fn match_pattern<'a>(
                                                 match_pattern(
                                                     sub_pat,
                                                     &payload_val,
-                                                    env,
                                                     &sub_pat.span,
                                                     frame,
                                                     ctx,
                                                 )
                                                 .await
                                             }
-                                            None => Ok(None),
+                                            None => Ok(false),
                                         }
                                     }
                                 }
                             }
-                            _ => Ok(None),
+                            _ => Ok(false),
                         }
                     }
                     None => Err(EvalError::user_error(
@@ -2069,49 +2064,42 @@ pub(crate) fn match_pattern<'a>(
                             payload,
                         } = &value
                         else {
-                            return Ok(None);
+                            return Ok(false);
                         };
                         let variant_tag = format!("{}.{}", tycon, ctor);
                         if tag != variant_tag {
-                            return Ok(None);
+                            return Ok(false);
                         }
                         let Some(payload_id) = payload else {
-                            return Ok(None);
+                            return Ok(false);
                         };
                         let payload_thunk = Arc::clone(payload_id);
                         let payload_val =
                             materialize(&payload_thunk, Some(value_span), ctx).await?;
                         let Value::Dict(payload_map) = &payload_val else {
-                            return Ok(None);
+                            return Ok(false);
                         };
                         // For each named arg, extract the field from the payload dict and
                         // recursively match the sub-pattern.
-                        let mut result_env = Arc::clone(env);
                         for na in named_args.iter() {
                             let field_key = HashableValue::Str(Arc::from(na.node.name.as_str()));
                             let Some(field_thunk) = payload_map.get(&field_key) else {
-                                return Ok(None);
+                                return Ok(false);
                             };
                             let field_val = materialize(field_thunk, Some(value_span), ctx).await?;
-                            match match_pattern(
+                            if !match_pattern(
                                 &na.node.value,
                                 &field_val,
-                                &result_env,
                                 &na.node.value.span,
                                 frame,
                                 ctx,
                             )
                             .await?
                             {
-                                Some(new_env) => {
-                                    result_env = new_env;
-                                }
-                                None => {
-                                    return Ok(None);
-                                }
+                                return Ok(false);
                             }
                         }
-                        Ok(Some(result_env))
+                        Ok(true)
                     }
                     None => Err(EvalError::user_error(
                         "not a valid pattern: Call head must resolve to a constructor tag"
@@ -2126,8 +2114,6 @@ pub(crate) fn match_pattern<'a>(
             SurfaceExpression::Dict(entries) => {
                 match &value {
                     Value::Dict(dict_thunk_ids) => {
-                        let mut result_env = Arc::clone(env);
-
                         // Check each pattern field
                         for entry in entries {
                             // Extract the key — should be a string key
@@ -2161,30 +2147,24 @@ pub(crate) fn match_pattern<'a>(
                                     materialize(field_thunk, Some(value_span), ctx).await?;
 
                                 // Recursively match the field pattern
-                                match match_pattern(
+                                if !match_pattern(
                                     &entry.node.value,
                                     &field_value,
-                                    &result_env,
                                     &entry.node.value.span,
                                     frame,
                                     ctx,
                                 )
                                 .await?
                                 {
-                                    Some(new_env) => {
-                                        result_env = new_env;
-                                    }
-                                    None => {
-                                        return Ok(None);
-                                    }
+                                    return Ok(false);
                                 }
                             } else {
                                 // Required field not present
-                                return Ok(None);
+                                return Ok(false);
                             }
                         }
 
-                        Ok(Some(result_env))
+                        Ok(true)
                     }
                     Value::Variant {
                         payload: Some(payload_id),
@@ -2194,9 +2174,9 @@ pub(crate) fn match_pattern<'a>(
                         let payload_thunk = Arc::clone(payload_id);
                         let payload_val =
                             materialize(&payload_thunk, Some(value_span), ctx).await?;
-                        match_pattern(pattern, &payload_val, env, value_span, frame, ctx).await
+                        match_pattern(pattern, &payload_val, value_span, frame, ctx).await
                     }
-                    _ => Ok(None),
+                    _ => Ok(false),
                 }
             }
 

@@ -34,20 +34,6 @@ tokio::task_local! {
 /// (e.g., the prelude env with 500+ entries) within deeply nested evaluation contexts.
 const MAX_CONTINUATION_STACK: usize = 8192;
 
-// Thread-local singleton empty Env for MatchDispatchData. Avoids allocating a new
-// Arc<RwLock<Env>> on every match expression evaluation. This is always empty —
-// MatchDispatch uses EvalFrame for scope; the legacy Env field (B-515) is a
-// transitional placeholder that match_pattern reads but never writes to.
-// Uses thread_local (not static OnceLock) because Env is !Sync via TyConDef→Value→Rc.
-thread_local! {
-    static EMPTY_MATCH_ENV: Arc<RwLock<crate::env::Env>> =
-        Arc::new(RwLock::new(crate::env::Env::new()));
-}
-
-fn empty_match_env() -> Arc<RwLock<crate::env::Env>> {
-    EMPTY_MATCH_ENV.with(Arc::clone)
-}
-
 /// RAII guard for profiling spans. Automatically closes the span on drop.
 struct ProfilingSpanGuard {
     profiling: Option<Arc<Mutex<crate::profiling::ProfilingCollector>>>,
@@ -315,8 +301,6 @@ pub(crate) struct MatchDispatchData {
     /// Arc to the original CoreExpr::Match node. The arms vec is extracted on demand
     /// to avoid cloning the whole vec per continuation frame.
     pub(crate) match_expr: Arc<Spanned<CoreExpr>>,
-    /// The original environment for matching (legacy Env chain; B-515: transitional).
-    pub(crate) env: Arc<RwLock<crate::env::Env>>,
     /// EvalFrame for arm body evaluation.
     pub(crate) frame: Arc<EvalFrame>,
     pub(crate) ctx: Arc<EvalContext>,
@@ -334,8 +318,6 @@ pub(crate) struct MatchGuardCheckData {
     pub(crate) frame: Arc<EvalFrame>,
     pub(crate) ctx: Arc<EvalContext>,
     pub(crate) match_span: Span,
-    /// Arm scope environment with pattern bindings (legacy Env chain; B-515: transitional).
-    pub(crate) arm_env: Arc<RwLock<crate::env::Env>>,
     /// The scrutinee value (needed for predicate invocation and fallback)
     pub(crate) scrutinee_value: Value,
     /// The arm body to evaluate if guard passes
@@ -1097,7 +1079,6 @@ async fn dispatch_state(
                     crate::eval_materialize::MatchDispatchData {
                         arm_idx: 0,
                         match_expr: Arc::clone(&core_expr),
-                        env: empty_match_env(),
                         frame: Arc::clone(&frame),
                         ctx: Arc::clone(&thunk_ctx),
                         match_span: core_expr.span.clone(),
@@ -2428,7 +2409,6 @@ pub(crate) async fn apply_cont(
             let MatchDispatchData {
                 arm_idx,
                 match_expr,
-                env,
                 frame,
                 ctx,
                 match_span,
@@ -2451,10 +2431,9 @@ pub(crate) async fn apply_cont(
                         // here without block_on_anywhere — this keeps async state on the heap
                         // rather than the Rust stack, preventing stack overflow on deeply
                         // nested patterns.
-                        let matched_env = match match_pattern(
+                        let matched = match match_pattern(
                             &arm.pattern,
                             &scrutinee_value,
-                            &env,
                             &arm.pattern.span,
                             &frame,
                             &ctx,
@@ -2465,7 +2444,7 @@ pub(crate) async fn apply_cont(
                             Err(e) => return Action::Continue(Err(e)),
                         };
 
-                        if let Some(arm_env) = matched_env {
+                        if matched {
                             // The sentinel pattern (Wildcard) matched. Now check if the body is a
                             // CaseArm — if so, the actual pattern evaluation is deferred here.
                             // CaseArm bodies are [case pattern body] arms stored with a Wildcard
@@ -2475,82 +2454,81 @@ pub(crate) async fn apply_cont(
                             // the body, or soft-skip to the next arm.
                             // Determine the arm body expression and the EvalFrame to use
                             // when evaluating the body (and guard).
-                            let (eval_body, arm_frame, legacy_arm_env) =
-                                if let CoreExpr::CaseArm {
-                                    let_bindings,
+                            let (eval_body, arm_frame) = if let CoreExpr::CaseArm {
+                                let_bindings,
+                                pattern,
+                                body,
+                            } = &arm.body.node
+                            {
+                                // 3-arg form: [case [let bindings] pattern body]
+                                // Evaluate the structural pattern, collecting (slot, thunk)
+                                // pairs for each bound variable declared in [let ...].
+                                let binding_map = extract_let_binding_names(&let_bindings.node);
+                                match eval_case_arm_structural_pattern(
                                     pattern,
-                                    body,
-                                } = &arm.body.node
+                                    &binding_map,
+                                    &scrutinee_value,
+                                    match_span.clone(),
+                                    &frame,
+                                    &ctx,
+                                )
+                                .await
                                 {
-                                    // 3-arg form: [case [let bindings] pattern body]
-                                    // Evaluate the structural pattern, collecting (slot, thunk)
-                                    // pairs for each bound variable declared in [let ...].
-                                    let binding_map = extract_let_binding_names(&let_bindings.node);
-                                    match eval_case_arm_structural_pattern(
-                                        pattern,
-                                        &binding_map,
-                                        &scrutinee_value,
-                                        match_span.clone(),
-                                        &frame,
-                                        &ctx,
-                                    )
-                                    .await
-                                    {
-                                        Ok(Some(arm_bindings)) => {
-                                            // Pattern matched. Build an arm EvalFrame with the
-                                            // bound variable thunks in params.
-                                            //
-                                            // The resolver uses enter_param_scope(&bound_names)
-                                            // for case arm bindings so they resolve to Parameter(i)
-                                            // rather than LetrecGroupMember(i). This avoids
-                                            // collisions with root_group builtin slots (which also
-                                            // start at LGM(0)). arm_frame.params[i] holds the
-                                            // bound thunk for the i-th declared binding.
-                                            //
-                                            // group and closure_env are inherited from the parent
-                                            // frame — outer scope names remain accessible in the
-                                            // arm body via their LGM or ClosureCapture addresses.
-                                            let arm_frame = if arm_bindings.is_empty() {
-                                                // No bindings: body evaluates in parent frame unchanged.
-                                                Arc::clone(&frame)
-                                            } else {
-                                                // Build params vec: slot 0, 1, 2, ... map to
-                                                // bound thunks in insertion order. arm_bindings
-                                                // is a vec of (param_index, thunk) pairs.
-                                                // Slots are sequential (0, 1, 2, ...) so we can
-                                                // sort by slot and fill a contiguous vec.
-                                                let mut sorted = arm_bindings;
-                                                sorted.sort_unstable_by_key(|(slot, _)| *slot);
-                                                let mut params_vec: Vec<Arc<Thunk>> =
-                                                    Vec::with_capacity(sorted.len());
-                                                for (slot, thunk) in sorted {
-                                                    let slot = slot as usize;
-                                                    // Slots must be contiguous starting at 0.
-                                                    // Gaps are a resolver invariant violation —
-                                                    // fill defensively.
-                                                    while params_vec.len() < slot {
-                                                        params_vec.push(Arc::clone(&thunk));
-                                                    }
-                                                    params_vec.push(thunk);
+                                    Ok(Some(arm_bindings)) => {
+                                        // Pattern matched. Build an arm EvalFrame with the
+                                        // bound variable thunks in params.
+                                        //
+                                        // The resolver uses enter_param_scope(&bound_names)
+                                        // for case arm bindings so they resolve to Parameter(i)
+                                        // rather than LetrecGroupMember(i). This avoids
+                                        // collisions with root_group builtin slots (which also
+                                        // start at LGM(0)). arm_frame.params[i] holds the
+                                        // bound thunk for the i-th declared binding.
+                                        //
+                                        // group and closure_env are inherited from the parent
+                                        // frame — outer scope names remain accessible in the
+                                        // arm body via their LGM or ClosureCapture addresses.
+                                        let arm_frame = if arm_bindings.is_empty() {
+                                            // No bindings: body evaluates in parent frame unchanged.
+                                            Arc::clone(&frame)
+                                        } else {
+                                            // Build params vec: slot 0, 1, 2, ... map to
+                                            // bound thunks in insertion order. arm_bindings
+                                            // is a vec of (param_index, thunk) pairs.
+                                            // Slots are sequential (0, 1, 2, ...) so we can
+                                            // sort by slot and fill a contiguous vec.
+                                            let mut sorted = arm_bindings;
+                                            sorted.sort_unstable_by_key(|(slot, _)| *slot);
+                                            let mut params_vec: Vec<Arc<Thunk>> =
+                                                Vec::with_capacity(sorted.len());
+                                            for (slot, thunk) in sorted {
+                                                let slot = slot as usize;
+                                                // Slots must be contiguous starting at 0.
+                                                // Gaps are a resolver invariant violation —
+                                                // fill defensively.
+                                                while params_vec.len() < slot {
+                                                    params_vec.push(Arc::clone(&thunk));
                                                 }
-                                                Arc::new(EvalFrame {
-                                                    group: Arc::clone(&frame.group),
-                                                    closure_env: Arc::clone(&frame.closure_env),
-                                                    params: Arc::new(params_vec),
-                                                })
-                                            };
-                                            (Arc::clone(body), arm_frame, Arc::clone(&arm_env))
-                                        }
-                                        Ok(None) => {
-                                            // Pattern did not match — move to next arm
-                                            continue;
-                                        }
-                                        Err(e) => return Action::Continue(Err(e)),
+                                                params_vec.push(thunk);
+                                            }
+                                            Arc::new(EvalFrame {
+                                                group: Arc::clone(&frame.group),
+                                                closure_env: Arc::clone(&frame.closure_env),
+                                                params: Arc::new(params_vec),
+                                            })
+                                        };
+                                        (Arc::clone(body), arm_frame)
                                     }
-                                } else {
-                                    // Not a CaseArm body — use the parent frame unchanged.
-                                    (Arc::clone(&arm.body), Arc::clone(&frame), arm_env)
-                                };
+                                    Ok(None) => {
+                                        // Pattern did not match — move to next arm
+                                        continue;
+                                    }
+                                    Err(e) => return Action::Continue(Err(e)),
+                                }
+                            } else {
+                                // Not a CaseArm body — use the parent frame unchanged.
+                                (Arc::clone(&arm.body), Arc::clone(&frame))
+                            };
 
                             // Pattern matched. If there is a guard, evaluate it.
                             if let Some(guard_expr) = &arm.guard {
@@ -2562,7 +2540,6 @@ pub(crate) async fn apply_cont(
                                     frame: Arc::clone(&arm_frame),
                                     ctx: Arc::clone(&ctx),
                                     match_span: match_span.clone(),
-                                    arm_env: legacy_arm_env,
                                     scrutinee_value: scrutinee_value.clone(),
                                     body: Arc::clone(&eval_body),
                                     callable_invoked: false,
@@ -2601,7 +2578,6 @@ pub(crate) async fn apply_cont(
                 frame,
                 ctx,
                 match_span,
-                arm_env,
                 scrutinee_value,
                 body,
                 callable_invoked,
@@ -2643,7 +2619,6 @@ pub(crate) async fn apply_cont(
                                 frame: Arc::clone(&frame),
                                 ctx: Arc::clone(&ctx),
                                 match_span: match_span.clone(),
-                                arm_env,
                                 scrutinee_value,
                                 body,
                                 callable_invoked: true,
@@ -2677,7 +2652,6 @@ pub(crate) async fn apply_cont(
 
                     if guard_passed {
                         // Guard passed — evaluate the body.
-                        let _ = arm_env; // legacy env dropped
                         Action::EvalCore {
                             expr: body,
                             frame,
@@ -2685,11 +2659,9 @@ pub(crate) async fn apply_cont(
                         }
                     } else {
                         // Guard failed — try the next arm
-                        let _ = arm_env; // legacy env dropped; MatchDispatch uses empty_match_env()
                         stack.push(Cont::MatchDispatch(Box::new(MatchDispatchData {
                             arm_idx: arm_idx + 1,
                             match_expr: Arc::clone(&match_expr),
-                            env: empty_match_env(),
                             frame,
                             ctx: Arc::clone(&ctx),
                             match_span: match_span.clone(),
