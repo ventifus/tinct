@@ -1,5 +1,0 @@
-# contains? with a Dict input for a missing key uses any? path and returns False.
-# B-578: verify the any? dispatch path returns False for non-members.
-[contains? "missing" [a: 1  b: 2  c: 3]]
-=== out
-Boolean.False

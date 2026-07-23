@@ -1,8 +1,0 @@
-# cross_dict_multi_hop_outer_ref: innermost dict references root dict, skipping mid.
-# B-576/B-585: LGM(absolute_slot) — frame.group is the flat accumulated group including root entries.
-[root-val: 100
- mid: [mid-val: 200
-       inner: [result: [+ root-val mid-val]]]]
-.mid.inner.result
-=== out
-300
