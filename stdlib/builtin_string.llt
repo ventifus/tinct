@@ -54,4 +54,5 @@
   builtin-bytes-get:       [fn@Integer [let i@Integer b@Bytes] ...]
   builtin-bytes-slice:     [fn@Bytes   [let b@Bytes start@Integer end@Integer] ...]
   builtin-encode:          [fn@Bytes   [let encoding@Any x@Any] ...]
+  builtin-bytes-to-int:    [fn@Integer [let b@Bytes] ...]
 ]

@@ -1,0 +1,19 @@
+# Property test: ft-index returns the correct element at each position.
+# Builds a tree via successive push-right calls and verifies ft-index retrieves
+# each element correctly via O(log n) navigation.
+[
+  t: [push-right 40 [push-right 30 [push-right 20 [push-right 10 [push-right 0 FingerTree.FTEmpty]]]]]
+
+  i0: [ft-index 0 t]
+  i1: [ft-index 1 t]
+  i2: [ft-index 2 t]
+  i3: [ft-index 3 t]
+  i4: [ft-index 4 t]
+
+  # Return only the indexed values, not the tree structure itself
+  result: [i0: i0  i1: i1  i2: i2  i3: i3  i4: i4]
+]
+---
+%.result
+=== out
+Dict({"i0": Int(0), "i1": Int(10), "i2": Int(20), "i3": Int(30), "i4": Int(40)})

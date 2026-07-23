@@ -1,0 +1,15 @@
+# Tests builtin-bytes-to-int: reinterpret 8 bytes as a little-endian i64.
+# Round-trip: encode Int64LE 1 → bytes → bytes-to-int → 1.
+# Also tests float-bits for known IEEE 754 values:
+#   float-bits 0.0 = 0 (all-zero bit pattern)
+#   float-bits 1.0 = 4607182418800017408 = 0x3FF0000000000000
+[
+  # Round-trip: Int64LE encoding of 1 → reinterpret as i64 = 1
+  round-trip: [builtin-bytes-to-int [builtin-encode 10 1]]
+
+  # float-bits via prelude wrappers
+  bits-zero: [float-bits 0.0]
+  bits-one:  [float-bits 1.0]
+]
+=== out
+Dict({"bits-one": Int(4607182418800017408), "bits-zero": Int(0), "round-trip": Int(1)})

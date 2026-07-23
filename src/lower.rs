@@ -1648,22 +1648,24 @@ struct ConstructorInfo {
 /// - Anything else → "One" (default for unrecognized forms)
 fn infer_child_role_from_type_expr(expr: &SurfaceExpression) -> &'static str {
     match expr {
-        // [Seq T] or [Map K V] — Call with a known container type as head
+        // [Map K V] — Call with Map as head → MapValues role (iterate over values, preserve keys)
+        // Any other Call head → One (single child).
+        // Note: [Seq T] previously mapped to a "Seq" role, but Seq was eliminated from @Child fields
+        // when Intersect.types migrated from [Seq TypeNode] to [Map Int TypeNode]. Only "One" and
+        // "MapValues" roles remain.
         SurfaceExpression::Call { func, .. } => match &func.expr {
             SurfaceExpression::VarRef { name, .. } => match name.as_str() {
-                "Seq" => "Seq",
                 "Map" => "MapValues",
                 _ => "One",
             },
             _ => "One",
         },
-        // Dict with positional entries: [Seq T] parses as Dict([VarRef("Seq"), ...])
+        // Dict with positional entries: [Map K V] parses as Dict([VarRef("Map"), ...])
         SurfaceExpression::Dict(entries) if !entries.is_empty() => {
             if let Some(first) = entries.first() {
                 if first.node.key.is_none() {
                     if let SurfaceExpression::VarRef { name, .. } = &first.node.value.expr {
                         return match name.as_str() {
-                            "Seq" => "Seq",
                             "Map" => "MapValues",
                             _ => "One",
                         };

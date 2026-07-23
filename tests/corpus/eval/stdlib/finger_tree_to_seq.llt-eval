@@ -1,0 +1,14 @@
+# Property test: ft-to-seq traverses all elements in insertion order.
+# Build a tree via push-right (left-to-right order preserved),
+# then verify ft-to-seq followed by reduce gives the original order.
+[
+  t:   [push-right "c" [push-right "b" [push-right "a" FingerTree.FTEmpty]]]
+  seq: [ft-to-seq t]
+
+  # Verify in-order traversal by reducing the seq into a string
+  joined: [reduce [fn [let acc x] [str acc x]] "" seq]
+]
+---
+%.joined
+=== out
+String("abc")

@@ -154,7 +154,7 @@
     Union@[as-type: [fn [let u] u]  guarding: 0]:
       [types@Child: [Map Int TypeNode]]      # @Child on Map → MapValues (map over values)
     Intersect@[as-type: [fn [let i] i]  guarding: 0]:
-      [types@Child: [Seq TypeNode]]
+      [types@Child: [Map Int TypeNode]]  # @Child on Map → MapValues (map over values)
     Negation@[as-type: [fn [let n] n]  guarding: 0]:
       [inner@Child: TypeNode]                # @Child on TypeNode → One
     # TypeConstructor — two roles:
@@ -241,11 +241,11 @@
       0: []
       ...: [builtin-keys [builtin-get "field-annotations" ann]]]]
 
-  # child-role: return the child role string ("One", "Seq", or "MapValues") for a
+  # child-role: return the child role string ("One" or "MapValues") for a
   # given @Child field of a constructor.
   #   "One"       — field type is TypeNode (a single child)
-  #   "Seq"       — field type is [Seq TypeNode] (a sequence of children)
   #   "MapValues" — field type is [Map K TypeNode] (map; map over values, preserve keys)
+  # The "Seq" role was removed when Intersect.types migrated from [Seq TypeNode] to [Map Int TypeNode].
   child-role: [fn [let ctor field]
     [builtin-get "role"
       [builtin-get field
@@ -1365,18 +1365,18 @@ Get all values from a dict as an integer-indexed list.
 
 Example: [values [a: 10  b: 20]] => [10 20]
 
-Note: Preserves dict insertion order: values are returned in the same order as keys. O(n) via lazy Seq construction + collect. Returns Seq (Seq.End-terminated).
+Note: Preserves dict insertion order: values are returned in the same order as keys. O(n) via lazy Seq construction + collect-dict.
 """] [let xs@Record]
-    [collect [values-seq-impl xs [keys xs] 0 [length [keys xs]]]]]
+    [collect-dict [values-seq-impl xs [keys xs] 0 [length [keys xs]]]]]
 
 entries: [fn@[return: Dict  doc: """
 Get all entries as a list of [key: k  value: v] dicts.
 
 Example: [entries [a: 10  b: 20]] => [[key: "a"  value: 10]  [key: "b"  value: 20]]
 
-Note: Preserves dict insertion order: entries appear in the same order as the source dict. O(n) via lazy Seq construction + collect. Returns Seq (Seq.End-terminated).
+Note: Preserves dict insertion order: entries appear in the same order as the source dict. O(n) via lazy Seq construction + collect-dict.
 """] [let xs@Record]
-    [collect [entries-seq-impl xs [keys xs] 0 [length [keys xs]]]]]
+    [collect-dict [entries-seq-impl xs [keys xs] 0 [length [keys xs]]]]]
 
 from-entries: [fn@[return: Dict  doc: """
 Reconstruct a dict from a list of [key: k value: v] pairs.
@@ -1423,9 +1423,9 @@ Rebuild a collection with dense 0..n integer keys.
 
 Example: [reindex [a: 1 b: 2 c: 3]] => [0: 1 1: 2 2: 3]
 
-Note: Preserves values and insertion order. Useful after drop or sparse slicing to normalize key numbering. O(n) via lazy Seq construction + collect. Returns Seq (Seq.End-terminated).
+Note: Preserves values and insertion order. Useful after drop or sparse slicing to normalize key numbering. O(n).
 """] [let xs@Dict]
-    [collect [reindex-seq-impl xs [keys xs] 0 [length [keys xs]]]]]
+    [collect-dict [reindex-seq-impl xs [keys xs] 0 [length [keys xs]]]]]
 
 # ============================================================================
 # Sorting (Mergesort)
@@ -1472,18 +1472,22 @@ sort-by@[doc: "Sort with custom comparator (O(n log n) mergesort)"]: [fn@[bind: 
              ...: xs]]
          [merge-sort-impl xs n]]]]
 
-# Like Python's sorted() — accepts both Seq and Dict; collects a Seq first.
-# Type: (Seq a | Dict Comparable -> Seq Comparable)
+# Like Python's sorted() — accepts Seq, List (finger tree), or Dict; materializes to Dict first.
+# Type: (Seq a | List a | Dict Comparable -> Dict Comparable)
 # Example: [sorted [filter [fn [x] [> x 2]] [1 3 2 4]]] => [3 4]
 # Example: [sorted [3 1 2]] => [1 2 3]
 sorted@[doc: "Sort collection in ascending order"]: [fn@Dict [let xs]
-    [sort-asc [if [seq? xs] [collect xs] xs]]]
+    [sort-asc [if [seq? xs]  [collect-dict xs]
+              [if [list? xs] [collect-dict [ft-to-seq xs]]
+                              xs]]]]
 
 # Like sorted, with a custom comparator.
-# Type: ((a -> a -> Bool) -> Seq a | Dict a -> Seq a)
+# Type: ((a -> a -> Bool) -> Seq a | List a | Dict a -> Dict a)
 # Example: [sorted-by [fn [let a b] [> a b]] [filter [fn [let x] [> x 0]] [-1 3 -2 4]]] => [4 3]
-sorted-by@[doc: "Sort with custom comparator (accepts Seq or Dict)"]: [fn@[bind: [a]  return: Dict] [let cmp@[Fn@Boolean [a a]] xs]
-    [sort-by cmp [if [seq? xs] [collect xs] xs]]]
+sorted-by@[doc: "Sort with custom comparator (accepts Seq, List, or Dict)"]: [fn@[bind: [a]  return: Dict] [let cmp@[Fn@Boolean [a a]] xs]
+    [sort-by cmp [if [seq? xs]  [collect-dict xs]
+                 [if [list? xs] [collect-dict [ft-to-seq xs]]
+                                 xs]]]]
 
 # ============================================================================
 # Universal Collection Operations (preserve keys)
@@ -1563,13 +1567,15 @@ Pair entries from two collections by position.
 
 Example: [zip ["a" "b" "c"] [1 2 3]] => [["a" 1] ["b" 2] ["c" 3]]
 
-Note: If both xs and ys are Seq: lazy Seq of pairs. Otherwise: collect Seqs to Dicts, then use eager zip. Stops at the shorter collection's length.
+Note: If both xs and ys are Seq: lazy Seq of pairs. Otherwise: materialize to Dict, then use eager zip. Stops at the shorter collection's length.
 """] [let xs ys]
     [if [and [seq? xs] [seq? ys]]
         [zip-seq-impl xs ys]
         [zip-dict-impl
-            [if [seq? xs] [collect xs] xs]
-            [if [seq? ys] [collect ys] ys]]]]
+            [if [seq? xs]  [collect-dict xs]
+            [if [list? xs] [collect-dict [ft-to-seq xs]] xs]]
+            [if [seq? ys]  [collect-dict ys]
+            [if [list? ys] [collect-dict [ft-to-seq ys]] ys]]]]]
 
 flatten: [fn@[bind: [a]  return: [Seq a]  doc: """
 Flatten nested lists one level deep.
@@ -1583,7 +1589,7 @@ Note: Input must be a Seq or Dict of Seqs — each element is itself a Seq. O(n)
         [flatten-impl-dict xs]]]
 
 flatten-impl-dict@[doc: "Flatten dict implementation (internal helper)"]: [fn@Dict [let xs@Dict]
-    [collect [flatten-seq-impl xs [keys xs] 0 [length xs]]]]
+    [collect-dict [flatten-seq-impl xs [keys xs] 0 [length xs]]]]
 
 # Recursively search for a key in nested dicts.
 # find-deep helpers depend on find-deep and get (public) — live in public dict.
@@ -1756,7 +1762,7 @@ transpose-impl: [fn@Dict [let rows@Dict col-keys@[Seq Any]]
     [from-entries [map
         [fn [let col-key]
             [key: col-key
-             value: [collect [map [fn [let row] [builtin-get col-key row]] rows]]]]
+             value: [collect-dict [map [fn [let row] [builtin-get col-key row]] rows]]]]
         [each col-keys]]]]
 
 transpose: [fn@[return: Dict  doc: """
@@ -1992,9 +1998,9 @@ zip-seq-impl: [fn@[bind: [a b]  return: [Seq Dict]] [let xs@[Seq a] ys@[Seq b]]
             ...:             Seq.End]]
         ...:             Seq.End]]
 
-# zip-dict-impl: Build lazy Seq of pairs from two Dicts, then collect.
+# zip-dict-impl: Build lazy Seq of pairs from two Dicts, then collect to Dict.
 zip-dict-impl: [fn@Dict [let xs@Dict ys@Dict]
-    [collect [zip-dict-seq-impl xs ys [builtin-keys xs] [builtin-keys ys] 0 [builtin-dict-length [builtin-keys xs]] [builtin-dict-length [builtin-keys ys]]]]]
+    [collect-dict [zip-dict-seq-impl xs ys [builtin-keys xs] [builtin-keys ys] 0 [builtin-dict-length [builtin-keys xs]] [builtin-dict-length [builtin-keys ys]]]]]
 
 zip-dict-seq-impl: [fn@[Seq Dict] [let xs@Dict ys@Dict xks yks i@Integer xlen@Integer ylen@Integer]
     [match [builtin-int-gte i xlen]
@@ -2798,6 +2804,63 @@ Int64LE/BE, UInt64LE/BE, Float32LE/BE, Float64LE/BE.
     Float64LE   Float64BE]
 
 # ============================================================================
+# encode — prelude wrapper for builtin-encode
+# ============================================================================
+#
+# Converts a ByteOrder variant to its integer discriminant (0–17) and delegates
+# to builtin-encode, which accepts only Int discriminants.
+# Discriminant mapping:
+#   0=Int8   1=UInt8   2=Int16LE  3=Int16BE  4=UInt16LE  5=UInt16BE
+#   6=Int32LE  7=Int32BE  8=UInt32LE  9=UInt32BE  10=Int64LE  11=Int64BE
+#   12=UInt64LE  13=UInt64BE  14=Float32LE  15=Float32BE  16=Float64LE  17=Float64BE
+
+encode@[doc: """
+Encode a numeric value as Bytes using the specified ByteOrder format.
+
+Example: [encode ByteOrder.Int64LE 42] => Bytes (8 bytes, little-endian)
+Example: [encode ByteOrder.Float64LE 3.14] => Bytes (8 bytes, IEEE 754)
+"""]:
+  [fn [let fmt val]
+    [builtin-encode
+      [match fmt
+        ByteOrder.Int8:     0
+        ByteOrder.UInt8:    1
+        ByteOrder.Int16LE:  2   ByteOrder.Int16BE:  3
+        ByteOrder.UInt16LE: 4   ByteOrder.UInt16BE: 5
+        ByteOrder.Int32LE:  6   ByteOrder.Int32BE:  7
+        ByteOrder.UInt32LE: 8   ByteOrder.UInt32BE: 9
+        ByteOrder.Int64LE:  10  ByteOrder.Int64BE:  11
+        ByteOrder.UInt64LE: 12  ByteOrder.UInt64BE: 13
+        ByteOrder.Float32LE: 14 ByteOrder.Float32BE: 15
+        ByteOrder.Float64LE: 16 ByteOrder.Float64BE: 17
+        ...: [raise "encode: unknown ByteOrder format"]]
+      val]]
+
+# ============================================================================
+# float-bits — IEEE 754 bit pattern of a Float as an Int
+# ============================================================================
+#
+# Encodes a Float as 8 bytes (Float64LE = native endian on little-endian systems)
+# then reinterprets those bytes as a signed 64-bit integer.
+# The result is the raw IEEE 754 bit representation.
+#
+# Example: [float-bits 1.0] => 4607182418800017408 (0x3FF0000000000000)
+# Example: [float-bits 0.0] => 0
+# Example: [float-bits -0.0] => -9223372036854775808 (sign bit set)
+
+float-bits@[doc: """
+Return the raw IEEE 754 bit pattern of a Float as an Int.
+
+Uses native (little-endian) byte order for the bit extraction.
+The sign bit, exponent, and mantissa are accessible via integer arithmetic.
+
+Example: [float-bits 1.0] => 4607182418800017408
+Example: [float-bits 0.0] => 0
+"""]:
+  [fn@Integer [let f@Float]
+    [builtin-bytes-to-int [encode ByteOrder.Float64LE f]]]
+
+# ============================================================================
 # Type Class Declarations: Hashable
 # ============================================================================
 # Float is intentionally excluded: NaN != NaN violates Equatable reflexivity.
@@ -2907,17 +2970,32 @@ error: raise
 # map, filter, reduce, take, drop operate on Seq values via nominal ADT pattern match.
 # Dict dispatch uses the builtin-* aliases (for backwards compatibility with Dict callers).
 
+# list?: true iff x is a FingerTree/List value (any FTEmpty/FTSingle/FTDeep variant).
+# Used by map/filter/reduce to dispatch on List inputs via ft-to-seq.
+list?: [fn [let x]
+  [match x
+    FingerTree.FTEmpty:      Boolean.True
+    [case [let _] [FingerTree.FTSingle _] Boolean.True]
+    [case [let _] [FingerTree.FTDeep   _] Boolean.True]
+    ...:                                   Boolean.False]]
+
 filter@[return: [Seq a]  doc: """
 Keep elements of a Seq satisfying predicate. Lazy — safe on infinite Seqs.
+
+Also accepts List (finger tree) by converting to Seq via ft-to-seq first.
 
 Example: [collect [filter [fn [let x] [> x 2]] [range 0 5]]] => [3 4]
 
 Note: Predicate is evaluated eagerly per element. For Dict inputs use builtin-filter.
-"""]: [fn@[bind: [a]  return: [Seq a]] [let f@[Fn@Boolean [a]] s@[Seq a]]
-    [seq-filter-lazy f s]]
+"""]: [fn@[bind: [a]  return: [Seq a]] [let f@[Fn@Boolean [a]] s]
+    [if [list? s]
+      [seq-filter-lazy f [ft-to-seq s]]
+      [seq-filter-lazy f s]]]
 
 map@[return: [Seq b]  doc: """
-Apply function to each element of a Seq or Dict. Lazy — safe on infinite Seqs.
+Apply function to each element of a Seq, Dict, or List. Lazy — safe on infinite Seqs.
+
+Also accepts List (finger tree) by converting to Seq via ft-to-seq first.
 
 Example: [collect [map [fn [let x] [* x 2]] [range 0 3]]] => [0 2 4]
 
@@ -2925,20 +3003,24 @@ Note: O(1) per element consumed. Dict inputs are converted to Seq via each.
 """]: [fn@[bind: [a b]  return: [Seq b]] [let f@[Fn@b [a]] s]
     [if [dict? s]
       [map f [each s]]
-      [seq-map-lazy f s]]]
+      [if [list? s]
+        [seq-map-lazy f [ft-to-seq s]]
+        [seq-map-lazy f s]]]]
 
 reduce@[return: b  doc: """
-Left fold a Seq with a binary accumulator function. O(n). Tail-recursive via TCO.
+Left fold a Seq, Dict, or List with a binary accumulator function. O(n).
+
+Also accepts List (finger tree) by converting to Seq via ft-to-seq first.
 
 Example: [reduce [fn [let acc x] [+ acc x]] 0 [range 0 4]] => 6
-
-Note: For Dict inputs use reduce.
 """]: [fn@[bind: [a b]  return: b] [let f@[Fn@b [b a]] acc@b s]
     [if [dict? s]
       [reduce f acc [each s]]
-      [match s
-        Seq.End:      acc
-        [case [let p] [Seq.Cons p] [reduce f [f acc p.head] p.tail]]]]]
+      [if [list? s]
+        [reduce f acc [ft-to-seq s]]
+        [match s
+          Seq.End:      acc
+          [case [let p] [Seq.Cons p] [reduce f [f acc p.head] p.tail]]]]]]
 
 take@[return: [Seq a]  doc: """
 First n elements of a Seq. Lazy.
@@ -2969,18 +3051,21 @@ Note: Returns s immediately when n=0. Tail-recursive on the skipped prefix via T
 # Primitive collection/string length — re-exported so macro transformers and user code
 # can call [length xs] without depending on %rust "collection" being in scope.
 length@[doc: """
-Number of entries in a dict, or character count of a string.
+Number of entries in a dict, string character count, or List element count.
 
 Example: [length [a: 1  b: 2  c: 3]] => 3
 Example: [length "hello"] => 5
 Example: [length []] => 0
+Example: [length [collect [range 0 5]]] => 5  (O(1) via ft-size)
 
 Note: For Seq values, prefer [count identity xs] (length forces a Seq to a Dict first).
 """]: [fn@Integer [let xs]
     [match [builtin-type-of xs]
       "String": [builtin-str-length xs]
       "Bytes":  [builtin-bytes-length xs]
-      ...:        [builtin-dict-length xs]]]
+      ...:        [if [list? xs]
+                    [ft-size xs]
+                    [builtin-dict-length xs]]]]
 
 # Reconstruct a Dict from a Seq of key-value pair dicts.
 # Takes a Seq of [key: K, value: V] dicts (as produced by each-kv).
@@ -3125,6 +3210,7 @@ bytes-find@[doc: "Find needle Bytes in haystack Bytes; returns byte index or -1.
 bytes-of@[doc: "Convert a Seq or Dict of byte Ints to a Bytes value."]: builtin-bytes-of
 bytes-equal?@[doc: "Constant-time equality check for two Bytes values."]: builtin-bytes-equal?
 ct-equal?@[doc: "Constant-time equality for two Bytes values (alias for bytes-equal? — cryptographic use)."]: builtin-ct-equal?
+bytes-to-int@[doc: "Reinterpret 8 Bytes as a little-endian signed 64-bit integer. Used by float-bits."]: builtin-bytes-to-int
 
 # Dict lookup with optional return (Absent on miss).
 # Composes builtin-has-key? + builtin-get + Absent.Absent — Rust does not know about Absent.
@@ -3543,12 +3629,25 @@ Note: Errors on Seq.End. Returns a Seq (lazy; does not force tail elements).
       [case [let p] [Seq.Cons p] p.tail]
       Seq.End:      [raise "tail: empty sequence"]]]
 
-collect@[return: Dict  doc: """
-Materialize a lazy Seq into an integer-keyed Dict {0: a, 1: b, ...}. O(n).
+# collect-dict: internal helper — materializes a lazy Seq into an integer-keyed Dict.
+# Used by prelude functions that must return a Dict (sort, bytes-concat, entries, values, etc.)
+# The public `collect` now returns [List a] (finger tree); use collect-dict when a Dict is required.
+collect-dict@[doc: "Internal: materialize a Seq into an integer-keyed Dict. Prefer collect for user code."]:
+  [fn@[bind: [a]  return: Dict] [let xs@[Seq a]] [reduce [fn [let acc x] [dict-append x acc]] [] xs]]
+
+collect@[return: [List a]  doc: """
+Materialize a lazy Seq into a List (2-3 finger tree). O(n).
+
+After collect, length is O(1) and index access is O(log n) via ft-index.
 
 Note: Forces evaluation of the entire Seq. Use with caution on infinite sequences.
+Breaking change from prior API: collect now returns [List a], not an
+integer-keyed Dict. Existing code using [get i [collect s]] continues to work
+via the Indexable instance. Code pattern-matching on the raw Dict structure
+must use collect-dict instead.
 """]:
-  [fn@[bind: [a]  return: Dict] [let xs@[Seq a]] [reduce [fn [let acc x] [dict-append x acc]] [] xs]]
+  [fn@[bind: [a]  return: [List a]] [let xs@[Seq a]]
+    [reduce [fn [let tree x] [push-right x tree]] FingerTree.FTEmpty xs]]
 
 range@[return: [Seq Integer]  doc: """
 Lazy half-open integer range [start, end). Pure tinct — no Rust dispatch.
@@ -3963,9 +4062,15 @@ chunks@[doc: "Lazily read fixed-size byte chunks from a handle. Returns a Seq of
 
 # Concatenate a Seq or Dict of Bytes values into a single Bytes value.
 # Uses the variadic `bytes` builtin (via builtin-bytes) after collecting the sequence eagerly.
+# collect-dict is used here because builtin-apply requires an integer-keyed Dict.
 # Example: [bytes-concat [collect [chunks handle 65536]]]
 bytes-concat@[doc: "Concatenate a Seq or Dict of Bytes values into a single Bytes value"]:
-  [fn [let chunks-seq] [apply builtin-bytes [collect chunks-seq]]]
+  [fn [let chunks-seq]
+    [if [seq? chunks-seq]
+      [apply builtin-bytes [collect-dict chunks-seq]]
+      [if [list? chunks-seq]
+        [apply builtin-bytes [collect-dict [ft-to-seq chunks-seq]]]
+        [apply builtin-bytes chunks-seq]]]]
 
 # Datetime functions — loaded via builtin-module "datetime" (T-1195 runtime wiring pending)
 # Each calls [builtin-module "datetime"] inline to access the datetime module's functions.
@@ -5316,13 +5421,16 @@ tmpl: [fn [let template@Expr]
 # resolved at evaluation time. This avoids any arena-crossing ThunkId issues.
 # Uses typed variadics (first@Expr, ...rest@Expr) — all args must be Expr values.
 do: [fn [let first@Expr ...rest@Expr]
+  # collect-dict is used here (not collect) because do-fold uses builtin-dict-length/get
+  # which require an integer-keyed Dict. rest is already a Dict (variadic arg), but
+  # collect-dict is idempotent on Dict inputs: it iterates via each and reindexes.
   [ast: [if [do-is-inferred-form first]
-    [do-desugar-inferred [cons first [collect rest]]]
-    [if [builtin-eq-int [length [collect rest]] 0]
+    [do-desugar-inferred [cons first [collect-dict [each rest]]]]
+    [if [builtin-eq-int [builtin-dict-length rest] 0]
       [do-call-1
         [do-access-node first "pure"]
         [do-empty-dict-node]]
-      [do-fold first [collect rest]]]]]
+      [do-fold first rest]]]]
   [eval-macro-ast ast]]
 
 # >>: lazy multi-body in expression position.

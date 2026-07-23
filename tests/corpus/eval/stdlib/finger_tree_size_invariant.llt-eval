@@ -1,0 +1,19 @@
+# Property test: push-right and push-left preserve the ft-size invariant.
+# Build trees by successive pushes and verify the size matches element count at each step.
+[
+  t0: FingerTree.FTEmpty
+  t1: [push-right 10 t0]
+  t2: [push-right 20 t1]
+  t3: [push-right 30 t2]
+  t4: [push-left 5 t3]
+  t5: [push-left 1 t4]
+
+  sizes: [0: [ft-size t0]
+          1: [ft-size t1]
+          2: [ft-size t2]
+          3: [ft-size t3]
+          4: [ft-size t4]
+          5: [ft-size t5]]
+]
+=== out
+Dict({"sizes": Dict({0: Int(0), 1: Int(1), 2: Int(2), 3: Int(3), 4: Int(4), 5: Int(5)})})

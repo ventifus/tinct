@@ -1180,7 +1180,7 @@ pub fn string_builtins() -> Vec<crate::value::BuiltinDef> {
     use crate::builtins::builtin;
     use crate::builtins_bytes::{
         builtin_bytes_equal, builtin_bytes_find, builtin_bytes_get, builtin_bytes_of,
-        builtin_bytes_slice, builtin_ct_equal, builtin_encode,
+        builtin_bytes_slice, builtin_bytes_to_int, builtin_ct_equal, builtin_encode,
     };
     use crate::value::Strictness;
     vec![
@@ -1339,6 +1339,13 @@ pub fn string_builtins() -> Vec<crate::value::BuiltinDef> {
             [Strictness::Seq, Strictness::Seq, Strictness::Seq],
             3,
             ["bytes", "start", "end"]
+        ),
+        builtin!(
+            "builtin-bytes-to-int",
+            builtin_bytes_to_int,
+            [Strictness::Seq],
+            1,
+            ["b"]
         ),
     ]
 }

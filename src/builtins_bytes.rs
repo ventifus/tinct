@@ -746,6 +746,83 @@ pub(crate) fn builtin_bytes_get(
     })
 }
 
+/// `builtin-bytes-to-int`: Reinterpret a Bytes value as a little-endian i64.
+///
+/// Takes 1 arg:
+/// - `b`: Bytes — the byte sequence to reinterpret (must be exactly 8 bytes)
+///
+/// Returns `Int` — the raw bit pattern of the bytes as a 64-bit signed integer.
+/// Used by `float-bits` to extract the IEEE 754 bit representation of a Float.
+/// O(1).
+pub(crate) fn builtin_bytes_to_int(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx: _,
+            ..
+        } = ctx_arg;
+
+        if let Some(ref named_map) = named {
+            if !named_map.is_empty() {
+                return Err(EvalError::internal(
+                    "builtin-bytes-to-int does not accept named arguments".to_string(),
+                    call_span,
+                )
+                .into());
+            }
+        }
+
+        if args.len() != 1 {
+            return Err(EvalError::internal(
+                format!(
+                    "builtin-bytes-to-int requires exactly 1 argument (b), got {}",
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
+        }
+
+        let thunk0 = Arc::clone(&args[0]);
+        let b_val = thunk0
+            .try_get_value()
+            .expect("pre-materialized by pos_strictness")
+            .clone();
+
+        let bytes = match b_val.as_bytes() {
+            Some(b) => b,
+            None => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-bytes-to-int".to_string(),
+                    "Bytes",
+                    b_val.type_name(),
+                    thunk0.span.clone(),
+                )
+                .into())
+            }
+        };
+
+        if bytes.len() != 8 {
+            return Err(EvalError::user_error(
+                format!(
+                    "builtin-bytes-to-int requires exactly 8 bytes, got {}",
+                    bytes.len()
+                ),
+                call_span,
+            )
+            .into());
+        }
+
+        let arr: [u8; 8] = bytes[..8].try_into().unwrap();
+        let n = i64::from_le_bytes(arr);
+        ok_val(Value::Int(n), call_span)
+    })
+}
+
 /// `builtin-bytes-slice`: Return a sub-slice of a Bytes value as a new Bytes.
 ///
 /// Takes 3 args:

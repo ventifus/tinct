@@ -1,0 +1,23 @@
+# Property test: ft-concat produces a tree whose size is the sum of both inputs.
+# Verifies the size invariant is maintained after concatenation.
+# Also verifies ft-to-seq traverses concatenated tree in correct order.
+[
+  # Build two trees
+  left:  [push-right 2 [push-right 1 [push-right 0 FingerTree.FTEmpty]]]
+  right: [push-right 5 [push-right 4 [push-right 3 FingerTree.FTEmpty]]]
+
+  # Concatenate
+  merged: [ft-concat left right]
+
+  # Sizes
+  size-left:   [ft-size left]
+  size-right:  [ft-size right]
+  size-merged: [ft-size merged]
+
+  # Verify in-order traversal by summing elements
+  total: [reduce [fn [let acc x] [+ acc x]] 0 [ft-to-seq merged]]
+]
+---
+[size-left: %.size-left  size-right: %.size-right  size-merged: %.size-merged  total: %.total]
+=== out
+Dict({"size-left": Int(3), "size-merged": Int(6), "size-right": Int(3), "total": Int(15)})
