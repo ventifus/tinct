@@ -284,8 +284,8 @@
              [parse-result:  [builtin-parse decl-bytes decl-path]]
              [desugared:     [builtin-desugar parse-result.program]]
              [decl-docs:     [builtin-program-docs desugared]]
-             # Decl env: seed env plus field-get/slot-get sentinels so header eval works.
-             [decl-env:      [merge seed-env [field-get: .field-get  slot-get: .slot-get]]]
+             # Decl env: dot-access desugars to builtin-get (a core builtin always in scope).
+             [decl-env:      seed-env]
              # Split docs by stage so type-stage docs are processed first.
              [split: [reduce
                [fn [let acc doc]
@@ -421,9 +421,9 @@
   # (lowered, env) and returns the exports Dict directly.
   # Adds: env, last-result, _tc.
   eval-program: [fn [let extras tc state]
-    # Seed env: extras (e.g. %prelude env ref, Boolean, etc.) plus field-get/slot-get.
-    [seed-env: [merge extras [field-get: .field-get  slot-get: .slot-get
-                               Boolean: Boolean  True: Boolean.True  False: Boolean.False]]]
+    # Seed env: extras (e.g. %prelude env ref, Boolean, etc.).
+    # Dot-access desugars to builtin-get (a core builtin always in scope).
+    [seed-env: [merge extras [Boolean: Boolean  True: Boolean.True  False: Boolean.False]]]
     [eval-doc: [fn [let acc doc]
       # Short-circuit: if a previous doc in this pass already has errors, skip remaining docs.
       [match [builtin-eq-int [count-errors acc.diagnostics] 0]
@@ -542,7 +542,7 @@
   Boolean: [type True False]
 
   ProgramItem: [type
-    File: [path: String  cap: DirCap]
+    File: [path: String  handle: Handle]
     Expr: [src:  String]
   ]
 
@@ -929,6 +929,8 @@
       ...: 0]]
 
   # find-corpus-files: recursively walk cap/dir-path, accumulate .llt-eval files.
+  # Each discovered file is wrapped as ProgramItem.File { path, handle } matching
+  # the protocol from main.rs. The handle is a pre-opened readable file.
   find-corpus-files: [fn@Dict [let cap dir-path state@Dict]
     [entries: [builtin-list-dir cap dir-path]]
     [reduce
@@ -937,7 +939,8 @@
         [match [builtin-eq-string entry.type "dir"]
           0: [match [check-llt-eval entry.name]
                0: st
-               ...: [merge st [make-entry [builtin-dict-length st] [ProgramItem.File path: full  cap: cap]]]]
+               ...: [merge st [make-entry [builtin-dict-length st]
+                      [ProgramItem.File path: full  handle: [builtin-file-open cap full "read"]]]]]
           ...: [find-corpus-files cap full st]]]
       state
       entries]]

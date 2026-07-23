@@ -1108,11 +1108,11 @@ impl SurfaceResolver {
             } => {
                 if let Some(target) = expr {
                     self.walk_surface_node(target);
-                    // Resolve field-get to get its VarAddr at the current scope depth.
-                    // The lowerer reads this VarAddr to locate the field-get function.
-                    // If field-get is not in scope (resolver not seeded with env), leave
+                    // Resolve builtin-get to get its VarAddr at the current scope depth.
+                    // The lowerer reads this VarAddr to locate the builtin-get function.
+                    // If builtin-get is not in scope (resolver not seeded with env), leave
                     // the OnceLock unset — the lowerer will emit a diagnostic.
-                    if let Some(addr) = self.resolve_name("field-get") {
+                    if let Some(addr) = self.resolve_name("builtin-get") {
                         resolution.set(Some(addr));
                     }
                 } else if let crate::ast::DotKey::Ident(name) = field {
@@ -2808,12 +2808,12 @@ mod tests {
     /// B-586: Nested dict with a non-zero initial frame offset.
     ///
     /// Simulates the case where R root entries exist (e.g., builtins) before the document
-    /// dict. With initial frame [{field-get: 0}] (R=1): outer dict has offset 1.
+    /// dict. With initial frame [{builtin-get: 0}] (R=1): outer dict has offset 1.
     ///   Outer dict: x→LGM(1), inner→LGM(2). accumulated_dict_offset advances to 3.
     ///   Inner dict: ref→LGM(3). $x → LGM(1).
     ///
     /// Before the fix, the Dict arm used enter_scope(&keys, Dict) with offset=0, giving
-    ///   x→LGM(0), inner→LGM(1), ref→LGM(0). LGM(0) → group[0] = field-get builtin (wrong!).
+    ///   x→LGM(0), inner→LGM(1), ref→LGM(0). LGM(0) → group[0] = builtin-get (wrong!).
     #[test]
     fn nested_dict_lgm_offset_nonzero_base() {
         // Seed with one initial frame entry to simulate R=1 root entries.
@@ -2822,9 +2822,9 @@ mod tests {
         let program = crate::desugar::desugar_surface_program(&output.program);
         let doc = &program.documents[0].node;
 
-        // Simulate R=1: one root-scope entry named "field-get" at slot 0.
+        // Simulate R=1: one root-scope entry named "builtin-get" at slot 0.
         let mut root_frame: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
-        root_frame.insert("field-get".to_string(), 0u32);
+        root_frame.insert("builtin-get".to_string(), 0u32);
         let (table, _diags, _frames) = resolve_surface_document_inplace(doc, &[root_frame]);
 
         // Outer dict: x at LGM(1), inner at LGM(2) (offset=1 from root frame).

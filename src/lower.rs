@@ -318,27 +318,24 @@ fn lower_expr(
         SurfaceExpression::Field {
             expr: Some(inner),
             field,
-            field_slot,
             resolution,
+            ..
         } => {
             // Build the getter function Var and the key argument.
-            // The resolver writes a VarAddr for field-get into Field.resolution.
-            // field-get and slot-get live in the same env frame; slot-get is always one
-            // slot after field-get (by construction in dot-access-env and build_core_env).
-            // When resolution is unset, the resolver did not run on this node — emit a
-            // diagnostic so the caller fails loudly rather than silently producing a wrong address.
-            let field_get_addr = match resolution.get() {
+            // The resolver writes a VarAddr for builtin-get into Field.resolution.
+            // All dot-access desugars to [builtin-get key target] — one correct path.
+            let getter_addr = match resolution.get() {
                 Some(Some(addr)) => addr.clone(),
                 state @ (Some(None) | None) => {
                     let why = if state.is_none() {
                         "resolver did not run on this node"
                     } else {
-                        "field-get not found in any scope (resolver ran but returned None)"
+                        "builtin-get not found in any scope (resolver ran but returned None)"
                     };
                     diagnostics.push(LowerDiagnostic {
                         kind: LowerDiagnosticKind::Error,
                         message: format!(
-                            "field-get: missing resolver coordinates for `.{}` — {}",
+                            "builtin-get: missing resolver coordinates for `.{}` — {}",
                             field, why
                         ),
                         span: arc.span.clone(),
@@ -347,38 +344,20 @@ fn lower_expr(
                 }
             };
 
-            // slot-get is always one slot after field-get in the same env frame.
-            // Increment the slot index within the VarAddr variant.
-            let slot_get_addr = match &field_get_addr {
-                VarAddr::LetrecGroupMember(s) => VarAddr::LetrecGroupMember(s + 1),
-                VarAddr::ClosureCapture(s) => VarAddr::ClosureCapture(s + 1),
-                VarAddr::Parameter(_) => VarAddr::Parameter(0), // placeholder for field slot
-            };
-
-            let (getter_name, getter_addr, key_arg) = if let Some(typed_slot) = field_slot.get() {
-                // Typed: use slot-get (positional O(1) access).
-                // slot-get is always one slot after field-get in the same env frame.
-                // field_get_addr is always a real addr here: the Some(None) | None arm
-                // above already returned CoreExpr::Placeholder for missing coordinates.
-                ("slot-get", slot_get_addr, CoreExpr::Int(typed_slot as i64))
-            } else {
-                // Untyped: use field-get (key-based lookup).
-                let key_core = match field {
-                    crate::ast::DotKey::Int(n) => CoreExpr::Int(*n),
-                    crate::ast::DotKey::Ident(s) => CoreExpr::Str(s.clone()),
-                };
-                ("field-get", field_get_addr, key_core)
+            let key_core = match field {
+                crate::ast::DotKey::Int(n) => CoreExpr::Int(*n),
+                crate::ast::DotKey::Ident(s) => CoreExpr::Str(s.clone()),
             };
 
             let getter_var = Arc::new(crate::ast::Spanned::new(
                 CoreExpr::Var {
-                    name: getter_name.to_string(),
+                    name: "builtin-get".to_string(),
                     addr: getter_addr,
                     annotation: None,
                 },
                 arc.span.clone(),
             ));
-            let key_node = Arc::new(crate::ast::Spanned::new(key_arg, arc.span.clone()));
+            let key_node = Arc::new(crate::ast::Spanned::new(key_core, arc.span.clone()));
             let target_node = Arc::new(lower_inner(inner, diagnostics, scope_frames));
 
             CoreExpr::Call {

@@ -98,8 +98,8 @@ use std::sync::Arc;
 pub use ast::{Annotation, Param, Span, Spanned};
 /// Surface AST types for the runtime-v2 pipeline.
 pub use ast::{
-    CallDispatch, CapturesCell, MacroProvenance, Provenance, Resolution, SlotAnnotation,
-    SurfaceEntry, SurfaceExpression, SurfaceNode, SurfaceProgram, TypeAnnotation, VarAddr,
+    CallDispatch, CapturesCell, MacroProvenance, Provenance, Resolution, SurfaceEntry,
+    SurfaceExpression, SurfaceNode, SurfaceProgram, TypeAnnotation, VarAddr,
 };
 /// Parser entry points.
 pub use parser::{format_parse_error, parse, parse_surface_expression, ParseOutput};

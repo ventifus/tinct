@@ -1675,7 +1675,6 @@ mod tests {
             expr: Some(inner),
             field: crate::ast::DotKey::Ident(ctor_name.to_string()),
             resolution: crate::ast::Resolution::new(),
-            field_slot: crate::ast::SlotAnnotation::new(),
         }
     }
 

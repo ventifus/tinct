@@ -30,7 +30,9 @@ tokio::task_local! {
 
 /// Maximum continuation stack depth. Prevents unbounded stack growth in the CEK machine.
 /// Documented in doc/16-architecture.md §Iterative Evaluator.
-const MAX_CONTINUATION_STACK: usize = 2048;
+/// Set to 8192 to accommodate recursive dict operations (merge, reduce) on large dicts
+/// (e.g., the prelude env with 500+ entries) within deeply nested evaluation contexts.
+const MAX_CONTINUATION_STACK: usize = 8192;
 
 // Thread-local singleton empty Env for MatchDispatchData. Avoids allocating a new
 // Arc<RwLock<Env>> on every match expression evaluation. This is always empty —

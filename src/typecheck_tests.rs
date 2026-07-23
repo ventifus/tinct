@@ -4845,9 +4845,9 @@ async fn test_b477_user_instance_call_dispatch_set_with_scope_frames() {
     //
     // For this test, we seed scope_frames with one outer frame (the prelude-like scope).
     // The synthetic frame for the user dict will be pushed by run_typecheck_dict.
-    // We use a simple outer frame with a sentinel "field-get" binding so frames is non-empty.
+    // We use a simple outer frame with a sentinel "builtin-get" binding so frames is non-empty.
     let mut outer_frame: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
-    outer_frame.insert("field-get".to_string(), 0u32);
+    outer_frame.insert("builtin-get".to_string(), 0u32);
     state.scope_frames = Some(vec![outer_frame]);
 
     let (result_env, _ty, errors) = process_document(

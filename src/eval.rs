@@ -3162,28 +3162,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_func_label_dot_access() {
-        // After the field-get refactor, dot access compiles to Call(field-get, [key, target]).
-        // The function position is a Var("field-get") so func_label_core returns "field-get".
+        // Dot access compiles to Call(builtin-get, [key, target]).
+        // The function position is a Var("builtin-get") so func_label_core returns "builtin-get".
         use crate::eval_call::func_label_core;
         let func_var = CoreExpr::Var {
-            name: "field-get".to_string(),
-            addr: crate::ast::VarAddr::ClosureCapture(crate::builtins_core::FIELD_GET_ROOT_SLOT),
+            name: "builtin-get".to_string(),
+            addr: crate::ast::VarAddr::ClosureCapture(0),
             annotation: None,
         };
         let label = func_label_core(&func_var);
-        assert_eq!(label.as_deref(), Some("field-get"));
-    }
-
-    #[tokio::test]
-    async fn test_func_label_chained_dot_access() {
-        // After the field-get refactor, chained dot access uses slot-get (slot 1) for typed access.
-        use crate::eval_call::func_label_core;
-        let label = func_label_core(&CoreExpr::Var {
-            name: "slot-get".to_string(),
-            addr: crate::ast::VarAddr::ClosureCapture(crate::builtins_core::SLOT_GET_ROOT_SLOT),
-            annotation: None,
-        });
-        assert_eq!(label.as_deref(), Some("slot-get"));
+        assert_eq!(label.as_deref(), Some("builtin-get"));
     }
 
     #[tokio::test]

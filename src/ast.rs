@@ -647,8 +647,6 @@ pub enum SurfaceExpression {
         field: DotKey,
         #[expr(skip, default_fn = "crate::ast::Resolution::new")]
         resolution: Resolution,
-        #[expr(skip, default_fn = "crate::ast::SlotAnnotation::new")]
-        field_slot: SlotAnnotation,
     },
 
     // Pipe is surface-only — the lowering pass rewrites it to Call before evaluation.
@@ -998,40 +996,6 @@ impl Default for TypeAnnotation {
 impl std::fmt::Debug for TypeAnnotation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "TypeAnnotation({:?})", self.0.get().map(|o| o.is_some()))
-    }
-}
-
-/// Inline field slot — written once by the type checker for typed Field nodes.
-pub struct SlotAnnotation(std::sync::OnceLock<Option<u32>>);
-impl SlotAnnotation {
-    pub fn new() -> Self {
-        Self(std::sync::OnceLock::new())
-    }
-    pub fn get(&self) -> Option<u32> {
-        self.0.get().copied().flatten()
-    }
-    pub fn set(&self, slot: u32) {
-        let _ = self.0.set(Some(slot));
-    }
-}
-impl Clone for SlotAnnotation {
-    fn clone(&self) -> Self {
-        Self::new()
-    }
-}
-impl PartialEq for SlotAnnotation {
-    fn eq(&self, _: &Self) -> bool {
-        true
-    }
-}
-impl Default for SlotAnnotation {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-impl std::fmt::Debug for SlotAnnotation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "SlotAnnotation({:?})", self.0.get())
     }
 }
 

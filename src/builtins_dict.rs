@@ -257,18 +257,21 @@ pub(crate) fn builtin_length(
     })
 }
 
-/// `field-get`: Dot-access key lookup -- the desugared form of `target.field`.
+/// `builtin-get`: Rust primitive for keyed access on Dict, Variant, and Proxy values.
 ///
-/// Takes 2 args: key (String or Int) and target (Dict, Proxy, Variant, Program, Document).
-/// Returns the value at `key` in `target`, following the same rules as dot-access:
-/// - Dict: look up by HashableValue key
-/// - Proxy: invoke the proxy handler with the key string
-/// - Variant: auto-unpack the payload and retry
-/// - Program / Document: field dispatch to well-known field names
-/// - Environment: TYPE ERROR -- should have been compiled to `slot-get` by the type checker
+/// Takes 2 args: a key (Int or String) and a target value.
+/// Returns the value at that key, or errors if the key is not found.
 ///
-/// Registered at ROOT SCOPE SLOT 0 in `core_builtins()`. The lowerer hardcodes this slot.
-pub(crate) fn builtin_field_get(
+/// Handles:
+/// - Dict: O(1) key lookup
+/// - Variant (with payload): auto-unpacks payload dict and looks up key; falls back to
+///   TyConDef constructor constants (T-1358) if not found in payload
+/// - Variant (unit, no payload): looks up TyConDef constructor constants directly
+/// - Proxy: invokes the proxy handler with the key string
+///
+/// This is the single primitive backing both dot-access (`target.field`) and explicit
+/// `[get key target]`. The lowerer desugars dot-access to `[builtin-get key target]`.
+pub(crate) fn builtin_get(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
@@ -279,35 +282,36 @@ pub(crate) fn builtin_field_get(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("field-get", named.as_ref(), call_span.clone())?;
+        reject_named("builtin-get", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span.clone()).into());
         }
 
-        // arg[0]: key (String or Int) — pre-materialized by Strictness::Seq
+        // Materialize the key
         let thunk0 = args[0].clone();
         let key_val = thunk0
             .try_get_value()
-            .expect("pre-materialized by Strictness::Seq")
+            .expect("pre-materialized by force_count/pos_strictness")
             .clone();
-        let key = value_to_hashable_key(&key_val, "field-get", thunk0.span.clone())?;
+        let key = value_to_hashable_key(&key_val, "builtin-get", thunk0.span.clone())?;
 
-        // arg[1]: target — pre-materialized by Strictness::Seq
+        // Materialize the target
         let thunk1 = args[1].clone();
         let target_val = thunk1
             .try_get_value()
-            .expect("pre-materialized by Strictness::Seq")
+            .expect("pre-materialized by force_count/pos_strictness")
             .clone();
         let target_span = thunk1.span.clone();
 
-        field_get_on_value(key, target_val, target_span, call_span, None, &ctx).await
+        builtin_get_on_value(key, target_val, target_span, call_span, None, &ctx).await
     })
 }
 
-/// Inner recursive helper for `field-get` and Variant auto-unpack.
+/// Inner recursive helper for `builtin-get`, handling Dict, Variant auto-unpack,
+/// TyConDef constructor constants, and Proxy dispatch.
 ///
 /// `variant_tag`: when accessing a Variant payload, carry the tag for TyConDef constant fallback.
-async fn field_get_on_value(
+async fn builtin_get_on_value(
     key: HashableValue,
     target_val: Value,
     target_span: crate::ast::Span,
@@ -359,7 +363,7 @@ async fn field_get_on_value(
             crate::eval_access::invoke_proxy_handler(
                 &handler,
                 string_val(&key_str),
-                0, // proxy handlers don't need caller scope
+                0,
                 ctx,
                 &call_span,
             )
@@ -377,7 +381,7 @@ async fn field_get_on_value(
                     let payload_val = materialize(&payload_id, Some(&call_span), ctx).await?;
                     // Recurse with variant_tag set so TyConDef constants can be found.
                     let composite_tag = format!("{}.{}", tycon, ctor);
-                    Box::pin(field_get_on_value(
+                    Box::pin(builtin_get_on_value(
                         key,
                         payload_val,
                         payload_span,
@@ -417,161 +421,22 @@ async fn field_get_on_value(
                 }
             }
         }
-        other => Err(EvalError::type_mismatch_ctx(
-            "field-get".to_string(),
-            "Dict, Proxy, or Variant",
-            other.type_name(),
-            target_span,
-        )
-        .into()),
-    }
-}
-
-/// `slot-get`: Positional slot access — the desugared form of typed `target.field`.
-///
-/// Takes 2 args: slot (Int) and target (Dict or Environment).
-/// Returns the value at position `slot` in `target`:
-/// - Dict: O(1) positional lookup via `get_index`
-/// - Environment: direct slot lookup into the slots Vec
-///
-/// Registered at ROOT SCOPE SLOT 1 in `core_builtins()`. The lowerer hardcodes this slot.
-pub(crate) fn builtin_slot_get(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx: _,
-        ..
-    } = ctx_arg;
-    Box::pin(async move {
-        reject_named("slot-get", named.as_ref(), call_span.clone())?;
-        if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span.clone()).into());
-        }
-
-        // arg[0]: slot (Int) — pre-materialized by Strictness::Seq
-        let thunk0 = args[0].clone();
-        let slot_val = thunk0
-            .try_get_value()
-            .expect("pre-materialized by Strictness::Seq")
-            .clone();
-        let slot = match slot_val {
-            Value::Int(n) if n >= 0 => n as usize,
-            Value::Int(n) => {
-                return Err(EvalError::internal(
-                    format!("slot-get: negative slot index {n}"),
-                    call_span,
-                )
-                .into())
-            }
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "slot-get".to_string(),
-                    "Int",
-                    other.type_name(),
-                    thunk0.span.clone(),
-                )
-                .into())
-            }
-        };
-
-        // arg[1]: target — pre-materialized by Strictness::Seq
-        let thunk1 = args[1].clone();
-        let target_val = thunk1
-            .try_get_value()
-            .expect("pre-materialized by Strictness::Seq")
-            .clone();
-        let target_span = thunk1.span.clone();
-
-        match target_val {
-            Value::Dict(map) => match map.get_index(slot) {
-                Some((_, thunk)) => Ok(Arc::clone(thunk)),
-                None => Err(EvalError::internal(
-                    format!(
-                        "slot-get: slot {slot} out of bounds (dict has {} entries)",
-                        map.len()
-                    ),
-                    target_span,
-                )
-                .into()),
-            },
-            other => Err(EvalError::type_mismatch_ctx(
-                "slot-get".to_string(),
-                "Dict",
+        other => {
+            let key_display = match &key {
+                HashableValue::Int(n) => format!("key {n}"),
+                HashableValue::Str(s) => format!("key \"{s}\""),
+                other_key => format!("key {other_key}"),
+            };
+            let context = format!("builtin-get ({key_display})");
+            Err(EvalError::type_mismatch_ctx(
+                context,
+                "Dict, Variant, or Proxy",
                 other.type_name(),
                 target_span,
             )
-            .into()),
+            .into())
         }
-    })
-}
-
-/// `builtin-get`: Rust primitive for dict key lookup.
-///
-/// Takes 2 args: a key (Int or String) and a dict.
-/// Returns the value at that key, or errors if the key is not found.
-///
-/// This is a thin primitive that `get` (in prelude.llt) wraps, following the
-/// same pattern as `builtin-reduce` → `reduce` and `builtin-fold` → `fold`.
-pub(crate) fn builtin_get(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-        ..
-    } = ctx_arg;
-    Box::pin(async move {
-        reject_named("builtin-get", named.as_ref(), call_span.clone())?;
-        if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span.clone()).into());
-        }
-
-        // Materialize the key
-        let thunk0 = args[0].clone();
-        let key_val = thunk0
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
-        let key = value_to_hashable_key(&key_val, "builtin-get", thunk0.span.clone())?;
-
-        // Materialize the dict (spine only, not values)
-        let thunk1 = args[1].clone();
-        let dict_val = thunk1
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
-        // Include the key in the context string so the error message identifies WHICH
-        // [get ...] call received the wrong type. This makes macro-expansion bugs diagnosable.
-        let key_display = match &key {
-            HashableValue::Int(n) => format!("key {n}"),
-            HashableValue::Str(s) => format!("key \"{s}\""),
-            other => format!("key {other}"),
-        };
-        let context = format!("builtin-get ({key_display})");
-        let map = crate::builtins::require_dict(
-            &context,
-            dict_val,
-            thunk1.span.clone(),
-            &ctx,
-            call_span.clone(),
-        )
-        .await?;
-
-        // Look up the key
-        match map.get(&key) {
-            Some(thunk) => Ok(Arc::clone(thunk)),
-            None => {
-                let key_str = key.to_string();
-                let available_keys = map.keys().map(|k| k.to_string()).collect();
-                Err(EvalError::key_not_found(&key_str, available_keys, call_span).into())
-            }
-        }
-    })
+    }
 }
 
 /// `builtin-has-key?`: Check whether a key exists in a dict.

@@ -44,8 +44,8 @@ use crate::builtins_dict::{
     builtin_build_dict, builtin_builder_delete, builtin_builder_finish, builtin_builder_get,
     builtin_builder_get_or, builtin_builder_has, builtin_builder_set, builtin_builder_snapshot,
     builtin_dict_has_key_nth, builtin_dict_has_kv_nth, builtin_dict_has_nth, builtin_dict_key_nth,
-    builtin_dict_kv_nth, builtin_dict_nth, builtin_field_get, builtin_get, builtin_get_by_field,
-    builtin_has_key, builtin_keys, builtin_length, builtin_make_builder, builtin_slot_get,
+    builtin_dict_kv_nth, builtin_dict_nth, builtin_get, builtin_get_by_field, builtin_has_key,
+    builtin_keys, builtin_length, builtin_make_builder,
 };
 // String implementations — Core-46 only.
 use crate::builtins_string::{
@@ -74,31 +74,8 @@ use crate::builtins_async::{builtin_channel, builtin_send};
 use crate::value::{BuiltinDef, Strictness};
 
 /// Returns all "core" module Rust builtins aggregated from the split implementation files.
-///
-/// SLOT ORDER INVARIANT: `field-get` MUST be slot 0 and `slot-get` MUST be slot 1.
-/// The lowerer hardcodes these slots — do not reorder these first two entries.
-#[cfg(test)]
-pub const FIELD_GET_ROOT_SLOT: u32 = 0;
-#[cfg(test)]
-pub const SLOT_GET_ROOT_SLOT: u32 = 1;
-
 pub fn core_builtins() -> Vec<BuiltinDef> {
     vec![
-        // ── Dot-access builtins — MUST be slots 0 and 1 (lowerer invariant) ─────────
-        builtin!(
-            "field-get",
-            builtin_field_get,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["key", "dict"]
-        ),
-        builtin!(
-            "slot-get",
-            builtin_slot_get,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["slot", "dict"]
-        ),
         // ── Arithmetic — monomorphic typed variants ───────────────────────────────────
         builtin!(
             "builtin-int-add",

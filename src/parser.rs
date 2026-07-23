@@ -4206,7 +4206,6 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                 expr: target,
                                 field: field_key,
                                 resolution: crate::ast::Resolution::new(),
-                                field_slot: crate::ast::SlotAnnotation::new(),
                             },
                             dot_access_span.clone(),
                         ));
@@ -4286,7 +4285,6 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                 expr: target,
                                 field: field_key,
                                 resolution: crate::ast::Resolution::new(),
-                                field_slot: crate::ast::SlotAnnotation::new(),
                             },
                             dot_access_span.clone(),
                         ));

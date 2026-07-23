@@ -414,7 +414,6 @@ fn eval_quote_preprocess<'a>(
                     expr: Some(processed_target),
                     field: field.clone(),
                     resolution: crate::ast::Resolution::new(),
-                    field_slot: crate::ast::SlotAnnotation::new(),
                 }))
             }
 
@@ -425,7 +424,6 @@ fn eval_quote_preprocess<'a>(
                 expr: None,
                 field: field.clone(),
                 resolution: crate::ast::Resolution::new(),
-                field_slot: crate::ast::SlotAnnotation::new(),
             })),
 
             SurfaceExpression::Pipe {

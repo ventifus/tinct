@@ -1345,18 +1345,13 @@ async fn apply_cont(
         TypeCheckCont::AfterFieldBase {
             field,
             span,
-            field_node,
+            field_node: _,
         } => {
             let resolved_base = state.subst.apply(&child_ty);
             let (ty, slot_opt) = field_type_from_base(&resolved_base, &field, &span, errors);
 
-            // T-1490: Write back the slot annotation so the lowerer can emit slot-get.
-            // slot_opt is Some only for closed Dict rows with the field at a known IndexMap position.
-            if let Some(slot) = slot_opt {
-                if let SurfaceExpression::Field { field_slot, .. } = &field_node.expr {
-                    field_slot.set(slot);
-                }
-            }
+            // slot_opt is unused — dot-access now always desugars to builtin-get (key-based lookup).
+            let _ = slot_opt;
 
             // T-1711: Emit diagnostic for Unknown field access
             if ty == Type::Unknown {
@@ -5036,7 +5031,7 @@ mod tests {
         );
     }
 
-    // ===== T-1490: field_slot annotation tests =====
+    // ===== AfterFieldBase type inference tests =====
 
     /// T-1490: `field_type_from_base` returns the correct slot index for a closed Dict row.
     ///
@@ -5143,19 +5138,17 @@ mod tests {
     /// This test uses `apply_cont` rather than the full `run_typecheck` pipeline to avoid
     /// requiring the prelude to be loaded.
     #[tokio::test]
-    async fn test_after_field_base_writes_field_slot() {
+    async fn test_after_field_base_resolves_type() {
         use crate::ast::{DotKey, Resolution};
         use crate::type_def::{Row, RowTail};
         use indexmap::IndexMap;
 
         // Build a Field node: <expr>.x  — expr is None (absent base, unused here).
-        // The field_slot inside the SurfaceNode is the OnceLock that apply_cont will write to.
         let field_node = Arc::new(SurfaceNode::new(
             SurfaceExpression::Field {
                 expr: None,
                 field: DotKey::Ident("x".to_string()),
                 resolution: Resolution::new(),
-                field_slot: crate::ast::SlotAnnotation::new(), // This is the one that will be set
             },
             crate::rust_span!(),
         ));
@@ -5199,17 +5192,6 @@ mod tests {
             TypeCheckAction::Eval(_, _) => {
                 panic!("AfterFieldBase must not produce Eval action");
             }
-        }
-
-        // The field_slot on the field node must now be set to Some(0)
-        if let SurfaceExpression::Field { field_slot, .. } = &field_node.expr {
-            assert_eq!(
-                field_slot.get(),
-                Some(0u32),
-                "AfterFieldBase must write slot index 0 for .x in a closed Dict {{x: Int, y: Str}}"
-            );
-        } else {
-            panic!("field_node must be a Field expression");
         }
 
         // No unexpected errors

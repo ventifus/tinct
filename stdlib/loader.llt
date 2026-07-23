@@ -341,8 +341,9 @@
     # Desugar the parsed program (expands $_ lambda, pipe, etc.)
     [desugared:     [builtin-desugar parse-result.program]]
     [docs:          [builtin-program-docs desugared]]
-    # Seed env from extras dict (e.g., %prelude for prelude.llt) plus field-get/slot-get sentinels.
-    [seed-env: [merge extras [field-get: .field-get  slot-get: .slot-get]]]
+    # Seed env from extras dict (e.g., %prelude for prelude.llt).
+    # Dot-access desugars to builtin-get (a core builtin always in scope).
+    [seed-env: extras]
     # Per-document reduce fn: unified for type-stage and runtime passes.
     # acc is {env: Dict  tc: TypeContext}.
     [eval-doc: [fn [let acc doc]
