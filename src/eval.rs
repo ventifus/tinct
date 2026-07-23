@@ -108,6 +108,13 @@ pub(crate) async fn eval_document_exprs_with_env(
 
         if i == last_idx {
             // Last expression: build frame and return thunk lazily.
+            //
+            // Capture the accumulated_group snapshot for Matchable dispatch (T-1847).
+            // The OnceLock ensures this is written at most once (first call wins), so
+            // nested calls from builtin-eval or user documents are silently ignored.
+            // At this point accumulated_group contains all intermediate dict entries from
+            // the loader program at their canonical LGM slots.
+            ctx.set_init_accumulated_group(accumulated_group.clone());
             let thunk = crate::eval_core::eval_core_expr(&core_spanned, &frame, ctx).await?;
             // Return fallback_env_id as bridge placeholder for callers that use the scope_id.
             return Ok((thunk, fallback_env_id));
@@ -513,6 +520,22 @@ pub struct EvalContext {
     /// Shared cheaply across child contexts via `Arc::clone`. Child contexts created by
     /// `with_base_dir`, `with_cancel_token`, etc. all see the same root group (read-only).
     pub root_group: Arc<Vec<Arc<Thunk>>>,
+    /// Snapshot of the accumulated_group after the init program (loader + prelude) finishes
+    /// evaluating all its intermediate dicts.
+    ///
+    /// Set exactly once via `set_init_accumulated_group`, called from
+    /// `eval_document_exprs_with_env` the first time it reaches the last expression node.
+    /// The OnceLock guarantees at-most-once write; the `Arc` allows sharing across all child
+    /// contexts without copying the vec.
+    ///
+    /// Contains every thunk at its canonical LGM slot: root-scope entries (builtins + caps)
+    /// at slots 0..root_group.len()-1, then prelude dict entries at cumulative slots above
+    /// that. Builtins use `call_to_match_resolved` to retrieve the `to-match` instance
+    /// binding thunk for Matchable dispatch (T-1846/T-1847).
+    ///
+    /// `None` (OnceLock not set) in bootstrap/test contexts where the full loader pipeline
+    /// has not run. All callers must gracefully fall back when `get()` returns `None`.
+    pub init_accumulated_group: Arc<std::sync::OnceLock<Arc<Vec<Arc<Thunk>>>>>,
 }
 
 impl EvalContext {
@@ -577,6 +600,7 @@ impl EvalContext {
             type_context: Arc::new(Mutex::new(None)),
             scope_frames: None,
             root_group: Self::build_root_group_builtins(),
+            init_accumulated_group: Arc::new(std::sync::OnceLock::new()),
         })
     }
 
@@ -606,6 +630,7 @@ impl EvalContext {
             type_context: Arc::new(Mutex::new(None)),
             scope_frames: None,
             root_group: Self::build_root_group_builtins(),
+            init_accumulated_group: Arc::new(std::sync::OnceLock::new()),
         })
     }
 
@@ -644,6 +669,7 @@ impl EvalContext {
             type_context: Arc::clone(&self.type_context),
             scope_frames: self.scope_frames.clone(),
             root_group: Arc::clone(&self.root_group),
+            init_accumulated_group: Arc::clone(&self.init_accumulated_group),
         })
     }
 
@@ -686,6 +712,7 @@ impl EvalContext {
             type_context: Arc::clone(&self.type_context),
             scope_frames: self.scope_frames.clone(),
             root_group: Arc::clone(&self.root_group),
+            init_accumulated_group: Arc::clone(&self.init_accumulated_group),
         });
         (child_ctx, child_token)
     }
@@ -723,6 +750,7 @@ impl EvalContext {
             type_context: Arc::clone(&self.type_context),
             scope_frames: self.scope_frames.clone(),
             root_group: Arc::clone(&self.root_group),
+            init_accumulated_group: Arc::clone(&self.init_accumulated_group),
         })
     }
 
@@ -763,6 +791,7 @@ impl EvalContext {
             type_context: Arc::clone(&self.type_context),
             scope_frames: self.scope_frames.clone(),
             root_group: Arc::clone(&self.root_group),
+            init_accumulated_group: Arc::clone(&self.init_accumulated_group),
         })
     }
 
@@ -817,6 +846,7 @@ impl EvalContext {
             type_context: Arc::clone(&self.type_context),
             scope_frames: Some(frames),
             root_group: Arc::clone(&self.root_group),
+            init_accumulated_group: Arc::clone(&self.init_accumulated_group),
         })
     }
 
@@ -861,6 +891,7 @@ impl EvalContext {
             type_context: Arc::clone(&self.type_context),
             scope_frames: self.scope_frames.clone(),
             root_group: Arc::new(new_group),
+            init_accumulated_group: Arc::clone(&self.init_accumulated_group),
         })
     }
 
@@ -891,6 +922,29 @@ impl EvalContext {
                 name.map(|n| (n, slot as u32))
             })
             .collect()
+    }
+
+    /// Store a snapshot of the accumulated_group after the init program evaluates.
+    ///
+    /// Called from `eval_document_exprs_with_env` the first time it reaches the last
+    /// expression node of the loader program. The OnceLock ensures the snapshot is written
+    /// at most once; subsequent calls (from nested `builtin-eval` or user documents) silently
+    /// do nothing (the first write wins).
+    ///
+    /// The `group` parameter is the full `accumulated_group` at the point just before the last
+    /// expression node is evaluated — it contains every thunk for every intermediate dict the
+    /// loader has evaluated so far, at their canonical LGM slots.
+    pub fn set_init_accumulated_group(&self, group: Vec<Arc<Thunk>>) {
+        // set() returns Err if already set; silently ignore — first write wins.
+        let _ = self.init_accumulated_group.set(Arc::new(group));
+    }
+
+    /// Retrieve the accumulated_group snapshot from the init program's evaluation.
+    ///
+    /// Returns `None` in bootstrap/test contexts where the full loader pipeline has not run.
+    /// Callers must gracefully fall back (e.g., return `false`) when this is `None`.
+    pub fn get_init_accumulated_group(&self) -> Option<&Arc<Vec<Arc<Thunk>>>> {
+        self.init_accumulated_group.get()
     }
 
     /// Record blame provenance for a pipeline `%` thunk at a `---` boundary.
@@ -1433,6 +1487,84 @@ pub(crate) fn is_constructor_name(name: &str) -> bool {
     name.chars().next().is_some_and(|c| c.is_uppercase())
 }
 
+/// Look up a function by `name` in `ctx.scope_frames` / `ctx.init_accumulated_group`,
+/// call it with `val`, and return true if the result is a nonzero Int.
+///
+/// This is the shared implementation for `call_to_match` (looks up `"to-match"`) and
+/// `call_to_match_resolved` (looks up a pre-resolved instance binding name). Both
+/// dispatch through the same general LGM slot lookup path.
+///
+/// Returns `false` gracefully in any of these situations:
+/// - `ctx.init_accumulated_group` is not set (bootstrap/test context)
+/// - `ctx.scope_frames` is `None` (not yet populated)
+/// - `name` is not found in any scope frame
+/// - the thunk at the resolved slot fails to materialize
+/// - the thunk does not contain a function value
+/// - the function call result fails to materialize
+/// - the result is not a `Value::Int`
+async fn call_to_match_by_name(
+    name: &str,
+    val: &Value,
+    ctx: &Arc<EvalContext>,
+    span: &Span,
+) -> bool {
+    // Step 1: get the init accumulated group snapshot.
+    let Some(acc_group) = ctx.get_init_accumulated_group() else {
+        return false;
+    };
+    // Step 2: find `name` in scope_frames to get its absolute LGM slot.
+    let Some(scope_frames) = ctx.scope_frames.as_ref() else {
+        return false;
+    };
+    let slot = scope_frames
+        .iter()
+        .find_map(|frame| frame.get(name).copied());
+    let Some(slot) = slot else {
+        return false;
+    };
+    // Step 3: index the accumulated group at that slot.
+    let Some(fn_thunk) = acc_group.get(slot as usize) else {
+        return false;
+    };
+    // Step 4: materialize the thunk to get the to-match function value.
+    let fn_val = match materialize(fn_thunk, Some(span), ctx).await {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    // Step 5: destructure as a user-defined function.
+    let (params, body, closure_env) = match fn_val {
+        Value::Function {
+            params,
+            body,
+            closure_env,
+            ..
+        } => (params, body, closure_env),
+        _ => return false,
+    };
+    // Step 6: wrap val as a pre-materialized thunk (already a concrete value — no eval needed).
+    let val_thunk = Arc::new(Thunk::value(val.clone(), span.clone()));
+    // Step 7: invoke the function with val as the sole positional argument.
+    let call_ctx = CallContext {
+        params: params.as_slice(),
+        body: &body,
+        closure_env,
+        positional: std::slice::from_ref(&val_thunk),
+        named: None,
+        default_env_id: 0,
+        call_span: span.clone(),
+        ctx,
+    };
+    let result_thunk = match invoke_function(&call_ctx).await {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+    // Step 8: materialize the call result and check if it is a nonzero Int.
+    match materialize(&result_thunk, Some(span), ctx).await {
+        Ok(Value::Int(n)) => n != 0,
+        _ => false,
+    }
+}
+
 /// Force a thunk to its concrete value, memoizing the result.
 ///
 /// On first materialization, evaluates the thunk and caches the result (or error).
@@ -1462,17 +1594,15 @@ pub(crate) fn is_constructor_name(name: &str) -> bool {
 /// or for types with no instance.
 pub async fn call_to_match(
     val: &Value,
-    env: &Arc<RwLock<crate::value::Environment>>,
-    _ctx: &Arc<EvalContext>,
-    _span: &Span,
+    _env: &Arc<RwLock<crate::value::Environment>>,
+    ctx: &Arc<EvalContext>,
+    span: &Span,
 ) -> bool {
-    // T-1846 (blocked on T-1847): implement by looking up "to-match" in scope_frames,
-    // indexing init_accumulated_group[slot] for the thunk, materializing, and calling it
-    // with `val`. Returns false conservatively until T-1847 stores init_accumulated_group
-    // in EvalContext so builtins can access prelude-level thunks by LGM slot.
-    // The `env` parameter is a legacy stub retained for signature compatibility.
-    let _ = (env, val);
-    false
+    // Look up the "to-match" dispatch function by name in scope_frames and call it with val.
+    // Falls back to false in bootstrap/pre-prelude contexts where init_accumulated_group is
+    // not set or "to-match" is not in scope_frames.
+    // The `_env` parameter is a legacy stub retained for signature compatibility.
+    call_to_match_by_name("to-match", val, ctx, span).await
 }
 
 /// Convert a tinct value to a match signal using a pre-resolved Matchable instance binding name.
@@ -1490,17 +1620,13 @@ pub async fn call_to_match(
 pub async fn call_to_match_resolved(
     val: &Value,
     binding_name: &str,
-    env: &Arc<RwLock<crate::value::Environment>>,
-    _ctx: &Arc<EvalContext>,
+    _env: &Arc<RwLock<crate::value::Environment>>,
+    ctx: &Arc<EvalContext>,
     span: &Span,
 ) -> bool {
-    // T-1846 (blocked on T-1847): look up binding_name in ctx.scope_frames to get its LGM
-    // slot, then retrieve the thunk from ctx.init_accumulated_group[slot], materialize it
-    // to get the to-match function value, call it with val, and return nonzero = true.
-    // Returns false conservatively until T-1847 stores init_accumulated_group in EvalContext.
-    // The `env` parameter is a legacy stub retained for signature compatibility.
-    let _ = (val, binding_name, env, span);
-    false
+    // Direct-dispatch variant: call the pre-resolved Matchable instance binding by name.
+    // The `_env` parameter is a legacy stub retained for signature compatibility.
+    call_to_match_by_name(binding_name, val, ctx, span).await
 }
 
 /// Pre-resolve the match-signal class instance binding name from a predicate function's
@@ -1525,9 +1651,10 @@ pub async fn call_to_match_resolved(
 /// type name, or no matching instance binding exists in the environment. In that case,
 /// callers should fall back to `call_to_match` for the standard two-hop dispatch.
 ///
-/// This does NOT call the binding — it only resolves the name. The environment lookup
-/// and invocation happen inside `call_to_match_resolved` at call time.
-pub fn resolve_matchable_binding_from_fn(pred: &Value) -> Option<String> {
+/// This does NOT call the binding — it only resolves the name. The name is later passed
+/// to `call_to_match_resolved` which uses `ctx.init_accumulated_group` + `ctx.scope_frames`
+/// to look up and invoke the function at each call site.
+pub fn resolve_matchable_binding_from_fn(pred: &Value, ctx: &Arc<EvalContext>) -> Option<String> {
     let return_ann = match pred {
         Value::Function { annotation, .. } => annotation
             .as_deref()
@@ -1538,16 +1665,20 @@ pub fn resolve_matchable_binding_from_fn(pred: &Value) -> Option<String> {
     // Extract a simple type name from the annotation.
     // `fn@SomeType` -> Annotation::Simple("SomeType") -> "SomeType"
     let type_name = match return_ann {
-        crate::ast::Annotation::Simple(name) => name.as_str(),
+        crate::ast::Annotation::Simple(name) => name.clone(),
         _ => return None,
     };
-    // T-1846 (blocked on T-1847): scan ctx.scope_frames for a name matching the suffix
-    // ∷to-match⟨{type_name}⟩⧽ — the Rust-level protocol name "to-match" is fixed, and
-    // the class name is whatever class declared it in the prelude (typically Matchable).
+    // Scan scope_frames for the instance binding name whose key ends with
+    // `∷to-match⟨{type_name}⟩⧽`. The Rust-level protocol method name is "to-match" (fixed);
+    // the class name (typically "Matchable") is whatever class declared it in the prelude.
     // Instance binding names have the form: ɪɴꜱᴛᴀɴᴄᴇ⧼{class}∷to-match⟨{type_name}⟩⧽
-    // Returns None conservatively until T-1847 provides init_accumulated_group in EvalContext
-    // so the resolved name can be looked up as a thunk at call time.
-    let _ = type_name;
+    let suffix = format!("\u{2237}to-match\u{27e8}{type_name}\u{27e9}\u{29fd}");
+    let scope_frames = ctx.scope_frames.as_ref()?;
+    for frame in scope_frames.iter() {
+        if let Some(name) = frame.keys().find(|k| k.ends_with(&suffix)) {
+            return Some(name.clone());
+        }
+    }
     None
 }
 

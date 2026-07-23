@@ -168,7 +168,9 @@ pub fn builtin_unix_to_timestamp(
 }
 
 /// Read the current time from a ClockCap.
-pub fn builtin_now(args: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+pub fn builtin_now(
+    args: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let call_span = args.call_span.clone();
         let [cap_thunk] = args.args.as_slice() else {
@@ -1055,7 +1057,9 @@ pub fn builtin_duration_to_nanos(
 }
 
 /// Load a timezone from a zoneinfo directory (via DirCap).
-pub fn builtin_load_tz(args: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+pub fn builtin_load_tz(
+    args: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let call_span = args.call_span.clone();
         let [dir_thunk, name_thunk] = args.args.as_slice() else {

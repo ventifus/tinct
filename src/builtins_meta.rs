@@ -273,7 +273,8 @@ pub(crate) fn builtin_until(
         // This lets us pre-resolve the Matchable binding name once before the loop,
         // avoiding repeated runtime type derivation on every iteration.
         let pred_fn_val = materialize(&pred_thunk, Some(&call_span), &ctx).await?;
-        let pred_matchable_binding = crate::eval::resolve_matchable_binding_from_fn(&pred_fn_val);
+        let pred_matchable_binding =
+            crate::eval::resolve_matchable_binding_from_fn(&pred_fn_val, &ctx);
         // Wrap the materialized predicate back into a thunk for use in pending calls.
         let pred_thunk = Arc::new(Thunk::value(pred_fn_val, call_span.clone()));
 
