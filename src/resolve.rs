@@ -230,9 +230,7 @@ impl SurfaceResolver {
     }
 
     fn exit_scope(&mut self) {
-        self.scopes
-            .pop()
-            .expect("exit_scope called with empty stack");
+        self.scopes.pop().expect("scopes is empty");
     }
 
     /// Resolve `name` in the current scope stack, returning its `VarAddr`.
@@ -441,7 +439,7 @@ impl SurfaceResolver {
                 let capture_list = self
                     .fn_capture_lists
                     .last_mut()
-                    .expect("fn_capture_lists must parallel fn_scope_boundaries");
+                    .expect("fn_capture_lists is empty");
                 let capture_idx =
                     if let Some(pos) = capture_list.iter().position(|(n, _)| n == name) {
                         pos as u32
@@ -558,7 +556,7 @@ impl SurfaceResolver {
                 let capture_list = self
                     .fn_capture_lists
                     .last_mut()
-                    .expect("fn_capture_lists must parallel fn_scope_boundaries");
+                    .expect("fn_capture_lists is empty");
                 let capture_idx =
                     if let Some(pos) = capture_list.iter().position(|(n, _)| n == name) {
                         pos as u32
@@ -741,7 +739,7 @@ impl SurfaceResolver {
                 let info = self
                     .intermediate_bodies
                     .pop()
-                    .expect("param info must still be on stack");
+                    .expect("intermediate_bodies is empty");
                 for (bname, span, consumed, _, _) in info.bindings {
                     if !consumed {
                         self.diagnostics.push(TypeDiagnostic {
@@ -763,7 +761,7 @@ impl SurfaceResolver {
                 let captures = self
                     .fn_capture_lists
                     .pop()
-                    .expect("fn_capture_lists must parallel fn_scope_boundaries");
+                    .expect("fn_capture_lists is empty");
                 resolved_captures.set(Arc::new(captures));
 
                 // Restore accumulated_dict_offset to its pre-fn value now that we have
@@ -1117,7 +1115,7 @@ impl SurfaceResolver {
                     // nearest enclosing letrec dict scope. This prevents `[k: .k ...]`
                     // from creating a circular self-reference.
                     // `.a.b.c` chains work correctly: only this innermost `expr: None`
-                    // case uses parent lookup; outer `.b` / `.c` use normal field-get.
+                    // case uses parent lookup; outer `.b` / `.c` desugar to `builtin-get`.
                     if let Some(coords) = self.resolve_name_parent(name) {
                         resolution.set(Some(coords));
                     } else {
@@ -1142,7 +1140,12 @@ impl SurfaceResolver {
             }
 
             // Quote: do NOT resolve variables inside — they are AST data, not bindings.
-            SurfaceExpression::Quote(_) => {}
+            // However, any Fn expressions inside a quote must have resolved_captures set to
+            // empty (no runtime captures — quoted fns are AST values, not runtime closures).
+            // The lowerer requires resolved_captures to be set on every Fn node it encounters.
+            SurfaceExpression::Quote(inner) => {
+                set_empty_captures_in_quote(&inner.expr);
+            }
 
             SurfaceExpression::Unquote(inner) | SurfaceExpression::UnquoteSplice(inner) => {
                 self.walk_surface_node(inner);
@@ -1548,6 +1551,54 @@ impl SurfaceResolver {
 ///   - `kind = "resolve-error"`, `level = Err`: undefined-variable VarRefs in expression position.
 ///   - `kind = "lost-binding"`, `level = Warn`: lost intermediate bindings and unused parameters.
 /// - `new_frames`: scope frames ADDED by this document (not including `initial_frames`).
+/// Recursively set `resolved_captures = []` on every Fn node inside a Quote body.
+///
+/// The resolver intentionally skips Quote bodies (variables inside quotes are AST data,
+/// not runtime bindings). However, the lowerer requires every Fn node to have
+/// `resolved_captures` set. Quoted Fn nodes are AST values, not runtime closures, so
+/// their captures are always empty.
+fn set_empty_captures_in_quote(expr: &crate::ast::SurfaceExpression) {
+    use crate::ast::SurfaceExpression;
+    match expr {
+        SurfaceExpression::Fn { resolved_captures, body, .. } => {
+            // Set empty captures — quoted fns are AST values with no runtime closure.
+            let _ = resolved_captures.set(std::sync::Arc::new(vec![]));
+            // Recurse into body in case it contains nested fns.
+            set_empty_captures_in_quote(&body.expr);
+        }
+        SurfaceExpression::Call { func, args, named_args, .. } => {
+            set_empty_captures_in_quote(&func.expr);
+            for a in args { set_empty_captures_in_quote(&a.expr); }
+            for na in named_args { set_empty_captures_in_quote(&na.node.value.expr); }
+        }
+        SurfaceExpression::Dict(entries) => {
+            for e in entries {
+                if let Some(k) = &e.node.key { set_empty_captures_in_quote(&k.expr); }
+                set_empty_captures_in_quote(&e.node.value.expr);
+            }
+        }
+        SurfaceExpression::Sequential(exprs) => {
+            for e in exprs { set_empty_captures_in_quote(&e.expr); }
+        }
+        SurfaceExpression::Pipe { lhs, rhs, .. } => {
+            set_empty_captures_in_quote(&lhs.expr);
+            set_empty_captures_in_quote(&rhs.expr);
+        }
+        SurfaceExpression::Quote(inner) => {
+            // Nested quote — still recurse.
+            set_empty_captures_in_quote(&inner.expr);
+        }
+        SurfaceExpression::Unquote(inner) | SurfaceExpression::UnquoteSplice(inner) => {
+            set_empty_captures_in_quote(&inner.expr);
+        }
+        SurfaceExpression::TypeAssert { expr, .. } => {
+            set_empty_captures_in_quote(&expr.expr);
+        }
+        // Leaf nodes: VarRef, Str, Int, Float, Placeholder, Field, etc. — nothing to do.
+        _ => {}
+    }
+}
+
 pub fn resolve_surface_document_inplace(
     doc: &crate::ast::SurfaceDocument,
     initial_frames: &[indexmap::IndexMap<String, u32>],

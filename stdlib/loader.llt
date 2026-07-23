@@ -53,7 +53,7 @@
 #                 containing directory of each file being processed. %cwd itself
 #                 is fixed and accessible directly from the closure.
 #   prelude     — runtime value of prelude.llt, merged into every user doc's scope.
-#                 Used to seed the type-stage env (via builtin-tc-with-scope).
+#                 Used to seed the type-stage env (via builtin-tc-update-type-stage-env).
 #   emit-ch     — the shared channel for emitting values to the output formatter.
 #
 # Known initial-env entries (%cwd, %libdir, %args) are included in every
@@ -78,12 +78,12 @@
 #   Bytes:   builtin-bytes, builtin-bytes-concat, builtin-dict-length
 #   AST:     builtin-parse, builtin-resolve, builtin-lower, builtin-typecheck-doc
 #   Type:    builtin-make-type-ctx, builtin-fork-type-ctx,
-#            builtin-tc-with-scope
+#            builtin-tc-update-type-stage-env
 #   Meta:    builtin-module, builtin-eval
 # Note: builtin-resolve now takes a name-set Dict<String,1> (not scope frames).
 #       builtin-eval now takes (lowered CoreDocument, env Dict) and returns
 #       the exports Dict directly (raises on error — no {result, scope-id, diags}).
-#       builtin-tc-with-scope now takes env Dict instead of scope-id Int.
+#       builtin-tc-update-type-stage-env wires the type-stage env into the TypeContext.
 #   String:  builtin-str, builtin-str-bytes, builtin-str-hash, builtin-str-lt
 #   Dict:    builtin-reduce (Dict fold only — NOT Seq; Seq reduce is tinct),
 #            merge, builtin-get, builtin-keys, builtin-dict-length, builtin-build-dict
@@ -381,7 +381,7 @@
     [ts-acc: [reduce eval-doc [env: seed-env  tc: fundamental-tc] split.ts]]
     # Wire ts env into the TypeContext so type-stage functions are visible
     # during type-checking of runtime documents.
-    [tc: [builtin-tc-with-scope ts-acc.tc ts-acc.env]]
+    [tc: [builtin-tc-update-type-stage-env ts-acc.tc ts-acc.env]]
     # Pass 2: evaluate runtime documents, starting from ts-acc so runtime docs see type-stage defs.
     [final-acc: [reduce eval-doc [env: ts-acc.env  tc: tc] split.rt]]
     # Return {env} so callers can thread into subsequent calls.
@@ -564,7 +564,10 @@
   prelude-env:    prelude-result.env
 
   # Create a TypeContext for runtime type-checking.
-  tc: [builtin-tc-with-scope fundamental-tc prelude-env]
+  # fundamental-tc is already enriched by include: the type-stage pass inside include
+  # wires prelude's type-stage env, and builtin-typecheck-doc calls populate inference_env
+  # with prelude's type schemes. No additional wiring is needed here.
+  tc: fundamental-tc
 
   emit-ch: [builtin-channel]
 

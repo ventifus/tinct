@@ -254,15 +254,11 @@ pub(crate) enum TypeCheckCont {
 
     /// After inferring the base expression of a Field access, look up the field type.
     ///
-    /// `field_node` is the `SurfaceExpression::Field` node whose `field_slot` OnceLock we write
-    /// after resolving the base type.  When the base is a closed `Dict` row and the field key is
-    /// present at a known index, we call `field_slot.set(slot_index)` so the lowerer can emit
-    /// `slot-get` (O(1) positional access) instead of `field-get` (key-based O(n) lookup).
+    /// Resolves the field type from the inferred base type and returns it via
+    /// `TypeCheckAction::Done`. All dot-access desugars to `builtin-get` (key-based lookup).
     AfterFieldBase {
         field: crate::ast::DotKey,
         span: Span,
-        /// The Field node itself — needed to write back the slot annotation.
-        field_node: Arc<SurfaceNode>,
     },
 
     /// After inferring the inner expression of an Unquote, return its type.
@@ -397,7 +393,6 @@ async fn infer_step(
                 stack.push(TypeCheckCont::AfterFieldBase {
                     field: field.clone(),
                     span: node.span.clone(),
-                    field_node: Arc::clone(node),
                 });
                 TypeCheckAction::Eval(Arc::clone(base), Arc::clone(env))
             }
@@ -1345,16 +1340,9 @@ async fn apply_cont(
         }
 
         // ===== AfterFieldBase =====
-        TypeCheckCont::AfterFieldBase {
-            field,
-            span,
-            field_node: _,
-        } => {
+        TypeCheckCont::AfterFieldBase { field, span } => {
             let resolved_base = state.subst.apply(&child_ty);
-            let (ty, slot_opt) = field_type_from_base(&resolved_base, &field, &span, errors);
-
-            // slot_opt is unused — dot-access now always desugars to builtin-get (key-based lookup).
-            let _ = slot_opt;
+            let ty = field_type_from_base(&resolved_base, &field, &span, errors);
 
             // T-1711: Emit diagnostic for Unknown field access
             if ty == Type::Unknown {
@@ -3317,20 +3305,11 @@ fn compute_type_assert_mismatch(
 
 // ===== Inline helper: Field type lookup =====
 
-/// Look up the type of `field` in `base_ty`, returning `(field_type, slot_index)`.
-///
-/// `slot_index` is `Some(n)` when the base is a **closed** `Dict` row and `field` is found
-/// at a known `IndexMap` position `n`.  The slot is only annotated for closed rows (tail ==
-/// `RowTail::Empty`) because an open row (`RowTail::Uniform`) may have more fields present at
-/// runtime, which would shift the physical slot positions.  The lowerer uses the slot to emit
-/// `slot-get` (O(1)) instead of `field-get` (O(n) key scan).
-///
-/// Returns `(Type::Unknown, None)` for TypeVar / Unknown / open-tail bases — the caller
-/// emits a diagnostic separately.
 /// Resolve the type of a field access `base_ty.field`.
 ///
-/// Returns `(field_type, slot_opt)` where `slot_opt` is `Some(i)` only for closed
-/// (Empty-tailed) Dict rows where the field is known — used for O(1) `slot-get` lowering.
+/// Returns the type of the named field in `base_ty`, or `Type::Unknown` when the field
+/// is not statically known. All dot-access desugars to `builtin-get` (key-based lookup);
+/// there is no slot-indexed fast path.
 ///
 /// ## Why Unknown is correct for missing fields
 ///
@@ -3349,7 +3328,7 @@ fn field_type_from_base(
     field: &crate::ast::DotKey,
     span: &Span,
     errors: &mut Vec<TypeDiagnostic>,
-) -> (Type, Option<u32>) {
+) -> Type {
     let key = match field {
         crate::ast::DotKey::Ident(s) => s.clone(),
         crate::ast::DotKey::Int(n) => n.to_string(),
@@ -3357,21 +3336,12 @@ fn field_type_from_base(
 
     match base_ty {
         Type::Dict(row) => {
-            match row.fields.get_full(&key) {
-                Some((slot, _, ty)) => {
-                    // Only annotate the slot when the row is closed (Empty tail).
-                    // A Uniform tail means the row is open — additional fields may be
-                    // present at runtime, which would shift physical slot positions.
-                    let slot_opt = match &row.tail {
-                        RowTail::Empty => Some(slot as u32),
-                        RowTail::Uniform { .. } => None,
-                    };
-                    (ty.clone(), slot_opt)
-                }
+            match row.fields.get(&key) {
+                Some(ty) => ty.clone(),
                 // Field not found in the named fields — return Unknown (see doc comment above).
                 // BAS width subtyping: the value may carry this field at runtime even if the
                 // annotated type does not list it. Unknown is the correct gradual type here.
-                None => (Type::Unknown, None),
+                None => Type::Unknown,
             }
         }
         // Intersection: try each member. If no member has the field, return Unknown.
@@ -3379,29 +3349,25 @@ fn field_type_from_base(
         Type::Intersection(members) => {
             for m in members {
                 if let Type::Dict(row) = m {
-                    if let Some((slot, _, ty)) = row.fields.get_full(&key) {
-                        let slot_opt = match &row.tail {
-                            RowTail::Empty => Some(slot as u32),
-                            RowTail::Uniform { .. } => None,
-                        };
-                        return (ty.clone(), slot_opt);
+                    if let Some(ty) = row.fields.get(&key) {
+                        return ty.clone();
                     }
                 }
             }
-            (Type::Unknown, None)
+            Type::Unknown
         }
         // Gradual: Unknown/Any base → Unknown field (consistency, not subtyping).
         // TypeVar: the base type is not yet resolved — defer field type to Unknown.
-        Type::Unknown | Type::Any | Type::TypeVar(_, _) => (Type::Unknown, None),
+        Type::Unknown | Type::Any | Type::TypeVar(_, _) => Type::Unknown,
         // Negation, Union, NominalVariant, TyCon: structural field access is not defined
         // for these types in the static type system. Return Unknown (gradual) rather than
         // an error — these types may be refined by later unification or narrowing.
-        Type::Negation(_) => (Type::Unknown, None),
-        Type::Union(_) => (Type::Unknown, None),
-        Type::NominalVariant { .. } => (Type::Unknown, None),
-        Type::TyCon(_) | Type::TyConResolved(_, _) | Type::App(_, _) => (Type::Unknown, None),
+        Type::Negation(_) => Type::Unknown,
+        Type::Union(_) => Type::Unknown,
+        Type::NominalVariant { .. } => Type::Unknown,
+        Type::TyCon(_) | Type::TyConResolved(_, _) | Type::App(_, _) => Type::Unknown,
         // Error propagation: absorb silently (cascade prevention).
-        Type::Error(payload) => (Type::Error(payload.clone()), None),
+        Type::Error(payload) => Type::Error(payload.clone()),
         // Concrete non-record types: field access is definitely wrong — emit type error.
         other => {
             let err = TypeDiagnostic::error(
@@ -3410,7 +3376,7 @@ fn field_type_from_base(
                 span.clone(),
             );
             errors.push(err.clone());
-            (Type::error_with(vec![err]), None)
+            Type::error_with(vec![err])
         }
     }
 }
@@ -5152,11 +5118,11 @@ mod tests {
 
     // ===== AfterFieldBase type inference tests =====
 
-    /// T-1490: `field_type_from_base` returns the correct slot index for a closed Dict row.
+    /// `field_type_from_base` returns the correct type for a closed Dict row.
     ///
-    /// For `{x: Int, y: Str}` (closed, Empty tail), accessing `.x` must return slot 0
-    /// and accessing `.y` must return slot 1.  This verifies that the slot index matches
-    /// IndexMap insertion order, which is what the lowerer reads via `slot-get`.
+    /// For `{x: Int, y: Str}` (closed, Empty tail), accessing `.x` must return `Int`
+    /// and accessing `.y` must return `Str`. All dot-access desugars to `builtin-get`
+    /// (key-based lookup); no slot index is computed or returned.
     #[test]
     fn test_field_type_from_base_closed_dict_slot() {
         use crate::ast::DotKey;
@@ -5175,34 +5141,32 @@ mod tests {
         let span = crate::rust_span!();
         let mut errors = Vec::new();
 
-        // Accessing .x — slot 0
-        let (ty_x, slot_x) = field_type_from_base(
+        // Accessing .x
+        let ty_x = field_type_from_base(
             &base_ty,
             &DotKey::Ident("x".to_string()),
             &span,
             &mut errors,
         );
         assert_eq!(ty_x, Type::Int, ".x should resolve to Int");
-        assert_eq!(slot_x, Some(0u32), ".x should have slot index 0");
         assert!(errors.is_empty(), "No errors expected for .x");
 
-        // Accessing .y — slot 1
-        let (ty_y, slot_y) = field_type_from_base(
+        // Accessing .y
+        let ty_y = field_type_from_base(
             &base_ty,
             &DotKey::Ident("y".to_string()),
             &span,
             &mut errors,
         );
         assert_eq!(ty_y, Type::Str, ".y should resolve to Str");
-        assert_eq!(slot_y, Some(1u32), ".y should have slot index 1");
         assert!(errors.is_empty(), "No errors expected for .y");
 
-        // Accessing an absent field — no slot, Unknown type.
+        // Accessing an absent field — Unknown type.
         // Under BAS width subtyping, an annotated record type {x: Int} (Empty tail) does NOT
         // mean "exactly these fields" — it means "at least these fields." A value at this type
         // may have additional fields at runtime. Returning Unknown (not an error) is correct:
         // the field may exist, we just don't statically know its type.
-        let (ty_z, slot_z) = field_type_from_base(
+        let ty_z = field_type_from_base(
             &base_ty,
             &DotKey::Ident("z".to_string()),
             &span,
@@ -5213,18 +5177,16 @@ mod tests {
             Type::Unknown,
             ".z absent from row → Unknown (BAS width subtyping)"
         );
-        assert_eq!(slot_z, None, ".z absent from row → no slot");
         assert!(
             errors.is_empty(),
             "No errors expected for absent field — BAS allows extra fields"
         );
     }
 
-    /// T-1490: Open Dict rows (Uniform tail) must NOT produce slot annotations.
+    /// Open Dict rows (Uniform tail) resolve field types correctly.
     ///
-    /// A Uniform tail means the row is open — additional fields may be present at runtime,
-    /// which shifts physical slot positions.  Emitting a slot annotation on an open row
-    /// would produce an incorrect `slot-get` call in the lowered code.
+    /// A Uniform tail means the row is open — additional fields may be present at runtime.
+    /// All dot-access desugars to `builtin-get` (key-based lookup) regardless of tail kind.
     #[test]
     fn test_field_type_from_base_open_dict_no_slot() {
         use crate::ast::DotKey;
@@ -5245,43 +5207,26 @@ mod tests {
         let span = crate::rust_span!();
         let mut errors = Vec::new();
 
-        let (ty, slot) = field_type_from_base(
+        let ty = field_type_from_base(
             &base_ty,
             &DotKey::Ident("x".to_string()),
             &span,
             &mut errors,
         );
-        assert_eq!(ty, Type::Int, ".x should still resolve to Int in open row");
-        assert_eq!(
-            slot, None,
-            "Open row (Uniform tail) must not produce a slot annotation"
-        );
+        assert_eq!(ty, Type::Int, ".x should resolve to Int in open row");
         assert!(errors.is_empty());
     }
 
-    /// T-1490: `AfterFieldBase` handler writes `field_slot` on the Field node.
+    /// `AfterFieldBase` resolves the field type and returns it via `TypeCheckAction::Done`.
     ///
-    /// Constructs a `Field` SurfaceNode, wraps the result in `AfterFieldBase`, and directly
-    /// calls `apply_cont` to verify that `field_slot.set()` is invoked when the base type is
-    /// a closed Dict row with a known field.
-    ///
-    /// This test uses `apply_cont` rather than the full `run_typecheck` pipeline to avoid
-    /// requiring the prelude to be loaded.
+    /// Directly calls `apply_cont` with an `AfterFieldBase` continuation and a closed
+    /// Dict base type `{x: Int, y: Str}` to verify that `.x` resolves to `Type::Int`.
+    /// This tests the handler in isolation without requiring the full `run_typecheck` pipeline.
     #[tokio::test]
     async fn test_after_field_base_resolves_type() {
-        use crate::ast::{DotKey, Resolution};
+        use crate::ast::DotKey;
         use crate::type_def::{Row, RowTail};
         use indexmap::IndexMap;
-
-        // Build a Field node: <expr>.x  — expr is None (absent base, unused here).
-        let field_node = Arc::new(SurfaceNode::new(
-            SurfaceExpression::Field {
-                expr: None,
-                field: DotKey::Ident("x".to_string()),
-                resolution: Resolution::new(),
-            },
-            crate::rust_span!(),
-        ));
 
         // Closed Dict row: {x: Int, y: Str}
         let mut fields: IndexMap<String, Type> = IndexMap::new();
@@ -5296,7 +5241,6 @@ mod tests {
         let cont = TypeCheckCont::AfterFieldBase {
             field: DotKey::Ident("x".to_string()),
             span: crate::rust_span!(),
-            field_node: Arc::clone(&field_node),
         };
 
         let mut state = InferState::new();

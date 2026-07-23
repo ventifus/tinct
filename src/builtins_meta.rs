@@ -2640,85 +2640,6 @@ pub(crate) fn builtin_fork_type_ctx(
     })
 }
 
-/// `builtin-tc-with-scope`: Registers the type-stage env in the TypeContext.
-///
-/// Takes 2 positional args (both forced):
-///   - arg 0: `Value::TypeContext` — the TypeContext to update
-///   - arg 1: `Value::Dict` — the accumulated env dict from type-stage document evaluation
-///     (env-dict protocol, T-1775)
-///
-/// T-1775: The second argument is an env-dict (`Dict<String, Any>`) produced by
-/// evaluating type-stage documents with the env-dict protocol.  The env-dict is not
-/// This builtin is a no-op — it validates the env-dict argument type but does not
-/// populate the TypeContextData.type_stage_scope chain. Use builtin-tc-update-type-stage-env
-/// (T-1803) to populate the type-stage scope chain instead.
-///
-/// Returns the same `Value::TypeContext` value unchanged.
-///
-/// Used by loader.llt and test-loader.llt after evaluating type-stage documents.
-///
-/// Signature: `[builtin-tc-with-scope type-ctx ts-env]`
-/// where `ts-env` is the accumulated env dict from type-stage document evaluation.
-pub(crate) fn builtin_tc_with_scope(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx: _,
-            ..
-        } = ctx_arg;
-        crate::builtins::reject_named("builtin-tc-with-scope", named.as_ref(), call_span.clone())?;
-        if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
-        }
-        let tc_val = args[0]
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
-        let ts_env_val = args[1]
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
-
-        let tc_arc = match tc_val {
-            Value::TypeContext(arc) => arc,
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "builtin-tc-with-scope".to_string(),
-                    "TypeContext",
-                    other.type_name(),
-                    call_span,
-                )
-                .into())
-            }
-        };
-
-        // arg 1: env-dict (T-1775 protocol) — must be Dict.
-        // This builtin is a no-op for now — type-stage scope chain population is done by
-        // builtin-tc-update-type-stage-env (T-1803). This builtin exists for backwards
-        // compatibility with existing loader.llt/test-loader.llt call sites.
-        match &ts_env_val {
-            Value::Dict(_) => {}
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "builtin-tc-with-scope".to_string(),
-                    "Dict",
-                    other.type_name(),
-                    call_span,
-                )
-                .into())
-            }
-        }
-
-        // No-op: return the TypeContext unchanged. Use builtin-tc-update-type-stage-env
-        // to actually populate the type-stage scope chain.
-        ok_val(Value::TypeContext(tc_arc), call_span)
-    })
-}
-
 /// `builtin-tc-update-type-stage-env`: populate the TypeContext's type-stage scope chain.
 ///
 /// Takes two positional arguments:
@@ -2736,7 +2657,7 @@ pub(crate) fn builtin_tc_with_scope(
 ///
 /// Returns the same TypeContext (mutations are visible through the shared Arc<Mutex>).
 ///
-/// T-1803: Replaces the no-op builtin-tc-with-scope with actual scope chain population.
+/// T-1803: Populates the TypeContext type-stage scope chain from the accumulated env dict.
 pub(crate) fn builtin_tc_update_type_stage_env(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
@@ -2803,6 +2724,10 @@ pub(crate) fn builtin_tc_update_type_stage_env(
             let val = materialize(&thunk, None, &ctx).await?;
             let entry = if let Some(ty) = crate::type_normalize::typenode_leaf_to_type(&val) {
                 crate::type_infer::TypeStageEntry::Resolved(ty)
+            } else if let Some(kind) = crate::type_normalize::typenode_typevar_kind(&val) {
+                // TypeNode.TypeVar kind: "Operator"|"Label" → TypeStageEntry::TypeVar
+                // Produced by builtin_core.llt for the Operator and Label type names.
+                crate::type_infer::TypeStageEntry::TypeVar(kind)
             } else if matches!(val, Value::Function { .. }) {
                 crate::type_infer::TypeStageEntry::Function(Arc::clone(&thunk))
             } else {
@@ -3031,7 +2956,7 @@ pub(crate) fn builtin_program_docs(
 /// is the same as produced by `surface_node_to_expr_variant`, which is what
 /// `json-expression` in json.llt consumes.
 ///
-/// This replaces the `Value::Document.expressions` field-get backdoor that was
+/// This replaces the `Value::Document.expressions` internal access backdoor that was
 /// deleted from builtins_dict.rs (T-1605 follow-up, S-926 R4).
 pub(crate) fn builtin_doc_expressions(
     ctx_arg: BuiltinArgs,
@@ -3346,7 +3271,7 @@ pub(crate) fn builtin_eval(
 
 /// `builtin-variant-payload`: extract the payload from a Variant, returning it directly.
 /// Takes 1 arg (a Variant). Returns the payload value (forces the payload thunk).
-/// Used to extract values from Result.Ok/Error without going through field-get (which
+/// Used to extract values from Result.Ok/Error without going through key-based lookup (which
 /// fails when the payload is a non-dict value like String).
 pub(crate) fn builtin_variant_payload(
     ctx_arg: BuiltinArgs,
@@ -4575,7 +4500,7 @@ pub(crate) fn builtin_lower(
 /// These are the AST, evaluation, reflection, and macro builtins that are NOT in the
 /// core_builtins() set. The core_builtins() items (builtin-parse, builtin-resolve,
 /// builtin-typecheck-doc, builtin-eval, builtin-module, builtin-get-type-context,
-/// builtin-make-type-ctx, builtin-tc-with-scope, builtin-variant-payload,
+/// builtin-make-type-ctx, builtin-tc-update-type-stage-env, builtin-variant-payload,
 /// builtin-tag-of, builtin-llt-repr, builtin-type-of, builtin-cap-env-has?,
 /// builtin-check-type, builtin-desugar, builtin-program-docs, builtin-doc-meta)
 /// stay in core_builtins() for loader.llt.

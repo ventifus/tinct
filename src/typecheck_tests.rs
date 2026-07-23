@@ -3,10 +3,7 @@ use crate::ast::{SurfaceEntry, SurfaceExpression, SurfaceNode, TypeAnnotationTab
 use crate::rust_span;
 use crate::type_def::TyConDef;
 use crate::typecheck::process_document;
-use crate::typecheck::typecheck_annot::{
-    body_contains_tycon_ref, contains_recvar, expand_all_tycon_apps, expand_named,
-    resolve_annotation, resolve_type_name,
-};
+use crate::typecheck::typecheck_annot::{resolve_annotation, resolve_type_name};
 use crate::types::unify;
 use crate::types::TypeScheme;
 use crate::Annotation;
@@ -125,6 +122,17 @@ async fn doc_env_and_type(input: &str) -> (Arc<RwLock<crate::env::Env>>, Type) {
         std::sync::Arc::clone(&arc_env),
     )));
     let mut state = InferState::with_env(std::sync::Arc::clone(&child_env));
+    // Seed type_stage_scope with builtin TypeVar kinds (Label, Operator).
+    // In production these come from builtin_core.llt type-stage evaluation.
+    // Unit tests don't load the type-stage, so we inject them directly.
+    {
+        use crate::type_infer::TypeStageEntry;
+        use crate::type_def::Kind;
+        let mut frame = std::collections::HashMap::new();
+        frame.insert("Label".to_string(), TypeStageEntry::TypeVar(Kind::Label));
+        frame.insert("Operator".to_string(), TypeStageEntry::TypeVar(Kind::Operator));
+        state.type_stage_scope.push(frame);
+    }
     let (result_env, result_ty, errors) = process_document(
         &program.documents[0].node,
         &arc_env,
@@ -1956,8 +1964,7 @@ async fn test_mutual_recursion_two_aliases() {
 async fn test_recursive_type_depth_limit() {
     // Recursive type alias with a single keyed field: [next: Deep].
     // The recursion guard fires for the `Deep` VarRef in `next: Deep`, returning a fresh
-    // TypeVar (the mu-variable) instead of expanding infinitely. The depth limit
-    // (MAX_ALIAS_DEPTH = 256) guards against pathological expansion via expand_alias_body_guarded.
+    // TypeVar (the mu-variable) instead of expanding infinitely.
     let result = check("[Deep: [type [next: Deep]]]").await;
     assert!(
         result.is_ok(),
@@ -2898,463 +2905,6 @@ async fn test_do_infer_resolve_monad_from_expr_explicit_call_no_match() {
     );
 }
 
-// ============================================================================
-// T-1066 / T-1067: expand_named / expand_all_tycon_apps unit tests
-// ============================================================================
-
-/// Build a minimal InferState for expansion tests.
-fn make_expand_env() -> crate::types::InferState {
-    crate::types::InferState::new()
-}
-
-/// Helper: construct a zero-param TyConDef with a given body type.
-fn make_tycon_def_zero(body: Type) -> Arc<crate::type_def::TyConDef> {
-    Arc::new(crate::type_def::TyConDef {
-        params: vec![],
-        body,
-        constraints: vec![],
-        variance: vec![],
-        constructors: vec![],
-        builtin_type: None,
-        annotation: None,
-        field_annotations: indexmap::IndexMap::new(),
-        constructor_constants: indexmap::IndexMap::new(),
-        definition_span: None,
-    })
-}
-
-/// Helper: construct a one-param TyConDef with given param name and body type.
-fn make_tycon_def_one(param: &str, body: Type) -> Arc<crate::type_def::TyConDef> {
-    Arc::new(crate::type_def::TyConDef {
-        params: vec![param.to_string()],
-        body,
-        constraints: vec![],
-        variance: vec![crate::type_def::Variance::Covariant],
-        constructors: vec![],
-        builtin_type: None,
-        annotation: None,
-        field_annotations: indexmap::IndexMap::new(),
-        constructor_constants: indexmap::IndexMap::new(),
-        definition_span: None,
-    })
-}
-
-/// Helper: construct a builtin-opaque TyConDef.
-fn make_builtin_tycon(param: &str, discriminant: &str) -> Arc<crate::type_def::TyConDef> {
-    Arc::new(crate::type_def::TyConDef {
-        params: vec![param.to_string()],
-        body: Type::Unknown,
-        constraints: vec![],
-        variance: vec![crate::type_def::Variance::Covariant],
-        constructors: vec![],
-        builtin_type: Some(discriminant.to_string()),
-        annotation: None,
-        field_annotations: indexmap::IndexMap::new(),
-        constructor_constants: indexmap::IndexMap::new(),
-        definition_span: None,
-    })
-}
-
-/// T-1066a: body_contains_tycon_ref returns false for primitive types.
-#[tokio::test]
-async fn test_body_contains_tycon_ref_primitives() {
-    assert!(!body_contains_tycon_ref(&Type::Int));
-    assert!(!body_contains_tycon_ref(&Type::Float));
-    assert!(!body_contains_tycon_ref(&Type::Str));
-    assert!(!body_contains_tycon_ref(&Type::Unknown));
-    assert!(!body_contains_tycon_ref(&Type::TypeVar(
-        "_t0".to_string(),
-        0
-    )));
-    // TyCon("Boolean") IS a TyCon reference (Bool was primitive, Boolean is user-defined)
-    assert!(body_contains_tycon_ref(&Type::TyCon("Boolean".to_string())));
-}
-
-/// T-1066b: body_contains_tycon_ref returns true for bare TyCon.
-#[tokio::test]
-async fn test_body_contains_tycon_ref_tycyon() {
-    assert!(body_contains_tycon_ref(&Type::TyCon("Coll".to_string())));
-}
-
-/// T-1066c: body_contains_tycon_ref returns true for App(TyCon, _).
-#[tokio::test]
-async fn test_body_contains_tycon_ref_app_tycyon() {
-    let ty = Type::App(
-        Box::new(Type::TyCon("Coll".to_string())),
-        Box::new(Type::Int),
-    );
-    assert!(body_contains_tycon_ref(&ty));
-}
-
-/// T-1066d: body_contains_tycon_ref walks Union members.
-#[tokio::test]
-async fn test_body_contains_tycon_ref_union() {
-    // Union([Int, TyCon("Foo")]) → true
-    let ty = Type::normalize_union(vec![Type::Int, Type::TyCon("Foo".to_string())]);
-    assert!(body_contains_tycon_ref(&ty));
-
-    // Union([Int, Str]) → false
-    let ty2 = Type::normalize_union(vec![Type::Int, Type::Str]);
-    assert!(!body_contains_tycon_ref(&ty2));
-}
-
-/// T-1066e: contains_recvar detects TypeVar with matching name.
-#[tokio::test]
-async fn test_contains_recvar_basic() {
-    let var = "𝜇ꜱʏᴍ⧼List⧽42";
-    assert!(contains_recvar(&Type::TypeVar(var.to_string(), 0), var));
-    assert!(!contains_recvar(&Type::TypeVar("_t0".to_string(), 0), var));
-    assert!(!contains_recvar(&Type::Int, var));
-}
-
-/// T-1066f: contains_recvar walks nested structures.
-#[tokio::test]
-async fn test_contains_recvar_nested() {
-    let var = "𝜇ꜱʏᴍ⧼List⧽42";
-    // Union containing the recvar
-    let ty = Type::normalize_union(vec![Type::Int, Type::TypeVar(var.to_string(), 0)]);
-    assert!(contains_recvar(&ty, var));
-}
-
-/// T-1066g: expand_named returns None for unknown type name.
-#[tokio::test]
-async fn test_expand_named_unknown_type() {
-    let mut state = make_expand_env();
-    let result = expand_named("UnknownType", &[], &mut state);
-    assert!(result.is_none(), "Unknown type name should return None");
-}
-
-/// T-1066h: expand_named returns the body directly for a zero-param, no-TyCon alias.
-#[tokio::test]
-async fn test_expand_named_zero_param_primitive_body() {
-    let mut state = make_expand_env();
-    // Register "MyInt" as an alias for Type::Int in state.tycon_env (the canonical store).
-    let def = make_tycon_def_zero(Type::Int);
-    state.tycon_env.insert("MyInt".to_string(), def);
-
-    let result = expand_named("MyInt", &[], &mut state);
-    assert_eq!(result, Some(Type::Int), "MyInt should expand to Int");
-}
-
-/// T-1066i: expand_named expands a zero-param alias with a TyCon body.
-#[tokio::test]
-async fn test_expand_named_zero_param_tycyon_body() {
-    let mut state = make_expand_env();
-    // Register "Wrapper" as an alias for Int (via a TyCon body that resolves)
-    // Register "Inner" as alias for Int in state.tycon_env (the canonical store).
-    let inner_def = make_tycon_def_zero(Type::Int);
-    state.tycon_env.insert("Inner".to_string(), inner_def);
-
-    // Register "Wrapper" as alias for TyCon("Inner")
-    let wrapper_def = make_tycon_def_zero(Type::TyCon("Inner".to_string()));
-    state.tycon_env.insert("Wrapper".to_string(), wrapper_def);
-
-    let result = expand_named("Wrapper", &[], &mut state);
-    // Wrapper's body is TyCon("Inner"), which expands to Int
-    assert_eq!(
-        result,
-        Some(Type::Int),
-        "Wrapper should expand through Inner to Int"
-    );
-}
-
-/// T-1066j: expand_named handles builtin-opaque types (no structural expansion).
-#[tokio::test]
-async fn test_expand_named_builtin_opaque() {
-    let mut state = make_expand_env();
-    let def = make_builtin_tycon("a", "Coll");
-    // Keep a clone of the Arc so we can build the expected value with the same pointer.
-    let def_for_expected = Arc::clone(&def);
-    state.tycon_env.insert("Coll".to_string(), def);
-
-    // Coll[Int] — builtin opaque, returns App(TyConResolved("Coll", arc), Int)
-    // After S-919 (T-1206), expand_named produces TyConResolved (not TyCon) for
-    // builtin-opaque types so that UNIFY-TYCON can use Arc::ptr_eq for identity checking.
-    let result = expand_named("Coll", &[Type::Int], &mut state);
-    let expected = Type::App(
-        Box::new(Type::TyConResolved("Coll".to_string(), def_for_expected)),
-        Box::new(Type::Int),
-    );
-    assert_eq!(
-        result,
-        Some(expected),
-        "Coll[Int] should stay as App(TyConResolved(Coll, arc), Int)"
-    );
-}
-
-/// T-1066k: expand_named detects cycles via Arc::ptr_eq and returns TypeVar sentinel.
-#[tokio::test]
-async fn test_expand_named_cycle_detection() {
-    let mut state = make_expand_env();
-
-    // Register "List" as alias for Union([Int, TyCon("List")])
-    // This is a self-referential type: List = Int | List
-    // We need the Arc to be the SAME one registered in state.tycon_env for Arc::ptr_eq.
-    // NOTE: body MUST contain a TyCon reference to avoid the fast-path optimization
-    // at typecheck_annot.rs:4668 which returns the body immediately for zero-param
-    // types with no TyCon refs.
-    let arc_for_env = Arc::new(crate::type_def::TyConDef {
-        params: vec![],
-        body: Type::Union(vec![Type::Int, Type::TyCon("List".to_string())]),
-        constraints: vec![],
-        variance: vec![],
-        constructors: vec![],
-        builtin_type: None,
-        annotation: None,
-        field_annotations: indexmap::IndexMap::new(),
-        constructor_constants: indexmap::IndexMap::new(),
-        definition_span: None,
-    });
-    state
-        .tycon_env
-        .insert("List".to_string(), Arc::clone(&arc_for_env));
-
-    // Retrieve the exact arc that's registered (Arc::ptr_eq-comparable)
-    let registered_arc = state.tycon_env.get("List").unwrap().clone();
-
-    // Pre-push to the expansion stack to simulate being mid-expansion of "List"
-    let binder_name = "𝜇ꜱʏᴍ⧼List⧽99".to_string();
-    state
-        .expansion_stack
-        .push((Arc::clone(&registered_arc), binder_name.clone()));
-
-    // Now expand "List" — should detect the cycle and return TypeVar(binder_name)
-    let result = expand_named("List", &[], &mut state);
-    assert_eq!(
-        result,
-        Some(Type::TypeVar(binder_name, 0)),
-        "expand_named should return the binder TypeVar on cycle detection"
-    );
-}
-
-/// T-1066l: expand_named with one param substitution.
-#[tokio::test]
-async fn test_expand_named_one_param() {
-    let mut state = make_expand_env();
-
-    // Register "Box" as alias for param "a" — i.e., `type Box = [let a] a`
-    // In the current representation, param "a" appears as TypeVar("a", 0) in the body
-    let def = make_tycon_def_one("a", Type::TypeVar("a".to_string(), 0));
-    state.tycon_env.insert("Box".to_string(), def);
-
-    // Box[Int] should expand to Int (param "a" substituted with Int)
-    let result = expand_named("Box", &[Type::Int], &mut state);
-    assert_eq!(result, Some(Type::Int), "Box[Int] should expand to Int");
-}
-
-/// T-1067a: expand_all_tycon_apps is a no-op for primitive types.
-#[tokio::test]
-async fn test_expand_all_tycon_apps_primitive() {
-    let mut state = make_expand_env();
-
-    assert_eq!(expand_all_tycon_apps(&Type::Int, &mut state), Type::Int);
-    assert_eq!(expand_all_tycon_apps(&Type::Str, &mut state), Type::Str);
-    assert_eq!(
-        expand_all_tycon_apps(&Type::TyCon("Boolean".to_string()), &mut state),
-        Type::TyCon("Boolean".to_string())
-    );
-}
-
-/// T-1067b: expand_all_tycon_apps expands a TyCon that is registered.
-#[tokio::test]
-async fn test_expand_all_tycon_apps_registered_tycyon() {
-    let mut state = make_expand_env();
-    let def = make_tycon_def_zero(Type::Int);
-    state.tycon_env.insert("MyInt".to_string(), def);
-
-    let result = expand_all_tycon_apps(&Type::TyCon("MyInt".to_string()), &mut state);
-    assert_eq!(result, Type::Int, "TyCon(MyInt) should expand to Int");
-}
-
-/// T-1067c: expand_all_tycon_apps preserves unknown TyCon (fallback).
-#[tokio::test]
-async fn test_expand_all_tycon_apps_unknown_tycyon_preserved() {
-    let mut state = make_expand_env();
-    // UnknownType not in env — should be preserved as-is
-    let ty = Type::TyCon("UnknownType".to_string());
-    let result = expand_all_tycon_apps(&ty, &mut state);
-    assert_eq!(result, ty, "Unknown TyCon should be preserved");
-}
-
-/// T-1067d: expand_all_tycon_apps expands App(TyCon, arg).
-#[tokio::test]
-async fn test_expand_all_tycon_apps_app_tycyon() {
-    let mut state = make_expand_env();
-
-    // Register "Wrapper" as a one-param alias for the param itself
-    let def = make_tycon_def_one("a", Type::TypeVar("a".to_string(), 0));
-    state.tycon_env.insert("Wrapper".to_string(), def);
-
-    let ty = Type::App(
-        Box::new(Type::TyCon("Wrapper".to_string())),
-        Box::new(Type::Int),
-    );
-    // Wrapper[Int] should expand to Int
-    let result = expand_all_tycon_apps(&ty, &mut state);
-    assert_eq!(result, Type::Int, "App(Wrapper, Int) should expand to Int");
-}
-
-// ============================================================================
-// T-1072: expand_named Step 8 wrapping rule + mutual recursion
-// ============================================================================
-
-/// T-1072a: expand_named cycle detection for a self-referential alias.
-///
-/// Tests current behavior: `Self = Int | Self` is detected as recursive (cycle detection
-/// fires via Arc::ptr_eq), but the contractiveness check blocks wrapping in Type::Recursive
-/// because a bare TypeVar inside a Union is non-contractive (Rule 2 of is_contractive_type
-/// requires ALL union members to be contractive; TypeVar(binder, 0) is a bare self-ref).
-///
-/// expand_named is wired into the annotation resolver via resolve_type_head (S-862 complete).
-/// The contractiveness rule for Union correctly rejects bare recursive refs as non-contractive
-/// (a Union member that is a bare self-ref is not guarded by a structural constructor).
-///
-/// Current behavior: returns Some(Union([Int, TypeVar(binder, 0)])) — not Type::Recursive.
-/// The TypeVar sentinel IS present (proving cycle detection worked), but the Recursive
-/// wrapper is absent (contractiveness check prevented it).
-#[tokio::test]
-async fn test_expand_named_produces_recursive_wrapper() {
-    let mut state = make_expand_env();
-
-    // Register "Self" as an alias with body Union([Int, TyCon("Self")]).
-    // This creates a self-referential type: Self = Int | Self.
-    // We need to register it so that expand_named can find the same Arc for cycle detection.
-    let arc_self = Arc::new(crate::type_def::TyConDef {
-        params: vec![],
-        body: Type::Union(vec![Type::Int, Type::TyCon("Self".to_string())]),
-        constraints: vec![],
-        variance: vec![],
-        constructors: vec![],
-        builtin_type: None,
-        annotation: None,
-        field_annotations: indexmap::IndexMap::new(),
-        constructor_constants: indexmap::IndexMap::new(),
-        definition_span: None,
-    });
-    state
-        .tycon_env
-        .insert("Self".to_string(), Arc::clone(&arc_self));
-
-    let result = expand_named("Self", &[], &mut state);
-
-    // Current behavior: cycle is detected (TypeVar sentinel present), but
-    // is_contractive_type returns false for Union([Int, TypeVar(binder)]) because
-    // the bare TypeVar self-reference inside the Union is non-contractive (Rule 1+2).
-    // The result is a bare union, NOT a Type::Recursive wrapper.
-    match &result {
-        Some(Type::Union(members)) => {
-            assert_eq!(
-                members.len(),
-                2,
-                "Self = Int | Self expands to a 2-member union, got: {members:?}"
-            );
-            // One member must be Int
-            assert!(
-                members.contains(&Type::Int),
-                "expanded union must contain Type::Int, got: {members:?}"
-            );
-            // The other member is the TypeVar cycle sentinel (any TypeVar — binder name is internal)
-            let has_typevar = members.iter().any(|m| matches!(m, Type::TypeVar(_, _)));
-            assert!(
-                has_typevar,
-                "expanded union must contain a TypeVar cycle sentinel, got: {members:?}"
-            );
-        }
-        other => panic!(
-            "Self = Int | Self: expected Some(Union([Int, TypeVar(...)])) (non-contractive, \
-             Recursive wrapping blocked by is_contractive_type), got: {other:?}"
-        ),
-    }
-}
-
-/// T-1072b: expand_named mutual recursion — cycle detection fires at origin.
-///
-/// EvenList = Int | OddList, OddList = Int | EvenList (mutual recursion).
-/// Tests current behavior: expanding EvenList triggers cycle detection when OddList's
-/// expansion encounters EvenList again (Arc::ptr_eq matches), producing a TypeVar
-/// sentinel for EvenList. OddList is then expanded to Union([Int, TypeVar(binder_even)]).
-/// This flattens into EvenList's expansion as Union([Int, TypeVar(binder_even)]).
-///
-/// The contractiveness check blocks wrapping in Type::Recursive (same as T-1072a):
-/// Union([Int, TypeVar(binder_even)]) is non-contractive because the TypeVar is a bare
-/// self-reference inside a Union (Rule 1+2 of is_contractive_type).
-///
-/// expand_named is wired into the annotation resolver via resolve_type_head (S-862 complete).
-/// Current behavior: Some(Union([Int, TypeVar(binder_even)])) — cycle detected (TypeVar
-/// present), Recursive wrapper absent (contractiveness check failed).
-#[tokio::test]
-async fn test_expand_named_mutual_recursion_wraps_at_origin() {
-    let mut state = make_expand_env();
-
-    // Register two mutually-recursive aliases:
-    //   EvenList = Int | TyCon("OddList")
-    //   OddList  = Int | TyCon("EvenList")
-    // The body of each references the other by name (TyCon lookup).
-    let even_arc = Arc::new(crate::type_def::TyConDef {
-        params: vec![],
-        body: Type::Union(vec![Type::Int, Type::TyCon("OddList".to_string())]),
-        constraints: vec![],
-        variance: vec![],
-        constructors: vec![],
-        builtin_type: None,
-        annotation: None,
-        field_annotations: indexmap::IndexMap::new(),
-        constructor_constants: indexmap::IndexMap::new(),
-        definition_span: None,
-    });
-    let odd_arc = Arc::new(crate::type_def::TyConDef {
-        params: vec![],
-        body: Type::Union(vec![Type::Int, Type::TyCon("EvenList".to_string())]),
-        constraints: vec![],
-        variance: vec![],
-        constructors: vec![],
-        builtin_type: None,
-        annotation: None,
-        field_annotations: indexmap::IndexMap::new(),
-        constructor_constants: indexmap::IndexMap::new(),
-        definition_span: None,
-    });
-    state
-        .tycon_env
-        .insert("EvenList".to_string(), Arc::clone(&even_arc));
-    state
-        .tycon_env
-        .insert("OddList".to_string(), Arc::clone(&odd_arc));
-
-    let result = expand_named("EvenList", &[], &mut state);
-
-    // Current behavior: mutual cycle is detected — OddList expansion encounters EvenList
-    // on the stack (Arc::ptr_eq), returns TypeVar(binder_even, 0). OddList's expansion
-    // is Union([Int, TypeVar(binder_even)]) which is non-contractive, so OddList itself
-    // gets no Recursive wrapper. This flattens into EvenList's result:
-    // Union([Int, TypeVar(binder_even)]).
-    // EvenList sees contains_recvar = true but is_contractive = false → no Recursive wrapper.
-    match &result {
-        Some(Type::Union(members)) => {
-            assert_eq!(
-                members.len(),
-                2,
-                "EvenList mutual recursion expands to a 2-member union, got: {members:?}"
-            );
-            // One member must be Int
-            assert!(
-                members.contains(&Type::Int),
-                "expanded union must contain Type::Int, got: {members:?}"
-            );
-            // The other member is the TypeVar cycle sentinel for EvenList
-            let has_typevar = members.iter().any(|m| matches!(m, Type::TypeVar(_, _)));
-            assert!(
-                has_typevar,
-                "expanded union must contain a TypeVar cycle sentinel (EvenList binder), got: {members:?}"
-            );
-        }
-        other => panic!(
-            "EvenList/OddList mutual recursion: expected Some(Union([Int, TypeVar(...)])) \
-             (cycle detected, Recursive wrapping blocked by is_contractive_type), got: {other:?}"
-        ),
-    }
-}
-
 // -- S-783 regression tests (parser fix + annotation fix) --
 
 #[tokio::test]
@@ -3646,65 +3196,6 @@ async fn test_is_subtype_recursive_different_field_names_returns_false() {
     );
 }
 
-// -- T-1166: Negative is_contractive_type unit tests --
-// These tests verify the 3-rule contractiveness check for recursive type alias bodies.
-// The function is in src/typecheck_annot.rs; it's called at type alias construction time
-// to reject non-contractive definitions like `type Bad a = a` (infinite regress).
-
-/// T-1166a: is_contractive_type(&Type::TypeVar("a"), "a") → false
-/// Rule 1: bare self-reference μa.a is NOT contractive.
-#[tokio::test]
-async fn test_is_contractive_type_bare_selfref_false() {
-    let ty = Type::TypeVar("a".to_string(), 0);
-    let result = crate::typecheck::typecheck_annot::is_contractive_type(&ty, "a");
-    assert!(
-        !result,
-        "is_contractive_type(TypeVar(\"a\"), \"a\") must be false (Rule 1: bare self-ref μa.a)"
-    );
-}
-
-/// T-1166b: is_contractive_type(&Type::Union([TypeVar("a"), Int]), "a") → false
-/// Rule 2: union with a bare self-reference member is NOT contractive.
-#[tokio::test]
-async fn test_is_contractive_type_union_with_selfref_false() {
-    let ty = Type::Union(vec![Type::TypeVar("a".to_string(), 0), Type::Int]);
-    let result = crate::typecheck::typecheck_annot::is_contractive_type(&ty, "a");
-    assert!(
-        !result,
-        "is_contractive_type(Union([TypeVar(\"a\"), Int]), \"a\") must be false \
-         (Rule 2: union member is bare self-ref)"
-    );
-}
-
-/// T-1166c: is_contractive_type(&Type::Union([Int, Str]), "a") → true
-/// Rule 2: union with NO self-reference is contractive (vacuously true).
-#[tokio::test]
-async fn test_is_contractive_type_union_no_selfref_true() {
-    let ty = Type::Union(vec![Type::Int, Type::Str]);
-    let result = crate::typecheck::typecheck_annot::is_contractive_type(&ty, "a");
-    assert!(
-        result,
-        "is_contractive_type(Union([Int, Str]), \"a\") must be true \
-         (Rule 2: no self-ref in union → vacuously contractive)"
-    );
-}
-
-/// T-1166d: is_contractive_type(&Type::Dict({x: TypeVar("a")}), "a") → true
-/// Rule 3: Record is a guarding constructor, so even with a self-ref field it's contractive.
-#[tokio::test]
-async fn test_is_contractive_type_record_with_selfref_true() {
-    let ty = Type::Dict(crate::type_def::Row {
-        fields: [("x".to_string(), Type::TypeVar("a".to_string(), 0))].into(),
-        tail: crate::type_def::RowTail::Empty,
-    });
-    let result = crate::typecheck::typecheck_annot::is_contractive_type(&ty, "a");
-    assert!(
-        result,
-        "is_contractive_type(Record({{x: TypeVar(\"a\")}}), \"a\") must be true \
-         (Rule 3: Record is a guarding constructor)"
-    );
-}
-
 #[tokio::test]
 async fn test_class_name_in_param_annotation_user_defined_class() {
     // T-1197: A user-defined class name in annotation position must also produce a
@@ -3858,16 +3349,16 @@ async fn test_deeply_nested_fn_no_stack_overflow() {
     );
 }
 
-/// T-1642 / Test 3: Type annotation resolves through `type_stage_map` via CEK path.
+/// T-1642 / Test 3: Type annotation resolves through `type_stage_scope` via CEK path.
 ///
-/// Verifies that a `TypeStageEntry::Resolved` entry in `state.type_stage_map` is correctly
+/// Verifies that a `TypeStageEntry::Resolved` entry in `state.type_stage_scope` is correctly
 /// consulted by `resolve_type_head` when resolving an uppercase annotation name.
 ///
 /// This test calls `run_typecheck` directly on a `TypeAssert` node (`[@Int 42]`), exercising
 /// the `AfterTypeAssertInner` continuation path and confirming the CEK loop handles annotation
 /// resolution without Rust recursion.
 ///
-/// The test seeds `type_stage_map` with `"Int" → TypeStageEntry::Resolved(Type::Int)` so
+/// The test seeds `type_stage_scope` with `"Int" → TypeStageEntry::Resolved(Type::Int)` so
 /// that `@Int` resolves without error even though the type environment is otherwise empty.
 #[tokio::test]
 async fn test_type_stage_resolver_via_cek() {
@@ -3884,13 +3375,13 @@ async fn test_type_stage_resolver_via_cek() {
         _ => panic!("expected expression item"),
     };
 
-    // Seed the type_stage_map so that the annotation `@Int` resolves to Type::Int.
-    let mut type_stage_map = std::collections::HashMap::new();
-    type_stage_map.insert("Int".to_string(), TypeStageEntry::Resolved(Type::Int));
+    // Seed the type_stage_scope so that the annotation `@Int` resolves to Type::Int.
+    let mut type_stage_scope = std::collections::HashMap::new();
+    type_stage_scope.insert("Int".to_string(), TypeStageEntry::Resolved(Type::Int));
 
     let env = Arc::new(RwLock::new(crate::env::Env::new()));
     let mut state = InferState::new();
-    state.type_stage_scope = vec![type_stage_map];
+    state.type_stage_scope = vec![type_stage_scope];
 
     let mut errors: Vec<TypeDiagnostic> = Vec::new();
     let mut stack = Vec::new();
@@ -3900,10 +3391,10 @@ async fn test_type_stage_resolver_via_cek() {
         typecheck_cek::run_typecheck(&node, &env, &mut state, &mut errors, &mut None, &mut stack)
             .await;
 
-    // With Int resolved via the type_stage_map, there should be no type errors.
+    // With Int resolved via the type_stage_scope, there should be no type errors.
     assert!(
         errors.is_empty(),
-        "[@Int 42] with type_stage_map seeded for Int should produce no type errors via CEK; got: {:?}",
+        "[@Int 42] with type_stage_scope seeded for Int should produce no type errors via CEK; got: {:?}",
         errors.iter().map(|e| e.message.clone()).collect::<Vec<_>>()
     );
     // The resolved type should be Int (the annotation overrides the inner 42's IntLiteral type).
@@ -4023,7 +3514,7 @@ async fn test_annotation_error_reported_at_source() {
 
 /// T-1665 / Test 2: `@Unknown` is the gradual-typing escape hatch — produces no errors.
 ///
-/// `@Unknown` must resolve cleanly through the unified `type_stage_map` path (Step 3
+/// `@Unknown` must resolve cleanly through the unified `type_stage_scope` path (Step 3
 /// in `resolve_type_head`), not through a special-case shortcut. This test verifies the
 /// seed added to `typecheck_surface_program_annotation_table` is effective.
 #[tokio::test]
@@ -4236,7 +3727,7 @@ async fn test_cek_fn_expression_infers_function_type() {
 /// T-1666 / Test 5: `AfterFnBody` is correctly applied for a fn with an annotated Int return.
 ///
 /// `[fn@Int [let x@Int] $x]` — the return annotation overrides the body type.
-/// With `Int` seeded in `type_stage_map`, `AfterFnBody` should see `return_ann = Some(Type::Int)`
+/// With `Int` seeded in `type_stage_scope`, `AfterFnBody` should see `return_ann = Some(Type::Int)`
 /// and build a `Function { ret: Int, .. }` type.
 ///
 /// This test isolates the `return_ann` override path inside `AfterFnBody` (the branch
@@ -4248,7 +3739,7 @@ async fn test_cek_fn_expression_infers_function_type() {
 async fn test_cek_after_fn_body_return_annotation_overrides_body_type() {
     use crate::type_infer::TypeStageEntry;
 
-    // Seed Int in type_stage_map so @Int resolves without error.
+    // Seed Int in type_stage_scope so @Int resolves without error.
     let src = "[fn@Int [let x@Int] $x]";
     let program = crate::desugar::desugar_surface_program(
         &crate::parse(src, test_file(src)).unwrap().program,
@@ -4261,11 +3752,11 @@ async fn test_cek_after_fn_body_return_annotation_overrides_body_type() {
     let env = Arc::new(RwLock::new(crate::env::Env::new()));
     let mut state = InferState::new();
 
-    // Seed Int in the type_stage_map so @Int resolves correctly.
-    let mut type_stage_map =
+    // Seed Int in the type_stage_scope so @Int resolves correctly.
+    let mut type_stage_scope =
         std::collections::HashMap::<String, crate::type_infer::TypeStageEntry>::new();
-    type_stage_map.insert("Int".to_string(), TypeStageEntry::Resolved(Type::Int));
-    state.type_stage_scope = vec![type_stage_map];
+    type_stage_scope.insert("Int".to_string(), TypeStageEntry::Resolved(Type::Int));
+    state.type_stage_scope = vec![type_stage_scope];
 
     let mut errors: Vec<TypeDiagnostic> = Vec::new();
     let mut stack = Vec::new();
@@ -4292,7 +3783,7 @@ async fn test_cek_after_fn_body_return_annotation_overrides_body_type() {
 
 /// T-1666 / Test 6: `AfterTypeAssertInner` — matching annotation produces no error.
 ///
-/// `[@Int 42]` with `Int` seeded in `type_stage_map`: the inner expression infers
+/// `[@Int 42]` with `Int` seeded in `type_stage_scope`: the inner expression infers
 /// `IntLiteral(42)`, which is a subtype of `Int`. `AfterTypeAssertInner` calls
 /// `compute_type_assert_mismatch`, finds no mismatch, and returns `Type::Int`.
 ///
@@ -4314,10 +3805,10 @@ async fn test_cek_type_assert_matching_annotation_no_error() {
     let env = Arc::new(RwLock::new(crate::env::Env::new()));
     let mut state = InferState::new();
 
-    let mut type_stage_map =
+    let mut type_stage_scope =
         std::collections::HashMap::<String, crate::type_infer::TypeStageEntry>::new();
-    type_stage_map.insert("Int".to_string(), TypeStageEntry::Resolved(Type::Int));
-    state.type_stage_scope = vec![type_stage_map];
+    type_stage_scope.insert("Int".to_string(), TypeStageEntry::Resolved(Type::Int));
+    state.type_stage_scope = vec![type_stage_scope];
 
     let mut errors: Vec<TypeDiagnostic> = Vec::new();
     let mut stack = Vec::new();
@@ -4340,7 +3831,7 @@ async fn test_cek_type_assert_matching_annotation_no_error() {
 
 /// T-1666 / Test 7: `AfterTypeAssertInner` — mismatched annotation emits a type error.
 ///
-/// `[@Int "hello"]` with `Int` seeded in `type_stage_map`: the inner expression infers
+/// `[@Int "hello"]` with `Int` seeded in `type_stage_scope`: the inner expression infers
 /// `StringLiteral("hello")`, which is NOT a subtype of `Int`. `AfterTypeAssertInner`
 /// detects the mismatch and pushes a `TypeDiagnostic`.
 ///
@@ -4365,10 +3856,10 @@ async fn test_cek_type_assert_mismatched_annotation_emits_error() {
     let env = Arc::new(RwLock::new(crate::env::Env::new()));
     let mut state = InferState::new();
 
-    let mut type_stage_map =
+    let mut type_stage_scope =
         std::collections::HashMap::<String, crate::type_infer::TypeStageEntry>::new();
-    type_stage_map.insert("Int".to_string(), TypeStageEntry::Resolved(Type::Int));
-    state.type_stage_scope = vec![type_stage_map];
+    type_stage_scope.insert("Int".to_string(), TypeStageEntry::Resolved(Type::Int));
+    state.type_stage_scope = vec![type_stage_scope];
 
     let mut errors: Vec<TypeDiagnostic> = Vec::new();
     let mut stack = Vec::new();

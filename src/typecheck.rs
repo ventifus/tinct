@@ -316,7 +316,7 @@ pub async fn typecheck_surface_program_with_env(
     // Merge the document-level Env scheme bindings back into the child Env.
     // This ensures that variables declared in this program are visible to callers
     // that hold the returned Arc<RwLock<Env>> (e.g., subsequent builtin-typecheck-doc calls).
-    merge_env_schemes_into_env(&env, &child_env);
+    merge_env_schemes_into_env(&env, &child_env, &mut state);
     // child_env is state.env — classes/instances were written to it via the merge.
     state.invalidate_env_caches();
 
@@ -341,7 +341,11 @@ pub async fn typecheck_surface_program_with_env(
 /// Since `target_env.parent == parent_env`, schemes that already exist in the parent
 /// chain are already visible — no filtering is needed. Duplicate insertion is safe
 /// (insert_scheme and insert_scheme_named_only are idempotent for same-name, same-value).
-fn merge_env_schemes_into_env(source_env: &Arc<RwLock<Env>>, target_env: &Arc<RwLock<Env>>) {
+fn merge_env_schemes_into_env(
+    source_env: &Arc<RwLock<Env>>,
+    target_env: &Arc<RwLock<Env>>,
+    state: &mut crate::type_infer::InferState,
+) {
     // Collect frames from innermost to outermost, stopping when we reach target_env
     // to avoid reading and writing the same RwLock simultaneously (deadlock prevention).
     let target_ptr = Arc::as_ptr(target_env);
@@ -381,6 +385,27 @@ fn merge_env_schemes_into_env(source_env: &Arc<RwLock<Env>>, target_env: &Arc<Rw
         }
         for (name, def) in &frame.tycon_defs {
             guard.insert_tycon_def(name.clone(), Arc::clone(def));
+        }
+        // Wire classes into type_stage_scope so that imported declarations from loaded
+        // modules are visible to annotation resolution (T-1805).
+        if state.type_stage_scope.is_empty() {
+            state
+                .type_stage_scope
+                .push(std::collections::HashMap::new());
+        }
+        for (name, decl) in &frame.classes {
+            state.type_stage_scope[0]
+                .entry(name.clone())
+                .or_insert(crate::type_infer::TypeStageEntry::Class(decl.clone()));
+        }
+        // Wire tycon_defs into type_stage_scope so that imported type constructors from
+        // loaded modules resolve correctly in annotations (T-1805).
+        for (name, _) in &frame.tycon_defs {
+            state.type_stage_scope[0].entry(name.clone()).or_insert(
+                crate::type_infer::TypeStageEntry::Resolved(crate::types::Type::TyCon(
+                    name.clone(),
+                )),
+            );
         }
     }
 }

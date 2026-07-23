@@ -23,6 +23,9 @@
     Dict: [fields: Any  open: Any  key-type: Any  value-type: Any]
     TypeConstructor: [name: Any]
     TypeApplication: [ctor: Any  args: Any]
+    # Kind-annotated type variable sentinel: resolves to a fresh TypeVar of the given kind.
+    # kind: "Operator" | "Label" — string keys matching crate::type_def::Kind variants.
+    TypeVar: [kind: Any]
     # Opaque Rust value types — no payload, identity-matched by tag name.
     Program
     Document
@@ -50,6 +53,10 @@
 
   Integer:      TypeNode.Int
   String:       TypeNode.String
+  # Kind sentinels: @Operator and @Label resolve to fresh TypeVars of the given kind.
+  # Consumed by typenode_typevar_kind in type_normalize.rs → TypeStageEntry::TypeVar.
+  Operator:     [TypeNode.TypeVar kind: "Operator"]
+  Label:        [TypeNode.TypeVar kind: "Label"]
   Float:        TypeNode.Float
   Bytes:        TypeNode.Bytes
   Never:        TypeNode.Never
@@ -226,7 +233,6 @@
   # ── TypeContext bootstrap ──────────────────────────────────────────────────
   builtin-get-type-context: [fn@TypeContext [] ...]
   builtin-make-type-ctx:    [fn@TypeContext [] ...]
-  builtin-tc-with-scope:    [fn@TypeContext [let ctx@TypeContext env@Dict] ...]
 
   # ── Sequences (core collection ops) ───────────────────────────────────────
   builtin-take:    [fn@Dict [let n@Integer xs@Dict] ...]

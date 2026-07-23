@@ -1,16 +1,13 @@
 //! Type annotation resolution and type expression parsing.
 
-use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, RwLock};
+use std::collections::HashMap;
+use std::sync::Arc;
 
-use super::{check_surface_expr, contains_unknown_or_top, TypeMap};
 use crate::ast::{Annotation, Span, Spanned, SurfaceEntry, SurfaceExpression, SurfaceNode};
-use crate::env::Env;
 use crate::error::TypeDiagnostic;
 use crate::rust_span;
 use crate::type_class::ConstraintArg;
-use crate::type_def::TyConDef;
-use crate::type_def::Variance;
+use crate::type_def::{TyConDef, Variance};
 use crate::types::{Constraint, InferState, Kind, Row, Type};
 use crate::value::{HashableValue, Thunk, Value};
 
@@ -221,213 +218,6 @@ fn walk_polarity(
         }
         // Concrete types (Int, Str, Bool, etc.), TyCon, Unknown, Top, Error — no TypeVar involvement.
         _ => {}
-    }
-}
-
-#[allow(dead_code)]
-pub(crate) async fn resolve_type_assert(
-    annotation: &Spanned<Annotation>,
-    inner: &Arc<SurfaceNode>,
-    env: &Arc<RwLock<Env>>,
-    _span: Span,
-    state: &mut InferState,
-    constraints: &mut Vec<Constraint>,
-    type_map: &mut Option<&mut TypeMap>,
-) -> Result<Type, Vec<TypeDiagnostic>> {
-    // Create per-annotation-scope mappings for type and row variables.
-    // Named row variables (e.g., ...r) in TypeAssert annotations are tracked correctly
-    // instead of creating fresh anonymous row vars.
-    let mut ann_mapping: Option<HashMap<String, String>> = Some(HashMap::new());
-    let mut ann_mapping_opt = ann_mapping.as_mut();
-    let mut row_ann_mapping_opt: Option<&mut HashMap<String, String>> = None;
-
-    let expected = resolve_annotation(
-        &annotation.node,
-        annotation.span.clone(),
-        state,
-        constraints,
-        &mut ann_mapping_opt,
-        &mut row_ann_mapping_opt,
-        None,
-    )
-    .await
-    .map_err(|e| vec![e])?;
-
-    // Use checking mode for TypeAssert inner expression (doc/06 §Bidirectional Typing).
-    let check_result = check_surface_expr(inner, &expected, env, state, type_map).await;
-
-    // If checking fails, propagate errors (TypeAssert failures are hard type errors).
-    if let Err(type_errors) = check_result {
-        let has_default = annotation.node.get_property("default").is_some();
-        if !has_default {
-            return Err(type_errors);
-        }
-    }
-
-    // Validate the default value type — hard error if the default cannot satisfy the asserted type.
-    if let Some(default_node) = annotation.node.get_property("default") {
-        let mut local_errors: Vec<TypeDiagnostic> = Vec::new();
-        let mut local_stack = Vec::new();
-        let default_ty_result = {
-            let default_ty = Box::pin(super::typecheck_cek::run_typecheck(
-                default_node,
-                env,
-                state,
-                &mut local_errors,
-                type_map,
-                &mut local_stack,
-            ))
-            .await;
-            if local_errors.is_empty() {
-                Ok(default_ty)
-            } else {
-                Err(local_errors)
-            }
-        };
-        match default_ty_result {
-            Ok(default_ty) => {
-                // Apply type_vars bindings to both types before comparison — access-chain constraints
-                // may have bound TypeVars (e.g., $data.name generates row-variable
-                // bindings). Without applying bindings, the comparison uses stale TypeVars.
-                // Guard: skip allocation when subst is empty (common case for concrete programs).
-                let (default_ty, expected_resolved) = if state.subst_is_empty() {
-                    (default_ty, expected.clone())
-                } else {
-                    (state.apply(&default_ty), state.apply(&expected))
-                };
-                let passes = Type::is_subtype(&default_ty, &expected_resolved, None)
-                    || ((contains_unknown_or_top(&default_ty)
-                        || contains_unknown_or_top(&expected_resolved))
-                        && Type::is_consistent(&default_ty, &expected_resolved));
-                if !passes {
-                    return Err(vec![TypeDiagnostic::error(
-                        "type-error",
-                        format!(
-                            "default value type mismatch: default has type {default_ty}, \
-                             but assertion expects {expected_resolved}"
-                        ),
-                        default_node.span.clone(),
-                    )]);
-                }
-            }
-            Err(errs) => {
-                // Propagate inference errors from the default expression
-                return Err(errs);
-            }
-        }
-    }
-
-    // Validate repr: storage hint if present.
-    // Valid values: "u8", "i8", "u16", "i16", "u32", "i32", "u64", "i64".
-    // Must be consistent with the declared type (must be numeric).
-    if let Some(repr_node) = annotation.node.get_property("repr") {
-        if let SurfaceExpression::StringLiteral {
-            content: ref repr_val,
-            ..
-        } = repr_node.expr
-        {
-            const VALID_REPRS: &[&str] = &["u8", "i8", "u16", "i16", "u32", "i32", "u64", "i64"];
-            if !VALID_REPRS.contains(&repr_val.as_str()) {
-                return Err(vec![TypeDiagnostic::error(
-                    "type-error",
-                    format!(
-                        "invalid repr: \"{repr_val}\" — must be one of: {}",
-                        VALID_REPRS.join(", ")
-                    ),
-                    repr_node.span.clone(),
-                )]);
-            }
-            // Check consistency: repr requires a numeric type (Int or Float)
-            let is_numeric = matches!(&expected, Type::Int | Type::Float);
-            if !is_numeric {
-                return Err(vec![TypeDiagnostic::error(
-                    "type-error",
-                    format!(
-                        "repr: \"{repr_val}\" requires a numeric type, but annotation declares {}",
-                        expected
-                    ),
-                    repr_node.span.clone(),
-                )]);
-            }
-        }
-    }
-
-    // Apply substitution before returning to ensure bound type variables are resolved.
-    // The expected type may contain TypeVars that were bound during checking mode or
-    // access-chain inference (e.g., check_dot_access binds row variables).
-    // Guard: skip allocation when subst is empty (common case for concrete programs).
-    let expected = if state.subst_is_empty() {
-        expected
-    } else {
-        state.apply(&expected)
-    };
-
-    Ok(expected)
-}
-
-/// Resolve an annotated type expression `[@Name $annotation]`.
-///
-/// If `name == "Fn"`, interprets `$annotation` as a function type specification:
-/// - `[@Fn@RetType [Param1 Param2 ...]]` → function type with params and return type
-/// - `[@Fn@RetType]` (no param list) → zero-parameter function returning RetType
-///
-/// Otherwise, resolves `$annotation` as a regular type annotation.
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn resolve_annotated(
-    name: &str,
-    annotation: &Spanned<Annotation>,
-    _env: &Arc<RwLock<Env>>,
-    span: Span,
-    state: &mut InferState,
-    constraints: &mut Vec<Constraint>,
-    ann_mapping: &mut Option<&mut HashMap<String, String>>,
-    row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
-    type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
-) -> Result<Type, TypeDiagnostic> {
-    if name == "Fn" {
-        resolve_fn_type(
-            &annotation.node,
-            annotation.span.clone(),
-            state,
-            constraints,
-            ann_mapping,
-            row_ann_mapping,
-            type_params_scope,
-        )
-        .await
-    } else if name == "Handle" {
-        // Handle@SomeCapType — subscript form for capability row in parameter annotations.
-        //
-        // The inner annotation is the capability row argument. Examples:
-        //   h@Handle@DirCap         → Handle(DirCap)
-        //   h@Handle@NetCap         → Handle(NetCap)
-        //   h@Handle@[Readable]     → Handle(Record { readable: {} })
-        //   h@Handle@Unknown        → Handle(Unknown)  (gradual handle)
-        //
-        // Resolve the inner annotation as a type and wrap in Handle.
-        let cap_type = resolve_annotation(
-            &annotation.node,
-            span,
-            state,
-            constraints,
-            ann_mapping,
-            row_ann_mapping,
-            type_params_scope,
-        )
-        .await?;
-        Ok(Type::handle(cap_type))
-    } else {
-        resolve_annotation(
-            &annotation.node,
-            span,
-            state,
-            constraints,
-            ann_mapping,
-            row_ann_mapping,
-            type_params_scope,
-        )
-        .await
     }
 }
 
@@ -1448,7 +1238,23 @@ pub(crate) async fn resolve_annotation(
             // resolve the outer to a type and produce App(outer_ty, arg).
             match outer.as_ref() {
                 Annotation::Simple(name) => {
-                    Box::pin(resolve_type_head(name, &[arg], state, constraints, span)).await
+                    let annotation_scope: std::collections::HashMap<
+                        String,
+                        crate::type_infer::TypeStageEntry,
+                    > = state
+                        .kind_env()
+                        .into_iter()
+                        .map(|(n, k)| (n, crate::type_infer::TypeStageEntry::TypeVar(k)))
+                        .collect();
+                    Box::pin(resolve_type_head(
+                        name,
+                        &[arg],
+                        &annotation_scope,
+                        state,
+                        constraints,
+                        span,
+                    ))
+                    .await
                 }
                 _ => {
                     // Non-Simple outer: resolve outer as a type then apply arg to it.
@@ -1959,214 +1765,42 @@ fn apply_type_alias_substitution(
     }
 }
 
-/// Resolve a type name with recursion guard (used during alias registration).
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)] // Internal helper for type alias expansion
-pub(crate) async fn resolve_type_name_with_guard(
-    name: &str,
-    span: Span,
-    state: &mut InferState,
-    constraints: &mut Vec<Constraint>,
-    ann_mapping: &mut Option<&mut HashMap<String, String>>,
-    row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
-    recursion_guard: &mut HashSet<String>,
-    _current_alias: &str,
-    depth: usize,
-    type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
-) -> Result<Type, TypeDiagnostic> {
-    // Route lowercase names and all primitive/structural type names through resolve_type_name,
-    // which now uses the type-stage env as the canonical source.
-    if !name.starts_with(|c: char| c.is_uppercase()) {
-        let row_ref: Option<&HashMap<String, String>> = row_ann_mapping.as_ref().map(|m| &**m);
-        return resolve_type_name(
-            name,
-            span,
-            state,
-            constraints,
-            ann_mapping,
-            &row_ref,
-            type_params_scope,
-        )
-        .await;
-    }
-
-    // Uppercase type name — check for type alias in state.tycon_env
-    if let Some(alias) = state.tycon_env.get(name).cloned() {
-        // Check if we're in a recursive expansion
-        if recursion_guard.contains(name) {
-            // Recursive reference detected — return a fresh type variable as the mu-variable
-            // for this recursive position. This gives recursive positions a proper type that
-            // can be unified with the alias body rather than silently widening to Unknown.
-            // Callers see a TypeVar(_tN) that unifies with the alias's expanded type.
-            return Ok(state.fresh_type_var(&span));
-        }
-
-        // Check arity
-        if !alias.params.is_empty() {
-            return Err(TypeDiagnostic::error(
-                "type-error",
-                format!(
-                    "type alias '{}' expects {} type parameter(s), got 0",
-                    name,
-                    alias.params.len()
-                ),
-                span,
-            ));
-        }
-
-        // Add to recursion guard
-        recursion_guard.insert(name.to_string());
-
-        // Expand the alias body (which is already a resolved Type)
-        let result = expand_alias_body_guarded(
-            &alias.body,
-            state,
-            ann_mapping,
-            row_ann_mapping,
-            recursion_guard,
-            name,
-            depth + 1,
-            span,
-        );
-
-        // Remove from guard
-        recursion_guard.remove(name);
-
-        result
-    } else if let Some(class_decl) = {
-        let env_guard = state.env.read().unwrap();
-        env_guard.get_class(name)
-    } {
-        // T-1197 / T-1206: Class name used in annotation position in a recursive/guarded context.
-        // Now that constraints is threaded through, push the Constraint::Class to the caller's
-        // collection so the constraint is not dropped.
-        let level = state.level;
-        let (fresh, fresh_ty) =
-            state.fresh_type_var_with(Some(name), Some(level), Kind::Type, &span);
-        constraints.push(Constraint::Class {
-            class: Arc::new(class_decl),
-            vars: vec![ConstraintArg::Var(fresh)],
-            origin_name: None,
-            origin_span: Some(span),
-        });
-        Ok(fresh_ty)
-    } else {
-        Err(TypeDiagnostic::error(
-            "type-error",
-            format!("undefined type: {}", name),
-            span,
-        ))
-    }
-}
-
 /// Unified type-head resolution: given a name and optional already-resolved type arguments,
 /// produce a `Type`. This is the single canonical lookup path for all forms:
 ///   - Bare name: `@Comparable`, `@Integer`, `@Seq` — call with `args = &[]`
 ///   - Type application: `[Seq a]`, `[Iterable a]`, `[Map K V]` — call with resolved args
 ///
-/// Lookup order (applied identically for bare names and type applications):
-///   1. Operator/Label kind annotations (kind constraints, not types)
-///   2. class_env (BEFORE tycon_env) — `[Iterable a]` creates constrained TypeVar
-///   3. type_stage_scope — type-stage evaluated types from the init program's type-stage docs
-///   4. tycon_env → `expand_named` or `instantiate_tycon_def` for structural aliases
-///   5. Undefined → TypeDiagnostic
+/// Lookup order:
+///   1. Scope chain: `annotation_scope` (kind_env entries) prepended to `state.type_stage_scope`
+///      - TypeStageEntry::Resolved  → return the resolved type (with App wrapping if args present)
+///      - TypeStageEntry::Function  → call the thunk with args via evaluate_resolver_with_thunk
+///      - TypeStageEntry::TypeVar   → fresh TypeVar of the given kind; if kind has arity > 0 and
+///                                    args are present, produce Type::App(Operator(name), arg)
+///      - TypeStageEntry::Class     → fresh TypeVar with a class constraint
+///   2. Undefined → TypeDiagnostic
+///
+/// `annotation_scope` is built at each call site from `state.kind_env()` (the filtered view
+/// that excludes Kind::Type entries). It prepends operator-kinded and label-kinded TypeVar
+/// names so they resolve before the main scope chain. Type names `Operator` and `Label`
+/// themselves are wired into type_stage_scope via builtin_core.llt's type-stage section.
 ///
 /// The lowercase path (ann_mapping, type_params_scope, cross-kind collision) is handled
 /// by `resolve_type_name` before calling this function — `resolve_type_head` only handles
-/// the case where we have a name that refers to a type constructor or class.
-#[allow(clippy::too_many_arguments)]
+/// the case where we have a name that refers to a type constructor, class, or kind-annotated var.
 async fn resolve_type_head(
     name: &str,
     args: &[Type],
+    annotation_scope: &std::collections::HashMap<String, crate::type_infer::TypeStageEntry>,
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     span: Span,
 ) -> Result<Type, TypeDiagnostic> {
-    // Step 1: Kind constraints — Operator and Label are kinds, not types.
-    // When args are present in application position, Operator-kinded names produce App chains.
-    match name {
-        "Operator" if args.is_empty() => {
-            return Err(TypeDiagnostic::error("type-error",
-                "Operator is a kind, not a type — annotate a class type parameter as `f@Operator`, not a value expression",
-                span,
-            ));
-        }
-        "Label" if args.is_empty() => {
-            // Anonymous Label-kinded TypeVar.
-            let level = state.level;
-            let (fresh, fresh_ty) =
-                state.fresh_type_var_with(Some("_label"), Some(level), Kind::Label, &span);
-            state.kind_env.insert(fresh.clone(), Kind::Label);
-            return Ok(fresh_ty);
-        }
-        _ => {}
-    }
-
-    // Step 1b: Operator-kinded names in application position (e.g., `m` in `[m SomeType]`
-    // where `m` was declared `m@Operator` in a class definition).
-    // This handles user-defined higher-kinded type parameters.
-    if !args.is_empty() {
-        if let Some(kind) = state.get_kind(name) {
-            if kind.arity() > 0 {
-                if args.len() != 1 {
-                    return Err(TypeDiagnostic::error(
-                        "type-error",
-                        format!(
-                            "type constructor `{name}` requires 1 type argument, got {}",
-                            args.len()
-                        ),
-                        span,
-                    ));
-                }
-                let a_type = args[0].clone();
-                if let Type::Operator(op_name) = &a_type {
-                    return Err(TypeDiagnostic::error(
-                        "type-error",
-                        format!(
-                            "kind mismatch: type constructor `{name}` cannot be \
-                             applied to another type constructor `{op_name}`; \
-                             use a concrete type instead"
-                        ),
-                        span,
-                    ));
-                }
-                return Ok(Type::App(
-                    Box::new(Type::Operator(name.to_string())),
-                    Box::new(a_type),
-                ));
-            }
-        }
-    }
-
-    // Step 2: class_env — checked BEFORE tycon_env so that type class names in application
-    // position (e.g., `[Iterable a]`) produce a constrained TypeVar rather than TyCon("Iterable").
-    // This is the fix for xs@[Iterable a] producing "cannot unify Iterable with Seq".
-    if let Some(class_decl) = {
-        let env_guard = state.env.read().unwrap();
-        env_guard.get_class(name)
-    } {
-        let level = state.level;
-        let (fresh, fresh_ty) =
-            state.fresh_type_var_with(Some(name), Some(level), Kind::Type, &span);
-        // Build ConstraintArg list: [Var(?c), Ground(arg1), Ground(arg2), ...]
-        let mut vars = vec![ConstraintArg::Var(fresh)];
-        for arg in args {
-            vars.push(ConstraintArg::Ground(arg.clone()));
-        }
-        constraints.push(Constraint::Class {
-            class: Arc::new(class_decl),
-            vars,
-            origin_name: None,
-            origin_span: Some(span),
-        });
-        return Ok(fresh_ty);
-    }
-
-    // Step 3: type_stage_scope — walk the scope chain for pre-computed types.
+    // Single scope chain: annotation_scope (kind_env) prepended to type_stage_scope.
     // B-588: TypeVar/Class entries require mutable state access (fresh_type_var_with),
     // so we clone the entry and break, then resolve after the immutable borrow ends.
-    let mut found_type_stage: Option<crate::type_infer::TypeStageEntry> = None;
-    for scope in &state.type_stage_scope {
+    let mut found_entry: Option<crate::type_infer::TypeStageEntry> = None;
+    let chain = std::iter::once(annotation_scope).chain(state.type_stage_scope.iter());
+    for scope in chain {
         if let Some(entry) = scope.get(name) {
             match entry {
                 crate::type_infer::TypeStageEntry::Resolved(ty) => {
@@ -2201,20 +1835,32 @@ async fn resolve_type_head(
                         {
                             return Ok(ty);
                         }
+                        // evaluate_resolver_with_thunk returned None — continue to next scope.
+                    } else {
+                        // eval_ctx unavailable — cannot invoke a type-stage function without
+                        // an evaluation context. This is a misconfiguration error, not a
+                        // lookup failure; emit a diagnostic rather than silently falling through
+                        // to "undefined type: X" which would hide the real problem.
+                        return Err(TypeDiagnostic::error(
+                            "type-error",
+                            format!(
+                                "type constructor `{}` requires an evaluation context (eval_ctx is None)",
+                                name
+                            ),
+                            span,
+                        ));
                     }
-                    // eval_ctx unavailable — continue to next scope or Step 4.
                 }
                 crate::type_infer::TypeStageEntry::TypeVar(kind) => {
-                    // B-588: TypeVar entry — clone kind and break to resolve after loop
-                    // (avoids borrow conflict: loop borrows state.type_stage_scope immutably,
-                    // fresh_type_var_with borrows state mutably).
-                    found_type_stage =
-                        Some(crate::type_infer::TypeStageEntry::TypeVar(kind.clone()));
+                    // Clone kind and break to resolve after loop (avoids borrow conflict:
+                    // loop borrows state.type_stage_scope immutably, fresh_type_var_with
+                    // borrows state mutably).
+                    found_entry = Some(crate::type_infer::TypeStageEntry::TypeVar(kind.clone()));
                     break;
                 }
                 crate::type_infer::TypeStageEntry::Class(class_decl) => {
-                    // B-588: Class entry — clone decl and break to resolve after loop.
-                    found_type_stage =
+                    // Clone decl and break to resolve after loop.
+                    found_entry =
                         Some(crate::type_infer::TypeStageEntry::Class(class_decl.clone()));
                     break;
                 }
@@ -2222,14 +1868,49 @@ async fn resolve_type_head(
         }
     }
 
-    // B-588: Resolve TypeVar/Class entries found in the scope chain (after loop ends,
+    // Resolve TypeVar/Class entries found in the scope chain (after loop ends,
     // so the immutable borrow of state.type_stage_scope is released).
-    match found_type_stage {
+    match found_entry {
         Some(crate::type_infer::TypeStageEntry::TypeVar(kind)) => {
+            // Operator-kinded (arity > 0) names in application position produce App chains.
+            // This handles `[m SomeType]` where `m@Operator` was declared in a class.
+            if kind.arity() > 0 && !args.is_empty() {
+                if args.len() != 1 {
+                    return Err(TypeDiagnostic::error(
+                        "type-error",
+                        format!(
+                            "type constructor `{name}` requires 1 type argument, got {}",
+                            args.len()
+                        ),
+                        span,
+                    ));
+                }
+                let a_type = args[0].clone();
+                if let Type::Operator(op_name) = &a_type {
+                    return Err(TypeDiagnostic::error(
+                        "type-error",
+                        format!(
+                            "kind mismatch: type constructor `{name}` cannot be \
+                             applied to another type constructor `{op_name}`; \
+                             use a concrete type instead"
+                        ),
+                        span,
+                    ));
+                }
+                return Ok(Type::App(
+                    Box::new(Type::Operator(name.to_string())),
+                    Box::new(a_type),
+                ));
+            }
             let level = state.level;
-            let (_fresh, fresh_ty) =
-                state.fresh_type_var_with(Some(name), Some(level), kind, &span);
-            return Ok(fresh_ty);
+            let (fresh, fresh_ty) =
+                state.fresh_type_var_with(Some(name), Some(level), kind.clone(), &span);
+            // Register non-Type kinds in kind_env so check_kind_wellformed and annotation_scope
+            // correctly track the kind of this TypeVar (preserves old Step 1/1b behavior).
+            if !matches!(kind, Kind::Type) {
+                state.kind_env.insert(fresh, kind);
+            }
+            Ok(fresh_ty)
         }
         Some(crate::type_infer::TypeStageEntry::Class(class_decl)) => {
             let level = state.level;
@@ -2249,56 +1930,17 @@ async fn resolve_type_head(
                 origin_name: None,
                 origin_span: Some(span),
             });
-            return Ok(fresh_ty);
+            Ok(fresh_ty)
         }
-        _ => {} // Resolved/Function handled inside the loop; None = not found
+        _ => {
+            // Not found in any scope — undefined type name.
+            Err(TypeDiagnostic::error(
+                "type-error",
+                format!("undefined type: {}", name),
+                span,
+            ))
+        }
     }
-
-    // Step 4: tycon_env — user-defined nominal types ([type ...] declarations) and
-    // opaque Rust types (DirCap, File, etc. registered by imports.rs).
-    // These are NOT type-stage types; they are registered during typechecking.
-    if let Some(def) = state.tycon_env.get(name).cloned() {
-        if !def.constructors.is_empty() {
-            let base = Type::TyCon(name.to_string());
-            if args.is_empty() {
-                return Ok(base);
-            }
-            let mut result = base;
-            for arg in args {
-                result = Type::App(Box::new(result), Box::new(arg.clone()));
-            }
-            return Ok(result);
-        }
-        if !def.params.is_empty() && !args.is_empty() {
-            if args.len() != def.params.len() {
-                return Err(TypeDiagnostic::error(
-                    "type-error",
-                    format!(
-                        "type alias '{}' expects {} type parameter(s), got {}",
-                        name,
-                        def.params.len(),
-                        args.len()
-                    ),
-                    span,
-                ));
-            }
-            return Box::pin(instantiate_tycon_def(def.as_ref(), args, state)).await;
-        }
-        return Ok(expand_named(name, args, state).unwrap_or_else(|| {
-            let mut result = Type::TyCon(name.to_string());
-            for arg in args {
-                result = Type::App(Box::new(result), Box::new(arg.clone()));
-            }
-            result
-        }));
-    }
-
-    // Undefined type name.
-    Err(TypeDiagnostic::error(
-        "type-error",
-        format!("undefined type: {}", name),
-        span,
-    ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2312,24 +1954,13 @@ pub(crate) async fn resolve_type_name(
     type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
 ) -> Result<Type, TypeDiagnostic> {
     match name {
-        // Kind constraints — not types, require special handling before the type-stage path.
-        "Operator" => Err(TypeDiagnostic::error("type-error",
-            "Operator is a kind, not a type — annotate a class type parameter as `f@Operator`, not a value expression",
-            span,
-        )),
-        "Label" => {
-            // Anonymous Label-kinded TypeVar. Not a type — creates a fresh label-kinded TypeVar.
-            let level = state.level;
-            let (fresh, fresh_ty) = state.fresh_type_var_with(Some("_label"), Some(level), Kind::Label, &span);
-            state.kind_env.insert(fresh.clone(), Kind::Label);
-            Ok(fresh_ty)
-        }
         // All fundamental types (Integer, String, Float, Bytes, Never, Any,
-        // Proxy, Dict, Expr, Unknown) are declared in builtin_core.llt and resolved through
-        // the type_stage_scope/tycon_env chain in resolve_type_head.
+        // Proxy, Dict, Expr, Unknown, Operator, Label) are declared in builtin_core.llt
+        // and resolved through the scope chain in resolve_type_head.
         // `@Unknown` resolves via type_stage_scope (seeded with Unknown → Type::Unknown in
         // typecheck_surface_program_annotation_table for test paths, and populated from
-        // type-stage documents in production). Operator and Label are handled above.
+        // type-stage documents in production).
+        // `@Operator` and `@Label` resolve via type_stage_scope → TypeStageEntry::TypeVar.
         _ => {
             if name.starts_with(|c: char| c.is_lowercase()) {
                 // Type parameter scope enforcement (T-1100 / T-951).
@@ -2351,7 +1982,8 @@ pub(crate) async fn resolve_type_name(
                     if strict && !in_params && !params.contains_key(name) {
                         // Name not declared as a type parameter — check if it's a scope reference.
                         if !state.tycon_env.contains_key(name) {
-                            return Err(TypeDiagnostic::error("type-error",
+                            return Err(TypeDiagnostic::error(
+                                "type-error",
                                 format!(
                                     "undefined name '{name}' in type alias body — \
                                      lowercase names must be declared as type parameters \
@@ -2401,440 +2033,46 @@ pub(crate) async fn resolve_type_name(
                             .expect("invariant: annotation var registered in mapping must be in state.type_vars");
                         Ok(Type::TypeVar(existing_var.clone(), current_level))
                     } else {
-                        Err(TypeDiagnostic::error("type-error",format!("undefined type: {name}"), span))
+                        Err(TypeDiagnostic::error(
+                            "type-error",
+                            format!("undefined type: {name}"),
+                            span,
+                        ))
                     }
                 } else {
-                    Err(TypeDiagnostic::error("type-error",format!("undefined type: {name}"), span))
+                    Err(TypeDiagnostic::error(
+                        "type-error",
+                        format!("undefined type: {name}"),
+                        span,
+                    ))
                 }
             } else {
                 // Uppercase type name — route through the unified resolve_type_head.
-                // resolve_type_head checks class_env BEFORE tycon_env (the correct order),
-                // then scope-chain lookup, then errors.
-                Box::pin(resolve_type_head(name, &[], state, constraints, span)).await
-            }
-        }
-    }
-}
-
-/// Expand an alias body type, recursively expanding any nested type alias references.
-/// Uses equi-recursive semantics (Amadio & Cardelli 1993) with a depth guard to prevent infinite unfolding.
-/// The guard tracks aliases currently being expanded to detect cycles.
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)] // Recursive helper with state threading
-#[allow(clippy::only_used_in_recursion)] // state, ann_mapping, row_ann_mapping needed for recursive expansion
-fn expand_alias_body_guarded(
-    ty: &Type,
-    state: &mut InferState,
-    ann_mapping: &mut Option<&mut HashMap<String, String>>,
-    row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
-    alias_guard: &mut HashSet<String>,
-    current_alias: &str,
-    depth: usize,
-    span: Span,
-) -> Result<Type, TypeDiagnostic> {
-    // Depth guard (Amadio & Cardelli 1993)
-    const MAX_ALIAS_DEPTH: usize = 256;
-    if depth >= MAX_ALIAS_DEPTH {
-        return Err(TypeDiagnostic::error(
-            "type-error",
-            format!(
-                "recursive type alias '{}' exceeds maximum unfolding depth ({})",
-                current_alias, MAX_ALIAS_DEPTH
-            ),
-            span,
-        ));
-    }
-
-    // Add current alias to guard
-    alias_guard.insert(current_alias.to_string());
-
-    // Recursively expand the type structure
-    let result = match ty {
-        Type::Dict(row) => {
-            let mut new_fields = indexmap::IndexMap::new();
-            for (k, v) in &row.fields {
-                new_fields.insert(
-                    k.clone(),
-                    expand_alias_body_guarded(
-                        v,
-                        state,
-                        ann_mapping,
-                        row_ann_mapping,
-                        alias_guard,
-                        current_alias,
-                        depth,
-                        span.clone(),
-                    )?,
-                );
-            }
-            Ok(Type::Dict(Row {
-                fields: new_fields,
-                tail: crate::type_def::RowTail::Empty,
-            }))
-        }
-        Type::Function {
-            params,
-            ret,
-            typed_variadics,
-            rest,
-            required_count,
-        } => {
-            let new_params = params
-                .iter()
-                .map(|(name, p_ty)| {
-                    Ok::<_, TypeDiagnostic>((
-                        name.clone(),
-                        expand_alias_body_guarded(
-                            p_ty,
-                            state,
-                            ann_mapping,
-                            row_ann_mapping,
-                            alias_guard,
-                            current_alias,
-                            depth,
-                            span.clone(),
-                        )?,
-                    ))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let new_typed_variadics = typed_variadics
-                .iter()
-                .map(|(name, ty)| {
-                    Ok::<_, TypeDiagnostic>((
-                        name.clone(),
-                        expand_alias_body_guarded(
-                            ty,
-                            state,
-                            ann_mapping,
-                            row_ann_mapping,
-                            alias_guard,
-                            current_alias,
-                            depth,
-                            span.clone(),
-                        )?,
-                    ))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let new_rest = rest
-                .as_ref()
-                .map(|boxed| {
-                    Ok::<_, TypeDiagnostic>(Box::new((
-                        boxed.0.clone(),
-                        expand_alias_body_guarded(
-                            &boxed.1,
-                            state,
-                            ann_mapping,
-                            row_ann_mapping,
-                            alias_guard,
-                            current_alias,
-                            depth,
-                            span.clone(),
-                        )?,
-                    )))
-                })
-                .transpose()?;
-            let new_ret = Box::new(expand_alias_body_guarded(
-                ret,
-                state,
-                ann_mapping,
-                row_ann_mapping,
-                alias_guard,
-                current_alias,
-                depth,
-                span,
-            )?);
-            Ok(Type::Function {
-                params: new_params,
-                typed_variadics: new_typed_variadics,
-                rest: new_rest,
-                ret: new_ret,
-                required_count: *required_count,
-            })
-        }
-        Type::Union(members) => {
-            let new_members = members
-                .iter()
-                .map(|m| {
-                    expand_alias_body_guarded(
-                        m,
-                        state,
-                        ann_mapping,
-                        row_ann_mapping,
-                        alias_guard,
-                        current_alias,
-                        depth,
-                        span.clone(),
-                    )
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(Type::Union(new_members))
-        }
-        Type::Intersection(members) => {
-            let new_members = members
-                .iter()
-                .map(|m| {
-                    expand_alias_body_guarded(
-                        m,
-                        state,
-                        ann_mapping,
-                        row_ann_mapping,
-                        alias_guard,
-                        current_alias,
-                        depth,
-                        span.clone(),
-                    )
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(Type::Intersection(new_members))
-        }
-        Type::App(f, arg) => {
-            let new_f = expand_alias_body_guarded(
-                f,
-                state,
-                ann_mapping,
-                row_ann_mapping,
-                alias_guard,
-                current_alias,
-                depth,
-                span.clone(),
-            )?;
-            let new_arg = expand_alias_body_guarded(
-                arg,
-                state,
-                ann_mapping,
-                row_ann_mapping,
-                alias_guard,
-                current_alias,
-                depth,
-                span,
-            )?;
-            Ok(Type::App(Box::new(new_f), Box::new(new_arg)))
-        }
-        // For all other types (primitives, type vars, TyCon, etc.), return as-is
-        _ => Ok(ty.clone()),
-    };
-
-    // Remove current alias from guard after expansion
-    alias_guard.remove(current_alias);
-
-    result
-}
-
-/// Resolve a type expression with recursion guard for recursive type aliases.
-/// This is the internal version used during alias registration.
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)] // Internal helper for recursive type resolution
-pub(crate) async fn resolve_type_expr_with_guard(
-    node: &Arc<SurfaceNode>,
-    state: &mut InferState,
-    constraints: &mut Vec<Constraint>,
-    ann_mapping: &mut Option<&mut HashMap<String, String>>,
-    row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
-    recursion_guard: &mut HashSet<String>,
-    current_alias: &str,
-    depth: usize,
-    type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
-) -> Result<Type, TypeDiagnostic> {
-    const MAX_ALIAS_DEPTH: usize = 256;
-    if depth >= MAX_ALIAS_DEPTH {
-        return Err(TypeDiagnostic::error(
-            "type-error",
-            format!(
-                "recursive type alias '{}' exceeds maximum unfolding depth ({})",
-                current_alias, MAX_ALIAS_DEPTH
-            ),
-            node.span.clone(),
-        ));
-    }
-
-    match &node.expr {
-        SurfaceExpression::StringLiteral { content: s, .. } => Ok(Type::StringLiteral(s.clone())),
-        SurfaceExpression::VarRef { name, .. } => {
-            resolve_type_name_with_guard(
-                name,
-                node.span.clone(),
-                state,
-                constraints,
-                ann_mapping,
-                row_ann_mapping,
-                recursion_guard,
-                current_alias,
-                depth,
-                type_params_scope,
-            )
-            .await
-        }
-        SurfaceExpression::Dict(entries) => {
-            Box::pin(resolve_type_dict_with_guard(
-                entries,
-                node.span.clone(),
-                state,
-                constraints,
-                ann_mapping,
-                row_ann_mapping,
-                recursion_guard,
-                current_alias,
-                depth,
-                type_params_scope,
-            ))
-            .await
-        }
-        _ => {
-            // For all other expr types, delegate to normal resolve_type_expr.
-            // Most expr types (literals, Annotated, Call) don't recursively reference type aliases,
-            // so the guard isn't needed. If we encounter cases where nested aliases cause issues,
-            // we can expand this match to handle them explicitly.
-            Box::pin(resolve_type_expr(
-                node,
-                state,
-                constraints,
-                ann_mapping,
-                row_ann_mapping,
-                type_params_scope,
-            ))
-            .await
-        }
-    }
-}
-
-/// Resolve a dict in type position with recursion guard.
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)] // Internal helper for recursive type resolution
-async fn resolve_type_dict_with_guard(
-    entries: &[Spanned<SurfaceEntry>],
-    span: Span,
-    state: &mut InferState,
-    constraints: &mut Vec<Constraint>,
-    ann_mapping: &mut Option<&mut HashMap<String, String>>,
-    row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
-    recursion_guard: &mut HashSet<String>,
-    current_alias: &str,
-    depth: usize,
-    type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
-) -> Result<Type, TypeDiagnostic> {
-    let all_positional = entries.iter().all(|e| e.node.key.is_none());
-
-    // Keyed record dict: `[value: Int  next: Node]` — the most common recursive alias body.
-    // When all entries are keyed (or rest `...`), resolve each field value via
-    // `resolve_type_expr_with_guard` so the recursion guard is respected for field types.
-    // This is the critical path that was previously a dead code path: the old fallthrough
-    // to `resolve_type_dict` called `resolve_type_name` (not `_with_guard`), so recursive
-    // field references like `next: Node` silently returned the Unknown Pass-1 placeholder
-    // instead of a fresh TypeVar.
-    //
-    // Positional-only forms (Fn types, [Seq T], [Map K V], parameterized aliases,
-    // unions) are not keyed, so they fall through to `resolve_type_dict` as before.
-    if !all_positional {
-        // Reuse the same logic as the tail of resolve_type_dict but route field-value
-        // resolution through resolve_type_expr_with_guard.
-        let mut fields: indexmap::IndexMap<String, Type> = indexmap::IndexMap::new();
-        for entry in entries {
-            if let SurfaceExpression::Placeholder(..) = &entry.node.value.expr {
-                // `...` rest notation: accepted for openness annotation, produces no field.
-                continue;
-            }
-            let key = match &entry.node.key {
-                Some(k) => match &k.expr {
-                    SurfaceExpression::StringLiteral { content: s, .. } => s.clone(),
-                    // Field with annotation: `field@Child: Type` (T-1052).
-                    // Annotation is now on VarRef directly; use the name field.
-                    SurfaceExpression::VarRef { name, .. } => name.clone(),
-                    _ => {
-                        return Err(TypeDiagnostic::error(
-                            "type-error",
-                            "type record keys must be bare words",
-                            k.span.clone(),
-                        ))
-                    }
-                },
-                None => {
-                    // Mixed keyed+positional dict — fall back to the full resolver.
-                    return resolve_type_dict(
-                        entries,
-                        span,
-                        state,
-                        constraints,
-                        ann_mapping,
-                        row_ann_mapping,
-                        type_params_scope,
-                        "",
-                    )
-                    .await;
-                }
-            };
-            let ty = Box::pin(resolve_type_expr_with_guard(
-                &entry.node.value,
-                state,
-                constraints,
-                ann_mapping,
-                row_ann_mapping,
-                recursion_guard,
-                current_alias,
-                depth,
-                type_params_scope,
-            ))
-            .await?;
-            fields.insert(key, ty);
-        }
-
-        // Mirror the multi-field intersection splitting from resolve_type_dict:
-        // When two or more fields with no shared type variables are present, produce
-        // Intersection of closed single-field Records (BAS open semantics).
-        if fields.len() >= 2 {
-            let mut all_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-            let mut has_shared = false;
-            for ty in fields.values() {
-                let mut field_type_vars = std::collections::HashSet::new();
-                ty.collect_all_vars(&mut field_type_vars);
-                for v in field_type_vars {
-                    if !all_seen.insert(v) {
-                        has_shared = true;
-                        break;
-                    }
-                }
-                if has_shared {
-                    break;
-                }
-            }
-            if !has_shared {
-                let members: Vec<Type> = fields
+                // The scope chain (annotation_scope + type_stage_scope) covers all
+                // classes, tycon_defs, Operator/Label, and kind-annotated TypeVars.
+                let annotation_scope: std::collections::HashMap<
+                    String,
+                    crate::type_infer::TypeStageEntry,
+                > = state
+                    .kind_env()
                     .into_iter()
-                    .map(|(k, v)| {
-                        let mut member_fields = indexmap::IndexMap::new();
-                        member_fields.insert(k, v);
-                        Type::Dict(Row {
-                            fields: member_fields,
-                            tail: crate::type_def::RowTail::Empty,
-                        })
-                    })
+                    .map(|(n, k)| (n, crate::type_infer::TypeStageEntry::TypeVar(k)))
                     .collect();
-                return Ok(Type::normalize_intersection(members));
+                Box::pin(resolve_type_head(
+                    name,
+                    &[],
+                    &annotation_scope,
+                    state,
+                    constraints,
+                    span,
+                ))
+                .await
             }
         }
-
-        let ty = Type::Dict(Row {
-            fields,
-            tail: crate::type_def::RowTail::Empty,
-        });
-        crate::types::check_kind_wellformed(&ty, &state.kind_env(), span)?;
-        return Ok(ty);
     }
-
-    // For remaining positional-only cases (function types, [Seq T], [Map K V],
-    // parameterized alias applications, and multi-type unions), delegate to the normal
-    // resolver which has the full dispatch logic for those forms.
-    resolve_type_dict(
-        entries,
-        span,
-        state,
-        constraints,
-        ann_mapping,
-        row_ann_mapping,
-        type_params_scope,
-        "",
-    )
-    .await
 }
+
+
 
 pub(crate) async fn resolve_type_expr(
     node: &Arc<SurfaceNode>,
@@ -3477,16 +2715,15 @@ pub(crate) async fn resolve_type_dict(
 
     // Unified type-head application: [Name Arg1 Arg2 ...] or bare [Name].
     //
-    // Routes through `resolve_type_head` which checks in the correct order:
-    //   1. Operator/Label kind annotations
-    //   2. class_env (BEFORE tycon_env) — fixes [Iterable a], [Comparable x], etc.
-    //   3. tycon_env → expand_named / instantiate_tycon_def
-    //   4. scope-chain lookup → call_strict_resolver
-    //   5. Falls through (returns None) for unrecognized names
+    // Routes through `resolve_type_head` which checks the unified scope chain:
+    //   annotation_scope (kind_env entries) → type_stage_scope (all types/classes/tycons)
     //
-    // This replaces the three previously separate blocks (TyConDef-based application,
-    // kind_env application, and parameterized alias application), which were processed
-    // in that order and never checked class_env for names in application position.
+    // T-1804: Steps 1 (Operator/Label hardcoded), 1b (kind_env lookup), 2 (class_env),
+    // and 4 (tycon_env) are eliminated. The scope chain covers all of them:
+    //   - TypeStageEntry::TypeVar    → kind-annotated TypeVar (Operator, Label, m@Operator)
+    //   - TypeStageEntry::Class      → class constraint (Iterable, Comparable, etc.)
+    //   - TypeStageEntry::Resolved   → concrete type (Integer, DirCap, user TyCon, etc.)
+    //   - TypeStageEntry::Function   → parameterized constructor (Seq, Map, etc.)
     // All three cases now go through the single canonical lookup path.
     //
     // IMPORTANT: We only enter this block when the name is recognizable as a type head
@@ -3497,19 +2734,25 @@ pub(crate) async fn resolve_type_dict(
         if let Some(first) = entries.first() {
             if first.node.key.is_none() {
                 if let SurfaceExpression::VarRef { name, .. } = &first.node.value.expr {
-                    // Check whether this name is a known type head. The order matters:
-                    // class_env must be checked BEFORE tycon_env (the fix). We do this
-                    // lightweight check here to decide whether to enter the path — the
-                    // full resolution is done inside resolve_type_head.
-                    let in_class_env = {
-                        let env_guard = state.env.read().unwrap();
-                        env_guard.get_class(name).is_some()
-                    };
-                    let in_tycon_env = state.tycon_env.contains_key(name.as_str());
-                    let in_kind_env = state.get_kind(name.as_str()).is_some_and(|k| k.arity() > 0);
-                    let is_kind_keyword = name == "Operator" || name == "Label";
+                    // Check whether this name is a known type head — i.e., it appears in the
+                    // unified scope chain (annotation_scope + type_stage_scope). This is the
+                    // gating check that determines whether to enter the resolve_type_head path.
+                    // Build annotation_scope once here; pass it through to resolve_type_head.
+                    let annotation_scope: std::collections::HashMap<
+                        String,
+                        crate::type_infer::TypeStageEntry,
+                    > = state
+                        .kind_env()
+                        .into_iter()
+                        .map(|(n, k)| (n, crate::type_infer::TypeStageEntry::TypeVar(k)))
+                        .collect();
+                    let in_scope = annotation_scope.contains_key(name.as_str())
+                        || state
+                            .type_stage_scope
+                            .iter()
+                            .any(|s| s.contains_key(name.as_str()));
 
-                    if in_class_env || in_tycon_env || in_kind_env || is_kind_keyword {
+                    if in_scope {
                         // Resolve argument types from the remaining positional entries.
                         // Keyed entries (constraint:, doc:, bind:, etc.) are metadata — skip them.
                         let mut resolved_args: Vec<Type> = Vec::new();
@@ -3534,6 +2777,7 @@ pub(crate) async fn resolve_type_dict(
                         return Box::pin(resolve_type_head(
                             name,
                             &resolved_args,
+                            &annotation_scope,
                             state,
                             constraints,
                             span,
@@ -4213,50 +3457,20 @@ async fn collect_typenode_seq(
     }
 }
 
-/// Convert a TypeNode `Value` to a `Type`.
+/// Convert a materialized TypeNode value (from type-stage evaluation) into a Rust `Type`.
 ///
-/// Handles TypeNode Variant values produced by the type-stage evaluator:
+/// Called after evaluating a type-stage expression to convert the resulting runtime
+/// `Value` back into a `Type` for use by the type checker.
 ///
-/// **TypeNode Variant values** — `Variant { tag: "TypeNode.Int" }`, `Variant { tag:
-/// "TypeNode.Union", payload: ... }` etc., produced by the TypeNode ADT declared in the
-/// type-stage prelude (T-1058/T-1061). Matched by tag prefix `"TypeNode."`.
-///
-/// Returns `None` if the value cannot be recognized as a Type.
-///
-/// **Coverage:** All structural TypeNode variants are handled: Union, Intersect, Negation,
-/// Record, Arrow, TypeConstructor, TypeApplication, TypeVar, Recursive, RecursiveRef.
-///
-/// Public (crate-internal) re-export; the implementation is `typenode_value_to_type`.
-#[allow(dead_code)]
-pub(crate) async fn typenode_value_to_type_pub(
+/// Returns `None` if the value is not a recognizable TypeNode constructor.
+pub(crate) async fn typenode_value_to_type(
     val: &Value,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Option<Type> {
-    typenode_value_to_type(val, ctx).await
-}
-
-fn typenode_value_to_type<'a>(
-    val: &'a Value,
-    ctx: &'a Arc<crate::eval::EvalContext>,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<Type>> + Send + 'a>> {
     Box::pin(async move {
         match val {
-            // T-1555: Value::Annotated is removed; annotated bindings no longer need unwrapping.
-
-            // TypeNode Variant values produced by the TypeNode ADT (T-1058 / T-1061).
-            Value::Variant {
-                tycon,
-                ctor,
-                payload: _,
-            } => {
-                let tag = format!("{}.{}", tycon, ctor);
-                match tag.as_str() {
-                    // ── Primitive leaf constructors ──────────────────────────────────────
-                    // No payload — map directly to concrete Type variants.
-                    "TypeNode.Int" => Some(Type::Int),
-                    "TypeNode.Float" => Some(Type::Float),
-                    "TypeNode.String" => Some(Type::Str),
-                    // TypeNode.Bool: Boolean is a prelude-defined TyCon. Return None here so
+            Value::Variant { tycon, ctor, .. } if tycon.as_ref() == "TypeNode" => {
+                match ctor.as_ref() {
                     // callers fall through to as_type_dispatch. Note: as_type_dispatch currently
                     // cannot resolve TypeNode.Bool to a concrete Type via the prelude as-type chain,
                     // so compound TypeNode expressions containing Bool sub-nodes will fail resolution.
@@ -4564,259 +3778,7 @@ fn typenode_value_to_type<'a>(
             _ => None,
         }
     })
-}
-
-/// Convert a resolved `Type` back to a `Value::Variant` representing the corresponding
-/// TypeNode ADT constructor.
-///
-/// This is the inverse of `typenode_value_to_type` for the subset of `Type` variants that
-/// have a direct TypeNode representation. Used by the implied-call path in `resolve_type_expr`
-/// when calling type-stage functions (like `or`, `all`, `without`) with arguments that may
-/// contain TypeVars — the args are first resolved to `Type` via `resolve_type_expr`, then
-/// converted to `TypeNode Value`s here before being passed to `eval_type_stage_value`.
-///
-/// Returns `None` for `Type` variants that cannot be faithfully round-tripped through the
-/// TypeNode ADT (e.g., complex structural types not yet fully supported). Callers should fall
-/// back to the Union interpretation when `None` is returned.
-#[allow(dead_code)]
-fn type_to_typenode_value<'a>(
-    ty: &'a Type,
-    ctx: &'a Arc<crate::eval::EvalContext>,
-    span: Span,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<Value>> + Send + 'a>> {
-    Box::pin(async move {
-        // mk_arc: build an Arc<Thunk> for dict value insertion (T-1772: Value::Dict stores Arc<Thunk>)
-        let mk_arc = |v: Value| -> Arc<Thunk> { Arc::new(Thunk::value(v, span.clone())) };
-        // alloc_payload: wrap a Value::Dict as Arc<Thunk> for Variant payload
-        let alloc_payload = |v: Value| -> Arc<Thunk> { Arc::new(Thunk::value(v, span.clone())) };
-
-        Some(match ty {
-            Type::Int => Value::Variant {
-                tycon: Arc::from("TypeNode"),
-                ctor: Arc::from("Int"),
-                payload: None,
-            },
-            Type::Float => Value::Variant {
-                tycon: Arc::from("TypeNode"),
-                ctor: Arc::from("Float"),
-                payload: None,
-            },
-            Type::Str => Value::Variant {
-                tycon: Arc::from("TypeNode"),
-                ctor: Arc::from("String"),
-                payload: None,
-            },
-            Type::Bytes => Value::Variant {
-                tycon: Arc::from("TypeNode"),
-                ctor: Arc::from("Bytes"),
-                payload: None,
-            },
-            Type::Any => Value::Variant {
-                tycon: Arc::from("TypeNode"),
-                ctor: Arc::from("Top"),
-                payload: None,
-            },
-            Type::Never => Value::Variant {
-                tycon: Arc::from("TypeNode"),
-                ctor: Arc::from("Never"),
-                payload: None,
-            },
-            Type::Unknown => Value::Variant {
-                tycon: Arc::from("TypeNode"),
-                ctor: Arc::from("Unknown"),
-                payload: None,
-            },
-            Type::Proxy => Value::Variant {
-                tycon: Arc::from("TypeNode"),
-                ctor: Arc::from("Proxy"),
-                payload: None,
-            },
-            Type::TypeVar(name, level) => {
-                let mut payload: indexmap::IndexMap<HashableValue, Arc<Thunk>> =
-                    indexmap::IndexMap::new();
-                payload.insert(
-                    HashableValue::Str("name".into()),
-                    mk_arc(crate::value::string_val(name)),
-                );
-                payload.insert(
-                    HashableValue::Str("level".into()),
-                    mk_arc(Value::Int(*level as i64)),
-                );
-                let payload_tid = alloc_payload(Value::Dict(payload));
-                Value::Variant {
-                    tycon: Arc::from("TypeNode"),
-                    ctor: Arc::from("TypeVar"),
-                    payload: Some(payload_tid),
-                }
-            }
-            Type::Dict(row) => {
-                // TypeNode.Dict { fields: dict_of_typenodes, open: Bool }
-                let mut fields_map: indexmap::IndexMap<HashableValue, Arc<Thunk>> =
-                    indexmap::IndexMap::new();
-                for (k, v_ty) in &row.fields {
-                    let field_tn =
-                        Box::pin(type_to_typenode_value(v_ty, ctx, span.clone())).await?;
-                    fields_map.insert(HashableValue::Str(k.clone().into()), mk_arc(field_tn));
-                }
-                let open = matches!(row.tail, crate::type_def::RowTail::Uniform { .. });
-                let mut payload: indexmap::IndexMap<HashableValue, Arc<Thunk>> =
-                    indexmap::IndexMap::new();
-                payload.insert(
-                    HashableValue::Str("fields".into()),
-                    mk_arc(Value::Dict(fields_map)),
-                );
-                payload.insert(
-                    HashableValue::Str("open".into()),
-                    mk_arc(Value::Int(if open { 1 } else { 0 })),
-                );
-                let payload_tid = alloc_payload(Value::Dict(payload));
-                Value::Variant {
-                    tycon: Arc::from("TypeNode"),
-                    ctor: Arc::from("Dict"),
-                    payload: Some(payload_tid),
-                }
-            }
-            Type::Union(members) => {
-                let mut member_vals: indexmap::IndexMap<HashableValue, Arc<Thunk>> =
-                    indexmap::IndexMap::new();
-                for (i, m) in members.iter().enumerate() {
-                    let m_tn = Box::pin(type_to_typenode_value(m, ctx, span.clone())).await?;
-                    member_vals.insert(HashableValue::Int(i as i64), mk_arc(m_tn));
-                }
-                let mut payload: indexmap::IndexMap<HashableValue, Arc<Thunk>> =
-                    indexmap::IndexMap::new();
-                payload.insert(
-                    HashableValue::Str("types".into()),
-                    mk_arc(Value::Dict(member_vals)),
-                );
-                let payload_tid = alloc_payload(Value::Dict(payload));
-                Value::Variant {
-                    tycon: Arc::from("TypeNode"),
-                    ctor: Arc::from("Union"),
-                    payload: Some(payload_tid),
-                }
-            }
-            // For types we cannot faithfully represent as a TypeNode value, return None.
-            // The caller falls back to the Union interpretation.
-            _ => return None,
-        })
-    })
-}
-
-/// Evaluate a type-stage tinct function value with the given arguments and convert the
-/// result to a `Type`.
-///
-/// This is the inner call protocol for type-stage dispatch — used to invoke any type-stage
-/// function value with pre-materialized argument values.
-///
-/// ## Behaviour
-///
-/// 1. Allocates materialized thunks for each argument value in `args`.
-/// 2. Calls `fn_val` via `invoke_function` using the EvalContext from `state.eval_ctx`.
-/// 3. Materializes the result thunk.
-/// 4. Converts the result via `typenode_value_to_type`.
-///
-/// Returns `Err(TypeDiagnostic)` if:
-/// - `fn_val` is not a function value.
-/// - `state.eval_ctx` is `None` (EvalContext unavailable).
-/// - Function invocation or materialization fails.
-/// - The result cannot be converted to a `Type` (unrecognized TypeNode tag).
-///
-/// ## Usage
-///
-/// Callable when a type-stage function value is already in hand (e.g., an `as-type:` fn
-/// extracted from a constructor annotation).
-#[allow(dead_code)]
-pub(crate) async fn eval_type_stage_value(
-    fn_val: &Value,
-    args: &[Value],
-    state: &mut InferState,
-) -> Result<Type, TypeDiagnostic> {
-    let origin_span = rust_span!();
-
-    // Use the EvalContext from tinct's evaluation pipeline — capabilities flow in from tinct.
-    let ctx = match state.eval_ctx.clone() {
-        Some(ctx) => ctx,
-        None => {
-            return Err(TypeDiagnostic::error(
-                "type-error",
-                "type-stage evaluation requires an EvalContext from the tinct pipeline",
-                origin_span.clone(),
-            ))
-        }
-    };
-
-    // Build materialized Arc<Thunk> for each argument.
-    let arg_thunks: Vec<Arc<Thunk>> = args
-        .iter()
-        .map(|v| Arc::new(Thunk::value(v.clone(), origin_span.clone())))
-        .collect();
-
-    // Dispatch: fn_val must be a user-defined function (not a builtin).
-    // Builtin type-stage functions are not expected in as-type dispatch paths.
-    // T-1555: Value::Annotated is removed; function values are no longer wrapped.
-    let result_thunk = match fn_val {
-        Value::Function {
-            ref params,
-            ref body,
-            ref closure_env,
-            ..
-        } => {
-            let call_ctx = crate::eval_call::CallContext {
-                params,
-                body,
-                closure_env: Arc::clone(closure_env),
-                positional: &arg_thunks,
-                named: None,
-                call_span: origin_span.clone(),
-                ctx: &ctx,
-            };
-            crate::eval_call::invoke_function(&call_ctx)
-                .await
-                .map_err(|e| {
-                    TypeDiagnostic::error(
-                        "type-error",
-                        format!("type-stage function call failed: {e}"),
-                        origin_span.clone(),
-                    )
-                })?
-        }
-        // Not a function — as-type dispatch requires a callable value.
-        _ => {
-            return Err(TypeDiagnostic::error(
-                "type-error",
-                "eval_type_stage_value: argument is not a function value",
-                origin_span,
-            ))
-        }
-    };
-
-    // Materialize the result.
-    let result_val = crate::eval::materialize(&result_thunk, None, &ctx)
-        .await
-        .map_err(|e| {
-            TypeDiagnostic::error(
-                "type-error",
-                format!("type-stage materialization failed: {e}"),
-                origin_span.clone(),
-            )
-        })?;
-
-    // Convert TypeNode Value → Type.
-    // If the direct structural conversion fails (unrecognised TypeNode tag), try
-    // as_type_dispatch to normalise the value through the prelude's `as-typenode`
-    // function before giving up.
-    if let Some(ty) = typenode_value_to_type(&result_val, &ctx).await {
-        return Ok(ty);
-    }
-    if let Some(ty) = as_type_dispatch(&result_val, state).await {
-        return Ok(ty);
-    }
-    Err(TypeDiagnostic::error(
-        "type-error",
-        format!("type-stage result cannot be converted to Type: {result_val}"),
-        origin_span,
-    ))
+    .await
 }
 
 /// Dispatch a TypeNode `Value` through the type-stage `as-typenode` protocol function.
@@ -4841,8 +3803,8 @@ pub(crate) async fn eval_type_stage_value(
 /// 1. Looks up `as-typenode` in `state.type_stage_scope` as a
 ///    `TypeStageEntry::Function(thunk_id)`.
 /// 2. Materialises the thunk via `state.eval_ctx` to obtain the resolver function value.
-/// 3. Calls `eval_type_stage_value(fn_val, &[val.clone()], state)` — the function value
-///    receives the TypeNode value as its sole argument and returns a normalised TypeNode.
+/// 3. Invokes the function inline via `evaluate_resolver_by_value` with the TypeNode value as
+///    the sole argument. Returns a normalised TypeNode.
 /// 4. Converts the normalised TypeNode value to a `Type` via `typenode_value_to_type`.
 ///
 /// Returns `None` if:
@@ -4850,9 +3812,7 @@ pub(crate) async fn eval_type_stage_value(
 /// - The `as-typenode` entry is `Resolved` (not a function).
 /// - `state.eval_ctx` is `None`.
 /// - Thunk materialisation fails.
-/// - `eval_type_stage_value` returns an error.
-/// - The result of `eval_type_stage_value` is itself unrecognised (would cause recursion;
-///   stopped at this depth).
+/// - The result is unrecognised (would cause recursion; stopped at this depth).
 ///
 /// ## Protocol contract (Axiom 1 / D-7)
 ///
@@ -4892,9 +3852,9 @@ pub(crate) async fn as_type_dispatch(val: &Value, state: &mut InferState) -> Opt
         .ok()?;
 
     // Step 3: call the resolver with the TypeNode value as its sole argument.
-    // We use evaluate_resolver_by_value (inline) rather than eval_type_stage_value so that the
-    // result conversion uses typenode_value_to_type ONLY (no as_type_dispatch fallback),
-    // preventing infinite recursion if the resolver itself returns an unrecognised tag.
+    // Invoke inline rather than via a helper so the result conversion uses
+    // typenode_value_to_type ONLY (no as_type_dispatch fallback), preventing infinite
+    // recursion if the resolver itself returns an unrecognised tag.
     let origin_span = rust_span!();
     let arg_thunk = Arc::new(Thunk::value(val.clone(), origin_span.clone()));
 
@@ -5032,541 +3992,6 @@ pub(crate) async fn eval_type_stage_expr(
 // ============================================================================
 // Alias Expansion: T-1066 expand_named / T-1067 expand_all_tycon_apps
 // ============================================================================
-
-/// An entry on the expansion stack used by `expand_named` / `expand_all_tycon_apps`.
-///
-/// Each entry carries a cloned `Arc<TyConDef>` (preserving pointer identity for
-/// `Arc::ptr_eq` cycle detection) and the pre-assigned binder name that will be
-/// used if a recursive reference to this entry is found during expansion.
-///
-/// The binder name is generated via `gensym_fresh('𝜇', alias_name)` before the body
-/// is expanded, so that any self-reference in the body can return the pre-assigned name
-/// rather than an uninitialized one.
-#[allow(dead_code)]
-pub(crate) type ExpansionStack = Vec<(Arc<crate::type_def::TyConDef>, String)>;
-
-/// Returns `true` if `ty` contains any bare (unexpanded) type constructor references.
-///
-/// A "bare" type constructor reference is one of:
-/// - `Type::TyCon(name)` — a named type constructor waiting to be expanded
-/// - `Type::App(Type::TyCon(_), _)` — a type constructor application
-/// - Any nested occurrence of the above
-///
-/// Used by `expand_named` Step 2b as a fast-path: if the alias body has no TyCon
-/// references, it can be returned directly without further expansion.
-pub(crate) fn body_contains_tycon_ref(ty: &Type) -> bool {
-    match ty {
-        Type::TyCon(_) => true,
-        Type::App(f, arg) => body_contains_tycon_ref(f) || body_contains_tycon_ref(arg),
-        Type::Dict(row) => {
-            if row.fields.values().any(body_contains_tycon_ref) {
-                return true;
-            }
-            if let crate::type_def::RowTail::Uniform { key, value } = &row.tail {
-                if let Some(k) = key {
-                    if body_contains_tycon_ref(k) {
-                        return true;
-                    }
-                }
-                body_contains_tycon_ref(value)
-            } else {
-                false
-            }
-        }
-        Type::Function { params, ret, .. } => {
-            params.iter().any(|(_, p)| body_contains_tycon_ref(p)) || body_contains_tycon_ref(ret)
-        }
-        Type::Union(members) | Type::Intersection(members) => {
-            members.iter().any(body_contains_tycon_ref)
-        }
-        Type::Negation(inner) => body_contains_tycon_ref(inner),
-        Type::NominalVariant {
-            tycon: _,
-            ctor: _,
-            fields,
-        } => {
-            if fields.fields.values().any(body_contains_tycon_ref) {
-                return true;
-            }
-            if let crate::type_def::RowTail::Uniform { key, value } = &fields.tail {
-                if let Some(k) = key {
-                    if body_contains_tycon_ref(k) {
-                        return true;
-                    }
-                }
-                body_contains_tycon_ref(value)
-            } else {
-                false
-            }
-        }
-        // S-860: equirecursive-types-core — a Recursive body may contain unexpanded TyCon refs.
-        Type::Recursive { body, .. } => body_contains_tycon_ref(body),
-        _ => false,
-    }
-}
-
-/// Returns `true` if `ty` contains a `TypeVar` with the given name.
-///
-/// Used by `expand_named` Step 8 to determine whether the expanded body actually
-/// contains a self-reference (making this a genuinely recursive type). If the
-/// binder variable does not appear in the expanded body, the type is non-recursive
-/// and no `Recursive` wrapper is needed.
-///
-/// Note: `TypeVar(var, 0)` at recursive positions is the sentinel produced by Step 4
-/// (cycle detection). After expansion, `contains_recvar(expanded, binder_name)` checks
-/// whether this sentinel appears anywhere in the body — confirming the alias is recursive.
-pub(crate) fn contains_recvar(ty: &Type, var: &str) -> bool {
-    match ty {
-        Type::TypeVar(name, _) => name == var,
-        Type::App(f, arg) => contains_recvar(f, var) || contains_recvar(arg, var),
-        Type::Dict(row) => {
-            if row.fields.values().any(|t| contains_recvar(t, var)) {
-                return true;
-            }
-            if let crate::type_def::RowTail::Uniform { key, value } = &row.tail {
-                if let Some(k) = key {
-                    if contains_recvar(k, var) {
-                        return true;
-                    }
-                }
-                contains_recvar(value, var)
-            } else {
-                false
-            }
-        }
-        Type::Function { params, ret, .. } => {
-            params.iter().any(|(_, p)| contains_recvar(p, var)) || contains_recvar(ret, var)
-        }
-        Type::Union(members) | Type::Intersection(members) => {
-            members.iter().any(|m| contains_recvar(m, var))
-        }
-        Type::Negation(inner) => contains_recvar(inner, var),
-        Type::NominalVariant {
-            tycon: _,
-            ctor: _,
-            fields,
-        } => {
-            if fields.fields.values().any(|t| contains_recvar(t, var)) {
-                return true;
-            }
-            if let crate::type_def::RowTail::Uniform { key, value } = &fields.tail {
-                if let Some(k) = key {
-                    if contains_recvar(k, var) {
-                        return true;
-                    }
-                }
-                contains_recvar(value, var)
-            } else {
-                false
-            }
-        }
-        // S-860: equirecursive-types-core — recurse into the body of a nested Recursive.
-        // Globally unique gensym var names guarantee no shadowing: an inner Recursive will
-        // never carry the same `var` name as an outer one, so recursion is always safe.
-        Type::Recursive { body, .. } => contains_recvar(body, var),
-        _ => false,
-    }
-}
-
-/// Returns `true` if `ty` is contractive with respect to `var`.
-///
-/// A type is contractive if it does NOT permit a bare self-reference to appear at the root
-/// or inside a Union/Intersection without a guarding constructor. This ensures that recursive
-/// types are well-founded and can be unfolded finitely.
-///
-/// **Contractiveness rules:**
-/// 1. `TypeVar(var, _)` where `var` matches → NOT contractive (bare self-ref)
-/// 2. `Union(members)` or `Intersection(members)` → ALL members must be contractive
-/// 3. All other forms (Record, Function, App, TyCon, etc.) → contractive (guarding constructors)
-///
-/// Used by `expand_named` (T-1162) to verify that a recursive type alias body is well-formed
-/// before wrapping it in `Type::Recursive`. Non-contractive types are infinite without a
-/// guarding constructor and cannot be soundly expanded.
-///
-/// Example:
-/// - `type Bad a = a` → NOT contractive (bare TypeVar)
-/// - `type Bad a = [A a | B a]` → contractive (Union with guarding constructors A/B)
-/// - `type Bad a = [a | a]` → NOT contractive (Union of bare self-refs)
-/// - `type Good = [x: Int next: Good]` → contractive (Record guarding constructor)
-pub(crate) fn is_contractive_type(ty: &Type, var: &str) -> bool {
-    match ty {
-        // Rule 1: Bare self-reference → NOT contractive.
-        Type::TypeVar(name, _) if name == var => false,
-
-        // Rule 2: Union/Intersection → ALL members must be contractive.
-        Type::Union(members) | Type::Intersection(members) => {
-            members.iter().all(|m| is_contractive_type(m, var))
-        }
-
-        // Rule 3: All other forms are guarding constructors → contractive.
-        // This includes:
-        // - Record (structural guard)
-        // - Function (arrow constructor)
-        // - App (type application)
-        // - TyCon (named type constructor)
-        // - NominalVariant (variant constructor)
-        // - Negation (type operator)
-        // - Recursive (nested recursive type)
-        // - Primitives (Int, Float, Str, Bool, etc.)
-        _ => true,
-    }
-}
-
-/// Expand a named type alias to its fully-expanded `Type`.
-///
-/// Implements the 6-step algorithm from the equirecursive-types design (§Annotation Resolver):
-///
-/// 1. Look up the `TyConDef` for `name` from `state.tycon_env`.
-/// 2. Fast path: if the body is a primitive type and contains no `TyCon` references,
-///    return the body directly (no expansion needed).
-/// 3. Builtin-opaque path: if `builtin_type` is `Some`, return
-///    `Type::App(Type::TyCon(name), args[0])` (or `Type::TyCon(name)` for zero-arg)
-///    without structural expansion.
-/// 4. Cycle detection: if the expansion stack already contains this `Arc<TyConDef>`
-///    (via `Arc::ptr_eq`), this is a recursive reference. Return a `TypeVar` with
-///    the pre-assigned binder name from the stack entry.
-/// 5. Param substitution: build a `HashMap<String, Type>` from `params` → `args` and
-///    apply it to the body via `apply_type_alias_substitution`.
-/// 6. Recursive expansion: push a new stack entry (with a fresh gensym'd binder name),
-///    call `expand_all_tycon_apps` on the substituted body, then pop.
-///
-/// Returns `None` if the name is not registered in `state.tycon_env`.
-///
-/// **Cycle origin detection (wrap rule):** after expansion, if the expanded
-/// body contains a `TypeVar` matching the pre-assigned binder name, this alias IS the
-/// cycle origin — the body is wrapped in `Type::Recursive { var: binder_name, body }`.
-/// Non-recursive aliases are returned as-is (no wrapper needed).
-///
-/// The `Type::Recursive` produced here is consumed by `is_subtype` via the S-Exp + S-Assum
-/// coinductive algorithm implemented in S-861. `expand_named` is wired into the annotation
-/// resolver via `resolve_type_head` (S-862 complete).
-pub(crate) fn expand_named(name: &str, args: &[Type], state: &mut InferState) -> Option<Type> {
-    // Step 1: look up the TyConDef.
-    // Lookup in state.tycon_env — the authoritative flat store, populated by typecheck_cek.rs
-    // Pass 2 and builtins registration.
-    let def_arc = state.tycon_env.get(name).cloned()?;
-    let def = Arc::clone(&def_arc);
-
-    // Arity check: number of args must match declared params.
-    if args.len() != def.params.len() {
-        // Arity mismatch — cannot expand. Fall back to a TyCon application so that
-        // callers can still produce a type error message. Build the App chain.
-        let base = Type::TyCon(name.to_string());
-        if args.is_empty() {
-            return Some(base);
-        }
-        let mut result = base;
-        for arg in args {
-            result = Type::App(Box::new(result), Box::new(arg.clone()));
-        }
-        return Some(result);
-    }
-
-    // Step 2a: nominal ADT guard — do NOT expand the body of a declared nominal type.
-    // Nominal ADTs (those with declared constructors) must stay as TyCon/TyConResolved so that
-    // nominal identity is preserved. Expanding a TyCon to its Union of constructors collapses
-    // it into structural equivalence with any union that happens to match the body —
-    // which is wrong for nominal typing. UNIFY-TYCON-EXPAND handles the TyCon ~
-    // NominalVariant and TyCon ~ Union cases correctly without body expansion.
-    if !def.constructors.is_empty() {
-        let base = Type::TyConResolved(name.to_string(), def_arc);
-        if args.is_empty() {
-            return Some(base);
-        }
-        let mut result = base;
-        for arg in args {
-            result = Type::App(Box::new(result), Box::new(arg.clone()));
-        }
-        return Some(result);
-    }
-
-    // Step 2b: fast path for zero-param types with no TyCon references in body.
-    // Structural aliases (Int, Float, etc.) have no params, no constructors, and no TyCon
-    // references in body — return the body directly.
-    if def.params.is_empty() && !body_contains_tycon_ref(&def.body) {
-        return Some(def.body.clone());
-    }
-
-    // Step 3: builtin-opaque types — do not structurally expand.
-    // Return App(TyConResolved(name, arc), args) so that UNIFY-TYCON handles them by Arc identity
-    // and variance-directed comparison, not by structural equivalence.
-    if def.builtin_type.is_some() {
-        let base = Type::TyConResolved(name.to_string(), def_arc);
-        if args.is_empty() {
-            return Some(base);
-        }
-        let mut result = base;
-        for arg in args {
-            result = Type::App(Box::new(result), Box::new(arg.clone()));
-        }
-        return Some(result);
-    }
-
-    // Step 4: cycle detection via Arc::ptr_eq.
-    // If the same Arc<TyConDef> is already on the stack, this is a self-referential
-    // (recursive) type. Return a TypeVar with the pre-assigned binder name so that the
-    // caller receives a stable type identity for the recursive position.
-    for (stack_def, binder_name) in state.expansion_stack.iter() {
-        if Arc::ptr_eq(stack_def, &def) {
-            return Some(Type::TypeVar(binder_name.clone(), 0));
-        }
-    }
-
-    // Step 5: param substitution.
-    // Build a HashMap from parameter name → concrete arg type and apply it to the body.
-    // Uses `apply_type_alias_substitution` which handles all Type variants including
-    // TypeVar (for parameter tokens), Record, Function, Union, App, etc.
-    let body_substituted = if def.params.is_empty() {
-        def.body.clone()
-    } else {
-        let mut param_subst: HashMap<String, Type> = HashMap::new();
-        for (param, arg) in def.params.iter().zip(args.iter()) {
-            param_subst.insert(param.clone(), arg.clone());
-        }
-        apply_type_alias_substitution(&def.body, &param_subst, state)
-    };
-
-    // Step 6: push to stack with a fresh binder name, expand, then pop.
-    // The binder name is pre-assigned BEFORE expansion so that Step 4 above can return
-    // it when the body self-references this alias (S-860: equirecursive-types-core).
-    //
-    // The gensym_fresh call is here — BEFORE stack.push — so the pre-assigned name is
-    // available to Step 4 (cycle detection) for any self-reference in the body.
-    let binder_name = crate::builtins_meta::gensym_fresh('𝜇', name);
-    state.expansion_stack.push((def, binder_name.clone()));
-
-    let expanded = expand_all_tycon_apps(&body_substituted, state);
-
-    state.expansion_stack.pop();
-
-    // Recursive wrapping rule (Step 6 wrap — S-860: equirecursive-types-core).
-    //
-    // Check whether the pre-assigned binder name appears in the expanded body as a
-    // TypeVar sentinel (produced by Step 4 cycle detection when the body self-references
-    // this alias). If yes, this alias IS recursive — wrap the body in `Type::Recursive`.
-    // If no (non-recursive alias), return the body as-is.
-    //
-    // This wrapping rule implements §Annotation Resolver Path 1 from
-    // doc/whatif/equirecursive-types.md: "wrap `Recursive` only when popping the stack
-    // entry whose fresh name appears in the expanded body."
-    //
-    // The S-Exp + S-Assum coinductive subtype algorithm that CONSUMES `Type::Recursive`
-    // was implemented in S-861 (`is_atom_subtype` in src/bas.rs). `expand_named` is wired
-    // into the annotation resolver via `resolve_type_head` (S-862 complete).
-    if contains_recvar(&expanded, &binder_name) {
-        // T-1162: Contractiveness check BEFORE wrapping in Type::Recursive.
-        // A recursive type must be contractive — the self-reference must appear under a
-        // guarding constructor (Record, Function, App, etc.), NOT as a bare TypeVar or
-        // inside a Union/Intersection of bare self-refs.
-        //
-        // Non-contractive types are infinite without a guarding constructor and cannot be
-        // soundly expanded. Example: `type Bad a = a` → infinite regress.
-        //
-        // If the expanded body is NOT contractive, return it as-is WITHOUT wrapping.
-        // This lets the caller handle the non-recursive (or malformed) type downstream.
-        if !is_contractive_type(&expanded, &binder_name) {
-            // Non-contractive recursive type — do NOT wrap in Recursive.
-            // Return the expanded body as-is. Downstream type checking will likely produce
-            // an error when it encounters the bare TypeVar sentinel.
-            return Some(expanded);
-        }
-
-        // Recursive alias: wrap in Type::Recursive with the pre-assigned binder name.
-        // TypeVar(binder_name, 0) in `expanded` marks the recursive positions (self-refs).
-        Some(Type::Recursive {
-            var: binder_name,
-            body: Box::new(expanded),
-        })
-    } else {
-        // Non-recursive alias: return the expanded body as-is (no wrapper needed).
-        Some(expanded)
-    }
-}
-
-/// Recursively expand all `Type::TyCon` and `Type::App(TyCon, _)` references in `ty`.
-///
-/// This is the structural walker that drives alias expansion. It calls `expand_named`
-/// for each named type constructor it encounters, passing the current expansion stack
-/// for cycle detection.
-///
-/// - `Type::TyCon(name)` → `expand_named(name, &[], stack, state)`
-/// - `Type::App(Type::TyCon(name), arg)` → expand arg first, then
-///   `expand_named(name, &[expanded_arg], stack, state)`
-/// - Nested `Type::App(Type::App(TyCon, a), b)` chains → collect all args in order,
-///   call `expand_named(name, &[a, b, ...], stack, state)` (curried left-assoc)
-/// - All other type forms → recurse structurally into children
-///
-/// Returns the expanded type. Falls back to the original type node when expansion
-/// fails (e.g., unknown alias name — the TyCon is preserved for downstream error
-/// reporting).
-pub(crate) fn expand_all_tycon_apps(ty: &Type, state: &mut InferState) -> Type {
-    match ty {
-        // Bare TyCon — zero-arg application.
-        Type::TyCon(name) => expand_named(name, &[], state).unwrap_or_else(|| ty.clone()),
-
-        // App chain: collect the root TyCon name and all args, then expand.
-        // App is left-associative: App(App(TyCon("Map"), Str), Int) = Map[Str][Int].
-        // We collect args right-to-left while peeling left-associative Apps, then reverse.
-        Type::App(f, arg) => {
-            // Expand the argument first (args are always expanded before the ctor).
-            let expanded_arg = expand_all_tycon_apps(arg, state);
-
-            // Check whether `f` is a TyCon or another App(TyCon, ...) chain.
-            // Collect the root name and all preceding args by peeling the App spine.
-            let (root_name, preceding_args) = collect_app_spine(f);
-
-            match root_name {
-                Some(name) => {
-                    // Expand preceding args first, then append the current expanded_arg.
-                    let mut all_args: Vec<Type> = preceding_args
-                        .iter()
-                        .map(|a| expand_all_tycon_apps(a, state))
-                        .collect();
-                    all_args.push(expanded_arg);
-
-                    expand_named(name, &all_args, state).unwrap_or_else(|| {
-                        // Unknown alias — rebuild the App chain with the expanded args.
-                        let base = Type::TyCon(name.to_string());
-                        all_args
-                            .into_iter()
-                            .fold(base, |acc, a| Type::App(Box::new(acc), Box::new(a)))
-                    })
-                }
-                None => {
-                    // `f` is not a TyCon chain (e.g., App(TypeVar, arg)) — recurse into f.
-                    let expanded_f = expand_all_tycon_apps(f, state);
-                    Type::App(Box::new(expanded_f), Box::new(expanded_arg))
-                }
-            }
-        }
-
-        // Structural recursion for all other type forms.
-        Type::Dict(row) => {
-            let new_fields: indexmap::IndexMap<String, Type> = row
-                .fields
-                .iter()
-                .map(|(k, v)| (k.clone(), expand_all_tycon_apps(v, state)))
-                .collect();
-            let new_tail = match &row.tail {
-                crate::type_def::RowTail::Uniform { key, value } => {
-                    crate::type_def::RowTail::Uniform {
-                        key: key
-                            .as_ref()
-                            .map(|k| Box::new(expand_all_tycon_apps(k, state))),
-                        value: Box::new(expand_all_tycon_apps(value, state)),
-                    }
-                }
-                other => other.clone(),
-            };
-            Type::Dict(Row {
-                fields: new_fields,
-                tail: new_tail,
-            })
-        }
-
-        Type::Function {
-            params,
-            ret,
-            typed_variadics,
-            rest,
-            required_count,
-        } => Type::Function {
-            params: params
-                .iter()
-                .map(|(name, p)| (name.clone(), expand_all_tycon_apps(p, state)))
-                .collect(),
-            typed_variadics: typed_variadics
-                .iter()
-                .map(|(name, p)| (name.clone(), expand_all_tycon_apps(p, state)))
-                .collect(),
-            rest: rest
-                .as_ref()
-                .map(|boxed| Box::new((boxed.0.clone(), expand_all_tycon_apps(&boxed.1, state)))),
-            ret: Box::new(expand_all_tycon_apps(ret, state)),
-            required_count: *required_count,
-        },
-
-        Type::Union(members) => Type::normalize_union(
-            members
-                .iter()
-                .map(|m| expand_all_tycon_apps(m, state))
-                .collect(),
-        ),
-
-        Type::Intersection(members) => Type::normalize_intersection(
-            members
-                .iter()
-                .map(|m| expand_all_tycon_apps(m, state))
-                .collect(),
-        ),
-
-        Type::Negation(inner) => Type::Negation(Box::new(expand_all_tycon_apps(inner, state))),
-
-        Type::NominalVariant {
-            tycon,
-            ctor,
-            fields,
-        } => {
-            let new_fields: indexmap::IndexMap<String, Type> = fields
-                .fields
-                .iter()
-                .map(|(k, v)| (k.clone(), expand_all_tycon_apps(v, state)))
-                .collect();
-            let new_tail = match &fields.tail {
-                crate::type_def::RowTail::Uniform { key, value } => {
-                    crate::type_def::RowTail::Uniform {
-                        key: key
-                            .as_ref()
-                            .map(|k| Box::new(expand_all_tycon_apps(k, state))),
-                        value: Box::new(expand_all_tycon_apps(value, state)),
-                    }
-                }
-                other => other.clone(),
-            };
-            Type::NominalVariant {
-                tycon: tycon.clone(),
-                ctor: ctor.clone(),
-                fields: Row {
-                    fields: new_fields,
-                    tail: new_tail,
-                },
-            }
-        }
-
-        // S-860: equirecursive-types-core — recurse into the body of a Recursive type.
-        // A Recursive wrapper (produced by expand_named's Step 8 on an earlier pass) may
-        // contain TyCon references in its body that still need expansion. The `var` binder
-        // is preserved unchanged — it is a μ-binder name, not a type alias reference.
-        Type::Recursive { var, body } => Type::Recursive {
-            var: var.clone(),
-            body: Box::new(expand_all_tycon_apps(body, state)),
-        },
-
-        // Atomic types (primitives, TypeVar, Unknown, Top, etc.) — no TyCon children.
-        _ => ty.clone(),
-    }
-}
-
-/// Collect the root `TyCon` name and all intermediate argument types from a left-associative
-/// `App` spine.
-///
-/// Given `App(App(TyCon("Map"), Str), Int)`, returns `(Some("Map"), [Str, Int])`.
-/// Given `App(TypeVar("a"), Int)`, returns `(None, [])` — no TyCon root.
-///
-/// The returned `preceding_args` are in left-to-right order (first arg first).
-fn collect_app_spine(ty: &Type) -> (Option<&str>, Vec<&Type>) {
-    match ty {
-        Type::TyCon(name) => (Some(name.as_str()), vec![]),
-        Type::App(f, arg) => {
-            let (root, mut args) = collect_app_spine(f);
-            if root.is_some() {
-                args.push(arg.as_ref());
-            }
-            (root, args)
-        }
-        _ => (None, vec![]),
-    }
-}
 
 /// Detect `[Fn@Return [ParamTypes]]` -- a Dict with two auto-indexed entries
 /// where the first is `Annotated { name: "Fn", ... }` and the second is a Dict

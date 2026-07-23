@@ -136,33 +136,35 @@ The type-stage mechanism allows type annotations to reference names computed at 
 
 The two passes in the type-stage threading are:
 
-**Pass 1 (type-stage evaluation):** The loader evaluates the `--- stage: "type"` section of each module using `builtin-tc-with-scope`. This call:
-1. Evaluates the type-stage document section as a regular tinct program
-2. Records the resulting scope-id (`Value::Int`) into `TypeContextData.type_stage_scope_id` via `builtin-tc-with-scope`
+**Pass 1 (type-stage evaluation):** The loader evaluates the `--- stage: "type"` section of each module via `builtin-tc-update-type-stage-env`. This call:
+1. Evaluates the type-stage document section as a regular tinct program, producing an env Dict
+2. Prepends a new frame to `TypeContextData.type_stage_scope` (Vec[0] = innermost) with TypeStageEntry values derived from the env Dict
 
-**Pass 2 (type-stage-aware type-checking):** When `builtin-typecheck-doc` type-checks a module, it reads `TypeContextData.type_stage_scope_id` from the TypeContext and writes it into `InferState.type_stage_scope_id`. The type checker then uses this scope-id as the authoritative source for annotation name resolution:
+**Pass 2 (type-stage-aware type-checking):** When `builtin-typecheck-doc` type-checks a module, it reads `TypeContextData.type_stage_scope` from the TypeContext into `InferState.type_stage_scope`. The type checker uses this scope chain as the authoritative source for annotation name resolution:
 
 ```
-TypeContextData.type_stage_scope_id
-    → InferState.type_stage_scope_id
-        → resolve_type_head (Step 4)
-            → ScopeArena::lookup_name_in_scope_chain
+TypeContextData.type_stage_scope
+    → InferState.type_stage_scope
+        → resolve_type_head (single scope-chain loop)
+            → TypeStageEntry::Resolved | Function | TypeVar | Class
                 → call_strict_resolver → Type
 ```
 
-The scope arena IS the authoritative type-stage environment. There is no translation layer — `ScopeArena::lookup_name_in_scope_chain(scope_id, name)` returns the thunk for the type-stage value, which is then materialized and converted to a `Type` via `call_strict_resolver`.
+The `type_stage_scope` Vec IS the authoritative type-stage environment. There is no translation layer — each frame is a `HashMap<String, TypeStageEntry>` populated by `builtin-tc-update-type-stage-env` from the evaluated env Dict.
 
 ### `resolve_type_head` Lookup Order
 
-When the type checker encounters an uppercase annotation name (e.g., `@Integer`, `@Seq`, `@DirCap`), it resolves it through `resolve_type_head` in this order:
+When the type checker encounters an uppercase annotation name (e.g., `@Integer`, `@Seq`, `@DirCap`), it resolves it through `resolve_type_head` via a single scope-chain loop:
 
-1. **Kind constraints** — `Operator` and `Label` are kinds, not types; handled specially
-2. **class_env** — if the name is a registered type class (e.g., `Iterable`), produces a constrained TypeVar
-3. **tycon_env** — if the name is in `state.tycon_env` (registered TyConDef), uses `expand_named` or `instantiate_tycon_def`
-4. **scope-chain lookup** via `type_stage_scope_id` — looks up the name in the type-stage scope chain, materializes the thunk, calls `call_strict_resolver`
-5. **Undefined** — returns a `TypeError`
+1. **`annotation_scope`** — TypeVar entries from `state.kind_env()` (Operator/Label-kinded names, prepended by the call site before entering the loop)
+2. **`state.type_stage_scope`** — frames populated by `builtin-tc-update-type-stage-env` (innermost = Vec[0], highest priority):
+   - `TypeStageEntry::Resolved(Type)` → return the Type (with App wrapping if args present)
+   - `TypeStageEntry::Function(Arc<Thunk>)` → invoke via `evaluate_resolver_with_thunk` with args
+   - `TypeStageEntry::TypeVar(Kind)` → fresh TypeVar of the given kind; break from loop
+   - `TypeStageEntry::Class(ClassDecl)` → fresh TypeVar with class constraint; break from loop
+3. **Undefined** — returns a `TypeError`
 
-This is the mechanism by which `@Integer` resolves to `Type::Int` in user code: `builtin_core.llt`'s type-stage section defines `Integer = TypeNode.Int`, the loader evaluates it and wires the scope, and `resolve_type_head` Step 4 finds it there.
+This is the mechanism by which `@Integer` resolves to `Type::Int` in user code: `builtin_core.llt`'s type-stage section defines `Integer = TypeNode.Int`, the loader evaluates it and wires the scope via `builtin-tc-update-type-stage-env`, and `resolve_type_head` finds it in the scope chain.
 
 ---
 

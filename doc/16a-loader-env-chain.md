@@ -61,9 +61,10 @@ The third dict body sees Dicts 1 and 2. It:
    env via `%prelude` (for mutually-recursive includes) and
    Boolean/True/False before prelude declares them.
 2. Extracts `prelude-env` (a Dict) from the result: `prelude-result.env`.
-3. Creates the runtime TypeContext: `[builtin-tc-with-scope fundamental-tc
-   prelude-env]` — wires the prelude env dict into the type checker so
-   prelude's type schemes are available.
+3. Uses `fundamental-tc` directly as the runtime TypeContext — it is already
+   enriched by the `include` call: the type-stage pass wires prelude's type-stage
+   env via `builtin-tc-update-type-stage-env`, and `builtin-typecheck-doc` calls
+   populate the inference_env with prelude's type schemes.
 4. Allocates the emit channel and formatter.
 
 ### Final Expression
@@ -238,15 +239,16 @@ for the type checker. It flows explicitly:
 
 1. `fundamental-tc` is built once from `builtin_core.llt` — contains
    `DirCap`, `Int`, `Bytes`, etc.
-2. `[builtin-tc-with-scope fundamental-tc prelude-env]` wires the
-   prelude env dict into the TypeContext so prelude's type schemes are
-   visible during type-checking of user documents. The argument is now
-   a Dict (env dict), not a scope-id.
+2. `fundamental-tc` is used directly as the runtime TypeContext — the `include`
+   call that loads prelude already enriches it: the type-stage pass calls
+   `builtin-tc-update-type-stage-env` (which prepends a new scope frame to
+   `TypeContextData.type_stage_scope`), and `builtin-typecheck-doc` calls
+   populate `inference_env` with type schemes.
 3. Per-document: `builtin-typecheck-doc` receives `tc` and the resolved
    document. It updates `tc`'s internal `inference_env` (merging the
    document's new type schemes) so subsequent documents see them.
 4. Type-stage documents (`--- stage: "type"`) are evaluated first; their
-   env is wired into `tc` via `builtin-tc-with-scope` before
+   env is wired into `tc` via `builtin-tc-update-type-stage-env` before
    runtime-stage documents are type-checked. This lets `@Integer`,
    `@Float`, etc. annotations resolve correctly in the runtime stage.
 
@@ -264,7 +266,7 @@ The only Rust primitives used by the loader are the irreducible
 builtins listed in the loader's header comment:
 `builtin-file-read`, `builtin-parse`, `builtin-resolve`,
 `builtin-typecheck-doc`, `builtin-lower`, `builtin-eval`,
-`builtin-tc-with-scope`, `builtin-make-type-ctx`, `builtin-channel`,
+`builtin-tc-update-type-stage-env`, `builtin-make-type-ctx`, `builtin-channel`,
 `builtin-send`, `builtin-str`, `builtin-get`, `builtin-keys`,
 `builtin-dict-length`, `builtin-build-dict`, `builtin-tag-of`,
 `builtin-path-dir`, and `builtin-string-concat`.

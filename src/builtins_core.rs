@@ -59,7 +59,7 @@ use crate::builtins_meta::{
     builtin_builtin_module, builtin_cap_env_has, builtin_check_type, builtin_desugar,
     builtin_doc_expressions, builtin_doc_meta, builtin_eval, builtin_get_type_context,
     builtin_is_variant, builtin_llt_repr, builtin_parse, builtin_program_docs, builtin_raise,
-    builtin_resolve, builtin_tag_of, builtin_tc_with_scope, builtin_try, builtin_type_of,
+    builtin_resolve, builtin_tag_of, builtin_try, builtin_type_of,
     builtin_typecheck_doc, builtin_variant_payload,
 };
 // I/O implementations — Core-46 only.
@@ -508,13 +508,6 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             crate::builtins_meta::builtin_make_type_ctx,
             [],
             0
-        ),
-        builtin!(
-            "builtin-tc-with-scope",
-            builtin_tc_with_scope,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["type-ctx", "ts-env"]
         ),
         builtin!(
             "builtin-tc-update-type-stage-env",

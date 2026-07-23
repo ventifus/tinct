@@ -8,8 +8,7 @@
 //! - `VarRef` → `Var` (resolved de Bruijn coordinates) or `Placeholder` (unresolvable — diagnostic emitted)
 //! - `Pipe { lhs, rhs }` → `Call { func: rhs, args: [lhs], implied: true }` (syntactic sugar)
 //! - `TypeAssert` → `TypeAssert` (with resolved_type from the inline TypeAnnotation field or Type::Unknown)
-//! - `Field` with `field_slot` set → `Call(slot-get, [Int(slot), target])` (O(1) positional access)
-//! - `Field` without `field_slot` → `Call(field-get, [Str/Int(key), target])` (key-based lookup)
+//! - `Field` → `Call(builtin-get, [Str/Int(key), target])` (unified key-based lookup)
 //! - `SurfaceNode.type_guard` set → wraps the lowered CoreExpr in `CoreExpr::TypeAssert`
 //! - All other variants: structural lowering, recursing into child nodes
 
@@ -848,7 +847,7 @@ fn lower_expr(
             desugared: *desugared,
             captures: resolved_captures
                 .get()
-                .expect("resolved_captures must be set by resolver")
+                .expect("resolved_captures not set")
                 .clone(),
         },
 

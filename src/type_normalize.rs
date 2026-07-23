@@ -355,6 +355,50 @@ pub(crate) fn typenode_leaf_to_type(val: &Value) -> Option<Type> {
     }
 }
 
+/// Extract the Kind from a TypeNode.TypeVar sentinel value.
+///
+/// `TypeNode.TypeVar kind: "Operator"` and `TypeNode.TypeVar kind: "Label"` are produced
+/// by builtin_core.llt's type-stage section for the `Operator` and `Label` type names.
+/// This helper converts them to `crate::type_def::Kind` values so that the type-stage
+/// scope population code (builtins_meta.rs, lib.rs) can produce `TypeStageEntry::TypeVar`.
+///
+/// Returns `Some(Kind)` for recognised kind strings, `None` for unrecognised values.
+pub(crate) fn typenode_typevar_kind(val: &Value) -> Option<crate::type_def::Kind> {
+    // Only matches Value::Variant { tycon: "TypeNode", ctor: "TypeVar", payload: Some(thunk) }
+    // where the thunk resolves to Value::Dict containing kind: "Operator" | "Label".
+    let (tycon, ctor, payload_opt) = match val {
+        Value::Variant {
+            tycon,
+            ctor,
+            payload,
+        } => (&**tycon, &**ctor, payload),
+        _ => return None,
+    };
+    if tycon != "TypeNode" || ctor != "TypeVar" {
+        return None;
+    }
+    // The payload is an Arc<Thunk> that resolves to a Dict with a "kind" string field.
+    let payload_thunk = payload_opt.as_ref()?;
+    let payload_val = payload_thunk.try_get_value()?;
+    let dict = match payload_val {
+        Value::Dict(d) => d,
+        _ => return None,
+    };
+    // Extract the "kind" field value.
+    let kind_key = crate::value::HashableValue::Str(std::sync::Arc::from("kind"));
+    let kind_thunk = dict.get(&kind_key)?;
+    let kind_val = kind_thunk.try_get_value()?;
+    let kind_str = match kind_val {
+        Value::String { source, start, end } => &source[*start..*end],
+        _ => return None,
+    };
+    match kind_str {
+        "Operator" => Some(crate::type_def::Kind::Operator),
+        "Label" => Some(crate::type_def::Kind::Label),
+        _ => None,
+    }
+}
+
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
