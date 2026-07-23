@@ -1,0 +1,21 @@
+# Case arm variable bindings: [case [let x] pattern body] must make x available in body.
+# B-598: bind_or_pin_name previously dropped the thunk; arm body had no bound variables.
+# Bindings now use Parameter(i) addressing (via enter_param_scope) to avoid collisions
+# with root_group builtin slots.
+
+[
+  # Bind the entire scrutinee to a variable and return it directly.
+  # Pattern: v (a Var in binding position). Scrutinee: 42. Result: v = 42.
+  r1: [match 42 [case [let v] v v] ...: 0]
+
+  # Bound variable used in a compound expression in the body.
+  # v = 42, body = [+ v 1] = 43.
+  r2: [match 42 [case [let v] v [+ v 1]] ...: 0]
+
+  # Non-matching case arm falls through to wildcard.
+  # Scrutinee = "hello", literal pattern = 42 (no match). Wildcard body = 99.
+  r3: [match "hello" [case [let v] 42 v] ...: 99]
+]
+
+=== out
+["r1": 42  "r2": 43  "r3": 99]

@@ -5960,4 +5960,115 @@ mod tests {
             ),
         }
     }
+
+    // B-598: Case arm variable bindings must be injected into the arm EvalFrame.
+    // `[case [let v] pattern body]` — `v` must be accessible in body.
+    // Previously bind_or_pin_name created the thunk and immediately dropped it;
+    // the arm body evaluated in the parent frame and `v` was undefined.
+    //
+    // These tests use the eval_surface_file path (via parse + desugar) to exercise
+    // the full resolver → lowerer → evaluator pipeline including case arm scope.
+
+    #[tokio::test]
+    async fn test_b598_case_arm_binding_is_accessible() {
+        // `[case [let v] v body]` — pattern IS the binding variable `v`.
+        // Scrutinee = 42. Pattern `v` matches (and binds v=42). Body returns v directly.
+        // r: [match 42 [case [let v] v v] ...: 0] → r = 42.
+        let ctx = test_ctx();
+        let file: Arc<str> = Arc::from("<test>");
+        let source = "[r: [match 42 [case [let v] v v] ...: 0]]";
+        let parsed = crate::parser::parse(source, Arc::clone(&file)).expect("parse");
+        let program = crate::desugar::desugar_program_full(&parsed.program);
+        let root_frame = ctx.root_group_resolver_map();
+        let _ = crate::resolve::resolve_surface_program(&program, &[root_frame]);
+        let thunk = crate::eval_surface_file(&program, &ctx)
+            .await
+            .expect("eval_surface_file must succeed");
+        let val = materialize(&thunk, None, &ctx)
+            .await
+            .expect("materialize must succeed");
+        let Value::Dict(ref d) = val else {
+            panic!("expected Dict, got {val:?}");
+        };
+        let r = d
+            .get(&HashableValue::Str(Arc::from("r")))
+            .expect("key 'r' must exist");
+        let r_val = super::materialize(r, None, &ctx)
+            .await
+            .expect("r must materialize");
+        assert_eq!(
+            r_val,
+            Value::Int(42),
+            "B-598: case arm binding v should be 42; got: {r_val:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_b598_case_arm_binding_used_in_expression() {
+        // `[case [let v] v [builtin-int-add v 1]]` — v is bound to the scrutinee,
+        // then used in an arithmetic expression in the body.
+        // Scrutinee = 41. v = 41. Body = [builtin-int-add v 1] = 42.
+        // (Using builtin-int-add directly to avoid the + typeclass resolution.)
+        let ctx = test_ctx();
+        let file: Arc<str> = Arc::from("<test>");
+        let source = "[r: [match 41 [case [let v] v [builtin-int-add v 1]] ...: 0]]";
+        let parsed = crate::parser::parse(source, Arc::clone(&file)).expect("parse");
+        let program = crate::desugar::desugar_program_full(&parsed.program);
+        let root_frame = ctx.root_group_resolver_map();
+        let _ = crate::resolve::resolve_surface_program(&program, &[root_frame]);
+        let thunk = crate::eval_surface_file(&program, &ctx)
+            .await
+            .expect("eval_surface_file must succeed");
+        let val = materialize(&thunk, None, &ctx)
+            .await
+            .expect("materialize must succeed");
+        let Value::Dict(ref d) = val else {
+            panic!("expected Dict, got {val:?}");
+        };
+        let r = d
+            .get(&HashableValue::Str(Arc::from("r")))
+            .expect("key 'r' must exist");
+        let r_val = super::materialize(r, None, &ctx)
+            .await
+            .expect("r must materialize");
+        assert_eq!(
+            r_val,
+            Value::Int(42),
+            "B-598: v=41, body [builtin-int-add v 1] should be 42; got: {r_val:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_b598_case_arm_no_match_falls_through() {
+        // A non-matching case arm must fall through to the next arm (wildcard).
+        // r: [match "hello" [case [let v] 42 v] ...: 99]
+        // Scrutinee "hello" != literal 42 → arm does not match → wildcard 99.
+        let ctx = test_ctx();
+        let file: Arc<str> = Arc::from("<test>");
+        let source = r#"[r: [match "hello" [case [let v] 42 v] ...: 99]]"#;
+        let parsed = crate::parser::parse(source, Arc::clone(&file)).expect("parse");
+        let program = crate::desugar::desugar_program_full(&parsed.program);
+        let root_frame = ctx.root_group_resolver_map();
+        let _ = crate::resolve::resolve_surface_program(&program, &[root_frame]);
+        let thunk = crate::eval_surface_file(&program, &ctx)
+            .await
+            .expect("eval_surface_file must succeed");
+        let val = materialize(&thunk, None, &ctx)
+            .await
+            .expect("materialize must succeed");
+        let Value::Dict(ref d) = val else {
+            panic!("expected Dict, got {val:?}");
+        };
+        let r = d
+            .get(&HashableValue::Str(Arc::from("r")))
+            .expect("key 'r' must exist");
+        let r_val = super::materialize(r, None, &ctx)
+            .await
+            .expect("r must materialize");
+        assert_eq!(
+            r_val,
+            Value::Int(99),
+            "B-598: non-matching case arm must fall through to wildcard; got: {r_val:?}"
+        );
+    }
 }

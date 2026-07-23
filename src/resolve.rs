@@ -187,11 +187,6 @@ impl SurfaceResolver {
         }
     }
 
-    /// Enter a letrec dict scope: each key gets `LetrecGroupMember(i)` as its VarAddr.
-    fn enter_scope(&mut self, keys: &[String], kind: ScopeKind) {
-        self.enter_scope_with_offset(keys, 0, kind);
-    }
-
     /// Enter a letrec dict scope with a slot offset.
     /// Each key gets `LetrecGroupMember(offset + i)` as its VarAddr.
     /// Used by walk_surface_document to assign cumulative LGM indices to sequential
@@ -1216,7 +1211,12 @@ impl SurfaceResolver {
                 };
                 let has_bindings = !bound_names.is_empty();
                 if has_bindings {
-                    self.enter_scope(&bound_names, ScopeKind::Other);
+                    // Case arm bindings use Parameter addressing so they do not conflict with
+                    // root_group builtin LGM slots (which start at slot 0). Parameter(i) is
+                    // looked up via arm_frame.params[i], which the evaluator builds from the
+                    // bound thunks collected during pattern matching. This is analogous to
+                    // function parameter binding — locally scoped for the arm body only.
+                    self.enter_param_scope(&bound_names);
                 }
                 self.walk_surface_node(pattern);
                 self.walk_surface_node(body);
@@ -2318,7 +2318,11 @@ mod tests {
 
     /// Match arm pattern bindings should be resolved in the arm body.
     /// Uses [case [let n] _ $n] form: [let n] declares the binding, _ matches anything,
-    /// and $n in the body resolves to the case arm's scope as LetrecGroupMember(0).
+    /// and $n in the body resolves to the case arm's scope as Parameter(0).
+    ///
+    /// B-598: case arm bindings use enter_param_scope so they resolve to Parameter(i),
+    /// not LetrecGroupMember(i). This avoids collision with root_group builtin slots
+    /// (which also start at LGM(0)). At runtime, arm_frame.params[i] holds the bound thunk.
     #[test]
     fn match_arm_pattern_binding() {
         // T-1154: bare lowercase names in match arm patterns are now Pin (not Variable).
@@ -2333,14 +2337,18 @@ mod tests {
             .expect("$n should be resolved (case arm binding in arm scope)");
         assert_eq!(
             addr,
-            &VarAddr::LetrecGroupMember(0),
-            "n is the first (and only) binding, LetrecGroupMember(0)"
+            &VarAddr::Parameter(0),
+            "n is the first (and only) binding — Parameter(0) via enter_param_scope (B-598)"
         );
     }
 
     /// Case arm bodies see the bindings declared in [let ...].
     /// T-1154: bare lowercase names in match arm patterns are now Pin (not Variable).
     /// To bind a variable, use [case [let n] pattern body] form.
+    ///
+    /// B-598: case arm bindings resolve to Parameter(i) so they don't conflict with
+    /// root_group builtin slots (LGM(0) = builtin-int-add). The arm body accesses `n`
+    /// via arm_frame.params[0] which holds the bound thunk from pattern matching.
     #[test]
     fn match_arm_guard_sees_pattern_bindings() {
         // T-1154: `n:` in match arm position creates a Pin pattern, not a variable binding.
@@ -2359,11 +2367,11 @@ mod tests {
             let addr = table
                 .get(id)
                 .expect("$n should be resolved via case arm [let n]");
-            // The case arm scope introduces n as LetrecGroupMember(0)
+            // The case arm scope introduces n as Parameter(0) via enter_param_scope (B-598)
             assert_eq!(
                 addr,
-                &VarAddr::LetrecGroupMember(0),
-                "n is LetrecGroupMember(0)"
+                &VarAddr::Parameter(0),
+                "n is Parameter(0) via enter_param_scope (B-598)"
             );
         }
     }

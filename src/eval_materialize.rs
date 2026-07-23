@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use indexmap::IndexMap;
 
-use crate::ast::{Annotation, CoreExpr, Span, Spanned};
+use crate::ast::{Annotation, CoreExpr, Span, Spanned, VarAddr};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{
     as_record_row_merged, format_expected_label, format_field_path, format_got_label,
@@ -2483,27 +2483,63 @@ pub(crate) async fn apply_cont(
                                 } = &arm.body.node
                                 {
                                     // 3-arg form: [case [let bindings] pattern body]
-                                    // B-515 transitional: eval_case_arm_structural_pattern still uses FlatEnv.
-                                    // Pass 0 as parent_env_id placeholder.
+                                    // Evaluate the structural pattern, collecting (slot, thunk)
+                                    // pairs for each bound variable declared in [let ...].
                                     let binding_map = extract_let_binding_names(&let_bindings.node);
                                     match eval_case_arm_structural_pattern(
                                         pattern,
                                         &binding_map,
                                         &scrutinee_value,
                                         match_span.clone(),
-                                        0,
+                                        &frame,
                                         &ctx,
                                     )
                                     .await
                                     {
-                                        Ok(Some(_feid)) => {
-                                            // Pattern matched: use parent frame for body evaluation.
-                                            // B-515: arm FlatEnv bindings not yet visible via EvalFrame.
-                                            (
-                                                Arc::clone(body),
-                                                Arc::clone(&frame),
-                                                Arc::clone(&arm_env),
-                                            )
+                                        Ok(Some(arm_bindings)) => {
+                                            // Pattern matched. Build an arm EvalFrame with the
+                                            // bound variable thunks in params.
+                                            //
+                                            // The resolver uses enter_param_scope(&bound_names)
+                                            // for case arm bindings so they resolve to Parameter(i)
+                                            // rather than LetrecGroupMember(i). This avoids
+                                            // collisions with root_group builtin slots (which also
+                                            // start at LGM(0)). arm_frame.params[i] holds the
+                                            // bound thunk for the i-th declared binding.
+                                            //
+                                            // group and closure_env are inherited from the parent
+                                            // frame — outer scope names remain accessible in the
+                                            // arm body via their LGM or ClosureCapture addresses.
+                                            let arm_frame = if arm_bindings.is_empty() {
+                                                // No bindings: body evaluates in parent frame unchanged.
+                                                Arc::clone(&frame)
+                                            } else {
+                                                // Build params vec: slot 0, 1, 2, ... map to
+                                                // bound thunks in insertion order. arm_bindings
+                                                // is a vec of (param_index, thunk) pairs.
+                                                // Slots are sequential (0, 1, 2, ...) so we can
+                                                // sort by slot and fill a contiguous vec.
+                                                let mut sorted = arm_bindings;
+                                                sorted.sort_unstable_by_key(|(slot, _)| *slot);
+                                                let mut params_vec: Vec<Arc<Thunk>> =
+                                                    Vec::with_capacity(sorted.len());
+                                                for (slot, thunk) in sorted {
+                                                    let slot = slot as usize;
+                                                    // Slots must be contiguous starting at 0.
+                                                    // Gaps are a resolver invariant violation —
+                                                    // fill defensively.
+                                                    while params_vec.len() < slot {
+                                                        params_vec.push(Arc::clone(&thunk));
+                                                    }
+                                                    params_vec.push(thunk);
+                                                }
+                                                Arc::new(EvalFrame {
+                                                    group: Arc::clone(&frame.group),
+                                                    closure_env: Arc::clone(&frame.closure_env),
+                                                    params: Arc::new(params_vec),
+                                                })
+                                            };
+                                            (Arc::clone(body), arm_frame, Arc::clone(&arm_env))
                                         }
                                         Ok(None) => {
                                             // Pattern did not match — move to next arm
@@ -2801,11 +2837,13 @@ pub(crate) async fn apply_cont(
 /// pattern expression will be evaluated from the current environment and compared for
 /// equality (pin semantics).
 ///
-/// Returns an `IndexMap<String, u32>` mapping each binding name to its slot index.
-/// The slot is the declaration-order position (first name → 0, second → 1, …), which
-/// matches the resolver's `enter_scope(&bound_names)` insertion-order slot assignment.
-/// The map is threaded into `eval_case_arm_structural_pattern` to distinguish bind vs.
-/// pin at each name position, and to fill the correct FlatEnv slot when binding.
+/// Returns an `IndexMap<String, u32>` mapping each binding name to its Parameter index.
+/// The index is the declaration-order position (first name → 0, second → 1, …), which
+/// matches the resolver's `enter_param_scope(&bound_names)` insertion-order assignment.
+/// The resolver emits `Parameter(i)` for uses of the i-th declared binding in the arm
+/// body and pattern. The map is threaded into `eval_case_arm_structural_pattern` to
+/// distinguish bind vs. pin at each name position, and to record the correct Parameter
+/// index when building the arm EvalFrame's params vec.
 fn extract_let_binding_names(let_decl: &CoreExpr) -> IndexMap<String, u32> {
     let mut map: IndexMap<String, u32> = IndexMap::new();
     if let CoreExpr::LetDecl { bindings } = let_decl {
@@ -2831,42 +2869,40 @@ fn extract_let_binding_names(let_decl: &CoreExpr) -> IndexMap<String, u32> {
 
 /// Evaluate the structural pattern of a 3-arg `[case [let bindings] pattern body]` arm.
 ///
-/// Returns `Ok(Some(env))` if the pattern matches, `Ok(None)` if it does not match,
-/// or `Err(e)` if evaluating the pattern itself produces an error (e.g., unresolvable
-/// pin reference, failed field-get for constructor tag). Errors must not be silently
-/// converted to no-match — that produces misleading diagnostics.
+/// Returns `Ok(Some(bindings))` if the pattern matches, where `bindings` is a vec of
+/// `(param_index, thunk)` pairs — one entry per bound variable declared in `[let ...]`.
+/// Each `param_index` is the Parameter slot assigned by the resolver (0, 1, 2, ... in
+/// declaration order, via `enter_param_scope`). `thunk` is a pre-materialized thunk
+/// holding the matched scrutinee fragment for that variable. The caller builds
+/// `arm_frame.params` from these bindings so that `arm_frame.params[param_index]`
+/// returns the bound value when the body's `VarAddr::Parameter(i)` is looked up.
 ///
-/// Returns `Ok(Some(arm_env_id))` on match, where `arm_env_id` is a placeholder u32.
-/// B-515 transitional: FlatEnv arm binding replaced by EvalFrame; arm_env_id is 0.
+/// Returns `Ok(None)` if the pattern does not match, or `Err(e)` if evaluating the
+/// pattern itself produces an error (e.g., unresolvable pin reference, failed field-get
+/// for constructor tag). Errors must not be silently converted to no-match — that
+/// produces misleading diagnostics.
 async fn eval_case_arm_structural_pattern(
     pattern: &Arc<Spanned<CoreExpr>>,
     binding_map: &IndexMap<String, u32>,
     scrutinee_value: &Value,
     match_span: Span,
-    parent_env_id: u32,
+    frame: &Arc<EvalFrame>,
     ctx: &Arc<EvalContext>,
-) -> EvalResult<Option<u32>> {
-    // B-515 transitional: scope_arena removed; use 0 as stub arm_env_id.
-    // Pattern matching still works for tag checks; variable bindings are not yet
-    // injected into EvalFrame (tracked by B-515).
-    let arm_env_id: u32 = 0;
-
-    // Legacy placeholder env for eval_structural_pattern_inner.
-    let arm_env_legacy = Arc::new(RwLock::new(crate::env::Env::new()));
+) -> EvalResult<Option<Vec<(u32, Arc<Thunk>)>>> {
+    let mut bindings: Vec<(u32, Arc<Thunk>)> = Vec::with_capacity(binding_map.len());
 
     if eval_structural_pattern_inner(
         &pattern.node,
         binding_map,
-        arm_env_id,
         scrutinee_value,
-        &arm_env_legacy,
-        parent_env_id,
+        frame,
+        &mut bindings,
         match_span.clone(),
         ctx,
     )
     .await?
     {
-        Ok(Some(arm_env_id))
+        Ok(Some(bindings))
     } else {
         Ok(None)
     }
@@ -2878,16 +2914,18 @@ async fn eval_case_arm_structural_pattern(
 /// or `Err(e)` if pattern evaluation itself fails (unresolvable reference,
 /// constructor tag cannot be determined, etc.).
 ///
+/// `bindings` accumulates `(slot, thunk)` pairs for each bound variable encountered.
+/// `frame` is the parent EvalFrame, used for pin variable lookup.
+///
 /// Uses `Box::pin` for recursive async calls (the codebase does not depend on
 /// `async_recursion`).
 #[allow(clippy::too_many_arguments)]
 fn eval_structural_pattern_inner<'a>(
     pattern: &'a CoreExpr,
     binding_map: &'a IndexMap<String, u32>,
-    arm_env_id: u32,
     scrutinee_value: &'a Value,
-    arm_env_legacy: &'a Arc<RwLock<crate::env::Env>>,
-    parent_env_id: u32,
+    frame: &'a Arc<EvalFrame>,
+    bindings: &'a mut Vec<(u32, Arc<Thunk>)>,
     match_span: Span,
     ctx: &'a Arc<EvalContext>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<bool>> + Send + 'a>> {
@@ -2903,17 +2941,17 @@ fn eval_structural_pattern_inner<'a>(
             CoreExpr::Var {
                 name,
                 annotation: None,
-                ..
+                addr,
             } => {
                 bind_or_pin_name(
                     name,
                     binding_map,
-                    arm_env_id,
                     scrutinee_value,
                     &match_span,
                     ctx,
-                    u32::MAX,
-                    u32::MAX,
+                    frame,
+                    addr,
+                    bindings,
                 )
                 .await
             }
@@ -2923,18 +2961,18 @@ fn eval_structural_pattern_inner<'a>(
             CoreExpr::Var {
                 name,
                 annotation: Some(annotation),
-                ..
+                addr,
             } => {
                 // First, perform the bind-or-pin operation
                 let bind_result = bind_or_pin_name(
                     name,
                     binding_map,
-                    arm_env_id,
                     scrutinee_value,
                     &match_span,
                     ctx,
-                    u32::MAX,
-                    u32::MAX,
+                    frame,
+                    addr,
+                    bindings,
                 )
                 .await?;
 
@@ -2964,22 +3002,25 @@ fn eval_structural_pattern_inner<'a>(
 
                     // The bound variable holds scrutinee_value. Pass it directly —
                     // it is already a Value, no need to wrap in a Thunk and materialize.
+                    // Legacy env stubs: apply_predicate_to_subject ignores both (T-1846/T-1847).
+                    let dummy_env = Arc::new(std::sync::RwLock::new(crate::env::Env::new()));
                     let pred_call_thunk = apply_predicate_to_subject(
                         pred_value,
                         scrutinee_value.clone(),
                         match_span.clone(),
                         match_span.clone(),
-                        arm_env_legacy,
-                        arm_env_id,
+                        &dummy_env,
+                        0,
                         ctx,
                     );
 
                     let pred_result = materialize(&pred_call_thunk, Some(&match_span), ctx).await?;
 
                     // call_to_match ignores legacy env (T-1846/T-1847 track implementation).
-                    let dummy_env =
+                    let dummy_env2 =
                         Arc::new(std::sync::RwLock::new(crate::value::Environment::new()));
-                    if !crate::eval::call_to_match(&pred_result, &dummy_env, ctx, &match_span).await
+                    if !crate::eval::call_to_match(&pred_result, &dummy_env2, ctx, &match_span)
+                        .await
                     {
                         return Ok(false);
                     }
@@ -3078,10 +3119,9 @@ fn eval_structural_pattern_inner<'a>(
                             if !eval_structural_pattern_inner(
                                 &na.node.value.node,
                                 binding_map,
-                                arm_env_id,
                                 &field_val,
-                                arm_env_legacy,
-                                parent_env_id,
+                                frame,
+                                bindings,
                                 match_span.clone(),
                                 ctx,
                             )
@@ -3109,10 +3149,9 @@ fn eval_structural_pattern_inner<'a>(
                         return eval_structural_pattern_inner(
                             &args[0].node,
                             binding_map,
-                            arm_env_id,
                             &payload_val,
-                            arm_env_legacy,
-                            parent_env_id,
+                            frame,
+                            bindings,
                             match_span,
                             ctx,
                         )
@@ -3134,10 +3173,9 @@ fn eval_structural_pattern_inner<'a>(
                         if !eval_structural_pattern_inner(
                             &arg.node,
                             binding_map,
-                            arm_env_id,
                             &field_val,
-                            arm_env_legacy,
-                            parent_env_id,
+                            frame,
+                            bindings,
                             match_span.clone(),
                             ctx,
                         )
@@ -3218,10 +3256,9 @@ fn eval_structural_pattern_inner<'a>(
                     if !eval_structural_pattern_inner(
                         &entry.node.value.node,
                         binding_map,
-                        arm_env_id,
                         &field_val,
-                        arm_env_legacy,
-                        parent_env_id,
+                        frame,
+                        bindings,
                         match_span.clone(),
                         ctx,
                     )
@@ -3254,52 +3291,81 @@ fn eval_structural_pattern_inner<'a>(
 
 /// Implement bind-or-pin at a single name position in a 3-arg structural pattern.
 ///
-/// - If `name` is in `binding_map`: allocate a Thunk::value for `scrutinee_value`
-///   and fill the arm FlatEnv slot at `binding_map[name]`.
-/// - If `name` is NOT in `binding_map`: look up `name` via de Bruijn coordinates
-///   (`pin_level`, `pin_slot`) in the enclosing scope, compare with `primitive_eq`;
-///   return false (soft skip) if not equal.
-///
-/// `pin_level` and `pin_slot` are the de Bruijn coordinates of `name` in the enclosing scope.
-/// `u32::MAX` for both means no resolver coordinates were available (resolver error) —
-/// this propagates as Err.
-#[allow(clippy::too_many_arguments)]
+/// - If `name` is in `binding_map`: create a pre-materialized Thunk::value for
+///   `scrutinee_value` and push `(param_index, thunk)` onto `bindings`. The resolver
+///   uses `enter_param_scope` for case arm bindings, assigning `Parameter(param_index)`
+///   to uses of `name` in the arm body. The caller builds `arm_frame.params` from these
+///   bindings so that `arm_frame.params[param_index]` returns the bound value when the
+///   body evaluates.
+/// - If `name` is NOT in `binding_map`: it is a pin pattern — look up `name` via its
+///   resolver-assigned `addr` in the parent `frame`, materialize it, and compare with
+///   `primitive_eq`. Returns false (soft skip) if not equal.
 async fn bind_or_pin_name(
     name: &str,
     binding_map: &IndexMap<String, u32>,
-    arm_env_id: u32,
     scrutinee_value: &Value,
     match_span: &Span,
     ctx: &Arc<EvalContext>,
-    pin_level: u32,
-    pin_slot: u32,
+    frame: &Arc<EvalFrame>,
+    addr: &VarAddr,
+    bindings: &mut Vec<(u32, Arc<Thunk>)>,
 ) -> EvalResult<bool> {
     if let Some(&slot) = binding_map.get(name) {
-        // Binding: create a materialized thunk for the scrutinee value and fill the arm
-        // FlatEnv slot. The resolver assigned (level=0, slot=K) to uses of `name` in the
-        // arm body; K matches the slot stored in binding_map.
-        // B-515: arm FlatEnv slot filling pending full EvalFrame migration.
-        // Create the bound thunk but don't fill FlatEnv slot (scope_arena removed).
-        let _thunk = Arc::new(Thunk::value(scrutinee_value.clone(), match_span.clone()));
-        let _ = (arm_env_id, slot, ctx);
+        // Binding: create a pre-materialized thunk holding the matched scrutinee fragment.
+        // The resolver assigned Parameter(slot) to uses of `name` in the arm body.
+        // Pushed onto `bindings`; the caller extends the parent EvalFrame's group at `slot`.
+        let thunk = Arc::new(Thunk::value(scrutinee_value.clone(), match_span.clone()));
+        bindings.push((slot, thunk));
         Ok(true)
     } else {
-        // Pin: look up name via de Bruijn coordinates in env, compare with scrutinee.
-        if pin_level == u32::MAX || pin_slot == u32::MAX {
-            return Err(EvalError::internal(
-                format!("pattern pin '{name}': no resolver coordinates (annotation without binding declaration?)"),
-                match_span.clone(),
-            ).into());
-        }
-        // B-515 transitional: FlatEnv pin lookup via scope_arena is removed.
-        // Pin comparison in pattern matching is not yet migrated to EvalFrame.
-        // Return an internal error to avoid silently producing wrong results.
-        let _ = (arm_env_id, pin_level, pin_slot, ctx);
-        Err(EvalError::internal(
-            format!("pattern pin '{name}': FlatEnv pin lookup pending EvalFrame migration (B-515)"),
-            match_span.clone(),
-        )
-        .into())
+        // Pin: look up the name's value in the parent frame via its resolver-assigned addr.
+        // `addr` is the VarAddr the resolver assigned to this name in the enclosing scope.
+        let pinned_thunk = match addr {
+            VarAddr::LetrecGroupMember(i) => {
+                let i = *i as usize;
+                if i >= frame.group.len() {
+                    return Err(EvalError::internal(
+                        format!(
+                            "pattern pin '{name}': LGM slot {i} out of range (group len {})",
+                            frame.group.len()
+                        ),
+                        match_span.clone(),
+                    )
+                    .into());
+                }
+                Arc::clone(&frame.group[i])
+            }
+            VarAddr::ClosureCapture(i) => {
+                let i = *i as usize;
+                if i >= frame.closure_env.len() {
+                    return Err(EvalError::internal(
+                        format!(
+                            "pattern pin '{name}': ClosureCapture slot {i} out of range (closure_env len {})",
+                            frame.closure_env.len()
+                        ),
+                        match_span.clone(),
+                    )
+                    .into());
+                }
+                Arc::clone(&frame.closure_env[i])
+            }
+            VarAddr::Parameter(i) => {
+                let i = *i as usize;
+                if i >= frame.params.len() {
+                    return Err(EvalError::internal(
+                        format!(
+                            "pattern pin '{name}': Parameter slot {i} out of range (params len {})",
+                            frame.params.len()
+                        ),
+                        match_span.clone(),
+                    )
+                    .into());
+                }
+                Arc::clone(&frame.params[i])
+            }
+        };
+        let pinned_val = materialize(&pinned_thunk, Some(match_span), ctx).await?;
+        Ok(primitive_eq(scrutinee_value.clone(), pinned_val))
     }
 }
 
