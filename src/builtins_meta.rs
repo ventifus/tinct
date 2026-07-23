@@ -2283,19 +2283,12 @@ pub(crate) fn builtin_typecheck_doc(
             state.env = Arc::clone(&guard.inference_env);
             state.eval_ctx = Some(Arc::clone(&ctx));
 
-            // Build type_stage_map from the type-stage scope chain.
-            // Walk all scopes from root to leaf at type_stage_scope_id. For each slot whose
-            // thunk carries a span name (set by eval_dict_core for string-keyed entries),
-            // record its ThunkId. Innermost scope entries override outer ones (dict overrides).
-            // Seed with Unknown → Resolved(Unknown) so @Unknown always resolves.
-            let mut ts_map = std::collections::HashMap::new();
-            ts_map.insert(
-                "Unknown".to_string(),
-                crate::type_infer::TypeStageEntry::Resolved(crate::types::Type::Unknown),
-            );
-            // ScopeArena deleted — type_stage_map and scope_frames not populated from arena.
-            let _ = guard.type_stage_scope_id;
-            state.type_stage_map = Some(ts_map);
+            // Install the TypeContextData's accumulated type-stage scope chain.
+            // Ensure an innermost frame exists for declarations discovered during this typecheck.
+            state.type_stage_scope = guard.type_stage_scope.clone();
+            if state.type_stage_scope.is_empty() {
+                state.type_stage_scope.push(std::collections::HashMap::new());
+            }
 
             let type_map = crate::ast::TypeAnnotationTable::new();
             let parent_env = Arc::clone(&guard.inference_env);
@@ -2335,6 +2328,21 @@ pub(crate) fn builtin_typecheck_doc(
             }
             crate::env::merge_env_chain_into(&doc_env, &guard.inference_env);
             // guard.inference_env stays unchanged — it is the single flat root
+
+            // Write back type_stage_scope: merge new declarations (ADTs, classes) from
+            // frame[0] back into TypeContextData so subsequent typecheck calls see them.
+            if let Some(new_entries) = state.type_stage_scope.first() {
+                if guard.type_stage_scope.is_empty() {
+                    guard
+                        .type_stage_scope
+                        .push(std::collections::HashMap::new());
+                }
+                for (name, entry) in new_entries {
+                    guard.type_stage_scope[0]
+                        .entry(name.clone())
+                        .or_insert_with(|| entry.clone());
+                }
+            }
         }
 
         // Build unified diagnostics dict from all type diagnostics (errors + warnings + info)
@@ -2484,11 +2492,11 @@ pub(crate) fn builtin_make_type_ctx(
         // For loader's fundamental-tc, use [builtin-get-type-context] instead —
         // it returns the TypeContext that main.rs pre-populated from builtin_core.llt.
         let tc = TypeContextData {
-            type_stage_scope_id: None,
             inference_env: crate::imports::get_builtin_core_type_env()
                 .await
                 .expect("builtin_core type env unavailable"),
             tycon_env: std::collections::HashMap::new(),
+            type_stage_scope: Vec::new(),
             type_diagnostics: Vec::new(),
         };
         // Install it on EvalContext (no-op if already initialized).
@@ -2555,15 +2563,9 @@ pub(crate) fn builtin_fork_type_ctx(
 ///
 /// T-1775: The second argument is an env-dict (`Dict<String, Any>`) produced by
 /// evaluating type-stage documents with the env-dict protocol.  The env-dict is not
-/// stored in TypeContextData (ScopeArena and type_stage_scope_id are no longer used
-/// by `builtin-typecheck-doc`).  This builtin is therefore a no-op for the env field —
-/// it returns the same TypeContext unchanged regardless of the env value.
-///
-/// The no-op behavior is correct: `builtin-typecheck-doc` already ignores
-/// `type_stage_scope_id` (line `let _ = guard.type_stage_scope_id;`), so wiring the
-/// type-stage scope into the TypeContext via scope-id had no effect.  Under the env-dict
-/// protocol the type-stage types are resolved through the env passed to `builtin-resolve`
-/// and `builtin-eval`, not through the TypeContext.
+/// This builtin is a no-op — it validates the env-dict argument type but does not
+/// populate the TypeContextData.type_stage_scope chain. Use builtin-tc-update-type-stage-env
+/// (T-1803) to populate the type-stage scope chain instead.
 ///
 /// Returns the same `Value::TypeContext` value unchanged.
 ///
@@ -2609,10 +2611,9 @@ pub(crate) fn builtin_tc_with_scope(
         };
 
         // arg 1: env-dict (T-1775 protocol) — must be Dict.
-        // The value is not stored — type_stage_scope_id is already ignored by
-        // builtin-typecheck-doc (`let _ = guard.type_stage_scope_id` in builtins_meta.rs).
-        // Under the env-dict protocol, type-stage resolution is done by the resolver
-        // through the name-set passed to builtin-resolve, not through the TypeContext.
+        // This builtin is a no-op for now — type-stage scope chain population is done by
+        // builtin-tc-update-type-stage-env (T-1803). This builtin exists for backwards
+        // compatibility with existing loader.llt/test-loader.llt call sites.
         match &ts_env_val {
             Value::Dict(_) => {}
             other => {
@@ -2626,8 +2627,8 @@ pub(crate) fn builtin_tc_with_scope(
             }
         }
 
-        // No-op: type_stage_scope_id is a bridge placeholder that builtin-typecheck-doc
-        // already ignores.  Return the TypeContext unchanged.
+        // No-op: return the TypeContext unchanged. Use builtin-tc-update-type-stage-env
+        // to actually populate the type-stage scope chain.
         ok_val(Value::TypeContext(tc_arc), call_span)
     })
 }
@@ -3353,7 +3354,7 @@ pub(crate) fn builtin_eval_macro_ast(
 /// `eval-types`: same as `eval` but evaluates in the type-stage environment.
 ///
 /// This is used for evaluating type-level expressions (type aliases, class declarations).
-/// Base environment: the type_stage_scope_id from the current TypeContext.
+/// Base environment: uses the parent_env_id bridge placeholder (always None).
 pub(crate) fn builtin_eval_types(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -3375,12 +3376,8 @@ pub(crate) fn builtin_eval_types(
         // Reject all named args — eval-types takes only the positional document arg.
         crate::builtins::reject_named("eval-types", named.as_ref(), call_span.clone())?;
 
-        // Get type_stage_scope_id from the TypeContext.
-        // This is the scope populated by the type-stage evaluation pass.
-        let type_stage_scope_id: Option<u32> = {
-            let tc_guard = ctx.type_context.lock().unwrap();
-            tc_guard.as_ref().and_then(|tc| tc.type_stage_scope_id)
-        };
+        // parent_env_id is a bridge placeholder (always None → 0).
+        let parent_env_id: Option<u32> = None;
 
         // Materialize the input — accepts Value::Document only.
         let input_val = args[0]
@@ -3404,7 +3401,7 @@ pub(crate) fn builtin_eval_types(
             let (result_thunk, _root_env_id) = crate::eval::eval_document_exprs_with_env(
                 &expr_nodes,
                 &ctx,
-                type_stage_scope_id,
+                parent_env_id,
                 None,
             )
             .await?;

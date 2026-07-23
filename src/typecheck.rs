@@ -84,12 +84,18 @@ pub async fn typecheck_surface_program_annotation_table(
     TypeAnnotationTable,
     crate::type_def::TyConEnv,
 ) {
+    // Seed Unknown so @Unknown always resolves (gradual-typing escape hatch).
+    let mut seed = std::collections::HashMap::new();
+    seed.insert(
+        "Unknown".to_string(),
+        crate::type_infer::TypeStageEntry::Resolved(crate::types::Type::Unknown),
+    );
     typecheck_surface_program_annotation_table_with_env(
         program,
         Arc::new(RwLock::new(Env::new())),
         None,
         std::collections::HashMap::new(),
-        None,
+        vec![seed],
     )
     .await
 }
@@ -105,7 +111,7 @@ pub async fn typecheck_surface_program_annotation_table_with_env(
     initial_env: Arc<RwLock<Env>>,
     eval_ctx: Option<std::sync::Arc<crate::eval::EvalContext>>,
     seed_tycon_env: crate::type_def::TyConEnv,
-    type_stage_map: Option<std::collections::HashMap<String, crate::type_infer::TypeStageEntry>>,
+    type_stage_scope: Vec<std::collections::HashMap<String, crate::type_infer::TypeStageEntry>>,
 ) -> (
     Vec<TypeDiagnostic>,
     TypeAnnotationTable,
@@ -117,24 +123,11 @@ pub async fn typecheck_surface_program_annotation_table_with_env(
     let mut state = InferState::new();
     state.eval_ctx = eval_ctx;
     state.tycon_env = seed_tycon_env;
-    // Always seed type_stage_map with Unknown → Type::Unknown so that `@Unknown`
-    // (the gradual-typing escape hatch) resolves through the unified Step 3 path
-    // in resolve_type_head. Production callers supply a full map from type-stage
-    // documents; this seed is merged in regardless so `Unknown` is always available.
-    // The caller-supplied entries win on conflict (or_insert semantics below).
-    let mut effective_type_stage_map = {
-        let mut m = std::collections::HashMap::new();
-        m.insert(
-            "Unknown".to_string(),
-            crate::type_infer::TypeStageEntry::Resolved(crate::types::Type::Unknown),
-        );
-        m
-    };
-    if let Some(caller_map) = type_stage_map {
-        // Caller entries override the seed (production type-stage map takes precedence).
-        effective_type_stage_map.extend(caller_map);
-    }
-    state.type_stage_map = Some(effective_type_stage_map);
+    // Install the caller-supplied type-stage scope chain.
+    // Unknown is expected to be in the chain (seeded by builtin_core.llt's type-stage
+    // section). If the chain is empty and no Unknown is present, @Unknown annotations
+    // will produce "undefined type" errors — this is correct for bootstrap/test contexts.
+    state.type_stage_scope = type_stage_scope;
     // Compute and store the resolution table for slot-indexed VarRef lookup.
     // No runtime env at the type-checker path; pass empty initial_frames for bootstrap mode.
     let (resolve_table, _frames) = crate::resolve::resolve_surface_program(program, &[]);
@@ -238,19 +231,17 @@ pub async fn typecheck_surface_program_with_env(
     let mut env: Arc<RwLock<Env>> = Arc::clone(&child_env);
     let mut state = InferState::with_env(Arc::clone(&child_env));
     state.eval_ctx = eval_ctx;
-    // Seed type_stage_map with Unknown → Type::Unknown so that `@Unknown` resolves
-    // through the unified Step 3 path in resolve_type_head. This function is called
-    // by typecheck_source (corpus tests, LSP diagnostics) which do not evaluate
-    // type-stage documents. The full production loader uses
-    // typecheck_surface_program_annotation_table_with_env instead (which has its own
-    // equivalent seed). The seed ensures `@Unknown` never requires a special case.
+    // Seed type_stage_scope with Unknown → Type::Unknown so that `@Unknown` resolves
+    // through the scope chain. This function is called by typecheck_source (corpus tests,
+    // LSP diagnostics) which do not evaluate type-stage documents. The full production
+    // loader uses typecheck_surface_program_annotation_table_with_env instead.
     {
         let mut seed = std::collections::HashMap::new();
         seed.insert(
             "Unknown".to_string(),
             crate::type_infer::TypeStageEntry::Resolved(crate::types::Type::Unknown),
         );
-        state.type_stage_map = Some(seed);
+        state.type_stage_scope = vec![seed];
     }
     // Seed tycon_env from the TypeContext's accumulated TyConDefs. This propagates
     // opaque types (DirCap, File, ClockCap, Handle, etc.) declared in builtin_core.llt

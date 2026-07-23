@@ -839,7 +839,7 @@ async fn improve_functional_dependency_inner(
                     args: det_arg_types,
                 };
                 let mut norm_ctx = crate::type_normalize::NormCtxt::new(state.eval_ctx.clone());
-                norm_ctx.type_stage_map = state.type_stage_map.clone();
+                norm_ctx.type_stage_scope = state.type_stage_scope.clone();
                 let resolved =
                     crate::type_normalize::normalize(&stage_app, &state.type_vars, &mut norm_ctx)
                         .await;
@@ -2194,7 +2194,7 @@ pub async fn unify(
     // into type inference (e.g., a failing resolver should produce a stuck TypeStageApp, not
     // a type error).
     let mut norm_ctx = crate::type_normalize::NormCtxt::new(state.eval_ctx.clone());
-    norm_ctx.type_stage_map = state.type_stage_map.clone();
+    norm_ctx.type_stage_scope = state.type_stage_scope.clone();
     norm_ctx.allow_eval = false;
     let a = crate::type_normalize::normalize(&a_substituted, &state.type_vars, &mut norm_ctx).await;
     let b = crate::type_normalize::normalize(&b_substituted, &state.type_vars, &mut norm_ctx).await;
@@ -3355,7 +3355,7 @@ pub async fn constrain(
 
     // Normalize both types.
     let mut norm_ctx = crate::type_normalize::NormCtxt::new(state.eval_ctx.clone());
-    norm_ctx.type_stage_map = state.type_stage_map.clone();
+    norm_ctx.type_stage_scope = state.type_stage_scope.clone();
     norm_ctx.allow_eval = false;
     let sub =
         crate::type_normalize::normalize(&sub_substituted, &state.type_vars, &mut norm_ctx).await;
@@ -3513,7 +3513,7 @@ pub async fn process_deferred_equalities(
         // One NormCtxt per outer iteration: the resolver cache is shared across all
         // equality pairs in this pass, amortizing the HashMap allocation cost.
         let mut norm_ctx = crate::type_normalize::NormCtxt::new(state.eval_ctx.clone());
-        norm_ctx.type_stage_map = state.type_stage_map.clone();
+        norm_ctx.type_stage_scope = state.type_stage_scope.clone();
         for (a, b) in deferred {
             // Normalize both sides
             let a_norm =

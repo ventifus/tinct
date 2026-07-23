@@ -206,8 +206,8 @@ pub async fn run_loader_pipeline(
     };
 
     // Two-pass: evaluate type-stage documents first, force all thunks to build
-    // type_stage_map with fully materialized types, then typecheck the loader program.
-    let type_stage_map_opt: Option<
+    // type_stage_scope with fully materialized types, then typecheck the loader program.
+    let type_stage_scope: Vec<
         std::collections::HashMap<String, crate::type_infer::TypeStageEntry>,
     > = {
         // Filter type-stage documents (those with stage: "type" in their header).
@@ -227,7 +227,7 @@ pub async fn run_loader_pipeline(
             .collect();
 
         if ts_docs.is_empty() {
-            None
+            Vec::new()
         } else {
             // Build a mini-program with only the type-stage documents and evaluate it.
             // The documents are already desugared and resolved from the main program pass —
@@ -284,7 +284,7 @@ pub async fn run_loader_pipeline(
                             }
                         }
                     }
-                    Some(map)
+                    vec![map]
                 }
                 other => {
                     return Err(format!(
@@ -321,7 +321,7 @@ pub async fn run_loader_pipeline(
             builtin_env,
             Some(Arc::clone(&eval_ctx_with_frames)),
             seed_tycon_env,
-            type_stage_map_opt,
+            type_stage_scope,
         )
         .await;
     // Wire the TyConEnv from the typecheck pass into the eval context so that

@@ -2116,7 +2116,7 @@ pub(crate) async fn resolve_type_name_with_guard(
 /// Lookup order (applied identically for bare names and type applications):
 ///   1. Operator/Label kind annotations (kind constraints, not types)
 ///   2. class_env (BEFORE tycon_env) — `[Iterable a]` creates constrained TypeVar
-///   3. type_stage_map — type-stage evaluated types from the init program's type-stage docs
+///   3. type_stage_scope — type-stage evaluated types from the init program's type-stage docs
 ///   4. tycon_env → `expand_named` or `instantiate_tycon_def` for structural aliases
 ///   5. Undefined → TypeDiagnostic
 ///
@@ -2212,20 +2212,23 @@ async fn resolve_type_head(
         return Ok(fresh_ty);
     }
 
-    // Step 3: type_stage_map — pre-computed types from type-stage evaluation.
-    // This is the single unified path replacing the old three-path resolution
-    // (Step 3a direct thunks + Step 3b eval_type_stage_expr fallback).
-    if let Some(ref map) = state.type_stage_map {
-        if let Some(entry) = map.get(name) {
+    // Step 3: type_stage_scope — walk the scope chain for pre-computed types.
+    for scope in &state.type_stage_scope {
+        if let Some(entry) = scope.get(name) {
             match entry {
                 crate::type_infer::TypeStageEntry::Resolved(ty) => {
                     // Fully materialized type (e.g., TypeNode.Int → Type::Int) — return directly.
-                    // This is the common case for primitive types and zero-arg type aliases.
-                    return Ok(ty.clone());
+                    if args.is_empty() {
+                        return Ok(ty.clone());
+                    }
+                    let mut result = ty.clone();
+                    for arg in args {
+                        result = Type::App(Box::new(result), Box::new(arg.clone()));
+                    }
+                    return Ok(result);
                 }
                 crate::type_infer::TypeStageEntry::Function(thunk) => {
                     // Function thunk — parameterized type constructor (e.g., Seq, Result).
-                    // Use the pre-located Arc<Thunk> directly via evaluate_resolver_with_thunk.
                     if let Some(eval_ctx) = &state.eval_ctx {
                         if let Some(ty) = crate::type_normalize::evaluate_resolver_with_thunk(
                             Arc::clone(thunk),
@@ -2237,8 +2240,11 @@ async fn resolve_type_head(
                             return Ok(ty);
                         }
                     }
-                    // If eval_ctx is not available (bootstrap path), fall through to Step 4.
+                    // eval_ctx unavailable — continue to next scope or Step 4.
                 }
+                // TypeVar and Class are handled by T-1804 (resolve_type_head rewrite).
+                // For now, skip them in the scope chain walk.
+                _ => {}
             }
         }
     }
@@ -2316,8 +2322,8 @@ pub(crate) async fn resolve_type_name(
         }
         // All fundamental types (Integer, String, Float, Bytes, Never, Any,
         // Proxy, Dict, Expr, Unknown) are declared in builtin_core.llt and resolved through
-        // the type_stage_map/tycon_env chain in resolve_type_head.
-        // `@Unknown` resolves via type_stage_map (seeded with Unknown → Type::Unknown in
+        // the type_stage_scope/tycon_env chain in resolve_type_head.
+        // `@Unknown` resolves via type_stage_scope (seeded with Unknown → Type::Unknown in
         // typecheck_surface_program_annotation_table for test paths, and populated from
         // type-stage documents in production). Operator and Label are handled above.
         _ => {
@@ -4873,7 +4879,7 @@ pub(crate) async fn eval_type_stage_value(
 ///
 /// ## Mechanism
 ///
-/// 1. Looks up `as-typenode` in `state.type_stage_map` as a
+/// 1. Looks up `as-typenode` in `state.type_stage_scope` as a
 ///    `TypeStageEntry::Function(thunk_id)`.
 /// 2. Materialises the thunk via `state.eval_ctx` to obtain the resolver function value.
 /// 3. Calls `eval_type_stage_value(fn_val, &[val.clone()], state)` — the function value
@@ -4881,7 +4887,7 @@ pub(crate) async fn eval_type_stage_value(
 /// 4. Converts the normalised TypeNode value to a `Type` via `typenode_value_to_type`.
 ///
 /// Returns `None` if:
-/// - `state.type_stage_map` is absent or does not contain `as-typenode`.
+/// - `state.type_stage_scope` is empty or does not contain `as-typenode`.
 /// - The `as-typenode` entry is `Resolved` (not a function).
 /// - `state.eval_ctx` is `None`.
 /// - Thunk materialisation fails.
@@ -4898,16 +4904,26 @@ pub(crate) async fn eval_type_stage_value(
 /// `as-typenode` function under this exact name to participate in TypeNode dispatch.
 /// Tracked as decision D-7.
 pub(crate) async fn as_type_dispatch(val: &Value, state: &mut InferState) -> Option<Type> {
-    // Step 1: locate the `as-typenode` resolver in the type-stage map.
-    let resolver_thunk = match state
-        .type_stage_map
-        .as_ref()
-        .and_then(|m| m.get("as-typenode"))
-    {
-        Some(crate::type_infer::TypeStageEntry::Function(t)) => Arc::clone(t),
-        // Resolved entry is a ground Type, not a function — cannot call it.
-        Some(crate::type_infer::TypeStageEntry::Resolved(_)) => return None,
-        None => return None,
+    // Step 1: locate the `as-typenode` resolver in the type-stage scope chain.
+    let resolver_thunk = {
+        let mut found = None;
+        for scope in &state.type_stage_scope {
+            if let Some(entry) = scope.get("as-typenode") {
+                match entry {
+                    crate::type_infer::TypeStageEntry::Function(t) => {
+                        found = Some(Arc::clone(t));
+                        break;
+                    }
+                    // Resolved entry is a ground Type, not a function — cannot call it.
+                    crate::type_infer::TypeStageEntry::Resolved(_) => return None,
+                    _ => continue,
+                }
+            }
+        }
+        match found {
+            Some(t) => t,
+            None => return None,
+        }
     };
 
     // Step 2: materialise the thunk to get the resolver function value.

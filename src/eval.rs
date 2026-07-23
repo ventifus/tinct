@@ -336,14 +336,6 @@ pub(crate) fn format_field_path(field_path: &[String]) -> String {
 /// builtin-fork-type-ctx). This struct is the stable field layout.
 #[derive(Debug, Clone)]
 pub struct TypeContextData {
-    /// Scope ID for type-stage function thunks.
-    ///
-    /// Set by `builtin-tc-with-scope` after evaluating the type-stage documents.
-    /// `normalize()` and `resolve_type_head` use this ID to look up type-stage resolver
-    /// functions by name via scope-chain traversal.
-    ///
-    /// `None` until populated by the type-stage initialization path (loader.llt Pass 1).
-    pub type_stage_scope_id: Option<u32>,
     /// Accumulated Hindley-Milner inference environment.
     /// Initialized to the builtin_core TypeEnv at startup (via `init_type_context` callers).
     /// Each `builtin-typecheck-doc` call seeds from this env and writes the resulting `final_env`
@@ -358,6 +350,10 @@ pub struct TypeContextData {
     /// type-checks (builtin_io.llt, builtin_async.llt, ...) without requiring them to
     /// re-declare types they receive from the runtime environment.
     pub tycon_env: std::collections::HashMap<String, std::sync::Arc<crate::type_def::TyConDef>>,
+    /// Type-stage scope chain: pre-computed types from type-stage evaluation.
+    /// Vec[0] = innermost (highest priority); Vec[N-1] = outermost.
+    /// Populated by builtin-tc-update-type-stage-env and builtin_typecheck_doc write-back.
+    pub type_stage_scope: Vec<std::collections::HashMap<String, crate::type_infer::TypeStageEntry>>,
     /// Accumulated type errors from all `builtin-typecheck-doc` calls.
     /// Each call to `builtin-typecheck-doc` appends the errors from that document to this vec.
     /// Type diagnostics (errors + warnings + info) from the most recent typecheck pass.
@@ -5096,7 +5092,8 @@ mod tests {
         let surface_program = crate::desugar::desugar_program_full(&parsed.program);
         // Resolve with the full root frame so dict sibling LGM slots match the runtime.
         let root_frame = ctx.root_group_resolver_map();
-        let (_table, _frames) = crate::resolve::resolve_surface_program(&surface_program, &[root_frame]);
+        let (_table, _frames) =
+            crate::resolve::resolve_surface_program(&surface_program, &[root_frame]);
         let _ = env;
         let thunk = super::eval_surface_file(&surface_program, &ctx)
             .await

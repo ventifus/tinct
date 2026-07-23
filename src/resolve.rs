@@ -389,44 +389,57 @@ impl SurfaceResolver {
                         // Single fn level: use addr directly.
                         addr.clone()
                     } else {
-                        // Multi-level cascade: outermost fn uses addr directly;
-                        // each subsequent level inherits via ClosureCapture.
-                        let mut last_pos: Option<u32> = None;
+                        // Multi-level cascade: walk from outermost fn to immediately
+                        // enclosing fn, cascading captures at each level.
+                        //
+                        // `last_addr` tracks the VarAddr the NEXT cascade level should
+                        // use as its original_addr. It starts as `addr` (the raw VarAddr
+                        // from the scope where the name was found).
+                        //
+                        // Key invariant: a fn does NOT capture names that are local to
+                        // its own scope (parameters, LGM entries within its body). Those
+                        // are already accessible at call time. Only names from OUTSIDE
+                        // the fn boundary are captured. When a name is local to fn_i,
+                        // fn_i+1 captures it directly using the raw addr (e.g.,
+                        // Parameter(i) is available via frame.params at fn_i+1's
+                        // creation time during fn_i's call).
+                        let mut last_addr: VarAddr = addr.clone();
                         for level_idx in 0..(num_levels - 1) {
                             let level_fn_boundary = self.fn_scope_boundaries[level_idx];
-                            // Compute this fn level's original_addr for the name.
-                            // If match_depth is within this fn's local scope, it can access directly.
-                            // If match_depth is outside this fn's boundary, inherit from outer level.
-                            let level_original_addr = if match_depth >= level_fn_boundary {
-                                // Name is in this fn's local scope (parameter or local LGM).
-                                addr.clone()
-                            } else if let Some(prev_pos) = last_pos {
-                                // Inherit from the outer level via ClosureCapture.
-                                VarAddr::ClosureCapture(prev_pos)
+                            if match_depth >= level_fn_boundary {
+                                // Name is local to this fn level (parameter or LGM
+                                // within its scope). This fn does NOT need to capture
+                                // it — it's already accessible at call time.
+                                // Pass the raw addr through to the next level.
+                                last_addr = addr.clone();
                             } else {
-                                // Outermost fn (level 0): use addr directly from enclosing scope.
-                                addr.clone()
-                            };
+                                // Name is outside this fn level's boundary — this
+                                // level must capture it.
+                                let level_original_addr = last_addr.clone();
 
-                            // Add to this fn level's capture list (if not already present).
-                            let existing_pos = self.fn_capture_lists[level_idx]
-                                .iter()
-                                .position(|(n, _)| n == name)
-                                .map(|p| p as u32);
-                            let pos = if let Some(p) = existing_pos {
-                                p
-                            } else {
-                                let idx = self.fn_capture_lists[level_idx].len() as u32;
-                                self.fn_capture_lists[level_idx]
-                                    .push((name.to_string(), level_original_addr.clone()));
-                                idx
-                            };
-                            last_pos = Some(pos);
+                                // Add to this fn level's capture list (if not already present).
+                                let existing_pos = self.fn_capture_lists[level_idx]
+                                    .iter()
+                                    .position(|(n, _)| n == name)
+                                    .map(|p| p as u32);
+                                let pos = if let Some(p) = existing_pos {
+                                    p
+                                } else {
+                                    let idx = self.fn_capture_lists[level_idx].len() as u32;
+                                    self.fn_capture_lists[level_idx]
+                                        .push((name.to_string(), level_original_addr));
+                                    idx
+                                };
+                                last_addr = VarAddr::ClosureCapture(pos);
+                            }
                         }
 
-                        // Current (innermost) fn inherits from the immediately enclosing fn.
-                        let enclosing_pos = last_pos.expect("cascade must set a position");
-                        VarAddr::ClosureCapture(enclosing_pos)
+                        // Current (innermost) fn uses last_addr as its original_addr.
+                        // If no intermediate fn needed to capture (all levels had the
+                        // name locally), last_addr is still the raw addr (e.g.,
+                        // Parameter(i)), which is correct — the innermost fn captures
+                        // directly from the enclosing fn's frame.
+                        last_addr
                     }
                 };
                 let capture_list = self
@@ -2851,5 +2864,215 @@ mod tests {
                 "$x in fn body must be Parameter(0)"
             );
         }
+    }
+
+    // --- Helpers for Fn capture inspection ---
+
+    /// Recursively collect all Fn nodes from the program, returning each Fn's
+    /// resolved_captures list (if set by the resolver).
+    fn collect_fn_captures(
+        program: &crate::ast::SurfaceProgram,
+    ) -> Vec<(Vec<String>, Arc<Vec<(String, VarAddr)>>)> {
+        let mut results = Vec::new();
+        for doc_spanned in &program.documents {
+            for item in &doc_spanned.node.items {
+                if let crate::ast::SurfaceItem::Expr(node) = item {
+                    collect_fn_nodes(node, &mut results);
+                }
+            }
+        }
+        results
+    }
+
+    fn collect_fn_nodes(
+        arc: &Arc<SurfaceNode>,
+        out: &mut Vec<(Vec<String>, Arc<Vec<(String, VarAddr)>>)>,
+    ) {
+        match &arc.expr {
+            SurfaceExpression::Fn {
+                params,
+                body,
+                resolved_captures,
+                ..
+            } => {
+                let param_names: Vec<String> =
+                    params.iter().map(|p| p.node.name.clone()).collect();
+                if let Some(captures) = resolved_captures.get() {
+                    out.push((param_names, Arc::clone(captures)));
+                }
+                collect_fn_nodes(body, out);
+            }
+            SurfaceExpression::Dict(entries) => {
+                for entry in entries {
+                    if let Some(key) = &entry.node.key {
+                        collect_fn_nodes(key, out);
+                    }
+                    collect_fn_nodes(&entry.node.value, out);
+                }
+            }
+            SurfaceExpression::Call {
+                func,
+                args,
+                named_args,
+                ..
+            } => {
+                collect_fn_nodes(func, out);
+                for arg in args {
+                    collect_fn_nodes(arg, out);
+                }
+                for na in named_args {
+                    collect_fn_nodes(&na.node.value, out);
+                }
+            }
+            SurfaceExpression::Sequential(exprs) => {
+                for e in exprs {
+                    collect_fn_nodes(e, out);
+                }
+            }
+            SurfaceExpression::Match { scrutinee, arms } => {
+                collect_fn_nodes(scrutinee, out);
+                for arm in arms {
+                    collect_fn_nodes(&arm.pattern, out);
+                    if let Some(guard) = &arm.guard {
+                        collect_fn_nodes(guard, out);
+                    }
+                    for body_expr in &arm.body {
+                        collect_fn_nodes(body_expr, out);
+                    }
+                }
+            }
+            SurfaceExpression::CaseArm {
+                let_bindings,
+                pattern,
+                body,
+            } => {
+                collect_fn_nodes(let_bindings, out);
+                collect_fn_nodes(pattern, out);
+                collect_fn_nodes(body, out);
+            }
+            SurfaceExpression::Pipe { lhs, rhs, .. } => {
+                collect_fn_nodes(lhs, out);
+                collect_fn_nodes(rhs, out);
+            }
+            SurfaceExpression::TypeAssert { expr, .. } => collect_fn_nodes(expr, out),
+            SurfaceExpression::Field {
+                expr: Some(expr), ..
+            } => collect_fn_nodes(expr, out),
+            _ => {}
+        }
+    }
+
+    // --- B-577: nested fn capturing outer fn's parameter ---
+
+    /// When fn_B is nested inside fn_A and captures fn_A's parameter,
+    /// fn_A must NOT have that parameter in its own capture list (it's already
+    /// available as a parameter). fn_B must capture it with original_addr = Parameter(i).
+    #[test]
+    fn nested_fn_does_not_capture_outer_fn_own_param() {
+        // [outer: [fn [let x] [fn [let y] $x]]]
+        // outer fn (params: [x]) should have NO captures related to x.
+        // inner fn (params: [y]) should capture x with original_addr = Parameter(0).
+        let (program, table) = parse_and_resolve("[outer: [fn [let x] [fn [let y] $x]]]");
+
+        // $x inside inner fn should be ClosureCapture(0).
+        let x_refs = find_varref_nodes(&program, "x");
+        assert!(
+            !x_refs.is_empty(),
+            "expected VarRef for $x in inner fn body"
+        );
+        let (id, _) = &x_refs[0];
+        let addr = table.get(id).expect("$x should be resolved");
+        assert_eq!(
+            addr,
+            &VarAddr::ClosureCapture(0),
+            "$x in inner fn body should be ClosureCapture(0)"
+        );
+
+        // Now check the capture lists. Collect all Fn nodes.
+        let fns = collect_fn_captures(&program);
+        assert_eq!(fns.len(), 2, "expected 2 Fn nodes (outer and inner)");
+
+        // outer fn (params: [x]): should have NO captures (x is its own parameter).
+        let (ref outer_params, ref outer_captures) = fns[0];
+        assert!(
+            outer_params.contains(&"x".to_string()),
+            "outer fn should have param x"
+        );
+        assert!(
+            !outer_captures.iter().any(|(n, _)| n == "x"),
+            "outer fn must NOT capture its own parameter x — captures: {:?}",
+            outer_captures
+        );
+
+        // inner fn (params: [y]): should capture x with original_addr = Parameter(0).
+        let (ref inner_params, ref inner_captures) = fns[1];
+        assert!(
+            inner_params.contains(&"y".to_string()),
+            "inner fn should have param y"
+        );
+        let x_capture = inner_captures
+            .iter()
+            .find(|(n, _)| n == "x")
+            .expect("inner fn must capture x");
+        assert_eq!(
+            x_capture.1,
+            VarAddr::Parameter(0),
+            "inner fn's capture of x should have original_addr = Parameter(0) \
+             (from outer fn's parameter, available at inner fn creation time)"
+        );
+    }
+
+    /// Triple nesting: fn_A → fn_B → fn_C, where fn_C captures fn_A's parameter.
+    /// fn_A must not capture its own param. fn_B must capture via Parameter(i).
+    /// fn_C must capture via ClosureCapture from fn_B.
+    #[test]
+    fn triple_nested_fn_captures_outermost_param() {
+        // [f: [fn [let x] [fn [let y] [fn [let z] $x]]]]
+        let (program, table) = parse_and_resolve("[f: [fn [let x] [fn [let y] [fn [let z] $x]]]]");
+
+        // $x in innermost fn should be ClosureCapture.
+        let x_refs = find_varref_nodes(&program, "x");
+        assert!(!x_refs.is_empty());
+        let (id, _) = &x_refs[0];
+        let addr = table.get(id).expect("$x should be resolved");
+        assert_eq!(
+            addr,
+            &VarAddr::ClosureCapture(0),
+            "$x in fn_C should be ClosureCapture(0)"
+        );
+
+        let fns = collect_fn_captures(&program);
+        assert_eq!(fns.len(), 3, "expected 3 Fn nodes");
+
+        // fn_A (params: [x]): no captures of x.
+        assert!(
+            !fns[0].1.iter().any(|(n, _)| n == "x"),
+            "fn_A must not capture its own parameter x"
+        );
+
+        // fn_B (params: [y]): captures x with original_addr = Parameter(0).
+        let b_x_capture = fns[1]
+            .1
+            .iter()
+            .find(|(n, _)| n == "x")
+            .expect("fn_B must capture x");
+        assert_eq!(
+            b_x_capture.1,
+            VarAddr::Parameter(0),
+            "fn_B captures x from fn_A's Parameter(0)"
+        );
+
+        // fn_C (params: [z]): captures x with original_addr = ClosureCapture(pos_in_fn_B).
+        let c_x_capture = fns[2]
+            .1
+            .iter()
+            .find(|(n, _)| n == "x")
+            .expect("fn_C must capture x");
+        let b_x_pos = fns[1].1.iter().position(|(n, _)| n == "x").unwrap() as u32;
+        assert_eq!(
+            c_x_capture.1,
+            VarAddr::ClosureCapture(b_x_pos),
+            "fn_C captures x via ClosureCapture from fn_B"
+        );
     }
 }

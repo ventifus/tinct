@@ -3922,7 +3922,7 @@ async fn test_type_stage_resolver_via_cek() {
 
     let env = Arc::new(RwLock::new(crate::env::Env::new()));
     let mut state = InferState::new();
-    state.type_stage_map = Some(type_stage_map);
+    state.type_stage_scope = vec![type_stage_map];
 
     let mut errors: Vec<TypeDiagnostic> = Vec::new();
     let mut stack = Vec::new();
@@ -4297,7 +4297,7 @@ async fn test_cek_after_fn_body_return_annotation_overrides_body_type() {
     let mut type_stage_map =
         std::collections::HashMap::<String, crate::type_infer::TypeStageEntry>::new();
     type_stage_map.insert("Int".to_string(), TypeStageEntry::Resolved(Type::Int));
-    state.type_stage_map = Some(type_stage_map);
+    state.type_stage_scope = vec![type_stage_map];
 
     let mut errors: Vec<TypeDiagnostic> = Vec::new();
     let mut stack = Vec::new();
@@ -4349,7 +4349,7 @@ async fn test_cek_type_assert_matching_annotation_no_error() {
     let mut type_stage_map =
         std::collections::HashMap::<String, crate::type_infer::TypeStageEntry>::new();
     type_stage_map.insert("Int".to_string(), TypeStageEntry::Resolved(Type::Int));
-    state.type_stage_map = Some(type_stage_map);
+    state.type_stage_scope = vec![type_stage_map];
 
     let mut errors: Vec<TypeDiagnostic> = Vec::new();
     let mut stack = Vec::new();
@@ -4400,7 +4400,7 @@ async fn test_cek_type_assert_mismatched_annotation_emits_error() {
     let mut type_stage_map =
         std::collections::HashMap::<String, crate::type_infer::TypeStageEntry>::new();
     type_stage_map.insert("Int".to_string(), TypeStageEntry::Resolved(Type::Int));
-    state.type_stage_map = Some(type_stage_map);
+    state.type_stage_scope = vec![type_stage_map];
 
     let mut errors: Vec<TypeDiagnostic> = Vec::new();
     let mut stack = Vec::new();

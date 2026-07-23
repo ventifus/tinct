@@ -1936,11 +1936,11 @@ async fn run_eval(
         // value_matches_type checks have definition spans for clear error messages.
         // Accumulated further by builtin-typecheck-doc calls during loading.
         ctx.init_type_context(tinct::TypeContextData {
-            type_stage_scope_id: None,
             inference_env: tinct::get_builtin_core_type_env()
                 .await
                 .expect("builtin_core type env unavailable at startup"),
             tycon_env: tinct::get_builtin_core_tycon_env().unwrap_or_default(),
+            type_stage_scope: Vec::new(),
             type_diagnostics: Vec::new(),
         });
         ctx

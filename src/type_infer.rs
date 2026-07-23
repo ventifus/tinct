@@ -230,7 +230,7 @@ impl TypeScheme {
 /// of the type-checking result for LSP consumers.
 pub type SchemeMap = HashMap<(u32, u32, u32, u32), TypeScheme>;
 
-/// Type-stage entry: either a resolved type or a function that must be evaluated.
+/// Type-stage entry: either a resolved type, a function, a type variable kind, or a class.
 #[derive(Debug, Clone)]
 pub enum TypeStageEntry {
     /// Fully materialized type — no further evaluation needed.
@@ -239,6 +239,10 @@ pub enum TypeStageEntry {
     /// type constructors (e.g., Seq, Result) where the type-stage function takes type
     /// parameters and returns a TypeNode.
     Function(std::sync::Arc<crate::value::Thunk>),
+    /// Annotation type variable of this kind — produces a fresh TypeVar when resolved.
+    TypeVar(crate::type_def::Kind),
+    /// Class constraint — produces a fresh TypeVar with a class constraint when resolved.
+    Class(crate::type_class::ClassDecl),
 }
 
 /// Inference state for levels-based let-generalization
@@ -362,10 +366,12 @@ pub struct InferState {
     /// to materialize type-stage thunks without ambient filesystem access. Never created
     /// inside the type checker; always provided by the caller that has proper capabilities.
     pub eval_ctx: Option<std::sync::Arc<crate::eval::EvalContext>>,
-    /// Type-stage map: pre-computed types from type-stage evaluation.
-    /// Populated in lib.rs by forcing all type-stage thunks before type-checking begins.
-    /// Replaces the old lazy type_stage_thunks with fully materialized entries.
-    pub type_stage_map: Option<std::collections::HashMap<String, TypeStageEntry>>,
+    /// Type-stage scope chain: pre-computed types from type-stage evaluation.
+    /// Vec[0] = innermost (highest priority); Vec[N-1] = outermost.
+    /// Each frame is a HashMap of type names to their TypeStageEntry.
+    /// Populated by builtin-tc-update-type-stage-env (T-1803) and builtin_typecheck_doc
+    /// write-back. Empty Vec means no type-stage types are available.
+    pub type_stage_scope: Vec<std::collections::HashMap<String, TypeStageEntry>>,
     /// Unified TypeVar table (from HEAD~1 design).
     /// In the current design, TypeVar bindings are in `subst.type_map`, levels in `levels`,
     /// and kinds in `kind_env`. This field exists for compatibility with type_class.rs
@@ -428,7 +434,7 @@ impl InferState {
             resolution_table: None,
             main_env: None,
             eval_ctx: None,
-            type_stage_map: None,
+            type_stage_scope: Vec::new(),
             type_vars: indexmap::IndexMap::new(),
             bounds: std::collections::HashMap::new(),
             fd_in_progress: std::collections::HashSet::new(),

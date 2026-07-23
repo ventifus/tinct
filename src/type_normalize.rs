@@ -28,11 +28,10 @@ pub struct NormCtxt {
     pub call_stack: Vec<String>,
     /// EvalContext for accessing the scope arena (ScopeArena) and type-stage function thunks.
     pub eval_ctx: Option<Arc<crate::eval::EvalContext>>,
-    /// Pre-built map from type-stage name → resolver entry for O(1) resolver lookup.
-    /// Populated from `InferState.type_stage_map` by production callers in type_unify.rs.
-    /// `None` in test/bootstrap contexts — TypeStageApp nodes remain stuck.
-    pub type_stage_map:
-        Option<std::collections::HashMap<String, crate::type_infer::TypeStageEntry>>,
+    /// Type-stage scope chain for resolver lookup.
+    /// Populated from `InferState.type_stage_scope` by production callers in type_unify.rs.
+    /// Empty Vec in test/bootstrap contexts — TypeStageApp nodes remain stuck.
+    pub type_stage_scope: Vec<std::collections::HashMap<String, crate::type_infer::TypeStageEntry>>,
     /// If false, disable resolver evaluation (prevents runtime errors from propagating into type inference).
     /// Set to false inside unify() to prevent evaluation failures from causing type errors.
     pub allow_eval: bool,
@@ -51,7 +50,7 @@ impl NormCtxt {
             max_depth: 64,
             call_stack: Vec::new(),
             eval_ctx,
-            type_stage_map: None,
+            type_stage_scope: Vec::new(),
             allow_eval: true,
         }
     }
@@ -118,50 +117,40 @@ pub fn normalize<'a>(
                     ctx.call_stack.push(fn_name.clone());
 
                     let result = if ctx.allow_eval {
-                        // First: try Resolved entries — these don't need eval_ctx.
-                        // TypeStageEntry::Resolved(ty) means "this resolver always produces ty
-                        // for any ground args." No evaluation machinery is required.
-                        let resolved_no_eval = ctx.type_stage_map.as_ref().and_then(|map| {
-                            map.get(fn_name).and_then(|entry| match entry {
-                                crate::type_infer::TypeStageEntry::Resolved(ty) => Some(ty.clone()),
-                                _ => None,
-                            })
-                        });
-
-                        if let Some(ty) = resolved_no_eval {
-                            ty
-                        } else if let (Some(ref map), Some(eval_ctx)) =
-                            (&ctx.type_stage_map, ctx.eval_ctx.clone())
-                        {
-                            // O(1) lookup in the pre-built type_stage_map — Function entries
-                            // require eval_ctx to materialize the thunk.
-                            let resolved = if let Some(entry) = map.get(fn_name) {
+                        // Walk the type-stage scope chain looking for fn_name.
+                        let mut found_type: Option<Type> = None;
+                        for scope in &ctx.type_stage_scope {
+                            if let Some(entry) = scope.get(fn_name) {
                                 match entry {
-                                    crate::type_infer::TypeStageEntry::Function(thunk) => {
-                                        evaluate_resolver_with_thunk(
-                                            Arc::clone(thunk),
-                                            &normalized_args,
-                                            &eval_ctx,
-                                        )
-                                        .await
+                                    crate::type_infer::TypeStageEntry::Resolved(ty) => {
+                                        found_type = Some(ty.clone());
+                                        break;
                                     }
-                                    // Resolved was already handled above; unreachable here.
-                                    crate::type_infer::TypeStageEntry::Resolved(_) => None,
+                                    crate::type_infer::TypeStageEntry::Function(thunk) => {
+                                        if let Some(eval_ctx) = ctx.eval_ctx.clone() {
+                                            if let Some(ty) = evaluate_resolver_with_thunk(
+                                                Arc::clone(thunk),
+                                                &normalized_args,
+                                                &eval_ctx,
+                                            )
+                                            .await
+                                            {
+                                                found_type = Some(ty);
+                                                break;
+                                            }
+                                        }
+                                        // eval_ctx unavailable or resolver returned None — continue
+                                    }
+                                    // TypeVar and Class are not used in normalize —
+                                    // they are annotation-resolution-only entries.
+                                    _ => continue,
                                 }
-                            } else {
-                                None
-                            };
-                            resolved.unwrap_or_else(|| Type::TypeStageApp {
-                                fn_name: fn_name.clone(),
-                                args: normalized_args,
-                            })
-                        } else {
-                            // No type_stage_map or eval_ctx — return stuck TypeStageApp
-                            Type::TypeStageApp {
-                                fn_name: fn_name.clone(),
-                                args: normalized_args,
                             }
                         }
+                        found_type.unwrap_or_else(|| Type::TypeStageApp {
+                            fn_name: fn_name.clone(),
+                            args: normalized_args,
+                        })
                     } else {
                         // allow_eval is false (inside unify) — return stuck TypeStageApp to prevent
                         // runtime errors from propagating into type inference
@@ -301,7 +290,7 @@ pub(crate) async fn call_strict_resolver(
 }
 
 /// Evaluate a resolver by Arc<Thunk> — materializes the thunk then delegates to `call_strict_resolver`.
-/// Used by the `type_stage_map` Function path (Step 3 in `resolve_type_head`) which has a pre-located thunk.
+/// Used by the `type_stage_scope` Function path in `resolve_type_head` which has a pre-located thunk.
 pub(crate) async fn evaluate_resolver_with_thunk(
     thunk: Arc<crate::value::Thunk>,
     args: &[crate::type_def::Type],
@@ -922,7 +911,7 @@ mod tests {
 
     // ── B-428: Re-implemented type-stage resolver tests ────────────────────────
 
-    /// B-428: TypeStageApp with ground args resolves via type_stage_map
+    /// B-428: TypeStageApp with ground args resolves via type_stage_scope
     #[tokio::test]
     async fn test_normalize_type_stage_app_ground_args_resolves() {
         let tv = empty_type_vars();
@@ -933,7 +922,7 @@ mod tests {
         type_stage_map.insert("AddResult".to_string(), TypeStageEntry::Resolved(Type::Int));
 
         let mut ctx = NormCtxt::new(None);
-        ctx.type_stage_map = Some(type_stage_map);
+        ctx.type_stage_scope = vec![type_stage_map];
 
         let ty = Type::TypeStageApp {
             fn_name: "AddResult".to_string(),
@@ -964,7 +953,7 @@ mod tests {
         );
 
         let mut ctx = NormCtxt::new(None);
-        ctx.type_stage_map = Some(type_stage_map);
+        ctx.type_stage_scope = vec![type_stage_map];
 
         // AddResult(Int, TypeVar("a")) where a is bound to Float → should normalize to Float
         let ty = Type::TypeStageApp {
@@ -988,7 +977,7 @@ mod tests {
         type_stage_map.insert("AddResult".to_string(), TypeStageEntry::Resolved(Type::Int));
 
         let mut ctx = NormCtxt::new(None);
-        ctx.type_stage_map = Some(type_stage_map);
+        ctx.type_stage_scope = vec![type_stage_map];
 
         let ty = Type::TypeStageApp {
             fn_name: "AddResult".to_string(),
@@ -1015,7 +1004,7 @@ mod tests {
         );
 
         let mut ctx = NormCtxt::new(None);
-        ctx.type_stage_map = Some(type_stage_map);
+        ctx.type_stage_scope = vec![type_stage_map];
 
         let ty = Type::TypeStageApp {
             fn_name: "AddResult".to_string(),
@@ -1039,7 +1028,7 @@ mod tests {
         type_stage_map.insert("DivResult".to_string(), TypeStageEntry::Resolved(Type::Int));
 
         let mut ctx = NormCtxt::new(None);
-        ctx.type_stage_map = Some(type_stage_map);
+        ctx.type_stage_scope = vec![type_stage_map];
 
         let ty = Type::TypeStageApp {
             fn_name: "DivResult".to_string(),
