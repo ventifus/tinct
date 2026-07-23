@@ -4767,7 +4767,6 @@ pub(crate) async fn eval_type_stage_value(
                 closure_env: Arc::clone(closure_env),
                 positional: &arg_thunks,
                 named: None,
-                default_env_id: 0,
                 call_span: origin_span.clone(),
                 ctx: &ctx,
             };
@@ -4914,7 +4913,6 @@ pub(crate) async fn as_type_dispatch(val: &Value, state: &mut InferState) -> Opt
                 closure_env: Arc::clone(closure_env),
                 positional: &[arg_thunk],
                 named: None,
-                default_env_id: 0,
                 call_span: origin_span.clone(),
                 ctx: &eval_ctx,
             };

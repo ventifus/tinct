@@ -120,8 +120,6 @@ pub struct CallContext<'a> {
     pub closure_env: Arc<Vec<Arc<Thunk>>>,
     pub positional: &'a [Arc<Thunk>],
     pub named: Option<&'a IndexMap<String, Arc<Thunk>>>,
-    /// FlatEnv env_id for the caller's scope — retained for default-expression evaluation.
-    pub default_env_id: u32,
     /// Call site span — `name` field carries the function label for blame tracking.
     pub call_span: Span,
     pub ctx: &'a Arc<EvalContext>,
@@ -138,7 +136,6 @@ pub async fn invoke_function(ctx: &CallContext<'_>) -> EvalResult<Arc<Thunk>> {
         ctx.params,
         ctx.positional,
         ctx.named,
-        ctx.default_env_id,
         Arc::clone(&ctx.closure_env),
         ctx.ctx,
         &ctx.call_span,
@@ -170,7 +167,6 @@ pub(crate) async fn invoke_function_tco(
         ctx.params,
         ctx.positional,
         ctx.named,
-        ctx.default_env_id,
         Arc::clone(&ctx.closure_env),
         ctx.ctx,
         &ctx.call_span,
@@ -193,7 +189,6 @@ pub(crate) async fn bind_args_thunks(
     params: &[Param],
     positional: &[Arc<Thunk>],
     named: Option<&IndexMap<String, Arc<Thunk>>>,
-    default_env_id: u32,
     closure_env: Arc<Vec<Arc<Thunk>>>,
     ctx: &Arc<EvalContext>,
     call_span: &Span,
@@ -328,7 +323,6 @@ pub(crate) async fn bind_args_thunks(
                 {
                     return Err(err);
                 }
-                let _ = default_env_id; // retained in signature for future use
                 let default_thunk = Arc::new(Thunk::core_expr(
                     Arc::new(lowered_default),
                     EvalFrame::empty(),

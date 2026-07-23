@@ -411,7 +411,6 @@ pub(crate) fn builtin_apply_impl(
                     } else {
                         Some(&named_ids)
                     },
-                    default_env_id: 0,
                     ctx: &ctx,
                     call_span: call_span.with_name(Arc::from("apply")),
                 })

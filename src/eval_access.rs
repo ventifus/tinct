@@ -37,7 +37,6 @@ pub(crate) async fn invoke_proxy_handler(
                 closure_env,
                 positional: &[key_arg_id],
                 named: None,
-                default_env_id: 0,
                 call_span: access_span
                     .clone()
                     .with_name(Arc::from("proxy field access")),

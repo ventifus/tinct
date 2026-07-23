@@ -1356,7 +1356,6 @@ pub(crate) async fn apply_cont(
                                         closure_env: Arc::clone(&closure_env),
                                         positional: args.as_deref().expect("args set above"),
                                         named: named.as_ref().expect("named set above").as_deref(),
-                                        default_env_id: caller_env_id,
                                         call_span: call_span.clone(),
                                         ctx: &thunk_ctx,
                                     };
@@ -1395,7 +1394,6 @@ pub(crate) async fn apply_cont(
                                         closure_env: Arc::clone(&closure_env),
                                         positional: args.as_deref().expect("args set above"),
                                         named: named.as_ref().expect("named set above").as_deref(),
-                                        default_env_id: caller_env_id,
                                         call_span: call_span.clone(),
                                         ctx: &thunk_ctx,
                                     };

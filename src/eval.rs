@@ -1550,7 +1550,6 @@ async fn call_to_match_by_name(
         closure_env,
         positional: std::slice::from_ref(&val_thunk),
         named: None,
-        default_env_id: 0,
         call_span: span.clone(),
         ctx,
     };

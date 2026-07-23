@@ -959,7 +959,6 @@ pub(crate) fn builtin_str_map_chars(
                         closure_env: Arc::clone(closure_env),
                         positional: &pos_args,
                         named: None,
-                        default_env_id: 0,
                         call_span: call_span.clone().with_name(Arc::from("str-map-chars")),
                         ctx: &ctx,
                     })
