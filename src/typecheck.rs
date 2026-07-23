@@ -1110,6 +1110,52 @@ pub(crate) async fn infer_instance_decl_from_surface(
                 }
             };
 
+            // T-1853: Bidirectional type checking — look up the class method's polymorphic
+            // signature, instantiate it with the concrete pattern types, and set
+            // state.expected_fn_params so infer_fn_push_cont can type unannotated params.
+            //
+            // Example: class Equatable [let a] with signature eq: [Fn@Boolean [a a]].
+            // For instance [let a@Int], method_sig = Fn(a,a)→Bool → instantiate a→Int
+            // → Fn(Int,Int)→Bool → expected_fn_params = [Int, Int].
+            // Unannotated params x, y in `[fn [let x y] ...]` then get Type::Int instead
+            // of Type::Unknown.
+            {
+                let class_method_sig: Option<Type> = {
+                    let env_guard = state.env.read().unwrap();
+                    env_guard.get_class(class_name).and_then(|cd| {
+                        cd.method_signatures
+                            .iter()
+                            .find(|(n, _)| n == &method_name)
+                            .map(|(_, ty)| ty.clone())
+                    })
+                };
+                if let Some(sig) = class_method_sig {
+                    // Build a temporary substitution: class param name → concrete pattern type.
+                    // This is purely local — no state mutation.
+                    let tmp_subst = crate::type_infer::Substitution::new();
+                    for (pname, pty) in param_names.iter().zip(pattern_types.iter()) {
+                        if !matches!(pty, Type::TypeVar(..)) {
+                            tmp_subst
+                                .type_map
+                                .borrow_mut()
+                                .insert(pname.clone(), pty.clone());
+                        }
+                    }
+                    let specialized = tmp_subst.apply(&sig);
+                    // Extract fixed param types from the specialized Function type.
+                    if let Type::Function {
+                        params: fn_params, ..
+                    } = specialized
+                    {
+                        let expected: Vec<Type> =
+                            fn_params.iter().map(|(_, ty)| ty.clone()).collect();
+                        if !expected.is_empty() {
+                            state.expected_fn_params = Some(expected);
+                        }
+                    }
+                }
+            }
+
             let mut method_errors: Vec<TypeDiagnostic> = Vec::new();
             let mut method_stack = Vec::new();
             let method_impl_type = Box::pin(typecheck_cek::run_typecheck(
@@ -1121,6 +1167,9 @@ pub(crate) async fn infer_instance_decl_from_surface(
                 &mut method_stack,
             ))
             .await;
+            // Clear expected_fn_params in case run_typecheck didn't consume it
+            // (e.g. the method body is not a fn expression).
+            state.expected_fn_params = None;
             if !method_errors.is_empty() {
                 if pushed_frame {
                     state.type_stage_scope.remove(0);

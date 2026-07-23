@@ -292,6 +292,15 @@ pub struct InferState {
     /// Set by `infer_fn_push_cont` (CEK) when entering a function body with an explicit return annotation,
     /// cleared when exiting. Used for inferred [do] macro to determine which monad to use.
     pub expected_return: Option<Type>,
+    /// Expected parameter types for the next `fn` expression to be inferred.
+    /// Set by `infer_instance_decl_from_surface` before calling `run_typecheck` on an instance
+    /// method body, using the class method's specialized signature. Consumed and cleared by
+    /// `infer_fn_push_cont` when it processes the params — it is single-use per fn invocation.
+    ///
+    /// Index i = expected type for the i-th fixed (non-variadic) parameter.
+    /// When `Some`, unannotated params use `expected_fn_params[i]` instead of `Type::Unknown`.
+    /// When `None` (the default), unannotated params fall back to `Type::Unknown` as before.
+    pub expected_fn_params: Option<Vec<Type>>,
     /// Accumulated type diagnostics (warnings, hints).
     /// Populated during type inference and generalization, extracted by the type checker.
     pub diagnostics: Vec<crate::error::TypeDiagnostic>,
@@ -420,6 +429,7 @@ impl InferState {
             failed_bindings: HashMap::new(),
             scheme_map: None,
             expected_return: None,
+            expected_fn_params: None,
             diagnostics: Vec::new(),
             deferred_equalities: Vec::new(),
             boundary_guards: HashMap::new(),

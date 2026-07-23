@@ -2899,11 +2899,17 @@ async fn infer_fn_push_cont(
         None
     };
 
+    // Consume expected_fn_params from state (single-use per fn invocation).
+    // Set by infer_instance_decl_from_surface for bidirectional type checking of instance methods.
+    // Taking it here prevents leaking into nested fn expressions in the body.
+    let expected_params: Option<Vec<Type>> = state.expected_fn_params.take();
+
     // Resolve param annotations and build fn env
     let mut fn_env_inner = Env::with_parent(Arc::clone(env));
     let mut param_types: Vec<(Option<String>, Type)> = Vec::new();
     let mut typed_variadics: Vec<(String, Type)> = Vec::new();
     let mut rest: Option<Box<(String, Type)>> = None;
+    let mut fixed_param_idx: usize = 0;
 
     for p in params {
         let param_ty = if p.node.variadic {
@@ -2953,7 +2959,17 @@ async fn infer_fn_push_cont(
                 }
             }
         } else {
-            Type::Unknown
+            // Unannotated fixed param: use expected type from class method signature if available,
+            // otherwise fall back to Type::Unknown for gradual typing.
+            // expected_params is indexed by the fixed-param position (variadic params excluded).
+            if let Some(ref expected) = expected_params {
+                expected
+                    .get(fixed_param_idx)
+                    .cloned()
+                    .unwrap_or(Type::Unknown)
+            } else {
+                Type::Unknown
+            }
         };
         // Store the resolved type back onto the SurfaceParam so the lowerer can carry it
         // into CoreParam::resolved_type without re-parsing the annotation.
@@ -3001,6 +3017,7 @@ async fn infer_fn_push_cont(
                 errors.push(err);
             }
             param_types.push((Some(p.node.name.clone()), param_ty));
+            fixed_param_idx += 1;
         }
     }
 
@@ -4278,13 +4295,42 @@ pub(crate) async fn run_typecheck_dict(
                                         // Parse method type from entry value expression.
                                         // The value IS the type expression (e.g., [Fn@c [a b]]).
                                         let mut constraints = Vec::new();
-                                        // Fresh ann_map per method: prevents TypeVars from one method's
-                                        // resolution leaking into the next (which would panic if those
-                                        // TypeVars aren't in state.type_vars).
+                                        // Pre-seed ann_map with class type params so that lowercase
+                                        // type variable names (e.g., `a`, `b`) in the method
+                                        // signature resolve to TypeVars rather than erroring.
+                                        //
+                                        // We use the param name itself as the internal TypeVar name
+                                        // (e.g., "a" → TypeVar("a", level)). This is safe because:
+                                        // - The resolved method type is stored in method_signatures
+                                        //   and only used locally (never unified into global state).
+                                        // - When infer_instance_decl_from_surface substitutes
+                                        //   param_name → concrete_type, it directly matches these
+                                        //   TypeVar("a", _) occurrences in the method type.
+                                        // - If a collision occurs with an existing TypeVar of the
+                                        //   same name, the worst outcome is a stale level (graceful
+                                        //   degradation — the expected type stays as TypeVar, and
+                                        //   unannotated params fall back to Unknown as before).
                                         let mut method_ann_map: std::collections::HashMap<
                                             String,
                                             String,
                                         > = std::collections::HashMap::new();
+                                        for param_name in params.iter() {
+                                            // Register the param name as both the annotation key
+                                            // and the internal TypeVar name.
+                                            let lvl = state.level;
+                                            state.levels.insert(param_name.clone(), lvl);
+                                            state
+                                                .type_vars
+                                                .entry(param_name.clone())
+                                                .or_insert_with(|| {
+                                                    crate::type_infer::TypeVarEntry::blank(
+                                                        lvl,
+                                                        crate::types::Kind::Type,
+                                                    )
+                                                });
+                                            method_ann_map
+                                                .insert(param_name.clone(), param_name.clone());
+                                        }
                                         let mut ann_map_mut = Some(&mut method_ann_map);
                                         let mut row_ann_mapping = None;
                                         let method_type_result =
@@ -4300,6 +4346,31 @@ pub(crate) async fn run_typecheck_dict(
 
                                         match method_type_result {
                                             Ok(method_type) => {
+                                                // T-1853: Store the polymorphic method type in
+                                                // ClassDecl.method_signatures so that
+                                                // infer_instance_decl_from_surface can look up the
+                                                // expected function type for bidirectional checking.
+                                                {
+                                                    let mut env_guard = state.env.write().unwrap();
+                                                    if let Some(mut class_decl) =
+                                                        env_guard.get_class(class_name)
+                                                    {
+                                                        // Avoid duplicate entries if this method
+                                                        // was already registered (e.g. re-processed).
+                                                        if !class_decl
+                                                            .method_signatures
+                                                            .iter()
+                                                            .any(|(n, _)| n == &method_name)
+                                                        {
+                                                            class_decl.method_signatures.push((
+                                                                method_name.clone(),
+                                                                method_type.clone(),
+                                                            ));
+                                                            env_guard.insert_class(class_decl);
+                                                        }
+                                                    }
+                                                }
+
                                                 // Build Class constraint with class Arc and param vars
                                                 let constraint_vars: Vec<
                                                     crate::type_class::ConstraintArg,

@@ -9,11 +9,11 @@
 # loader). The class type parameter `a` is injected into type_stage_scope as `a → Int` when
 # checking method bodies, so ANNOTATED method params (e.g., `@a`) resolve to `Int`.
 #
-# However, UNANNOTATED params (`x` and `y` in this test) still infer as Unknown because
-# they have no annotation for the type checker to propagate the expected type through.
-# Full elimination of T010 for unannotated params requires bidirectional type checking
-# using class method signatures, which are not currently populated (method_signatures: vec![]).
-# This is tracked as future work — the correct user fix is to annotate params: `@a` or `@Integer`.
+# T-1853 (S-982): Bidirectional type checking from class method signatures is now implemented.
+# However, the method in this test is named `eq`, NOT `=` — Equatable only declares `=`.
+# Since `eq` is not in Equatable's method_signatures, expected_fn_params is not set,
+# and `x`/`y` still infer as Unknown. The correct user fix is to name the method `=`
+# or annotate params explicitly: `@Integer`.
 [
   MyEqInt: [instance Equatable
     [pattern [Int]]:

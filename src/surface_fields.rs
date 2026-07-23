@@ -93,9 +93,7 @@ pub fn surface_node_get_field(
             // Leading-dot has no target expression — return null (empty dict)
             null()
         }
-        (SurfaceExpression::Field { field: dot_key, .. }, "field") => {
-            dot_key_to_value(dot_key)
-        }
+        (SurfaceExpression::Field { field: dot_key, .. }, "field") => dot_key_to_value(dot_key),
 
         // --- Pipe ---
         (SurfaceExpression::Pipe { lhs, .. }, "lhs") => expr_variant(lhs),
