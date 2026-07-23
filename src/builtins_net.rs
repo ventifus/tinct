@@ -49,7 +49,7 @@ use crate::value::{string_val, BuiltinArgs, BuiltinDef, HashableValue, Strictnes
 /// - `Udp` → error "UDP not yet supported, use Tcp" (reserved for Phase 2)
 pub(crate) fn builtin_connect(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     // Network redesign in progress: Handle/WriteHandle removed. TCP/Unix connections
     // will be reimplemented on a new stream type. See File redesign sprint.
     let BuiltinArgs { call_span, .. } = ctx_arg;
@@ -805,7 +805,7 @@ async fn extract_sans(
 /// Stubbed: Handle/WriteHandle removed. Will be reimplemented with new stream type.
 pub(crate) fn builtin_tls_layer(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs { call_span, .. } = ctx_arg;
     Box::pin(async move {
         Err(EvalError::user_error(
@@ -831,7 +831,7 @@ pub(crate) fn builtin_tls_layer(
 /// `tls-peer-cert`: Extract TLS certificate metadata. Stubbed: Handle removed.
 pub(crate) fn builtin_tls_peer_cert(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs { call_span, .. } = ctx_arg;
     Box::pin(async move {
         Err(EvalError::user_error(
@@ -959,7 +959,7 @@ impl std::io::Write for QuicSendWriter {
 /// Returns a `QuicSession` on success.
 pub(crate) fn builtin_quic_session(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         use std::net::{SocketAddr, ToSocketAddrs};
         use std::sync::Arc;
@@ -1122,7 +1122,7 @@ pub(crate) fn builtin_quic_session(
 /// Both halves bridge async quinn I/O to synchronous BufRead/Write via block_on.
 pub(crate) fn builtin_quic_open_stream(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     // Stubbed: returned Value::Handle which no longer exists.
     // Will be reimplemented with a new stream type in the network redesign sprint.
     let BuiltinArgs { call_span, .. } = ctx_arg;
@@ -1148,7 +1148,7 @@ pub(crate) fn builtin_quic_open_stream(
 /// for reliable streaming, which is the common HTTP/3 use case.
 pub(crate) fn builtin_quic_open_datagram(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1208,7 +1208,7 @@ pub(crate) fn builtin_quic_open_datagram(
 /// underlying connection pool across multiple `http-request` calls.
 pub(crate) fn builtin_http2_session(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1364,7 +1364,7 @@ fn parse_origin_host_port(origin: &str, span: Span) -> EvalResult<(String, Optio
 /// the Http3Session value.
 pub(crate) fn builtin_http3_session(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1465,7 +1465,7 @@ pub(crate) fn builtin_http3_session(
 /// - Other: type error (hard error)
 pub(crate) fn builtin_http_request(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1854,7 +1854,7 @@ fn http_request_h3(
 /// Users who want Result-based error handling wrap the call in `[try [fn [] [icmp-ping ...]]]`.
 pub(crate) fn builtin_icmp_ping(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2205,7 +2205,7 @@ fn icmp_ping_impl(
 /// `data` must be a String or Bytes.
 pub(crate) fn builtin_send_datagram(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2279,7 +2279,7 @@ pub(crate) fn builtin_send_datagram(
 /// a datagram arrives.
 pub(crate) fn builtin_recv_datagram(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2349,7 +2349,7 @@ pub(crate) fn builtin_recv_datagram(
 /// username/password extracted by splitting userinfo on ":" (RFC 3986 convention).
 pub(crate) fn builtin_uri(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2504,7 +2504,7 @@ pub(crate) fn builtin_uri(
 /// Errors if no authority (no host). Port defaults to scheme default if not specified.
 pub(crate) fn builtin_url(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2626,7 +2626,7 @@ pub(crate) fn builtin_url(
 /// Errors if scheme is not "urn".
 pub(crate) fn builtin_urn(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,

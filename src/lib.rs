@@ -16,6 +16,9 @@
 // Boxing it at every return site would be invasive and would hurt readability for marginal
 // runtime benefit (errors are cold paths).
 #![allow(clippy::result_large_err)]
+// Increased recursion limit for deep Send/Sync bound evaluation through hyper/reqwest/tower
+// dependency chains (reqwest::Client -> hyper_util::Client -> Pool -> PoolInner chain).
+#![recursion_limit = "256"]
 
 pub(crate) mod arena;
 // Shared async runtime for QUIC/HTTP3 builtins (block_on helper).
@@ -482,7 +485,7 @@ pub trait ValueVisitor {
 
 /// Type alias for the pinned future returned by `visit_value`.
 type VisitValueFuture<'a, Output> = std::pin::Pin<
-    Box<dyn std::future::Future<Output = Result<Output, Box<error::EvalError>>> + 'a>,
+    Box<dyn std::future::Future<Output = Result<Output, Box<error::EvalError>>> + Send + 'a>,
 >;
 
 /// Shared structural traversal for materialised `Value` trees.
@@ -493,13 +496,16 @@ type VisitValueFuture<'a, Output> = std::pin::Pin<
 /// # Panics
 ///
 /// Does not panic. All errors are propagated via `Result`.
-pub fn visit_value<'a, V: ValueVisitor + 'a>(
+pub fn visit_value<'a, V: ValueVisitor + Sync + 'a>(
     val: &'a value::Value,
     ctx: &'a Arc<eval::EvalContext>,
     depth: usize,
     visitor: &'a V,
     span: ast::Span,
-) -> VisitValueFuture<'a, V::Output> {
+) -> VisitValueFuture<'a, V::Output>
+where
+    V::Output: Send,
+{
     Box::pin(async move {
         if let Some(limit_result) = visitor.depth_limit_output(depth, span.clone()) {
             return limit_result;

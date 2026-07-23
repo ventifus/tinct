@@ -46,7 +46,7 @@ fn check_int_to_float_precision(n: i64, span: crate::ast::Span) -> EvalResult<()
 /// `builtin-mul`: Pure Int/Float multiplication primitive. No typeclass dispatch.
 pub(crate) fn builtin_mul(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -99,7 +99,7 @@ pub(crate) fn builtin_mul(
 /// Always returns Float (even Int / Int). Division by zero is an error.
 pub(crate) fn builtin_div_float(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -158,7 +158,7 @@ pub(crate) fn builtin_div_float(
 /// No cross-type comparison — both args must be Int.
 pub(crate) fn builtin_eq_int(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -199,7 +199,7 @@ pub(crate) fn builtin_eq_int(
 /// No cross-type comparison — both args must be Float.
 pub(crate) fn builtin_eq_float(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -240,7 +240,7 @@ pub(crate) fn builtin_eq_float(
 /// No cross-type comparison — both args must be String.
 pub(crate) fn builtin_eq_string(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -294,7 +294,7 @@ pub(crate) fn builtin_eq_string(
 /// Inherently materializing: must inspect values to determine ordering.
 pub(crate) fn builtin_lt(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -366,7 +366,7 @@ pub(crate) fn builtin_lt(
 /// `builtin-float-lt`: Float less-than. Returns Int(1) if a < b, Int(0) otherwise.
 pub(crate) fn builtin_float_lt(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -398,7 +398,7 @@ pub(crate) fn builtin_float_lt(
 /// `builtin-str-lt`: String lexicographic less-than. Returns Int(1) if a < b, Int(0) otherwise.
 pub(crate) fn builtin_str_lt(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -444,7 +444,7 @@ pub(crate) fn builtin_str_lt(
 /// Implemented as `!(b < a)` (negation of `>`).
 pub(crate) fn builtin_lte(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -576,7 +576,7 @@ fn extract_two_floats(
 /// Inherently materializing: must extract numeric values to compute power.
 pub(crate) fn builtin_pow(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -596,7 +596,7 @@ pub(crate) fn builtin_pow(
 /// Inherently materializing: must extract numeric value to compute square root.
 pub(crate) fn builtin_sqrt(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -615,7 +615,7 @@ pub(crate) fn builtin_sqrt(
 /// Inherently materializing: must extract numeric value to compute logarithm.
 pub(crate) fn builtin_log(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -633,7 +633,7 @@ pub(crate) fn builtin_log(
 /// Inherently materializing: must extract numeric value to compute logarithm.
 pub(crate) fn builtin_log2(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -651,7 +651,7 @@ pub(crate) fn builtin_log2(
 /// Inherently materializing: must extract numeric value to compute logarithm.
 pub(crate) fn builtin_log10(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -669,7 +669,7 @@ pub(crate) fn builtin_log10(
 /// Inherently materializing: must extract numeric value to compute exponential.
 pub(crate) fn builtin_exp(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -687,7 +687,7 @@ pub(crate) fn builtin_exp(
 /// Inherently materializing: must extract numeric value to compute sine.
 pub(crate) fn builtin_sin(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -705,7 +705,7 @@ pub(crate) fn builtin_sin(
 /// Inherently materializing: must extract numeric value to compute cosine.
 pub(crate) fn builtin_cos(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -723,7 +723,7 @@ pub(crate) fn builtin_cos(
 /// Inherently materializing: must extract numeric value to compute tangent.
 pub(crate) fn builtin_tan(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -741,7 +741,7 @@ pub(crate) fn builtin_tan(
 /// Inherently materializing: must extract numeric value to compute arcsine.
 pub(crate) fn builtin_asin(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -759,7 +759,7 @@ pub(crate) fn builtin_asin(
 /// Inherently materializing: must extract numeric value to compute arccosine.
 pub(crate) fn builtin_acos(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -777,7 +777,7 @@ pub(crate) fn builtin_acos(
 /// Inherently materializing: must extract numeric value to compute arctangent.
 pub(crate) fn builtin_atan(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -795,7 +795,7 @@ pub(crate) fn builtin_atan(
 /// Inherently materializing: must extract numeric values to compute arctangent.
 pub(crate) fn builtin_atan2(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -813,7 +813,7 @@ pub(crate) fn builtin_atan2(
 /// Inherently materializing: must extract numeric value to check for NaN.
 pub(crate) fn builtin_nan_check(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -831,7 +831,7 @@ pub(crate) fn builtin_nan_check(
 /// Inherently materializing: must extract numeric value to check for infinity.
 pub(crate) fn builtin_inf_check(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -849,7 +849,7 @@ pub(crate) fn builtin_inf_check(
 /// Inherently materializing: must extract numeric value to check for finiteness.
 pub(crate) fn builtin_finite_check(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -920,7 +920,7 @@ fn extract_int_pair(
 /// Inherently materializing: must extract numeric values to compute bitwise AND.
 pub(crate) fn builtin_band(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -938,7 +938,7 @@ pub(crate) fn builtin_band(
 /// Inherently materializing: must extract numeric values to compute bitwise OR.
 pub(crate) fn builtin_bor(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -956,7 +956,7 @@ pub(crate) fn builtin_bor(
 /// Inherently materializing: must extract numeric values to compute bitwise XOR.
 pub(crate) fn builtin_bxor(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -974,7 +974,7 @@ pub(crate) fn builtin_bxor(
 /// Inherently materializing: must extract numeric values to compute left shift.
 pub(crate) fn builtin_shl(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1007,7 +1007,7 @@ pub(crate) fn builtin_shl(
 /// Inherently materializing: must extract numeric values to compute right shift.
 pub(crate) fn builtin_shr(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1046,7 +1046,7 @@ pub(crate) fn builtin_shr(
 /// Inherently materializing: must inspect value to determine type and perform conversion.
 pub(crate) fn builtin_float(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1084,7 +1084,7 @@ pub(crate) fn builtin_float(
 
 pub(crate) fn builtin_int_add(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1118,7 +1118,7 @@ pub(crate) fn builtin_int_add(
 
 pub(crate) fn builtin_float_add(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1149,7 +1149,7 @@ pub(crate) fn builtin_float_add(
 
 pub(crate) fn builtin_int_to_float(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1177,7 +1177,7 @@ pub(crate) fn builtin_int_to_float(
 
 pub(crate) fn builtin_int_sub(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1211,7 +1211,7 @@ pub(crate) fn builtin_int_sub(
 
 pub(crate) fn builtin_float_sub(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1242,7 +1242,7 @@ pub(crate) fn builtin_float_sub(
 
 pub(crate) fn builtin_int_mul(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1276,7 +1276,7 @@ pub(crate) fn builtin_int_mul(
 
 pub(crate) fn builtin_float_mul(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1310,7 +1310,7 @@ pub(crate) fn builtin_float_mul(
 
 pub(crate) fn builtin_int_gt(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1341,7 +1341,7 @@ pub(crate) fn builtin_int_gt(
 
 pub(crate) fn builtin_float_gt(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1372,7 +1372,7 @@ pub(crate) fn builtin_float_gt(
 
 pub(crate) fn builtin_str_gt(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1415,7 +1415,7 @@ pub(crate) fn builtin_str_gt(
 
 pub(crate) fn builtin_int_gte(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1446,7 +1446,7 @@ pub(crate) fn builtin_int_gte(
 
 pub(crate) fn builtin_float_gte(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1477,7 +1477,7 @@ pub(crate) fn builtin_float_gte(
 
 pub(crate) fn builtin_str_gte(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,

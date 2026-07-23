@@ -152,7 +152,7 @@ fn hashable_value_to_value(hv: &HashableValue) -> Value {
 /// Inherently materializing: must access IndexMap to enumerate keys.
 pub(crate) fn builtin_keys(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -201,7 +201,7 @@ pub(crate) fn builtin_keys(
 /// Inherently materializing: must access IndexMap to count entries or count UTF-8 characters or bytes.
 pub(crate) fn builtin_length(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -273,7 +273,7 @@ pub(crate) fn builtin_length(
 /// `[get key target]`. The lowerer desugars dot-access to `[builtin-get key target]`.
 pub(crate) fn builtin_get(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -447,7 +447,7 @@ async fn builtin_get_on_value(
 /// Prelude composes this with `builtin-get` to implement `get?` without Rust knowing Absent.
 pub(crate) fn builtin_has_key(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -496,7 +496,7 @@ pub(crate) fn builtin_has_key(
 /// `Dict a → Int → Int`
 pub(crate) fn builtin_dict_has_nth(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -553,7 +553,7 @@ pub(crate) fn builtin_dict_has_nth(
 /// `Dict a → Int → a`
 pub(crate) fn builtin_dict_nth(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -610,7 +610,7 @@ pub(crate) fn builtin_dict_nth(
 /// `Dict a → Int → Int`
 pub(crate) fn builtin_dict_has_key_nth(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -670,7 +670,7 @@ pub(crate) fn builtin_dict_has_key_nth(
 /// `Dict a → Int → Key`
 pub(crate) fn builtin_dict_key_nth(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -730,7 +730,7 @@ pub(crate) fn builtin_dict_key_nth(
 /// `Dict a → Int → Int`
 pub(crate) fn builtin_dict_has_kv_nth(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -790,7 +790,7 @@ pub(crate) fn builtin_dict_has_kv_nth(
 /// `Dict a → Int → [key: Key  value: a]`
 pub(crate) fn builtin_dict_kv_nth(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -861,7 +861,7 @@ pub(crate) fn builtin_dict_kv_nth(
 /// Usage pattern: `[builder-set k [cons x [builder-get-or k [] b]] b]`
 pub(crate) fn builtin_builder_get_or(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -948,7 +948,7 @@ pub(crate) fn builtin_builder_get_or(
 /// `from-entries`, `map-entries`, `walk`, `transpose`, `collect-kv`, etc.
 pub(crate) fn builtin_build_dict(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1033,7 +1033,7 @@ pub(crate) fn builtin_build_dict(
 /// Takes 0 args. Returns a new Builder.
 pub(crate) fn builtin_make_builder(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1101,7 +1101,7 @@ pub(crate) fn builtin_make_builder(
 /// Errors if the builder is frozen.
 pub(crate) fn builtin_builder_set(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1179,7 +1179,7 @@ pub(crate) fn builtin_builder_set(
 /// Errors if the builder is frozen.
 pub(crate) fn builtin_builder_delete(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1254,7 +1254,7 @@ pub(crate) fn builtin_builder_delete(
 /// Errors if the builder is already frozen.
 pub(crate) fn builtin_builder_finish(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1301,7 +1301,7 @@ pub(crate) fn builtin_builder_finish(
 /// Errors if the builder is frozen.
 pub(crate) fn builtin_builder_snapshot(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1347,7 +1347,7 @@ pub(crate) fn builtin_builder_snapshot(
 /// Takes 2 args: key (Int or String), builder. Returns Bool.
 pub(crate) fn builtin_builder_has(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1424,7 +1424,7 @@ pub(crate) fn builtin_builder_has(
 /// Takes 2 args: key (Int or String), builder. Returns the value or errors if key not found.
 pub(crate) fn builtin_builder_get(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1518,7 +1518,7 @@ pub(crate) fn builtin_builder_get(
 /// via the `get` wrapper in prelude.
 pub(crate) fn builtin_get_by_field(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1694,7 +1694,7 @@ pub(crate) fn builtin_get_by_field(
 /// Args: (n, xs)
 pub(crate) fn builtin_take(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1762,7 +1762,7 @@ pub(crate) fn builtin_take(
 /// Args: (n, xs)
 pub(crate) fn builtin_drop(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1835,7 +1835,7 @@ pub(crate) fn builtin_drop(
 /// Args: (xs, ys)
 pub(crate) fn builtin_concat(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,

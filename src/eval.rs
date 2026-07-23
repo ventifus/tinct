@@ -305,7 +305,7 @@ type GuardDefault = (Arc<Spanned<crate::ast::CoreExpr>>, u32);
 
 /// Type alias for the return type of `match_pattern` — an async fn returning an optional env.
 type MatchPatternFuture<'a> =
-    std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Option<Arc<RwLock<Env>>>>> + 'a>>;
+    std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Option<Arc<RwLock<Env>>>>> + Send + 'a>>;
 
 // ValuesEqualFuture removed — primitive_eq is synchronous (no async needed).
 
@@ -727,13 +727,14 @@ impl EvalContext {
 
     /// Create a child EvalContext with a timeout: automatically cancels after `ms` milliseconds.
     ///
-    /// Spawns a background task (via spawn_local) that fires the cancellation after the delay.
+    /// Spawns a background task that fires the cancellation after the delay.
     /// Returns the child context; the cancel handle is internal (use `[with-cancel]` if you
     /// need explicit control).
     pub fn with_timeout_ms(self: &Arc<Self>, ms: u64) -> Arc<Self> {
         let child_token = self.cancel.child_token();
         let cancel_clone = child_token.clone();
-        let handle = crate::async_rt::spawn_local(async move {
+        // All captured types are Send (CancellationToken).
+        let handle = tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
             cancel_clone.cancel();
         });
@@ -1580,7 +1581,7 @@ pub fn materialize<'a>(
     thunk: &'a Arc<Thunk>,
     mat_span: Option<&'a Span>,
     ctx: &'a Arc<EvalContext>,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Value>> + 'a>> {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Value>> + Send + 'a>> {
     Box::pin(async move {
         loop {
             // Check terminal states first (result is set).
@@ -3295,7 +3296,7 @@ mod tests {
         // Create a PendingCall thunk where the function is a Builtin
         fn multiply_builtin(
             ctx: crate::value::BuiltinArgs,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>>>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
             Box::pin(async move {
                 let a = materialize(&ctx.args[0], None, &ctx.ctx).await?;
                 let b = materialize(&ctx.args[1], None, &ctx.ctx).await?;

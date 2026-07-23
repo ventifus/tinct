@@ -75,7 +75,7 @@ pub fn normalize<'a>(
     ty: &'a Type,
     type_vars: &'a IndexMap<String, TypeVarEntry>,
     ctx: &'a mut NormCtxt,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Type> + 'a>> {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Type> + Send + 'a>> {
     Box::pin(async move {
         // Step 1: Apply current substitution
         let ty_substituted = crate::types::apply_substitution(ty, type_vars);

@@ -4248,7 +4248,7 @@ pub(crate) async fn typenode_value_to_type_pub(
 fn typenode_value_to_type<'a>(
     val: &'a Value,
     ctx: &'a Arc<crate::eval::EvalContext>,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<Type>> + 'a>> {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<Type>> + Send + 'a>> {
     Box::pin(async move {
         match val {
             // T-1555: Value::Annotated is removed; annotated bindings no longer need unwrapping.
@@ -4592,7 +4592,7 @@ fn type_to_typenode_value<'a>(
     ty: &'a Type,
     ctx: &'a Arc<crate::eval::EvalContext>,
     span: Span,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<Value>> + 'a>> {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<Value>> + Send + 'a>> {
     Box::pin(async move {
         // mk_arc: build an Arc<Thunk> for dict value insertion (T-1772: Value::Dict stores Arc<Thunk>)
         let mk_arc = |v: Value| -> Arc<Thunk> { Arc::new(Thunk::value(v, span.clone())) };

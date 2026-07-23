@@ -2892,7 +2892,7 @@ fn eval_structural_pattern_inner<'a>(
     parent_env_id: u32,
     match_span: Span,
     ctx: &'a Arc<EvalContext>,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<bool>> + 'a>> {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<bool>> + Send + 'a>> {
     Box::pin(async move {
         match pattern {
             // Wildcard: always succeeds, no binding.
@@ -4380,20 +4380,21 @@ mod cek_lifecycle_tests {
 /// - `expand_macro_call_surface` in expand.rs (Expr.* typed macro results)
 /// - `builtin_to_tinct` in stream.rs (pre-force all nested values before SCN serialization)
 pub(crate) async fn force_dict_tree(val: &Value, ctx: &Arc<EvalContext>) -> EvalResult<Value> {
-    force_dict_tree_impl(val, ctx, &mut HashSet::new()).await
+    force_dict_tree_impl(val, ctx, &mut HashSet::<usize>::new()).await
 }
 
 fn force_dict_tree_impl<'a>(
     val: &'a Value,
     ctx: &'a Arc<EvalContext>,
-    visited: &'a mut HashSet<*const Thunk>,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Value>> + 'a>> {
+    // Use usize (pointer address) instead of *const Thunk — raw pointers are !Send but usize is Send.
+    visited: &'a mut HashSet<usize>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Value>> + Send + 'a>> {
     Box::pin(async move {
         match val {
             Value::Dict(map) => {
                 let mut new_map = IndexMap::new();
                 for (key, thunk) in map {
-                    let thunk_ptr = Arc::as_ptr(thunk);
+                    let thunk_ptr = Arc::as_ptr(thunk) as usize;
 
                     // Cycle detection: if we've already visited this thunk, return it as-is
                     if !visited.insert(thunk_ptr) {
@@ -4415,7 +4416,7 @@ fn force_dict_tree_impl<'a>(
                 payload,
             } => {
                 if let Some(payload_thunk) = payload {
-                    let thunk_ptr = Arc::as_ptr(payload_thunk);
+                    let thunk_ptr = Arc::as_ptr(payload_thunk) as usize;
 
                     // Cycle detection: if we've already visited this thunk, return variant as-is
                     if !visited.insert(thunk_ptr) {

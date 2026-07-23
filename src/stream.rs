@@ -29,7 +29,7 @@ use crate::value::{string_val, BuiltinArgs, Thunk};
 /// See `Value::to_tinct` in `src/surface_fmt.rs` for the full serialization logic.
 pub(crate) fn builtin_to_tinct(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,

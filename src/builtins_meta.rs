@@ -89,7 +89,7 @@ pub(crate) fn make_gensym_name_with_scope(scope: char, prefix: &str, id: u64) ->
 /// (WHNF) — dicts remain dicts with unforced entries, not deep-forced.
 pub(crate) fn builtin_force(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -113,7 +113,7 @@ pub(crate) fn builtin_force(
 /// Inherently materializing: constructs concrete error value.
 pub(crate) fn builtin_raise(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -141,7 +141,7 @@ pub(crate) fn builtin_raise(
 /// Arg 2 (node) is Strictness::Id (not materialized - stays as thunk).
 pub(crate) fn builtin_macro_error(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -194,7 +194,7 @@ pub(crate) fn builtin_macro_error(
 /// Inherently materializing: must materialize body to catch errors.
 pub(crate) fn builtin_try(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -247,7 +247,7 @@ pub(crate) fn builtin_try(
 /// This implementation uses a Rust loop with eager materialization at each step.
 pub(crate) fn builtin_until(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -338,7 +338,7 @@ pub(crate) fn builtin_until(
 /// PendingBuiltin thunk, enabling iterative arg materialization via BuiltinForceArg.
 pub(crate) fn builtin_apply_impl(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -473,7 +473,7 @@ pub(crate) fn builtin_apply_impl(
 /// `apply`: wrapper that returns a PendingBuiltin thunk for iterative arg materialization.
 pub(crate) fn builtin_apply(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -529,7 +529,7 @@ pub(crate) fn builtin_apply(
 ///   `gensym-with-scope scope prefix` → explicit scope
 pub(crate) fn builtin_gensym(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -591,7 +591,7 @@ pub(crate) fn builtin_gensym(
 /// Non-materializing: only inspects the macro_injects_map from EvalConfig.
 pub(crate) fn builtin_macro_injects(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -636,7 +636,7 @@ pub(crate) fn builtin_macro_injects(
 /// Returns Value::Decimal. Error on invalid format.
 pub(crate) fn builtin_decimal(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -678,7 +678,7 @@ pub(crate) fn builtin_decimal(
 /// `big-int`: Convert an Int or String to a BigInt (arbitrary-precision integer).
 pub(crate) fn builtin_big_int(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -723,7 +723,7 @@ pub(crate) fn builtin_big_int(
 /// Inherently materializing: must inspect value variant to determine type.
 pub(crate) fn builtin_type_of(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -762,7 +762,7 @@ pub(crate) fn builtin_type_of(
 /// checking all known primitive type names, which is not future-proof.
 pub(crate) fn builtin_is_variant(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -798,7 +798,7 @@ pub(crate) fn builtin_is_variant(
 /// - PendingCall/PendingBuiltin/Guarded/InProgress/Failed → descriptor dict (legacy, will be updated)
 pub(crate) fn builtin_ast_of(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1077,7 +1077,7 @@ pub(crate) fn builtin_ast_of(
 /// Used by the `-o llt` output formatter.
 pub(crate) fn builtin_llt_repr(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1109,7 +1109,7 @@ pub(crate) fn builtin_llt_repr(
 /// or use pattern matching instead.
 pub(crate) fn builtin_tag_of(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1178,7 +1178,7 @@ pub(crate) fn builtin_tag_of(
 /// Used for precise error reporting in macros.
 pub(crate) fn builtin_span_of(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1276,7 +1276,7 @@ pub(crate) fn builtin_span_of(
 /// Used to inspect resolver output from tinct code.
 pub(crate) fn builtin_var_resolution(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1465,7 +1465,7 @@ pub(crate) fn builtin_var_resolution(
 /// The annotation dict is available after WHNF without further forcing.
 pub(crate) fn builtin_annotation_of(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1550,7 +1550,7 @@ pub(crate) fn builtin_annotation_of(
 /// Both arguments are pre-materialized by `pos_strictness = [Seq, Seq]`.
 pub(crate) fn builtin_make_annotated(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1657,7 +1657,7 @@ pub(crate) fn blake3_hex(bytes: &[u8]) -> String {
 /// Example: `[blake3 "hello"]` → `"ea8f163db38682925e4491c5e58d4bb3506ef8c14eb78a86e908c5624a67200f"`
 pub(crate) fn builtin_blake3(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1689,7 +1689,7 @@ pub(crate) fn builtin_blake3(
 /// cache key: `blake3(cap-identity + "|" + source)`.
 pub(crate) fn builtin_cap_identity(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1775,7 +1775,7 @@ pub(crate) fn builtin_cap_identity(
 /// This is Stage 1 of the 4-stage pipeline: parse → resolve → typecheck → eval.
 pub(crate) fn builtin_parse(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1935,7 +1935,7 @@ pub(crate) fn builtin_parse(
 /// This is Stage 2 of the 4-stage pipeline (Stage 1 is parse from loader.llt).
 pub(crate) fn builtin_resolve(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2092,7 +2092,7 @@ pub(crate) fn builtin_resolve(
 /// The returned dict is a flat list of diagnostics (empty when no warnings).
 pub(crate) fn builtin_lint_pipeline_docs(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2228,7 +2228,7 @@ pub(crate) fn builtin_lint_pipeline_docs(
 /// Returns Value::Document (same Arc — type annotations written inline).
 pub(crate) fn builtin_typecheck_doc(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2423,7 +2423,7 @@ pub(crate) fn builtin_typecheck_doc(
 /// Signature: `[builtin-get-type-context]`
 pub(crate) fn builtin_get_type_context(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2479,7 +2479,7 @@ pub(crate) fn builtin_get_type_context(
 /// Signature: `[builtin-make-type-ctx]`
 pub(crate) fn builtin_make_type_ctx(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2520,7 +2520,7 @@ pub(crate) fn builtin_make_type_ctx(
 /// Signature: `[builtin-fork-type-ctx parent-ctx]`
 pub(crate) fn builtin_fork_type_ctx(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2580,7 +2580,7 @@ pub(crate) fn builtin_fork_type_ctx(
 /// where `ts-env` is the accumulated env dict from type-stage document evaluation.
 pub(crate) fn builtin_tc_with_scope(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2658,7 +2658,7 @@ pub(crate) fn builtin_tc_with_scope(
 /// T-1803: Replaces the no-op builtin-tc-with-scope with actual scope chain population.
 pub(crate) fn builtin_tc_update_type_stage_env(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2756,7 +2756,7 @@ pub(crate) fn builtin_tc_update_type_stage_env(
 /// ```
 pub(crate) fn builtin_program(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2838,7 +2838,7 @@ pub(crate) fn builtin_program(
 /// Returns a new Value::Program with desugaring applied.
 pub(crate) fn builtin_desugar(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2894,7 +2894,7 @@ pub(crate) fn builtin_desugar(
 /// Returns auto-indexed Dict of Value::Document values (Arc::clone each doc).
 pub(crate) fn builtin_program_docs(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2954,7 +2954,7 @@ pub(crate) fn builtin_program_docs(
 /// deleted from builtins_dict.rs (T-1605 follow-up, S-926 R4).
 pub(crate) fn builtin_doc_expressions(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -3020,7 +3020,7 @@ pub(crate) fn builtin_doc_expressions(
 /// Returns empty Dict if header is empty.
 pub(crate) fn builtin_doc_meta(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -3098,7 +3098,7 @@ pub(crate) fn builtin_doc_meta(
 /// Available modules: "core", "datetime", "net"
 pub(crate) fn builtin_builtin_module(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -3159,7 +3159,7 @@ pub(crate) fn builtin_builtin_module(
 /// T-1775: env-dict protocol replaces the old scope-id Int parameter.
 pub(crate) fn builtin_eval(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -3269,7 +3269,7 @@ pub(crate) fn builtin_eval(
 /// fails when the payload is a non-dict value like String).
 pub(crate) fn builtin_variant_payload(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -3316,7 +3316,7 @@ pub(crate) fn builtin_variant_payload(
 /// call site.
 pub(crate) fn builtin_current_env(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -3357,7 +3357,7 @@ pub(crate) fn builtin_current_env(
 ///   6. Return the result thunk (the `%` of the resulting environment)
 pub(crate) fn builtin_eval_macro_ast(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -3465,7 +3465,7 @@ pub(crate) fn builtin_eval_macro_ast(
 /// Base environment: uses the parent_env_id bridge placeholder (always None).
 pub(crate) fn builtin_eval_types(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -3591,7 +3591,7 @@ pub(crate) fn builtin_eval_types(
 /// Returns the data value unchanged on success, throws SchemaViolation with all violations on failure.
 pub(crate) fn builtin_validate(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -3668,7 +3668,7 @@ fn expect_two_args(
 
 /// Return type alias for async-recursive `validate_value`.
 type ValidationFuture =
-    std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Vec<(String, String)>>>>>;
+    std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Vec<(String, String)>>> + Send>>;
 
 /// Recursive validation helper.
 ///
@@ -3951,7 +3951,7 @@ fn validate_value(
 // S-860: equirecursive-types-core
 pub(crate) fn builtin_is_contractive(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -3990,7 +3990,7 @@ pub(crate) fn builtin_is_contractive(
 fn is_contractive_value<'a>(
     val: &'a Value,
     ctx: &'a Arc<crate::eval::EvalContext>,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + 'a>> {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
     Box::pin(async move {
         // Unwrap Value::Annotated transparently — annotations do not affect contractiveness.
         let val = match val {
@@ -4077,7 +4077,7 @@ async fn is_contractive_seq(
 /// Returns: `Value::Variant { tag: "Expr.Sequential", payload: Some({exprs: dict}) }`.
 pub(crate) fn builtin_sequential(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -4151,7 +4151,7 @@ pub(crate) fn builtin_sequential(
 /// Returns Value::Program.
 pub(crate) fn builtin_ast_to_program(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -4292,7 +4292,7 @@ pub(crate) fn builtin_ast_to_program(
 /// without validation. Used by tinct-side expects validation (T-1506).
 pub(crate) fn builtin_check_type(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -4355,7 +4355,7 @@ pub(crate) fn builtin_check_type(
 /// to validate declared caps against the accumulated env dict.
 pub(crate) fn builtin_cap_env_has(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -4412,7 +4412,7 @@ pub(crate) fn builtin_cap_env_has(
 /// named, explicit pipeline step: parse → resolve → typecheck-doc → lower → eval.
 pub(crate) fn builtin_lower(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,

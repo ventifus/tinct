@@ -59,11 +59,13 @@ pub struct BuiltinArgs {
 /// Returns a Future that resolves to an `Arc<Thunk>` to allow builtins to participate
 /// in lazy evaluation and async operations.
 ///
-/// Note: `+ Send` is intentionally absent. LLT uses a `current_thread` runtime
-/// (see `async_rt.rs`), so futures never cross thread boundaries. Builtins capture
-/// `Rc<...>`-containing types (e.g. `Arc<Thunk>`, `Value`) that are `!Send`; requiring
-/// `+ Send` would force unsafe workarounds with no actual thread-safety benefit.
-pub type BuiltinFn = fn(BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>>;
+/// `+ Send` is required: builtins run on the multi-threaded tokio runtime. All captured
+/// types (`Value`, `Arc<Thunk>`, `Arc<EvalContext>`) are Send after T-1768 (Value: Send)
+/// and T-1774 (ScopeArena eliminated). The h3 driver task in builtins_net.rs uses
+/// `spawn_local` for its `!Send` h3::client::Connection — that is the sole remaining
+/// LocalSet use and is handled by keeping `spawn_local` only for that site.
+pub type BuiltinFn =
+    fn(BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>>;
 
 /// Strictness annotation for builtin argument demand (Wadler & Hughes 1987).
 #[repr(u8)]

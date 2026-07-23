@@ -1,19 +1,19 @@
 //! Shared async runtime for QUIC/HTTP3 builtins and the async reqwest HTTP/2 client.
-//! Single-threaded current_thread runtime initialized once per thread.
+//! Multi-threaded tokio runtime. BuiltinFn futures are `+ Send` (T-1841).
 //! Both the h3 QUIC stack and reqwest's async client (used by Http2Session) share this runtime.
 //!
 //! Design notes:
-//! - `block_on` drives a `current_thread` tokio runtime. Every call polls all
+//! - `block_on` drives a multi-thread tokio runtime (new_multi_thread). Every call polls all
 //!   spawned tasks cooperatively, so background driver tasks (e.g. the h3
 //!   `Connection` driver) make progress on each `block_on` call.
-//! - `spawn_local` queues a `!Send` future as a local task on the `LocalSet`
-//!   that wraps every `block_on` call. This avoids `Send` bounds for quinn/h3
-//!   types that don't implement `Send`.
+//! - `spawn_local` remains for the sole `!Send` use: the h3 `Connection` driver task in
+//!   builtins_net.rs. All other spawned tasks use `tokio::spawn` directly.
+//!   The LocalSet wraps `block_on` so the h3 driver is driven on each call.
 
 use std::future::Future;
 
 std::thread_local! {
-    static TOKIO_RT: tokio::runtime::Runtime = tokio::runtime::Builder::new_current_thread()
+    static TOKIO_RT: tokio::runtime::Runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .expect("async_rt: failed to create tokio runtime");
@@ -123,11 +123,14 @@ fn poll_future_sync<F: Future>(fut: F) -> F::Output {
     }
 }
 
-/// Spawn a `!Send + 'static` future as a local task.
+/// Spawn a `!Send + 'static` future as a local task on the thread-local LocalSet.
+///
+/// Use ONLY for futures that are genuinely `!Send` (e.g. the h3 `Connection` driver
+/// that captures `h3::client::Connection<h3_quinn::H3Connection>` which is `!Send`).
+/// For all Send futures, use `tokio::spawn` directly.
 ///
 /// The task is polled cooperatively on the next (and every subsequent)
-/// [`block_on`] call on this thread. Use this for background driver tasks
-/// (e.g. the HTTP/3 connection driver) that must run concurrently with requests.
+/// [`block_on`] call on this thread.
 ///
 /// Returns a `JoinHandle` that can be stored to keep the task alive; dropping
 /// the handle detaches the task (it continues running until it completes or

@@ -107,7 +107,7 @@ fn check_perm(
 /// Takes a String argument, writes it to stdout, returns null (empty dict).
 pub(crate) fn builtin_emit(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -145,7 +145,7 @@ pub(crate) fn builtin_emit(
 /// Gated by ctx.env_allowed: None = unrestricted, Some(set) = only those in the set.
 pub(crate) fn builtin_env(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -195,7 +195,7 @@ pub(crate) fn builtin_env(
 /// Gated by ctx.env_allowed: None = unrestricted, Some(set) = only those in the set.
 pub(crate) fn builtin_env_has(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -240,7 +240,7 @@ pub(crate) fn builtin_env_has(
 ///     Returns a new DirCap with the narrowed scope or restricted permissions.
 pub(crate) fn builtin_narrow(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -471,7 +471,7 @@ pub(crate) fn builtin_narrow(
 /// The RevocableDirCap can be revoked later via `revoke-cap`.
 pub(crate) fn builtin_revocable(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -532,7 +532,7 @@ pub(crate) fn builtin_revocable(
 /// Future operations on the cap will fail.
 pub(crate) fn builtin_revoke_cap(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -576,7 +576,7 @@ pub(crate) fn builtin_revoke_cap(
 /// Writes content to the file at path (creating or truncating), then returns empty dict `{}`.
 pub(crate) fn builtin_write(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -649,7 +649,7 @@ pub(crate) fn builtin_write(
 /// This ensures the target file is never partially written.
 pub(crate) fn builtin_write_atomic(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -769,7 +769,7 @@ pub(crate) fn builtin_write_atomic(
 /// Each dict has keys: name, type, size, mtime.
 pub(crate) fn builtin_list_dir(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -895,7 +895,7 @@ pub(crate) fn builtin_list_dir(
 /// Dict has keys: name, type, size, mtime, mode, is-dir, is-file, is-symlink.
 pub(crate) fn builtin_stat(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1020,7 +1020,7 @@ pub(crate) fn builtin_stat(
 /// Cheaper than try+stat for existence checks.
 pub(crate) fn builtin_exists(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1075,7 +1075,7 @@ pub(crate) fn builtin_exists(
 /// Returns a dict with the same schema as `stat`.
 pub(crate) fn builtin_stat_symlink(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1206,7 +1206,7 @@ pub(crate) fn builtin_stat_symlink(
 /// Returns empty dict on success.
 pub(crate) fn builtin_copy_file(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1286,7 +1286,7 @@ pub(crate) fn builtin_copy_file(
 /// Returns empty dict on success.
 pub(crate) fn builtin_symlink(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1392,7 +1392,7 @@ pub(crate) fn builtin_symlink(
 /// Only works on Unix-like systems.
 pub(crate) fn builtin_set_permissions(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1495,7 +1495,7 @@ pub(crate) fn builtin_set_permissions(
 #[cfg(target_os = "linux")]
 pub(crate) fn builtin_get_xattr(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1585,7 +1585,7 @@ pub(crate) fn builtin_get_xattr(
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn builtin_get_xattr(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs { call_span, .. } = ctx_arg;
         Err(EvalError::user_error(
@@ -1603,7 +1603,7 @@ pub(crate) fn builtin_get_xattr(
 #[cfg(target_os = "linux")]
 pub(crate) fn builtin_set_xattr(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1705,7 +1705,7 @@ pub(crate) fn builtin_set_xattr(
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn builtin_set_xattr(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs { call_span, .. } = ctx_arg;
         Err(EvalError::user_error(
@@ -1723,7 +1723,7 @@ pub(crate) fn builtin_set_xattr(
 #[cfg(target_os = "linux")]
 pub(crate) fn builtin_remove_xattr(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1810,7 +1810,7 @@ pub(crate) fn builtin_remove_xattr(
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn builtin_remove_xattr(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs { call_span, .. } = ctx_arg;
         Err(EvalError::user_error(
@@ -1828,7 +1828,7 @@ pub(crate) fn builtin_remove_xattr(
 #[cfg(target_os = "linux")]
 pub(crate) fn builtin_list_xattrs(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1909,7 +1909,7 @@ pub(crate) fn builtin_list_xattrs(
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn builtin_list_xattrs(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs { call_span, .. } = ctx_arg;
         Err(EvalError::user_error(
@@ -1924,7 +1924,7 @@ pub(crate) fn builtin_list_xattrs(
 /// Takes a DirCap and String path, returns Null.
 pub(crate) fn builtin_make_dir(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1980,7 +1980,7 @@ pub(crate) fn builtin_make_dir(
 /// Tries to remove as file first, then as directory.
 pub(crate) fn builtin_remove(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2040,7 +2040,7 @@ pub(crate) fn builtin_remove(
 /// Takes a DirCap, old path String, and new path String, returns Null.
 pub(crate) fn builtin_rename(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2106,7 +2106,7 @@ pub(crate) fn builtin_rename(
 /// Takes a DirCap, existing path String, and link path String, returns Null.
 pub(crate) fn builtin_link(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2165,7 +2165,7 @@ pub(crate) fn builtin_link(
 /// Takes a DirCap and String path, returns the target path as a String.
 pub(crate) fn builtin_read_link(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2233,7 +2233,7 @@ pub(crate) fn builtin_read_link(
 /// ```
 pub(crate) fn builtin_path_dir(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2299,7 +2299,7 @@ pub(crate) fn builtin_path_dir(
 /// All I/O protocol is built in tinct — `open` in prelude wraps this in a protocol dict.
 pub(crate) fn builtin_file_open(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2409,7 +2409,7 @@ pub(crate) fn builtin_file_open(
 /// Returns `Value::Bytes` with the bytes read, or empty `Value::Bytes` on EOF.
 pub(crate) fn builtin_file_read(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2506,7 +2506,7 @@ pub(crate) fn builtin_file_read(
 /// Returns the same `Value::File` it received, enabling handle threading.
 pub(crate) fn builtin_file_write(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2568,7 +2568,7 @@ pub(crate) fn builtin_file_write(
 /// Calls `std::io::Write::flush()`. Returns empty dict `[]`.
 pub(crate) fn builtin_file_flush(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2617,7 +2617,7 @@ pub(crate) fn builtin_file_flush(
 /// Returns empty dict `[]`.
 pub(crate) fn builtin_file_close(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2658,7 +2658,7 @@ pub(crate) fn builtin_file_close(
 /// Returns empty dict `[]`.
 pub(crate) fn builtin_file_seek(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2742,7 +2742,7 @@ pub(crate) fn builtin_file_seek(
 ///   `write: [fn [let s h] [builtin-write-stdout s h]]`
 pub(crate) fn builtin_write_stdout(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2780,7 +2780,7 @@ pub(crate) fn builtin_write_stdout(
 /// h is passed through lazily — it is not materialized.
 pub(crate) fn builtin_write_stderr(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2821,7 +2821,7 @@ pub(crate) fn builtin_write_stderr(
 /// Returns `Value::Bytes` (empty on EOF).
 pub(crate) fn builtin_read_stdin(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,

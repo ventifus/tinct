@@ -428,7 +428,7 @@ fn float_to_int_builtin(
 /// Inherently materializing: must inspect numeric value to convert/round.
 pub(crate) fn builtin_floor(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -451,7 +451,7 @@ pub(crate) fn builtin_floor(
 /// Inherently materializing: must inspect numeric value to convert/round.
 pub(crate) fn builtin_round(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -471,7 +471,7 @@ pub(crate) fn builtin_round(
 /// Inherently materializing: must inspect string content to parse integer value.
 pub(crate) fn builtin_to_int(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -505,7 +505,7 @@ pub(crate) fn builtin_to_int(
 /// Inherently materializing: must inspect string content to parse float value.
 pub(crate) fn builtin_to_float(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -540,7 +540,7 @@ pub(crate) use crate::builtins_dict::{builtin_concat, builtin_drop, builtin_take
 
 pub(crate) fn builtin_proxy(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -2141,7 +2141,7 @@ mod tests {
         // A PendingBuiltin thunk is forced by builtin-try; successful result wrapped in {ok: ...}.
         fn ok_builtin(
             _ctx: BuiltinArgs,
-        ) -> Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>>>> {
+        ) -> Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
             Box::pin(async move { ok_val(Value::Int(99), rust_span!()) })
         }
         let ctx = test_ctx();
@@ -2180,7 +2180,7 @@ mod tests {
         // Errors from forcing a PendingBuiltin thunk are caught and returned as {error: ...}.
         fn err_builtin(
             ctx: BuiltinArgs,
-        ) -> Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>>>> {
+        ) -> Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
             Box::pin(async move {
                 let call_span = ctx.call_span;
                 Err(EvalError::internal("builtin error".to_string(), call_span).into())
@@ -2226,7 +2226,7 @@ mod tests {
         // ResourceLimitExceeded errors should NOT be caught — they must propagate.
         fn resource_limit_builtin(
             ctx: BuiltinArgs,
-        ) -> Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>>>> {
+        ) -> Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
             Box::pin(async move {
                 let call_span = ctx.call_span;
                 Err(EvalError::resource_limit_exceeded(
@@ -2343,7 +2343,7 @@ mod tests {
     async fn apply_with_builtin() {
         fn add_builtin(
             builtin_ctx: BuiltinArgs,
-        ) -> Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>>>> {
+        ) -> Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
             Box::pin(async move {
                 let BuiltinArgs {
                     args,
@@ -2574,7 +2574,7 @@ mod tests {
     async fn type_of_builtin_returns_function() {
         fn dummy(
             _ctx: BuiltinArgs,
-        ) -> Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>>>> {
+        ) -> Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
             Box::pin(async move { ok_val(Value::Int(0), rust_span!()) })
         }
         let builtin = Value::Builtin(crate::value::BuiltinDef {

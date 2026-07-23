@@ -29,7 +29,7 @@ fn dt_err(msg: impl Into<String>, span: Span) -> Box<EvalError> {
 /// Errors if the format is invalid or the timestamp overflows i64 nanoseconds.
 pub fn builtin_parse_timestamp(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let call_span = args.call_span.clone();
         let [s_thunk] = args.args.as_slice() else {
@@ -66,7 +66,7 @@ pub fn builtin_parse_timestamp(
 /// Format a Timestamp as an RFC 3339 string.
 pub fn builtin_format_timestamp(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let call_span = args.call_span.clone();
         let [t_thunk] = args.args.as_slice() else {
@@ -105,7 +105,7 @@ pub fn builtin_format_timestamp(
 /// Convert a Timestamp to Unix seconds (truncating nanoseconds).
 pub fn builtin_timestamp_to_unix(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let call_span = args.call_span.clone();
         let [t_thunk] = args.args.as_slice() else {
@@ -139,7 +139,7 @@ pub fn builtin_timestamp_to_unix(
 /// Convert Unix seconds to a Timestamp.
 pub fn builtin_unix_to_timestamp(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let call_span = args.call_span.clone();
         let [n_thunk] = args.args.as_slice() else {
@@ -168,7 +168,7 @@ pub fn builtin_unix_to_timestamp(
 }
 
 /// Read the current time from a ClockCap.
-pub fn builtin_now(args: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+pub fn builtin_now(args: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let call_span = args.call_span.clone();
         let [cap_thunk] = args.args.as_slice() else {
@@ -201,7 +201,7 @@ pub fn builtin_now(args: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<
 /// Create a fixed ClockCap that always returns the given timestamp.
 pub fn builtin_fixed_clock(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let call_span = args.call_span.clone();
         let [t_thunk] = args.args.as_slice() else {
@@ -233,7 +233,7 @@ pub fn builtin_fixed_clock(
 /// Add a duration to a timestamp.
 pub fn builtin_timestamp_add(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let call_span = args.call_span.clone();
         let [t_thunk, d_thunk] = args.args.as_slice() else {
@@ -285,7 +285,7 @@ pub fn builtin_timestamp_add(
 /// Compute the duration between two timestamps (t1 - t2).
 pub fn builtin_timestamp_diff(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let call_span = args.call_span.clone();
         let [t1_thunk, t2_thunk] = args.args.as_slice() else {
@@ -337,7 +337,7 @@ pub fn builtin_timestamp_diff(
 /// Compare two timestamps: t1 < t2
 pub fn builtin_timestamp_lt(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let call_span = args.call_span.clone();
         let [t1_thunk, t2_thunk] = args.args.as_slice() else {
@@ -388,7 +388,7 @@ pub fn builtin_timestamp_lt(
 /// Compare two timestamps: t1 > t2
 pub fn builtin_timestamp_gt(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let call_span = args.call_span.clone();
         let [t1_thunk, t2_thunk] = args.args.as_slice() else {
@@ -439,7 +439,7 @@ pub fn builtin_timestamp_gt(
 /// Compare two timestamps for equality: t1 == t2
 pub fn builtin_timestamp_eq(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let call_span = args.call_span.clone();
         let [t1_thunk, t2_thunk] = args.args.as_slice() else {
@@ -490,7 +490,7 @@ pub fn builtin_timestamp_eq(
 /// Extract the UTC year from a timestamp.
 pub fn builtin_timestamp_year(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let call_span = args.call_span.clone();
         let [t_thunk] = args.args.as_slice() else {
@@ -528,7 +528,7 @@ pub fn builtin_timestamp_year(
 /// Extract the UTC month (1-12) from a timestamp.
 pub fn builtin_timestamp_month(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let call_span = args.call_span.clone();
         let [t_thunk] = args.args.as_slice() else {
@@ -566,7 +566,7 @@ pub fn builtin_timestamp_month(
 /// Extract the UTC day (1-31) from a timestamp.
 pub fn builtin_timestamp_day(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let call_span = args.call_span.clone();
         let [t_thunk] = args.args.as_slice() else {
@@ -604,7 +604,7 @@ pub fn builtin_timestamp_day(
 /// Extract the UTC hour (0-23) from a timestamp.
 pub fn builtin_timestamp_hour(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let call_span = args.call_span.clone();
         let [t_thunk] = args.args.as_slice() else {
@@ -642,7 +642,7 @@ pub fn builtin_timestamp_hour(
 /// Extract the UTC minute (0-59) from a timestamp.
 pub fn builtin_timestamp_minute(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let call_span = args.call_span.clone();
         let [t_thunk] = args.args.as_slice() else {
@@ -680,7 +680,7 @@ pub fn builtin_timestamp_minute(
 /// Extract the UTC second (0-59) from a timestamp.
 pub fn builtin_timestamp_second(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let call_span = args.call_span.clone();
         let [t_thunk] = args.args.as_slice() else {
@@ -718,7 +718,7 @@ pub fn builtin_timestamp_second(
 /// Extract all UTC components from a timestamp as a dict.
 pub fn builtin_timestamp_parts(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let call_span = args.call_span.clone();
         let [t_thunk] = args.args.as_slice() else {
@@ -796,7 +796,7 @@ pub fn builtin_timestamp_parts(
 /// Create a duration from nanoseconds.
 pub fn builtin_duration_nanos(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let call_span = args.call_span.clone();
         let [n_thunk] = args.args.as_slice() else {
@@ -827,7 +827,7 @@ pub fn builtin_duration_nanos(
 /// must survive serialize/deserialize without conversion through seconds.
 pub fn builtin_timestamp_nanos(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let call_span = args.call_span.clone();
         let [n_thunk] = args.args.as_slice() else {
@@ -854,7 +854,7 @@ pub fn builtin_timestamp_nanos(
 /// Create a duration from seconds.
 pub fn builtin_duration_seconds(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let call_span = args.call_span.clone();
         let [n_thunk] = args.args.as_slice() else {
@@ -890,7 +890,7 @@ pub fn builtin_duration_seconds(
 /// Create a duration from minutes.
 pub fn builtin_duration_minutes(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let call_span = args.call_span.clone();
         let [n_thunk] = args.args.as_slice() else {
@@ -927,7 +927,7 @@ pub fn builtin_duration_minutes(
 /// Create a duration from hours.
 pub fn builtin_duration_hours(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let call_span = args.call_span.clone();
         let [n_thunk] = args.args.as_slice() else {
@@ -959,7 +959,7 @@ pub fn builtin_duration_hours(
 /// Create a duration from days.
 pub fn builtin_duration_days(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let call_span = args.call_span.clone();
         let [n_thunk] = args.args.as_slice() else {
@@ -991,7 +991,7 @@ pub fn builtin_duration_days(
 /// Convert a duration to seconds (truncating nanoseconds).
 pub fn builtin_duration_to_seconds(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let call_span = args.call_span.clone();
         let [d_thunk] = args.args.as_slice() else {
@@ -1025,7 +1025,7 @@ pub fn builtin_duration_to_seconds(
 /// Convert a duration to nanoseconds.
 pub fn builtin_duration_to_nanos(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let call_span = args.call_span.clone();
         let [d_thunk] = args.args.as_slice() else {
@@ -1055,7 +1055,7 @@ pub fn builtin_duration_to_nanos(
 }
 
 /// Load a timezone from a zoneinfo directory (via DirCap).
-pub fn builtin_load_tz(args: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+pub fn builtin_load_tz(args: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let call_span = args.call_span.clone();
         let [dir_thunk, name_thunk] = args.args.as_slice() else {
@@ -1127,7 +1127,7 @@ pub fn builtin_load_tz(args: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalRes
 /// Convert a timestamp to local time in a timezone.
 pub fn builtin_timestamp_in_tz(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let call_span = args.call_span.clone();
         let [t_thunk, tz_thunk] = args.args.as_slice() else {
@@ -1235,7 +1235,7 @@ pub fn builtin_timestamp_in_tz(
 /// Convert local time components to a UTC timestamp in a timezone.
 pub fn builtin_local_to_timestamp(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let call_span = args.call_span.clone();
         if args.args.len() != 7 {
@@ -1364,7 +1364,7 @@ pub fn builtin_local_to_timestamp(
 /// Get the local timezone name from the system.
 pub fn builtin_local_tz_name(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let call_span = args.call_span.clone();
         let [dir_thunk] = args.args.as_slice() else {

@@ -321,7 +321,7 @@ pub(crate) fn extract_binding_types<'a>(
     env: &'a Arc<RwLock<Env>>,
     state: &'a mut InferState,
     types: &'a mut Vec<Type>,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Vec<TypeDiagnostic>>> + 'a>> {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Vec<TypeDiagnostic>>> + Send + 'a>> {
     Box::pin(async move {
         match &binding.expr {
             // Binding bracket [a@Int b@Float] parsed as auto-indexed Dict (old syntax for multi-param).

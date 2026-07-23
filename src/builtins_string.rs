@@ -34,7 +34,7 @@ use crate::value::{string_val, BuiltinArgs, Thunk, Value};
 /// Inherently materializing: must inspect string content to find and replace patterns.
 pub(crate) fn builtin_replace(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -113,7 +113,7 @@ pub(crate) fn builtin_replace(
 /// Inherently materializing: must inspect string content to identify and remove whitespace.
 pub(crate) fn builtin_trim(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -134,7 +134,7 @@ pub(crate) fn builtin_trim(
 /// Inherently materializing: must inspect string content to count characters.
 pub(crate) fn builtin_str_length(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -161,7 +161,7 @@ pub(crate) fn builtin_str_length(
 /// O(1) — `str.len()` is stored directly. Takes 1 arg (String). Returns an Int.
 pub(crate) fn builtin_str_byte_count(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -187,7 +187,7 @@ pub(crate) fn builtin_str_byte_count(
 /// O(1) — bounds check only. Takes 2 args (String, Int). Returns Int 1 or 0.
 pub(crate) fn builtin_str_has_nth_byte(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -232,7 +232,7 @@ pub(crate) fn builtin_str_has_nth_byte(
 /// O(1) — direct byte array indexing. Takes 2 args (String, Int). Returns Int.
 pub(crate) fn builtin_str_nth_byte(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -279,7 +279,7 @@ pub(crate) fn builtin_str_nth_byte(
 /// Inherently materializing: must inspect string content to find character boundaries.
 pub(crate) fn builtin_str_slice(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -419,7 +419,7 @@ pub(crate) fn builtin_str_slice(
 /// `String → Int → Int`
 pub(crate) fn builtin_str_has_nth(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -480,7 +480,7 @@ pub(crate) fn builtin_str_has_nth(
 /// `String → Int → String`
 pub(crate) fn builtin_str_nth_char(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -559,7 +559,7 @@ pub(crate) fn builtin_str_nth_char(
 /// Inherently materializing: must inspect string content to extract the first character.
 pub(crate) fn builtin_char_code(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -601,7 +601,7 @@ pub(crate) fn builtin_char_code(
 /// Inherently materializing: must convert the integer to a character.
 pub(crate) fn builtin_chr(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -647,7 +647,7 @@ pub(crate) fn builtin_chr(
 /// ```
 pub(crate) fn builtin_str_bytes(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         use crate::value::bytes_val;
 
@@ -692,7 +692,7 @@ pub(crate) fn builtin_str_bytes(
 /// Inherently materializing: must inspect string content to search for substring.
 pub(crate) fn builtin_str_index_of(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -746,7 +746,7 @@ pub(crate) fn builtin_str_index_of(
 /// Inherently materializing: must inspect string content to identify and remove whitespace.
 pub(crate) fn builtin_trim_start(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -767,7 +767,7 @@ pub(crate) fn builtin_trim_start(
 /// Inherently materializing: must inspect string content to identify and remove whitespace.
 pub(crate) fn builtin_trim_end(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -794,7 +794,7 @@ pub(crate) fn builtin_trim_end(
 /// ```
 pub(crate) fn builtin_bytes_str(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         use crate::value::string_val;
 
@@ -843,7 +843,7 @@ pub(crate) fn builtin_bytes_str(
 /// Inherently materializing: must inspect string content to convert case.
 pub(crate) fn builtin_str_to_upper_char(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -873,7 +873,7 @@ pub(crate) fn builtin_str_to_upper_char(
 /// Inherently materializing: must inspect string content to convert case.
 pub(crate) fn builtin_str_to_lower_char(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -903,7 +903,7 @@ pub(crate) fn builtin_str_to_lower_char(
 /// Inherently materializing: must iterate characters and force each function call.
 pub(crate) fn builtin_str_map_chars(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1005,7 +1005,7 @@ pub(crate) fn builtin_str_map_chars(
 /// not call `stringify` and cannot infinitely recurse back through `str`.
 pub(crate) fn builtin_int_to_string(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1044,7 +1044,7 @@ pub(crate) fn builtin_int_to_string(
 /// not call `stringify` and cannot infinitely recurse back through `str`.
 pub(crate) fn builtin_float_to_string(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1084,7 +1084,7 @@ pub(crate) fn builtin_float_to_string(
 /// Inherently materializing: must inspect string content to apply the regex.
 pub(crate) fn builtin_regex_match(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1135,7 +1135,7 @@ pub(crate) fn builtin_regex_match(
 /// Inherently materializing: must inspect string content to concatenate.
 pub(crate) fn builtin_string_concat(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,

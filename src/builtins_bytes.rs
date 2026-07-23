@@ -22,7 +22,7 @@ use subtle::ConstantTimeEq;
 /// ```
 pub(crate) fn builtin_bytes(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -84,7 +84,7 @@ pub(crate) fn builtin_bytes(
 /// ```
 pub(crate) fn builtin_bytes_find(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -183,7 +183,7 @@ pub(crate) fn builtin_bytes_find(
 /// ```
 pub(crate) fn builtin_bytes_of(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -253,7 +253,7 @@ pub(crate) fn builtin_bytes_of(
 /// ```
 pub(crate) fn builtin_bytes_concat(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -341,7 +341,7 @@ pub(crate) fn builtin_bytes_concat(
 /// ```
 pub(crate) fn builtin_bytes_equal(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -428,7 +428,7 @@ pub(crate) fn builtin_bytes_equal(
 /// ```
 pub(crate) fn builtin_ct_equal(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -518,7 +518,7 @@ pub(crate) fn builtin_ct_equal(
 /// Returns Bytes of the appropriate length.
 pub(crate) fn builtin_encode(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -661,7 +661,7 @@ pub(crate) fn builtin_encode(
 /// O(1) — direct slice index into the underlying `Arc<[u8]>`.
 pub(crate) fn builtin_bytes_get(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -756,7 +756,7 @@ pub(crate) fn builtin_bytes_get(
 /// O(1).
 pub(crate) fn builtin_bytes_to_int(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -835,7 +835,7 @@ pub(crate) fn builtin_bytes_to_int(
 /// O(1) — shares the underlying `Arc<[u8]>` without copying, just adjusts offsets.
 pub(crate) fn builtin_bytes_slice(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,

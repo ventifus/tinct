@@ -162,7 +162,7 @@ fn eval_quote_preprocess<'a>(
     frame: Arc<EvalFrame>,
     ctx: &'a Arc<EvalContext>,
 ) -> std::pin::Pin<
-    Box<dyn std::future::Future<Output = EvalResult<Arc<crate::ast::SurfaceNode>>> + 'a>,
+    Box<dyn std::future::Future<Output = EvalResult<Arc<crate::ast::SurfaceNode>>> + Send + 'a>,
 > {
     use crate::ast::{
         SurfaceDeclaration, SurfaceEntry, SurfaceExpression, SurfaceMatchArm, SurfaceNamedArg,
@@ -659,7 +659,7 @@ pub(crate) fn eval_core_expr<'a>(
     expr: &'a Spanned<CoreExpr>,
     frame: &'a Arc<EvalFrame>,
     ctx: &'a Arc<EvalContext>,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>> + 'a>> {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>> + Send + 'a>> {
     Box::pin(async move {
         let span = expr.span.clone();
         match &expr.node {

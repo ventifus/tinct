@@ -155,7 +155,7 @@ async fn collect_dict_to_vec(
 /// is never spawned.
 pub(crate) fn builtin_task(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -171,8 +171,8 @@ pub(crate) fn builtin_task(
         let call_span_clone = call_span.clone();
         let func_thunk_clone = Arc::clone(&func_thunk);
 
-        // Spawn the task using spawn_local
-        let handle = crate::async_rt::spawn_local(async move {
+        // Spawn the task — all captured types are Send (Arc<EvalContext>, Arc<Thunk>, Value)
+        let handle = tokio::spawn(async move {
             // Materialize the function
             let func_value =
                 materialize(&func_thunk_clone, Some(&call_span_clone), &ctx_clone).await?;
@@ -246,7 +246,7 @@ pub(crate) fn builtin_task(
 /// Propagates any error from the task.
 pub(crate) fn builtin_await(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -331,7 +331,7 @@ pub(crate) fn builtin_await(
 /// The capacity must be ≥ 1. `[channel 0]` is a runtime error.
 pub(crate) fn builtin_channel(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -372,7 +372,7 @@ pub(crate) fn builtin_channel(
 /// Suspends if the channel buffer is full. Returns null on success.
 pub(crate) fn builtin_send(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -468,7 +468,7 @@ pub(crate) fn builtin_send(
 /// channel is closed (sender dropped). Context cancellation still raises an exception.
 pub(crate) fn builtin_recv(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -625,7 +625,7 @@ pub(crate) fn builtin_recv(
 /// produce values — typically by spawning the receiver task first.
 pub(crate) fn builtin_broadcast_channel(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -672,7 +672,7 @@ pub(crate) fn builtin_broadcast_channel(
 /// The receiver can recv exactly once; subsequent recvs fail.
 pub(crate) fn builtin_oneshot_channel(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -729,7 +729,7 @@ pub(crate) fn builtin_oneshot_channel(
 /// and the value is dropped. Returns [Closed] if the receiver has been dropped.
 pub(crate) fn builtin_try_send(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -809,7 +809,7 @@ pub(crate) fn builtin_try_send(
 /// fairness emerges naturally from the event loop.
 pub(crate) fn builtin_select_once(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named: _,
@@ -1190,7 +1190,7 @@ pub(crate) fn builtin_select_once(
 /// Implementation: identical to `task` but the name signals eager intent.
 pub(crate) fn builtin_par(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     // For now, par is just an alias for task
     // In a full multi-threaded implementation, this would use tokio::spawn instead of spawn_local
     builtin_task(ctx_arg)
@@ -1207,7 +1207,7 @@ pub(crate) fn builtin_par(
 /// On non-Unix platforms this builtin always returns an error.
 pub(crate) fn builtin_signal_channel(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1297,7 +1297,8 @@ pub(crate) fn builtin_signal_channel(
                 let tx_clone = tx.clone();
                 let cancel_token = ctx.cancel.clone();
 
-                let handle = crate::async_rt::spawn_local(async move {
+                // All captured types are Send (Sender<Value>, CancellationToken, Signal)
+                let handle = tokio::spawn(async move {
                     loop {
                         tokio::select! {
                             biased;
@@ -1356,7 +1357,7 @@ pub(crate) fn builtin_signal_channel(
 /// Backward compatibility: also accepts a bare Int (treated as milliseconds).
 pub(crate) fn builtin_timer_channel(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1426,7 +1427,8 @@ pub(crate) fn builtin_timer_channel(
         let tx_clone = tx.clone();
         let cancel_token = ctx.cancel.clone();
 
-        let handle = crate::async_rt::spawn_local(async move {
+        // All captured types are Send (Sender<Value>, CancellationToken)
+        let handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_millis(interval_ms));
             // Skip the first immediate tick so interval_ms elapses before the first send.
             interval.tick().await;
@@ -1489,7 +1491,7 @@ pub(crate) fn builtin_timer_channel(
 /// FSEvents, etc.), but this polling approach has no external dependencies.
 pub(crate) fn builtin_watch_channel(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1533,8 +1535,8 @@ pub(crate) fn builtin_watch_channel(
         let tx_clone = tx.clone();
         let cancel_token = ctx.cancel.clone();
 
-        // Spawn the filesystem polling task
-        let handle = crate::async_rt::spawn_local(async move {
+        // Spawn the filesystem polling task — all captured types are Send (Dir, String, Sender, CancellationToken)
+        let handle = tokio::spawn(async move {
             // Get the initial metadata to establish a baseline
             let mut last_modified = match dir.metadata(&path) {
                 Ok(meta) => meta.modified().ok(),
@@ -1610,7 +1612,7 @@ pub(crate) fn builtin_watch_channel(
 /// `[context]` gives user code access to a fresh independent root context.
 pub(crate) fn builtin_context(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1653,7 +1655,7 @@ pub(crate) fn builtin_context(
 /// Per async-eval.md: `[child-ctx: child  cancel: cancel-ctx]: [with-cancel ctx]`
 pub(crate) fn builtin_with_cancel(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1727,7 +1729,7 @@ pub(crate) fn builtin_with_cancel(
 /// Per async-eval.md: `timed-ctx: [with-timeout %clock ctx [duration 5 "s"]]`
 pub(crate) fn builtin_with_timeout(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1805,10 +1807,11 @@ pub(crate) fn builtin_with_timeout(
         let child_token = parent_token.child_token();
         let cancel_clone = child_token.clone();
 
-        // Spawn a local task to cancel the child token after the timeout.
+        // Spawn a task to cancel the child token after the timeout.
         // Note: We use real wall-clock time via tokio::time::sleep regardless of ClockCapInner.
         // The ClockCap gate is for authorization, not for deterministic sleep behavior.
-        let handle = crate::async_rt::spawn_local(async move {
+        // All captured types are Send (CancellationToken).
+        let handle = tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(duration_ms)).await;
             cancel_clone.cancel();
         });
@@ -1833,7 +1836,7 @@ pub(crate) fn builtin_with_timeout(
 /// Per async-eval.md: `dead-ctx: [with-deadline %clock ctx ts]`
 pub(crate) fn builtin_with_deadline(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1908,7 +1911,8 @@ pub(crate) fn builtin_with_deadline(
             .as_nanos() as i64;
         let delay_ns = (deadline_unix_ns - now_ns).max(0) as u64;
 
-        let handle = crate::async_rt::spawn_local(async move {
+        // All captured types are Send (CancellationToken, u64)
+        let handle = tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_nanos(delay_ns)).await;
             cancel_clone.cancel();
         });
@@ -1930,7 +1934,7 @@ pub(crate) fn builtin_with_deadline(
 /// Per async-eval.md: `[if [cancelled? ctx] [cleanup] [continue]]`
 pub(crate) fn builtin_cancelled_q(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1963,7 +1967,7 @@ pub(crate) fn builtin_cancelled_q(
 /// Per async-eval.md: `[cancel-fn]` — the cancel field from `[with-cancel ctx]` is passed here.
 pub(crate) fn builtin_cancel_task(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -2005,7 +2009,7 @@ pub(crate) fn builtin_cancel_task(
 /// Per async-eval.md: NOT capability-gated. Security = OS process isolation (tinct run boundary).
 pub(crate) fn builtin_cancel_root(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -2061,7 +2065,7 @@ pub(crate) fn builtin_cancel_root(
 /// Per async-eval.md: includes cluster-local workers (Tokio tasks), excludes remote workers.
 pub(crate) fn builtin_drain(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -2117,7 +2121,7 @@ pub(crate) fn builtin_drain(
 /// cancel-root and drain.
 pub(crate) fn builtin_exit_now(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -2169,7 +2173,7 @@ pub(crate) fn builtin_exit_now(
 /// runs to completion even if the caller's context is cancelled.
 pub(crate) fn builtin_non_cancellable(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -2213,7 +2217,7 @@ pub(crate) fn builtin_non_cancellable(
 /// evaluation-local state that should differ between parent and child evaluation contexts.
 pub(crate) fn builtin_with_context(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -2284,7 +2288,7 @@ pub(crate) fn builtin_with_context(
 /// watch sender has a concrete `Value` to hold.
 pub(crate) fn builtin_reactive_cell(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -2320,7 +2324,7 @@ pub(crate) fn builtin_reactive_cell(
 /// returns the most recently written value immediately.
 pub(crate) fn builtin_cell_get(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -2358,7 +2362,7 @@ pub(crate) fn builtin_cell_get(
 /// holds a concrete `Value` (not a lazy thunk that could be freed after the call).
 pub(crate) fn builtin_cell_set(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
