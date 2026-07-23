@@ -4090,6 +4090,20 @@ pub(crate) async fn run_typecheck_dict(
                             .unwrap()
                             .insert_tycon_def(name.clone(), std::sync::Arc::clone(&tycon_def));
                         state.tycon_env.entry(name.clone()).or_insert(tycon_def);
+                        // T-1805: Wire type declarations into type_stage_scope so
+                        // resolve_type_head can find user-declared types via the
+                        // scope chain. or_insert preserves type-stage entries
+                        // (type-stage has priority over runtime-declared types).
+                        if state.type_stage_scope.is_empty() {
+                            state
+                                .type_stage_scope
+                                .push(std::collections::HashMap::new());
+                        }
+                        state.type_stage_scope[0]
+                            .entry(name.clone())
+                            .or_insert(crate::type_infer::TypeStageEntry::Resolved(
+                                crate::types::Type::TyCon(name.clone()),
+                            ));
                         if params.is_empty() {
                             let value_scheme_ty = adt_value_type(&alias_ty);
                             if let Type::Dict(ref row) = value_scheme_ty {

@@ -2638,6 +2638,118 @@ pub(crate) fn builtin_tc_with_scope(
     })
 }
 
+/// `builtin-tc-update-type-stage-env`: populate the TypeContext's type-stage scope chain.
+///
+/// Takes two positional arguments:
+///   - arg 0: `Value::TypeContext` — the TypeContext to update
+///   - arg 1: `Value::Dict` — env-dict from type-stage document evaluation
+///
+/// For each string-keyed entry in the env-dict:
+///   - Materializes the thunk value
+///   - If the value is a TypeNode leaf (Int, String, etc.): adds TypeStageEntry::Resolved
+///   - If the value is a Function: adds TypeStageEntry::Function (parameterized type constructor)
+///   - Otherwise: skips (not a type-stage value)
+///
+/// The new frame is prepended to `TypeContextData.type_stage_scope` (Vec[0] = innermost,
+/// highest priority). Each module's type-stage is a distinct frame.
+///
+/// Returns the same TypeContext (mutations are visible through the shared Arc<Mutex>).
+///
+/// T-1803: Replaces the no-op builtin-tc-with-scope with actual scope chain population.
+pub(crate) fn builtin_tc_update_type_stage_env(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+            ..
+        } = ctx_arg;
+        crate::builtins::reject_named(
+            "builtin-tc-update-type-stage-env",
+            named.as_ref(),
+            call_span.clone(),
+        )?;
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+
+        // Extract TypeContext — same pattern as builtin_typecheck_doc
+        let tc_arc = match args[0]
+            .try_get_value()
+            .expect("Strictness::Seq")
+            .clone()
+        {
+            Value::TypeContext(arc) => arc,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-tc-update-type-stage-env".to_string(),
+                    "TypeContext",
+                    other.type_name(),
+                    call_span,
+                )
+                .into())
+            }
+        };
+
+        // Extract Dict
+        let dict_entries = match args[1]
+            .try_get_value()
+            .expect("Strictness::Seq")
+            .clone()
+        {
+            Value::Dict(d) => d,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-tc-update-type-stage-env".to_string(),
+                    "Dict",
+                    other.type_name(),
+                    call_span,
+                )
+                .into())
+            }
+        };
+
+        // Collect names + thunks without holding the TypeContext guard
+        let to_process: Vec<(String, Arc<Thunk>)> = dict_entries
+            .iter()
+            .filter_map(|(key, thunk)| {
+                if let HashableValue::Str(name) = key {
+                    Some((name.to_string(), Arc::clone(thunk)))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Materialize each thunk and convert to TypeStageEntry
+        let mut new_frame = std::collections::HashMap::new();
+        for (name, thunk) in to_process {
+            let val = materialize(&thunk, None, &ctx).await?;
+            let entry =
+                if let Some(ty) = crate::type_normalize::typenode_leaf_to_type(&val) {
+                    crate::type_infer::TypeStageEntry::Resolved(ty)
+                } else if matches!(val, Value::Function { .. }) {
+                    crate::type_infer::TypeStageEntry::Function(Arc::clone(&thunk))
+                } else {
+                    continue; // not a type-stage value — skip
+                };
+            new_frame.insert(name, entry);
+        }
+
+        // Prepend new frame — it becomes innermost (Vec[0]), highest priority
+        {
+            let mut guard = tc_arc.lock().unwrap();
+            guard.type_stage_scope.insert(0, new_frame);
+        }
+
+        // Return same TypeContext Arc (mutations visible through it)
+        ok_val(Value::TypeContext(tc_arc), call_span)
+    })
+}
+
 /// `builtin-program`: Construct a `Value::Program` from a sequence of Document values.
 ///
 /// Takes a single positional argument: a Seq or Dict of `Value::Document` values.

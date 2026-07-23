@@ -835,6 +835,19 @@ pub(crate) fn infer_class_decl_from_surface(
 
     state.env.write().unwrap().insert_class(class_decl.clone());
     state.invalidate_env_caches();
+    // T-1805: Wire class declarations into type_stage_scope so resolve_type_head
+    // can find class names via the scope chain. or_insert preserves type-stage
+    // entries (type-stage has priority over runtime-declared classes).
+    if state.type_stage_scope.is_empty() {
+        state
+            .type_stage_scope
+            .push(std::collections::HashMap::new());
+    }
+    state.type_stage_scope[0]
+        .entry(class_decl.name.clone())
+        .or_insert(crate::type_infer::TypeStageEntry::Class(
+            class_decl.clone(),
+        ));
     for (param_name, kind) in &class_decl.params {
         if *kind == Kind::Operator {
             state.kind_env.insert(param_name.clone(), Kind::Operator);

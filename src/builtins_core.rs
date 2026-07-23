@@ -517,6 +517,13 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             ["type-ctx", "ts-env"]
         ),
         builtin!(
+            "builtin-tc-update-type-stage-env",
+            crate::builtins_meta::builtin_tc_update_type_stage_env,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["tc", "env-dict"]
+        ),
+        builtin!(
             "builtin-module",
             builtin_builtin_module,
             [Strictness::Seq],

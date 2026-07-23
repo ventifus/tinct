@@ -308,10 +308,11 @@
                  [merge env exports]]
                decl-env
                split.ts]]
-             # Type-stage env wire: in the env-dict protocol there is no scope-id,
-             # so ts-tc is just the seed TypeContext (type_stage_scope_id is a no-op
-             # in builtin-typecheck-doc when ScopeArena is absent).
-             [ts-tc: seed-tc]
+             # Type-stage env wire: prepend the type-stage env as a new innermost
+             # scope frame on the TypeContext. This makes type-stage declarations
+             # (Integer, String, DirCap, etc.) visible to annotation resolution in
+             # subsequent typecheck passes.
+             [ts-tc: [builtin-tc-update-type-stage-env seed-tc ts-env]]
              # Pass 2: typecheck all docs with the enriched TypeContext.
              [resolve-diagnostics: [reduce
                [fn [let acc doc]
@@ -595,89 +596,99 @@
   # manages the per-test arena, and handles caps/expects validation.
 
   # eval-docs: resolve+eval all documents against base-env.
-  # Errors are captured into state.diagnostics rather than propagated as raises.
-  # Adds: env, last-result, documents.
+  # Errors are accumulated into state.diagnostics rather than raised.
+  # In tinct, match arm bodies are lazy, so a raise inside a match arm escapes any
+  # surrounding builtin-try boundary. The correct pattern (matching eval-program) is
+  # to accumulate resolve errors into st.diagnostics — if-ok then short-circuits
+  # at the pipeline level when diagnostics has errors.
+  # builtin-eval errors ARE caught via a nested builtin-try per-document.
+  # Adds: env, last-result, diagnostics, doc-results, documents.
   eval-docs: [fn [let base-env state]
-    [try-result: [builtin-try [call [fn []
-      [test-state: [reduce
-        [fn [let st doc]
-          [meta:        [builtin-doc-meta doc st.env]]
-          [uses-result: [uses-scope [get-or [] "uses" meta] fundamental-tc st.env st.stderr]]
-          # Inject %: st.last-result into env for non-first documents (T-1741/T-1742).
-          # The first document (doc-index == 0) has no upstream %; later documents receive
-          # the previous document's result as %, mirroring how prelude.llt threads % through
-          # a multi-document pipeline.
-          [doc-env: [merge st.env [merge uses-result.impls
-                       [match [builtin-eq-int st.doc-index 0]
-                         0: [%: st.last-result]
-                         ...: []]]]]
-          [name-set:    [env-to-name-set doc-env]]
-          [r:           [builtin-resolve doc name-set]]
-          [n-re:        [count-errors r.diagnostics]]
-          [new-stderr:  [emit-diagnostics r.diagnostics uses-result.stderr]]
-          [match [builtin-eq-int n-re 0]
-            0: [builtin-raise [reduce [fn [let acc d] [builtin-string-concat acc [format-diagnostic d]]]
-                                      "" r.diagnostics]]
-            ...: [call [fn [let]
-                 [typed:   [builtin-typecheck-doc r.doc st.tc].doc]
-                 [lowered: [builtin-lower typed]]
-                 [exports: [builtin-eval lowered doc-env]]
-                 # T-1507: Validate --- caps: declarations. The reduce raises if any cap
-                 # is missing, otherwise returns exports. caps-validated IS consumed
-                 # by validated-result, making this genuine data-flow (not a forcing trick).
-                 [caps-list: [get-or [] "caps" meta]]
-                 [caps-validated: [reduce
-                   [fn [let result cap-name]
-                     [match [builtin-cap-env-has? cap-name doc-env]
-                       0: [builtin-raise [builtin-string-concat "missing required capability: " cap-name]]
-                       ...: result]]
-                   exports
-                   [builtin-keys caps-list]]]
-                 # T-1506: Validate --- expects: type annotation. builtin-check-type raises
-                 # on mismatch; on success returns caps-validated unchanged.
-                 [expects: [get-or [] "expects" meta]]
-                 [validated-result: [match [builtin-eq-int [builtin-dict-length expects] 0]
-                   0: [builtin-check-type expects caps-validated]
-                   ...: caps-validated]]
-                 # Build next-env: merge exports into doc-env, add % for pipeline threading.
-                 # doc-env already has the current env + module impls; we extend with exports.
-                 [next-env: [merge doc-env [merge validated-result [%: validated-result]]]]
-                 [env:         next-env
-                  last-result:  validated-result
-                  tc:          st.tc
-                  stderr:      new-stderr
-                  doc-index:   [builtin-int-add st.doc-index 1]
-                  # Accumulate per-document results so typecheck-docs can inject %
-                  # with the correct value for each document's resolve pass (T-1741).
-                  doc-results: [merge st.doc-results [make-entry st.doc-index validated-result]]]
-                 ]]]]
-        [env:         base-env
-         last-result: []
-         tc:         fundamental-tc
-         stderr:     state.stderr
-         doc-index:  0
-         doc-results: []]
-        state.parsed.documents]]
+    [test-state: [reduce
+      [fn [let st doc]
+        # Short-circuit: if a previous doc already has errors, skip remaining docs.
+        [match [builtin-eq-int [count-errors st.diagnostics] 0]
+          0: st
+          ...: [call [fn [let]
+            [meta:        [builtin-doc-meta doc st.env]]
+            [uses-result: [uses-scope [get-or [] "uses" meta] fundamental-tc st.env st.stderr]]
+            # Inject %: st.last-result into env for non-first documents (T-1741/T-1742).
+            # The first document (doc-index == 0) has no upstream %; later documents receive
+            # the previous document's result as %, mirroring how prelude.llt threads % through
+            # a multi-document pipeline.
+            [doc-env: [merge st.env [merge uses-result.impls
+                         [match [builtin-eq-int st.doc-index 0]
+                           0: [%: st.last-result]
+                           ...: []]]]]
+            [name-set:    [env-to-name-set doc-env]]
+            [r:           [builtin-resolve doc name-set]]
+            [n-re:        [count-errors r.diagnostics]]
+            [new-stderr:  [emit-diagnostics r.diagnostics uses-result.stderr]]
+            [match [builtin-eq-int n-re 0]
+              # Resolve errors: accumulate into diagnostics (don't raise — raise is lazy
+              # and escapes builtin-try; accumulation lets if-ok short-circuit at the
+              # pipeline level).
+              0: [merge st [diagnostics: [append-diags st.diagnostics r.diagnostics]
+                             stderr: new-stderr]]
+              ...: [call [fn [let]
+                   [typed:   [builtin-typecheck-doc r.doc st.tc].doc]
+                   [lowered: [builtin-lower typed]]
+                   # Wrap builtin-eval in builtin-try to capture eval errors as diagnostics.
+                   [try-result: [builtin-try [call [fn [] [builtin-eval lowered doc-env]]]]]
+                   [match [builtin-has-key? "ok" try-result]
+                     0: [call [fn [let]
+                          [err-msg: [builtin-get "error" try-result]]
+                          [eval-stderr: [call [builtin-get "write" %stderr]
+                                          [builtin-string-concat err-msg "\n"] new-stderr]]
+                          [err-diag: [make-entry 0
+                            [level: "error"  kind: "eval-error"  message: err-msg
+                             span: []  notes: []  call-stack: []  macro-expand: []  blame: []]]]
+                          [merge st [diagnostics: [append-diags st.diagnostics err-diag]
+                                     stderr: eval-stderr]]]]
+                     ...: [call [fn [let]
+                          [exports: [builtin-get "ok" try-result]]
+                          # T-1507: Validate --- caps: declarations.
+                          [caps-list: [get-or [] "caps" meta]]
+                          [caps-validated: [reduce
+                            [fn [let result cap-name]
+                              [match [builtin-cap-env-has? cap-name doc-env]
+                                0: [builtin-raise [builtin-string-concat "missing required capability: " cap-name]]
+                                ...: result]]
+                            exports
+                            [builtin-keys caps-list]]]
+                          # T-1506: Validate --- expects: type annotation.
+                          [expects: [get-or [] "expects" meta]]
+                          [validated-result: [match [builtin-eq-int [builtin-dict-length expects] 0]
+                            0: [builtin-check-type expects caps-validated]
+                            ...: caps-validated]]
+                          # Build next-env: merge exports into doc-env, add % for pipeline threading.
+                          [next-env: [merge doc-env [merge validated-result [%: validated-result]]]]
+                          [env:         next-env
+                           last-result:  validated-result
+                           tc:          st.tc
+                           stderr:      new-stderr
+                           doc-index:   [builtin-int-add st.doc-index 1]
+                           diagnostics: st.diagnostics
+                           # Accumulate per-document results so typecheck-docs can inject %
+                           # with the correct value for each document's resolve pass (T-1741).
+                           doc-results: [merge st.doc-results [make-entry st.doc-index validated-result]]]
+                           ]]]]]]]]]]
+      [env:         base-env
+       last-result: []
+       tc:         fundamental-tc
+       stderr:     state.stderr
+       doc-index:  0
+       diagnostics: []
+       doc-results: []]
+      state.parsed.documents]]
+    [merge state
       [env:         test-state.env
        last-result:  test-state.last-result
        tc:          test-state.tc
        stderr:      test-state.stderr
+       diagnostics: test-state.diagnostics
        doc-results: test-state.doc-results
-       documents:   state.parsed.documents]]]]]
-    [match [builtin-has-key? "ok" try-result]
-      # Error path: write the caught error to state.stderr, return error state.
-      # The error is on the data-flow path — the next consumer of state.stderr forces this write.
-      0: [merge state [diagnostics: [make-entry 0
-               [level: "error"  kind: "eval-error"  message: [builtin-get "error" try-result]
-                span: []  notes: []  call-stack: []  macro-expand: []  blame: []]]
-                       stderr: [call [builtin-get "write" %stderr] [builtin-get "error" try-result] state.stderr]]]
-      ...: [merge state
-           [env:         [builtin-get "ok" try-result].env
-            last-result:  [builtin-get "ok" try-result].last-result
-            tc:          [builtin-get "ok" try-result].tc
-            stderr:      [builtin-get "ok" try-result].stderr
-            doc-results: [builtin-get "ok" try-result].doc-results
-            documents:   state.parsed.documents]]]]
+       documents:   state.parsed.documents]]]
 
   # typecheck-docs: typecheck state.documents using tc (the ready TypeContext).
   # tc must be the enriched TypeContext returned by typecheck-program — specifically
