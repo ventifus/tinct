@@ -192,9 +192,19 @@ impl PartialEq for HashableValue {
                 if a.len() != b.len() {
                     return false;
                 }
-                // Order-insensitive: collect a into a HashMap, compare key-by-key
-                let map: std::collections::HashMap<&HashableValue, &HashableValue> =
-                    a.iter().map(|(k, v)| (k, v)).collect();
+                // Order-insensitive: build a HashMap from `a`, then compare key-by-key.
+                // Uses explicit insertion loop instead of collect() to handle duplicate
+                // keys safely (returns false instead of panicking).
+                let mut map =
+                    std::collections::HashMap::<&HashableValue, &HashableValue>::with_capacity(
+                        a.len(),
+                    );
+                for (k, v) in a {
+                    if map.insert(k, v).is_some() {
+                        // Duplicate key in `a` — not a valid Dict, can't be equal
+                        return false;
+                    }
+                }
                 b.iter().all(|(k, v)| map.get(k).map_or(false, |u| *u == v))
             }
             (
@@ -2513,5 +2523,23 @@ mod tests {
         };
         let str_val = HashableValue::Str("Color.Red".into());
         assert_ne!(variant, str_val);
+    }
+
+    #[test]
+    fn hashable_value_dict_duplicate_keys_no_panic() {
+        // HashableValue::Dict with duplicate keys should not panic on equality check.
+        // Instead, it should return false (not equal to anything, even itself with dupes).
+        let d_with_dupes = HashableValue::Dict(vec![
+            (HashableValue::Str("a".into()), HashableValue::Int(1)),
+            (HashableValue::Str("a".into()), HashableValue::Int(2)),
+        ]);
+        let d_normal = HashableValue::Dict(vec![(
+            HashableValue::Str("a".into()),
+            HashableValue::Int(1),
+        )]);
+        // Should not panic — returns false because d_with_dupes has duplicate keys
+        assert_ne!(d_with_dupes, d_normal);
+        // Self-comparison with dupes also returns false (duplicate key detected)
+        assert_ne!(d_with_dupes, d_with_dupes.clone());
     }
 }

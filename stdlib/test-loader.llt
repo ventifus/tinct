@@ -823,7 +823,7 @@
   # run-test-file: execute a single file ProgramItem. Takes stderr-h from run-test.
   # Returns result dict including stderr: pipe-result.stderr so the cascade continues.
   run-test-file: [fn [let p prelude-env prelude-tc stderr-h]
-    [bytes:          [read-file [builtin-file-open p.cap p.path "read"] [builtin-bytes]]]
+    [bytes:          [read-file p.handle [builtin-bytes]]]
     [content:        [builtin-bytes-str bytes]]
     [source:         [extract-source content]]
     [expected-out:   [extract-section content "out"]]

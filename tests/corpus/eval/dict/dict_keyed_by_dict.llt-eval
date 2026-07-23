@@ -1,0 +1,12 @@
+# Dict with Dict keys -- nested dict as key, order-insensitive equality
+# [a: 1  b: 2] and [b: 2  a: 1] are equal as keys (order-insensitive)
+
+[
+  k1: [a: 1  b: 2]
+  k2: [b: 2  a: 1]
+  d:  [[a: 1  b: 2]: "found"]
+  r:  [get [b: 2  a: 1] [[a: 1  b: 2]: "found"]]
+]
+
+=== out
+["k1": ["a": 1  "b": 2]  "k2": ["b": 2  "a": 1]  "d": [[a: 1  b: 2]: "found"]  "r": "found"]

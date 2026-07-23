@@ -1,0 +1,11 @@
+# Dict with Boolean keys -- no collision with Int(0)/Int(1)
+# Boolean.True and Boolean.False are distinct types from integers
+
+[
+  d: [Boolean.True: "yes"  Boolean.False: "no"]
+  t: [get Boolean.True [Boolean.True: "yes"  Boolean.False: "no"]]
+  f: [get Boolean.False [Boolean.True: "yes"  Boolean.False: "no"]]
+]
+
+=== out
+["d": [Boolean.True: "yes"  Boolean.False: "no"]  "t": "yes"  "f": "no"]

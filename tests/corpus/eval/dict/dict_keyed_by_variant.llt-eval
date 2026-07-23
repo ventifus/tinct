@@ -1,0 +1,12 @@
+# Dict with Variant keys -- variant constructors as dict keys
+# Color.Red and Color.Green are valid HashableValue::Variant keys
+
+[Color: [type Red Green Blue]]
+[
+  d: [Color.Red: "red"  Color.Green: "green"  Color.Blue: "blue"]
+  r: [get Color.Red [Color.Red: "red"  Color.Green: "green"  Color.Blue: "blue"]]
+  g: [get Color.Green [Color.Red: "red"  Color.Green: "green"  Color.Blue: "blue"]]
+]
+
+=== out
+["d": [Color.Red: "red"  Color.Green: "green"  Color.Blue: "blue"]  "r": "red"  "g": "green"]
