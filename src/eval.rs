@@ -1214,7 +1214,8 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type, ctx: &EvalConte
         };
     }
 
-    Type::is_consistent_subtype(&ground_type_of(value), expected)
+    // B-450: pass tycon_env for variance-directed App comparison in fallthrough.
+    Type::is_consistent_subtype(&ground_type_of(value), expected, ctx.tycon_env())
 }
 
 /// Format a Type for error messages in TypeAssert.
@@ -3130,7 +3131,8 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("type mismatch"), "got: {}", err);
         assert!(
-            err.to_string().contains("expected String, Int, Boolean, or Variant"),
+            err.to_string()
+                .contains("expected String, Int, Boolean, or Variant"),
             "got: {}",
             err
         );
@@ -3155,7 +3157,8 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("type mismatch"), "got: {}", err);
         assert!(
-            err.to_string().contains("expected String, Int, Boolean, or Variant"),
+            err.to_string()
+                .contains("expected String, Int, Boolean, or Variant"),
             "got: {}",
             err
         );
@@ -4259,7 +4262,8 @@ mod tests {
         // is_consistent_subtype(IntLiteral(5), Int) = is_subtype(IntLiteral(5), Int) = true.
         assert!(Type::is_consistent_subtype(
             &Type::IntLiteral(5),
-            &Type::Int
+            &Type::Int,
+            None,
         ));
     }
 
@@ -4287,7 +4291,8 @@ mod tests {
         // StringLiteral IS a subtype of Str (literal specializes base type).
         assert!(Type::is_consistent_subtype(
             &Type::StringLiteral("foo".into()),
-            &Type::Str
+            &Type::Str,
+            None,
         ));
     }
 

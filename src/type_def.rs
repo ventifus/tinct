@@ -1000,7 +1000,13 @@ impl Type {
     /// can produce with `Unknown` at structural depth has an explicit arm here. The fallthrough
     /// to `is_subtype` is safe because it only handles types without structural sub-components
     /// or types that `ground_type_of` never produces.
-    pub fn is_consistent_subtype(sub: &Type, sup: &Type) -> bool {
+    /// B-450: `tycon_env` parameter threads through to the `is_subtype` fallthrough,
+    /// enabling variance-directed App comparison when TyCon definitions are available.
+    /// Pass `None` for conservative behavior (same as pre-B-450).
+    ///
+    /// B-451: Recursive arms unfold equirecursive types before consistent-subtype check,
+    /// enabling runtime TypeAssert on recursive type aliases.
+    pub fn is_consistent_subtype(sub: &Type, sup: &Type, tycon_env: Option<&TyConEnv>) -> bool {
         // Unknown on either side: consistent (? ~<: T and T ~<: ? for all T)
         if matches!(sub, Type::Unknown) || matches!(sup, Type::Unknown) {
             return true;
@@ -1014,6 +1020,25 @@ impl Type {
             return false;
         }
         match (sub, sup) {
+            // B-451: Unfold recursive types before consistent-subtype check.
+            // This enables runtime TypeAssert on recursive type aliases like
+            // `type List [Cons head: Int tail: List]` — without this arm,
+            // Recursive types fall through to is_subtype(sub, sup, None) which
+            // loses the tycon_env.
+            //
+            // When both sides are Recursive, delegate to is_subtype which has
+            // the S-Assum cycle guard preventing infinite unfolding.
+            (Type::Recursive { .. }, Type::Recursive { .. }) => {
+                Self::is_subtype(sub, sup, tycon_env)
+            }
+            (Type::Recursive { .. }, _) => {
+                let unfolded = unfold_once(sub);
+                Self::is_consistent_subtype(&unfolded, sup, tycon_env)
+            }
+            (_, Type::Recursive { .. }) => {
+                let unfolded = unfold_once(sup);
+                Self::is_consistent_subtype(sub, &unfolded, tycon_env)
+            }
             // Primitives: exact match
             (Type::Int, Type::Int)
             | (Type::Str, Type::Str)
@@ -1024,7 +1049,8 @@ impl Type {
             // Structural recursion — consistent subtyping throughout all composite types.
             // App covers F[A] ~<: F[B] for any parameterized type constructor.
             (Type::App(f1, a1), Type::App(f2, a2)) => {
-                Self::is_consistent_subtype(f1, f2) && Self::is_consistent_subtype(a1, a2)
+                Self::is_consistent_subtype(f1, f2, tycon_env)
+                    && Self::is_consistent_subtype(a1, a2, tycon_env)
             }
             (Type::TyCon(n1), Type::TyCon(n2)) => n1 == n2,
             (Type::TyConResolved(n1, arc1), Type::TyConResolved(n2, arc2)) => {
@@ -1039,7 +1065,7 @@ impl Type {
                     sub_row
                         .fields
                         .get(field)
-                        .map(|sub_ty| Self::is_consistent_subtype(sub_ty, sup_ty))
+                        .map(|sub_ty| Self::is_consistent_subtype(sub_ty, sup_ty, tycon_env))
                         .unwrap_or(false) // field absent in sub → fails
                 })
             }
@@ -1074,7 +1100,7 @@ impl Type {
                     let sub_is_variadic = !sub_tv.is_empty() || sub_rest.is_some();
                     let sub_is_any_fn = sub_p.is_empty() && sub_is_variadic;
                     if sub_is_any_fn {
-                        return Self::is_consistent_subtype(sub_r, sup_r);
+                        return Self::is_consistent_subtype(sub_r, sup_r, tycon_env);
                     }
                     // Concrete-arity function ~<: any-function: always consistent
                     return true;
@@ -1092,10 +1118,13 @@ impl Type {
                         .iter()
                         .zip(sup_tv.iter())
                         .all(|((_, sub_t), (_, sup_t))| {
-                            Self::is_consistent_subtype(sup_t, sub_t) // contravariant
+                            Self::is_consistent_subtype(sup_t, sub_t, tycon_env)
+                            // contravariant
                         });
                 let rest_subtype = match (sub_rest, sup_rest) {
-                    (Some(sr), Some(pr)) => Self::is_consistent_subtype(&pr.1, &sr.1), // contravariant
+                    (Some(sr), Some(pr)) => {
+                        Self::is_consistent_subtype(&pr.1, &sr.1, tycon_env) // contravariant
+                    }
                     (None, None) => true,
                     _ => false,
                 };
@@ -1105,29 +1134,29 @@ impl Type {
                     && rest_subtype
                     && sub_p.iter().zip(sup_p.iter()).all(
                         |((_sub_name, sub_ty), (_sup_name, sup_ty))| {
-                            Self::is_consistent_subtype(sup_ty, sub_ty) // contravariant
+                            Self::is_consistent_subtype(sup_ty, sub_ty, tycon_env)
+                            // contravariant
                         },
                     )
-                    && Self::is_consistent_subtype(sub_r, sup_r)
+                    && Self::is_consistent_subtype(sub_r, sup_r, tycon_env)
             }
             // Union in sub: all members must be c.s. subtype of sup.
             // Handles e.g. (Int | Str) ~<: Top, (Int | Unknown) ~<: Int.
             // Must appear before the wildcard `(_, Type::Union(...))` arm below.
-            (Type::Union(members), _) => {
-                members.iter().all(|m| Self::is_consistent_subtype(m, sup))
-            }
+            (Type::Union(members), _) => members
+                .iter()
+                .all(|m| Self::is_consistent_subtype(m, sup, tycon_env)),
             // Union in sup: value is c.s. subtype of union if c.s. subtype of any member
-            (_, Type::Union(members)) => {
-                members.iter().any(|m| Self::is_consistent_subtype(sub, m))
-            }
+            (_, Type::Union(members)) => members
+                .iter()
+                .any(|m| Self::is_consistent_subtype(sub, m, tycon_env)),
             // Intersection in sup: value must be c.s. subtype of all members
-            (_, Type::Intersection(members)) => {
-                members.iter().all(|m| Self::is_consistent_subtype(sub, m))
-            }
+            (_, Type::Intersection(members)) => members
+                .iter()
+                .all(|m| Self::is_consistent_subtype(sub, m, tycon_env)),
             // Remaining cases (NominalVariant, Handle at static level, etc.): fall to is_subtype.
-            // Safe because ground_type_of never produces these with Unknown at structural depth
-            // (Handle → Unknown, Variant fields → empty row).
-            _ => Self::is_subtype(sub, sup, None),
+            // B-450: pass tycon_env through to is_subtype for variance-directed App comparison.
+            _ => Self::is_subtype(sub, sup, tycon_env),
         }
     }
 
@@ -2958,7 +2987,7 @@ mod tests {
             required_count: 1,
         };
         assert!(
-            !Type::is_consistent_subtype(&variadic, &non_variadic),
+            !Type::is_consistent_subtype(&variadic, &non_variadic, None),
             "variadic fn(Int)... must NOT be a consistent subtype of non-variadic fn(Int)"
         );
     }
@@ -2986,7 +3015,7 @@ mod tests {
             required_count: 1,
         };
         assert!(
-            !Type::is_consistent_subtype(&non_variadic, &variadic),
+            !Type::is_consistent_subtype(&non_variadic, &variadic, None),
             "non-variadic fn(Int) must NOT be a consistent subtype of variadic fn(Int)..."
         );
     }
@@ -3002,7 +3031,7 @@ mod tests {
             required_count: 1,
         };
         assert!(
-            Type::is_consistent_subtype(&variadic, &variadic),
+            Type::is_consistent_subtype(&variadic, &variadic, None),
             "variadic fn(Int)... must be a consistent subtype of itself (reflexive)"
         );
     }
@@ -3018,7 +3047,7 @@ mod tests {
             required_count: 1,
         };
         assert!(
-            Type::is_consistent_subtype(&non_variadic, &non_variadic),
+            Type::is_consistent_subtype(&non_variadic, &non_variadic, None),
             "non-variadic fn(Int) must be a consistent subtype of itself (reflexive)"
         );
     }
@@ -3044,8 +3073,58 @@ mod tests {
             required_count: 1,
         };
         assert!(
-            !Type::is_consistent_subtype(&variadic_unknown, &non_variadic_unknown),
+            !Type::is_consistent_subtype(&variadic_unknown, &non_variadic_unknown, None),
             "fn(?)... must NOT be a consistent subtype of fn(?): variadic flag mismatch is not erased by Unknown"
+        );
+    }
+
+    // B-451: is_consistent_subtype Recursive arm tests
+    #[test]
+    fn test_is_consistent_subtype_recursive_unfolds() {
+        // µa.{x: Int} ~<: {x: Int} should hold — unfolding produces {x: Int} which matches.
+        let rec = Type::Recursive {
+            var: "a".to_string(),
+            body: Box::new(Type::Dict(Row {
+                fields: [("x".to_string(), Type::Int)].into(),
+                tail: RowTail::Empty,
+            })),
+        };
+        let dict = Type::Dict(Row {
+            fields: [("x".to_string(), Type::Int)].into(),
+            tail: RowTail::Empty,
+        });
+        assert!(
+            Type::is_consistent_subtype(&rec, &dict, None),
+            "µa.{{x: Int}} ~<: {{x: Int}} must hold — Recursive unfolds to matching Dict"
+        );
+    }
+
+    #[test]
+    fn test_is_consistent_subtype_recursive_reflexive() {
+        // µa.{x: a} ~<: µa.{x: a} should hold (reflexive).
+        let rec = Type::Recursive {
+            var: "a".to_string(),
+            body: Box::new(Type::Dict(Row {
+                fields: [("x".to_string(), Type::TypeVar("a".to_string(), 0))].into(),
+                tail: RowTail::Empty,
+            })),
+        };
+        assert!(
+            Type::is_consistent_subtype(&rec, &rec, None),
+            "µa.{{x: a}} ~<: µa.{{x: a}} must hold — reflexive recursive type"
+        );
+    }
+
+    #[test]
+    fn test_is_consistent_subtype_recursive_on_sup_side() {
+        // Int ~<: µa.Int should hold — sup-side Recursive unfolds to Int.
+        let rec = Type::Recursive {
+            var: "a".to_string(),
+            body: Box::new(Type::Int),
+        };
+        assert!(
+            Type::is_consistent_subtype(&Type::Int, &rec, None),
+            "Int ~<: µa.Int must hold — sup-side Recursive unfolds to Int"
         );
     }
 

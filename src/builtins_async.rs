@@ -799,13 +799,16 @@ pub(crate) fn builtin_try_send(
 
 /// `select-once`: Wait for the first of multiple sources to complete.
 ///
-/// Signature: `Context → [Seq {ch: Channel|BroadcastChannel|OneshotReceiver  handler: Fn}] → T | [Closed]`
+/// Signature: `Context → [Seq {ch: Channel|BroadcastChannel|OneshotReceiver  handler: Fn}] → {ok: T} | {closed: []}`
 ///
 /// Takes a context (for cancellation checking) and a sequence of source dicts, where each
 /// source has a `ch:` field (Channel, BroadcastChannel, or OneshotReceiver) and a `handler:` field (Fn).
 /// Waits for the FIRST channel to have a value available, then calls that channel's handler
-/// with the received value. Returns the handler result directly on success; `Closed.Closed` if
+/// with the received value. Returns `{ok: handler_result}` on success; `{closed: []}` if
 /// all channels are closed (not an error). Context cancellation still raises an exception.
+///
+/// B-468: The discriminated dict return (`{ok: ...}` vs `{closed: ...}`) prevents protocol
+/// ambiguity where a handler returning a Closed variant would prematurely terminate select loops.
 ///
 /// Channel type semantics:
 /// - Channel (mpsc): Standard FIFO channel, each value consumed once
@@ -813,8 +816,9 @@ pub(crate) fn builtin_try_send(
 /// - OneshotReceiver: Single-use receiver; after receiving one value, marked as closed
 ///
 /// Implementation note: uses a manual polling loop over all channels. When a channel
-/// produces a value, we call its handler and return. Closed channels are removed from
-/// consideration. If all channels are closed, returns `Closed.Closed`.
+/// produces a value, we call its handler and return `{ok: handler_result}`.
+/// Closed channels are removed from consideration. If all channels are closed,
+/// returns `{closed: []}`.
 ///
 /// Fairness: channels are checked in order, but since this is a cooperative runtime,
 /// fairness emerges naturally from the event loop.
@@ -989,15 +993,17 @@ pub(crate) fn builtin_select_once(
                                     closed_count += 1;
                                 }
                                 if closed_count == sources_len {
-                                    // All channels closed — return [Closed]
-                                    return ok_val(
-                                        Value::Variant {
-                                            tycon: Arc::from("Closed"),
-                                            ctor: Arc::from("Closed"),
-                                            payload: None,
-                                        },
-                                        call_span,
+                                    // B-468: All channels closed — return {closed: []}
+                                    // (discriminated from handler result {ok: v}).
+                                    let mut closed_map = IndexMap::new();
+                                    closed_map.insert(
+                                        HashableValue::Str("closed".into()),
+                                        Arc::new(Thunk::value(
+                                            Value::Dict(IndexMap::new()),
+                                            call_span.clone(),
+                                        )),
                                     );
+                                    return ok_val(Value::Dict(closed_map), call_span);
                                 }
                                 continue;
                             }
@@ -1020,15 +1026,17 @@ pub(crate) fn builtin_select_once(
                                     closed_count += 1;
                                 }
                                 if closed_count == sources_len {
-                                    // All channels closed — return [Closed]
-                                    return ok_val(
-                                        Value::Variant {
-                                            tycon: Arc::from("Closed"),
-                                            ctor: Arc::from("Closed"),
-                                            payload: None,
-                                        },
-                                        call_span,
+                                    // B-468: All channels closed — return {closed: []}
+                                    // (discriminated from handler result {ok: v}).
+                                    let mut closed_map = IndexMap::new();
+                                    closed_map.insert(
+                                        HashableValue::Str("closed".into()),
+                                        Arc::new(Thunk::value(
+                                            Value::Dict(IndexMap::new()),
+                                            call_span.clone(),
+                                        )),
                                     );
+                                    return ok_val(Value::Dict(closed_map), call_span);
                                 }
                                 continue;
                             }
@@ -1082,15 +1090,17 @@ pub(crate) fn builtin_select_once(
                                     closed_count += 1;
                                 }
                                 if closed_count == sources_len {
-                                    // All channels closed — return [Closed]
-                                    return ok_val(
-                                        Value::Variant {
-                                            tycon: Arc::from("Closed"),
-                                            ctor: Arc::from("Closed"),
-                                            payload: None,
-                                        },
-                                        call_span,
+                                    // B-468: All channels closed — return {closed: []}
+                                    // (discriminated from handler result {ok: v}).
+                                    let mut closed_map = IndexMap::new();
+                                    closed_map.insert(
+                                        HashableValue::Str("closed".into()),
+                                        Arc::new(Thunk::value(
+                                            Value::Dict(IndexMap::new()),
+                                            call_span.clone(),
+                                        )),
                                     );
+                                    return ok_val(Value::Dict(closed_map), call_span);
                                 }
                                 continue;
                             }
@@ -1159,8 +1169,14 @@ pub(crate) fn builtin_select_once(
                         }
                     };
 
-                    // Return the handler result directly — result_thunk stays lazy.
-                    return Ok(result_thunk);
+                    // B-468: Wrap handler result in {ok: handler_result} to distinguish
+                    // from the {closed: []} return. Prelude's select-impl uses
+                    // builtin-has-key? "ok" to discriminate, avoiding the protocol
+                    // ambiguity where a handler returning Closed.Closed would
+                    // prematurely terminate the select loop.
+                    let mut map = IndexMap::new();
+                    map.insert(HashableValue::Str("ok".into()), result_thunk);
+                    return ok_val(Value::Dict(map), call_span);
                 }
             }
 

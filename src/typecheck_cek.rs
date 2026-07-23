@@ -784,7 +784,11 @@ async fn apply_cont(
                         let body_is_concrete =
                             !matches!(body_resolved, Type::Unknown | Type::Any | Type::TypeVar(..));
                         if body_is_concrete
-                            && !Type::is_consistent_subtype(&body_resolved, &declared_ret)
+                            && !Type::is_consistent_subtype(
+                                &body_resolved,
+                                &declared_ret,
+                                Some(&state.tycon_env),
+                            )
                         {
                             errors.push(TypeDiagnostic::error(
                                 "unification-failure",
@@ -804,7 +808,11 @@ async fn apply_cont(
                         if body_is_concrete {
                             for member in members {
                                 if matches!(member, Type::Function { .. })
-                                    && !Type::is_consistent_subtype(&body_resolved, member)
+                                    && !Type::is_consistent_subtype(
+                                        &body_resolved,
+                                        member,
+                                        Some(&state.tycon_env),
+                                    )
                                 {
                                     errors.push(TypeDiagnostic::error(
                                         "unification-failure",
@@ -2581,7 +2589,7 @@ async fn apply_call_args_poly(
             let mut routed = false;
             for (bucket_idx, (_, bucket_ty)) in typed_variadics.iter().enumerate() {
                 let elem_ty = extract_seq_elem_type(bucket_ty);
-                if Type::is_consistent_subtype(&widened, &elem_ty) {
+                if Type::is_consistent_subtype(&widened, &elem_ty, Some(&state.tycon_env)) {
                     bucket_args[bucket_idx].push(widened.clone());
                     routed = true;
                     break;
@@ -3261,7 +3269,7 @@ fn compute_type_assert_mismatch(
             } else {
                 let mut param_err: Option<Vec<TypeDiagnostic>> = None;
                 for ((_, p_act), (_, p_exp)) in p_actual.iter().zip(p_expected.iter()) {
-                    if !Type::is_consistent_subtype(p_act, p_exp) {
+                    if !Type::is_consistent_subtype(p_act, p_exp, None) {
                         param_err = Some(vec![TypeDiagnostic::error(
                             "type-error",
                             format!(
@@ -3275,7 +3283,7 @@ fn compute_type_assert_mismatch(
                 }
                 if param_err.is_some() {
                     param_err
-                } else if !Type::is_consistent_subtype(r_actual, r_expected) {
+                } else if !Type::is_consistent_subtype(r_actual, r_expected, None) {
                     Some(vec![TypeDiagnostic::error(
                         "unification-failure",
                         format!("cannot unify {} with {}", r_expected, r_actual),
@@ -3287,7 +3295,7 @@ fn compute_type_assert_mismatch(
             }
         }
         _ => {
-            if !Type::is_consistent_subtype(actual, expected) {
+            if !Type::is_consistent_subtype(actual, expected, None) {
                 Some(vec![TypeDiagnostic::error(
                     "unification-failure",
                     format!("cannot unify {} with {}", expected, actual),

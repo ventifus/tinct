@@ -1,0 +1,8 @@
+# T-1385: oneshot-channel request/response pattern
+# Creates a oneshot channel, sends from one task, receives in the main flow.
+[pair: [oneshot-channel]]
+[_: [await [task [fn [] [send pair "response"]]]]]
+[result: [recv pair]]
+.result
+=== out
+String("response")

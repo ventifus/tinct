@@ -728,22 +728,21 @@ retry-impl: [fn@[bind: [a]  return: a] [let n@Integer thunk@[Fn@a []]]
                        ...: [retry-impl [builtin-int-sub n 1] thunk]]]]]
 
 # select-impl: recursive event-loop body.
-# Calls select-once on sources, passes result to handler, then loops.
-# Stops when select-once returns Closed.Closed (channel closed).
+# Calls builtin-select-once on sources, unwraps the discriminated return, then loops.
+# builtin-select-once returns {ok: handler_result} on success, {closed: []} when all
+# channels are closed. Prelude discriminates via builtin-has-key? "ok" — no variant
+# tag matching, so a handler returning Closed.Closed does not confuse the loop (B-468).
 # Checks ctx cancellation before each iteration so callers can bound the loop.
 # Tail-recursive with TCO support (O(1) stack depth in the CEK machine).
-#
-# B-468: If a handler returns Closed.Closed, this will incorrectly terminate the
-# select loop — the Closed.Closed: arm fires as if all channels closed, but it was
-# the handler's return value. Tracked: B-468. Fix: discriminated return type
-# (e.g. SelectResult.Value / SelectResult.Closed) from builtin-select-once.
 select-impl: [fn@Any [let ctx sources@[Seq Dict] handler@[Fn@Any [Any]]]
     [match [builtin-cancelled-q ctx]
-        0: [match [builtin-select-once ctx sources]
-                Closed.Closed:
-                    Closed.Closed
-                [case [let v] ...
-                    [call [fn [let _ignored] [select-impl ctx sources handler]] [handler v]]]]
+        0: [call [fn [let raw]
+                [match [builtin-has-key? "ok" raw]
+                    0: Closed.Closed
+                    [case [let _] ...
+                        [call [fn [let _ignored] [select-impl ctx sources handler]]
+                              [handler [builtin-get "ok" raw]]]]]]
+               [builtin-select-once ctx sources]]
         ...: []]]
 
 # Indexable declared here (dict 1) so it is in scope when type-checking dict 1 helpers
@@ -4035,7 +4034,15 @@ recv:               builtin-recv
 broadcast-channel:  builtin-broadcast-channel
 oneshot-channel:    builtin-oneshot-channel
 try-send:           builtin-try-send
-select-once:        builtin-select-once
+# B-468: builtin-select-once returns {ok: result} | {closed: []}.
+# The public select-once unwraps {ok: v} to v, and {closed: []} to Closed.Closed,
+# preserving the original protocol (handler_result | Closed.Closed) for callers.
+select-once: [fn@Any [let ctx sources]
+    [call [fn [let raw]
+        [match [builtin-has-key? "ok" raw]
+            0: Closed.Closed
+            [case [let _] ... [builtin-get "ok" raw]]]]
+        [builtin-select-once ctx sources]]]
 
 # Emit function: write to stdout. The CLI may override this via the %emit channel.
 # Uses builtin-emit directly for standalone use; CLI loader.llt overrides with channel-based version.

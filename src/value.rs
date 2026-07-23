@@ -1696,6 +1696,19 @@ impl Thunk {
         self.span.clone()
     }
 
+    /// Set the terminal result for this thunk. Write-once via OnceCell:
+    /// the first settle() wins, subsequent calls are no-ops.
+    ///
+    /// **B-424**: Failed thunks cannot accumulate materialization spans from
+    /// later call sites. The first error's span is preserved; this is acceptable
+    /// because the first materialization span is closest to the definition site
+    /// and is the most informative for debugging.
+    ///
+    /// **B-425**: Once a thunk is settled (Ok or Err), it cannot transition to
+    /// any other state. A materialized thunk cannot become Failed, even at high
+    /// continuation depth. The depth limit is enforced at the continuation stack
+    /// level (MAX_CONTINUATION_STACK in eval_materialize.rs) before any thunk is
+    /// settled, which is the correct enforcement point.
     pub fn settle(&self, result: Result<Value, Arc<EvalError>>) {
         let _ = self.inner.result.set(result);
         {
@@ -2128,6 +2141,62 @@ mod tests {
             thunk.try_get_value(),
             Some(&Value::Int(1)),
             "Expected materialized Int(1)"
+        );
+    }
+
+    // B-424: Failed thunk cannot accumulate spans — first error wins.
+    #[test]
+    fn test_b424_failed_thunk_first_error_wins() {
+        let span1 = test_span(1, 1, 1, 10);
+        let span2 = test_span(5, 1, 5, 10);
+        let thunk = Thunk::placeholder(span1.clone());
+
+        let error1 = Arc::new(crate::error::EvalError::internal(
+            "first error".to_string(),
+            span1,
+        ));
+        let error2 = Arc::new(crate::error::EvalError::internal(
+            "second error".to_string(),
+            span2,
+        ));
+
+        thunk.settle(Err(Arc::clone(&error1)));
+        // Second settle with different error is a no-op (OnceCell write-once).
+        thunk.settle(Err(Arc::clone(&error2)));
+
+        let e = thunk.try_get_error().expect("Expected Failed state");
+        assert_eq!(
+            Arc::as_ptr(e),
+            Arc::as_ptr(&error1),
+            "First error must win — OnceCell is write-once"
+        );
+    }
+
+    // B-425: Materialized thunk cannot transition to Failed.
+    #[test]
+    fn test_b425_materialized_thunk_cannot_become_failed() {
+        let span = test_span(1, 1, 1, 10);
+        let thunk = Thunk::placeholder(span.clone());
+
+        // Settle with success first.
+        thunk.settle(Ok(Value::Int(42)));
+
+        // Attempt to settle with error — must be a no-op.
+        let error = Arc::new(crate::error::EvalError::internal(
+            "should not replace".to_string(),
+            span,
+        ));
+        thunk.settle(Err(Arc::clone(&error)));
+
+        // Thunk should still be Ok(42).
+        assert_eq!(
+            thunk.try_get_value(),
+            Some(&Value::Int(42)),
+            "Materialized thunk must not transition to Failed — OnceCell write-once"
+        );
+        assert!(
+            thunk.try_get_error().is_none(),
+            "No error should be present after materialization"
         );
     }
 

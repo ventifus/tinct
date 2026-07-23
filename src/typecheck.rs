@@ -1281,7 +1281,7 @@ pub(crate) async fn check_surface_expr(
         // Full unification is async (unify calls are async) and cannot be performed from
         // this sync function. is_consistent_subtype handles TypeVar positions as gradual (?),
         // which is the correct behavior for the check context (unknown ≡ accept anything).
-        if !Type::is_consistent_subtype(&actual, &expected_resolved) {
+        if !Type::is_consistent_subtype(&actual, &expected_resolved, Some(&state.tycon_env)) {
             return Err(vec![TypeDiagnostic::error(
                 "unification-failure",
                 format!("cannot unify {} with {}", &expected_resolved, &actual),

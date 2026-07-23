@@ -1,0 +1,9 @@
+# T-1385: Basic channel send/recv round trip
+# Creates a channel, sends a value from a task, receives it.
+# Channel values are not serializable — only the received value is checked.
+[ch: [channel 1]]
+[_: [await [task [fn [] [send ch "hello"]]]]]
+[result: [recv ch]]
+.result
+=== out
+String("hello")
