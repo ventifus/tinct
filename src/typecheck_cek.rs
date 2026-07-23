@@ -832,6 +832,7 @@ async fn apply_cont(
                                     .to_string(),
                             spans: vec![(node_span.clone(), String::new())],
                             notes: vec![],
+                            help: vec![],
                         });
                     }
 
@@ -861,6 +862,7 @@ async fn apply_cont(
                                     ),
                                     spans: vec![(node_span.clone(), String::new())],
                                     notes: vec![],
+                help: vec![],
                                 });
                             }
                         }
@@ -1287,6 +1289,7 @@ async fn apply_cont(
                         .to_string(),
                     spans: vec![(span.clone(), String::new())],
                     notes: vec![],
+                    help: vec![],
                 });
             }
 
@@ -1364,6 +1367,7 @@ async fn apply_cont(
                     ),
                     spans: vec![(span.clone(), String::new())],
                     notes: vec![],
+                help: vec![],
                 });
             }
 
@@ -2077,6 +2081,7 @@ async fn apply_cont_call_func(
                 message: "calling expression of Unknown type — may not be a function".to_string(),
                 spans: vec![(call_node.span.clone(), String::new())],
                 notes: vec![],
+                help: vec![],
             });
             TypeCheckAction::Done(Type::Unknown)
         }

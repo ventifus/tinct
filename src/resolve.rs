@@ -750,6 +750,7 @@ impl SurfaceResolver {
                             message: format!("function parameter '{}' is never referenced", bname),
                             spans: vec![(span, String::new())],
                             notes: vec![],
+                            help: vec![],
                         });
                     }
                 }
@@ -1069,6 +1070,7 @@ impl SurfaceResolver {
                             message: format!("variable '{}' is never referenced", key.1),
                             spans: vec![(span.clone(), String::new())],
                             notes: vec![],
+                            help: vec![],
                         });
                     }
                 }
@@ -1593,6 +1595,7 @@ pub fn resolve_surface_document_inplace(
                 message: "document does not reference pipeline input %".to_string(),
                 spans: vec![(span, String::new())],
                 notes: vec![],
+                help: vec![],
             });
         }
     }
@@ -1680,6 +1683,7 @@ pub fn resolve_surface_document_with_env_dict(
                 message: "document does not reference pipeline input %".to_string(),
                 spans: vec![(span, String::new())],
                 notes: vec![],
+                help: vec![],
             });
         }
     }
@@ -1804,6 +1808,7 @@ pub fn lint_pipeline_stages(
                     ),
                     spans: vec![(span.clone(), String::new())],
                     notes: vec![],
+                    help: vec![],
                 });
             }
         }

@@ -636,6 +636,7 @@ fn emit_ambiguous_constraint_diagnostics(
                                 message,
                                 spans: vec![(diag_span, String::new())],
                                 notes: vec![],
+                                help: vec![],
                             });
                         }
                     }
@@ -658,6 +659,7 @@ fn emit_ambiguous_constraint_diagnostics(
                             ),
                             spans: vec![(span.clone(), String::new())],
                             notes: vec![],
+                help: vec![],
                         });
                     }
                 }
@@ -678,6 +680,7 @@ fn emit_ambiguous_constraint_diagnostics(
                                 ),
                                 spans: vec![(span.clone(), String::new())],
                                 notes: vec![],
+                help: vec![],
                             });
                         }
                     }
@@ -694,6 +697,7 @@ fn emit_ambiguous_constraint_diagnostics(
                             ),
                             spans: vec![(span.clone(), String::new())],
                             notes: vec![],
+                help: vec![],
                         });
                     }
                 }
@@ -936,6 +940,7 @@ pub fn generalize_with_doc(
                                             ),
                                             spans: vec![(span.clone(), String::new())],
                                             notes: vec![],
+                help: vec![],
                                         });
                                     }
                                 }
@@ -970,6 +975,7 @@ pub fn generalize_with_doc(
                                             ),
                                             spans: vec![(span.clone(), String::new())],
                                             notes: vec![],
+                help: vec![],
                                         });
                                     }
                                 }
@@ -1012,6 +1018,7 @@ pub fn generalize_with_doc(
                                             ),
                                             spans: vec![(span.clone(), String::new())],
                                             notes: vec![],
+                help: vec![],
                                         });
                                     }
                                 }
@@ -1030,6 +1037,7 @@ pub fn generalize_with_doc(
                                         ),
                                         spans: vec![(span.clone(), String::new())],
                                         notes: vec![],
+                help: vec![],
                                     });
                                 }
                             } else if field_ambiguous && !is_discharged(&effective_field) {
@@ -1047,6 +1055,7 @@ pub fn generalize_with_doc(
                                         ),
                                         spans: vec![(span.clone(), String::new())],
                                         notes: vec![],
+                help: vec![],
                                     });
                                 }
                             }

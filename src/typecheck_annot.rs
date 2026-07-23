@@ -1165,6 +1165,7 @@ pub(crate) async fn resolve_fn_metadata(
                         ),
                         spans: vec![(key_expr.span.clone(), String::new())],
                         notes: vec![],
+                        help: vec![],
                     });
                 }
             }

@@ -34,10 +34,12 @@ fn mk(expr: SurfaceExpression, span: Span) -> Arc<SurfaceNode> {
 /// format_parse_error(), ParseOutput.diagnostics) this is converted to `TypeDiagnostic`
 /// via the `From<ParseError>` impl (which enables `?` propagation) or by explicit
 /// `TypeDiagnostic::error(...)` calls with a context note.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 struct ParseError {
     message: String,
     span: Option<Span>,
+    /// Optional help suggestion rendered as `= help: ...` in the formatted output.
+    help: Option<&'static str>,
 }
 
 impl std::fmt::Display for ParseError {
@@ -63,7 +65,11 @@ impl std::error::Error for ParseError {}
 impl From<ParseError> for TypeDiagnostic {
     fn from(err: ParseError) -> Self {
         let span = err.span.unwrap_or_else(|| crate::rust_span!());
-        TypeDiagnostic::error("parse-error", err.message, span)
+        let mut diag = TypeDiagnostic::error("parse-error", err.message, span);
+        if let Some(help) = err.help {
+            diag.add_help(help);
+        }
+        diag
     }
 }
 
@@ -270,6 +276,7 @@ fn parse_bracket_annotation_dict(
                             message: "missing value after `:` in property dict annotation"
                                 .to_string(),
                             span: Some(tokens[i].span.clone()),
+                            help: None,
                         });
                     }
 
@@ -445,6 +452,7 @@ fn parse_bracket_annotation_dict(
                     return Err(ParseError {
                         message: "missing value after `:` in property dict annotation".to_string(),
                         span: Some(tokens[i].span.clone()),
+                        help: None,
                     });
                 }
                 i += 1;
@@ -455,6 +463,7 @@ fn parse_bracket_annotation_dict(
     Err(ParseError {
         message: "unclosed bracket in property dict annotation".to_string(),
         span: Some(bracket_start_span),
+        help: None,
     })
 }
 
@@ -475,6 +484,7 @@ fn parse_annotation_direct(
             return Err(ParseError {
                 message: "expected @ to start annotation".to_string(),
                 span: Some(tokens[i].span.clone()),
+                help: None,
             });
         }
     }
@@ -488,6 +498,7 @@ fn parse_annotation_direct(
         return Err(ParseError {
             message: "unexpected end of input after @".to_string(),
             span: Some(at_span),
+            help: None,
         });
     }
 
@@ -597,6 +608,7 @@ fn parse_annotation_direct(
                 tokens[i].node
             ),
             span: Some(tokens[i].span.clone()),
+            help: None,
         }),
     }
 }
@@ -1260,6 +1272,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                             "maximum nesting depth exceeded (limit: {MAX_PARSE_DEPTH})"
                         ),
                         span: Some(span.clone()),
+                        help: None,
                     };
                     if !stack.is_empty() {
                         // Recovery: failed to open the bracket (no frame pushed yet).
@@ -1823,6 +1836,9 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                         if let Some(frame) = stack.last() {
                             diag = diag.with_note(format!("while parsing {}", frame));
                         }
+                        if let Some(help) = err.help {
+                            diag.add_help(help);
+                        }
                         diagnostics.push(diag);
                         let error_expr =
                             mk(SurfaceExpression::Error(error_span.clone()), error_span);
@@ -1850,6 +1866,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                             close_bracket_recover!(ParseError {
                                 message: "key without value: expected `:` and value".to_string(),
                                 span: Some(key_expr.span.clone()),
+                                help: None,
                             });
                         } else {
                             // Apply floating annotation if present.
@@ -1920,6 +1937,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                     close_bracket_recover!(ParseError {
                                         message: "type-assert form [@Annotation expr] requires an expression".to_string(),
                                         span: Some(span.clone()),
+                                        help: None,
                                     });
                                     // close_bracket_recover! falls through; entries won't be used
                                     vec![]
@@ -2045,6 +2063,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                             close_bracket_recover!(ParseError {
                                 message: format!("named argument `{}` without value", key),
                                 span: Some(key_span),
+                                help: None,
                             });
                         } else {
                             // Determine the function expression
@@ -2057,6 +2076,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                     message: "call form requires at least a function expression"
                                         .to_string(),
                                     span: Some(span.clone()),
+                                    help: None,
                                 })
                             } else {
                                 // Explicit call: func is args[0]
@@ -2067,6 +2087,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                             "call function cannot be a named argument (got `{name}:`)",
                                         ),
                                         span: Some(span.clone()),
+                                        help: None,
                                     }),
                                 }
                             };
@@ -2136,6 +2157,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                             close_bracket_recover!(ParseError {
                                 message: "fn form requires a body expression".to_string(),
                                 span: Some(span.clone()),
+                                help: Some("a fn must have at least one body expression: [fn [let x] body]"),
                             });
                         }
 
@@ -2185,6 +2207,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                     "constructor `{key_name}:` requires a payload value (e.g. `{key_name}: [field: Type]`)"
                                 ),
                                 span: Some(span.clone()),
+                                help: None,
                             });
                         }
                         if type_exprs.is_empty() {
@@ -2192,6 +2215,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                 message: "type-alias form requires at least one type expression"
                                     .to_string(),
                                 span: Some(span.clone()),
+                                help: None,
                             });
                         } else {
                             // Build the body.
@@ -2239,6 +2263,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                             close_bracket_recover!(ParseError {
                                 message: "quote form requires an expression".to_string(),
                                 span: Some(span.clone()),
+                                help: None,
                             });
                         }
                         Some(expr) => {
@@ -2257,6 +2282,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                             close_bracket_recover!(ParseError {
                                 message: "unquote form requires an expression".to_string(),
                                 span: Some(span.clone()),
+                                help: None,
                             });
                         }
                         Some(expr) => {
@@ -2275,6 +2301,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                             close_bracket_recover!(ParseError {
                                 message: "unquote-splice form requires an expression".to_string(),
                                 span: Some(span.clone()),
+                                help: None,
                             });
                         }
                         Some(expr) => {
@@ -2303,17 +2330,20 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                             close_bracket_recover!(ParseError {
                                 message: "syntax-class: key without value".to_string(),
                                 span: Some(span.clone()),
+                                help: None,
                             });
                         } else if name.is_none() {
                             close_bracket_recover!(ParseError {
                                 message: "syntax-class form requires a name".to_string(),
                                 span: Some(span.clone()),
+                                help: None,
                             });
                         } else if pattern.is_none() {
                             close_bracket_recover!(ParseError {
                                 message: "syntax-class form requires a 'pattern:' field"
                                     .to_string(),
                                 span: Some(span.clone()),
+                                help: None,
                             });
                         } else {
                             #[allow(clippy::unnecessary_unwrap)] // Checked above by is_none() guard
@@ -2353,6 +2383,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                             close_bracket_recover!(ParseError {
                                 message: "match form requires a scrutinee expression".to_string(),
                                 span: Some(span.clone()),
+                                help: None,
                             });
                         } else if pending_pattern_expr.is_some() {
                             // A pending_pattern_expr at close-bracket time means the last
@@ -2367,6 +2398,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                         "match form has an expression with no arm to belong to"
                                             .to_string(),
                                     span: Some(span.clone()),
+                                    help: None,
                                 });
                             }
                         } else if pending_pattern.is_some() {
@@ -2374,12 +2406,14 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                 message: "match pattern must be followed by a body expression"
                                     .to_string(),
                                 span: Some(span.clone()),
+                                help: None,
                             });
                         } else if arms.is_empty() {
                             close_bracket_recover!(ParseError {
                                 message: "match form requires at least one pattern: body pair"
                                     .to_string(),
                                 span: Some(span.clone()),
+                                help: None,
                             });
                         } else {
                             #[allow(clippy::unnecessary_unwrap)] // Checked above by is_none() guard
@@ -2414,6 +2448,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                 message: "class form has incomplete method (key without value)"
                                     .to_string(),
                                 span: Some(span.clone()),
+                                help: None,
                             });
                         } else {
                             // Extract determines, resolver, injective, and superclasses from structural_metadata dict
@@ -2600,6 +2635,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                 message: "instance form has incomplete method (key without value)"
                                     .to_string(),
                                 span: Some(span.clone()),
+                                help: None,
                             });
                         } else if pending_arm_pattern.is_some() {
                             close_bracket_recover!(ParseError {
@@ -2607,6 +2643,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                     "instance form has incomplete arm (pattern without methods)"
                                         .to_string(),
                                 span: Some(span.clone()),
+                                help: None,
                             });
                         } else if let Some(class_name_str) = class_name {
                             // Finalize current arm methods by appending to the last arm
@@ -2620,6 +2657,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                             "instance form has orphaned methods without pattern"
                                                 .to_string(),
                                         span: Some(span.clone()),
+                                        help: None,
                                     });
                                 }
                             }
@@ -2686,6 +2724,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                             close_bracket_recover!(ParseError {
                                 message: "instance form requires a class name".to_string(),
                                 span: Some(span.clone()),
+                                help: None,
                             });
                         }
                     }
@@ -2734,6 +2773,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                     message: "case arm requires [let bindings] pattern body"
                                         .to_string(),
                                     span: Some(dict_span(span_start)),
+                                    help: None,
                                 });
                             } else {
                                 let body_expr = if body.len() == 1 {
@@ -2765,6 +2805,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                 message: "case arm requires [let bindings] pattern body"
                                     .to_string(),
                                 span: Some(dict_span(span_start)),
+                                help: None,
                             });
                         }
                     }
@@ -2779,6 +2820,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                             message: "pipe operator '|' requires a right-hand expression"
                                 .to_string(),
                             span: Some(span.clone()),
+                            help: None,
                         });
                     }
 
@@ -2861,6 +2903,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                         message: "`:` without a key (expected key before `:`)"
                                             .to_string(),
                                         span: Some(span.clone()),
+                                        help: None,
                                     })
                                 }
                             } else {
@@ -2869,6 +2912,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                     message: "`:` without a key (expected key before `:`)"
                                         .to_string(),
                                     span: Some(span.clone()),
+                                    help: None,
                                 })
                             }
                         } else {
@@ -2883,6 +2927,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                             Some(ParseError {
                                 message: "`:` without a name (expected bare word before `:` for named arg)".to_string(),
                                 span: Some(span.clone()),
+                                help: None,
                             })
                         } else {
                             None // Pending key is set; next expression will be the value
@@ -2897,6 +2942,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                 message: "`:` without a method name (expected method: Type)"
                                     .to_string(),
                                 span: Some(span.clone()),
+                                help: None,
                             })
                         } else {
                             None // Pending key is set; next expression will be the value
@@ -2929,6 +2975,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                 message: "`:` without a method name or pattern (expected method: impl or [pattern ...]: methods)"
                                     .to_string(),
                                 span: Some(span.clone()),
+                                help: None,
                             })
                         } else {
                             None // Pending key is set; next expression will be the value
@@ -2944,6 +2991,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                 message: "`:` without a pattern (expected pattern: body in match)"
                                     .to_string(),
                                 span: Some(span.clone()),
+                                help: None,
                             })
                         } else {
                             // Store the pending pattern expression directly as the pattern.
@@ -2962,6 +3010,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                     "`:` without a key (expected 'pattern' or 'message' before `:`)"
                                         .to_string(),
                                 span: Some(span.clone()),
+                                help: None,
                             })
                         } else {
                             None // Pending key is set; next expression will be the value
@@ -2988,6 +3037,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                 _ => Some(ParseError {
                                     message: "`:` in [let ...] must follow a bare identifier or a binding group `[a b]`".to_string(),
                                     span: Some(span.clone()),
+                                    help: None,
                                 }),
                             }
                         } else {
@@ -2995,6 +3045,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                 message: "`:` without a left-hand side in [let ...] form"
                                     .to_string(),
                                 span: Some(span.clone()),
+                                help: None,
                             })
                         }
                     }
@@ -3012,6 +3063,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                 message: "`:` without a value (expected constructor payload after `Name:`)"
                                     .to_string(),
                                 span: Some(span.clone()),
+                                help: None,
                             })
                         } else if let Some(last_entry) = type_exprs.last() {
                             if last_entry.node.key.is_none() {
@@ -3027,6 +3079,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                     _ => Some(ParseError {
                                         message: "`:` in [type ...] must follow an uppercase constructor name (e.g. `File: [path: String]`)".to_string(),
                                         span: Some(span.clone()),
+                                        help: None,
                                     }),
                                 }
                             } else {
@@ -3034,6 +3087,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                     message: "`:` without a constructor name in [type ...] form"
                                         .to_string(),
                                     span: Some(span.clone()),
+                                    help: None,
                                 })
                             }
                         } else {
@@ -3041,6 +3095,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                 message: "`:` without a constructor name in [type ...] form"
                                     .to_string(),
                                 span: Some(span.clone()),
+                                help: None,
                             })
                         }
                     }
@@ -3052,12 +3107,14 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                 form_name, open_pos.start_line, open_pos.start_col
                             ),
                             span: Some(span.clone()),
+                            help: None,
                         })
                     }
                     None => Some(ParseError {
                         message: "`:` at document top level (no enclosing bracket form)"
                             .to_string(),
                         span: Some(span.clone()),
+                        help: None,
                     }),
                 };
                 if let Some(err) = colon_err {
@@ -4166,6 +4223,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                     let err = ParseError {
                         message: "expected field name after '.'".to_string(),
                         span: Some(span.clone()),
+                        help: None,
                     };
                     if !stack.is_empty() {
                         i = recover_from_bracket_error(
@@ -4251,6 +4309,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                             let err = ParseError {
                                 message: "leading-dot requires an identifier field name; integer index '.N' is not valid without a target expression".to_string(),
                                 span: Some(token_vec[i].span.clone()),
+                                help: None,
                             };
                             if !stack.is_empty() {
                                 i = recover_from_bracket_error(
@@ -4331,6 +4390,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                 token_vec[i].node
                             ),
                             span: Some(token_vec[i].span.clone()),
+                            help: None,
                         };
                         if !stack.is_empty() {
                             i = recover_from_bracket_error(
@@ -4825,7 +4885,8 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
             )
         };
 
-        return Err(TypeDiagnostic::error("parse-error", message, unclosed_span));
+        return Err(TypeDiagnostic::error("parse-error", message, unclosed_span)
+            .with_help("add a closing ] to complete the expression"));
     }
 
     // Build the final file
@@ -4913,12 +4974,14 @@ fn pop_last_value_from_frame(
                 return Err(ParseError {
                     message: "dot access requires a target before '.'".to_string(),
                     span: Some(span),
+                    help: None,
                 });
             }
             if entries.is_empty() {
                 return Err(ParseError {
                     message: "dot access requires a target before '.'".to_string(),
                     span: Some(span),
+                    help: None,
                 });
             }
             let last_entry = entries.pop().unwrap();
@@ -4948,6 +5011,7 @@ fn pop_last_value_from_frame(
                 return Err(ParseError {
                     message: "dot access requires a target before '.'".to_string(),
                     span: Some(span),
+                    help: None,
                 });
             }
             match args.pop().unwrap() {
@@ -4969,6 +5033,7 @@ fn pop_last_value_from_frame(
                 Err(ParseError {
                     message: "dot access requires a target before '.'".to_string(),
                     span: Some(span),
+                    help: None,
                 })
             }
         }
@@ -4993,6 +5058,7 @@ fn pop_last_value_from_frame(
                     message: "@ annotation requires a preceding expression in type alias"
                         .to_string(),
                     span: Some(span),
+                    help: None,
                 })
             }
         }
@@ -5003,6 +5069,7 @@ fn pop_last_value_from_frame(
                 Err(ParseError {
                     message: "dot access requires a target before '.'".to_string(),
                     span: Some(span),
+                    help: None,
                 })
             }
         }
@@ -5013,6 +5080,7 @@ fn pop_last_value_from_frame(
                 Err(ParseError {
                     message: "dot access requires a target before '.'".to_string(),
                     span: Some(span),
+                    help: None,
                 })
             }
         }
@@ -5023,6 +5091,7 @@ fn pop_last_value_from_frame(
                 Err(ParseError {
                     message: "dot access requires a target before '.'".to_string(),
                     span: Some(span),
+                    help: None,
                 })
             }
         }
@@ -5041,6 +5110,7 @@ fn pop_last_value_from_frame(
                 Err(ParseError {
                     message: "dot access on a pattern is not supported".to_string(),
                     span: Some(span),
+                    help: None,
                 })
             } else if !arms.is_empty() {
                 // Pop the last body expression of the last arm for dot-chaining.
@@ -5061,24 +5131,29 @@ fn pop_last_value_from_frame(
                 Err(ParseError {
                     message: "dot access requires a target before '.'".to_string(),
                     span: Some(span),
+                    help: None,
                 })
             }
         }
         Some(StackFrame::SyntaxClass { .. }) => Err(ParseError {
             message: "dot access is not valid inside syntax-class form".to_string(),
             span: Some(span),
+            help: None,
         }),
         Some(StackFrame::ClassDecl { .. }) => Err(ParseError {
             message: "dot access is not valid inside class form".to_string(),
             span: Some(span),
+            help: None,
         }),
         Some(StackFrame::InstanceDecl { .. }) => Err(ParseError {
             message: "dot access is not valid inside instance form".to_string(),
             span: Some(span),
+            help: None,
         }),
         Some(StackFrame::PatternDecl { .. }) => Err(ParseError {
             message: "dot access is not valid inside pattern form".to_string(),
             span: Some(span),
+            help: None,
         }),
         Some(StackFrame::LetDecl {
             ref mut bindings,
@@ -5097,6 +5172,7 @@ fn pop_last_value_from_frame(
                         message: "dot access requires a target before '.' in let structural test"
                             .to_string(),
                         span: Some(span),
+                        help: None,
                     })
                 }
             } else if let Some(last_binding) = bindings.pop() {
@@ -5108,6 +5184,7 @@ fn pop_last_value_from_frame(
                     message: "@ annotation requires a preceding binding in let declaration"
                         .to_string(),
                     span: Some(span),
+                    help: None,
                 })
             }
         }
@@ -5134,6 +5211,7 @@ fn pop_last_value_from_frame(
                             message: "dot access requires a target before '.' in case arm"
                                 .to_string(),
                             span: Some(span),
+                            help: None,
                         })
                     }
                 }
@@ -5142,17 +5220,20 @@ fn pop_last_value_from_frame(
                     message: "dot access is not valid in case arm [let bindings] position"
                         .to_string(),
                     span: Some(span),
+                    help: None,
                 })
             } else {
                 Err(ParseError {
                     message: "dot access requires a target before '.' in case arm".to_string(),
                     span: Some(span),
+                    help: None,
                 })
             }
         }
         Some(StackFrame::Pipe { .. }) => Err(ParseError {
             message: "pipe operator '|' requires a right-hand expression".to_string(),
             span: Some(span),
+            help: None,
         }),
         Some(StackFrame::AnnotationCollect { ref mut value, .. }) => {
             // Dot access on the annotation value (e.g. `x@A.B` — dot-extending the annotation type).
@@ -5163,12 +5244,14 @@ fn pop_last_value_from_frame(
                 Err(ParseError {
                     message: "dot access requires a target before '.'".to_string(),
                     span: Some(span),
+                    help: None,
                 })
             }
         }
         None => Err(ParseError {
             message: "dot access requires a target before '.'".to_string(),
             span: Some(span),
+            help: None,
         }),
     }
 }
@@ -5237,6 +5320,7 @@ fn push_expr_to_parent(
                             return Err(ParseError {
                                 message: "fn parameter list contains invalid binding patterns; each entry must be a name, name@Type, ...name, or _ wildcard".to_string(),
                                 span: Some(node.span.clone()),
+                                help: None,
                             });
                         }
 
@@ -5310,6 +5394,7 @@ fn push_expr_to_parent(
                             message: "`[fn ...]` parameter bracket must start with `let` (e.g. `[fn [let x y] body]`)"
                                 .to_string(),
                             span: Some(node.span.clone()),
+                            help: Some("change [fn [x y] body] to [fn [let x y] body]"),
                         });
                     }
                 }
@@ -5411,6 +5496,7 @@ fn push_expr_to_parent(
                                 message: "`[type ...]` parameter bracket must start with `let` (e.g. `[type [let a b] Body]`)"
                                     .to_string(),
                                 span: Some(node.span.clone()),
+                                help: Some("change [type [a b] Body] to [type [let a b] Body]"),
                             });
                         }
                     }
@@ -5477,6 +5563,7 @@ fn push_expr_to_parent(
                              named constructors use keyed entry syntax: `{qualified}: [fields]`"
                         ),
                         span: Some(node.span.clone()),
+                        help: None,
                     });
                 }
 
@@ -5521,6 +5608,7 @@ fn push_expr_to_parent(
                                 use [or ...] for a union of structural types"
                                 .to_string(),
                             span: Some(node.span.clone()),
+                            help: None,
                         });
                     }
                 }
@@ -5545,6 +5633,7 @@ fn push_expr_to_parent(
                     return Err(ParseError {
                         message: "quote form can only have one expression".to_string(),
                         span: Some(node.span.clone()),
+                        help: None,
                     });
                 }
                 *quote_expr = Some(node);
@@ -5558,6 +5647,7 @@ fn push_expr_to_parent(
                     return Err(ParseError {
                         message: "unquote form can only have one expression".to_string(),
                         span: Some(node.span.clone()),
+                        help: None,
                     });
                 }
                 *unquote_expr = Some(node);
@@ -5571,6 +5661,7 @@ fn push_expr_to_parent(
                     return Err(ParseError {
                         message: "unquote-splice form can only have one expression".to_string(),
                         span: Some(node.span.clone()),
+                        help: None,
                     });
                 }
                 *unquote_splice_expr = Some(node);
@@ -5596,6 +5687,7 @@ fn push_expr_to_parent(
                             message: "syntax-class declaration requires a name (bare identifier)"
                                 .to_string(),
                             span: Some(node.span.clone()),
+                            help: None,
                         })
                     }
                 } else if pending_key.is_some() {
@@ -5608,6 +5700,7 @@ fn push_expr_to_parent(
                                     return Err(ParseError {
                                         message: "syntax-class: duplicate 'pattern' key".to_string(),
                                         span: Some(node.span.clone()),
+                                        help: None,
                                     });
                                 }
                                 *pattern = Some(node);
@@ -5618,6 +5711,7 @@ fn push_expr_to_parent(
                                     return Err(ParseError {
                                         message: "syntax-class: duplicate 'message' key".to_string(),
                                         span: Some(node.span.clone()),
+                                        help: None,
                                     });
                                 }
                                 if let SurfaceExpression::StringLiteral { content, .. } = &node.expr {
@@ -5628,6 +5722,7 @@ fn push_expr_to_parent(
                                         message: "syntax-class 'message' value must be a string literal"
                                             .to_string(),
                                         span: Some(node.span.clone()),
+                                        help: None,
                                     })
                                 }
                             }
@@ -5637,12 +5732,14 @@ fn push_expr_to_parent(
                                     key_name
                                 ),
                                 span: Some(key.span.clone()),
+                                help: None,
                             }),
                         }
                     } else {
                         Err(ParseError {
                             message: "syntax-class keys must be bare identifiers".to_string(),
                             span: Some(key.span.clone()),
+                            help: None,
                         })
                     }
                 } else {
@@ -5673,6 +5770,7 @@ fn push_expr_to_parent(
                         return Err(ParseError {
                             message: "match pattern must be followed by `:` and a body before a [case ...] arm".to_string(),
                             span: Some(node.span.clone()),
+                            help: None,
                         });
                     }
                     // Create a wildcard SurfaceNode as the pattern placeholder
@@ -5718,6 +5816,7 @@ fn push_expr_to_parent(
                         return Err(ParseError {
                             message: "unexpected expression before first match arm (no pattern: body pair yet)".to_string(),
                             span: Some(old_pending.span.clone()),
+                            help: None,
                         });
                     }
                     *pending_pattern_expr = Some(node);
@@ -5758,6 +5857,7 @@ fn push_expr_to_parent(
                             Err(ParseError {
                                 message: "class declaration requires [let ...] form (e.g. [class [let a] ...]); class name comes from the binding (e.g. MyClass: [class [let a] ...])".to_string(),
                                 span: Some(node.span.clone()),
+                                help: Some("change [class [a] ...] to [class [let a] ...]"),
                             })
                         }
                     }
@@ -5775,6 +5875,7 @@ fn push_expr_to_parent(
                                 "unexpected expression in class form (expected method: Type entries or structural metadata dict)"
                                     .to_string(),
                             span: Some(node.span.clone()),
+                            help: None,
                         }),
                     }
                 } else {
@@ -5785,6 +5886,7 @@ fn push_expr_to_parent(
                             "unexpected expression in class form (expected method: Type entries)"
                                 .to_string(),
                         span: Some(node.span.clone()),
+                        help: None,
                     })
                 }
             }
@@ -5808,6 +5910,7 @@ fn push_expr_to_parent(
                                 "instance form expects class name (VarRef) after 'instance' keyword"
                                     .to_string(),
                             span: Some(node.span.clone()),
+                            help: None,
                         }),
                     }
                 } else if pending_arm_pattern.is_none() {
@@ -5823,6 +5926,7 @@ fn push_expr_to_parent(
                             "unexpected expression in instance form (expected colon after pattern)"
                                 .to_string(),
                         span: Some(node.span.clone()),
+                        help: None,
                     })
                 }
             }
@@ -5933,6 +6037,7 @@ fn push_expr_to_parent(
                     return Err(ParseError {
                         message: "annotation accepts only one expression".to_string(),
                         span: Some(node.span.clone()),
+                        help: None,
                     });
                 }
                 *value = Some(node);
@@ -5982,6 +6087,7 @@ fn commit_let_pending(
                 key_name
             ),
             span: Some(combined_span),
+            help: None,
         }),
 
         // `[a b]: Constructor` inside [let ...] — binding group with constructor RHS.
@@ -5990,6 +6096,7 @@ fn commit_let_pending(
                       constructor names are not valid binding defaults"
                 .to_string(),
             span: Some(rhs_node.span.clone()),
+            help: None,
         }),
 
         // Case 3: `name: default_value` — named param with default.
@@ -6034,12 +6141,14 @@ fn commit_let_pending(
                       binding groups cannot have default values"
                 .to_string(),
             span: Some(rhs_node.span.clone()),
+            help: None,
         }),
 
         // Other LHS forms — should not arise from valid parse paths.
         _ => Err(ParseError {
             message: "unexpected form before `:` in [let ...] binding".to_string(),
             span: Some(key_node.span.clone()),
+            help: None,
         }),
     }
 }
@@ -6242,6 +6351,7 @@ fn set_floating_annotation(
         Err(ParseError {
             message: "floating annotation not valid in this context; `[@Type expr]` is only supported inside a dict".to_string(),
             span: Some(ann.span),
+            help: None,
         })
     }
 }
@@ -6356,6 +6466,7 @@ fn push_value(
                         return Err(ParseError {
                             message: format!("duplicate key \"{}\"", key_str),
                             span: Some(key.span.clone()),
+                            help: None,
                         });
                     }
                     seen_keys.insert(key_str);
@@ -6450,6 +6561,7 @@ fn push_value(
                 Err(ParseError {
                     message: "class methods must have names (e.g., `eq: Type`)".to_string(),
                     span: Some(node.span.clone()),
+                    help: None,
                 })
             }
         }
@@ -6511,6 +6623,7 @@ fn push_value(
                     message: "instance methods must have names (e.g., `eq: [fn [let x y] ...]`)"
                         .to_string(),
                     span: Some(node.span.clone()),
+                    help: None,
                 })
             }
         }
@@ -6627,6 +6740,16 @@ pub fn format_parse_error(err: &TypeDiagnostic, source: &str, file_name: &str) -
     if let Some(snippet) = render_span_snippet(source, span) {
         out.push_str("  |\n");
         out.push_str(&snippet);
+    }
+
+    // Notes (e.g. "while parsing fn expression")
+    for note in &err.notes {
+        out.push_str(&format!("  = note: {note}\n"));
+    }
+
+    // Help lines
+    for help in &err.help {
+        out.push_str(&format!("  = help: {help}\n"));
     }
 
     out
@@ -9211,6 +9334,36 @@ mod tests {
         assert!(formatted.contains("-->"));
         // The snippet should include the source line
         assert!(formatted.contains("[a: 1"));
+        // Unclosed bracket should include a help line
+        assert!(
+            formatted.contains("= help:"),
+            "unclosed bracket error should include a help line, got:\n{formatted}"
+        );
+        assert!(
+            formatted.contains("add a closing ]"),
+            "help line should mention adding a closing bracket, got:\n{formatted}"
+        );
+    }
+
+    #[test]
+    fn test_format_parse_error_fn_params_help() {
+        // [fn [x y] body] — missing `let` in params — should include help text
+        let source = "[fn [x y] x]";
+        let output = parse(source, test_file(source)).expect("parse should produce output");
+        assert!(
+            !output.diagnostics.is_empty(),
+            "expected a parse diagnostic for [fn [x y] body]"
+        );
+        let diag = &output.diagnostics[0];
+        let formatted = format_parse_error(diag, source, "test.llt");
+        assert!(
+            formatted.contains("= help:"),
+            "fn param error should include a help line, got:\n{formatted}"
+        );
+        assert!(
+            formatted.contains("[fn [let x y] body]"),
+            "help should show the correct form, got:\n{formatted}"
+        );
     }
 
     #[test]
@@ -9222,6 +9375,7 @@ mod tests {
             message: "test error".to_string(),
             spans: vec![],
             notes: vec![],
+            help: vec![],
         };
 
         // Format it

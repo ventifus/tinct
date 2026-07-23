@@ -1875,6 +1875,14 @@ pub(crate) fn builtin_parse(
                 HashableValue::Str("notes".into()),
                 mk(Value::Dict(notes_dict)),
             );
+            let mut help_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+            for (j, help) in diag.help.iter().enumerate() {
+                help_dict.insert(HashableValue::Int(j as i64), mk(string_val(help)));
+            }
+            w.insert(
+                HashableValue::Str("help".into()),
+                mk(Value::Dict(help_dict)),
+            );
             w.insert(
                 HashableValue::Str("call-stack".into()),
                 mk(Value::Dict(IndexMap::new())),
@@ -2047,6 +2055,14 @@ pub(crate) fn builtin_resolve(
                 HashableValue::Str("notes".into()),
                 mk(Value::Dict(notes_dict)),
             );
+            let mut help_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+            for (j, help) in diag.help.iter().enumerate() {
+                help_dict.insert(HashableValue::Int(j as i64), mk(string_val(help)));
+            }
+            w.insert(
+                HashableValue::Str("help".into()),
+                mk(Value::Dict(help_dict)),
+            );
             w.insert(
                 HashableValue::Str("call-stack".into()),
                 mk(Value::Dict(IndexMap::new())),
@@ -2197,6 +2213,14 @@ pub(crate) fn builtin_lint_pipeline_docs(
             w.insert(
                 HashableValue::Str("notes".into()),
                 mk(Value::Dict(notes_dict)),
+            );
+            let mut help_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+            for (j, help) in diag.help.iter().enumerate() {
+                help_dict.insert(HashableValue::Int(j as i64), mk(string_val(help)));
+            }
+            w.insert(
+                HashableValue::Str("help".into()),
+                mk(Value::Dict(help_dict)),
             );
             w.insert(
                 HashableValue::Str("call-stack".into()),
@@ -2383,6 +2407,14 @@ pub(crate) fn builtin_typecheck_doc(
             w.insert(
                 HashableValue::Str("notes".into()),
                 mk(Value::Dict(notes_dict)),
+            );
+            let mut help_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+            for (j, help) in diag.help.iter().enumerate() {
+                help_dict.insert(HashableValue::Int(j as i64), mk(string_val(help)));
+            }
+            w.insert(
+                HashableValue::Str("help".into()),
+                mk(Value::Dict(help_dict)),
             );
             w.insert(
                 HashableValue::Str("call-stack".into()),

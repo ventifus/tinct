@@ -1583,6 +1583,9 @@ pub struct TypeDiagnostic {
     pub message: String,
     pub spans: Vec<(crate::ast::Span, String)>,
     pub notes: Vec<String>,
+    /// Optional help lines rendered as `= help: ...` after the diagnostic.
+    /// Each entry is a separate suggestion line.
+    pub help: Vec<String>,
 }
 
 impl TypeDiagnostic {
@@ -1593,6 +1596,7 @@ impl TypeDiagnostic {
             message: message.into(),
             spans: vec![(span, String::new())],
             notes: vec![],
+            help: vec![],
         }
     }
 
@@ -1608,6 +1612,15 @@ impl TypeDiagnostic {
 
     pub fn add_note(&mut self, note: impl Into<String>) {
         self.notes.push(note.into());
+    }
+
+    pub fn with_help(mut self, help: impl Into<String>) -> Self {
+        self.help.push(help.into());
+        self
+    }
+
+    pub fn add_help(&mut self, help: impl Into<String>) {
+        self.help.push(help.into());
     }
 
     pub fn primary_span(&self) -> &crate::ast::Span {
@@ -3479,6 +3492,7 @@ bad value (defined at src/test_util.rs:3:5-3:10)
             message: "inferred Unknown type".to_string(),
             spans: vec![(span.clone(), String::new())],
             notes: vec![],
+            help: vec![],
         };
 
         assert_eq!(diag.message, "inferred Unknown type");

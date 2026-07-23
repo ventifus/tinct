@@ -3558,6 +3558,7 @@ pub async fn process_deferred_equalities(
                             ),
                             spans: vec![(span.clone(), String::new())],
                             notes: vec![],
+                            help: vec![],
                         });
                     }
                 }

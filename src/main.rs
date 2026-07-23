@@ -2395,6 +2395,7 @@ async fn run_fmt(
                         message: d.message.clone(),
                         spans: d.spans.clone(),
                         notes: d.notes.clone(),
+                        help: d.help.clone(),
                     };
                     if bumped_level == DiagnosticLevel::Err {
                         has_fatal_diag = true;
@@ -2522,6 +2523,7 @@ async fn run_lint(
                 message: d.message.clone(),
                 spans: d.spans.clone(),
                 notes: d.notes.clone(),
+                help: d.help.clone(),
             }
         } else {
             d.clone()
@@ -2580,6 +2582,16 @@ fn format_type_diagnostic(diag: &tinct::TypeDiagnostic, source: &str, file_name:
     if let Some(snippet) = tinct::render_span_snippet(source, primary_span.clone()) {
         out.push_str("  |\n");
         out.push_str(&snippet);
+    }
+
+    // Notes
+    for note in &diag.notes {
+        out.push_str(&format!("  = note: {note}\n"));
+    }
+
+    // Help lines
+    for help in &diag.help {
+        out.push_str(&format!("  = help: {help}\n"));
     }
 
     out
@@ -2739,6 +2751,7 @@ async fn run_literate_lint(tangled: &str, config: &LiterateConfig<'_>) -> Result
                 message: d.message.clone(),
                 spans: d.spans.clone(),
                 notes: d.notes.clone(),
+                help: d.help.clone(),
             }
         } else {
             d.clone()
