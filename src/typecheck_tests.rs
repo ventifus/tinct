@@ -4890,3 +4890,141 @@ async fn test_b477_user_instance_call_dispatch_set_with_scope_frames() {
     // scope_frames invariant above (no panic, correct frame pop).
     let _ = errors;
 }
+
+// B-599: Instance method body type parameter injection
+//
+// When a class has type parameter `a` and an instance arm specifies a concrete type
+// (e.g., `[let a@Int]`), the type parameter name `a` should be bound to `Int` in the
+// type_stage_scope when checking method bodies. This allows method body annotations
+// that reference `a` (e.g., `@a`) to resolve to `Int` rather than failing.
+
+#[tokio::test]
+async fn test_b599_instance_type_param_injected_into_scope() {
+    // Class with one type parameter `a`, instance with [let a@Int] pattern.
+    // The method body uses @a annotation which should resolve to Int via the
+    // type_stage_scope injection in infer_instance_decl_from_surface.
+    //
+    // In the test env, `Int` must be in type_stage_scope for @Int to resolve.
+    // We seed it manually to match what the production loader provides.
+    let src = r#"[
+  MyClass: [class [let a]]
+  MyInstance: [instance MyClass
+    [let a@Int]:
+      [process: [fn [let x@a] $x]]]
+  result: 42
+]"#;
+
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(src, Arc::from(file!())).unwrap().program,
+    );
+
+    let arc_env = crate::imports::get_builtin_core_type_env()
+        .await
+        .expect("builtin core type env unavailable");
+    let child_env = Arc::new(RwLock::new(crate::env::Env::with_parent(Arc::clone(
+        &arc_env,
+    ))));
+    let mut state = InferState::with_env(Arc::clone(&child_env));
+
+    // Seed type_stage_scope with Int and Boolean so that @Int and @Boolean annotations resolve.
+    // This mirrors what the production loader provides via the type-stage document chain.
+    let mut seed_scope = std::collections::HashMap::new();
+    seed_scope.insert(
+        "Int".to_string(),
+        crate::type_infer::TypeStageEntry::Resolved(Type::Int),
+    );
+    seed_scope.insert(
+        "Integer".to_string(),
+        crate::type_infer::TypeStageEntry::Resolved(Type::Int),
+    );
+    state.type_stage_scope = vec![seed_scope];
+
+    let (result_env, _ty, errors) = process_document(
+        &program.documents[0].node,
+        &arc_env,
+        &mut state,
+        &mut TypeAnnotationTable::new(),
+        &mut None,
+    )
+    .await;
+
+    // No type ERRORS (advisory diagnostics for ambiguous constraints are acceptable).
+    let type_errors: Vec<_> = errors
+        .iter()
+        .filter(|e| e.level == crate::error::DiagnosticLevel::Err)
+        .collect();
+    assert!(
+        type_errors.is_empty(),
+        "B-599: expected no type errors, got: {:?}",
+        type_errors
+    );
+
+    // The result binding must be present.
+    assert!(
+        result_env.read().unwrap().get_scheme("result").is_some(),
+        "B-599: result binding must be present"
+    );
+
+    // B-599 core invariant: after infer_instance_decl_from_surface, the type_stage_scope
+    // must be restored to its original length (1 frame seeded above). The push/pop during
+    // instance method body checking must be clean.
+    assert_eq!(
+        state.type_stage_scope.len(),
+        1,
+        "B-599: type_stage_scope must be restored to length 1 after instance method body checking"
+    );
+}
+
+#[tokio::test]
+async fn test_b599_type_stage_scope_restored_after_instance_check() {
+    // Verify that the type_stage_scope frame pushed for instance method body checking is
+    // correctly popped in the normal completion path.
+    //
+    // An anonymous instance declaration in a dict — the instance processing should
+    // push a frame, check the method body, and pop the frame cleanly.
+    let src = r#"[
+  SimpleClass: [class [let a]]
+  [instance SimpleClass
+    [let a@Int]:
+      [foo: [fn [let x] 42]]]
+  result: 42
+]"#;
+
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(src, Arc::from(file!())).unwrap().program,
+    );
+
+    let arc_env = crate::imports::get_builtin_core_type_env()
+        .await
+        .expect("builtin core type env unavailable");
+    let child_env = Arc::new(RwLock::new(crate::env::Env::with_parent(Arc::clone(
+        &arc_env,
+    ))));
+    let mut state = InferState::with_env(Arc::clone(&child_env));
+    let mut seed = std::collections::HashMap::new();
+    seed.insert(
+        "Int".to_string(),
+        crate::type_infer::TypeStageEntry::Resolved(Type::Int),
+    );
+    seed.insert(
+        "Integer".to_string(),
+        crate::type_infer::TypeStageEntry::Resolved(Type::Int),
+    );
+    state.type_stage_scope = vec![seed];
+
+    let (_result_env, _ty, _errors) = process_document(
+        &program.documents[0].node,
+        &arc_env,
+        &mut state,
+        &mut TypeAnnotationTable::new(),
+        &mut None,
+    )
+    .await;
+
+    // type_stage_scope must be restored to its original length (1) regardless of errors.
+    assert_eq!(
+        state.type_stage_scope.len(),
+        1,
+        "B-599: type_stage_scope cleanup invariant — must remain at length 1 after instance processing"
+    );
+}

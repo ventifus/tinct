@@ -345,11 +345,54 @@ pub(crate) fn extract_binding_types<'a>(
                     extract_binding_types(sub_binding, env, state, types).await?;
                 }
             }
-            // Implied call [Int] or [Result String] — use fresh TypeVar for parametric patterns.
-            // Full parametric type resolution from annotation expressions is future work,
-            // but a fresh TypeVar allows unification to find the correct type instead of
-            // degrading type checking with Unknown.
+            // Implied call form in pattern position.
+            //
+            // Zero-arg case `[Int]`, `[String]`, `[Boolean]` — the name is a type constructor
+            // with no arguments. Try to resolve the func name as a type annotation via
+            // `resolve_annotation`. If the name is registered in `type_stage_scope` or
+            // `tycon_env` (e.g. `Int`, `String`, `Boolean`), we get the concrete type back.
+            // This enables `[pattern [Int]]` to resolve to `Type::Int` rather than a fresh
+            // TypeVar, making the instance pattern concrete.
+            //
+            // Multi-arg case `[Result String]`, `[Channel Int]` — parametric type application.
+            // Full resolution of these is future work; use a fresh TypeVar so that unification
+            // can still find the correct type and T017 ("contains Unknown") does not fire.
+            SurfaceExpression::Call {
+                func,
+                args,
+                named_args,
+                ..
+            } if args.is_empty() && named_args.is_empty() => {
+                // Zero-arg implied call: attempt type-name resolution.
+                let resolved = if let SurfaceExpression::VarRef {
+                    name,
+                    escaped: false,
+                    ..
+                } = &func.expr
+                {
+                    let ann = crate::ast::Annotation::Simple(name.clone());
+                    let mut constraints: Vec<Constraint> = Vec::new();
+                    match typecheck_annot::resolve_annotation(
+                        &ann,
+                        func.span.clone(),
+                        state,
+                        &mut constraints,
+                        &mut None,
+                        &mut None,
+                        None,
+                    )
+                    .await
+                    {
+                        Ok(ty) => Some(ty),
+                        Err(_) => None,
+                    }
+                } else {
+                    None
+                };
+                types.push(resolved.unwrap_or_else(|| state.fresh_type_var(&binding.span)));
+            }
             SurfaceExpression::Call { .. } => {
+                // Multi-arg parametric call — fresh TypeVar for now.
                 types.push(state.fresh_type_var(&binding.span));
             }
             // a@Type form: VarRef with annotation — resolve via typecheck_annot::resolve_annotation.

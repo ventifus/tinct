@@ -880,7 +880,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
         }));
     }
 
-    let (param_count, has_fds, fd_list, _param_names) = {
+    let (param_count, has_fds, fd_list, param_names) = {
         let class_decl = state
             .env
             .read()
@@ -1050,12 +1050,47 @@ pub(crate) async fn infer_instance_decl_from_surface(
 
         let mut method_types = HashMap::new();
 
+        // B-599: Inject class type parameter bindings into type_stage_scope so that
+        // method body annotations referencing the class's type parameters resolve to the
+        // concrete pattern types for this arm.
+        //
+        // For example: class `Equatable [let a]` with method `=: [Fn@Boolean [a a]]` and
+        // arm pattern `[let a@Integer]` (pattern_types = [Type::Int]) → inject `a → Int`.
+        // Any annotation `@a` inside the method body now resolves to `Type::Int` instead
+        // of the catch-all behavior. For the arm `[pattern [Int]]` where the pattern type
+        // is already resolved to `Type::Int` (via the zero-arg Call fix in extract_binding_types),
+        // this also injects the correct concrete type.
+        //
+        // Implementation: push a new innermost type_stage_scope frame (index 0) containing
+        // the param_name → TypeStageEntry::Resolved(pattern_type) bindings. Pop it after all
+        // methods in this arm are checked. This is a temporary scope — it does NOT leak into
+        // other arms or the surrounding type environment.
+        let param_type_frame: std::collections::HashMap<String, crate::type_infer::TypeStageEntry> = {
+            let mut frame = std::collections::HashMap::new();
+            for (name, ty) in param_names.iter().zip(pattern_types.iter()) {
+                if !matches!(ty, Type::TypeVar(..)) {
+                    frame.insert(
+                        name.clone(),
+                        crate::type_infer::TypeStageEntry::Resolved(ty.clone()),
+                    );
+                }
+            }
+            frame
+        };
+        let pushed_frame = !param_type_frame.is_empty();
+        if pushed_frame {
+            state.type_stage_scope.insert(0, param_type_frame);
+        }
+
         for method in *methods {
             let method_name = match &method.node.key {
                 Some(key_node) => match &key_node.expr {
                     SurfaceExpression::StringLiteral { content, .. } => content.clone(),
                     SurfaceExpression::VarRef { name: n, .. } => n.clone(),
                     _ => {
+                        if pushed_frame {
+                            state.type_stage_scope.remove(0);
+                        }
                         return Err(vec![TypeDiagnostic::error(
                             "type-error",
                             "instance method name must be a string or identifier",
@@ -1064,6 +1099,9 @@ pub(crate) async fn infer_instance_decl_from_surface(
                     }
                 },
                 None => {
+                    if pushed_frame {
+                        state.type_stage_scope.remove(0);
+                    }
                     return Err(vec![TypeDiagnostic::error(
                         "type-error",
                         "instance method must have a name",
@@ -1084,6 +1122,9 @@ pub(crate) async fn infer_instance_decl_from_surface(
             ))
             .await;
             if !method_errors.is_empty() {
+                if pushed_frame {
+                    state.type_stage_scope.remove(0);
+                }
                 return Err(method_errors);
             }
             method_types.insert(method_name.clone(), method_impl_type.clone());
@@ -1102,6 +1143,11 @@ pub(crate) async fn infer_instance_decl_from_surface(
             // so inserting here makes the ɪ-prefixed binding visible to the same scope as
             // the instance declaration itself (letrec scope).
             env.write().unwrap().insert_scheme(binding_name, scheme);
+        }
+
+        // B-599: Pop the type param scope frame pushed before method body checking.
+        if pushed_frame {
+            state.type_stage_scope.remove(0);
         }
 
         let det_positions: Vec<usize> = {

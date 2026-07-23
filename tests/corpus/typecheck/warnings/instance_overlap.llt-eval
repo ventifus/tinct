@@ -3,8 +3,17 @@
 # checks the CURRENT frame; the prelude's Equatable Int is in a parent frame and is not seen.
 # T-1031 is done: check_structural_overlap now walks the InstanceEnv parent chain,
 # so W043 fires for cross-frame instance conflicts where a candidate overlaps a parent-frame instance.
-# TODO(B-326): Instance method body params infer as Unknown — pattern `[Int]` should propagate
-# to method params so `x` and `y` get type Int, eliminating the T010 warnings.
+#
+# B-599 (partial fix): The `[pattern [Int]]` syntax now correctly resolves `Int` to `Type::Int`
+# in the production path (where the type-stage scope is seeded with concrete type names by the
+# loader). The class type parameter `a` is injected into type_stage_scope as `a → Int` when
+# checking method bodies, so ANNOTATED method params (e.g., `@a`) resolve to `Int`.
+#
+# However, UNANNOTATED params (`x` and `y` in this test) still infer as Unknown because
+# they have no annotation for the type checker to propagate the expected type through.
+# Full elimination of T010 for unannotated params requires bidirectional type checking
+# using class method signatures, which are not currently populated (method_signatures: vec![]).
+# This is tracked as future work — the correct user fix is to annotate params: `@a` or `@Integer`.
 [
   MyEqInt: [instance Equatable
     [pattern [Int]]:
