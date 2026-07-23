@@ -303,7 +303,7 @@ impl SurfaceResolver {
                     .find(|info| {
                         info.scope_depth == match_depth
                             && !info.is_param
-                            && info.body_index < self.current_body_index
+                            && info.body_index <= self.current_body_index
                             && info
                                 .bindings
                                 .iter()
@@ -527,7 +527,7 @@ impl SurfaceResolver {
                     .find(|info| {
                         info.scope_depth == match_depth
                             && !info.is_param
-                            && info.body_index < self.current_body_index
+                            && info.body_index <= self.current_body_index
                             && info
                                 .bindings
                                 .iter()
@@ -1032,7 +1032,6 @@ impl SurfaceResolver {
                 for info in &drained {
                     for (name, span, _, ref_by_final, per_binding_refs) in &info.bindings {
                         let key = (info.body_index, name.clone());
-                        // Per-binding references: only what THIS binding's value uses.
                         all_bindings.push((key.clone(), span.clone(), per_binding_refs.clone()));
                         if *ref_by_final {
                             reachable.insert(key);
@@ -1560,25 +1559,42 @@ impl SurfaceResolver {
 fn set_empty_captures_in_quote(expr: &crate::ast::SurfaceExpression) {
     use crate::ast::SurfaceExpression;
     match expr {
-        SurfaceExpression::Fn { resolved_captures, body, .. } => {
+        SurfaceExpression::Fn {
+            resolved_captures,
+            body,
+            ..
+        } => {
             // Set empty captures — quoted fns are AST values with no runtime closure.
             let _ = resolved_captures.set(std::sync::Arc::new(vec![]));
             // Recurse into body in case it contains nested fns.
             set_empty_captures_in_quote(&body.expr);
         }
-        SurfaceExpression::Call { func, args, named_args, .. } => {
+        SurfaceExpression::Call {
+            func,
+            args,
+            named_args,
+            ..
+        } => {
             set_empty_captures_in_quote(&func.expr);
-            for a in args { set_empty_captures_in_quote(&a.expr); }
-            for na in named_args { set_empty_captures_in_quote(&na.node.value.expr); }
+            for a in args {
+                set_empty_captures_in_quote(&a.expr);
+            }
+            for na in named_args {
+                set_empty_captures_in_quote(&na.node.value.expr);
+            }
         }
         SurfaceExpression::Dict(entries) => {
             for e in entries {
-                if let Some(k) = &e.node.key { set_empty_captures_in_quote(&k.expr); }
+                if let Some(k) = &e.node.key {
+                    set_empty_captures_in_quote(&k.expr);
+                }
                 set_empty_captures_in_quote(&e.node.value.expr);
             }
         }
         SurfaceExpression::Sequential(exprs) => {
-            for e in exprs { set_empty_captures_in_quote(&e.expr); }
+            for e in exprs {
+                set_empty_captures_in_quote(&e.expr);
+            }
         }
         SurfaceExpression::Pipe { lhs, rhs, .. } => {
             set_empty_captures_in_quote(&lhs.expr);
