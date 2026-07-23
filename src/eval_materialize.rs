@@ -1270,7 +1270,6 @@ pub(crate) async fn apply_cont(
                             params,
                             body,
                             closure_env,
-                            fn_outer,
                             ..
                         } => {
                             // TCO path: when tail_hint=true, skip Memoize and return EvalCore directly.
@@ -1379,7 +1378,6 @@ pub(crate) async fn apply_cont(
                                         default_env_id: caller_env_id,
                                         call_span: call_span.clone(),
                                         ctx: &thunk_ctx,
-                                        fn_outer: fn_outer.clone(),
                                     };
                                     invoke_function_tco(&call_ctx).await
                                 };
@@ -1419,7 +1417,6 @@ pub(crate) async fn apply_cont(
                                         default_env_id: caller_env_id,
                                         call_span: call_span.clone(),
                                         ctx: &thunk_ctx,
-                                        fn_outer,
                                     };
                                     invoke_function(&call_ctx).await
                                 };
@@ -2360,7 +2357,6 @@ pub(crate) async fn apply_cont(
                             group: std::sync::Arc::new(updated_group),
                             closure_env: std::sync::Arc::clone(&frame.closure_env),
                             params: std::sync::Arc::clone(&frame.params),
-                            outer: frame.outer.clone(),
                         });
                         let next_expr = &exprs[next_idx];
                         stack.push(Cont::LetrecChainStep(Box::new(LetrecChainStepData {

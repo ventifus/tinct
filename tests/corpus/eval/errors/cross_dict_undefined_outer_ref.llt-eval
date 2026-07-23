@@ -1,4 +1,4 @@
-# OuterGroupRef error: nested dict literal referencing an undefined variable.
+# Cross-dict error: nested dict literal referencing an undefined variable.
 # missing_name is not defined anywhere; the resolver flags it as undefined.
 [outer: 42  inner: [ref: missing_name]]
 .inner.ref

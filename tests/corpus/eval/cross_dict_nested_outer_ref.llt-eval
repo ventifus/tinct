@@ -1,5 +1,5 @@
 # cross_dict_nested_outer_ref: inner dict accesses entry from its enclosing outer dict.
-# B-576: VarAddr::OuterGroupRef(1, slot) — one hop from inner frame to outer frame.
+# B-576/B-585: LGM(absolute_slot) — inner dict's frame.group is the accumulated group containing x.
 [x: 42
  inner: [y: x]]
 .inner.y

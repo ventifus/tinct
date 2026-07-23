@@ -125,10 +125,6 @@ pub struct CallContext<'a> {
     /// Call site span — `name` field carries the function label for blame tracking.
     pub call_span: Span,
     pub ctx: &'a Arc<EvalContext>,
-    /// Outer frame pointer from `Value::Function::fn_outer`. Propagated to the call-frame's
-    /// `EvalFrame::outer` so that `OuterGroupRef(hops, slot)` lookups inside the fn body
-    /// (and inner fns created within the body) can reach enclosing dict group thunks.
-    pub fn_outer: Option<Arc<EvalFrame>>,
 }
 
 /// Invoke a user-defined function with pre-evaluated thunks.
@@ -144,7 +140,6 @@ pub async fn invoke_function(ctx: &CallContext<'_>) -> EvalResult<Arc<Thunk>> {
         ctx.named,
         ctx.default_env_id,
         Arc::clone(&ctx.closure_env),
-        ctx.fn_outer.clone(),
         ctx.ctx,
         &ctx.call_span,
     )
@@ -177,7 +172,6 @@ pub(crate) async fn invoke_function_tco(
         ctx.named,
         ctx.default_env_id,
         Arc::clone(&ctx.closure_env),
-        ctx.fn_outer.clone(),
         ctx.ctx,
         &ctx.call_span,
     )
@@ -195,16 +189,12 @@ pub(crate) async fn invoke_function_tco(
 /// Handles arity validation, default params, variadic params, and system-injected
 /// named args. The returned EvalFrame carries the bound params and closure captures
 /// for use with `Thunk::core_expr` and `EvalFrame`-based variable lookup.
-///
-/// `fn_outer` is propagated to `EvalFrame::outer` so that `OuterGroupRef(hops, slot)` lookups
-/// inside the fn body (and inner fns created within it) resolve correctly.
 pub(crate) async fn bind_args_thunks(
     params: &[Param],
     positional: &[Arc<Thunk>],
     named: Option<&IndexMap<String, Arc<Thunk>>>,
     default_env_id: u32,
     closure_env: Arc<Vec<Arc<Thunk>>>,
-    fn_outer: Option<Arc<EvalFrame>>,
     ctx: &Arc<EvalContext>,
     call_span: &Span,
 ) -> EvalResult<Arc<EvalFrame>> {
@@ -496,11 +486,7 @@ pub(crate) async fn bind_args_thunks(
         })
         .collect();
 
-    Ok(EvalFrame::for_function_call(
-        closure_env,
-        params_vec,
-        fn_outer,
-    ))
+    Ok(EvalFrame::for_function_call(closure_env, params_vec))
 }
 
 /// Build a lazy Seq cons-list from a slice of `Arc<Thunk>`.

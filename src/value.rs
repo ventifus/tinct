@@ -118,18 +118,19 @@ impl fmt::Debug for BuiltinDef {
 /// Replaces ScopeArena-based scope chain traversal.
 ///
 /// - `closure_env[i]`: thunk for `VarAddr::ClosureCapture(i)` references (fn captures only)
-/// - `group[i]`: thunk for `VarAddr::LetrecGroupMember(i)` references
+/// - `group[i]`: thunk for `VarAddr::LetrecGroupMember(i)` references.
+///   At document level, `group` is the accumulated_group: root-scope entries at slots 0..N-1,
+///   followed by each dict's entries at cumulative slot offsets. No outer-frame traversal needed.
 /// - `params[i]`: thunk for `VarAddr::Parameter(i)` references
-/// - `outer`: back-pointer to the immediately-enclosing EvalFrame, for `VarAddr::OuterGroupRef(hops, slot)`
-///   references that traverse `hops` outer-frame links to reach `group[slot]`.
+///
+/// All three VarAddr variants index directly into this frame's vectors.
+/// No outer-frame chain traversal — cross-scope references are resolved at the resolver level
+/// (captures become ClosureCapture; document cross-dict refs become LGM with cumulative slots).
 #[derive(Debug, Clone)]
 pub struct EvalFrame {
     pub closure_env: std::sync::Arc<Vec<std::sync::Arc<Thunk>>>,
     pub group: std::sync::Arc<Vec<std::sync::Arc<Thunk>>>,
     pub params: std::sync::Arc<Vec<std::sync::Arc<Thunk>>>,
-    /// Back-pointer to the immediately-enclosing EvalFrame — used by OuterGroupRef
-    /// to traverse outer-frame links and access group thunks without putting them into closure_env.
-    pub outer: Option<std::sync::Arc<EvalFrame>>,
 }
 
 impl EvalFrame {
@@ -138,20 +139,17 @@ impl EvalFrame {
             closure_env: std::sync::Arc::new(vec![]),
             group: std::sync::Arc::new(vec![]),
             params: std::sync::Arc::new(vec![]),
-            outer: None,
         })
     }
 
     pub fn for_function_call(
         closure_env: std::sync::Arc<Vec<std::sync::Arc<Thunk>>>,
         params: Vec<std::sync::Arc<Thunk>>,
-        fn_outer: Option<std::sync::Arc<EvalFrame>>,
     ) -> std::sync::Arc<Self> {
         std::sync::Arc::new(Self {
             closure_env,
             group: std::sync::Arc::new(vec![]),
             params: std::sync::Arc::new(params),
-            outer: fn_outer,
         })
     }
 }
@@ -586,18 +584,13 @@ pub enum Value {
     /// User-defined function (closure capturing its defining environment).
     /// `body` is stored as `Arc<Spanned<CoreExpr>>` (Parts-E migration: no Expr round-trip).
     /// `closure_env` is the captured variable vector for closure-converted lookup.
-    /// `fn_outer` carries the outer frame pointer from the fn's creation site so that
-    /// fn call frames and LetrecChainStep frames can propagate it through `EvalFrame::outer`,
-    /// enabling `OuterGroupRef(hops, slot)` lookups inside inner fns created within the fn body.
+    /// All cross-scope captures are resolved at fn-creation time into `closure_env`;
+    /// no outer-frame pointer is needed at call time.
     Function {
         params: Arc<Vec<Param>>,
         body: Arc<Spanned<CoreExpr>>,
         closure_env: std::sync::Arc<Vec<std::sync::Arc<Thunk>>>,
         annotation: Option<Box<FnAnnotation>>,
-        /// Outer frame pointer from the fn's creation site. Propagated to fn call frames
-        /// so that `OuterGroupRef(hops, slot)` lookups resolve via `frame.outer^hops.group[slot]`
-        /// inside inner fns that capture cross-dict references from the enclosing scope.
-        fn_outer: Option<std::sync::Arc<EvalFrame>>,
     },
     /// Rust-native built-in function
     Builtin(BuiltinDef),
@@ -761,13 +754,11 @@ impl Clone for Value {
                 body,
                 closure_env,
                 annotation,
-                fn_outer,
             } => Value::Function {
                 params: Arc::clone(params),
                 body: Arc::clone(body),
                 closure_env: std::sync::Arc::clone(closure_env),
                 annotation: annotation.clone(),
-                fn_outer: fn_outer.clone(),
             },
             Value::Builtin(def) => Value::Builtin(*def),
             Value::Seq { head, tail } => Value::Seq {

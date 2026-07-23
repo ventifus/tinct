@@ -1,6 +1,6 @@
-# OuterGroupRef error with hops=2: deeply nested dict referencing an undefined variable.
-# Two levels of nesting; missing_name is not defined at any level.
-# Verifies error span propagation for multi-hop OuterGroupRef.
+# Cross-dict error: two-level nesting, referencing an undefined variable.
+# missing_name is not defined at any level.
+# Verifies error span propagation for cross-dict undefined variable references.
 [outer: 42
  mid: [mid-val: 10
        inner: [ref: missing_name]]]

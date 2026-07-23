@@ -189,14 +189,14 @@ pub async fn run_loader_pipeline(
     // coordinates at eval time, so typeclass method dispatch works in the production loader
     // path where typecheck precedes eval.
     let eval_ctx_with_frames: Arc<eval::EvalContext> = {
-        // Build the resolver seed frame from the eval context's root EvalFrame.
-        // root_frame.group contains all static builtins (slots 0..N-1) followed by
+        // Build the resolver seed map from the eval context's root group.
+        // root_group contains all static builtins (slots 0..N-1) followed by
         // capabilities (slots N..M-1) in the same order they were registered via
-        // with_root_frame_capabilities. root_frame_resolver_map() reads slot indices
+        // with_root_group_capabilities. root_group_resolver_map() reads slot indices
         // directly from the group, so the resolver and evaluator are always in sync.
-        // Each name gets OuterGroupRef(1, slot) from enter_scope_from_frame, which resolves
-        // at runtime via document-frame.outer (= root_frame) → group[slot].
-        let root_frame = eval_ctx.root_frame_resolver_map();
+        // Each name gets LGM(slot) from enter_scope_from_frame; at runtime accumulated_group
+        // starts with root_group so LGM(slot) indexes directly into the right thunk.
+        let root_frame = eval_ctx.root_group_resolver_map();
         let (_table, new_frames) =
             resolve::resolve_surface_program(&loader_program, std::slice::from_ref(&root_frame));
         // Combine: root_frame (outermost) followed by frames introduced by the program.

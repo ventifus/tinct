@@ -395,20 +395,18 @@ struct Environment {
 
 ### VarAddr — Variable Address Variants
 
-The `VarAddr` enum (in `src/ast.rs`) specifies how a variable reference is resolved at runtime. It has four variants:
+The `VarAddr` enum (in `src/ast.rs`) specifies how a variable reference is resolved at runtime. Complete closure conversion: exactly three variants, no runtime frame traversal.
 
-1. **`LetrecGroupMember(slot)`** — reference to a binding in the current letrec group. Runtime: index `frame.group[slot]`.
-2. **`ClosureCapture(slot)`** — fn closure capture. Runtime: index `fn.closure_env[slot]`. Used exclusively for variable references inside fn bodies that cross the fn boundary.
+1. **`LetrecGroupMember(slot)`** — reference to any binding in the flat accumulated group for this document evaluation. `slot` is an absolute cumulative index: root-scope entries occupy slots 0..N-1, then each document dict's entries follow in declaration order. Runtime: index `frame.group[slot]`.
+2. **`ClosureCapture(slot)`** — fn closure capture. Runtime: index `fn.closure_env[slot]`. All cross-fn-boundary references (including cross-document and cross-dict references from inside fn bodies) become `ClosureCapture` — resolved at fn creation time from the accumulated group via `LGM(slot)`.
 3. **`Parameter(slot)`** — fn parameter. Runtime: index `frame.params[slot]`.
-4. **`OuterGroupRef(hops, slot)`** — cross-dict reference via outer frame chain. Runtime: traverse `hops` outer-frame links from the current frame, then index `outer_frame.group[slot]`.
 
-**OuterGroupRef semantics:**
-- Emitted by the resolver for cross-dict references that do NOT cross a fn boundary (document-level dict literals, nested dict literals inside fn bodies).
-- `hops` is the count of Dict scopes between the reference site and the binding's dict, excluding FnSequentialBody scopes (which are not real `eval_dict_core` frames).
-- For root-scope builtins/capabilities captured by a fn, the resolver computes `OuterGroupRef(hops, slot)` where `hops = 1 (doc_frame) + creation_dict_count + fn_outer_count`. `creation_dict_count` = Dict scopes between the root scope and the innermost fn's boundary (not dicts inside fn bodies). `fn_outer_count = enclosing_fn_count - 1` (one fn_call_frame per outer fn in the chain at creation time).
-- FnSequentialBody scopes are NOT counted toward `hops` — they are intermediate dict expressions in a multi-body fn, not separate eval_dict_core frames.
-
-**EvalFrame.outer field:** Added to support OuterGroupRef traversal. Each `eval_dict_core` frame stores `outer: Some(Arc::clone(outer_frame))` at creation time. `EvalFrame::empty()` initializes `outer: None`.
+**Single flat LGM namespace per document evaluation:**
+- `ctx.root_group` contains all builtin and capability thunks at their assigned slots.
+- `accumulated_group` in `eval_document_exprs_with_env` starts as a copy of `root_group`, then extends with each document dict's entries as they are evaluated.
+- The resolver assigns cumulative absolute LGM slots: root entries at 0..N-1, then each dict's entries starting at the next available slot.
+- Cross-dict references within a document resolve directly to `LGM(absolute_slot)` — no runtime traversal, no hop counting.
+- All fn captures use `ClosureCapture(slot)` into `closure_env`, which is populated from the accumulated group at fn creation time.
 
 ### Compiler Notes: Strictness Analysis
 

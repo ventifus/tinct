@@ -432,16 +432,18 @@ pub(crate) async fn eval_dict_core(
     }
 
     // Phase 2: build the shared letrec EvalFrame and patch it into each non-literal
-    // CoreExpr thunk. The group Vec contains the final thunks (one per static-key entry,
-    // in slot order) so that VarAddr::LetrecGroupMember(i) lookups resolve correctly.
+    // CoreExpr thunk.
     //
-    // closure_env: propagate outer_frame.closure_env unchanged. Cross-dict references no longer
-    // use ClosureCapture — they use OuterGroupRef(hops, slot) which traverses outer-frame links
-    // directly. closure_env is only used by ClosureCapture for fn captures, which are set at
-    // fn creation time by walking the capture list against the enclosing EvalFrame.
+    // group: outer_frame.group (accumulated_group containing root entries + prior dict entries)
+    // EXTENDED with this dict's own letrec_slots. This ensures LGM(absolute_slot) lookups
+    // resolve correctly for both:
+    //   - Cross-dict refs (e.g., LGM(N) for a root or prior-dict entry) → outer_frame.group[N]
+    //   - Self-refs within this dict (e.g., LGM(outer_frame.group.len() + i)) → letrec_slots[i]
     //
-    // outer: set to outer_frame so that OuterGroupRef(hops, slot) lookups can traverse the
-    // outer-frame chain to reach the defining frame's group[slot].
+    // closure_env: for document-level dicts (outer_frame.closure_env.is_empty()), carry
+    // the outer_frame.group so that fns defined in this dict can capture cross-dict names via
+    // frame.group[slot] at fn-creation time. For fn-body dicts (closure_env non-empty),
+    // carry outer_frame.closure_env unchanged — the fn's own captures are already materialized.
     //
     // Patch is safe here: the thunks were just created in this function and have not been
     // shared with any other task yet (they are not in the dict map until after patch, and
@@ -454,17 +456,27 @@ pub(crate) async fn eval_dict_core(
     // static-key and computed-key). This ensures computed-key values (e.g., [$k: v]
     // in make-entry) can access function parameters and closures via the frame.
     if has_non_literal {
-        let group: std::sync::Arc<Vec<Arc<Thunk>>> = std::sync::Arc::new(letrec_slots.clone());
+        // Build extended group: outer group (accumulated) + this dict's letrec slots.
+        let mut extended_group: Vec<Arc<Thunk>> = outer_frame.group.iter().cloned().collect();
+        extended_group.extend(letrec_slots.iter().cloned());
+        let group: std::sync::Arc<Vec<Arc<Thunk>>> = std::sync::Arc::new(extended_group);
+
+        // closure_env: document-level dicts carry the outer group for fn captures;
+        // fn-body dicts carry the fn's closure_env unchanged.
+        let closure_env = if outer_frame.closure_env.is_empty() {
+            std::sync::Arc::clone(&outer_frame.group)
+        } else {
+            std::sync::Arc::clone(&outer_frame.closure_env)
+        };
 
         // Inherit outer_frame.params so that function parameters remain accessible
         // from within intermediate dict bodies inside a function. Without this, an
         // intermediate dict `[x: [fn-param-ref]]` inside `[fn [let p] [x: p] body]`
         // would fail because the dict's letrec_frame has empty params.
         let letrec_frame = std::sync::Arc::new(EvalFrame {
-            closure_env: std::sync::Arc::clone(&outer_frame.closure_env),
+            closure_env,
             group,
             params: std::sync::Arc::clone(&outer_frame.params),
-            outer: Some(std::sync::Arc::clone(outer_frame)),
         });
 
         for maybe_core_thunk in &core_expr_thunks {

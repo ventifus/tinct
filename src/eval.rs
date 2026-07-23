@@ -73,47 +73,21 @@ pub(crate) async fn eval_document_exprs_with_env(
         ));
     }
 
-    // Sequential document evaluation using a frame chain.
+    // Sequential document evaluation using accumulated_group.
     //
-    // Each intermediate dict expression becomes its own EvalFrame in a linked chain.
-    // `current_outer` starts as either:
-    //   - A dedicated env_frame carrying the `initial_group` entries (when `initial_group` is Some)
-    //   - The document base frame with `outer: root_frame` and empty group (when `initial_group` is None)
+    // accumulated_group starts with root-scope entries (builtins + capabilities) at
+    // slots 0..N-1, optionally followed by env-dict entries (when initial_group is Some).
+    // After each intermediate dict is evaluated and materialized, its string-keyed thunks
+    // are appended to accumulated_group at the next cumulative slot indices.
     //
-    // After each intermediate dict is evaluated and materialized, a new exported frame is
-    // prepended to the chain, carrying only that dict's string-keyed thunks. Subsequent
-    // expressions receive `current_outer` directly as their `outer_frame`, forming:
-    //
-    //   dict_N_letrec → dict_{N-1}_frame → ... → dict_1_frame → base_frame → root_frame
-    //
-    // The resolver assigns OuterGroupRef(hops, slot) for cross-dict references, where
-    // `hops` = number of Dict scope boundaries between the usage site and the definition
-    // site. Each exported frame corresponds to exactly one hop, so the runtime chain depth
-    // matches the resolver's Dict scope count precisely. This eliminates the accumulated_group
-    // flat-group approach that diverged from the resolver's per-dict frame model.
-    let mut current_outer: Arc<EvalFrame> = match initial_group {
-        Some(env_thunks) => {
-            // env-dict path: env-dict entries occupy a dedicated env_frame that dict_1's letrec
-            // points to via .outer. The resolver seeds env-dict names as LGM(i) (via enter_scope
-            // with ScopeKind::Other), which becomes OuterGroupRef(N, i) when referenced from
-            // inside dict_N's letrec (N Dict scope boundaries between the env_dict scope and
-            // dict_N's letrec scope).
-            Arc::new(EvalFrame {
-                group: Arc::new(env_thunks),
-                closure_env: Arc::new(vec![]),
-                params: Arc::new(vec![]),
-                outer: Some(Arc::clone(&ctx.root_frame)),
-            })
-        }
-        None => {
-            // Standard document path: start current_outer at root_frame directly.
-            // Dict 1's letrec will have outer = root_frame (1 hop to root).
-            // Dict N's letrec has outer = dict_{N-1}_exported_frame, which chains
-            // back to root_frame in N hops — matching the resolver's base_hops(1) +
-            // dict_count(N-1) = N formula.
-            Arc::clone(&ctx.root_frame)
-        }
-    };
+    // The resolver assigns LGM(absolute_slot) for all variable references (cross-dict
+    // references included), where absolute_slot is the unique cumulative index assigned
+    // by walk_surface_document_with_offset. frame.group[slot] resolves any LGM reference
+    // directly — no outer-frame traversal needed.
+    let mut accumulated_group: Vec<Arc<Thunk>> = ctx.root_group.iter().cloned().collect();
+    if let Some(env_thunks) = initial_group {
+        accumulated_group.extend(env_thunks);
+    }
 
     let last_idx = expr_nodes.len() - 1;
 
@@ -125,43 +99,33 @@ pub(crate) async fn eval_document_exprs_with_env(
         }
         let node_span = node.span.clone();
 
+        // Build the frame from the current accumulated_group.
+        let frame = Arc::new(EvalFrame {
+            group: Arc::new(accumulated_group.clone()),
+            closure_env: Arc::new(vec![]),
+            params: Arc::new(vec![]),
+        });
+
         if i == last_idx {
-            // Last expression: pass current_outer directly as the frame and return lazily.
-            // eval_dict_core (if this is a Dict) will use current_outer as outer_frame,
-            // making its letrec frame's .outer point to current_outer. For non-Dict last
-            // expressions, current_outer provides the correct variable lookup context.
-            let thunk =
-                crate::eval_core::eval_core_expr(&core_spanned, &current_outer, ctx).await?;
+            // Last expression: build frame and return thunk lazily.
+            let thunk = crate::eval_core::eval_core_expr(&core_spanned, &frame, ctx).await?;
             // Return fallback_env_id as bridge placeholder for callers that use the scope_id.
             return Ok((thunk, fallback_env_id));
         }
 
         // Intermediate expression: eval and materialize to extract its exported bindings.
-        let thunk = crate::eval_core::eval_core_expr(&core_spanned, &current_outer, ctx).await?;
+        let thunk = crate::eval_core::eval_core_expr(&core_spanned, &frame, ctx).await?;
         let val = materialize(&thunk, Some(&node_span), ctx).await?;
 
-        // If the result is a Dict, build a new exported frame from its string-keyed thunks
-        // and advance current_outer. String keys are in LGM-slot order (insertion order from
-        // eval_dict_core), so OuterGroupRef(1, slot) from the next dict's letrec resolves
-        // to the i-th string-key entry of this dict.
+        // If the result is a Dict, extend accumulated_group with its string-keyed thunks
+        // at the next cumulative slot indices. String keys are added in insertion order
+        // (matching the resolver's cumulative offset assignment in walk_surface_document_with_offset).
         if let Value::Dict(ref dict_map) = val {
-            let new_thunks: Vec<Arc<Thunk>> = dict_map
-                .iter()
-                .filter_map(|(k, v)| {
-                    if matches!(k, crate::value::HashableValue::Str(_)) {
-                        Some(Arc::clone(v))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            let prev_outer = Arc::clone(&current_outer);
-            current_outer = Arc::new(EvalFrame {
-                group: Arc::new(new_thunks),
-                closure_env: Arc::new(vec![]),
-                params: Arc::new(vec![]),
-                outer: Some(prev_outer),
-            });
+            for (k, v) in dict_map.iter() {
+                if matches!(k, crate::value::HashableValue::Str(_)) {
+                    accumulated_group.push(Arc::clone(v));
+                }
+            }
         }
     }
 
@@ -178,15 +142,15 @@ pub(crate) async fn eval_document_exprs_with_env(
 /// function accepts CoreExprs that are already lowered and evaluates them directly via
 /// `eval_core_expr`.
 ///
-/// `initial_group`: the env-dict thunks in insertion order. These become the env_frame's
-/// group, so `OuterGroupRef(1, i)` from inside dict_1's letrec resolves to `initial_group[i]`.
-/// `builtin-resolve` seeds the resolver with the env-dict name list as `LGM(i)` (via
-/// `resolve_surface_document_with_env_dict`), which becomes `OuterGroupRef(N, i)` when
-/// referenced from inside dict_N's letrec (one Dict scope boundary per prior dict).
+/// `initial_group`: the env-dict thunks in insertion order. They occupy slots
+/// `root_group.len()..root_group.len()+initial_group.len()-1` in accumulated_group,
+/// matching the resolver's `resolve_surface_document_with_env_dict` which assigns
+/// `LGM(root_group_len+i)` to env-dict names and then cumulative slots
+/// starting at `root_group_len+env_names.len()` to document dict entries.
 ///
 /// Returns the last expression's thunk. The caller is responsible for materializing
 /// to a Dict (exports). Intermediate dict expressions are materialized to extract their
-/// string-keyed thunks into the frame chain (identical semantics to
+/// string-keyed thunks into the accumulated_group (identical semantics to
 /// `eval_document_exprs_with_env`).
 pub(crate) async fn eval_core_document_exprs(
     core_entries: &[(
@@ -203,52 +167,38 @@ pub(crate) async fn eval_core_document_exprs(
         )));
     }
 
-    // Build the env_frame from initial_group. This frame holds the env-dict thunks and
-    // is the starting point for the document's frame chain. dict_1's letrec will have
-    // outer = env_frame, so OuterGroupRef(1, slot) resolves to env_frame.group[slot].
-    let env_frame = Arc::new(EvalFrame {
-        group: Arc::new(initial_group),
-        closure_env: Arc::new(vec![]),
-        params: Arc::new(vec![]),
-        outer: Some(Arc::clone(&ctx.root_frame)),
-    });
-    let mut current_outer: Arc<EvalFrame> = env_frame;
+    // Build accumulated_group: root-scope entries first, then env-dict entries.
+    // Document dict entries are appended at cumulative slots as each dict is evaluated.
+    let mut accumulated_group: Vec<Arc<Thunk>> = ctx.root_group.iter().cloned().collect();
+    accumulated_group.extend(initial_group);
 
     let last_idx = core_entries.len() - 1;
 
     for (i, (_key, spanned_core)) in core_entries.iter().enumerate() {
+        let frame = Arc::new(EvalFrame {
+            group: Arc::new(accumulated_group.clone()),
+            closure_env: Arc::new(vec![]),
+            params: Arc::new(vec![]),
+        });
+
         if i == last_idx {
-            // Last expression: pass current_outer directly as the frame and return lazily.
-            let thunk = crate::eval_core::eval_core_expr(spanned_core, &current_outer, ctx).await?;
+            // Last expression: return lazily.
+            let thunk = crate::eval_core::eval_core_expr(spanned_core, &frame, ctx).await?;
             return Ok(thunk);
         }
 
         // Intermediate expression: eval and materialize to extract its exported bindings.
-        let thunk = crate::eval_core::eval_core_expr(spanned_core, &current_outer, ctx).await?;
+        let thunk = crate::eval_core::eval_core_expr(spanned_core, &frame, ctx).await?;
         let entry_span = spanned_core.span.clone();
         let val = materialize(&thunk, Some(&entry_span), ctx).await?;
 
-        // If the result is a Dict, build a new exported frame and advance current_outer.
-        // String keys are in LGM-slot order (insertion order from eval_dict_core), so
-        // OuterGroupRef(1, slot) from the next dict's letrec resolves to this dict's entry.
+        // Extend accumulated_group with string-keyed thunks from this dict.
         if let Value::Dict(ref dict_map) = val {
-            let new_thunks: Vec<Arc<Thunk>> = dict_map
-                .iter()
-                .filter_map(|(k, v)| {
-                    if matches!(k, HashableValue::Str(_)) {
-                        Some(Arc::clone(v))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            let prev_outer = Arc::clone(&current_outer);
-            current_outer = Arc::new(EvalFrame {
-                group: Arc::new(new_thunks),
-                closure_env: Arc::new(vec![]),
-                params: Arc::new(vec![]),
-                outer: Some(prev_outer),
-            });
+            for (k, v) in dict_map.iter() {
+                if matches!(k, HashableValue::Str(_)) {
+                    accumulated_group.push(Arc::clone(v));
+                }
+            }
         }
     }
 
@@ -524,26 +474,23 @@ pub struct EvalContext {
     /// Propagated unchanged to all child contexts (with_base_dir, with_cancel_token, etc.)
     /// because scope frames are read-only after initialization.
     pub scope_frames: Option<Arc<Vec<indexmap::IndexMap<String, u32>>>>,
-    /// Root EvalFrame containing all root-scope thunks in slot order.
+    /// Root group: the thunks for all root-scope entries in slot order.
     ///
     /// Slots 0..N-1 hold pre-materialized `Value::Builtin` thunks, one per builtin def
     /// in the order returned by all builtin modules (matching the slot ordering that
-    /// `enter_scope_from_frame` / the resolver assigns via `OuterGroupRef(1, slot)`).
+    /// `enter_scope_from_frame` / the resolver assigns via `LGM(slot)`).
     ///
-    /// The document base frame has `outer: Some(Arc::clone(&ctx.root_frame))`. Dict letrec
-    /// frames have `outer = current_outer` (the prior dict's exported frame or the base frame).
-    /// Root-scope builtins are reached via `OuterGroupRef(N+1, slot)` from inside dict_N's letrec:
-    /// N hops through the exported dict frame chain, plus 1 hop through the base frame to root_frame.
-    /// The resolver correctly computes this via `base_hops(1) + dict_count(N)`.
-    /// This is the correct runtime mechanism for resolving root-scope names.
+    /// At document evaluation time, accumulated_group starts with root_group entries at
+    /// slots 0..root_group.len()-1. Document dict entries follow at cumulative slots.
+    /// All LGM(slot) references index into this accumulated_group directly.
     ///
-    /// Capabilities are added to root_frame.group after the initial builtin slots via
-    /// `with_root_frame_capabilities`. The resolver's `enter_scope_from_frame` call for the
-    /// root scope uses the same slot ordering so `OuterGroupRef(1, slot)` addresses are in sync.
+    /// Capabilities are added via `with_root_group_capabilities` after the initial builtin
+    /// slots. The resolver's `enter_scope_from_frame` uses the same slot ordering so
+    /// LGM(slot) addresses are in sync.
     ///
     /// Shared cheaply across child contexts via `Arc::clone`. Child contexts created by
-    /// `with_base_dir`, `with_cancel_token`, etc. all see the same root frame (read-only).
-    pub root_frame: Arc<EvalFrame>,
+    /// `with_base_dir`, `with_cancel_token`, etc. all see the same root group (read-only).
+    pub root_group: Arc<Vec<Arc<Thunk>>>,
 }
 
 impl EvalContext {
@@ -551,16 +498,15 @@ impl EvalContext {
         Self::new_with_options(base_dir, no_fs, false, None)
     }
 
-    /// Build the root EvalFrame from all static builtin modules.
+    /// Build the root group (Arc<Vec<Arc<Thunk>>>) from all static builtin modules.
     ///
-    /// Each builtin def occupies one slot in group, in the same order that the resolver's
+    /// Each builtin def occupies one slot in the vec, in the same order that the resolver's
     /// `enter_scope_from_frame` assigns slot indices (i.e., the order returned by the same
     /// builtin-module chain: core → meta → string → async → math → io → net → datetime).
-    /// This slot ordering is what `OuterGroupRef(1, slot)` addresses reference at runtime.
+    /// This slot ordering is what `LGM(slot)` addresses reference at runtime.
     ///
-    /// Called once per root context (`new_empty`, `new_with_options`). The resulting frame has
-    /// `outer: None` (there is no frame above the root). Child contexts share the same Arc.
-    fn build_root_frame_builtins() -> Arc<EvalFrame> {
+    /// Called once per root context (`new_empty`, `new_with_options`). Child contexts share the same Arc.
+    fn build_root_group_builtins() -> Arc<Vec<Arc<Thunk>>> {
         let all_builtins: Vec<crate::value::BuiltinDef> = crate::builtins_core::core_builtins()
             .into_iter()
             .chain(crate::builtins_meta::meta_builtins())
@@ -580,12 +526,7 @@ impl EvalContext {
                 ))
             })
             .collect();
-        Arc::new(EvalFrame {
-            group: Arc::new(group),
-            closure_env: Arc::new(vec![]),
-            params: Arc::new(vec![]),
-            outer: None,
-        })
+        Arc::new(group)
     }
 
     /// Create a new EvalContext for bootstrap and test contexts.
@@ -613,7 +554,7 @@ impl EvalContext {
             tycon_env: std::sync::OnceLock::new(),
             type_context: Arc::new(Mutex::new(None)),
             scope_frames: None,
-            root_frame: Self::build_root_frame_builtins(),
+            root_group: Self::build_root_group_builtins(),
         })
     }
 
@@ -642,7 +583,7 @@ impl EvalContext {
             tycon_env: std::sync::OnceLock::new(),
             type_context: Arc::new(Mutex::new(None)),
             scope_frames: None,
-            root_frame: Self::build_root_frame_builtins(),
+            root_group: Self::build_root_group_builtins(),
         })
     }
 
@@ -680,7 +621,7 @@ impl EvalContext {
             // pipeline must share the same Arc to observe each other's registrations.
             type_context: Arc::clone(&self.type_context),
             scope_frames: self.scope_frames.clone(),
-            root_frame: Arc::clone(&self.root_frame),
+            root_group: Arc::clone(&self.root_group),
         })
     }
 
@@ -722,7 +663,7 @@ impl EvalContext {
             },
             type_context: Arc::clone(&self.type_context),
             scope_frames: self.scope_frames.clone(),
-            root_frame: Arc::clone(&self.root_frame),
+            root_group: Arc::clone(&self.root_group),
         });
         (child_ctx, child_token)
     }
@@ -759,7 +700,7 @@ impl EvalContext {
             },
             type_context: Arc::clone(&self.type_context),
             scope_frames: self.scope_frames.clone(),
-            root_frame: Arc::clone(&self.root_frame),
+            root_group: Arc::clone(&self.root_group),
         })
     }
 
@@ -798,7 +739,7 @@ impl EvalContext {
             },
             type_context: Arc::clone(&self.type_context),
             scope_frames: self.scope_frames.clone(),
-            root_frame: Arc::clone(&self.root_frame),
+            root_group: Arc::clone(&self.root_group),
         })
     }
 
@@ -852,37 +793,31 @@ impl EvalContext {
             },
             type_context: Arc::clone(&self.type_context),
             scope_frames: Some(frames),
-            root_frame: Arc::clone(&self.root_frame),
+            root_group: Arc::clone(&self.root_group),
         })
     }
 
-    /// Create a child EvalContext with capabilities appended to the root EvalFrame.
+    /// Create a child EvalContext with capabilities appended to the root group.
     ///
     /// Called by `main.rs` after all capability thunks (`%cwd`, `%libdir`, `%clock`,
     /// user --cap-fs / --cap-net entries, `%programs`, `%args`) have been built. Each
-    /// capability occupies a slot in `root_frame.group` immediately after the builtin slots.
+    /// capability occupies a slot in `root_group` immediately after the builtin slots.
     ///
-    /// The resolver's `enter_scope_from_frame` assigns `OuterGroupRef(1, slot)` addresses
-    /// using the same slot ordering (builtins first, then capabilities in the order provided
-    /// here). At runtime, document-level EvalFrames have `outer = Some(root_frame)`, so
-    /// `OuterGroupRef(1, slot)` traverses one hop and resolves to `root_frame.group[slot]`.
+    /// The resolver's `enter_scope_from_frame` assigns `LGM(slot)` addresses using the
+    /// same slot ordering (builtins first, then capabilities in the order provided here).
+    /// At runtime, accumulated_group starts with root_group entries, so LGM(slot) indexes
+    /// directly into the right position.
     ///
-    /// The new root_frame is shared across all child contexts (pointer clone only).
-    pub fn with_root_frame_capabilities(
+    /// The new root_group is shared across all child contexts (pointer clone only).
+    pub fn with_root_group_capabilities(
         self: &Arc<Self>,
         capabilities: Vec<(String, Arc<Thunk>)>,
     ) -> Arc<Self> {
-        // Build an extended group: existing root_frame slots (builtins) + capability thunks.
-        let mut new_group: Vec<Arc<Thunk>> = self.root_frame.group.iter().cloned().collect();
+        // Build an extended group: existing root_group slots (builtins) + capability thunks.
+        let mut new_group: Vec<Arc<Thunk>> = self.root_group.iter().cloned().collect();
         for (_name, thunk) in capabilities {
             new_group.push(thunk);
         }
-        let new_root_frame = Arc::new(EvalFrame {
-            group: Arc::new(new_group),
-            closure_env: Arc::new(vec![]),
-            params: Arc::new(vec![]),
-            outer: None,
-        });
         Arc::new(Self {
             config: Arc::clone(&self.config),
             env_allowed: self.env_allowed.clone(),
@@ -902,22 +837,21 @@ impl EvalContext {
             },
             type_context: Arc::clone(&self.type_context),
             scope_frames: self.scope_frames.clone(),
-            root_frame: new_root_frame,
+            root_group: Arc::new(new_group),
         })
     }
 
-    /// Build the resolver seed frame from this context's root EvalFrame.
+    /// Build the resolver seed map from this context's root group.
     ///
     /// Returns a name → slot mapping where:
     /// - Slots 0..num_builtins-1 are builtin thunks (Value::Builtin with def.name)
     /// - Slots num_builtins..num_builtins+num_caps-1 are capability thunks (name from span)
     ///
     /// The resolver passes this as the outermost seed frame to `enter_scope_from_frame`,
-    /// which assigns `OuterGroupRef(1, slot)` to each name. At runtime, document-level
-    /// frames traverse one outer hop to reach `root_frame.group[slot]`.
-    pub fn root_frame_resolver_map(&self) -> indexmap::IndexMap<String, u32> {
-        self.root_frame
-            .group
+    /// which assigns `LGM(slot)` to each name. At runtime, accumulated_group starts with
+    /// root_group entries, so LGM(slot) indexes directly into `group[slot]`.
+    pub fn root_group_resolver_map(&self) -> indexmap::IndexMap<String, u32> {
+        self.root_group
             .iter()
             .enumerate()
             .filter_map(|(slot, thunk)| {
@@ -3402,7 +3336,6 @@ mod tests {
             })),
             closure_env: Arc::new(vec![]),
             annotation: None,
-            fn_outer: None,
         };
 
         let func_thunk = Arc::new(Thunk::value(identity_fn, test_span(1, 1, 1, 10)));
@@ -3465,7 +3398,6 @@ mod tests {
             })),
             closure_env: Arc::new(vec![]),
             annotation: None,
-            fn_outer: None,
         };
 
         let ctx_unevarg = test_ctx();
@@ -5618,7 +5550,6 @@ mod tests {
             body: Arc::new(sp(CoreExpr::Dict(vec![]))),
             closure_env: Arc::new(vec![]),
             annotation: None,
-            fn_outer: None,
         };
         match ground_type_of(&non_variadic) {
             Type::Function {
@@ -5658,7 +5589,6 @@ mod tests {
             body: Arc::new(sp(CoreExpr::Dict(vec![]))),
             closure_env: Arc::new(vec![]),
             annotation: None,
-            fn_outer: None,
         };
         match ground_type_of(&variadic_fn) {
             Type::Function {
@@ -5693,7 +5623,6 @@ mod tests {
             }]),
             body: Arc::new(sp(CoreExpr::Dict(vec![]))),
             closure_env: Arc::new(vec![]),
-            fn_outer: None,
             annotation: None,
         };
         match ground_type_of(&only_variadic) {

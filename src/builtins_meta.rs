@@ -394,7 +394,6 @@ pub(crate) fn builtin_apply_impl(
                 params,
                 body,
                 closure_env,
-                fn_outer,
                 ..
             } => {
                 let named_ids: IndexMap<String, Arc<Thunk>> = named_args; // already Arc<Thunk>
@@ -411,7 +410,6 @@ pub(crate) fn builtin_apply_impl(
                     default_env_id: 0,
                     ctx: &ctx,
                     call_span: call_span.with_name(Arc::from("apply")),
-                    fn_outer,
                 })
                 .await
             }
@@ -1432,38 +1430,19 @@ pub(crate) fn builtin_var_resolution(
                 // Return the VarAddr index as a flat dict {addr-type, index}.
                 use crate::ast::VarAddr;
                 let mut result: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-                match addr {
-                    VarAddr::OuterGroupRef(hops, slot) => {
-                        result.insert(
-                            HashableValue::Str("addr-type".into()),
-                            mk(string_val("outer-group")),
-                        );
-                        result.insert(
-                            HashableValue::Str("index".into()),
-                            mk(Value::Int(slot as i64)),
-                        );
-                        result.insert(
-                            HashableValue::Str("hops".into()),
-                            mk(Value::Int(hops as i64)),
-                        );
-                    }
-                    _ => {
-                        let (addr_type, index) = match addr {
-                            VarAddr::LetrecGroupMember(i) => ("letrec", i),
-                            VarAddr::ClosureCapture(i) => ("closure", i),
-                            VarAddr::Parameter(i) => ("param", i),
-                            VarAddr::OuterGroupRef(_, _) => unreachable!(),
-                        };
-                        result.insert(
-                            HashableValue::Str("addr-type".into()),
-                            mk(string_val(addr_type)),
-                        );
-                        result.insert(
-                            HashableValue::Str("index".into()),
-                            mk(Value::Int(index as i64)),
-                        );
-                    }
-                }
+                let (addr_type, index) = match addr {
+                    VarAddr::LetrecGroupMember(i) => ("letrec", i),
+                    VarAddr::ClosureCapture(i) => ("closure", i),
+                    VarAddr::Parameter(i) => ("param", i),
+                };
+                result.insert(
+                    HashableValue::Str("addr-type".into()),
+                    mk(string_val(addr_type)),
+                );
+                result.insert(
+                    HashableValue::Str("index".into()),
+                    mk(Value::Int(index as i64)),
+                );
                 ok_val(Value::Dict(result), call_span)
             }
         }
@@ -2028,7 +2007,11 @@ pub(crate) fn builtin_resolve(
         //   SurfaceNode::VarRef during the resolve walk (see lower.rs: resolution.get()). The
         //   ResolutionTable is not read by the evaluator.
         let (_resolve_table, resolve_diagnostics) =
-            crate::resolve::resolve_surface_document_with_env_dict(&doc_arc, &env_names);
+            crate::resolve::resolve_surface_document_with_env_dict(
+                &doc_arc,
+                &env_names,
+                ctx.root_group.len() as u32,
+            );
 
         // Build unified diagnostics dict from TypeDiagnostics (errors + warnings).
         // Callers distinguish severity by reading d.level on each entry.
@@ -3111,9 +3094,9 @@ pub(crate) fn builtin_eval(
         };
 
         // arg1: Value::Dict — env-dict: name → thunk.
-        // Extract thunks in insertion order; these become the initial_group (env_frame.group)
-        // for eval_core_document_exprs so that OuterGroupRef(N, i) references from inside
-        // dict_N's letrec traverse N hops through the frame chain to reach env_frame.group[i].
+        // Extract thunks in insertion order; these become the initial_group (env-dict entries)
+        // for eval_core_document_exprs. They are appended to accumulated_group after root_group
+        // entries, occupying slots root_group.len()..root_group.len()+env_names.len()-1.
         // The env-dict keys must be in the same insertion order as the name-set passed to
         // builtin-resolve, which determines the LGM slot assignments.
         let env_val = args[1]

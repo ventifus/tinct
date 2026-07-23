@@ -1947,10 +1947,10 @@ async fn run_eval(
     };
 
     // Inject deferred cap thunks into the root scope, carrying the capability name on the span.
-    // The name on the thunk's span is how the resolver frame (built from root_frame_resolver_map())
-    // assigns OuterGroupRef(1, slot) addresses. Ordering MUST be consistent: capabilities are
-    // appended to root_frame.group after the builtin slots, in the order they are added here.
-    // The resolver reads the same ordering from root_frame_resolver_map() later.
+    // The name on the thunk's span is how the resolver frame (built from root_group_resolver_map())
+    // assigns LGM(slot) addresses. Ordering MUST be consistent: capabilities are
+    // appended to root_group after the builtin slots, in the order they are added here.
+    // The resolver reads the same ordering from root_group_resolver_map() later.
     let mut capabilities: Vec<(String, Arc<tinct::Thunk>)> = Vec::new();
     for (name, thunk) in deferred_cap_thunks {
         let span = thunk
@@ -2081,7 +2081,7 @@ async fn run_eval(
         Value::Dict(dict)
     };
 
-    // Inject %programs and %args into the capabilities list so they appear in root_frame.group
+    // Inject %programs and %args into the capabilities list so they appear in root_group
     // alongside the other capabilities (%cwd, %libdir, %clock, etc.).
     // Ordering: %programs and %args are appended last, matching the resolver seed ordering.
     {
@@ -2099,9 +2099,9 @@ async fn run_eval(
 
     // Attach the complete capability list to the eval context.
     // All capability thunks (%cwd, %libdir, %clock, --cap-fs / --cap-net, %programs, %args)
-    // are now part of root_frame.group. Document-level EvalFrames have outer=Some(root_frame),
-    // so OuterGroupRef(1, slot) resolves each capability by slot index — no special fallback needed.
-    let eval_ctx = eval_ctx.with_root_frame_capabilities(capabilities);
+    // are now part of root_group. accumulated_group starts with root_group, so LGM(slot)
+    // resolves each capability directly — no frame traversal or special fallback needed.
+    let eval_ctx = eval_ctx.with_root_group_capabilities(capabilities);
 
     // Wrap the evaluation section in an async block so profiling cleanup runs unconditionally
     // even when loader setup fails.

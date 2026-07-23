@@ -644,17 +644,6 @@ pub(crate) async fn extract_fn_annotation_extra(
     Ok(extra)
 }
 
-/// Traverse outer-frame links to resolve an OuterGroupRef variable address.
-///
-/// Walks `hops` outer-frame links, then returns group[slot] from the target frame.
-fn traverse_outer_group(frame: &Arc<EvalFrame>, hops: u32, slot: u32) -> Option<Arc<Thunk>> {
-    let mut cur = frame.outer.as_ref();
-    for _ in 1..hops {
-        cur = cur.and_then(|f| f.outer.as_ref());
-    }
-    cur.and_then(|f| f.group.get(slot as usize)).map(Arc::clone)
-}
-
 /// Evaluate a CoreExpr to a thunk.
 ///
 /// Variable lookup uses `frame` (EvalFrame closure-conversion, replaces FlatEnv de Bruijn).
@@ -675,8 +664,9 @@ pub(crate) fn eval_core_expr<'a>(
 
             // Variable lookup via EvalFrame closure-conversion.
             // All names — builtins, capabilities, and user-defined — resolve through the
-            // EvalFrame chain via their VarAddr. Root-scope names use OuterGroupRef(1, slot)
-            // which traverses one hop from the document-level frame to root_frame.group[slot].
+            // accumulated_group (frame.group) via their VarAddr. LGM(slot) uses absolute
+            // cumulative slot indices: root-scope entries at 0..N-1, dict entries at
+            // cumulative offsets above them. No outer-frame traversal needed.
             CoreExpr::Var { name, addr, .. } => {
                 let thunk = match addr {
                     VarAddr::LetrecGroupMember(i) => frame.group.get(*i as usize).map(Arc::clone),
@@ -684,7 +674,6 @@ pub(crate) fn eval_core_expr<'a>(
                         frame.closure_env.get(*i as usize).map(Arc::clone)
                     }
                     VarAddr::Parameter(i) => frame.params.get(*i as usize).map(Arc::clone),
-                    VarAddr::OuterGroupRef(hops, slot) => traverse_outer_group(frame, *hops, *slot),
                 };
                 match thunk {
                     Some(t) => Ok(t),
@@ -834,29 +823,24 @@ pub(crate) fn eval_core_expr<'a>(
                 // Store the body directly as Arc<Spanned<CoreExpr>>.
                 // CoreExpr::Fn.body is already Arc<Spanned<CoreExpr>> — no conversion needed.
                 //
-                // Build closure_env by looking up each captured variable in the current frame
+                // Build closure_env by looking up each captured variable in the current frame.
+                // frame.group is the accumulated_group, which contains root entries at slots
+                // 0..N-1 and all prior dict entries at cumulative slots above them.
+                // LGM(absolute_slot) looks up frame.group[slot] directly.
                 // using its ORIGINAL VarAddr (from before the resolver converted it to
                 // ClosureCapture for references inside this function).
                 //
                 // Each entry in `captures` is (name, original_addr) where original_addr is the
                 // VarAddr the binding holds in the ENCLOSING EvalFrame:
-                //   - LetrecGroupMember(i) → frame.group[i]   (outer dict letrec binding)
-                //   - ClosureCapture(i)    → frame.closure_env[i] (outer closure capture)
+                //   - LetrecGroupMember(i) → frame.group[i]   (absolute cumulative slot in
+                //     accumulated_group: root entries at 0..N-1, dict entries at cumulative
+                //     offsets. Builtins, capabilities, and prior-dict entries all use LGM.)
+                //   - ClosureCapture(i)    → frame.closure_env[i] (outer fn closure capture)
                 //   - Parameter(i)         → frame.params[i]  (outer function argument)
                 //
                 // Build closure_env in capture-index order. Use map (not filter_map) so that
                 // each ClosureCapture(i) in the body resolves to closure_env[i] — skipping
                 // entries would shift all subsequent indices.
-                //
-                // Each capture's original_addr is looked up in the enclosing EvalFrame:
-                //   - LetrecGroupMember(i) → frame.group[i]       (letrec dict binding)
-                //   - ClosureCapture(i)    → frame.closure_env[i] (outer fn capture)
-                //   - Parameter(i)         → frame.params[i]      (outer fn argument)
-                //   - OuterGroupRef(1, s)  → root_frame.group[s]  (builtin or capability)
-                //
-                // OuterGroupRef(1, slot) is resolved by traverse_outer_group via the frame's
-                // outer chain. Document-level frames have outer=Some(root_frame), so builtins
-                // and capabilities at root_frame.group[slot] are found in one hop.
                 let closure_env_vec: Vec<Arc<Thunk>> = captures
                     .iter()
                     .map(|(name, original_addr)| {
@@ -868,9 +852,6 @@ pub(crate) fn eval_core_expr<'a>(
                                 frame.closure_env.get(*i as usize).map(Arc::clone)
                             }
                             VarAddr::Parameter(i) => frame.params.get(*i as usize).map(Arc::clone),
-                            VarAddr::OuterGroupRef(hops, slot) => {
-                                traverse_outer_group(frame, *hops, *slot)
-                            }
                         };
                         found.unwrap_or_else(|| {
                             panic!(
@@ -892,7 +873,6 @@ pub(crate) fn eval_core_expr<'a>(
                         body: Arc::clone(body),
                         closure_env: Arc::new(closure_env_vec),
                         annotation,
-                        fn_outer: frame.outer.clone(),
                     },
                     span.clone(),
                 )))
@@ -1090,7 +1070,6 @@ mod tests {
             closure_env: Arc::new(vec![]),
             group: Arc::new(vec![Arc::clone(&known_thunk)]),
             params: Arc::new(vec![]),
-            outer: None,
         });
 
         // Build a Var node: addr = LetrecGroupMember(0).

@@ -4805,7 +4805,6 @@ pub(crate) async fn eval_type_stage_value(
                 default_env_id: 0,
                 call_span: origin_span.clone(),
                 ctx: &ctx,
-                fn_outer: None,
             };
             crate::eval_call::invoke_function(&call_ctx)
                 .await
@@ -4943,7 +4942,6 @@ pub(crate) async fn as_type_dispatch(val: &Value, state: &mut InferState) -> Opt
                 default_env_id: 0,
                 call_span: origin_span.clone(),
                 ctx: &eval_ctx,
-                fn_outer: None,
             };
             crate::eval_call::invoke_function(&call_ctx).await.ok()?
         }

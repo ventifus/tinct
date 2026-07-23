@@ -284,7 +284,7 @@ pub(crate) async fn call_strict_resolver(
             Arc::new(crate::value::Thunk::value(val, span))
         })
         .collect();
-    let call_frame = crate::value::EvalFrame::for_function_call(closure_env, param_thunks, None);
+    let call_frame = crate::value::EvalFrame::for_function_call(closure_env, param_thunks);
 
     // Evaluate the function body in the call frame and force the result.
     let body_thunk = Arc::new(crate::value::Thunk::core_expr(

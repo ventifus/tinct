@@ -1174,6 +1174,8 @@ pub type ResolutionTable = std::collections::HashMap<NodeId, VarAddr>;
 /// `original_addr` is the VarAddr the captured variable held in the enclosing frame
 /// (LetrecGroupMember, ClosureCapture, or Parameter), BEFORE the resolver converts it to
 /// ClosureCapture for references inside the function body.
+/// LGM(slot) original_addrs are resolved at fn-definition time by indexing frame.group[slot],
+/// which is the accumulated_group containing root-scope entries at low slots.
 /// Written once by the resolver after processing each Fn body; read by the lowerer.
 /// Clone resets to empty — cloned Fn nodes are in new scopes and must be re-resolved.
 pub struct CapturesCell(std::sync::OnceLock<Arc<Vec<(String, VarAddr)>>>);
@@ -1266,9 +1268,17 @@ impl std::fmt::Debug for MatchableBinding {
 
 /// Variable addressing after closure conversion.
 /// Replaces (level, slot) de Bruijn coordinates.
+///
+/// All variable references use exactly three variants — no runtime frame traversal:
+/// - `LetrecGroupMember(slot)` — same letrec group (current dict/doc accumulated group).
+///   Root-scope entries occupy slots 0..N-1; document dict entries at cumulative slots.
+/// - `ClosureCapture(slot)` — fn capture, resolved at fn creation time.
+/// - `Parameter(slot)` — fn argument.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum VarAddr {
-    /// Index into EvalFrame.group (current letrec group thunks)
+    /// Index into EvalFrame.group (current letrec group thunks).
+    /// Root-scope entries (builtins and capabilities) occupy slots 0..N-1 in the
+    /// accumulated_group; document dict entries follow at cumulative slot offsets.
     LetrecGroupMember(u32),
     /// Index into EvalFrame.closure_env (fn-captured outer scope thunks).
     /// Emitted exclusively for fn captures: a VarRef inside a fn body that refers to a
@@ -1276,22 +1286,6 @@ pub enum VarAddr {
     /// (`resolved_captures`). At fn-definition time, the evaluator walks the capture list
     /// and copies thunks from the enclosing EvalFrame into `closure_env`.
     ClosureCapture(u32),
-    /// Reference to slot `slot` reached by traversing `hops` outer-frame links:
-    /// `frame.outer^hops.group[slot]`.
-    ///
-    /// Emitted for cross-dict references that are NOT inside a fn boundary: a VarRef in
-    /// an inner dict body that refers to a name defined in an enclosing dict scope.
-    /// At runtime, resolved by walking `hops` `frame.outer` links and then indexing
-    /// `group[slot]`.
-    ///
-    /// `hops = count(ScopeKind::Dict scopes strictly above match_depth)` — each Dict scope
-    /// above the reference site is a real eval_dict_core frame boundary requiring one hop.
-    ///
-    /// For root-scope captures by a fn: `hops = 1 (doc_frame) + creation_dict_count +
-    /// fn_outer_count`, where `creation_dict_count` is the count of ScopeKind::Dict scopes
-    /// between the root scope and the innermost fn's boundary, and `fn_outer_count =
-    /// fn_scope_boundaries.len() - 1` (one fn_call_frame per enclosing fn at creation time).
-    OuterGroupRef(u32, u32),
     /// Index into EvalFrame.params (function call arguments)
     Parameter(u32),
 }
@@ -1357,7 +1351,9 @@ pub enum CoreExpr {
         /// (LetrecGroupMember(i), ClosureCapture(i), or Parameter(i)) — i.e. the address BEFORE
         /// the resolver converted it to ClosureCapture for references inside this function.
         /// At function-definition time the evaluator uses these original addresses to look up
-        /// each captured thunk in the current EvalFrame and build `closure_env`.
+        /// each captured thunk in the accumulated_group (frame.group) and build `closure_env`.
+        /// LGM(slot) directly indexes frame.group[slot], which contains root-scope entries at
+        /// low slot indices and document dict entries at cumulative slot offsets above them.
         /// Written by the lowerer from `SurfaceExpression::Fn::resolved_captures`.
         captures: std::sync::Arc<Vec<(String, VarAddr)>>,
     },

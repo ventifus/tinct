@@ -1,6 +1,6 @@
-# 3-dict document: dict_3 references dict_1's binding via OuterGroupRef(hops=2).
-# B-584: frame chain is dict_3_letrec → dict_2_frame → dict_1_frame → base_frame → root_frame.
-# 'x' lives in dict_1_frame.group[0]; reaching it from dict_3_letrec requires 2 hops.
+# 3-dict document: dict_3 references dict_1's binding via LGM(absolute_slot).
+# B-585: flat accumulated group — root_group + dict_1 entries + dict_2 entries + dict_3 entries.
+# 'x' lives at its cumulative LGM slot; dict_3's frame.group contains the full accumulated group.
 [x: 42]
 [y: 10]
 [z: x]
