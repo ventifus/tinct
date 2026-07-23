@@ -1115,8 +1115,8 @@ fn extract_row(map: &IndexMap<HashableValue, Arc<Thunk>>) -> Row {
         .keys()
         .filter_map(|k| match k {
             HashableValue::Str(name) => Some((name.to_string(), Type::Unknown)),
-            // Integer-keyed entries are explicit [0: x 1: y] dict constructs, not record fields.
-            HashableValue::Int(_) => None,
+            // Non-string-keyed entries (integers, bools, variants, nested dicts) are not record fields.
+            _ => None,
         })
         .collect::<indexmap::IndexMap<String, Type>>();
     Row {
@@ -1382,12 +1382,14 @@ pub(crate) fn validate_and_wrap_record(
         let field_type = match key {
             HashableValue::Str(field_name) => row.fields.get(field_name.as_ref()),
             HashableValue::Int(n) => row.fields.get(&n.to_string()),
+            _ => None,
         };
 
         if let Some(field_type) = field_type {
             let field_name = match key {
                 HashableValue::Str(s) => s.to_string(),
                 HashableValue::Int(n) => n.to_string(),
+                other => other.to_string(),
             };
 
             // Push field name onto the shared path, clone for the thunk, then pop.
@@ -3111,8 +3113,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_value_to_key_invalid_type_variant() {
-        // A dict with a Variant key expression should fail in eval_key -> value_to_key.
-        // Build via SurfaceNode: use a Float as an invalid dict key (Float is not a valid key type).
+        // A dict with a Float key expression should fail in eval_key -> value_to_key.
+        // Float is not a valid key type (not hashable).
         let z = rust_span!();
         let zz = z.clone();
         let mk = move |expr: SurfaceExpression| Arc::new(SurfaceNode::new(expr, zz.clone()));
@@ -3128,7 +3130,7 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("type mismatch"), "got: {}", err);
         assert!(
-            err.to_string().contains("expected String or Int"),
+            err.to_string().contains("expected String, Int, Boolean, or Variant"),
             "got: {}",
             err
         );
@@ -3153,7 +3155,7 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("type mismatch"), "got: {}", err);
         assert!(
-            err.to_string().contains("expected String or Int"),
+            err.to_string().contains("expected String, Int, Boolean, or Variant"),
             "got: {}",
             err
         );

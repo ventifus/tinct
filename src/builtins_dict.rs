@@ -45,7 +45,107 @@ use indexmap::IndexMap;
 use crate::builtins::{ok_val, reject_named};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
+use crate::rust_span;
 use crate::value::{string_val, BuiltinArgs, HashableValue, Thunk, Value};
+
+/// Convert a runtime `Value` to a `HashableValue` dict key.
+/// Returns an error if the value is not hashable (Function, Handle, Seq, etc.).
+fn value_to_hashable_key(
+    val: &Value,
+    builtin_name: &str,
+    span: crate::ast::Span,
+) -> EvalResult<HashableValue> {
+    match val {
+        Value::Int(n) => Ok(HashableValue::Int(*n)),
+        Value::String { source, start, end } => {
+            let s = &source[*start..*end];
+            Ok(HashableValue::Str(s.into()))
+        }
+        Value::Variant {
+            tycon,
+            ctor,
+            payload,
+            ..
+        } => {
+            let tag = format!("{}.{}", tycon, ctor);
+            if payload.is_none() {
+                // Check for Boolean.True/False -> Bool
+                if tag == "Boolean.True" {
+                    return Ok(HashableValue::Bool(true));
+                }
+                if tag == "Boolean.False" {
+                    return Ok(HashableValue::Bool(false));
+                }
+            }
+            // General variant key
+            let hv_payload = match payload {
+                None => None,
+                Some(p) => {
+                    let p_val = p.try_get_value().ok_or_else(|| {
+                        EvalError::internal(
+                            format!("{builtin_name}: variant payload not materialized"),
+                            span.clone(),
+                        )
+                    })?;
+                    Some(Box::new(value_to_hashable_key(
+                        p_val,
+                        builtin_name,
+                        span.clone(),
+                    )?))
+                }
+            };
+            Ok(HashableValue::Variant {
+                tag: tag.into(),
+                payload: hv_payload,
+            })
+        }
+        other => Err(EvalError::type_mismatch_ctx(
+            builtin_name.to_string(),
+            "Int, String, Boolean, or Variant",
+            other.type_name(),
+            span,
+        )
+        .into()),
+    }
+}
+
+/// Convert a `HashableValue` key back to a runtime `Value`.
+fn hashable_value_to_value(hv: &HashableValue) -> Value {
+    match hv {
+        HashableValue::Int(n) => Value::Int(*n),
+        HashableValue::Str(s) => string_val(s),
+        HashableValue::Bool(b) => Value::Variant {
+            tycon: "Boolean".into(),
+            ctor: if *b { "True" } else { "False" }.into(),
+            payload: None,
+        },
+        HashableValue::Dict(pairs) => {
+            let mut map: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::with_capacity(pairs.len());
+            for (k, v) in pairs {
+                let v_val = hashable_value_to_value(v);
+                map.insert(k.clone(), Arc::new(Thunk::value(v_val, rust_span!())));
+            }
+            Value::Dict(map)
+        }
+        HashableValue::Variant { tag, payload } => {
+            // Split tag on '.' to get tycon and ctor
+            let (tycon, ctor) = if let Some(dot_pos) = tag.rfind('.') {
+                (&tag[..dot_pos], &tag[dot_pos + 1..])
+            } else {
+                (tag.as_ref(), "")
+            };
+            let payload_thunk = payload.as_ref().map(|p| {
+                let val = hashable_value_to_value(p);
+                Arc::new(Thunk::value(val, rust_span!()))
+            });
+            Value::Variant {
+                tycon: tycon.into(),
+                ctor: ctor.into(),
+                payload: payload_thunk,
+            }
+        }
+    }
+}
 
 /// `keys`: Takes 1 arg (a Dict). Returns a Dict with integer keys `0..n`
 /// mapping to the key values (Int keys become Int values, String keys become
@@ -84,10 +184,7 @@ pub(crate) fn builtin_keys(
         let origin = call_span.clone();
         let mut result: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::with_capacity(map.len());
         for (i, (key, _)) in map.iter().enumerate() {
-            let key_value = match key {
-                HashableValue::Int(n) => Value::Int(*n),
-                HashableValue::Str(s) => string_val(s),
-            };
+            let key_value = hashable_value_to_value(key);
             let thunk = Arc::new(Thunk::value(key_value, origin.clone()));
             result.insert(
                 HashableValue::Int(i64::try_from(i).map_err(|_| {
@@ -201,26 +298,7 @@ pub(crate) fn builtin_field_get(
             .try_get_value()
             .expect("pre-materialized by Strictness::Seq")
             .clone();
-        let key = match key_val {
-            Value::Int(n) => HashableValue::Int(n),
-            Value::String {
-                ref source,
-                start,
-                end,
-            } => {
-                let s = &source[start..end];
-                HashableValue::Str(s.into())
-            }
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "field-get".to_string(),
-                    "Int or String",
-                    other.type_name(),
-                    thunk0.span.clone(),
-                )
-                .into())
-            }
-        };
+        let key = value_to_hashable_key(&key_val, "field-get", thunk0.span.clone())?;
 
         // arg[1]: target — pre-materialized by Strictness::Seq
         let thunk1 = args[1].clone();
@@ -245,10 +323,7 @@ async fn field_get_on_value(
     variant_tag: Option<String>,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> EvalResult<Arc<Thunk>> {
-    let key_str = match &key {
-        HashableValue::Int(n) => n.to_string(),
-        HashableValue::Str(s) => s.to_string(),
-    };
+    let key_str = key.to_string();
 
     // Flatten Overlay to Dict before key lookup.
     let target_val = match target_val {
@@ -485,26 +560,7 @@ pub(crate) fn builtin_get(
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
-        let key = match key_val {
-            Value::Int(n) => HashableValue::Int(n),
-            Value::String {
-                ref source,
-                start,
-                end,
-            } => {
-                let s = &source[start..end];
-                HashableValue::Str(s.into())
-            }
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "builtin-get".to_string(),
-                    "Int or String",
-                    other.type_name(),
-                    thunk0.span.clone(),
-                )
-                .into())
-            }
-        };
+        let key = value_to_hashable_key(&key_val, "builtin-get", thunk0.span.clone())?;
 
         // Materialize the dict (spine only, not values)
         let thunk1 = args[1].clone();
@@ -517,6 +573,7 @@ pub(crate) fn builtin_get(
         let key_display = match &key {
             HashableValue::Int(n) => format!("key {n}"),
             HashableValue::Str(s) => format!("key \"{s}\""),
+            other => format!("key {other}"),
         };
         let context = format!("builtin-get ({key_display})");
         let map = crate::builtins::require_dict(
@@ -532,17 +589,8 @@ pub(crate) fn builtin_get(
         match map.get(&key) {
             Some(thunk) => Ok(Arc::clone(thunk)),
             None => {
-                let key_str = match &key {
-                    HashableValue::Int(n) => n.to_string(),
-                    HashableValue::Str(s) => s.to_string(),
-                };
-                let available_keys = map
-                    .keys()
-                    .map(|k| match k {
-                        HashableValue::Int(n) => n.to_string(),
-                        HashableValue::Str(s) => s.to_string(),
-                    })
-                    .collect();
+                let key_str = key.to_string();
+                let available_keys = map.keys().map(|k| k.to_string()).collect();
                 Err(EvalError::key_not_found(&key_str, available_keys, call_span).into())
             }
         }
@@ -577,26 +625,7 @@ pub(crate) fn builtin_has_key(
             .try_get_value()
             .expect("pre-materialized by pos_strictness")
             .clone();
-        let key = match key_val {
-            Value::Int(n) => HashableValue::Int(n),
-            Value::String {
-                ref source,
-                start,
-                end,
-            } => {
-                let s = &source[start..end];
-                HashableValue::Str(s.into())
-            }
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "builtin-has-key?".to_string(),
-                    "Int or String",
-                    other.type_name(),
-                    thunk0.span.clone(),
-                )
-                .into())
-            }
-        };
+        let key = value_to_hashable_key(&key_val, "builtin-has-key?", thunk0.span.clone())?;
 
         // Materialize the dict (spine only, not values)
         let thunk1 = args[1].clone();
@@ -837,10 +866,7 @@ pub(crate) fn builtin_dict_key_nth(
         };
         match usize::try_from(idx).ok().and_then(|i| map.get_index(i)) {
             Some((key, _)) => {
-                let key_val = match key {
-                    HashableValue::Int(n) => Value::Int(*n),
-                    HashableValue::Str(s) => string_val(s),
-                };
+                let key_val = hashable_value_to_value(key);
                 ok_val(key_val, call_span)
             }
             None => Err(EvalError::user_error(
@@ -960,10 +986,7 @@ pub(crate) fn builtin_dict_kv_nth(
         };
         match usize::try_from(idx).ok().and_then(|i| map.get_index(i)) {
             Some((key, val_thunk)) => {
-                let key_val = match key {
-                    HashableValue::Int(n) => Value::Int(*n),
-                    HashableValue::Str(s) => string_val(s),
-                };
+                let key_val = hashable_value_to_value(key);
                 let mut kv: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
                 kv.insert(
                     HashableValue::Str("key".into()),
@@ -1644,10 +1667,7 @@ pub(crate) fn builtin_builder_get(
         match builder.get(&key) {
             Some(thunk) => Ok(thunk),
             None => {
-                let key_str = match &key {
-                    HashableValue::Int(n) => n.to_string(),
-                    HashableValue::Str(s) => s.to_string(),
-                };
+                let key_str = key.to_string();
                 Err(EvalError::key_not_found(&key_str, vec![], call_span).into())
             }
         }

@@ -25,7 +25,42 @@ fn value_to_key(value: &Value, span: &Span) -> EvalResult<HashableValue> {
             end,
         } => Ok(HashableValue::Str(Arc::from(&source[*start..*end]))),
         Value::Int(n) => Ok(HashableValue::Int(*n)),
-        _ => Err(EvalError::type_mismatch("String or Int", value.type_name(), span.clone()).into()),
+        Value::Variant {
+            tycon,
+            ctor,
+            payload,
+            ..
+        } => {
+            let tag = format!("{}.{}", tycon, ctor);
+            if tag == "Boolean.True" {
+                return Ok(HashableValue::Bool(true));
+            }
+            if tag == "Boolean.False" {
+                return Ok(HashableValue::Bool(false));
+            }
+            let hv_payload = match payload {
+                None => None,
+                Some(p) => {
+                    let p_val = p.try_get_value().ok_or_else(|| {
+                        EvalError::internal(
+                            "variant payload not materialized".to_string(),
+                            span.clone(),
+                        )
+                    })?;
+                    Some(Box::new(value_to_key(p_val, span)?))
+                }
+            };
+            Ok(HashableValue::Variant {
+                tag: tag.into(),
+                payload: hv_payload,
+            })
+        }
+        _ => Err(EvalError::type_mismatch(
+            "String, Int, Boolean, or Variant",
+            value.type_name(),
+            span.clone(),
+        )
+        .into()),
     }
 }
 

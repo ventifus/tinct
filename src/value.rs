@@ -154,37 +154,124 @@ impl EvalFrame {
     }
 }
 
-/// Dict key type: either an integer (auto-indexed) or a string (bare word / quoted).
+/// Dict key type: any fully-materialised tinct value that implements Hash + Eq.
 /// This is the canonical hashable key used in `Value::Dict` and `IndexMap<HashableValue, Arc<Thunk>>`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Only these Value variants may appear as dict keys. Function, Handle, Task, and lazy Seq
+/// cannot be hashed (no structural identity).
+#[derive(Debug, Clone)]
 pub enum HashableValue {
     Int(i64),
     Str(Arc<str>),
+    Bool(bool),
+    /// Pairs in insertion order. Equality is order-insensitive.
+    Dict(Vec<(HashableValue, HashableValue)>),
+    Variant {
+        tag: Arc<str>,
+        payload: Option<Box<HashableValue>>,
+    },
 }
+
+/// Splitmix64 mix function: non-linear bijection for combining hash values.
+/// Used for order-insensitive Dict hashing — the commutative sum of mix(hash(k), hash(v))
+/// for each (k,v) pair ensures insertion order does not affect the hash.
+/// Non-linearity prevents key-value-swap collisions.
+fn splitmix64(mut x: u64) -> u64 {
+    x = x.wrapping_add(0x9e3779b97f4a7c15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d049bb133111eb);
+    x ^ (x >> 31)
+}
+
+impl PartialEq for HashableValue {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (HashableValue::Int(a), HashableValue::Int(b)) => a == b,
+            (HashableValue::Str(a), HashableValue::Str(b)) => a == b,
+            (HashableValue::Bool(a), HashableValue::Bool(b)) => a == b,
+            (HashableValue::Dict(a), HashableValue::Dict(b)) => {
+                if a.len() != b.len() {
+                    return false;
+                }
+                // Order-insensitive: collect a into a HashMap, compare key-by-key
+                let map: std::collections::HashMap<&HashableValue, &HashableValue> =
+                    a.iter().map(|(k, v)| (k, v)).collect();
+                b.iter().all(|(k, v)| map.get(k).map_or(false, |u| *u == v))
+            }
+            (
+                HashableValue::Variant {
+                    tag: t1,
+                    payload: p1,
+                },
+                HashableValue::Variant {
+                    tag: t2,
+                    payload: p2,
+                },
+            ) => t1 == t2 && p1 == p2,
+            _ => false, // different variants or cross-type
+        }
+    }
+}
+
+impl Eq for HashableValue {}
 
 impl PartialOrd for HashableValue {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         match (self, other) {
             (HashableValue::Int(a), HashableValue::Int(b)) => a.partial_cmp(b),
             (HashableValue::Str(a), HashableValue::Str(b)) => a.partial_cmp(b),
-            _ => None, // mixed types are incomparable
+            (HashableValue::Bool(a), HashableValue::Bool(b)) => a.partial_cmp(b),
+            _ => None, // mixed types and complex types are incomparable
         }
     }
 }
 
 impl Hash for HashableValue {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        // Use explicit u8 discriminants (Int=0u8, Str=2u8) instead of
-        // std::mem::discriminant so that StrHashableValue::hash can use the same
-        // literal without allocating a temporary Arc<str>.
+        // Use explicit u8 discriminants instead of std::mem::discriminant
+        // so that StrHashableValue::hash can use the same literal (2u8)
+        // without allocating a temporary Arc<str>.
+        // Discriminants: Int=0, Bool=1, Str=2, Dict=3, Variant=4
         match self {
             HashableValue::Int(n) => {
                 0u8.hash(state);
                 n.hash(state);
             }
+            HashableValue::Bool(b) => {
+                1u8.hash(state);
+                b.hash(state);
+            }
             HashableValue::Str(s) => {
                 2u8.hash(state);
                 s.hash(state);
+            }
+            HashableValue::Dict(pairs) => {
+                3u8.hash(state);
+                // Order-insensitive: commutative sum of mix(hash(k), hash(v))
+                // using splitmix64 as the non-linear mixer.
+                let mut sum: u64 = 0;
+                for (k, v) in pairs {
+                    let mut kh = std::collections::hash_map::DefaultHasher::new();
+                    k.hash(&mut kh);
+                    let key_hash = kh.finish();
+
+                    let mut vh = std::collections::hash_map::DefaultHasher::new();
+                    v.hash(&mut vh);
+                    let val_hash = vh.finish();
+
+                    sum = sum.wrapping_add(splitmix64(key_hash.wrapping_add(val_hash)));
+                }
+                sum.hash(state);
+            }
+            HashableValue::Variant { tag, payload } => {
+                4u8.hash(state);
+                tag.hash(state);
+                match payload {
+                    None => 0u8.hash(state),
+                    Some(v) => {
+                        1u8.hash(state);
+                        v.hash(state);
+                    }
+                }
             }
         }
     }
@@ -195,6 +282,27 @@ impl fmt::Display for HashableValue {
         match self {
             HashableValue::Int(n) => write!(f, "{n}"),
             HashableValue::Str(s) => write!(f, "{s}"),
+            HashableValue::Bool(b) => {
+                if *b {
+                    write!(f, "Boolean.True")
+                } else {
+                    write!(f, "Boolean.False")
+                }
+            }
+            HashableValue::Dict(pairs) => {
+                write!(f, "[")?;
+                for (i, (k, v)) in pairs.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, "  ")?;
+                    }
+                    write!(f, "{k}: {v}")?;
+                }
+                write!(f, "]")
+            }
+            HashableValue::Variant { tag, payload } => match payload {
+                None => write!(f, "{tag}"),
+                Some(p) => write!(f, "[{tag} {p}]"),
+            },
         }
     }
 }
@@ -220,7 +328,7 @@ impl Equivalent<HashableValue> for StrHashableValue<'_> {
     fn equivalent(&self, key: &HashableValue) -> bool {
         match key {
             HashableValue::Str(s) => self.0 == s.as_ref(),
-            HashableValue::Int(_) => false,
+            _ => false,
         }
     }
 }
@@ -2115,5 +2223,226 @@ mod tests {
         let cached = thunk.try_get_error();
         assert!(cached.is_some(), "try_get_error should return Some");
         assert_eq!(cached.unwrap().kind.to_string(), error.kind.to_string());
+    }
+
+    // =========================================================================
+    // HashableValue property tests
+    // =========================================================================
+
+    use std::collections::hash_map::DefaultHasher;
+
+    fn compute_hash(value: &HashableValue) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        value.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    #[test]
+    fn hashable_value_eq_implies_hash_eq_int() {
+        let a = HashableValue::Int(42);
+        let b = HashableValue::Int(42);
+        assert_eq!(a, b);
+        assert_eq!(compute_hash(&a), compute_hash(&b));
+    }
+
+    #[test]
+    fn hashable_value_eq_implies_hash_eq_str() {
+        let a = HashableValue::Str("hello".into());
+        let b = HashableValue::Str("hello".into());
+        assert_eq!(a, b);
+        assert_eq!(compute_hash(&a), compute_hash(&b));
+    }
+
+    #[test]
+    fn hashable_value_cross_type_inequality_int_str() {
+        let int_val = HashableValue::Int(0);
+        let str_val = HashableValue::Str("0".into());
+        assert_ne!(int_val, str_val);
+        // Hashes should also differ (different discriminants)
+        assert_ne!(compute_hash(&int_val), compute_hash(&str_val));
+
+        let int_val = HashableValue::Int(1);
+        let str_val = HashableValue::Str("1".into());
+        assert_ne!(int_val, str_val);
+        assert_ne!(compute_hash(&int_val), compute_hash(&str_val));
+    }
+
+    #[test]
+    fn hashable_value_hash_stability() {
+        let int_val = HashableValue::Int(42);
+        let h1 = compute_hash(&int_val);
+        let h2 = compute_hash(&int_val);
+        assert_eq!(h1, h2, "Hash of Int(42) must be deterministic");
+
+        let str_val = HashableValue::Str("key".into());
+        let h1 = compute_hash(&str_val);
+        let h2 = compute_hash(&str_val);
+        assert_eq!(h1, h2, "Hash of Str(\"key\") must be deterministic");
+    }
+
+    #[test]
+    fn hashable_value_distinct_values_have_distinct_hashes() {
+        let a = HashableValue::Int(1);
+        let b = HashableValue::Int(2);
+        assert_ne!(a, b);
+        assert_ne!(
+            compute_hash(&a),
+            compute_hash(&b),
+            "Int(1) and Int(2) should have different hashes"
+        );
+
+        let a = HashableValue::Str("foo".into());
+        let b = HashableValue::Str("bar".into());
+        assert_ne!(a, b);
+        assert_ne!(
+            compute_hash(&a),
+            compute_hash(&b),
+            "Str(\"foo\") and Str(\"bar\") should have different hashes"
+        );
+    }
+
+    #[test]
+    fn hashable_value_str_hashable_value_equivalence() {
+        // StrHashableValue must hash the same as HashableValue::Str for zero-allocation lookups
+        let hv = HashableValue::Str("test".into());
+        let shv = StrHashableValue("test");
+
+        let mut h1 = DefaultHasher::new();
+        hv.hash(&mut h1);
+
+        let mut h2 = DefaultHasher::new();
+        shv.hash(&mut h2);
+
+        assert_eq!(
+            h1.finish(),
+            h2.finish(),
+            "StrHashableValue and HashableValue::Str must produce identical hashes"
+        );
+        assert!(
+            shv.equivalent(&hv),
+            "StrHashableValue must be equivalent to matching HashableValue::Str"
+        );
+    }
+
+    #[test]
+    fn hashable_value_eq_implies_hash_eq_bool() {
+        let a = HashableValue::Bool(true);
+        let b = HashableValue::Bool(true);
+        assert_eq!(a, b);
+        assert_eq!(compute_hash(&a), compute_hash(&b));
+
+        let c = HashableValue::Bool(false);
+        let d = HashableValue::Bool(false);
+        assert_eq!(c, d);
+        assert_eq!(compute_hash(&c), compute_hash(&d));
+
+        assert_ne!(a, c);
+        assert_ne!(compute_hash(&a), compute_hash(&c));
+    }
+
+    #[test]
+    fn hashable_value_cross_type_inequality_bool() {
+        let bool_val = HashableValue::Bool(true);
+        let int_val = HashableValue::Int(1);
+        let str_val = HashableValue::Str("true".into());
+        assert_ne!(bool_val, int_val);
+        assert_ne!(bool_val, str_val);
+        assert_ne!(compute_hash(&bool_val), compute_hash(&int_val));
+        assert_ne!(compute_hash(&bool_val), compute_hash(&str_val));
+    }
+
+    #[test]
+    fn hashable_value_dict_order_insensitive_eq() {
+        // Dict equality is order-insensitive
+        let d1 = HashableValue::Dict(vec![
+            (HashableValue::Str("a".into()), HashableValue::Int(1)),
+            (HashableValue::Str("b".into()), HashableValue::Int(2)),
+        ]);
+        let d2 = HashableValue::Dict(vec![
+            (HashableValue::Str("b".into()), HashableValue::Int(2)),
+            (HashableValue::Str("a".into()), HashableValue::Int(1)),
+        ]);
+        assert_eq!(d1, d2, "Dict equality must be order-insensitive");
+        assert_eq!(
+            compute_hash(&d1),
+            compute_hash(&d2),
+            "Dict hash must be order-insensitive"
+        );
+    }
+
+    #[test]
+    fn hashable_value_dict_different_values() {
+        let d1 = HashableValue::Dict(vec![(
+            HashableValue::Str("a".into()),
+            HashableValue::Int(1),
+        )]);
+        let d2 = HashableValue::Dict(vec![(
+            HashableValue::Str("a".into()),
+            HashableValue::Int(2),
+        )]);
+        assert_ne!(d1, d2);
+    }
+
+    #[test]
+    fn hashable_value_dict_different_lengths() {
+        let d1 = HashableValue::Dict(vec![(
+            HashableValue::Str("a".into()),
+            HashableValue::Int(1),
+        )]);
+        let d2 = HashableValue::Dict(vec![
+            (HashableValue::Str("a".into()), HashableValue::Int(1)),
+            (HashableValue::Str("b".into()), HashableValue::Int(2)),
+        ]);
+        assert_ne!(d1, d2);
+    }
+
+    #[test]
+    fn hashable_value_variant_eq_and_hash() {
+        let v1 = HashableValue::Variant {
+            tag: "Color.Red".into(),
+            payload: None,
+        };
+        let v2 = HashableValue::Variant {
+            tag: "Color.Red".into(),
+            payload: None,
+        };
+        assert_eq!(v1, v2);
+        assert_eq!(compute_hash(&v1), compute_hash(&v2));
+
+        let v3 = HashableValue::Variant {
+            tag: "Color.Blue".into(),
+            payload: None,
+        };
+        assert_ne!(v1, v3);
+    }
+
+    #[test]
+    fn hashable_value_variant_with_payload() {
+        let v1 = HashableValue::Variant {
+            tag: "Option.Some".into(),
+            payload: Some(Box::new(HashableValue::Int(42))),
+        };
+        let v2 = HashableValue::Variant {
+            tag: "Option.Some".into(),
+            payload: Some(Box::new(HashableValue::Int(42))),
+        };
+        assert_eq!(v1, v2);
+        assert_eq!(compute_hash(&v1), compute_hash(&v2));
+
+        let v3 = HashableValue::Variant {
+            tag: "Option.Some".into(),
+            payload: Some(Box::new(HashableValue::Int(99))),
+        };
+        assert_ne!(v1, v3);
+    }
+
+    #[test]
+    fn hashable_value_variant_cross_type() {
+        let variant = HashableValue::Variant {
+            tag: "Color.Red".into(),
+            payload: None,
+        };
+        let str_val = HashableValue::Str("Color.Red".into());
+        assert_ne!(variant, str_val);
     }
 }

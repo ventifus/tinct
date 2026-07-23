@@ -1522,10 +1522,7 @@ pub(crate) fn builtin_http_request(
             Value::Dict(ref map) => {
                 let mut out = Vec::with_capacity(map.len());
                 for (key, thunk) in map.iter() {
-                    let key_str = match key {
-                        crate::value::HashableValue::Str(s) => s.to_string(),
-                        crate::value::HashableValue::Int(i) => i.to_string(),
-                    };
+                    let key_str = key.to_string();
                     let val_materialized =
                         crate::eval::materialize(thunk, Some(&call_span), &ctx).await?;
                     let val_str = require_string(

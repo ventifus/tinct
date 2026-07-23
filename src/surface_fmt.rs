@@ -51,6 +51,38 @@ pub fn fmt_dict(
                 }
                 out.push(':');
             }
+            HashableValue::Bool(b) => {
+                if *b {
+                    out.push_str("Boolean.True:");
+                } else {
+                    out.push_str("Boolean.False:");
+                }
+            }
+            HashableValue::Variant { tag, payload } => match payload {
+                None => {
+                    out.push_str(tag);
+                    out.push(':');
+                }
+                Some(p) => {
+                    out.push('[');
+                    out.push_str(tag);
+                    out.push(' ');
+                    out.push_str(&p.to_string());
+                    out.push_str("]:");
+                }
+            },
+            HashableValue::Dict(pairs) => {
+                out.push('[');
+                for (j, (k, v)) in pairs.iter().enumerate() {
+                    if j > 0 {
+                        out.push_str("  ");
+                    }
+                    out.push_str(&k.to_string());
+                    out.push_str(": ");
+                    out.push_str(&v.to_string());
+                }
+                out.push_str("]:");
+            }
         }
 
         // Format value — retrieve the materialized value and recursively serialize.

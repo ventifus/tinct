@@ -839,6 +839,13 @@ impl ValueVisitor for TinctReprVisitor {
                     entry.push_str(&val_str);
                     parts.push(entry);
                 }
+                other => {
+                    // Non-string/non-int key (Bool, Dict, Variant) — show as "Display: value"
+                    let mut entry = format!("{}", other);
+                    entry.push_str(": ");
+                    entry.push_str(&val_str);
+                    parts.push(entry);
+                }
             }
         }
         format!("[{}]", parts.join("  "))

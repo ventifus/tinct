@@ -2258,12 +2258,14 @@ async fn resolve_type_head(
                     // B-588: TypeVar entry — clone kind and break to resolve after loop
                     // (avoids borrow conflict: loop borrows state.type_stage_scope immutably,
                     // fresh_type_var_with borrows state mutably).
-                    found_type_stage = Some(crate::type_infer::TypeStageEntry::TypeVar(kind.clone()));
+                    found_type_stage =
+                        Some(crate::type_infer::TypeStageEntry::TypeVar(kind.clone()));
                     break;
                 }
                 crate::type_infer::TypeStageEntry::Class(class_decl) => {
                     // B-588: Class entry — clone decl and break to resolve after loop.
-                    found_type_stage = Some(crate::type_infer::TypeStageEntry::Class(class_decl.clone()));
+                    found_type_stage =
+                        Some(crate::type_infer::TypeStageEntry::Class(class_decl.clone()));
                     break;
                 }
             }

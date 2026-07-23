@@ -382,6 +382,9 @@ pub(crate) fn builtin_apply_impl(
                 HashableValue::Str(s) => {
                     named_args_arcs.insert(s.to_string(), Arc::clone(thunk));
                 }
+                _ => {
+                    // Non-Int/Str keys in call argument dicts are ignored (not valid as named args)
+                }
             }
         }
         int_entries.sort_by_key(|(k, _)| *k);
@@ -1987,9 +1990,9 @@ pub(crate) fn builtin_resolve(
         for (k, _v_thunk) in &name_set_dict {
             let name = match k {
                 HashableValue::Str(s) => s,
-                HashableValue::Int(i) => {
+                other => {
                     return Err(EvalError::internal(
-                        format!("name-set key is not a String: Int({})", i),
+                        format!("name-set key is not a String: {}", other),
                         call_span,
                     )
                     .into())
@@ -3762,10 +3765,7 @@ fn validate_value(
                         let field_schema_val =
                             materialize(field_schema_thunk, Some(&span), &ctx).await?;
                         if let Value::Dict(field_schema) = field_schema_val {
-                            let field_name = match field_key {
-                                HashableValue::Str(s) => s.to_string(),
-                                HashableValue::Int(i) => i.to_string(),
-                            };
+                            let field_name = field_key.to_string();
 
                             let field_path = if path.is_empty() {
                                 field_name.clone()

@@ -262,6 +262,15 @@ fn eval_quote_preprocess<'a>(
                                                 ))
                                             }
                                         }
+                                        // For non-Int/Str keys (Bool, Dict, Variant), render as string literal
+                                        other => Arc::new(SurfaceNode::new(
+                                            SurfaceExpression::StringLiteral {
+                                                prefix: String::new(),
+                                                delimiter: "\"".to_string(),
+                                                content: other.to_string(),
+                                            },
+                                            inner_span.clone(),
+                                        )),
                                     };
 
                                     processed_entries.push(Spanned::new(
