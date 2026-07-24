@@ -337,7 +337,7 @@
              all-diagnostics]]]
          diagnostics:    [match tc-result
              [case [let v] [ok: v] v]
-             ...: [make-entry 0 tc-result]]
+             ...: [$tc-result]]
          new-stderr:  [emit-diagnostics diagnostics acc.stderr]
          module-impl: [builtin-module name]]
         [impls:  [merge acc.impls module-impl]
@@ -458,7 +458,7 @@
                        [merge acc [env: next-env  tc: acc.tc  last-result: exports  stderr: new-stderr]]]]]
                    ...: [call [fn [let]
                         [eval-stderr: [call [builtin-get "write" %stderr] [builtin-string-concat [format-diagnostic try-result] "\n"] new-stderr]]
-                        [merge acc [diagnostics: [append-diags acc.diagnostics [make-entry 0 try-result]]  stderr: eval-stderr]]]]]]]]]]]]]
+                        [merge acc [diagnostics: [append-diags acc.diagnostics [$try-result]]  stderr: eval-stderr]]]]]]]]]]]]]
     # Split documents by stage: check meta.stage string
     [split: [reduce
       [fn [let acc doc]
@@ -663,7 +663,7 @@
                      ...: [call [fn [let]
                           [eval-stderr: [call [builtin-get "write" %stderr]
                                           [builtin-string-concat [format-diagnostic try-result] "\n"] new-stderr]]
-                          [merge st [diagnostics: [append-diags st.diagnostics [make-entry 0 try-result]]
+                          [merge st [diagnostics: [append-diags st.diagnostics [$try-result]]
                                      stderr: eval-stderr]]]]]]]]]]]]
       [env:         base-env
        last-result: []
