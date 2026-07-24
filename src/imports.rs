@@ -89,7 +89,23 @@ async fn build_builtin_core_type_env_inner() -> Option<Arc<RwLock<Env>>> {
     // type-stage eval only constructs TypeNode values in memory (no IO builtins).
     let type_stage_eval_ctx = crate::eval::EvalContext::new_empty();
 
-    // Filter type-stage documents from the program.
+    // ONE resolve pass on the FULL program with the eval root frame as the outer scope.
+    // This sets OnceLock coordinates on ALL nodes (including type-stage ones) relative to
+    // the EvalContext's root group, exactly as run_loader_pipeline does. The resulting
+    // scope frames are threaded into eval_ctx_with_frames so the evaluator can resolve
+    // VarRefs at any level — including unit constructor accesses like TypeNode.Int which
+    // require a working outer-frame lookup chain.
+    let eval_ctx_with_frames: std::sync::Arc<crate::eval::EvalContext> = {
+        let root_frame = type_stage_eval_ctx.root_group_resolver_map();
+        let (_table, new_frames) =
+            crate::resolve::resolve_surface_program(&program, std::slice::from_ref(&root_frame));
+        let all_frames: Vec<indexmap::IndexMap<String, u32>> =
+            std::iter::once(root_frame).chain(new_frames).collect();
+        type_stage_eval_ctx.with_scope_frames(std::sync::Arc::new(all_frames))
+    };
+
+    // Filter type-stage documents from the already-resolved full program.
+    // The OnceLocks are already set by the resolve above — no separate resolve needed.
     let ts_docs: Vec<_> = program
         .documents
         .iter()
@@ -105,33 +121,23 @@ async fn build_builtin_core_type_env_inner() -> Option<Arc<RwLock<Env>>> {
         .cloned()
         .collect();
 
-    // Build type_stage_scope by evaluating type-stage documents.
-    // This enables @Integer, @String, @Bytes, etc. to resolve during builtin_core typecheck.
-    //
-    // Two-pass: resolve ts_docs (CLONED nodes) with the eval-context scope FIRST (so dot-access
-    // nodes in the clone get correct LGM coordinates for evaluation), then resolve the full
-    // original program with empty scope (for typecheck). Because the eval-scope resolve operated
-    // on CLONED nodes (Resolution::clone() returns fresh OnceLocks), the original program's
-    // OnceLocks are unaffected by that pass — see comment at the full-program resolve call below.
+    // Build type_stage_scope by evaluating the type-stage documents with the correct context.
+    // eval_ctx_with_frames has the scope frames from the resolve pass, so VarRefs at any
+    // nesting level resolve correctly — including unit constructors (TypeNode.Int) which
+    // require outer-group frame lookup, not just builtins.
     let type_stage_scope: Vec<std::collections::HashMap<String, crate::type_infer::TypeStageEntry>> =
         if ts_docs.is_empty() {
             Vec::new()
         } else {
             let ts_program = crate::ast::SurfaceProgram { documents: ts_docs };
-            let eval_scope = type_stage_eval_ctx.root_group_resolver_map();
-            // Resolve ts_program with eval scope so LGM slots match the EvalContext's root_group.
-            // resolver writes inline to OnceLock cells; it has no error return type. Failures
-            // manifest as wrong LGM coordinates which cause downstream eval errors propagated
-            // by the subsequent ok()? calls.
-            let _ = crate::resolve::resolve_surface_program(&ts_program, &[eval_scope]);
-            let ts_thunk = crate::eval::eval_surface_file(&ts_program, &type_stage_eval_ctx).await.ok()?;
-            let ts_val = crate::eval::materialize(&ts_thunk, None, &type_stage_eval_ctx).await.ok()?;
+            let ts_thunk = crate::eval::eval_surface_file(&ts_program, &eval_ctx_with_frames).await.ok()?;
+            let ts_val = crate::eval::materialize(&ts_thunk, None, &eval_ctx_with_frames).await.ok()?;
             match ts_val {
                 crate::value::Value::Dict(entries) => {
                     let mut map = std::collections::HashMap::new();
                     for (key, thunk) in &entries {
                         if let crate::value::HashableValue::Str(name) = key {
-                            let val = crate::eval::materialize(thunk, None, &type_stage_eval_ctx).await.ok()?;
+                            let val = crate::eval::materialize(thunk, None, &eval_ctx_with_frames).await.ok()?;
                             if let Some(ty) =
                                 crate::type_normalize::typenode_leaf_to_type(&val)
                             {
@@ -161,16 +167,6 @@ async fn build_builtin_core_type_env_inner() -> Option<Arc<RwLock<Env>>> {
                 _ => Vec::new(),
             }
         };
-
-    // Resolve full program with empty scope (for typecheck).
-    // Note: the eval-scope resolve above operated on a CLONED ts_program
-    // (Resolution::clone() returns a fresh empty OnceLock — ast.rs:1126-1129), so
-    // the original program's OnceLocks were not touched by that pass. This resolve
-    // sets OnceLocks on ALL original program nodes. The typechecker at typecheck.rs:272
-    // runs its own resolve pass and uses the returned ResolutionTable HashMap (not
-    // OnceLock state), so these OnceLocks are benign — never read by any consumer.
-    // T-1576: bootstrap path uses empty scope stack.
-    let (_table, _frames) = crate::resolve::resolve_surface_program(&program, &[]);
 
     // Typecheck with builtins env as parent.
     // enable_hover_map=false (no LSP hover needed for bootstrap).
