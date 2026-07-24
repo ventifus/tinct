@@ -2459,3 +2459,211 @@ async fn test_constrain_typevar_lower_bound_added() {
         bounds.lower
     );
 }
+
+// ============================================================================
+// B-613: constrain() C-FN arm — function-type variance tests
+// ============================================================================
+
+/// B-613 Part 2: C-FN basic — constrain(Fn(Int→Int), Fn(α→α)) must accumulate bounds
+/// on α rather than binding α = Int immediately in the substitution.
+///
+/// Without the C-FN arm, constrain() falls through to unify(), which binds α = Int
+/// on the first encounter (param) and then fails Int = Int on the second (return) — or
+/// succeeds but loses directionality. With C-FN:
+///   - Contravariant param: constrain(α, Int) → α gets upper bound Int
+///   - Covariant return:    constrain(Int, α) → α gets lower bound Int
+/// α must NOT be bound in the substitution — only in bounds.
+#[tokio::test]
+async fn test_constrain_cfn_typevar_accumulates_bounds() {
+    let mut state = InferState::new();
+    let span = rust_span!();
+
+    state.set_level("α".to_string(), 0);
+    let alpha = Type::TypeVar("α".to_string(), 0);
+
+    // Fn(α→α): param = α, return = α
+    let fn_with_typevar = Type::Function {
+        params: vec![(None, alpha.clone())],
+        ret: Box::new(alpha.clone()),
+        typed_variadics: vec![],
+        rest: None,
+        required_count: 1,
+    };
+
+    // Fn(Int→Int): concrete, no TypeVars
+    let fn_concrete = Type::Function {
+        params: vec![(None, Type::Int)],
+        ret: Box::new(Type::Int),
+        typed_variadics: vec![],
+        rest: None,
+        required_count: 1,
+    };
+
+    // constrain(Fn(Int→Int), Fn(α→α)): Fn(Int→Int) ≤ Fn(α→α)
+    let result = constrain(
+        &fn_concrete,
+        &fn_with_typevar,
+        &mut state,
+        &mut Vec::new(),
+        span,
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "constrain(Fn(Int→Int), Fn(α→α)) should succeed with C-FN, got: {:?}",
+        result.unwrap_err()
+    );
+
+    // α must NOT be bound in the substitution — bounds accumulate, not equality.
+    let alpha_applied = state.apply(&alpha);
+    assert!(
+        matches!(alpha_applied, Type::TypeVar(ref n, _) if n == "α"),
+        "C-FN must not bind α in subst (directional bounds only); got: {:?}",
+        alpha_applied
+    );
+
+    // α must have bounds accumulated (lower or upper bound from Int).
+    let has_bounds = state.bounds.get("α").is_some();
+    assert!(
+        has_bounds,
+        "C-FN must accumulate bounds on α in state.bounds; none found"
+    );
+}
+
+/// B-613 Part 2: C-FN variance direction — contravariant params, covariant return.
+///
+/// For init@a reducer pattern: `constrain(Fn(acc:a, elem:Int → a), Fn(acc:a, elem:Int → a))`
+/// should be identity (same type on both sides → no work needed; sub == sup short-circuits).
+/// But for `constrain(Fn(Int, Int → Int), Fn(α, Int → α))`:
+///   - Param 1 (contravariant): constrain(α, Int) → α gets upper bound Int (α must accept Int)
+///   - Param 2 (contravariant): constrain(Int, Int) → trivial (same type)
+///   - Return (covariant):      constrain(Int, α) → α gets lower bound Int
+///
+/// After constraining: α has lower bound Int AND upper bound Int, but is NOT yet bound
+/// in the substitution. This preserves principal type inference — bounds accumulate first.
+#[tokio::test]
+async fn test_constrain_cfn_init_reducer_pattern() {
+    let mut state = InferState::new();
+    let span = rust_span!();
+
+    state.set_level("α".to_string(), 0);
+    let alpha = Type::TypeVar("α".to_string(), 0);
+
+    // Fn(α, Int → α): two-param function with TypeVar acc type
+    let fn_init = Type::Function {
+        params: vec![(Some("acc".to_string()), alpha.clone()), (None, Type::Int)],
+        ret: Box::new(alpha.clone()),
+        typed_variadics: vec![],
+        rest: None,
+        required_count: 2,
+    };
+
+    // Fn(Int, Int → Int): concrete reducer call site
+    let fn_concrete = Type::Function {
+        params: vec![(Some("acc".to_string()), Type::Int), (None, Type::Int)],
+        ret: Box::new(Type::Int),
+        typed_variadics: vec![],
+        rest: None,
+        required_count: 2,
+    };
+
+    // constrain(Fn(Int, Int → Int), Fn(α, Int → α))
+    // Subtype: a concrete reducer is being passed where init@α is expected.
+    let result = constrain(
+        &fn_concrete,
+        &fn_init,
+        &mut state,
+        &mut Vec::new(),
+        span,
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "constrain(Fn(Int,Int→Int), Fn(α,Int→α)) should succeed (init@a pattern), got: {:?}",
+        result.unwrap_err()
+    );
+
+    // α must NOT be bound in the substitution before bounds are discharged.
+    let alpha_applied = state.apply(&alpha);
+    assert!(
+        matches!(alpha_applied, Type::TypeVar(ref n, _) if n == "α"),
+        "C-FN init@a pattern must not prematurely bind α in subst; got: {:?}",
+        alpha_applied
+    );
+}
+
+/// B-613 Part 2: C-FN arity mismatch falls through to unify() for structured error.
+///
+/// constrain(Fn(Int → Int), Fn(Int, Str → Int)) — arity mismatch (1 vs 2 params).
+/// Must produce an error (not succeed silently).
+#[tokio::test]
+async fn test_constrain_cfn_arity_mismatch_errors() {
+    let mut state = InferState::new();
+    let span = rust_span!();
+
+    let fn1 = Type::Function {
+        params: vec![(None, Type::Int)],
+        ret: Box::new(Type::Int),
+        typed_variadics: vec![],
+        rest: None,
+        required_count: 1,
+    };
+
+    let fn2 = Type::Function {
+        params: vec![(None, Type::Int), (None, Type::Str)],
+        ret: Box::new(Type::Int),
+        typed_variadics: vec![],
+        rest: None,
+        required_count: 2,
+    };
+
+    let result = constrain(&fn1, &fn2, &mut state, &mut Vec::new(), span).await;
+
+    assert!(
+        result.is_err(),
+        "constrain(Fn(Int→Int), Fn(Int,Str→Int)) arity mismatch must produce an error"
+    );
+}
+
+/// B-613 Part 2: C-FN any-function special case — constrain(zero-param-variadic, Fn(Int→Int))
+/// constrains only the return types (covariant).
+#[tokio::test]
+async fn test_constrain_cfn_any_function_with_concrete() {
+    let mut state = InferState::new();
+    let span = rust_span!();
+
+    // Zero-param variadic = "any function" type.
+    let any_fn = Type::Function {
+        params: vec![],
+        ret: Box::new(Type::Unknown),
+        typed_variadics: vec![],
+        rest: Some(Box::new(("rest".to_string(), Type::Unknown))),
+        required_count: 0,
+    };
+
+    let concrete_fn = Type::Function {
+        params: vec![(None, Type::Int)],
+        ret: Box::new(Type::Int),
+        typed_variadics: vec![],
+        rest: None,
+        required_count: 1,
+    };
+
+    // constrain(any-function, concrete) — any-function ≤ concrete function
+    let result = constrain(
+        &any_fn,
+        &concrete_fn,
+        &mut state,
+        &mut Vec::new(),
+        span,
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "constrain(any-fn, Fn(Int→Int)) should succeed (any-function ≤ concrete), got: {:?}",
+        result.unwrap_err()
+    );
+}

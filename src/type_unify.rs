@@ -3501,6 +3501,87 @@ pub async fn constrain(
             return Ok(());
         }
 
+        // [C-FN] Structural function-type decomposition with correct variance.
+        // Pierce & Turner (2000) §6; Parreaux & Chau (2022) §3.2.1 C-FN:
+        //   (S1→T1) ≤ (S2→T2)  iff  S2 ≤ S1 (params contravariant) ∧ T1 ≤ T2 (return covariant)
+        //
+        // This arm fires BEFORE the ground-type BAS arm so that function types that contain
+        // TypeVars (e.g. `init@a` reducer patterns) correctly accumulate bounds rather than
+        // falling through to symmetric unify(), which would bind TypeVars immediately and lose
+        // directional information.
+        //
+        // "Any function" special case: a zero-param variadic function is the "any function" type.
+        // Mirrors the same check in unify() — an any-function is a subtype of any concrete-arity
+        // function. Only the return types are constrained (covariant).
+        //
+        // Arity / variadic mismatch: delegate to unify() for its structured error message.
+        (
+            Type::Function {
+                params: p1,
+                ret: r1,
+                typed_variadics: tv1,
+                rest: rest1,
+                required_count: _,
+            },
+            Type::Function {
+                params: p2,
+                ret: r2,
+                typed_variadics: tv2,
+                rest: rest2,
+                required_count: _,
+            },
+        ) => {
+            let is_variadic_1 = !tv1.is_empty() || rest1.is_some();
+            let is_variadic_2 = !tv2.is_empty() || rest2.is_some();
+            let is_any_function_1 = p1.is_empty() && is_variadic_1;
+            let is_any_function_2 = p2.is_empty() && is_variadic_2;
+
+            // Any-function ≤ any concrete-arity function: constrain return types (covariant).
+            if is_any_function_1 && !p2.is_empty() {
+                let (r1c, r2c) = ((**r1).clone(), (**r2).clone());
+                return Box::pin(constrain(&r1c, &r2c, state, constraints, span)).await;
+            }
+            if is_any_function_2 && !p1.is_empty() {
+                let (r1c, r2c) = ((**r1).clone(), (**r2).clone());
+                return Box::pin(constrain(&r1c, &r2c, state, constraints, span)).await;
+            }
+
+            // Structural mismatch: delegate to unify() for a structured error.
+            if p1.len() != p2.len() || is_variadic_1 != is_variadic_2 || tv1.len() != tv2.len() {
+                return Box::pin(unify(&sub, &sup, state, constraints, span, 0)).await;
+            }
+            // Rest mismatch: one has a rest param, the other does not.
+            let rest_mismatch = matches!((rest1, rest2), (Some(_), None) | (None, Some(_)));
+            if rest_mismatch {
+                return Box::pin(unify(&sub, &sup, state, constraints, span, 0)).await;
+            }
+
+            // C-FN: clone param/return types to release match borrows before recursive constrain().
+            let p1c: Vec<_> = p1.iter().map(|(n, t)| (n.clone(), t.clone())).collect();
+            let p2c: Vec<_> = p2.iter().map(|(n, t)| (n.clone(), t.clone())).collect();
+            let tv1c: Vec<_> = tv1.iter().map(|(n, t)| (n.clone(), t.clone())).collect();
+            let tv2c: Vec<_> = tv2.iter().map(|(n, t)| (n.clone(), t.clone())).collect();
+            let rest1c = rest1.as_ref().map(|b| (b.0.clone(), b.1.clone()));
+            let rest2c = rest2.as_ref().map(|b| (b.0.clone(), b.1.clone()));
+            let r1c = (**r1).clone();
+            let r2c = (**r2).clone();
+
+            // Fixed params: contravariant — constrain(sup_param, sub_param).
+            for ((_n1, ty1), (_n2, ty2)) in p1c.iter().zip(p2c.iter()) {
+                Box::pin(constrain(ty2, ty1, state, constraints, span.clone())).await?;
+            }
+            // Typed variadics: contravariant.
+            for ((_, ty1), (_, ty2)) in tv1c.iter().zip(tv2c.iter()) {
+                Box::pin(constrain(ty2, ty1, state, constraints, span.clone())).await?;
+            }
+            // Rest param: contravariant.
+            if let (Some(rb1), Some(rb2)) = (&rest1c, &rest2c) {
+                Box::pin(constrain(&rb2.1, &rb1.1, state, constraints, span.clone())).await?;
+            }
+            // Return type: covariant — constrain(sub_ret, sup_ret).
+            return Box::pin(constrain(&r1c, &r2c, state, constraints, span)).await;
+        }
+
         // Ground-type subtype check: neither side contains inference variables.
         // A ≤ B iff is_empty(to_rdnf(A & ~B)) — BAS subtyping judgment.
         // At argument-passing sites, the argument type need only be a SUBTYPE of the
