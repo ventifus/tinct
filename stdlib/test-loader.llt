@@ -82,9 +82,9 @@
         ...: acc]]]
     [loop init 0]]
 
-  join: [fn [let sep xs]
+  join: [fn@String [let sep@String xs@Dict]
     [n: [builtin-dict-length xs]]
-    [loop: [fn [let acc i]
+    [loop: [fn@String [let acc@String i]
       [match [builtin-int-gte i n]
         0: [loop
               [match [builtin-eq-int i 0]
@@ -125,7 +125,7 @@
   # log-step: write msg to state.stderr and return state with updated handle.
   # The returned state.stderr is the genuine consumer — it is forced when the next
   # stage (or the reduce's passed computation) accesses state.stderr.
-  log-step: [fn [let msg state@Dict]
+  log-step: [fn [let msg@String state@Dict]
     [merge state [stderr: [call [builtin-get "write" %stderr] [builtin-string-concat msg "\n"] state.stderr]]]]
 
   # env-to-name-set: build name-set Dict<String,1> from env for builtin-resolve.
@@ -179,51 +179,57 @@
     self]
 
   # strip-trailing-newline: remove one trailing \n from a string.
-  strip-trailing-newline: [fn [let s]
+  strip-trailing-newline: [fn@String [let s@String]
     [n: [builtin-str-length s]]
     [match [builtin-int-gt n 0]
       0: s
       ...: [builtin-str-slice s 0 [builtin-int-sub n 1]]]]
 
   # Format a single diagnostic dict as a human-readable error line.
-  format-diagnostic: [fn [let d]
-    [s: d.span]
+  format-diagnostic: [fn@String [let d]
+    [s: [@[file: String  start-line: Integer  start-col: Integer  end-line: Integer  end-col: Integer] d.span]]
     [file-part: [match [builtin-eq-int [builtin-str-length s.file] 0]
       0: [builtin-string-concat s.file ":"]
       ...: "<unknown>:"]]
     [loc: [builtin-string-concat file-part [builtin-string-concat [builtin-int->string s.start-line] [builtin-string-concat ":" [builtin-int->string s.start-col]]]]]
-    [stack-empty: [builtin-eq-int [builtin-dict-length d.call-stack] 0]]
-    [base-line: [builtin-string-concat loc [builtin-string-concat ": " [builtin-string-concat d.level [builtin-string-concat ": " [builtin-string-concat d.kind [builtin-string-concat " — " [builtin-string-concat d.message "\n"]]]]]]]]
-    [notes-empty: [builtin-eq-int [builtin-dict-length d.notes] 0]]
+    [call-stack: [@Dict d.call-stack]]
+    [level:      [@String d.level]]
+    [kind:       [@String d.kind]]
+    [message:    [@String d.message]]
+    [notes:      [@Dict d.notes]]
+    [stack-empty: [builtin-eq-int [builtin-dict-length call-stack] 0]]
+    [base-line: [builtin-string-concat loc [builtin-string-concat ": " [builtin-string-concat level [builtin-string-concat ": " [builtin-string-concat kind [builtin-string-concat " — " [builtin-string-concat message "\n"]]]]]]]]
+    [notes-empty: [builtin-eq-int [builtin-dict-length notes] 0]]
     [with-notes: [match notes-empty
       0: [reduce
             [fn [let acc note] [builtin-string-concat acc [builtin-string-concat note "\n"]]]
             base-line
-            d.notes]
+            notes]
       ...: base-line]]
     # Render secondary-spans (e.g. "previously defined here") as note: lines.
     [secondary-spans: [get-or [] "secondary-spans" d]]
     [with-secondary: [match [builtin-eq-int [builtin-dict-length secondary-spans] 0]
       0: [reduce
             [fn [let acc ss]
-              [sf: ss.span]
+              [sf: [@[file: String  start-line: Integer  start-col: Integer] ss.span]]
               [ss-file: [match [builtin-eq-int [builtin-str-length sf.file] 0]
                 0: [builtin-string-concat sf.file ":"]
                 ...: ""]]
               [ss-loc: [builtin-string-concat ss-file [builtin-string-concat [builtin-int->string sf.start-line] [builtin-string-concat ":" [builtin-int->string sf.start-col]]]]]
-              [builtin-string-concat acc [builtin-string-concat "  note: " [builtin-string-concat ss.label [builtin-string-concat " at " [builtin-string-concat ss-loc "\n"]]]]]]
+              [builtin-string-concat acc [builtin-string-concat "  note: " [builtin-string-concat [@String ss.label] [builtin-string-concat " at " [builtin-string-concat ss-loc "\n"]]]]]]
             with-notes
             secondary-spans]
       ...: with-notes]]
     [match stack-empty
       0: [reduce
             [fn [let acc frame]
-              [frame-file: [match [builtin-eq-int [builtin-str-length frame.span.file] 0]
-                0: [builtin-string-concat frame.span.file ":"]
+              [fs: [@[file: String  start-line: Integer  start-col: Integer] frame.span]]
+              [frame-file: [match [builtin-eq-int [builtin-str-length fs.file] 0]
+                0: [builtin-string-concat fs.file ":"]
                 ...: ""]]
-              [builtin-string-concat acc [builtin-string-concat "  in " [builtin-string-concat frame.label [builtin-string-concat " at " [builtin-string-concat frame-file [builtin-string-concat [builtin-int->string frame.span.start-line] [builtin-string-concat ":" [builtin-string-concat [builtin-int->string frame.span.start-col] "\n"]]]]]]]]]
+              [builtin-string-concat acc [builtin-string-concat "  in " [builtin-string-concat [@String frame.label] [builtin-string-concat " at " [builtin-string-concat frame-file [builtin-string-concat [builtin-int->string fs.start-line] [builtin-string-concat ":" [builtin-string-concat [builtin-int->string fs.start-col] "\n"]]]]]]]]]
             with-secondary
-            d.call-stack]
+            call-stack]
       ...: with-secondary]]
 
   # emit-diagnostics: write all diagnostics to h, return the updated stderr handle.
@@ -238,9 +244,9 @@
         ...: h]]]
     [loop 0 h]]
 
-  count-errors: [fn [let diags@Dict]
+  count-errors: [fn@Integer [let diags@Dict]
     [n: [builtin-dict-length diags]]
-    [loop: [fn [let i acc]
+    [loop: [fn@Integer [let i acc@Integer]
       [match [builtin-int-gte i n]
         0: [loop [builtin-int-add i 1]
               [match [builtin-eq-string [builtin-dict-nth diags i].level "error"]
