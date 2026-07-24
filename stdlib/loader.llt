@@ -88,7 +88,7 @@
 #   Dict:    builtin-reduce (Dict fold only — NOT Seq; Seq reduce is tinct),
 #            merge, builtin-get, builtin-keys, builtin-dict-length, builtin-build-dict
 #   Variant: builtin-tag-of (reads Variant tag string — Variant internals, not Dict)
-#   Path:    builtin-path-dir (String → DirCap; extracts dir from a file path)
+#   Path:    builtin-path-dirname (String → String; extracts parent dir from a file path)
 #
 # Eliminated (reducible — derivable in tinct from the irreducibles above):
 #   builtin-bytes-empty?  → [match [= [builtin-dict-length x] 0] ...]
@@ -489,10 +489,10 @@
       [case [let p] [ProgramItem.Expr p] [eval-expr p.src prev include-dir prelude-env tc emit-ch]]]]
 
   eval-file: [fn [let item prev include-dir prelude-env tc emit-ch]
-    # %include-dir for this file's documents = the directory containing item.path.
-    # %cwd is fixed (CLI working directory) and comes from the closure unchanged.
-    # builtin-path-dir: String → DirCap
-    [file-include-dir: [builtin-path-dir item.path]]
+    # %include-dir for this file's documents = the directory containing item.path,
+    # derived by narrowing %cwd (the CLI-provided working directory cap) to the
+    # parent directory component of the path. No ambient filesystem access.
+    [file-include-dir: [builtin-narrow %cwd [builtin-path-dirname item.path]]]
     [bytes:        [read-file item.handle [builtin-bytes]]]
     [parse-result: [builtin-parse bytes item.path]]
     # Emit parse errors as a data dependency (no >> needed).

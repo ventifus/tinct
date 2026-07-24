@@ -476,23 +476,6 @@ async fn async_main() -> i32 {
     }
 }
 
-/// Open a base directory for the given file path, using the file's parent directory.
-/// Falls back to "." if the path has no parent or is "-" (stdin).
-///
-/// AMBIENT-OK: Helper for CLI bootstrap — operator specified file paths.
-#[allow(clippy::disallowed_methods)]
-fn open_file_base_dir(file_path: &str, context: &str) -> Result<cap_std::fs::Dir, String> {
-    let dir_path = if file_path == "-" {
-        std::path::Path::new(".")
-    } else {
-        let p = std::path::Path::new(file_path);
-        p.parent()
-            .filter(|d| !d.as_os_str().is_empty())
-            .unwrap_or(std::path::Path::new("."))
-    };
-    cap_std::fs::Dir::open_ambient_dir(dir_path, cap_std::ambient_authority())
-        .map_err(|e| format!("{context}: cannot open base directory: {e}"))
-}
 
 /// Open cap_std::fs::Dir entries for the given --cap-fs list.
 /// Skips injection when no_fs is true.
@@ -1991,19 +1974,8 @@ async fn run_eval(
     // one Rust↔tinct bootstrap contract for %programs (see doc/whatif/type-foundations.md).
 
     // Create the base eval context (owns the ScopeArena used by all %programs thunks).
-    let cwd_for_ctx = {
-        // AMBIENT-OK: CWD at startup, operator-controlled.
-        #[allow(clippy::disallowed_methods)]
-        cap_std::fs::Dir::open_ambient_dir(
-            std::env::current_dir()
-                .map_err(|e| format!("cannot determine working directory: {e}"))?,
-            cap_std::ambient_authority(),
-        )
-        .map_err(|e| format!("cannot open cwd for eval context: {e}"))?
-    };
     let eval_ctx = {
         let mut ctx = EvalContext::new_with_options(
-            cwd_for_ctx,
             no_fs,
             require_integrity,
             env_allowed.clone(),
@@ -2443,14 +2415,7 @@ async fn run_fmt(
         path
     };
 
-    // Format the source using the tinct-hosted formatter.
-    // The formatter re-parses internally; we cannot reuse the typecheck AST because
-    // the formatter needs to preserve comments and layout details.
-    // Pass the file's directory as an already-open Dir to avoid re-acquiring ambient authority.
-    let fmt_base_dir_for_formatter = open_file_base_dir(file_path, "fmt").ok();
-    let formatted =
-        tinct::format_source_tinct_with_dir(&source, &script_path, fmt_base_dir_for_formatter)
-            .await?;
+    let formatted = tinct::format_source_tinct_with_dir(&source, &script_path).await?;
 
     if check {
         if source != formatted {

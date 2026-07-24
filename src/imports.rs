@@ -85,21 +85,9 @@ async fn build_builtin_core_type_env_inner() -> Option<Arc<RwLock<Env>>> {
     // in resolve_type_name; types declared within the file resolve via state.tycon_env.
     let parent_env = Arc::new(RwLock::new(crate::env::Env::new()));
 
-    // Create EvalContext for type-stage evaluation BEFORE the main resolve.
-    // This lets us seed the type-stage resolve with the correct scope (N builtins) so
-    // that dot-access nodes (TypeNode.Int etc.) get correct LGM coordinates for evaluation.
-    // no_fs=true: type-stage eval only calls TypeNode constructors, no IO.
-    //
-    // EvalContext structurally requires a cap_std::fs::Dir even when no_fs=true (EvalConfig
-    // holds it), but no_fs=true ensures no actual I/O occurs during the type-stage evaluation
-    // which only constructs TypeNode values in memory.
-    #[allow(clippy::disallowed_methods)] // AMBIENT-OK: no_fs=true prevents actual I/O; EvalContext struct requires a Dir
-    let type_stage_eval_ctx = cap_std::fs::Dir::open_ambient_dir(
-        ".",
-        cap_std::ambient_authority(),
-    )
-    .ok()
-    .map(|base_dir| crate::eval::EvalContext::new_empty(base_dir, true));
+    // Create EvalContext for type-stage evaluation. No filesystem access needed —
+    // type-stage eval only constructs TypeNode values in memory (no IO builtins).
+    let type_stage_eval_ctx = crate::eval::EvalContext::new_empty(true);
 
     // Filter type-stage documents from the program.
     let ts_docs: Vec<_> = program
@@ -126,25 +114,24 @@ async fn build_builtin_core_type_env_inner() -> Option<Arc<RwLock<Env>>> {
     // on CLONED nodes (Resolution::clone() returns fresh OnceLocks), the original program's
     // OnceLocks are unaffected by that pass — see comment at the full-program resolve call below.
     let type_stage_scope: Vec<std::collections::HashMap<String, crate::type_infer::TypeStageEntry>> =
-        if ts_docs.is_empty() || type_stage_eval_ctx.is_none() {
+        if ts_docs.is_empty() {
             Vec::new()
         } else {
-            let eval_ctx_ref = type_stage_eval_ctx.as_ref().unwrap();
             let ts_program = crate::ast::SurfaceProgram { documents: ts_docs };
-            let eval_scope = eval_ctx_ref.root_group_resolver_map();
+            let eval_scope = type_stage_eval_ctx.root_group_resolver_map();
             // Resolve ts_program with eval scope so LGM slots match the EvalContext's root_group.
             // resolver writes inline to OnceLock cells; it has no error return type. Failures
             // manifest as wrong LGM coordinates which cause downstream eval errors propagated
             // by the subsequent ok()? calls.
             let _ = crate::resolve::resolve_surface_program(&ts_program, &[eval_scope]);
-            let ts_thunk = crate::eval::eval_surface_file(&ts_program, eval_ctx_ref).await.ok()?;
-            let ts_val = crate::eval::materialize(&ts_thunk, None, eval_ctx_ref).await.ok()?;
+            let ts_thunk = crate::eval::eval_surface_file(&ts_program, &type_stage_eval_ctx).await.ok()?;
+            let ts_val = crate::eval::materialize(&ts_thunk, None, &type_stage_eval_ctx).await.ok()?;
             match ts_val {
                 crate::value::Value::Dict(entries) => {
                     let mut map = std::collections::HashMap::new();
                     for (key, thunk) in &entries {
                         if let crate::value::HashableValue::Str(name) = key {
-                            let val = crate::eval::materialize(thunk, None, eval_ctx_ref).await.ok()?;
+                            let val = crate::eval::materialize(thunk, None, &type_stage_eval_ctx).await.ok()?;
                             if let Some(ty) =
                                 crate::type_normalize::typenode_leaf_to_type(&val)
                             {

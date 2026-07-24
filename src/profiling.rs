@@ -480,8 +480,7 @@ mod tests {
     use super::*;
 
     async fn test_ctx() -> Arc<EvalContext> {
-        let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
-        crate::eval::EvalContext::new_empty(base_dir, false)
+        crate::eval::EvalContext::new_empty(false)
     }
 
     #[tokio::test]

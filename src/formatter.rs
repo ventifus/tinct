@@ -4,16 +4,10 @@
 // formatter script (`stdlib/cli/fmt/pretty.llt`) with the parsed AST dict as `%`.
 // The Rust `Formatter` struct was deleted — it was only ever used by the now-removed
 // `format_source` function that was dead code from `tinct fmt`'s perspective.
-/// Format source using the tinct-hosted formatter script, optionally receiving an already-open
-/// base directory to avoid re-acquiring ambient filesystem authority.
-///
-/// `base_dir` should be passed by callers (e.g., `src/main.rs`) that already hold an open Dir.
-/// When `None`, falls back to opening the current working directory ambiently — this path is
-/// used by the LSP server which does not have an open CWD Dir at the formatter call site.
+/// Format source using the tinct-hosted formatter script.
 pub async fn format_source_tinct_with_dir(
     input: &str,
     script_path: &std::path::Path,
-    base_dir: Option<cap_std::fs::Dir>,
 ) -> Result<String, String> {
     use crate::desugar;
     use crate::eval::{self, EvalContext};
@@ -25,21 +19,6 @@ pub async fn format_source_tinct_with_dir(
 
     // Determine mode from script name: compact.llt → minimal AST; everything else → full AST.
     let compact = script_path.file_stem().and_then(|s| s.to_str()) == Some("compact");
-
-    // Open the base directory first (needed by EvalContext).
-    let base_dir = match base_dir {
-        Some(dir) => dir,
-        None => {
-            // AMBIENT-OK: fallback for callers (LSP) that do not hold an open CWD Dir.
-            let base_dir_path = std::env::current_dir()
-                .ok()
-                .and_then(|d| d.canonicalize().ok())
-                .unwrap_or_else(|| std::path::PathBuf::from("."));
-            #[allow(clippy::disallowed_methods)]
-            cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
-                .map_err(|e| format!("cannot open base directory: {e}"))?
-        }
-    };
 
     // Parse the input source (no env/ctx needed yet).
     let file: Arc<str> = Arc::from("<formatter>");
@@ -61,7 +40,7 @@ pub async fn format_source_tinct_with_dir(
     // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
     let formatter_program = desugar::desugar_program_full(&formatter_parsed.program);
 
-    let ctx = EvalContext::new_empty(base_dir, false);
+    let ctx = EvalContext::new_empty(false);
 
     // Resolve the formatter program using the env-dict protocol.
     // "input-ast" is the formatter's own input variable name (not the loader's % convention).
@@ -140,11 +119,10 @@ pub async fn format_source_tinct_with_dir(
 /// scripts named `compact` receive a minimal AST (no source, no comments); all others
 /// receive the full AST (with source info and comments for comment preservation).
 ///
-/// Convenience wrapper: opens CWD ambiently. Callers that already hold an open
-/// `cap_std::fs::Dir` should use [`format_source_tinct_with_dir`] instead.
+/// Alias for `format_source_tinct_with_dir`.
 pub async fn format_source_tinct(
     input: &str,
     script_path: &std::path::Path,
 ) -> Result<String, String> {
-    format_source_tinct_with_dir(input, script_path, None).await
+    format_source_tinct_with_dir(input, script_path).await
 }

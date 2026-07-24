@@ -424,7 +424,6 @@ pub struct TypeContextData {
 /// Immutable session configuration shared across evaluation.
 #[derive(Debug)]
 pub struct EvalConfig {
-    pub base_dir: cap_std::fs::Dir,
     pub no_fs: bool,
     /// When true, every `$include` call must supply an integrity hash.
     /// Hashless includes are rejected with `IncludeHashRequired`.
@@ -576,8 +575,8 @@ pub struct EvalContext {
 }
 
 impl EvalContext {
-    pub fn new(base_dir: cap_std::fs::Dir, no_fs: bool) -> Arc<Self> {
-        Self::new_with_options(base_dir, no_fs, false, None)
+    pub fn new(no_fs: bool) -> Arc<Self> {
+        Self::new_with_options(no_fs, false, None)
     }
 
     /// Build the root group (Arc<Vec<Arc<Thunk>>>) from all static builtin modules.
@@ -616,12 +615,11 @@ impl EvalContext {
     /// - Bootstrap contexts (run_loader_pipeline, where loader.llt is being evaluated)
     /// - Re-entrant macro expansion (depth > 0 in expand.rs)
     /// - Test helpers that create contexts without a prelude env
-    pub fn new_empty(base_dir: cap_std::fs::Dir, no_fs: bool) -> Arc<Self> {
+    pub fn new_empty(no_fs: bool) -> Arc<Self> {
         let root_group = Self::build_root_group_builtins();
         let root_spine = crate::value::GroupSpine::from_flat(root_group.iter().cloned().collect());
         Arc::new(Self {
             config: Arc::new(EvalConfig {
-                base_dir,
                 no_fs,
                 require_integrity: false,
                 macro_injects_map: HashMap::new(),
@@ -645,7 +643,6 @@ impl EvalContext {
     }
 
     pub fn new_with_options(
-        base_dir: cap_std::fs::Dir,
         no_fs: bool,
         require_integrity: bool,
         env_allowed: Option<HashSet<String>>,
@@ -654,7 +651,6 @@ impl EvalContext {
         let root_spine = crate::value::GroupSpine::from_flat(root_group.iter().cloned().collect());
         Arc::new(Self {
             config: Arc::new(EvalConfig {
-                base_dir,
                 no_fs,
                 require_integrity,
                 macro_injects_map: HashMap::new(),
@@ -675,55 +671,6 @@ impl EvalContext {
             root_spine,
             init_accumulated_group: Arc::new(std::sync::OnceLock::new()),
         })
-    }
-
-    /// Create a new EvalContext with a different base_dir but sharing the same
-    /// stdlib_env (e.g., during $include).
-    ///
-    /// Inherits `no_fs` and `require_integrity` from the parent config so that
-    /// sandbox restrictions are preserved across directory changes.
-    pub fn with_base_dir(&self, base_dir: cap_std::fs::Dir) -> Arc<Self> {
-        Arc::new(Self {
-            config: Arc::new(EvalConfig {
-                base_dir,
-                no_fs: self.config.no_fs,
-                require_integrity: self.config.require_integrity,
-                macro_injects_map: self.config.macro_injects_map.clone(),
-                source_file: self.config.source_file.clone(),
-            }),
-            env_allowed: self.env_allowed.clone(),
-            blame_map: Mutex::new(self.blame_map.lock().unwrap().clone()),
-            boundary_guards: RwLock::new(self.boundary_guards.read().unwrap().clone()),
-            do_infer_resolutions: RwLock::new(self.do_infer_resolutions.read().unwrap().clone()),
-            libdir_dir: Mutex::new(self.libdir_dir.lock().unwrap().clone()),
-            cancel: self.cancel.clone(),
-            task_registry: Arc::clone(&self.task_registry),
-            profiling: self.profiling.as_ref().map(Arc::clone),
-            tycon_env: {
-                let child_lock = std::sync::OnceLock::new();
-                if let Some(env) = self.tycon_env.get() {
-                    child_lock.set(std::sync::Arc::clone(env)).ok();
-                }
-                child_lock
-            },
-            // TypeContext is shared: child contexts see the same type-checker state.
-            // builtin-typecheck-doc updates TypeContext in-place, so all contexts in a
-            // pipeline must share the same Arc to observe each other's registrations.
-            type_context: Arc::clone(&self.type_context),
-            scope_frames: self.scope_frames.clone(),
-            root_group: Arc::clone(&self.root_group),
-            root_spine: Arc::clone(&self.root_spine),
-            init_accumulated_group: Arc::clone(&self.init_accumulated_group),
-        })
-    }
-
-    /// Like `with_base_dir` but accepts an optional `base_dir_path` that is not used.
-    pub fn with_base_dir_and_path(
-        &self,
-        base_dir: cap_std::fs::Dir,
-        _base_dir_path: Option<std::path::PathBuf>,
-    ) -> Arc<Self> {
-        self.with_base_dir(base_dir)
     }
 
     /// Create a child EvalContext with a new cancellation token derived from this context's token.

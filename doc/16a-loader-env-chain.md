@@ -107,8 +107,8 @@ loader's lexical scope (Dict 2/3 closure). This means:
 - `%cwd` is always the CLI working directory — fixed for the session.
 - `%libdir` is always the stdlib DirCap — fixed for the session.
 - `%include-dir` IS threaded as a parameter because it changes per-file
-  (set to the containing directory of each file being processed by
-  `builtin-path-dir`).
+  (derived by narrowing `%cwd` to the parent directory of each file's path
+  via `builtin-path-dirname`).
 
 ### The Per-Document Env Dict
 
@@ -269,7 +269,7 @@ builtins listed in the loader's header comment:
 `builtin-tc-update-type-stage-env`, `builtin-make-type-ctx`, `builtin-channel`,
 `builtin-send`, `builtin-str`, `builtin-get`, `builtin-keys`,
 `builtin-dict-length`, `builtin-build-dict`, `builtin-tag-of`,
-`builtin-path-dir`, and `builtin-string-concat`.
+`builtin-path-dirname`, and `builtin-string-concat`.
 
 `builtin-resolve` takes a `Dict<String,1>` name-set (not scope frames).
 `builtin-eval` takes `(CoreDocument, env Dict)` and returns the exports

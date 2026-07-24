@@ -2313,8 +2313,7 @@ mod tests {
     use super::*;
 
     fn test_ctx() -> Arc<crate::eval::EvalContext> {
-        let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
-        crate::eval::EvalContext::new(base_dir, false)
+        crate::eval::EvalContext::new(false)
     }
 
     /// Peel a `Value::Variant` to its payload dict.

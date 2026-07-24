@@ -3928,27 +3928,12 @@ pub(crate) async fn eval_type_stage_expr(
     // Prefer state.eval_ctx (threaded from the loader pipeline) so type-stage evaluation
     // uses the same capabilities and root scope as the surrounding evaluation. This covers
     // the production path (builtin-typecheck-doc) and the bootstrap path (imports.rs).
-    //
-    // When state.eval_ctx is None (LSP/corpus-test paths that do not thread an EvalContext),
-    // fall back to an ambient minimal context. B-610 tracks eliminating this fallback by
-    // threading EvalContext into the LSP and corpus-test paths.
     // no_fs=true: type-stage evaluation is pure compute — no filesystem I/O occurs.
     let ctx: std::sync::Arc<crate::eval::EvalContext> =
         if let Some(ref eval_ctx) = state.eval_ctx {
             std::sync::Arc::clone(eval_ctx)
         } else {
-            #[allow(clippy::disallowed_methods)] // B-610: remove once LSP path threads EvalContext
-            let base_dir =
-                cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority()).map_err(
-                    |e| {
-                        TypeDiagnostic::error(
-                            "type-error",
-                            format!("type-stage eval: cannot open ambient dir: {e}"),
-                            node_span.clone(),
-                        )
-                    },
-                )?;
-            crate::eval::EvalContext::new_empty(base_dir, true)
+            crate::eval::EvalContext::new_empty(true)
         };
 
     // No resolution pass for synthetic type-stage nodes; resolution is inline on nodes

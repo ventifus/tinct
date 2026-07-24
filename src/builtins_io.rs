@@ -2217,21 +2217,21 @@ pub(crate) fn builtin_read_link(
     })
 }
 
-/// `builtin-path-dir`: Given a String path (file path), return a DirCap for its parent directory.
+/// `builtin-path-dirname`: Pure string operation — extract the directory portion of a path.
 ///
-/// The path is interpreted relative to `ctx.config.base_dir` (the sandbox root). The parent
-/// directory component is extracted from the path and opened using cap_std's confined
-/// directory API (RESOLVE_BENEATH: no escaping the sandbox).
+/// Takes 1 arg: String (file path). Returns String: the parent directory component.
+/// If the path has no directory component (bare filename), returns `"."`.
 ///
-/// Takes 1 arg: String (file path). Returns DirCap with full permissions of the parent.
+/// No filesystem access, no DirCap required. Use `[narrow cap [builtin-path-dirname path]]`
+/// to derive a DirCap for the file's parent directory from an already-granted cap.
 ///
 /// # Example
 ///
 /// ```llt
-/// [builtin-path-dir "data/config/settings.json"]
-/// # → DirCap for "data/config/" (relative to base dir)
+/// [builtin-path-dirname "cli/out/llt.llt"]  # → "cli/out"
+/// [builtin-path-dirname "file.llt"]          # → "."
 /// ```
-pub(crate) fn builtin_path_dir(
+pub(crate) fn builtin_path_dirname(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
@@ -2244,43 +2244,22 @@ pub(crate) fn builtin_path_dir(
         } = ctx_arg;
 
         let val = crate::builtins::expect_one_arg(
-            "builtin-path-dir",
+            "builtin-path-dirname",
             &args,
             named.as_ref(),
             &ctx,
             call_span.clone(),
         )?;
 
-        let path_str = require_string("builtin-path-dir", val, Arc::clone(&args[0]).span.clone())?;
+        let path_str = require_string("builtin-path-dirname", val, Arc::clone(&args[0]).span.clone())?;
 
-        // Extract parent directory component from the path string.
-        let path = std::path::Path::new(&path_str);
-        let parent = path.parent().unwrap_or(std::path::Path::new("."));
+        let parent = std::path::Path::new(&path_str)
+            .parent()
+            .and_then(|p| p.to_str())
+            .unwrap_or(".");
+        let result = if parent.is_empty() { "." } else { parent };
 
-        // Open the parent directory within the cap_std sandbox (RESOLVE_BENEATH).
-        // This prevents escape from ctx.config.base_dir regardless of the path content.
-        let parent_str = parent.to_string_lossy();
-        let opened = ctx
-            .config
-            .base_dir
-            .open_dir(parent_str.as_ref())
-            .map_err(|e| {
-                EvalError::user_error(
-                    format!(
-                        "builtin-path-dir: failed to open parent directory '{}' of path '{}': {}",
-                        parent_str, path_str, e
-                    ),
-                    call_span.clone(),
-                )
-            })?;
-
-        ok_val(
-            Value::DirCap {
-                dir: opened,
-                perms: DirPerms::full(),
-            },
-            call_span,
-        )
+        ok_val(string_val(result), call_span)
     })
 }
 

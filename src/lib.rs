@@ -1135,8 +1135,7 @@ mod tests {
     }
 
     async fn test_ctx() -> Arc<eval::EvalContext> {
-        let base_dir = test_util::test_caps().root.try_clone().unwrap();
-        eval::EvalContext::new_empty(base_dir, false)
+        eval::EvalContext::new_empty(false)
     }
 
     #[test]
