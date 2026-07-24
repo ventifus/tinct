@@ -29,7 +29,8 @@ use crate::error::{DiagnosticLevel, TypeDiagnostic};
 use crate::type_def::{Row, RowTail, TyConDef};
 use crate::type_infer::Substitution;
 use crate::types::{
-    generalize, generalize_with_doc, instantiate_at_level, instantiate_scheme, unify, Constraint,
+    constrain, generalize, generalize_with_doc, instantiate_at_level, instantiate_scheme,
+    Constraint,
     InferState, Kind, Type, TypeScheme,
 };
 
@@ -2416,15 +2417,19 @@ async fn finalize_call_no_positional_args(
                     .await
                 };
                 let mut constraints = std::mem::take(&mut state.constraints);
-                let _ = unify(
+                let saved_bounds = state.bounds.clone();
+                if let Err(e) = constrain(
                     &arg_ty,
                     &param_ty,
                     state,
                     &mut constraints,
                     na.span.clone(),
-                    0,
                 )
-                .await;
+                .await
+                {
+                    state.bounds = saved_bounds;
+                    errors.push(e);
+                }
                 state.constraints = constraints;
             }
             None => {
@@ -2526,16 +2531,17 @@ async fn apply_call_args_poly(
         }
 
         let mut constraints = std::mem::take(&mut state.constraints);
-        if let Err(e) = Box::pin(unify(
-            param_ty,
+        let saved_bounds = state.bounds.clone();
+        if let Err(e) = constrain(
             &widened_arg,
+            param_ty,
             state,
             &mut constraints,
             span.clone(),
-            0,
-        ))
+        )
         .await
         {
+            state.bounds = saved_bounds;
             errors.push(e);
         }
         state.constraints = constraints;
@@ -2604,16 +2610,17 @@ async fn apply_call_args_poly(
             let elem_ty = extract_seq_elem_type(bucket_ty);
             for matched_arg in &bucket_args[bucket_idx] {
                 let mut constraints = std::mem::take(&mut state.constraints);
-                if let Err(e) = Box::pin(unify(
-                    &elem_ty,
+                let saved_bounds = state.bounds.clone();
+                if let Err(e) = constrain(
                     matched_arg,
+                    &elem_ty,
                     state,
                     &mut constraints,
                     span.clone(),
-                    0,
-                ))
+                )
                 .await
                 {
+                    state.bounds = saved_bounds;
                     errors.push(e);
                 }
                 state.constraints = constraints;
@@ -2633,16 +2640,17 @@ async fn apply_call_args_poly(
                     tail: RowTail::Empty,
                 });
                 let mut constraints = std::mem::take(&mut state.constraints);
-                if let Err(e) = Box::pin(unify(
-                    rest_ty,
+                let saved_bounds = state.bounds.clone();
+                if let Err(e) = constrain(
                     &rest_dict,
+                    rest_ty,
                     state,
                     &mut constraints,
                     span.clone(),
-                    0,
-                ))
+                )
                 .await
                 {
+                    state.bounds = saved_bounds;
                     errors.push(e);
                 }
                 state.constraints = constraints;
@@ -2702,16 +2710,17 @@ async fn apply_call_args_poly(
                     .await
                 };
                 let mut constraints = std::mem::take(&mut state.constraints);
-                if let Err(e) = Box::pin(unify(
+                let saved_bounds = state.bounds.clone();
+                if let Err(e) = constrain(
                     &arg_ty,
                     &param_ty,
                     state,
                     &mut constraints,
                     na.span.clone(),
-                    0,
-                ))
+                )
                 .await
                 {
+                    state.bounds = saved_bounds;
                     errors.push(TypeDiagnostic::error(
                         "type-error",
                         format!(
@@ -2771,16 +2780,17 @@ async fn apply_call_args_poly(
                 tail: RowTail::Empty,
             });
             let mut constraints = std::mem::take(&mut state.constraints);
-            if let Err(e) = Box::pin(unify(
-                rest_ty,
+            let saved_bounds = state.bounds.clone();
+            if let Err(e) = constrain(
                 &named_dict,
+                rest_ty,
                 state,
                 &mut constraints,
                 span.clone(),
-                0,
-            ))
+            )
             .await
             {
+                state.bounds = saved_bounds;
                 errors.push(e);
             }
             state.constraints = constraints;

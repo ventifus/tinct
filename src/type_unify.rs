@@ -3373,7 +3373,6 @@ pub async fn unify(
 /// principal type inference (Parreaux & Chau 2022, §3.2.1).
 ///
 /// Parreaux & Chau (2022), OOPSLA '22, §3.2.1 — C-Var1/2 in constrain(), not unify().
-#[allow(dead_code)]
 pub async fn constrain(
     sub: &Type,
     sup: &Type,
@@ -3502,9 +3501,22 @@ pub async fn constrain(
             return Ok(());
         }
 
+        // Ground-type subtype check: neither side contains inference variables.
+        // A ≤ B iff is_empty(to_rdnf(A & ~B)) — BAS subtyping judgment.
+        // At argument-passing sites, the argument type need only be a SUBTYPE of the
+        // parameter type, not EQUAL. This enables [or D1 D2] ≤ Dict(open) when both
+        // D1 and D2 are Dict subtypes, and [or [] Dict] ≤ Dict(open) similarly.
+        _ if !sub.has_inference_vars() && !sup.has_inference_vars() => {
+            let mut sigma = std::collections::HashSet::new();
+            if Type::is_subtype_bas(&sub, &sup, None, &mut sigma) {
+                return Ok(());
+            }
+            // Subtype check failed: fall through to unify() for a structured error.
+        }
+
         // All other cases: fall through to unify().
         // This handles: structural decomposition (records, functions, apps),
-        // TypeVar-to-TypeVar, U-SUBSUME for ground types, etc.
+        // TypeVar-to-TypeVar, and emitting errors for ground-type mismatches.
         _ => {}
     }
 
