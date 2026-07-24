@@ -111,9 +111,6 @@
       0: 0
       ...: [builtin-eq-int [builtin-dict-length x] 0]]]
 
-  # make-entry: construct single-entry dict from key and value.
-  # Defined here for Dict 1 because it runs before prelude is loaded.
-  make-entry: [fn [let k v] [$k: v]]
 
   # get-or: safe dict access with default value
   get-or: [fn [let default key dict]
@@ -250,11 +247,14 @@
   count-errors: [fn [let diags@Dict]
     [_count-errors-inner diags [builtin-dict-length diags] 0 0]]
 
+  # append-one: append a single value to an integer-keyed accumulator dict.
+  append-one: [fn [let acc v] [merge acc [[builtin-dict-length acc]: v]]]
+
   # _append-diags-inner: append new-diags to acc, re-indexing from offset
   _append-diags-inner: [fn [let acc@Dict new-diags@Dict n offset i]
     [match [builtin-int-gte i n]
       0: [_append-diags-inner
-           [merge acc [make-entry [builtin-int-add offset i] [builtin-dict-nth new-diags i]]]
+           [merge acc [[builtin-int-add offset i]: [builtin-dict-nth new-diags i]]]
            new-diags n offset [builtin-int-add i 1]]
       ...: acc]]
 
@@ -292,8 +292,8 @@
                  [meta:  [builtin-doc-meta doc decl-env]]
                  [stage: [get-or "runtime" "stage" meta]]
                  [match [builtin-eq-string stage "type"]
-                   0: [ts: acc.ts  rt: [merge acc.rt [make-entry [builtin-dict-length acc.rt] doc]]]
-                   ...: [ts: [merge acc.ts [make-entry [builtin-dict-length acc.ts] doc]]  rt: acc.rt]]]
+                   0: [ts: acc.ts  rt: [merge acc.rt [[builtin-dict-length acc.rt]: doc]]]
+                   ...: [ts: [merge acc.ts [[builtin-dict-length acc.ts]: doc]]  rt: acc.rt]]]
                [ts: []  rt: []]
                decl-docs]]
              # Pass 1: evaluate type-stage docs to get an env with TypeNode values.
@@ -326,7 +326,7 @@
                  [name-set: [env-to-name-set decl-env]]
                  [r: [builtin-resolve doc name-set]]
                  [tc-result: [builtin-typecheck-doc r.doc ts-tc]]
-                 [merge acc [make-entry [builtin-dict-length acc] tc-result]]]
+                 [merge acc [[builtin-dict-length acc]: tc-result]]]
                []
                decl-docs]]
              [tc-diagnostics: [reduce
@@ -453,7 +453,7 @@
                        [next-env: [merge doc-env
                                     [merge [%: exports]
                                       [match [builtin-eq-string doc-name ""]
-                                        0: [make-entry doc-name exports]
+                                        0: [$doc-name: exports]
                                         ...: []]]]]
                        [merge acc [env: next-env  tc: acc.tc  last-result: exports  stderr: new-stderr]]]]]
                    ...: [call [fn [let]
@@ -465,8 +465,8 @@
         [meta: [builtin-doc-meta doc seed-env]]
         [stage: [get-or "runtime" "stage" meta]]
         [match [builtin-eq-string stage "type"]
-          0: [ts: acc.ts  rt: [merge acc.rt [make-entry [builtin-dict-length acc.rt] doc]]]
-          ...: [ts: [merge acc.ts [make-entry [builtin-dict-length acc.ts] doc]]  rt: acc.rt]]]
+          0: [ts: acc.ts  rt: [merge acc.rt [[builtin-dict-length acc.rt]: doc]]]
+          ...: [ts: [merge acc.ts [[builtin-dict-length acc.ts]: doc]]  rt: acc.rt]]]
       [ts: []  rt: []]
       state.parsed.documents]]
     # Capture tc parameter to avoid letrec self-reference.
@@ -508,13 +508,13 @@
       [fn [let acc doc]
         [res: [builtin-resolve doc name-set]]
         [typed: [builtin-typecheck-doc res.doc state._tc]]
-        [merge acc [make-entry [builtin-dict-length acc] typed]]]
+        [merge acc [[builtin-dict-length acc]: typed]]]
       []
       state.parsed.documents]]
     [all-diagnostics: [reduce
       [fn [let acc tdoc]
         [reduce
-          [fn [let wacc w] [merge wacc [make-entry [builtin-dict-length wacc] w]]]
+          append-one
           acc
           tdoc.diagnostics]]
       []
@@ -658,7 +658,7 @@
                            diagnostics: st.diagnostics
                            # Accumulate per-document results so typecheck-docs can inject %
                            # with the correct value for each document's resolve pass (T-1741).
-                           doc-results: [merge st.doc-results [make-entry st.doc-index validated-result]]]
+                           doc-results: [merge st.doc-results [$st.doc-index: validated-result]]]
                            ]]]
                      ...: [call [fn [let]
                           [eval-stderr: [call [builtin-get "write" %stderr]
@@ -714,33 +714,33 @@
                0: []
                ...: [match [builtin-has-key? "%" res.unreferenced]
                     0: []
-                    ...: [make-entry 0 [level: "warning"
-                         kind: "abandoned-input"
-                         message: "document does not reference pipeline input %"
-                         span: res.doc-span
-                         notes: []
-                         help: []
-                         call-stack: []
-                         macro-expand: []
-                         blame: []]]]]]
+                    ...: [[level: "warning"
+                          kind: "abandoned-input"
+                          message: "document does not reference pipeline input %"
+                          span: res.doc-span
+                          notes: []
+                          help: []
+                          call-stack: []
+                          macro-expand: []
+                          blame: []]]]]]
              # Collect all resolver diagnostics (res.diagnostics: errors + warnings) AND
              # typecheck diagnostics into a single list for this document.
              # res.diagnostics is the unified bag; callers read d.level to filter by severity.
              [base-diags: [reduce
-               [fn [let wacc w] [merge wacc [make-entry [builtin-dict-length wacc] w]]]
+               append-one
                res.diagnostics
                input-warn-diags]]
              [doc-diags: [reduce
-               [fn [let wacc w] [merge wacc [make-entry [builtin-dict-length wacc] w]]]
+               append-one
                base-diags
                typed.diagnostics]]
-             [merge acc [make-entry [builtin-dict-length acc] doc-diags]]]
+             [merge acc [[builtin-dict-length acc]: doc-diags]]]
            []
            state.documents]]]
     [all-diagnostics: [reduce
       [fn [let acc doc-diags]
         [reduce
-          [fn [let wacc w] [merge wacc [make-entry [builtin-dict-length wacc] w]]]
+          append-one
           acc
           doc-diags]]
       []
@@ -750,7 +750,7 @@
     # produced keys that the next stage never consumes (abandoned-output warnings).
     [pipeline-lint-diags: [builtin-lint-pipeline-docs state.documents pipeline-input: "%"]]
     [all-with-lint: [reduce
-      [fn [let acc w] [merge acc [make-entry [builtin-dict-length acc] w]]]
+      append-one
       all-diagnostics
       pipeline-lint-diags]]
     [new-stderr: [emit-diagnostics all-with-lint state.stderr]]
@@ -962,7 +962,7 @@
         [match [builtin-eq-string entry.type "dir"]
           0: [match [check-llt-eval entry.name]
                0: st
-               ...: [merge st [make-entry [builtin-dict-length st]
+               ...: [merge st [[builtin-dict-length st]:
                       [ProgramItem.File path: full  handle: [builtin-file-open cap full ["read"] -1 -1]]]]]
           ...: [find-corpus-files cap full st]]]
       state
