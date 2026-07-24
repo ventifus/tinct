@@ -735,8 +735,18 @@ pub fn is_atom_subtype(
                 }
             }
         }
-        // SingleFieldRecord vs Record atom: single-field does not imply all fields of Record
-        (Atom::SingleFieldRecord { .. }, Atom::Record(_)) => false,
+        // SingleFieldRecord vs Record atom: {k: V} <: Record(r2) iff r2 accepts field k with type V.
+        // Case 1: r2 explicitly has field k — compare value types.
+        // Case 2: r2 has a Uniform tail (open dict) — any field is accepted; compare V against sup_v.
+        (Atom::SingleFieldRecord { key, value }, Atom::Record(r2)) => {
+            if let Some(r2_field_ty) = r2.fields.get(key.as_str()) {
+                Type::is_subtype_bas(value, r2_field_ty, tycon_env, sigma)
+            } else if let RowTail::Uniform { value: sup_v, .. } = &r2.tail {
+                Type::is_subtype_bas(value, sup_v, tycon_env, sigma)
+            } else {
+                false
+            }
+        }
 
         // Record vs primitive/function/variant/literal → disjoint, never subtypes
         (Atom::Record(_), Atom::Primitive(_))
