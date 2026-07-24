@@ -104,7 +104,7 @@
 
   # ── Control flow ──────────────────────────────────────────────────────────
   builtin-raise: [fn@Never  [let msg@String] ...]
-  builtin-try:   [fn@[bind: [a]  return: [or [ok: a] [error: String]]] [let expr@a] ...]
+  builtin-try:   [fn@[bind: [a]  return: [or [ok: a] [level: String  kind: String  message: String  span: Dict  secondary-spans: Dict  notes: Dict  call-stack: Dict  macro-expand: Dict  blame: Dict]]] [let expr@a] ...]
 
   # ── Arithmetic — monomorphic typed variants ───────────────────────────────
   # Each variant handles exactly one type combination. Cross-type arithmetic
@@ -188,7 +188,6 @@
   builtin-narrow:        [fn@DirCap  [let cap@DirCap path@String] ...]
   builtin-list-dir:      [fn@Dict    [let cap@DirCap path@String] ...]
   builtin-path-dir:      [fn@DirCap  [let path@String] ...]
-  builtin-file-open:     [fn@File    [let cap@DirCap path@String mode@String] ...]
   builtin-file-read:     [fn@Bytes   [let file@File n@Integer] ...]
   builtin-write-stdout:  [fn@[bind: [h] return: h] [let s@String h] ...]
   builtin-write-stderr:  [fn@[bind: [h] return: h] [let s@String h] ...]

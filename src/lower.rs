@@ -15,8 +15,8 @@
 use std::sync::Arc;
 
 use crate::ast::{
-    CoreEntry, CoreExpr, CoreMatchArm, CoreNamedArg, CoreParam, Span, Spanned, SurfaceEntry,
-    SurfaceExpression, SurfaceNode, VarAddr,
+    class_decl_name, CoreEntry, CoreExpr, CoreMatchArm, CoreNamedArg, CoreParam, Span, Spanned,
+    SurfaceEntry, SurfaceExpression, SurfaceNode, VarAddr,
 };
 use crate::rust_span;
 
@@ -567,24 +567,28 @@ fn lower_expr(
             }).collect();
 
             let mut core_entries: Vec<Spanned<CoreEntry>> = Vec::with_capacity(entries.len());
+            // Shared across all InstanceDecl entries in this dict — prevents duplicate plain
+            // method slots when multiple instances implement the same method (e.g. two
+            // [instance File.Writable ...] entries both having `write:`).
+            let mut emitted_instance_method_names: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
             for se in entries {
                 if let SurfaceExpression::Decl(decl) = &se.node.value.expr {
                     match decl.as_ref() {
                         crate::ast::SurfaceDeclaration::InstanceDecl { class_name, arms } => {
-                            if se.node.key.is_some() {
-                                // Named instance: emit outer key binding only.
-                                // Binding names are NOT flattened to avoid duplicate key errors
-                                // when multiple instances of the same class exist in the dict.
-                                let lowered = lower_expr(
-                                    &se.node.value,
-                                    &se.node.value.expr,
-                                    diagnostics,
-                                    scope_frames,
-                                );
-                                // Named instance keys are always static string keys.
-                                // Use the same pattern as regular dict entries: VarRef (plain or
-                                // annotated like `FunctorResult@[doc: "..."]`) → Str(name).
-                                let key = se.node.key.as_ref().map(|k| {
+                            {
+                                // Both named and anonymous instances:
+                                // 1. If named, emit the outer key binding first.
+                                // 2. Emit plain method slots (resolver call-site resolution).
+                                // 3. Emit mangled binding slots (dispatch).
+                                // Order matches surface_dict_static_keys exactly.
+                                if let Some(k) = &se.node.key {
+                                    let lowered = lower_expr(
+                                        &se.node.value,
+                                        &se.node.value.expr,
+                                        diagnostics,
+                                        scope_frames,
+                                    );
                                     let key_expr = match &k.expr {
                                         SurfaceExpression::VarRef {
                                             name,
@@ -593,15 +597,14 @@ fn lower_expr(
                                         } => CoreExpr::Str(name.clone()),
                                         _ => lower_expr(k, &k.expr, diagnostics, scope_frames),
                                     };
-                                    Arc::new(Spanned::new(key_expr, k.span.clone()))
-                                });
-                                let value = Arc::new(Spanned::new(lowered, se.span.clone()));
-                                core_entries
-                                    .push(Spanned::new(CoreEntry { key, value }, se.span.clone()));
-                            } else {
-                                // Anonymous instance: flatten binding names into the outer dict.
-                                // surface_dict_static_keys emits the same names so the resolver's
-                                // letrec scope matches this layout exactly.
+                                    let key =
+                                        Some(Arc::new(Spanned::new(key_expr, k.span.clone())));
+                                    let value = Arc::new(Spanned::new(lowered, se.span.clone()));
+                                    core_entries.push(Spanned::new(
+                                        CoreEntry { key, value },
+                                        se.span.clone(),
+                                    ));
+                                }
                                 for (pattern, method_entries) in arms {
                                     let dispatch_tags = extract_dispatch_tags(&pattern.expr);
                                     let type_args: Vec<&str> =
@@ -613,7 +616,6 @@ fn lower_expr(
                                                     content,
                                                     ..
                                                 } => content.clone(),
-                                                // Both plain and annotated VarRef use the name field.
                                                 SurfaceExpression::VarRef { name, .. } => {
                                                     name.clone()
                                                 }
@@ -621,8 +623,29 @@ fn lower_expr(
                                             },
                                             None => continue,
                                         };
+                                        // Plain method slot — de-duplicated across ALL instances
+                                        // in this dict (shared set prevents duplicate keys when
+                                        // multiple instances implement the same method).
+                                        if !explicit_keys.contains(&method_name)
+                                            && emitted_instance_method_names
+                                                .insert(method_name.clone())
+                                        {
+                                            let key = Some(Arc::new(Spanned::new(
+                                                CoreExpr::Str(method_name.clone()),
+                                                se.span.clone(),
+                                            )));
+                                            let value = Arc::new(Spanned::new(
+                                                CoreExpr::Dict(vec![]),
+                                                se.span.clone(),
+                                            ));
+                                            core_entries.push(Spanned::new(
+                                                CoreEntry { key, value },
+                                                se.span.clone(),
+                                            ));
+                                        }
+                                        // Mangled binding slot for dispatch.
                                         let binding_name = crate::type_def::instance_binding_name(
-                                            class_name,
+                                            &class_decl_name(class_name),
                                             &method_name,
                                             &type_args,
                                         );
@@ -665,46 +688,9 @@ fn lower_expr(
                             core_entries
                                 .push(Spanned::new(CoreEntry { key, value }, se.span.clone()));
                         }
-                        crate::ast::SurfaceDeclaration::ClassDecl {
-                            name: _class_name,
-                            methods,
-                            ..
-                        } => {
-                            // ClassDecl method slots: for each method NOT explicitly defined
-                            // elsewhere in this dict, emit a slot-alignment filler entry with
-                            // an empty dict value. These slots are never accessed in correct
-                            // programs — the type checker sets call_dispatch to route calls
-                            // to the appropriate instance binding. If call_dispatch is not set
-                            // (type error), the empty-dict placeholder surfaces a proper error.
-                            //
-                            // Method slots MUST come BEFORE the class outer key to match the
-                            // resolver's key ordering in surface_dict_static_keys.
-                            for me in methods {
-                                let method_name = match me.node.key.as_ref() {
-                                    Some(k) => match &k.expr {
-                                        SurfaceExpression::StringLiteral { content, .. } => {
-                                            content.clone()
-                                        }
-                                        SurfaceExpression::VarRef { name, .. } => name.clone(),
-                                        _ => continue,
-                                    },
-                                    None => continue,
-                                };
-                                if !explicit_keys.contains(&method_name) {
-                                    let key = Some(Arc::new(Spanned::new(
-                                        CoreExpr::Str(method_name),
-                                        se.span.clone(),
-                                    )));
-                                    let value = Arc::new(Spanned::new(
-                                        CoreExpr::Dict(vec![]),
-                                        se.span.clone(),
-                                    ));
-                                    core_entries.push(Spanned::new(
-                                        CoreEntry { key, value },
-                                        se.span.clone(),
-                                    ));
-                                }
-                            }
+                        crate::ast::SurfaceDeclaration::ClassDecl { .. } => {
+                            // ClassDecl is type-level only. No method slots emitted here.
+                            // Method name slots come from InstanceDecl entries in this dict.
 
                             // Named ClassDecl: emit an empty-dict runtime value so the outer
                             // key occupies a slot. This allows leading-dot re-exports like
@@ -976,7 +962,7 @@ fn lower_expr(
                         };
 
                         let binding_name = crate::type_def::instance_binding_name(
-                            class_name,
+                            &class_decl_name(class_name),
                             &method_name,
                             &type_args,
                         );
@@ -1226,6 +1212,85 @@ fn lower_let_decl_binding(
 /// Used by instance binding name generation in lower.rs to build the type_args for each arm.
 /// Only `Some(_)` tags contribute to the binding name; trailing None entries (like the
 /// return-type param `c` in Addable) are harmlessly ignored.
+/// Derive a canonical dispatch tag string from any annotation, handling both simple
+/// names (`@String` → "String") and complex parametric types (`@[Seq a]` → "[Seq a]").
+fn annotation_dispatch_tag(ann: &crate::ast::Annotation) -> Option<String> {
+    use crate::ast::Annotation;
+    match ann {
+        Annotation::Simple(name) => {
+            // TypeVars are lowercase — not a dispatch tag.
+            if name
+                .chars()
+                .next()
+                .map(|c| c.is_uppercase())
+                .unwrap_or(false)
+            {
+                Some(name.clone())
+            } else {
+                None
+            }
+        }
+        Annotation::PropertyDict(entries) => {
+            // Path 1: normalized simple annotation (@Int → PropertyDict{type: VarRef("Int")}).
+            // The parser's normalize_varref_annotation wraps simple names in {type: VarRef(name)}.
+            let from_type_key: Option<String> = entries.iter().find_map(|e| {
+                let key_str = e.node.key.as_ref().and_then(|k| match &k.expr {
+                    SurfaceExpression::StringLiteral { content, .. } => Some(content.as_str()),
+                    _ => None,
+                });
+                if key_str == Some("type") {
+                    if let SurfaceExpression::VarRef { name, .. } = &e.node.value.expr {
+                        if name
+                            .chars()
+                            .next()
+                            .map(|c| c.is_uppercase())
+                            .unwrap_or(false)
+                        {
+                            Some(name.clone())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            });
+            if from_type_key.is_some() {
+                return from_type_key;
+            }
+            // Path 2: complex parametric annotation (@[Seq a], @[List a], @[Map k v], ...).
+            // Build a canonical string from the positional entries. The first entry is the
+            // type constructor (uppercase = concrete type). This produces unique tags for
+            // distinct parametric types while remaining stable across code edits.
+            let parts: Vec<String> = entries
+                .iter()
+                .map(|e| match &e.node.value.expr {
+                    SurfaceExpression::VarRef { name, .. } => name.clone(),
+                    _ => "_".to_string(),
+                })
+                .collect();
+            if parts.is_empty() {
+                None
+            } else {
+                Some(format!("[{}]", parts.join(" ")))
+            }
+        }
+        Annotation::Annotated(base, inner) => {
+            // @A@B form — combine both parts.
+            let base_tag = annotation_dispatch_tag(base)?;
+            let inner_tag = annotation_dispatch_tag(inner).unwrap_or_default();
+            Some(if inner_tag.is_empty() {
+                base_tag
+            } else {
+                format!("{}@{}", base_tag, inner_tag)
+            })
+        }
+        Annotation::Quote => None,
+    }
+}
+
 pub(crate) fn extract_dispatch_tags(arm_pattern: &SurfaceExpression) -> Vec<Option<String>> {
     let bindings = match arm_pattern {
         SurfaceExpression::LetDecl { bindings } => bindings,
@@ -1233,49 +1298,12 @@ pub(crate) fn extract_dispatch_tags(arm_pattern: &SurfaceExpression) -> Vec<Opti
     };
     bindings
         .iter()
-        .map(|binding_spanned| {
-            // Each binding is VarRef { annotation: Some(_) } or VarRef { annotation: None } or Str(name)
-            match &binding_spanned.expr {
-                SurfaceExpression::VarRef {
-                    annotation: Some(ann),
-                    ..
-                } => {
-                    // Extract the type name from annotations. VarRef annotations are normalized
-                    // from Simple("T") to PropertyDict{type: VarRef("T")} at parse time, so we
-                    // handle both forms. Only uppercase type names are valid dispatch tags.
-                    use crate::ast::Annotation;
-                    let type_name_opt = match &ann.node {
-                        Annotation::Simple(type_name) => Some(type_name.as_str()),
-                        Annotation::PropertyDict(entries) => {
-                            // Find the "type" key entry and extract its VarRef name.
-                            entries.iter().find_map(|e| {
-                                let key_str = e.node.key.as_ref().and_then(|k| match &k.expr {
-                                    SurfaceExpression::StringLiteral { content, .. } => {
-                                        Some(content.as_str())
-                                    }
-                                    _ => None,
-                                });
-                                if key_str == Some("type") {
-                                    if let SurfaceExpression::VarRef { name, .. } =
-                                        &e.node.value.expr
-                                    {
-                                        Some(name.as_str())
-                                    } else {
-                                        None
-                                    }
-                                } else {
-                                    None
-                                }
-                            })
-                        }
-                        _ => None,
-                    };
-                    type_name_opt
-                        .filter(|n| n.chars().next().map(|c| c.is_uppercase()).unwrap_or(false))
-                        .map(|n| n.to_string())
-                }
-                _ => None, // Unannotated binding
-            }
+        .map(|binding_spanned| match &binding_spanned.expr {
+            SurfaceExpression::VarRef {
+                annotation: Some(ann),
+                ..
+            } => annotation_dispatch_tag(&ann.node),
+            _ => None,
         })
         .collect()
 }

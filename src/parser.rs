@@ -726,7 +726,7 @@ enum StackFrame {
     },
     /// Instance declaration: `[instance ClassName [pattern [...]]`: methods... ...]`
     InstanceDecl {
-        class_name: Option<String>,
+        class_name: Option<Arc<SurfaceNode>>,
         /// Match arms: (pattern_expr, method_entries)
         arms: Vec<(Arc<SurfaceNode>, Vec<Spanned<SurfaceEntry>>)>,
         /// Pending arm pattern expression (before colon)
@@ -2645,7 +2645,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                 span: Some(span.clone()),
                                 help: None,
                             });
-                        } else if let Some(class_name_str) = class_name {
+                        } else if let Some(class_name_node) = class_name {
                             // Finalize current arm methods by appending to the last arm
                             if !current_arm_methods.is_empty() {
                                 if let Some(last_arm) = arms.last_mut() {
@@ -2663,7 +2663,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                             }
 
                             let decl = SurfaceDeclaration::InstanceDecl {
-                                class_name: class_name_str,
+                                class_name: class_name_node,
                                 arms: arms
                                     .into_iter()
                                     .map(|(pattern, methods)| {
@@ -5145,11 +5145,25 @@ fn pop_last_value_from_frame(
             span: Some(span),
             help: None,
         }),
-        Some(StackFrame::InstanceDecl { .. }) => Err(ParseError {
-            message: "dot access is not valid inside instance form".to_string(),
-            span: Some(span),
-            help: None,
-        }),
+        Some(StackFrame::InstanceDecl {
+            ref mut class_name,
+            ref pending_arm_pattern,
+            ref arms,
+            ..
+        }) => {
+            // Allow dot-access to extend the class name expression.
+            // pop class_name so the dot continuation attaches to it (e.g. File.Readable).
+            if class_name.is_some() && pending_arm_pattern.is_none() && arms.is_empty() {
+                Ok(class_name.take().unwrap())
+            } else {
+                Err(ParseError {
+                    message: "dot access is not valid in this position in instance form"
+                        .to_string(),
+                    span: Some(span),
+                    help: None,
+                })
+            }
+        }
         Some(StackFrame::PatternDecl { .. }) => Err(ParseError {
             message: "dot access is not valid inside pattern form".to_string(),
             span: Some(span),
@@ -5895,24 +5909,15 @@ fn push_expr_to_parent(
                 ref mut pending_arm_pattern,
                 ..
             }) => {
-                // InstanceDecl expects: [instance ClassName [pattern [...]]`: methods... ...]
-                // First expression is the class name (VarRef).
-                // Subsequent pattern expressions are handled as pending_arm_pattern.
+                // InstanceDecl: [instance ClassExpr [pattern [...]]: methods ...]
+                // First expression is the class name — any expression, dot-access included.
+                // Subsequent expressions are arm patterns.
                 if class_name.is_none() {
-                    // This is the class name
-                    match &node.expr {
-                        SurfaceExpression::VarRef { name: cls_name, .. } => {
-                            *class_name = Some(cls_name.clone());
-                            Ok(())
-                        }
-                        _ => Err(ParseError {
-                            message:
-                                "instance form expects class name (VarRef) after 'instance' keyword"
-                                    .to_string(),
-                            span: Some(node.span.clone()),
-                            help: None,
-                        }),
-                    }
+                    // Class name: accept any expression — dot-access chains like File.Readable
+                    // are valid. Semantic validation (is this actually a class?) is the
+                    // resolver's job, not the parser's.
+                    *class_name = Some(node);
+                    Ok(())
                 } else if pending_arm_pattern.is_none() {
                     // This could be a pattern expr (PatternDecl or other expr before colon)
                     // Store it and wait for colon
@@ -6557,12 +6562,9 @@ fn push_value(
                 ));
                 Ok(())
             } else {
-                // ClassDecl expects keyed entries only (method names)
-                Err(ParseError {
-                    message: "class methods must have names (e.g., `eq: Type`)".to_string(),
-                    span: Some(node.span.clone()),
-                    help: None,
-                })
+                // Unexpected expression in class body — delegate to parent.
+                // Semantic validation is the resolver's job, not the parser's.
+                push_expr_to_parent(stack, current_document_items, node)
             }
         }
         Some(StackFrame::InstanceDecl {
@@ -6618,13 +6620,9 @@ fn push_value(
                 // Delegate to push_expr_to_parent which sets pending_arm_pattern.
                 push_expr_to_parent(stack, current_document_items, node)
             } else {
-                // InstanceDecl expects keyed entries only (method names)
-                Err(ParseError {
-                    message: "instance methods must have names (e.g., `eq: [fn [let x y] ...]`)"
-                        .to_string(),
-                    span: Some(node.span.clone()),
-                    help: None,
-                })
+                // Unexpected expression while arm pattern is pending — delegate to parent.
+                // Semantic validation is the resolver's job, not the parser's.
+                push_expr_to_parent(stack, current_document_items, node)
             }
         }
         _ => {

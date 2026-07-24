@@ -2275,10 +2275,8 @@ pub(crate) async fn apply_cont(
                                 }
                             })
                             .collect();
-                        let updated_group: Vec<std::sync::Arc<crate::value::Thunk>> =
-                            frame.group.iter().cloned().chain(new_thunks).collect();
                         let updated_frame = std::sync::Arc::new(crate::value::EvalFrame {
-                            group: std::sync::Arc::new(updated_group),
+                            group: frame.group.extend(new_thunks),
                             closure_env: std::sync::Arc::clone(&frame.closure_env),
                             params: std::sync::Arc::clone(&frame.params),
                         });
@@ -2367,10 +2365,8 @@ pub(crate) async fn apply_cont(
                                 }
                             })
                             .collect();
-                        let updated_group: Vec<std::sync::Arc<crate::value::Thunk>> =
-                            frame.group.iter().cloned().chain(new_thunks).collect();
                         let updated_frame = std::sync::Arc::new(crate::value::EvalFrame {
-                            group: std::sync::Arc::new(updated_group),
+                            group: frame.group.extend(new_thunks),
                             closure_env: std::sync::Arc::clone(&frame.closure_env),
                             params: std::sync::Arc::clone(&frame.params),
                         });
@@ -3303,7 +3299,7 @@ async fn bind_or_pin_name(
                     )
                     .into());
                 }
-                Arc::clone(&frame.group[i])
+                frame.group.get(i).expect("bounds check passed above")
             }
             VarAddr::ClosureCapture(i) => {
                 let i = *i as usize;
@@ -3317,7 +3313,7 @@ async fn bind_or_pin_name(
                     )
                     .into());
                 }
-                Arc::clone(&frame.closure_env[i])
+                frame.closure_env.get(i).expect("bounds check passed above")
             }
             VarAddr::Parameter(i) => {
                 let i = *i as usize;

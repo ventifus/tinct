@@ -83,9 +83,9 @@ pub(crate) async fn eval_document_exprs_with_env(
     // references included), where absolute_slot is the unique cumulative index assigned
     // by walk_surface_document_with_offset. frame.group[slot] resolves any LGM reference
     // directly — no outer-frame traversal needed.
-    let mut accumulated_group: Vec<Arc<Thunk>> = ctx.root_group.iter().cloned().collect();
+    let mut spine = Arc::clone(&ctx.root_spine);
     if let Some(env_thunks) = initial_group {
-        accumulated_group.extend(env_thunks);
+        spine = spine.extend(env_thunks);
     }
 
     let last_idx = expr_nodes.len() - 1;
@@ -100,8 +100,8 @@ pub(crate) async fn eval_document_exprs_with_env(
 
         // Build the frame from the current accumulated_group.
         let frame = Arc::new(EvalFrame {
-            group: Arc::new(accumulated_group.clone()),
-            closure_env: Arc::new(vec![]),
+            group: Arc::clone(&spine),
+            closure_env: crate::value::GroupSpine::empty(),
             params: Arc::new(vec![]),
         });
 
@@ -113,7 +113,7 @@ pub(crate) async fn eval_document_exprs_with_env(
             // nested calls from builtin-eval or user documents are silently ignored.
             // At this point accumulated_group contains all intermediate dict entries from
             // the loader program at their canonical LGM slots.
-            ctx.set_init_accumulated_group(accumulated_group.clone());
+            ctx.set_init_accumulated_group(Arc::clone(&spine));
             let thunk = crate::eval_core::eval_core_expr(&core_spanned, &frame, ctx).await?;
             // Return fallback_env_id as bridge placeholder for callers that use the scope_id.
             return Ok((thunk, fallback_env_id));
@@ -140,11 +140,17 @@ pub(crate) async fn eval_document_exprs_with_env(
                 )));
             }
         };
-        for (k, v) in dict_map.iter() {
-            if matches!(k, crate::value::HashableValue::Str(_)) {
-                accumulated_group.push(Arc::clone(v));
-            }
-        }
+        let new_entries: Vec<Arc<Thunk>> = dict_map
+            .iter()
+            .filter_map(|(k, v)| {
+                if matches!(k, crate::value::HashableValue::Str(_)) {
+                    Some(Arc::clone(v))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        spine = spine.extend(new_entries);
     }
 
     unreachable!(
@@ -187,15 +193,14 @@ pub(crate) async fn eval_core_document_exprs(
 
     // Build accumulated_group: root-scope entries first, then env-dict entries.
     // Document dict entries are appended at cumulative slots as each dict is evaluated.
-    let mut accumulated_group: Vec<Arc<Thunk>> = ctx.root_group.iter().cloned().collect();
-    accumulated_group.extend(initial_group);
+    let mut spine = ctx.root_spine.extend(initial_group);
 
     let last_idx = core_entries.len() - 1;
 
     for (i, (_key, spanned_core)) in core_entries.iter().enumerate() {
         let frame = Arc::new(EvalFrame {
-            group: Arc::new(accumulated_group.clone()),
-            closure_env: Arc::new(vec![]),
+            group: Arc::clone(&spine),
+            closure_env: crate::value::GroupSpine::empty(),
             params: Arc::new(vec![]),
         });
 
@@ -223,11 +228,17 @@ pub(crate) async fn eval_core_document_exprs(
                 )));
             }
         };
-        for (k, v) in dict_map.iter() {
-            if matches!(k, HashableValue::Str(_)) {
-                accumulated_group.push(Arc::clone(v));
-            }
-        }
+        let new_entries: Vec<Arc<Thunk>> = dict_map
+            .iter()
+            .filter_map(|(k, v)| {
+                if matches!(k, HashableValue::Str(_)) {
+                    Some(Arc::clone(v))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        spine = spine.extend(new_entries);
     }
 
     unreachable!(
@@ -539,6 +550,13 @@ pub struct EvalContext {
     /// Shared cheaply across child contexts via `Arc::clone`. Child contexts created by
     /// `with_base_dir`, `with_cancel_token`, etc. all see the same root group (read-only).
     pub root_group: Arc<Vec<Arc<Thunk>>>,
+    /// GroupSpine representation of root_group for O(1) frame construction.
+    ///
+    /// Persistent cons-list version of root_group. Every document evaluation starts with
+    /// `Arc::clone(&ctx.root_spine)` (O(1)) instead of `root_group.iter().cloned().collect()`
+    /// (O(n)). Extended with dict entries via `spine.extend(new_entries)` which is also
+    /// O(|new_entries|) and shares the previous level via Arc::clone.
+    pub root_spine: std::sync::Arc<crate::value::GroupSpine>,
     /// Snapshot of the accumulated_group after the init program (loader + prelude) finishes
     /// evaluating all its intermediate dicts.
     ///
@@ -554,7 +572,7 @@ pub struct EvalContext {
     ///
     /// `None` (OnceLock not set) in bootstrap/test contexts where the full loader pipeline
     /// has not run. All callers must gracefully fall back when `get()` returns `None`.
-    pub init_accumulated_group: Arc<std::sync::OnceLock<Arc<Vec<Arc<Thunk>>>>>,
+    pub init_accumulated_group: Arc<std::sync::OnceLock<std::sync::Arc<crate::value::GroupSpine>>>,
 }
 
 impl EvalContext {
@@ -599,6 +617,8 @@ impl EvalContext {
     /// - Re-entrant macro expansion (depth > 0 in expand.rs)
     /// - Test helpers that create contexts without a prelude env
     pub fn new_empty(base_dir: cap_std::fs::Dir, no_fs: bool) -> Arc<Self> {
+        let root_group = Self::build_root_group_builtins();
+        let root_spine = crate::value::GroupSpine::from_flat(root_group.iter().cloned().collect());
         Arc::new(Self {
             config: Arc::new(EvalConfig {
                 base_dir,
@@ -618,7 +638,8 @@ impl EvalContext {
             tycon_env: std::sync::OnceLock::new(),
             type_context: Arc::new(Mutex::new(None)),
             scope_frames: None,
-            root_group: Self::build_root_group_builtins(),
+            root_group,
+            root_spine,
             init_accumulated_group: Arc::new(std::sync::OnceLock::new()),
         })
     }
@@ -629,6 +650,8 @@ impl EvalContext {
         require_integrity: bool,
         env_allowed: Option<HashSet<String>>,
     ) -> Arc<Self> {
+        let root_group = Self::build_root_group_builtins();
+        let root_spine = crate::value::GroupSpine::from_flat(root_group.iter().cloned().collect());
         Arc::new(Self {
             config: Arc::new(EvalConfig {
                 base_dir,
@@ -648,7 +671,8 @@ impl EvalContext {
             tycon_env: std::sync::OnceLock::new(),
             type_context: Arc::new(Mutex::new(None)),
             scope_frames: None,
-            root_group: Self::build_root_group_builtins(),
+            root_group,
+            root_spine,
             init_accumulated_group: Arc::new(std::sync::OnceLock::new()),
         })
     }
@@ -688,6 +712,7 @@ impl EvalContext {
             type_context: Arc::clone(&self.type_context),
             scope_frames: self.scope_frames.clone(),
             root_group: Arc::clone(&self.root_group),
+            root_spine: Arc::clone(&self.root_spine),
             init_accumulated_group: Arc::clone(&self.init_accumulated_group),
         })
     }
@@ -731,6 +756,7 @@ impl EvalContext {
             type_context: Arc::clone(&self.type_context),
             scope_frames: self.scope_frames.clone(),
             root_group: Arc::clone(&self.root_group),
+            root_spine: Arc::clone(&self.root_spine),
             init_accumulated_group: Arc::clone(&self.init_accumulated_group),
         });
         (child_ctx, child_token)
@@ -769,6 +795,7 @@ impl EvalContext {
             type_context: Arc::clone(&self.type_context),
             scope_frames: self.scope_frames.clone(),
             root_group: Arc::clone(&self.root_group),
+            root_spine: Arc::clone(&self.root_spine),
             init_accumulated_group: Arc::clone(&self.init_accumulated_group),
         })
     }
@@ -810,6 +837,7 @@ impl EvalContext {
             type_context: Arc::clone(&self.type_context),
             scope_frames: self.scope_frames.clone(),
             root_group: Arc::clone(&self.root_group),
+            root_spine: Arc::clone(&self.root_spine),
             init_accumulated_group: Arc::clone(&self.init_accumulated_group),
         })
     }
@@ -846,6 +874,7 @@ impl EvalContext {
             type_context: Arc::clone(&self.type_context),
             scope_frames: Some(frames),
             root_group: Arc::clone(&self.root_group),
+            root_spine: Arc::clone(&self.root_spine),
             init_accumulated_group: Arc::clone(&self.init_accumulated_group),
         })
     }
@@ -868,9 +897,14 @@ impl EvalContext {
     ) -> Arc<Self> {
         // Build an extended group: existing root_group slots (builtins) + capability thunks.
         let mut new_group: Vec<Arc<Thunk>> = self.root_group.iter().cloned().collect();
+        let cap_thunks: Vec<Arc<Thunk>> = capabilities
+            .iter()
+            .map(|(_name, thunk)| Arc::clone(thunk))
+            .collect();
         for (_name, thunk) in capabilities {
             new_group.push(thunk);
         }
+        let root_spine = self.root_spine.extend(cap_thunks);
         Arc::new(Self {
             config: Arc::clone(&self.config),
             env_allowed: self.env_allowed.clone(),
@@ -891,6 +925,7 @@ impl EvalContext {
             type_context: Arc::clone(&self.type_context),
             scope_frames: self.scope_frames.clone(),
             root_group: Arc::new(new_group),
+            root_spine,
             init_accumulated_group: Arc::clone(&self.init_accumulated_group),
         })
     }
@@ -934,16 +969,16 @@ impl EvalContext {
     /// The `group` parameter is the full `accumulated_group` at the point just before the last
     /// expression node is evaluated — it contains every thunk for every intermediate dict the
     /// loader has evaluated so far, at their canonical LGM slots.
-    pub fn set_init_accumulated_group(&self, group: Vec<Arc<Thunk>>) {
+    pub fn set_init_accumulated_group(&self, group: std::sync::Arc<crate::value::GroupSpine>) {
         // set() returns Err if already set; silently ignore — first write wins.
-        let _ = self.init_accumulated_group.set(Arc::new(group));
+        let _ = self.init_accumulated_group.set(group);
     }
 
     /// Retrieve the accumulated_group snapshot from the init program's evaluation.
     ///
     /// Returns `None` in bootstrap/test contexts where the full loader pipeline has not run.
     /// Callers must gracefully fall back (e.g., return `false`) when this is `None`.
-    pub fn get_init_accumulated_group(&self) -> Option<&Arc<Vec<Arc<Thunk>>>> {
+    pub fn get_init_accumulated_group(&self) -> Option<&std::sync::Arc<crate::value::GroupSpine>> {
         self.init_accumulated_group.get()
     }
 
@@ -1528,7 +1563,7 @@ async fn call_to_match_by_name(
         return false;
     };
     // Step 4: materialize the thunk to get the to-match function value.
-    let fn_val = match materialize(fn_thunk, Some(span), ctx).await {
+    let fn_val = match materialize(&fn_thunk, Some(span), ctx).await {
         Ok(v) => v,
         Err(_) => return false,
     };
@@ -1818,7 +1853,7 @@ pub(crate) fn match_pattern<'a>(
                                     )
                                     .into());
                                 }
-                                Arc::clone(&frame.group[slot])
+                                frame.group.get(slot).expect("bounds check passed above")
                             }
                             VarAddr::ClosureCapture(slot) => {
                                 let slot = *slot as usize;
@@ -1832,7 +1867,10 @@ pub(crate) fn match_pattern<'a>(
                                     )
                                     .into());
                                 }
-                                Arc::clone(&frame.closure_env[slot])
+                                frame
+                                    .closure_env
+                                    .get(slot)
+                                    .expect("bounds check passed above")
                             }
                             VarAddr::Parameter(slot) => {
                                 let slot = *slot as usize;
@@ -2295,8 +2333,8 @@ mod tests {
     }
 
     /// Test helper for tests that need dot-access to work.
-    /// field-get (slot 0) and slot-get (slot 1) must be in scope for the resolver
-    /// and at the root env level for the evaluator's De Bruijn slot lookup.
+    /// `build_core_env()` seeds the resolver with all builtin names. Dot-access desugars
+    /// to `builtin-get` (key-based lookup) and must be registered in the root env.
     fn core_env_and_ctx() -> (Arc<RwLock<crate::env::Env>>, Arc<EvalContext>) {
         let env = crate::builtins::build_core_env();
         let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();

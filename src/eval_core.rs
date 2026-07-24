@@ -676,10 +676,8 @@ pub(crate) fn eval_core_expr<'a>(
             // cumulative offsets above them. No outer-frame traversal needed.
             CoreExpr::Var { name, addr, .. } => {
                 let thunk = match addr {
-                    VarAddr::LetrecGroupMember(i) => frame.group.get(*i as usize).map(Arc::clone),
-                    VarAddr::ClosureCapture(i) => {
-                        frame.closure_env.get(*i as usize).map(Arc::clone)
-                    }
+                    VarAddr::LetrecGroupMember(i) => frame.group.get(*i as usize),
+                    VarAddr::ClosureCapture(i) => frame.closure_env.get(*i as usize),
                     VarAddr::Parameter(i) => frame.params.get(*i as usize).map(Arc::clone),
                 };
                 match thunk {
@@ -852,12 +850,8 @@ pub(crate) fn eval_core_expr<'a>(
                     .iter()
                     .map(|(name, original_addr)| {
                         let found = match original_addr {
-                            VarAddr::LetrecGroupMember(i) => {
-                                frame.group.get(*i as usize).map(Arc::clone)
-                            }
-                            VarAddr::ClosureCapture(i) => {
-                                frame.closure_env.get(*i as usize).map(Arc::clone)
-                            }
+                            VarAddr::LetrecGroupMember(i) => frame.group.get(*i as usize),
+                            VarAddr::ClosureCapture(i) => frame.closure_env.get(*i as usize),
                             VarAddr::Parameter(i) => frame.params.get(*i as usize).map(Arc::clone),
                         };
                         found.unwrap_or_else(|| {
@@ -1068,14 +1062,15 @@ mod tests {
     /// value must match the injected value.
     #[tokio::test]
     async fn test_eval_varref() {
+        use crate::value::GroupSpine;
         let span = test_span(1, 1, 1, 5);
         let ctx = test_ctx();
 
         // Build an EvalFrame with the known thunk in group[0].
         let known_thunk = Arc::new(Thunk::value(Value::Int(77), span.clone()));
         let frame = Arc::new(EvalFrame {
-            closure_env: Arc::new(vec![]),
-            group: Arc::new(vec![Arc::clone(&known_thunk)]),
+            closure_env: GroupSpine::empty(),
+            group: GroupSpine::from_flat(vec![Arc::clone(&known_thunk)]),
             params: Arc::new(vec![]),
         });
 

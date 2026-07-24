@@ -53,6 +53,25 @@ async fn check_err(input: &str) -> Vec<TypeDiagnostic> {
     check(input).await.unwrap_err()
 }
 
+/// Like check() but only fails on ERROR-level diagnostics, ignoring Warn/Info.
+/// Use when a test verifies absence of a SPECIFIC error type and accepts
+/// advisory diagnostics (type-unknown warnings, explicit-unknown info, etc.).
+async fn check_errors_only(input: &str) -> Result<(), Vec<TypeDiagnostic>> {
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(input, test_file(input)).unwrap().program,
+    );
+    let (errors, _table, _tycon_env) = typecheck_surface_program_annotation_table(&program).await;
+    let err_only: Vec<TypeDiagnostic> = errors
+        .into_iter()
+        .filter(|d| d.level == crate::error::DiagnosticLevel::Err)
+        .collect();
+    if err_only.is_empty() {
+        Ok(())
+    } else {
+        Err(err_only)
+    }
+}
+
 async fn infer(input: &str) -> Type {
     let program = crate::desugar::desugar_surface_program(
         &crate::parse(input, test_file(input)).unwrap().program,
@@ -126,11 +145,14 @@ async fn doc_env_and_type(input: &str) -> (Arc<RwLock<crate::env::Env>>, Type) {
     // In production these come from builtin_core.llt type-stage evaluation.
     // Unit tests don't load the type-stage, so we inject them directly.
     {
-        use crate::type_infer::TypeStageEntry;
         use crate::type_def::Kind;
+        use crate::type_infer::TypeStageEntry;
         let mut frame = std::collections::HashMap::new();
         frame.insert("Label".to_string(), TypeStageEntry::TypeVar(Kind::Label));
-        frame.insert("Operator".to_string(), TypeStageEntry::TypeVar(Kind::Operator));
+        frame.insert(
+            "Operator".to_string(),
+            TypeStageEntry::TypeVar(Kind::Operator),
+        );
         state.type_stage_scope.push(frame);
     }
     let (result_env, result_ty, errors) = process_document(
@@ -448,7 +470,9 @@ async fn test_dot_access_constraint_generation_on_open_record_with_known_field()
     // Under BAS, check_dot_access generates constraint γ_data → Record({unknown: β})
     // in state.subst, but unify_rows ignores non-shared fields (BAS width subtyping).
     // No type error is produced; the caller sees Unknown for the unknown field.
-    let result = check("[result: $data.unknown  data: [known: 1]]").await;
+    // check_errors_only: accepts Warn "type unknown" from unannotated binding `data` and
+    // the dot-access on an unknown field which resolves to Type::Unknown under BAS.
+    let result = check_errors_only("[result: $data.unknown  data: [known: 1]]").await;
     assert!(
         result.is_ok(),
         "BAS: accessing unknown field on forward reference returns Unknown, not an error; \
@@ -949,7 +973,9 @@ async fn test_call_polymorphic_positional_plus_named_arity_ok() {
     // Polymorphic function with 2 params called with 1 positional arg + 1 named arg.
     // total_supplied = args.len() + named_args.len() = 1 + 1 = 2 = params.len() → ok.
     // This is a regression test for the named arg arity counting fix.
-    let result = check(
+    // check_errors_only: accepts Warn "type unknown" from unannotated parameters `a` and `b`
+    // and cross-document type inference for `f` in the second document.
+    let result = check_errors_only(
         "[f: [fn [let a b] $a]]
              ---
              [result: [call $f 1 b: 2]]",
@@ -1433,7 +1459,9 @@ async fn test_arity_mismatch_named_args_counted() {
     // 1 param, 0 positional args, 1 named arg → total_supplied = 1 = params.len() → no error.
     //
     // Uses multi-document input so f's type is fully resolved before the call site.
-    let result = check(
+    // check_errors_only: accepts Warn "type unknown" from unannotated parameter `x` and
+    // cross-document type inference for `f` referenced in the second document.
+    let result = check_errors_only(
         "[f: [fn [let x] $x]]
              ---
              [result: [call $f x: 42]]",
@@ -1458,7 +1486,9 @@ async fn test_check_call_forward_ref_function() {
     // in apply_cont_call_func (CEK AfterCallFunc handler), this produces a spurious
     // "expected function type" error. With the fix, the TypeVar arm returns a fresh
     // TypeVar for the return type without emitting an error.
-    let result = check("[result: [call $f 42]  f: [fn [let x] $x]]").await;
+    // check_errors_only: accepts Warn "type unknown" from unannotated parameter `x`
+    // in the forward-referenced function `f`.
+    let result = check_errors_only("[result: [call $f 42]  f: [fn [let x] $x]]").await;
     assert!(
         result.is_ok(),
         "forward-reference function call should not produce type error, got: {:?}",
@@ -1933,7 +1963,11 @@ async fn test_narrowing_type_map_hover() {
 #[tokio::test]
 async fn test_exhaustive_match_string_literal_variants() {
     // String literal variants: "ok" | "err" | "pending"
-    let result = check(
+    // check_errors_only: accepts Warn "type unknown" from the @["ok" "err" "pending"]
+    // annotation — the test harness lacks the prelude type-stage scope needed to resolve
+    // string-literal union annotations to a concrete type. The annotation form is valid;
+    // exhaustiveness checking still passes because the match arms cover all literal variants.
+    let result = check_errors_only(
         "[match [@[\"ok\" \"err\" \"pending\"] \"ok\"]\n\
                  \"ok\":      \"is-ok\"\n\
                  \"err\":     \"is-err\"\n\
@@ -2160,7 +2194,8 @@ async fn test_recursive_function_base_case_return_type() {
     // Uses `if` (special-cased in type checker) and Int literals without any
     // builtins, which require the prelude type class env not available in check().
     // Exercises: recursive fn pre-binding, letrec call into `f`, return type from base case.
-    let result = check("[f: [fn [let n] [if n 0 [f n]]]  r: [f 3]]").await;
+    // check_errors_only: accepts Warn "type unknown" from unannotated parameter `n` in `f`.
+    let result = check_errors_only("[f: [fn [let n] [if n 0 [f n]]]  r: [f 3]]").await;
     assert!(
         result.is_ok(),
         "recursive fn with Int base case and call site should type-check: {:?}",
@@ -2211,7 +2246,8 @@ async fn test_multi_variadic_unannotated_rest_typecheck() {
 #[tokio::test]
 async fn test_multi_variadic_call_unannotated_typecheck() {
     // Calling a function with unannotated rest should type-check.
-    let result = check("[f: [fn [let x ...rest] rest]  r: [f 1 2 3]]").await;
+    // check_errors_only: accepts Warn "type unknown" from unannotated parameters `x` and `...rest`.
+    let result = check_errors_only("[f: [fn [let x ...rest] rest]  r: [f 1 2 3]]").await;
     assert!(
         result.is_ok(),
         "call with unannotated rest should type-check: {:?}",
@@ -3520,7 +3556,9 @@ async fn test_annotation_error_reported_at_source() {
 #[tokio::test]
 async fn test_unknown_annotation_no_error() {
     // @Unknown on the return type of a function should produce no type errors.
-    let result = check("[f: [fn@Unknown [let x] $x]]").await;
+    // check_errors_only: accepts Info "explicit @Unknown annotation" — @Unknown is the
+    // gradual-typing escape hatch and produces an advisory Info diagnostic, not an error.
+    let result = check_errors_only("[f: [fn@Unknown [let x] $x]]").await;
     assert!(
         result.is_ok(),
         "expected no errors for @Unknown (gradual-typing escape hatch), got: {:?}",
@@ -3530,6 +3568,35 @@ async fn test_unknown_annotation_no_error() {
             .map(|e| e.message.clone())
             .collect::<Vec<_>>()
     );
+}
+
+/// B-609: bootstrap typecheck resolves `@Integer` — `builtin-int-add` has `ret: Type::Int`.
+///
+/// `get_builtin_core_type_env()` evaluates the type-stage section of builtin_core.llt to
+/// populate `type_stage_scope` with `Integer → Type::Int`. If that evaluation fails,
+/// `builtin-int-add: [fn@Integer [let a@Integer b@Integer] ...]` produces `ret: Type::Unknown`
+/// instead of `ret: Type::Int`. This test distinguishes a working bootstrap from a broken one —
+/// `Type::Function { .. }` would match both; checking `ret == Type::Int` does not.
+#[tokio::test]
+async fn test_b609_bootstrap_typecheck_resolves_integer_annotation() {
+    let arc_env = crate::imports::get_builtin_core_type_env()
+        .await
+        .expect("builtin core type env unavailable in test");
+    let scheme = env_get(&arc_env, "builtin-int-add")
+        .expect("builtin-int-add must be present in bootstrap env");
+    match &scheme.body {
+        crate::types::Type::Function { ret, .. } => {
+            assert_eq!(
+                ret.as_ref(),
+                &crate::types::Type::Int,
+                "builtin-int-add return type must be Type::Int — if broken bootstrap, @Integer \
+                 resolves to Unknown and ret is Type::Unknown"
+            );
+        }
+        other => panic!(
+            "builtin-int-add must have Function type (broken @Integer produces non-Function), got: {other:?}"
+        ),
+    }
 }
 
 /// B-524: fn param names must not create false SCC dependency edges to same-named siblings.
@@ -3553,7 +3620,9 @@ async fn test_unknown_annotation_no_error() {
 async fn test_fn_param_shadow_does_not_create_scc_dep_edge() {
     // With the fix: g's param 'a' shadows sibling 'a'; no spurious cycle; g: Unknown→Unknown.
     // Calling g with "hello" must NOT produce a type error.
-    let result = check(r#"[a: [g 42]  g: [fn [let a] $a]  result: [g "hello"]]"#).await;
+    // check_errors_only: accepts Warn "type unknown" from unannotated parameter `a` in `g`
+    // (inferred as Unknown→Unknown under gradual typing once the false SCC edge is removed).
+    let result = check_errors_only(r#"[a: [g 42]  g: [fn [let a] $a]  result: [g "hello"]]"#).await;
     assert!(
         result.is_ok(),
         "B-524: [g \"hello\"] must typecheck (g: Unknown\u{2192}Unknown when param shadows \

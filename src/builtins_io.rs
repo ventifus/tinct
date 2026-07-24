@@ -2286,14 +2286,20 @@ pub(crate) fn builtin_path_dir(
 
 /// `builtin-file-open`: Open a file via a DirCap and return a raw `Value::File`.
 ///
-/// Signature: `[builtin-file-open cap path mode]`
+/// Signature: `[builtin-file-open cap path modes mode flags]`
 ///
-/// `mode` is a String:
-/// - `"read"` → open for reading
-/// - `"write"` → open for writing (truncate + create)
-/// - `"append"` → open in append mode (create if absent)
-/// - `"create"` → create file if it doesn't exist (write mode implied)
-/// - `"truncate"` → truncate to zero length (write mode implied)
+/// `modes` is a positional list of mode strings, e.g. `["read"]` or `["write" "create" "truncate"]`.
+/// Each string activates the corresponding cap_std OpenOptions flag:
+/// - `"read"` → `opts.read(true)`
+/// - `"write"` → `opts.write(true)`
+/// - `"append"` → `opts.append(true)`
+/// - `"create"` → `opts.create(true)`
+/// - `"truncate"` → `opts.truncate(true)`
+/// - `"create-new"` → `opts.create_new(true)`
+///
+/// `mode`: Unix permission bits for newly created files (Integer). -1 = use OS default.
+/// `flags`: Raw `open(2)` flags via `custom_flags` (Integer). -1 = no custom flags.
+/// Both `mode` and `flags` are Unix-specific; on non-Unix platforms the values are ignored.
 ///
 /// Returns `Value::File(Arc<Mutex<cap_std::fs::File>>)`.
 /// All I/O protocol is built in tinct — `open` in prelude wraps this in a protocol dict.
@@ -2305,18 +2311,20 @@ pub(crate) fn builtin_file_open(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
-        if args.len() != 3 {
-            return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
+        if args.len() != 5 {
+            return Err(EvalError::arity_mismatch(5, args.len(), call_span).into());
         }
         reject_named("builtin-file-open", named.as_ref(), call_span.clone())?;
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
         let thunk2 = Arc::clone(&args[2]);
+        let thunk3 = Arc::clone(&args[3]);
+        let thunk4 = Arc::clone(&args[4]);
         let dir_val = thunk0
             .try_get_value()
             .expect("pre-materialized by pos_strictness[0]=Seq")
@@ -2325,79 +2333,117 @@ pub(crate) fn builtin_file_open(
             .try_get_value()
             .expect("pre-materialized by pos_strictness[1]=Seq")
             .clone();
-        let mode_val = thunk2
+        let modes_raw = thunk2
             .try_get_value()
             .expect("pre-materialized by pos_strictness[2]=Seq")
+            .clone();
+        let mode_raw = thunk3
+            .try_get_value()
+            .expect("pre-materialized by pos_strictness[3]=Seq")
+            .clone();
+        let flags_raw = thunk4
+            .try_get_value()
+            .expect("pre-materialized by pos_strictness[4]=Seq")
             .clone();
 
         let (dir, _perms) = extract_dir_cap(&dir_val, "builtin-file-open", thunk0.span.clone())?;
         let path = require_string("builtin-file-open", path_val, thunk1.span.clone())?;
-        let mode = require_string("builtin-file-open", mode_val, thunk2.span.clone())?;
 
-        use cap_std::fs::OpenOptions;
-
-        let file = match mode.as_str() {
-            "read" => dir.open(&path).map_err(|e| {
-                EvalError::user_error(
-                    format!("builtin-file-open: failed to open '{}' for reading: {}", path, e),
-                    call_span.clone(),
-                )
-            })?,
-            "write" => dir
-                .open_with(
-                    &path,
-                    OpenOptions::new().write(true).create(true).truncate(true),
-                )
-                .map_err(|e| {
-                    EvalError::user_error(
-                        format!("builtin-file-open: failed to open '{}' for writing: {}", path, e),
-                        call_span.clone(),
-                    )
-                })?,
-            "append" => dir
-                .open_with(&path, OpenOptions::new().append(true).create(true))
-                .map_err(|e| {
-                    EvalError::user_error(
-                        format!(
-                            "builtin-file-open: failed to open '{}' for appending: {}",
-                            path, e
-                        ),
-                        call_span.clone(),
-                    )
-                })?,
-            "create" => dir
-                .open_with(
-                    &path,
-                    OpenOptions::new().write(true).create(true).truncate(true),
-                )
-                .map_err(|e| {
-                    EvalError::user_error(
-                        format!("builtin-file-open: failed to create '{}': {}", path, e),
-                        call_span.clone(),
-                    )
-                })?,
-            "truncate" => dir
-                .open_with(
-                    &path,
-                    OpenOptions::new().write(true).create(true).truncate(true),
-                )
-                .map_err(|e| {
-                    EvalError::user_error(
-                        format!("builtin-file-open: failed to truncate '{}': {}", path, e),
-                        call_span.clone(),
-                    )
-                })?,
+        // Third arg: positional list of mode strings — ["read"], ["write" "create" "truncate"], etc.
+        let modes_dict = match modes_raw {
+            Value::Dict(map) => map,
             other => {
-                return Err(EvalError::user_error(
-                    format!(
-                        "builtin-file-open: unknown mode \"{}\" (expected \"read\", \"write\", \"append\", \"create\", or \"truncate\")",
-                        other
-                    ),
-                    call_span,
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-file-open".to_string(),
+                    "Dict",
+                    other.type_name(),
+                    thunk2.span.clone(),
                 )
-                .into())
+                .into());
             }
         };
+
+        // Fourth arg: Unix permission bits (-1 = OS default).
+        let mode_bits = match mode_raw {
+            Value::Int(n) => n,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-file-open".to_string(),
+                    "Integer",
+                    other.type_name(),
+                    thunk3.span.clone(),
+                )
+                .into());
+            }
+        };
+
+        // Fifth arg: raw open(2) flags (-1 = none).
+        let custom_flags = match flags_raw {
+            Value::Int(n) => n,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-file-open".to_string(),
+                    "Integer",
+                    other.type_name(),
+                    thunk4.span.clone(),
+                )
+                .into());
+            }
+        };
+
+        use cap_std::fs::OpenOptions;
+        let mut opts = OpenOptions::new();
+        for (_, val_thunk) in modes_dict.iter() {
+            let val = crate::eval::materialize(val_thunk, Some(&call_span), &ctx).await?;
+            if let Value::String {
+                ref source,
+                start,
+                end,
+            } = val
+            {
+                match &source[start..end] {
+                    "read" => {
+                        opts.read(true);
+                    }
+                    "write" => {
+                        opts.write(true);
+                    }
+                    "append" => {
+                        opts.append(true);
+                    }
+                    "create" => {
+                        opts.create(true);
+                    }
+                    "truncate" => {
+                        opts.truncate(true);
+                    }
+                    "create-new" => {
+                        opts.create_new(true);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        #[cfg(unix)]
+        {
+            use cap_std::fs::OpenOptionsExt;
+            if mode_bits != -1 {
+                opts.mode(mode_bits as u32);
+            }
+            if custom_flags != -1 {
+                opts.custom_flags(custom_flags as i32);
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = (mode_bits, custom_flags);
+
+        let file = dir.open_with(&path, &opts).map_err(|e| {
+            EvalError::user_error(
+                format!("builtin-file-open: failed to open '{}': {}", path, e),
+                call_span.clone(),
+            )
+        })?;
 
         ok_val(Value::File(Arc::new(Mutex::new(file))), call_span)
     })

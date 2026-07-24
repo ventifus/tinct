@@ -121,6 +121,34 @@ pub use error::{
 /// Type error diagnostic formatting.
 pub use types::{Type, TypeScheme};
 
+/// Format a TypeDiagnostic with source context for display.
+///
+/// Produces: `level[kind]: message\n --> file:line:col\n  |\n  snippet\n  = note: ...\n`
+pub fn format_type_diagnostic(diag: &TypeDiagnostic, source: &str, file_name: &str) -> String {
+    let level_str = match diag.level {
+        DiagnosticLevel::Info => "info",
+        DiagnosticLevel::Warn => "warning",
+        DiagnosticLevel::Err => "error",
+    };
+    let code = diag.kind;
+    let primary_span = diag.primary_span();
+    let line = primary_span.start_line;
+    let col = primary_span.start_col;
+    let mut out = format!("{level_str}[{code}]: {}\n", diag.message);
+    out.push_str(&format!(" --> {file_name}:{line}:{col}\n"));
+    if let Some(snippet) = render_span_snippet(source, primary_span.clone()) {
+        out.push_str("  |\n");
+        out.push_str(&snippet);
+    }
+    for note in &diag.notes {
+        out.push_str(&format!("  = note: {note}\n"));
+    }
+    for help in &diag.help {
+        out.push_str(&format!("  = help: {help}\n"));
+    }
+    out
+}
+
 /// Formatter: canonical source reformatter.
 pub use formatter::{format_source_tinct, format_source_tinct_with_dir};
 
@@ -262,6 +290,15 @@ pub async fn run_loader_pipeline(
                                     name.to_string(),
                                     crate::type_infer::TypeStageEntry::Resolved(ty),
                                 );
+                            } else if let Some(kind) =
+                                crate::type_normalize::typenode_typevar_kind(&val)
+                            {
+                                // TypeNode.TypeVar kind: "Operator"|"Label" → TypeStageEntry::TypeVar
+                                // Produced by builtin_core.llt for the Operator and Label type names.
+                                map.insert(
+                                    name.to_string(),
+                                    crate::type_infer::TypeStageEntry::TypeVar(kind),
+                                );
                             } else if matches!(val, crate::value::Value::Function { .. }) {
                                 // Function → keep as ThunkId for parameterized types
                                 map.insert(
@@ -269,13 +306,8 @@ pub async fn run_loader_pipeline(
                                     crate::type_infer::TypeStageEntry::Function(Arc::clone(thunk)),
                                 );
                             } else {
-                                // Non-leaf TypeNode (e.g., complex record, union) — use typenode_leaf_to_type
-                                // fallback by trying again. If it's not a TypeNode variant at all, skip.
-                                // For now, treat unknown values as functions (conservative).
-                                map.insert(
-                                    name.to_string(),
-                                    crate::type_infer::TypeStageEntry::Function(Arc::clone(thunk)),
-                                );
+                                // Unknown type-stage value — not a recognized TypeNode, TypeVar, or function.
+                                // Skip it; do not insert a wrong TypeStageEntry kind.
                             }
                         }
                     }
@@ -310,7 +342,7 @@ pub async fn run_loader_pipeline(
         Arc::new(std::sync::RwLock::new(wrapper))
     };
     let seed_tycon_env = crate::imports::get_builtin_core_tycon_env().unwrap_or_default();
-    let (loader_type_errors, _loader_annotation_table, loader_tycon_env) =
+    let (loader_diagnostics, _loader_annotation_table, loader_tycon_env) =
         typecheck::typecheck_surface_program_annotation_table_with_env(
             &loader_program,
             builtin_env,
@@ -322,21 +354,19 @@ pub async fn run_loader_pipeline(
     // Wire the TyConEnv from the typecheck pass into the eval context so that
     // value_matches_type and TypeAssert error messages can look up TyCon definitions.
     eval_ctx_with_frames.set_tycon_env(loader_tycon_env);
-    if !loader_type_errors.is_empty() {
-        let msg = loader_type_errors
-            .iter()
-            .map(|e| {
-                format!(
-                    "{}:{}:{}: {}",
-                    init_path,
-                    e.primary_span().start_line,
-                    e.primary_span().start_col,
-                    e.message
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        return Err(msg);
+    // Emit ALL diagnostics (errors and warnings). Never drop any.
+    // Only errors are fatal — warnings are informational.
+    let mut has_errors = false;
+    for diag in &loader_diagnostics {
+        eprintln!("{}", format_type_diagnostic(diag, init_source, init_path));
+        if diag.level == crate::error::DiagnosticLevel::Err {
+            has_errors = true;
+        }
+    }
+    if has_errors {
+        return Err(format!(
+            "{init_path}: type errors in init program — cannot proceed"
+        ));
     }
 
     // Evaluate loader.llt. env already contains all stdlib builtins, %programs, %args,
@@ -378,7 +408,7 @@ pub async fn typecheck_source(input: &str) -> Result<(), String> {
     let program = desugar::desugar_program_full(&parsed.program);
     let env_arc = imports::get_builtin_core_type_env()
         .await
-        .expect("builtin core type env not available — bootstrap error");
+        .expect("get_builtin_core_type_env() returned None");
     let (diagnostics, _type_map, _doc_map, _scheme_map) =
         typecheck::typecheck_surface_program(&program, env_arc).await;
     if diagnostics.is_empty() {
@@ -406,7 +436,7 @@ pub async fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
     // Type check the surface program.
     let env_arc2 = imports::get_builtin_core_type_env()
         .await
-        .expect("builtin core type env not available — bootstrap error");
+        .expect("get_builtin_core_type_env() returned None");
     let (diagnostics, _type_map, _doc_map, _scheme_map) =
         typecheck::typecheck_surface_program(&program, env_arc2).await;
     if !crate::error::has_type_errors(&diagnostics) {

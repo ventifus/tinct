@@ -81,14 +81,14 @@
   # Used by TypeNode.map-children to reconstruct same-shaped TypeNode variants
   # after applying a child-mapping function.
   #
-  # Signature: obj@Dict -> f@[Fn [String Any] Any] -> Dict
+  # Signature: obj@Dict -> f@[Fn [Any] Any] -> Dict
   #
   # Args:
   #   obj — the source dict
-  #   f   — called with (key, value), returns the new value for that key
+  #   f   — called with (value), returns the new value; key is preserved automatically
   #
   # Example:
-  #   [object-map [a: 1  b: 2] [fn [let k v] [+ v 10]]] => [a: 11  b: 12]
+  #   [object-map [a: 1  b: 2] [fn [let v] [+ v 10]]] => [a: 11  b: 12]
   #
   # Implemented using only core builtins (dict-merge, builtin-keys,
   # builtin-get, builtin-dict-length, builtin-dict-nth, builtin-eq-int,
@@ -100,7 +100,7 @@
       0: [call [fn [let]
             [k: [builtin-get i keys]]
             [object-map-step obj f keys [builtin-int-add i 1] n
-              [builtin-builder-set k [f k [builtin-get k obj]] builder]]]]
+              [builtin-builder-set k [f [builtin-get k obj]] builder]]]]
       ...: [builtin-builder-finish builder]]]
   object-map: [fn [let obj f]
     [keys: [builtin-keys obj]]
@@ -330,24 +330,24 @@
       [match t
         [case [let p] [TypeNode.Dict p]
           [TypeNode.Dict
-            fields: [object-map p.fields [fn [let k v] [f v]]]
+            fields: [object-map p.fields f]
             open:   p.open]]
         [case [let p] [TypeNode.Union p]
           [TypeNode.Union
-            types: [object-map p.types [fn [let k v] [f v]]]]]
+            types: [object-map p.types f]]]
         [case [let p] [TypeNode.Intersect p]
           [TypeNode.Intersect
-            types: [object-map p.types [fn [let k v] [f v]]]]]
+            types: [object-map p.types f]]]
         [case [let p] [TypeNode.Negation p]
           [TypeNode.Negation
             inner: [f p.inner]]]
         [case [let p] [TypeNode.TypeApplication p]
           [TypeNode.TypeApplication
             ctor: [f p.ctor]
-            args: [object-map p.args [fn [let k v] [f v]]]]]
+            args: [object-map p.args f]]]
         [case [let p] [TypeNode.Arrow p]
           [TypeNode.Arrow
-            params: [object-map p.params [fn [let k v] [f v]]]
+            params: [object-map p.params f]
             result: [f p.result]]]
         [case [let p] [TypeNode.Recursive p]
           [TypeNode.Recursive
@@ -561,30 +561,11 @@ make-entry: [fn@Dict [let k v] [$k: v]]
 # Logic helpers (only depend on builtins + siblings)
 # ============================================================================
 
-any?-impl: [fn@[bind: [a]  return: Integer] [let pred@[Fn@Boolean [a]] xs@Dict ks i@Integer len@Integer]
-    [match [builtin-int-gte i len]
-        0: [match [bool->int-priv [pred [builtin-get [builtin-get i ks] xs]]]
-            0: [any?-impl pred xs ks [builtin-int-add i 1] len]
-            ...: 1]
-        ...: 0]]
-
-all?-impl: [fn@[bind: [a]  return: Integer] [let pred@[Fn@Boolean [a]] xs@Dict ks i@Integer len@Integer]
-    [match [builtin-int-gte i len]
-        0: [match [bool->int-priv [pred [builtin-get [builtin-get i ks] xs]]]
-            0: 0
-            ...: [all?-impl pred xs ks [builtin-int-add i 1] len]]
-        ...: 1]]
 
 # ============================================================================
 # Control flow helpers (only depend on builtins + siblings)
 # ============================================================================
 
-cond-impl: [fn@[bind: [a]  return: [or a Null]] [let pairs@Dict i@Integer]
-    [match [builtin-int-gte i [builtin-dict-length pairs]]
-        0: [match [bool->int-priv [builtin-get i pairs].0]
-            0: [cond-impl pairs [builtin-int-add i 1]]
-            ...: [builtin-get i pairs].1]
-        ...: []]]
 
 # ============================================================================
 # Dict utilities helpers (only depend on builtins + siblings)
@@ -598,19 +579,17 @@ bool->int-priv: [fn [let b]
       [@Integer _]:  b
       ...:             1]]
 
-# raw-to-result: convert the {ok: val} / {error: msg} dict returned by builtin-try into
+# raw-to-result: convert the {ok: val} / diagnostic dict returned by builtin-try into
 # a Result.Ok / Result.Error variant for downstream match arms to consume.
 raw-to-result: [fn [let raw]
     [match [builtin-has-key? "ok" raw]
-        0: [Result.Error msg:   [builtin-get "error" raw]]
-        ...: [Result.Ok   value: [builtin-get "ok"    raw]]]]
+        0: [Result.Error msg:   [builtin-get "message" raw]]
+        ...: [Result.Ok   value: [builtin-get "ok"     raw]]]]
 
 # ============================================================================
 # List helpers (only depend on builtins + siblings)
 # ============================================================================
 
-nth-impl: [fn@[bind: [a]  return: a] [let xs@Dict ks n@Integer len@Integer]
-    [builtin-get [builtin-get [match [builtin-lt n 0] 0: n ...: [builtin-int-add len n]] ks] xs]]
 
 # ============================================================================
 # Higher-order helpers (only depend on builtins + siblings)
@@ -620,12 +599,6 @@ nth-impl: [fn@[bind: [a]  return: a] [let xs@Dict ks n@Integer len@Integer]
 # acc is a dict with pass/fail keys, each holding an integer-keyed Dict (forward order).
 # Uses dict-append for O(1) amortized insert. No Seq construction needed —
 # dict-append is a core builtin available in the private dict.
-partition-step: [fn@Dict [let acc e passes]
-    [match [bool->int-priv passes]
-        0: [pass: [builtin-get "pass" acc]
-            fail: [dict-append e [builtin-get "fail" acc]]]
-        ...: [pass: [dict-append e [builtin-get "pass" acc]]
-            fail: [builtin-get "fail" acc]]]]
 
 # ── Tinct implementations of formerly-Rust derived builtins ──────────────────
 # Private helpers: named without builtin- prefix since they are tinct, not Rust.
@@ -659,10 +632,6 @@ dict-merge: [fn [let a@Dict b@Dict]
     [_copy [_copy [builtin-make-builder] a [builtin-dict-length a] 0]
            b [builtin-dict-length b] 0]]]
 
-# sort-asc: delegates to sort-by with < as comparator (O(n log n) mergesort).
-# Callers: sort, sorted.
-sort-asc: [fn [let xs@Dict]
-  [sort-by [fn [let a b] [< a b]] xs]]
 
 # partition-finish: accumulator is already in forward order — return as-is.
 partition-finish: [fn@[bind: [a]  return: a] [let result@a] result]
@@ -704,15 +673,15 @@ try-or-impl: [fn@[bind: [a]  return: a] [let try-result default@a]
 # env-to-name-set: convert an env dict to a flat Dict<String,1> for builtin-resolve.
 # builtin-resolve now takes a name-set (flat dict of all visible names, values=1)
 # rather than a scope-frames array. The env is already a flat dict of name→thunk.
-env-to-name-set-inner: [fn [let keys n i builder]
-  [match [builtin-eq-int i n]
-    0: [env-to-name-set-inner keys n [builtin-int-add i 1]
-          [builtin-builder-set [builtin-get i keys] 1 builder]]
-    ...: [builtin-builder-finish builder]]]
 
 env-to-name-set: [fn [let env]
   [keys: [builtin-keys env]]
-  [env-to-name-set-inner keys [builtin-dict-length keys] 0 [builtin-make-builder]]]
+  [go: [fn [let n i builder]
+    [match [builtin-eq-int i n]
+      0: [go n [builtin-int-add i 1]
+               [builtin-builder-set [builtin-get i keys] 1 builder]]
+      ...: [builtin-builder-finish builder]]]]
+  [go [builtin-dict-length keys] 0 [builtin-make-builder]]]
 
 # ============================================================================
 # Async private helpers (T-733: moved from stdlib/async.llt)
@@ -720,30 +689,7 @@ env-to-name-set: [fn [let env]
 
 # retry-impl: recursive countdown helper for retry.
 # Attempts thunk. On success returns value. On failure, if n > 0 retries.
-retry-impl: [fn@[bind: [a]  return: a] [let n@Integer thunk@[Fn@a []]]
-    [match [raw-to-result [builtin-try [thunk]]]
-        [case [let p] [Result.Ok p]    p.value]
-        [case [let _] [Result.Error]   [match [builtin-int-gte n 1]
-                       0: [builtin-raise "retry limit exceeded"]
-                       ...: [retry-impl [builtin-int-sub n 1] thunk]]]]]
 
-# select-impl: recursive event-loop body.
-# Calls builtin-select-once on sources, unwraps the discriminated return, then loops.
-# builtin-select-once returns {ok: handler_result} on success, {closed: []} when all
-# channels are closed. Prelude discriminates via builtin-has-key? "ok" — no variant
-# tag matching, so a handler returning Closed.Closed does not confuse the loop (B-468).
-# Checks ctx cancellation before each iteration so callers can bound the loop.
-# Tail-recursive with TCO support (O(1) stack depth in the CEK machine).
-select-impl: [fn@Any [let ctx sources@[Seq Dict] handler@[Fn@Any [Any]]]
-    [match [builtin-cancelled-q ctx]
-        0: [call [fn [let raw]
-                [match [builtin-has-key? "ok" raw]
-                    0: Closed.Closed
-                    [case [let _] ...
-                        [call [fn [let _ignored] [select-impl ctx sources handler]]
-                              [handler [builtin-get "ok" raw]]]]]]
-               [builtin-select-once ctx sources]]
-        ...: []]]
 
 # Indexable declared here (dict 1) so it is in scope when type-checking dict 1 helpers
 # (e.g. cond-impl uses builtin-get which carries an Indexable constraint).
@@ -945,12 +891,6 @@ Return argument unchanged.
 Example: [identity 42] => 42
 """] [let x] x]
 
-const: [fn@[bind: [a]  return: a  doc: """
-Return first argument, ignore second (K combinator).
-
-Example: [const "hello" "ignored"] => "hello"
-Example: [map [const 0] [1 2 3]] => [0 0 0]
-"""] [let x] [fn [let y] x]]
 
 # ============================================================================
 # Logic
@@ -1003,9 +943,15 @@ Example: [any? [fn [x] [> x 0]] [1 -2 3]] => Boolean.True
 
 Note: Errors if xs is a Seq (collect first). Inherently materializing: short-circuits but materializes elements until condition met.
 """] [let pred@[Fn@Boolean [a]] xs@Dict]
-    [if [seq? xs]
-        [error "any?: expected Dict, got Seq -- collect the Seq first"]
-        [if [any?-impl pred xs [keys xs] 0 [length xs]] Boolean.True Boolean.False]]]
+  [impl: [fn [let ks i len]
+    [match [builtin-int-gte i len]
+      0: [match [bool->int-priv [pred [builtin-get [builtin-get i ks] xs]]]
+          0: [impl ks [builtin-int-add i 1] len]
+          ...: 1]
+      ...: 0]]]
+  [if [seq? xs]
+    [error "any?: expected Dict, got Seq -- collect the Seq first"]
+    [if [impl [keys xs] 0 [length xs]] Boolean.True Boolean.False]]]
 
 all?: [fn@[bind: [a]  return: Boolean  doc: """
 Boolean.True if all elements satisfy predicate.
@@ -1016,9 +962,15 @@ Example: [all? [fn [x] [> x 0]] [1 2 3]] => Boolean.True
 
 Note: Errors if xs is a Seq (collect first). Inherently materializing: short-circuits but materializes elements until condition failed.
 """] [let pred@[Fn@Boolean [a]] xs@Dict]
-    [if [seq? xs]
-        [error "all?: expected Dict, got Seq -- collect the Seq first"]
-        [if [all?-impl pred xs [keys xs] 0 [length xs]] Boolean.True Boolean.False]]]
+  [impl: [fn [let ks i len]
+    [match [builtin-int-gte i len]
+      0: [match [bool->int-priv [pred [builtin-get [builtin-get i ks] xs]]]
+          0: 0
+          ...: [impl ks [builtin-int-add i 1] len]]
+      ...: 1]]]
+  [if [seq? xs]
+    [error "all?: expected Dict, got Seq -- collect the Seq first"]
+    [if [impl [keys xs] 0 [length xs]] Boolean.True Boolean.False]]]
 
 # ============================================================================
 # Comparison (derived from < and =)
@@ -1222,7 +1174,14 @@ Multi-branch conditional.
 Example: [cond [[[> x 10] "big"] [[> x 0] "positive"] [True "other"]]]
 
 Note: Takes a list of [condition result] pairs. Returns the first result where condition is True. Returns [] (empty dict) when no branch matches. Only the matched branch is evaluated (lazy branch evaluation).
-"""] [let pairs@Dict] [cond-impl pairs 0]]
+"""] [let pairs@Dict]
+  [cond-impl: [fn [let i]
+    [match [builtin-int-gte i [builtin-dict-length pairs]]
+      0: [match [bool->int-priv [builtin-get i pairs].0]
+          0: [cond-impl [builtin-int-add i 1]]
+          ...: [builtin-get i pairs].1]
+      ...: []]]]
+  [cond-impl 0]]
 
 # until: re-exported from builtin-until (Rust builtin for performance — avoids per-iteration
 # thunk allocation overhead). Registered in src/builtins_core.rs as builtin-until.
@@ -1360,23 +1319,37 @@ Preserves remaining keys in insertion order. Returns dict unchanged if key is no
 update@[doc: "Update dict value by applying function"]: [fn@[bind: [a]  return: Dict] [let k f@[Fn@a [a]] xs@Record]
     [merge xs [make-entry k [f [get k xs]]]]]
 
-values: [fn@[return: Dict  doc: """
-Get all values from a dict as an integer-indexed list.
+values: [fn@[return: [List a]  doc: """
+Get all values from a dict as a List.
 
 Example: [values [a: 10  b: 20]] => [10 20]
 
-Note: Preserves dict insertion order: values are returned in the same order as keys. O(n) via lazy Seq construction + collect-dict.
+Note: Preserves dict insertion order: values are returned in the same order as keys. O(n).
 """] [let xs@Record]
-    [collect-dict [values-seq-impl xs [keys xs] 0 [length [keys xs]]]]]
+  [seq: [fn [let ks i len]
+    [match [builtin-int-gte i len]
+      0: [Seq.Cons
+          head: [builtin-get [builtin-get i ks] xs]
+          tail: [seq ks [builtin-int-add i 1] len]]
+      ...: Seq.End]]]
+  [collect [seq [keys xs] 0 [length [keys xs]]]]]
 
-entries: [fn@[return: Dict  doc: """
-Get all entries as a list of [key: k  value: v] dicts.
+entries: [fn@[return: [List Dict]  doc: """
+Get all entries as a List of [key: k  value: v] dicts.
 
 Example: [entries [a: 10  b: 20]] => [[key: "a"  value: 10]  [key: "b"  value: 20]]
 
-Note: Preserves dict insertion order: entries appear in the same order as the source dict. O(n) via lazy Seq construction + collect-dict.
+Note: Preserves dict insertion order: entries appear in the same order as the source dict. O(n).
 """] [let xs@Record]
-    [collect-dict [entries-seq-impl xs [keys xs] 0 [length [keys xs]]]]]
+  [seq: [fn [let ks i len]
+    [match [builtin-int-gte i len]
+      0: [step ks i len [builtin-get i ks]]
+      ...: Seq.End]]
+   step: [fn [let ks i len k]
+    [Seq.Cons
+      head: [key: k  value: [builtin-get k xs]]
+      tail: [seq ks [builtin-int-add i 1] len]]]]
+  [collect [seq [keys xs] 0 [length [keys xs]]]]]
 
 from-entries: [fn@[return: Dict  doc: """
 Reconstruct a dict from a list of [key: k value: v] pairs.
@@ -1401,7 +1374,9 @@ Note: Inverse of entries. O(n) via build-dict builtin.
 # assert: [nth 1 [10 20 30]] => 20
 # assert: [nth -1 [10 20 30]] => 30
 nth@[doc: "Get nth element (supports negative indices)"]: [fn@[bind: [a]  return: a] [let n@Integer xs@Dict]
-    [nth-impl xs [keys xs] n [length xs]]]
+  [ks:  [keys xs]
+   len: [length xs]]
+  [builtin-get [builtin-get [match [builtin-lt n 0] 0: n ...: [builtin-int-add len n]] ks] xs]]
 
 # Get the last element by insertion-order position, last character of a string, or last byte of Bytes (as Int).
 # last: delegates to builtin-last (see wrappers section at bottom of this dict).
@@ -1418,14 +1393,6 @@ conj@[doc: "Append element to end of list"]: [fn@[bind: [a]  return: Dict] [let 
 
 # concat, reverse, sort: delegate to their builtin-* aliases (see wrappers section).
 
-reindex: [fn@[return: Dict  doc: """
-Rebuild a collection with dense 0..n integer keys.
-
-Example: [reindex [a: 1 b: 2 c: 3]] => [0: 1 1: 2 2: 3]
-
-Note: Preserves values and insertion order. Useful after drop or sparse slicing to normalize key numbering. O(n).
-"""] [let xs@Dict]
-    [collect-dict [reindex-seq-impl xs [keys xs] 0 [length [keys xs]]]]]
 
 # ============================================================================
 # Sorting (Mergesort)
@@ -1439,6 +1406,11 @@ Note: Preserves values and insertion order. Useful after drop or sparse slicing 
 # Sort a list using a custom comparator.
 # Type: ((a -> a -> Bool) -> Dict a -> Seq a)
 # cmp is a less-than function: [cmp a b] returns True if a should come before b.
+# sort-asc: delegates to sort-by with < as comparator (O(n log n) mergesort).
+# Callers: sort, sorted.
+sort-asc: [fn [let xs@Dict]
+  [sort-by [fn [let a b] [< a b]] xs]]
+
 # Example: [sort-by [fn [let a b] [> a b]] [3 1 2]] => [3 2 1]  (descending)
 # Inherently materializing: must compare values to determine order.
 sort-by@[doc: "Sort with custom comparator (O(n log n) mergesort)"]: [fn@[bind: [a]  return: Dict] [let cmp@[Fn@Boolean [a a]] xs@Dict]
@@ -1472,22 +1444,20 @@ sort-by@[doc: "Sort with custom comparator (O(n log n) mergesort)"]: [fn@[bind: 
              ...: xs]]
          [merge-sort-impl xs n]]]]
 
-# Like Python's sorted() — accepts Seq, List (finger tree), or Dict; materializes to Dict first.
-# Type: (Seq a | List a | Dict Comparable -> Dict Comparable)
+# Like Python's sorted() — accepts Seq, List (finger tree), or Dict; returns a sorted List.
 # Example: [sorted [filter [fn [x] [> x 2]] [1 3 2 4]]] => [3 4]
 # Example: [sorted [3 1 2]] => [1 2 3]
-sorted@[doc: "Sort collection in ascending order"]: [fn@Dict [let xs]
-    [sort-asc [if [seq? xs]  [collect-dict xs]
-              [if [list? xs] [collect-dict [ft-to-seq xs]]
-                              xs]]]]
+sorted@[doc: "Sort collection in ascending order"]: [fn@[List a] [let xs]
+    [collect [each [sort-asc [if [seq? xs]  [collect-dict xs]
+                              [if [list? xs] [collect-dict [ft-to-seq xs]]
+                                              xs]]]]]]
 
 # Like sorted, with a custom comparator.
-# Type: ((a -> a -> Bool) -> Seq a | List a | Dict a -> Dict a)
 # Example: [sorted-by [fn [let a b] [> a b]] [filter [fn [let x] [> x 0]] [-1 3 -2 4]]] => [4 3]
-sorted-by@[doc: "Sort with custom comparator (accepts Seq, List, or Dict)"]: [fn@[bind: [a]  return: Dict] [let cmp@[Fn@Boolean [a a]] xs]
-    [sort-by cmp [if [seq? xs]  [collect-dict xs]
-                 [if [list? xs] [collect-dict [ft-to-seq xs]]
-                                 xs]]]]
+sorted-by@[doc: "Sort with custom comparator (accepts Seq, List, or Dict)"]: [fn@[bind: [a]  return: [List a]] [let cmp@[Fn@Boolean [a a]] xs]
+    [collect [each [sort-by cmp [if [seq? xs]  [collect-dict xs]
+                                 [if [list? xs] [collect-dict [ft-to-seq xs]]
+                                                 xs]]]]]]
 
 # ============================================================================
 # Universal Collection Operations (preserve keys)
@@ -1528,20 +1498,18 @@ Note: The function f receives the entry dict and must return the NEW VALUE (not 
 """] [let f@[Fn@b [Record]] xs@Record]
   [build-dict [map [fn [let e] [key: e.key  value: [f e]]] [each-kv xs]]]]
 
-object-map: [fn@[bind: [a b k]  return: Dict  doc: """
-Map a function over the values of a dict, passing (key, value) as two arguments.
-Keys are preserved; values are replaced by the function's return value.
+object-map: [fn@[bind: [a b]  return: Dict  doc: """
+Map a function over the values of a dict. Keys are preserved automatically.
 
 Args:
   obj — source dict
-  f   — called as [f key value]; returns the new value for that key
+  f   — called as [f value]; returns the new value for that key
 
-Example: [object-map [a: 1  b: 2] [fn [let k v] [+ v 10]]] => [a: 11  b: 12]
+Example: [object-map [a: 1  b: 2] [fn [let v] [+ v 10]]] => [a: 11  b: 12]
 
 Note: Counterpart to map-entries (which passes a single entry dict). Use object-map
-when f needs both key and value as separate parameters (e.g., TypeNode.map-children).
-O(n) via build-dict.
-"""] [let obj@Dict f@[Fn@b [k a]]]
+for value-only transformations where keys are preserved unchanged. O(n).
+"""] [let obj@Dict f@[Fn@b [a]]]
   [build-dict [map [fn [let e] [key: e.key  value: [f e.key e.value]]] [each-kv obj]]]]
 
 # Left fold: alias for reduce (Rust-native builtin, dual-dispatch on Dict/Seq).
@@ -1567,15 +1535,39 @@ Pair entries from two collections by position.
 
 Example: [zip ["a" "b" "c"] [1 2 3]] => [["a" 1] ["b" 2] ["c" 3]]
 
-Note: If both xs and ys are Seq: lazy Seq of pairs. Otherwise: materialize to Dict, then use eager zip. Stops at the shorter collection's length.
+Note: If both xs and ys are Seq: lazy Seq of pairs. Otherwise: materialize to Dict, then collect to List. Stops at the shorter collection's length.
 """] [let xs ys]
-    [if [and [seq? xs] [seq? ys]]
-        [zip-seq-impl xs ys]
-        [zip-dict-impl
-            [if [seq? xs]  [collect-dict xs]
-            [if [list? xs] [collect-dict [ft-to-seq xs]] xs]]
-            [if [seq? ys]  [collect-dict ys]
-            [if [list? ys] [collect-dict [ft-to-seq ys]] ys]]]]]
+  [zip-seq: [fn [let xs ys]
+    [match xs
+      [case [let px] [Seq.Cons px] [match ys
+        [case [let py] [Seq.Cons py] [Seq.Cons
+          head: [px.head  py.head]
+          tail: [zip-seq px.tail py.tail]]]
+        ...: Seq.End]]
+      ...: Seq.End]]
+   zip-dict: [fn [let dx dy]
+    [xks: [builtin-keys dx]
+     yks: [builtin-keys dy]
+     xlen: [builtin-dict-length xks]
+     ylen: [builtin-dict-length yks]
+     seq: [fn [let i]
+       [match [builtin-int-gte i xlen]
+         0: [match [builtin-int-gte i ylen]
+             0: [step i [builtin-get i xks] [builtin-get i yks]]
+             ...: Seq.End]
+         ...: Seq.End]]
+     step: [fn [let i xk yk]
+       [Seq.Cons
+         head: [[builtin-get xk dx] [builtin-get yk dy]]
+         tail: [seq [builtin-int-add i 1]]]]]
+    [collect [seq 0]]]]
+  [if [and [seq? xs] [seq? ys]]
+    [zip-seq xs ys]
+    [zip-dict
+      [if [seq? xs]  [collect-dict xs]
+      [if [list? xs] [collect-dict [ft-to-seq xs]] xs]]
+      [if [seq? ys]  [collect-dict ys]
+      [if [list? ys] [collect-dict [ft-to-seq ys]] ys]]]]]
 
 flatten: [fn@[bind: [a]  return: [Seq a]  doc: """
 Flatten nested lists one level deep.
@@ -1647,14 +1639,17 @@ Example: [partition [fn [let x] [> x 0]] [range 0 5]] => [pass: [1 2 3 4]  fail:
 Note: Returns a dict with keys `pass` (matching) and `fail` (non-matching). Both groups are
 materialized integer-keyed dicts (eager). O(n) via Seq cons + reverse + collect for each group.
 """] [let pred@[Fn@Boolean [a]] xs]
-    # partition-finish is identity (accumulator already in forward Dict order).
-    # Single-expression body avoids [let result ...] LetDecl-nesting bug (B-264).
-    [partition-finish
-        [reduce
-            [fn [let acc e]
-                [partition-step acc e [pred e]]]
-            [pass: []  fail: []]
-            xs]]]
+  [step: [fn [let acc e passes]
+    [match [bool->int-priv passes]
+      0: [pass: [builtin-get "pass" acc]
+          fail: [dict-append e [builtin-get "fail" acc]]]
+      ...: [pass: [dict-append e [builtin-get "pass" acc]]
+            fail: [builtin-get "fail" acc]]]]]
+  [partition-finish
+    [reduce
+      [fn [let acc e] [step acc e [pred e]]]
+      [pass: []  fail: []]
+      xs]]]
 
 flat-map: [fn@[bind: [a b]  return: [Seq b]  doc: """
 Map f over a Seq and flatten the results one level. Lazy. O(n+m).
@@ -1700,21 +1695,6 @@ Buckets are accumulated with append — elements appear in insertion order.
 """] [let f@[Fn@k [a]] xs]
     [group-by-finish f xs]]
 
-# Merge two dicts recursively. Sub-dicts are merged depth-first;
-# all other values from b override a (right-biased at each level).
-# Inherently materializing: must inspect values to determine if they are dicts.
-# deep-merge-step depends on has?/get/deep-merge (public) — lives in public dict.
-deep-merge-step@[doc: "Deep-merge step (internal helper)"]: [fn@Dict [let a@Record b@Record e@Dict]
-    [key: e.key
-     value:
-        [if
-            [and
-                [has? e.key a]
-                [and
-                    [dict? [get e.key a]]
-                    [dict? e.value]]]
-            [deep-merge [get e.key a] e.value]
-            e.value]]]
 
 deep-merge: [fn@[return: Dict  doc: """
 Merge two dicts recursively.
@@ -1724,10 +1704,15 @@ Example: [deep-merge [a: [x: 1] b: 2] [a: [y: 3] c: 4]] => [a: [x: 1 y: 3] b: 2 
 Note: Sub-dicts are merged depth-first; all other values from b override a (right-biased at each level). O(n) via build-dict.
 Returns a flat Dict (not an Overlay): keys only in a come first, then all keys from b (merged where both are dicts).
 """] [let a@Record b@Record]
-    [build-dict
-        [concat
-            [filter [fn [let e] [not [has? e.key b]]] [each-kv a]]
-            [map [fn [let e] [deep-merge-step a b e]] [each-kv b]]]]]
+  [step: [fn [let e]
+    [key: e.key
+     value: [if [and [has? e.key a] [and [dict? [get e.key a]] [dict? e.value]]]
+               [deep-merge [get e.key a] e.value]
+               e.value]]]]
+  [build-dict
+    [concat
+      [filter [fn [let e] [not [has? e.key b]]] [each-kv a]]
+      [map step [each-kv b]]]]]
 
 # Apply a function bottom-up to every node in a nested dict structure.
 # For dicts: recursively transform all values first, then apply f to the resulting dict.
@@ -1758,13 +1743,6 @@ Note: Takes a list of 2-element dicts [0: a 1: b] and returns [a: [0: a0 1: a1 .
     [a: [map [fn [let p] p.0] pairs]
      b: [map [fn [let p] p.1] pairs]]]
 
-transpose-impl: [fn@Dict [let rows@Dict col-keys@[Seq Any]]
-    [from-entries [map
-        [fn [let col-key]
-            [key: col-key
-             value: [collect-dict [map [fn [let row] [builtin-get col-key row]] rows]]]]
-        [each col-keys]]]]
-
 transpose: [fn@[return: Dict  doc: """
 Transpose a 2D dict structure (flip rows and columns).
 
@@ -1772,9 +1750,15 @@ Example: [transpose [[0: [a: 1 b: 2]] [1: [a: 3 b: 4]]]] => [a: [0: 1  1: 3]  b:
 
 Note: Takes a dict of dicts [[0: [0: a 1: b] 1: [0: c 1: d]]] and returns [[0: [0: a 1: c] 1: [0: b 1: d]]]. All inner dicts must have the same keys. O(n) via build-dict.
 """] [let rows@Dict]
-    [if [empty? rows]
-        []
-        [transpose-impl rows [keys [dict-first [values rows]]]]]]
+  [impl: [fn [let col-keys]
+    [from-entries [map
+      [fn [let col-key]
+        [key: col-key
+         value: [collect [map [fn [let row] [builtin-get col-key row]] rows]]]]
+      [each col-keys]]]]]
+  [if [empty? rows]
+    []
+    [impl [keys [dict-first [values rows]]]]]]
 
 # ============================================================================
 # Aggregates
@@ -1854,7 +1838,13 @@ contains?@[doc: "Check if collection contains element"]: [fn@Boolean [let val xs
         ...: [str-contains? val xs]]]
 
 uniq@[doc: "Remove duplicates (keep first occurrence). O(n²) due to O(n) contains-seq? per element, but uses reduce (Rust loop) for performance (B-267)."]: [fn@Dict [let xs]
-    [uniq-impl xs]]
+  [reduce-step: [fn [let acc v]
+    [if [contains-seq? [builtin-get "seen" acc] v]
+      acc
+      [seen:   [Seq.Cons head: v  tail: [builtin-get "seen" acc]]
+       result: [dict-append [builtin-get "result" acc] v]]]]]
+  [builtin-get "result"
+    [reduce reduce-step [seen: Seq.End  result: []] xs]]]
 
 # Right fold: fold f over xs from the right, starting with acc.
 # Equivalent to fold(f, acc, reverse(xs)).
@@ -1921,12 +1911,6 @@ record?@[doc: "Check if value is a record (Dict at runtime)"]: dict?
 map?@[doc: "Check if value is a map (Dict at runtime)"]: dict?
 
 # Check if a value is a "list-shaped dict" — i.e., a dict whose keys are all integers.
-# Returns True for [] (empty dict — vacuously True).
-# Example: [list? [1 2 3]] => True (keys 0, 1, 2 are all ints)
-# Example: [list? [a: 1 b: 2]] => False (string keys)
-# Inherently materializing: must check all keys via all?.
-list?@[doc: "Check if dict has all integer keys"]: [fn@Boolean [let xs]
-    [and [dict? xs] [all? [fn [let k] [int? k]] [@Dict [keys xs]]]]]
 
 # ============================================================================
 # Error Handling
@@ -1966,53 +1950,6 @@ Seq: [type [let a]
 # These helpers were moved from the private dict to the public dict so they can
 # reference Seq.End directly (available here since Seq is declared above).
 
-# values-seq-impl: Build a lazy Seq of values (O(1) per element).
-values-seq-impl: [fn@[bind: [a]  return: [Seq a]] [let xs@Dict ks i@Integer len@Integer]
-    [match [builtin-int-gte i len]
-        0: [Seq.Cons
-            head: [builtin-get [builtin-get i ks] xs]
-            tail: [values-seq-impl xs ks [builtin-int-add i 1] len]]
-        ...: Seq.End]]
-
-# entries-seq-impl: Build a lazy Seq of entry dicts (O(1) per element).
-entries-seq-impl: [fn@[Seq Dict] [let xs@Dict ks i@Integer len@Integer]
-    [match [builtin-int-gte i len]
-        0: [entries-seq-step xs ks i len [builtin-get i ks]]
-        ...: Seq.End]]
-
-entries-seq-step: [fn@[Seq Dict] [let xs@Dict ks i@Integer len@Integer k]
-    [Seq.Cons
-        head: [key: k  value: [builtin-get k xs]]
-        tail: [entries-seq-impl xs ks [builtin-int-add i 1] len]]]
-
-# reindex-seq-impl: Alias for values-seq-impl — identical body, kept for clarity.
-reindex-seq-impl: values-seq-impl
-
-# zip-seq-impl: Lazy Seq of pairs from two Seqs.
-zip-seq-impl: [fn@[bind: [a b]  return: [Seq Dict]] [let xs@[Seq a] ys@[Seq b]]
-    [match xs
-        [case [let px] [Seq.Cons px] [match ys
-            [case [let py] [Seq.Cons py] [Seq.Cons
-                head: [px.head  py.head]
-                tail: [zip-seq-impl px.tail py.tail]]]
-            ...:             Seq.End]]
-        ...:             Seq.End]]
-
-# zip-dict-impl: Build lazy Seq of pairs from two Dicts, then collect to Dict.
-zip-dict-impl: [fn@Dict [let xs@Dict ys@Dict]
-    [collect-dict [zip-dict-seq-impl xs ys [builtin-keys xs] [builtin-keys ys] 0 [builtin-dict-length [builtin-keys xs]] [builtin-dict-length [builtin-keys ys]]]]]
-
-zip-dict-seq-impl: [fn@[Seq Dict] [let xs@Dict ys@Dict xks yks i@Integer xlen@Integer ylen@Integer]
-    [match [builtin-int-gte i xlen]
-        0: [match [builtin-int-gte i ylen]
-            0: [zip-dict-seq-step xs ys xks yks i xlen ylen [builtin-get i xks] [builtin-get i yks]]
-            ...: Seq.End]
-        ...: Seq.End]]
-
-zip-dict-seq-step: [fn@[Seq Dict] [let xs@Dict ys@Dict xks yks i@Integer xlen@Integer ylen@Integer xk yk]
-    [Seq.Cons
-        head: [[builtin-get xk xs] [builtin-get yk ys]]
-        tail: [zip-dict-seq-impl xs ys xks yks [builtin-int-add i 1] xlen ylen]]]
 
 # contains-seq?: Check if a Seq contains val (O(n) linear scan).
 contains-seq?: [fn@[bind: [a]  return: Boolean] [let seq@[Seq a] val@a]
@@ -2022,22 +1959,6 @@ contains-seq?: [fn@[bind: [a]  return: Boolean] [let seq@[Seq a] val@a]
         Boolean.False
         seq]]
 
-# uniq-reduce-step: One step of reduce for uniq.
-# acc: {seen: Seq of already-included elements, result: Dict of unique elements in insertion order}
-# Appends v to result if not in seen; otherwise keeps acc unchanged.
-uniq-reduce-step: [fn@Dict [let acc@Dict v]
-    [if [contains-seq? [builtin-get "seen" acc] v]
-        acc
-        [seen: [Seq.Cons head: v  tail: [builtin-get "seen" acc]]
-         result: [dict-append [builtin-get "result" acc] v]]]]
-
-# uniq-impl: collect unique elements using reduce with forward-order Dict accumulation.
-# No reversal needed: dict-append adds elements in insertion order.
-uniq-impl: [fn@Dict [let xs]
-    [builtin-get "result"
-        [reduce uniq-reduce-step
-            [seen: Seq.End  result: []]
-            xs]]]
 
 # take-while-seq: Build a lazy Seq of entries while predicate holds (on the .value field).
 take-while-seq: [fn@[bind: [a]  return: [Seq Dict]] [let pred@[Fn@Boolean [a]] entries]
@@ -2095,11 +2016,6 @@ flatten-seq-concat-values: [fn@[bind: [a]  return: [Seq a]] [let d@Dict ks i@Int
 # seq-map-lazy:     cons-recursive lazy map (tail suspended as thunk, O(1) per element).
 # seq-filter-lazy:  cons-recursive lazy filter (predicate evaluated eagerly per element).
 
-seq-reverse-step@[return: [Seq a]  doc: "Internal: tail-recursive reverse accumulator for Seq."]:
-  [fn@[bind: [a]  return: [Seq a]] [let acc@[Seq a] s@[Seq a]]
-    [match s
-      [case [let p] [Seq.Cons p] [seq-reverse-step [Seq.Cons head: p.head  tail: acc] p.tail]]
-      Seq.End:      acc]]
 
 seq-map-lazy@[doc: """
 Internal: cons-recursive map helper. Safe on infinite Seqs via laziness.
@@ -2137,37 +2053,6 @@ via TCO — stack depth O(1) in the common case.
 # laziness by producing Seq.Cons cells recursively.
 # ============================================================================
 
-each-step@[doc: "Internal: step function for each — recurse via Seq.Cons tail thunk."]:
-  [fn@[bind: [a]  return: [Seq a]] [let d@Dict i@Integer]
-    [if [builtin-dict-has-nth? d i]
-      [Seq.Cons head: [builtin-dict-nth d i]  tail: [each-step d [+ i 1]]]
-      Seq.End]]
-
-each-key-step@[doc: "Internal: step function for each-key."]:
-  [fn@[Seq Any] [let d@Dict i@Integer]
-    [if [builtin-dict-has-key-nth? d i]
-      [Seq.Cons head: [builtin-dict-key-nth d i]  tail: [each-key-step d [+ i 1]]]
-      Seq.End]]
-
-each-kv-step@[doc: "Internal: step function for each-kv."]:
-  [fn@[Seq Dict] [let d@Dict i@Integer]
-    [if [builtin-dict-has-kv-nth? d i]
-      [Seq.Cons head: [builtin-dict-kv-nth d i]  tail: [each-kv-step d [+ i 1]]]
-      Seq.End]]
-
-# str-chars: iterate over Unicode codepoints of a string as single-char strings.
-str-chars-step@[doc: "Internal: step function for str-chars."]:
-  [fn@[Seq String] [let s@String i@Integer]
-    [if [builtin-str-has-nth? s i]
-      [Seq.Cons head: [builtin-str-nth-char s i]  tail: [str-chars-step s [+ i 1]]]
-      Seq.End]]
-
-# str-bytes-step: lazy Seq over raw UTF-8 bytes of a string (0–255 Ints).
-str-bytes-step@[doc: "Internal: step function for str-bytes."]:
-  [fn@[Seq Integer] [let s@String i@Integer]
-    [if [builtin-str-has-nth-byte? s i]
-      [Seq.Cons head: [builtin-str-nth-byte s i]  tail: [str-bytes-step s [+ i 1]]]
-      Seq.End]]
 
 # ============================================================================
 # Transport Type (Network Transport Variants)
@@ -2189,52 +2074,53 @@ Icmp:         Transport.Icmp
 # Open Mode Constants (File Open Mode Strings)
 # ============================================================================
 
-# Open mode flags — passed directly to builtin-file-open as string flags.
-Create:    "create"
-Truncate:  "truncate"
 
-# I/O Typeclasses: Readable and Writable classify handle types
-# Call sites that previously used Readable/Writable as open flags now use "read"/"write" strings.
-Readable@[doc: "Typeclass for readable handles: read-chunk and close."]:
-  [class [let h]
-    read-chunk: [Fn@Bytes [h Int]]
-    close:      [Fn@h     [h]]]
+# File — all file I/O type and class declarations in one namespace.
+# Flags (Appendable, Exclusive, Binary) and typeclasses (Readable, Writable, Closeable)
+# live here so they don't collide with data-structure typeclasses (e.g. Appendable for FingerTree).
+File: [
+  Closeable@[doc: "Typeclass for handles that can be explicitly closed."]:
+    [class [let h]
+      close: [Fn@h [h]]]
 
-Writable@[doc: "Typeclass for writable handles: write, flush, and close."]:
-  [class [let h]
-    write: [Fn@h [String h]]
-    flush: [Fn@h [h]]
-    close: [Fn@h [h]]]
-# Writable instance for File (opaque Rust type — TypeNode.File registered via imports.rs).
-[instance Writable
+  Readable@[doc: "Typeclass for readable handles: read-chunk."]:
+    [class [let h]
+      read-chunk: [Fn@[bytes: Bytes  handle: h] [h Int]]]
+
+  Writable@[doc: "Typeclass for writable handles: write and flush."]:
+    [class [let h]
+      write: [Fn@h [String h]]
+      flush: [Fn@h [h]]]
+
+  Appendable: [type Appendable]   # O_APPEND — writes always go to end
+  Exclusive:  [type Exclusive]    # O_EXCL+O_CREAT — fail if file already exists
+  Binary:     [type Binary]       # encoding hint: handle yields Bytes not String
+]
+
+# File is Closeable, Readable, and Writable.
+[instance File.Closeable
+  [let h@File]: [close: [fn [let h] [if [builtin-file-close h] h h]]]]
+
+[instance File.Writable
   [let h@File]: [write: [fn [let s h] [builtin-file-write h s]]
-                 flush: [fn [let h] [if [builtin-file-flush h] h h]]
-                 close: [fn [let h] [if [builtin-file-close h] h h]]]]
+                 flush: [fn [let h] [if [builtin-file-flush h] h h]]]]
 
-# Readable instance for File.
-[instance Readable
-  [let h@File]: [read-chunk: [fn [let n h] [builtin-file-read h n]]
-                 close:      [fn [let h] [if [builtin-file-close h] h h]]]]
+[instance File.Readable
+  [let h@File]: [read-chunk: [fn [let n h] [bytes: [builtin-file-read h n]  handle: h]]]]
 
-# Writable instance for Stdout (nominal type declared in loader.llt).
-[instance Writable
+# Stdout and Stderr are Writable but NOT Closeable.
+[instance File.Writable
   [let h@Stdout]: [write: [fn [let s h] [builtin-write-stdout s h]]
-                   flush: [fn [let h] h]
-                   close: [fn [let h] h]]]
+                   flush: [fn [let h] h]]]
 
-# Writable instance for Stderr (nominal type declared in loader.llt).
-[instance Writable
+[instance File.Writable
   [let h@Stderr]: [write: [fn [let s h] [builtin-write-stderr s h]]
-                   flush: [fn [let h] h]
-                   close: [fn [let h] h]]]
+                   flush: [fn [let h] h]]]
 
-# Readable instance for Stdin (nominal type declared in loader.llt).
-[instance Readable
-  [let h@Stdin]: [read-chunk: [fn [let n h] [builtin-read-stdin n]]
-                  close:      [fn [let h] h]]]
+# Stdin is Readable but NOT Closeable.
+[instance File.Readable
+  [let h@Stdin]: [read-chunk: [fn [let n h] [bytes: [builtin-read-stdin n]  handle: h]]]]
 
-CreateNew: "create-new"
-Binary:    "binary"
 
 # DirCapFlag type: permission flags passed to the [narrow] builtin.
 # Controls which capabilities a narrowed DirCap inherits from its source.
@@ -3119,25 +3005,26 @@ str-find@[doc: "Find first occurrence of needle in haystack; returns byte index 
 # assert: [split " " "a b c"] => [0: "a"  1: "b"  2: "c"]
 # assert: [split "," "one,two,three"] => [0: "one"  1: "two"  2: "three"]
 # assert: [split " " ""] => []
-split-impl: [fn@[bind: [a]  return: [Seq String]] [let sep@String sep-len@Integer s@String s-len@Integer pos@Integer]
-  [sub:       [str-slice s pos s-len]]
-  [found-rel: [builtin-str-index-of sep sub]]
-  [if [= found-rel -1]
-    [Seq.Cons head: sub  tail: Seq.End]
-    [call [fn [let]
-      [found: [+ pos found-rel]]
-      [Seq.Cons head: [str-slice s pos found]
-                tail: [split-impl sep sep-len s s-len [+ found sep-len]]]]]]]
-
 split: [fn@[bind: [a]  return: [Seq String]  doc: """
 Split string by separator. Returns a lazy Seq of segments.
 
 Example: [collect [split "," "a,b,c"]] => ["a" "b" "c"]
 Example: [collect [split "" "hi"]] => ["h" "i"]
 """] [let sep@String s@String]
+  [sep-len: [str-length sep]
+   s-len:   [str-length s]
+   split-from: [fn [let pos]
+     [sub:       [str-slice s pos s-len]]
+     [found-rel: [builtin-str-index-of sep sub]]
+     [if [= found-rel -1]
+       [Seq.Cons head: sub  tail: Seq.End]
+       [call [fn [let]
+         [found: [+ pos found-rel]]
+         [Seq.Cons head: [str-slice s pos found]
+                   tail: [split-from [+ found sep-len]]]]]]]]
   [if [= sep ""]
     [each [str-chars s]]
-    [split-impl sep [str-length sep] s [str-length s] 0]]]
+    [split-from 0]]]
 
 # Re-export builtins needed by the macro transformers (tmpl, do, >>, etc.)
 # defined at the end of this file. These are available from builtin_module("core")
@@ -3170,9 +3057,24 @@ Example: [merge [x: 1  y: 2] [y: 3  z: 4]] => [x: 1  y: 3  z: 4]
   [dict-merge a b]]
 
 # Dict iteration — tinct wrappers over single-step Rust primitives
-each@[return: [Seq a]  doc: "Iterate over dict values as a lazy Seq"]: [fn@[bind: [a]  return: [Seq a]] [let d@Dict] [each-step d 0]]
-each-key@[return: [Seq Any]  doc: "Iterate over dict keys as a lazy Seq"]: [fn@[Seq Any] [let d@Dict] [each-key-step d 0]]
-each-kv@[return: [Seq Dict]  doc: "Iterate over dict entries as a lazy Seq of [key: k  value: v] dicts"]: [fn@[Seq Dict] [let d@Dict] [each-kv-step d 0]]
+each@[return: [Seq a]  doc: "Iterate over dict values as a lazy Seq"]: [fn@[bind: [a]  return: [Seq a]] [let d@Dict]
+  [step: [fn [let i]
+    [if [builtin-dict-has-nth? d i]
+      [Seq.Cons head: [builtin-dict-nth d i]  tail: [step [+ i 1]]]
+      Seq.End]]]
+  [step 0]]
+each-key@[return: [Seq Any]  doc: "Iterate over dict keys as a lazy Seq"]: [fn@[Seq Any] [let d@Dict]
+  [step: [fn [let i]
+    [if [builtin-dict-has-key-nth? d i]
+      [Seq.Cons head: [builtin-dict-key-nth d i]  tail: [step [+ i 1]]]
+      Seq.End]]]
+  [step 0]]
+each-kv@[return: [Seq Dict]  doc: "Iterate over dict entries as a lazy Seq of [key: k  value: v] dicts"]: [fn@[Seq Dict] [let d@Dict]
+  [step: [fn [let i]
+    [if [builtin-dict-has-kv-nth? d i]
+      [Seq.Cons head: [builtin-dict-kv-nth d i]  tail: [step [+ i 1]]]
+      Seq.End]]]
+  [step 0]]
 # each-kv is now defined above (no longer near Iterable typeclass instances)
 build-dict@[return: Dict  doc: "Build a dict from a Seq or Dict of [key: k  value: v] pair dicts"]:
   [fn@Dict [let xs] [reduce [fn [let d kv] [set kv.key kv.value d]] [] xs]]
@@ -3244,11 +3146,12 @@ annotation-to-str@[doc: "Stringify a full annotation dict to a display string. N
       [match ann.kind
         "simple": ann.value
         "dict":
-          [positional: [filter [fn [let e] [null? e.key]] ann.entries]]
-          [if [not [empty? positional]]
-            [join "" ["[" [join " " [map [fn [let e] [annotation-value-str e.value]] positional]] "]"]]
-            [ret: [find-first-or [fn [let e] [= "return" e.key]] [] ann.entries]
-              [if [= ret []] "" [annotation-value-str ret.value]]]]
+          [call [fn [let positional]
+            [if [not [empty? positional]]
+              [join "" ["[" [join " " [map [fn [let e] [annotation-value-str e.value]] positional]] "]"]]
+              [ret: [find-first-or [fn [let e] [= "return" e.key]] [] ann.entries]
+                [if [= ret []] "" [annotation-value-str ret.value]]]]]
+            [filter [fn [let e] [null? e.key]] ann.entries]]
         ...: ""]]]
 
 sig-from-ast@[doc: "Build a signature string from an ast-of result"]:
@@ -3263,24 +3166,22 @@ sig-from-ast@[doc: "Build a signature string from an ast-of result"]:
       [join "" ["fn [" params "]"]]
       [join "" ["fn@" ret " [" params "]"]]]]
 
-describe-fn-impl@[doc: "Internal helper for describe — builds introspection dict from an ast-of result"]:
-  [fn [let val]
-    [ast: [@Dict [ast-of val]]]
-    [ann: [get-or "return-ann" [] ast]]
-    [doc: [if [= ann []] ""
-            [if [builtin-eq-string [builtin-get "kind" [@Dict ann]] "dict"]
-              [doc-entry: [try-or-impl [raw-to-result [builtin-try [head [filter [fn [let e] [builtin-eq-string [builtin-get "key" e] "doc"]] [builtin-get "entries" [@Dict ann]]]]]] []]
-                [if [= doc-entry []] "" [builtin-get "value" doc-entry]]]
-              ""]]]
-    [doc:        doc
-     return-ann: ann
-     params:     [get "params" ast]
-     sig:        [sig-from-ast ast]]]
-
 describe@[doc: "Get introspection dict for a value. For functions: {doc, return-ann, params, sig}. For others: {type}."]:
   [fn [let val]
+    [describe-fn: [fn [let val]
+      [ast: [@Dict [ast-of val]]]
+      [ann: [get-or "return-ann" [] ast]]
+      [doc: [if [= ann []] ""
+              [if [builtin-eq-string [builtin-get "kind" [@Dict ann]] "dict"]
+                [doc-entry: [try-or-impl [raw-to-result [builtin-try [head [filter [fn [let e] [builtin-eq-string [builtin-get "key" e] "doc"]] [builtin-get "entries" [@Dict ann]]]]]] []]
+                  [if [= doc-entry []] "" [builtin-get "value" doc-entry]]]
+                ""]]]
+      [doc:        doc
+       return-ann: ann
+       params:     [get "params" ast]
+       sig:        [sig-from-ast ast]]]]
     [if [fn? val]
-      [describe-fn-impl val]
+      [describe-fn val]
       [type: [type-of val]]]]
 
 # Capability operations
@@ -3314,18 +3215,38 @@ env@[doc: "Read an environment variable by name. Returns Absent.Absent if not se
 list-dir@[doc: "List directory entries under a DirCap. Returns a Seq of {name: String, type: String} dicts."]: builtin-list-dir
 
 # open: Open a file via DirCap, returning a Value::File handle directly.
-open@[doc: "Open a file under a DirCap. Returns a Value::File handle."]:
-  [fn [let cap path mode]
-    [builtin-file-open cap path mode]]
+# Flags are from the File namespace: File.Readable, File.Writable, File.Appendable,
+# File.Exclusive, File.Binary.
+open@[doc: """
+Open a file under a DirCap with explicit capability flags.
+Flags: File.Readable, File.Writable, File.Appendable, File.Exclusive, File.Binary.
+Examples:
+  [open %cwd \"file.txt\" File.Readable]
+  [open %cwd \"log.txt\" File.Writable File.Appendable]
+  [open %cwd \"lock\" File.Writable File.Exclusive]
+  [open %cwd \"data.bin\" File.Binary File.Readable]
+"""]: [fn@File [let cap@DirCap path@String ...flags@[or File.Readable File.Writable File.Appendable File.Exclusive File.Binary]]
+  [flag->modes: [fn [let acc f]
+     [match f
+       File.Readable.Readable:     [builtin-concat acc ["read"]]
+       File.Writable.Writable:     [builtin-concat acc ["write" "create" "truncate"]]
+       File.Appendable.Appendable: [builtin-concat acc ["append" "create"]]
+       File.Exclusive.Exclusive:   [builtin-concat acc ["create-new"]]
+       File.Binary.Binary:         acc
+       ...:                        acc]]
+   opts: [reduce flag->modes [] [values flags]]]
+  [if [null? opts]
+    [raise "open: must specify at least File.Readable or File.Writable"]
+    [builtin-file-open cap path opts -1 -1]]]
 
-read-all@[doc: "Read all content from a file handle into a String (UTF-8)."]:
-  [fn@String [let h]
+read-all@[doc: "Read all content from a file handle. Returns [content: String  handle: h]."]:
+  [fn@[content: String  handle: Any] [let h]
     [read-all-loop: [fn [let handle acc]
-      [chunk: [read-chunk 65536 handle]]
-      [if [builtin-eq-int [length chunk] 0]
-        acc
-        [read-all-loop handle [builtin-bytes-concat acc chunk]]]]]
-    [bytes-str [read-all-loop h [builtin-bytes]]]]
+      [result: [read-chunk 65536 handle]]
+      [if [builtin-eq-int [length result.bytes] 0]
+        [content: [bytes-str acc]  handle: handle]
+        [read-all-loop result.handle [builtin-bytes-concat acc result.bytes]]]]]
+    [read-all-loop h [builtin-bytes]]]
 
 # Filesystem operations
 write-file@[doc: "Write a string to a file under a DirCap"]: builtin-write
@@ -3360,12 +3281,6 @@ list-xattrs@[doc: "List all extended attribute names"]: builtin-list-xattrs
 # raw-create, seek, seek-end, position removed — operated on Value::Handle which no longer exists.
 # Use seek (pos h) for file handles — defined above alongside write, flush, close.
 
-# Network I/O — these builtins are not yet implemented; raise at call time.
-connect@[doc: "Open a TCP/UDP connection under a NetCap"]: [fn@Never [let ...args] [raise "connect: not implemented"]]
-tls-layer@[doc: "Layer TLS over a connection"]: [fn@Never [let ...args] [raise "tls-layer: not implemented"]]
-tls-peer-cert@[doc: "Extract TLS peer certificate metadata"]: [fn@Never [let ...args] [raise "tls-peer-cert: not implemented"]]
-send-datagram@[doc: "Send a QUIC unreliable datagram (RFC 9221). Args: data handle. Returns [] on success."]: builtin-send-datagram
-recv-datagram@[doc: "Receive a QUIC unreliable datagram (RFC 9221). Args: handle. Returns {data: Bytes}."]: builtin-recv-datagram
 
 # Handle utilities
 # string-handle removed — created Value::Handle which no longer exists.
@@ -3494,8 +3409,18 @@ char-code@[doc: "Return the Unicode codepoint of the first character of a string
 chr@[doc: "Return a single-character string for the given Unicode codepoint Int"]: builtin-chr
 
 # String inspection (sequence of characters, byte sequence)
-str-chars@[doc: "Return a lazy Seq of single-character strings from a string"]: [fn@[Seq String] [let s@String] [str-chars-step s 0]]
-str-bytes@[doc: "Return a lazy Seq of UTF-8 byte values (Ints 0–255) from a string"]: [fn@[Seq Integer] [let s@String] [str-bytes-step s 0]]
+str-chars@[doc: "Return a lazy Seq of single-character strings from a string"]: [fn@[Seq String] [let s@String]
+  [step: [fn [let i]
+    [if [builtin-str-has-nth? s i]
+      [Seq.Cons head: [builtin-str-nth-char s i]  tail: [step [+ i 1]]]
+      Seq.End]]]
+  [step 0]]
+str-bytes@[doc: "Return a lazy Seq of UTF-8 byte values (Ints 0–255) from a string"]: [fn@[Seq Integer] [let s@String]
+  [step: [fn [let i]
+    [if [builtin-str-has-nth-byte? s i]
+      [Seq.Cons head: [builtin-str-nth-byte s i]  tail: [step [+ i 1]]]
+      Seq.End]]]
+  [step 0]]
 str-bytes-raw@[doc: "Return the raw Bytes value for a string (UTF-8 encoded)"]: builtin-str-bytes
 bytes-str@[doc: "Return a String decoded from a Bytes value (UTF-8)"]: builtin-bytes-str
 
@@ -3672,15 +3597,6 @@ Purely tinct: tail is a thunk — each consumer force creates one Seq.Cons cell 
 evaluating the entire sequence. Stack depth O(1) per element via laziness.
 """] [let x@a] [Seq.Cons head: x  tail: [repeat x]]]
 
-# cycle-dict-impl: Infinite Seq cycling through a Dict's values by insertion-order index.
-# xs: the source Dict; ks: its keys (integer-indexed); len: number of keys; i: current index.
-# The tail [mod [+ i 1] len] wraps around so the cycle is infinite.
-# Tail is a thunk — stack depth O(1) per element consumed (laziness, not TCO).
-cycle-dict-impl: [fn@[bind: [a]  return: [Seq a]] [let xs@Dict ks len@Integer i@Integer]
-  [Seq.Cons
-    head: [builtin-get [builtin-get i ks] xs]
-    tail: [cycle-dict-impl xs ks len [mod [+ i 1] len]]]]
-
 cycle: [fn@[bind: [a]  return: [Seq a]  doc: """
 Cycle a Dict's values infinitely. Pure tinct — no Rust dispatch (T-1380).
 
@@ -3690,9 +3606,15 @@ Note: Repeats the collection elements in order infinitely. Must be consumed with
 drop, or other limiting operations.
 Accepts a Dict (integer-keyed or string-keyed). Raises on empty collection.
 """] [let xs]
+  [ks: [keys xs]
+   len: [length xs]
+   step: [fn [let i]
+     [Seq.Cons
+       head: [builtin-get [builtin-get i ks] xs]
+       tail: [step [mod [+ i 1] len]]]]]
   [if [empty? xs]
     [raise "cycle: empty collection"]
-    [cycle-dict-impl xs [keys xs] [length xs] 0]]]
+    [step 0]]]
 
 iterate: [fn@[bind: [a]  return: [Seq a]  doc: """
 Infinite lazy Seq by repeatedly applying f to seed. Pure tinct — no Rust dispatch (T-1380).
@@ -3705,16 +3627,6 @@ Purely tinct: tail is a thunk — [iterate f [f x]] is suspended until the consu
 the next element. Stack depth O(1) per element consumed.
 """] [let f@[Fn@a [a]] x@a] [Seq.Cons head: x  tail: [iterate f [f x]]]]
 
-# unfold-step: one step of an unfold iteration.
-# Calls f(seed). If result is [] (empty dict) terminates with Seq.End.
-# Otherwise expects a two-entry dict [0: value 1: next-seed] and yields value
-# as the next element, with [unfold-step f next-seed] as the lazy tail.
-unfold-step: [fn@[bind: [a s]  return: [Seq a]] [let f@[Fn@Dict [s]] seed@s]
-  [result: [f seed]]
-  [if [empty? result]
-    Seq.End
-    [Seq.Cons head: result.0  tail: [unfold-step f result.1]]]]
-
 unfold: [fn@[bind: [a s]  return: [Seq a]  doc: """
 Unfold a Seq from seed using f. Pure tinct — no Rust dispatch (T-1380).
 
@@ -3723,17 +3635,13 @@ Example: [collect [unfold [fn [let n] [if [< n 5] [0: n  1: [+ n 1]] []]] 0]] =>
 Note: f receives state, returns [0: value  1: next-state] to continue, or [] to stop.
 Lazy; generates elements on demand.
 Purely tinct (T-1380): dispatches on empty? of step result rather than Rust variant introspection.
-"""] [let f@[Fn@Dict [s]] seed@s] [unfold-step f seed]]
-
-# join-seq-impl: Join a Seq of elements with a separator. Eagerly collects elements.
-# Used by join for Seq inputs. cast converts each element to its string representation.
-join-seq-impl: [fn@String [let sep@String s]
-  [match s
-    Seq.End:      ""
-    [case [let p] [Seq.Cons p] [reduce
-                    [fn [let acc x] [builtin-string-concat acc [builtin-string-concat sep [str x]]]]
-                    [str p.head]
-                    p.tail]]]]
+"""] [let f@[Fn@Dict [s]] seed@s]
+  [step: [fn [let s]
+    [result: [f s]]
+    [if [empty? result]
+      Seq.End
+      [Seq.Cons head: result.0  tail: [step result.1]]]]]
+  [step seed]]
 
 # concat-seq: Concatenate two Seqs lazily (O(1) initial). Pure tinct (T-1380).
 # Used by concat when both inputs are Seq.
@@ -3751,7 +3659,14 @@ Note: Converts each element to a string via Castable dispatch, then concatenates
 with separator between elements. Works on any Iterable collection (Dict, Seq, List, Map)
 via the Iterable typeclass.
 """] [let sep@String xs@[Iterable a constraint: [Castable String a]]]
-  [join-seq-impl sep [each xs]]]
+  [join-seq: [fn [let s]
+    [match s
+      Seq.End:      ""
+      [case [let p] [Seq.Cons p] [reduce
+                      [fn [let acc x] [builtin-string-concat acc [builtin-string-concat sep [str x]]]]
+                      [str p.head]
+                      p.tail]]]]]
+  [join-seq [each xs]]]
 
 concat: [fn@[bind: [a]  return: [Seq a]  doc: """
 Concatenate two or more collections.
@@ -3957,7 +3872,7 @@ make-string-writer@[doc: "Create an empty StringWriter for accumulating string o
   [fn [] [StringWriter.Writer cells: ""]]
 
 # Writable instance for StringWriter.Writer — purely functional accumulation.
-[instance Writable
+[instance File.Writable
   [let h@StringWriter.Writer]: [write: [fn [let s h] [StringWriter.Writer cells: [builtin-string-concat h.cells s]]]
                                 flush: [fn [let h] h]
                                 close: [fn [let h] h]]]
@@ -4033,7 +3948,8 @@ path: String — file path relative to cap
 Included files start with % = [] (fresh pipeline input).
 Requires %prelude (env Dict) to be in scope — injected by the loader.
 """] [let cap@DirCap path@String integrity-hash@[default: Absent.Absent]]
-  [source: [read-all [open cap path "read"]]]
+  [read-result: [read-all [open cap path "read"]]]
+  [source: read-result.content]
   [_verify: [if [absent? integrity-hash] []
     [call [fn [let actual-hash]
       [if [= actual-hash integrity-hash] []
@@ -4048,17 +3964,20 @@ Requires %prelude (env Dict) to be in scope — injected by the loader.
 # lines: Read all lines from a protocol dict handle. Returns a Seq of String.
 # Reads the entire content via read-all, then splits on newlines.
 # Note: not lazy — reads entire content at once. For large files, use chunks instead.
-lines@[doc: "Read all lines from a protocol dict handle (via read-all + split). Returns Seq[String]."]:
-  [fn@[Seq String] [let h]
-    [content: [read-all h]]
-    [filter [fn [let line] [not [= line ""]]] [split "\n" content]]]
+lines@[doc: "Read all lines from a protocol dict handle. Returns [lines: Seq[String]  handle: h]."]:
+  [fn@[lines: Any  handle: Any] [let h]
+    [result: [read-all h]]
+    [lines: [filter [fn [let line] [not [= line ""]]] [split "\n" result.content]]
+     handle: result.handle]]
 
 # Lazily read fixed-size byte chunks from a Handle. Returns a Seq of Bytes.
 # Returns empty Seq when EOF reached.
 chunks@[doc: "Lazily read fixed-size byte chunks from a handle. Returns a Seq of Bytes."]:
   [fn@[Seq Bytes] [let h n@Integer]
-    [c: [read-chunk n h]]
-    [match [builtin-eq-int [builtin-bytes-length c] 0] 0: [Seq.Cons head: c  tail: [chunks h n]] ...: Seq.End]]
+    [result: [read-chunk n h]]
+    [match [builtin-eq-int [builtin-bytes-length result.bytes] 0]
+      0:   [Seq.Cons head: result.bytes  tail: [chunks result.handle n]]
+      ...: Seq.End]]
 
 # Concatenate a Seq or Dict of Bytes values into a single Bytes value.
 # Uses the variadic `bytes` builtin (via builtin-bytes) after collecting the sequence eagerly.
@@ -4292,7 +4211,17 @@ Example:
 
 Note: Tail-recursive with O(1) stack depth. TCO was implemented in tco-proper sprint.
 """]: [fn@Any [let ctx sources@[Seq Dict] handler@[Fn@Any [Any]]]
-    [select-impl ctx sources handler]]
+  [go: [fn [let]
+    [match [builtin-cancelled-q ctx]
+      0: [call [fn [let raw]
+            [match [builtin-has-key? "ok" raw]
+              0: Closed.Closed
+              [case [let _] ...
+                [call [fn [let _ignored] [go]]
+                      [handler [builtin-get "ok" raw]]]]]]
+           [builtin-select-once ctx sources]]
+      ...: []]]]
+  [go]]
 
 # retry: run thunk; on error, retry up to n more times.
 # Returns the first successful value, or raises "retry limit exceeded" after
@@ -4309,7 +4238,13 @@ Note: Makes up to n+1 total attempts (1 initial + n retries).
 Raises "retry limit exceeded" if all attempts fail.
 Inherently materializing: must force each attempt to catch errors.
 """]: [fn@[bind: [a]  return: a] [let n@Integer thunk@[Fn@a []]]
-    [retry-impl n thunk]]
+  [go: [fn [let n]
+    [match [raw-to-result [builtin-try [thunk]]]
+      [case [let p] [Result.Ok p]  p.value]
+      [case [let _] [Result.Error] [match [builtin-int-gte n 1]
+                     0: [builtin-raise "retry limit exceeded"]
+                     ...: [go [builtin-int-sub n 1]]]]]]]
+  [go n]]
 
 # finally: run cleanup regardless of whether body succeeds or errors.
 # Returns the body's result on success, re-raises on error.
@@ -5296,7 +5231,7 @@ do-wrap: [fn [let monad-ast step inner]
 do-fold: [fn [let monad-ast steps]
   [if [builtin-eq-int [builtin-dict-length steps] 1]
     [get 0 steps]
-    [do-wrap monad-ast [get 0 steps] [do-fold monad-ast [reindex [@Dict [builtin-drop 1 steps]]]]]]]
+    [do-wrap monad-ast [get 0 steps] [do-fold monad-ast [collect-dict [each [builtin-drop 1 steps]]]]]]]
 
 # Desugar the inferred [do] form: emit bind chain with unique sentinel monad.
 # Called when the first arg is NOT a monad (it's a binding step or other expression).

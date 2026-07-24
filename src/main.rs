@@ -8,7 +8,8 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use tinct::{
-    build_core_env, literate, parse, string_val, EvalContext, HashableValue, Thunk, Value,
+    build_core_env, format_type_diagnostic, literate, parse, string_val, EvalContext,
+    HashableValue, Thunk, Value,
 };
 // Exit codes for llt eval
 const EXIT_OK: i32 = 0;
@@ -2554,48 +2555,7 @@ async fn run_lint(
     Ok(())
 }
 
-/// Format a TypeDiagnostic with source context for display.
-///
-/// Produces output with diagnostic level prefix (error/warning/info), kind, message,
-/// source location, snippet with caret, and notes if present.
-fn format_type_diagnostic(diag: &tinct::TypeDiagnostic, source: &str, file_name: &str) -> String {
-    use tinct::DiagnosticLevel;
-
-    let level_str = match diag.level {
-        DiagnosticLevel::Info => "info",
-        DiagnosticLevel::Warn => "warning",
-        DiagnosticLevel::Err => "error",
-    };
-
-    let code = diag.kind;
-    let primary_span = diag.primary_span();
-    let line = primary_span.start_line;
-    let col = primary_span.start_col;
-
-    // Header: level[Txxx]: message
-    let mut out = format!("{level_str}[{code}]: {}\n", diag.message);
-
-    // Location: --> file:line:col
-    out.push_str(&format!(" --> {file_name}:{line}:{col}\n"));
-
-    // Snippet: source context with caret
-    if let Some(snippet) = tinct::render_span_snippet(source, primary_span.clone()) {
-        out.push_str("  |\n");
-        out.push_str(&snippet);
-    }
-
-    // Notes
-    for note in &diag.notes {
-        out.push_str(&format!("  = note: {note}\n"));
-    }
-
-    // Help lines
-    for help in &diag.help {
-        out.push_str(&format!("  = help: {help}\n"));
-    }
-
-    out
-}
+// format_type_diagnostic is now pub in tinct::format_type_diagnostic (src/lib.rs).
 
 /// Compute the blake3 hash of a file and print `blake3:<hexdigest>`.
 /// Used to generate integrity hashes for `$include` second arguments.

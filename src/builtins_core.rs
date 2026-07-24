@@ -59,8 +59,8 @@ use crate::builtins_meta::{
     builtin_builtin_module, builtin_cap_env_has, builtin_check_type, builtin_desugar,
     builtin_doc_expressions, builtin_doc_meta, builtin_eval, builtin_get_type_context,
     builtin_is_variant, builtin_llt_repr, builtin_parse, builtin_program_docs, builtin_raise,
-    builtin_resolve, builtin_tag_of, builtin_try, builtin_type_of,
-    builtin_typecheck_doc, builtin_variant_payload,
+    builtin_resolve, builtin_tag_of, builtin_try, builtin_type_of, builtin_typecheck_doc,
+    builtin_variant_payload,
 };
 // I/O implementations — Core-46 only.
 use crate::builtins_dict::{builtin_concat, builtin_drop, builtin_take};
@@ -396,7 +396,8 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             ["msg"]
         ),
         // builtin-try: takes 1 zero-arg function, calls it, returns `{ok: value}` on success
-        // or `{error: message}` (plain Dicts) on failure. See builtin_try in builtins_meta.rs.
+        // or the unified diagnostic dict `{level, kind, message, span, ...}` on failure.
+        // See builtin_try in builtins_meta.rs.
         builtin!("builtin-try", builtin_try, [], 0, ["expr"]),
         // ── Type introspection ────────────────────────────────────────────────────────
         builtin!(
@@ -446,9 +447,15 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
         builtin!(
             "builtin-file-open",
             builtin_file_open,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            3,
-            ["cap", "path", "mode"]
+            [
+                Strictness::Seq,
+                Strictness::Seq,
+                Strictness::Seq,
+                Strictness::Seq,
+                Strictness::Seq
+            ],
+            5,
+            ["cap", "path", "modes", "mode", "flags"]
         ),
         builtin!(
             "builtin-file-read",

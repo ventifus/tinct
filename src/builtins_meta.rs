@@ -43,7 +43,10 @@ use std::sync::{Arc, Mutex};
 use indexmap::IndexMap;
 
 use crate::ast::Span;
-use crate::builtins::{builtin, ok_val, reject_named, require_string, synthetic_call_expr};
+use crate::builtins::{
+    builtin, ok_val, reject_named, require_document, require_string, require_type_context,
+    synthetic_call_expr,
+};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{materialize, TypeContextData};
 use crate::eval_call::{invoke_function, CallContext};
@@ -189,8 +192,9 @@ pub(crate) fn builtin_macro_error(
 }
 
 /// `try`: takes 1 arg (a zero-arg Function). Calls it. Returns `{ok: value}` on success
-/// or `{error: message}` on failure. Both branches are Dicts so callers can always
-/// use `[builtin-has-key? "ok" raw]` to discriminate without a type check.
+/// or a unified diagnostic dict (fields: level, kind, message, span, secondary-spans,
+/// notes, call-stack, macro-expand, blame) on failure. Both branches are Dicts so callers
+/// can always use `[builtin-has-key? "ok" raw]` to discriminate without a type check.
 /// Inherently materializing: must materialize body to catch errors.
 pub(crate) fn builtin_try(
     ctx_arg: BuiltinArgs,
@@ -227,13 +231,75 @@ pub(crate) fn builtin_try(
                 if let ErrorKind::ResourceLimitExceeded { .. } = &e.kind {
                     return Err(e);
                 }
-                // Failure: {error: message}
-                let mut map = IndexMap::new();
-                map.insert(
-                    HashableValue::Str("error".into()),
-                    ok_val(string_val(&e.to_string()), call_span.clone())?,
+                // Failure: full diagnostic dict matching the unified protocol.
+                // Discriminated by absence of "ok" key (success has "ok", failure does not).
+                let mk = |v: Value| -> Arc<Thunk> { Arc::new(Thunk::value(v, call_span.clone())) };
+                let mk_span = |span: &crate::ast::Span| -> Arc<Thunk> {
+                    make_span_dict(span, &ctx, &call_span)
+                };
+                let primary_span = e.spans.first().map(|(s, _)| s).unwrap_or(&call_span);
+                let mut w: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+                // Unified diagnostic protocol fields:
+                let error_msg = e.kind.to_string();
+                w.insert(HashableValue::Str("level".into()), mk(string_val("error")));
+                w.insert(
+                    HashableValue::Str("kind".into()),
+                    mk(string_val(e.kind.kind_name())),
                 );
-                ok_val(Value::Dict(map), call_span)
+                w.insert(
+                    HashableValue::Str("message".into()),
+                    mk(string_val(&error_msg)),
+                );
+                w.insert(HashableValue::Str("span".into()), mk_span(primary_span));
+                // secondary-spans: spans[1..] as [{span, label}] dicts
+                let mut secondary: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+                for (j, (span, label)) in e.spans.iter().skip(1).enumerate() {
+                    let mut ss: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+                    ss.insert(HashableValue::Str("span".into()), mk_span(span));
+                    ss.insert(HashableValue::Str("label".into()), mk(string_val(label)));
+                    secondary.insert(HashableValue::Int(j as i64), mk(Value::Dict(ss)));
+                }
+                w.insert(
+                    HashableValue::Str("secondary-spans".into()),
+                    mk(Value::Dict(secondary)),
+                );
+                w.insert(
+                    HashableValue::Str("notes".into()),
+                    mk(Value::Dict(IndexMap::new())),
+                );
+                // call-stack: [{label, span}] from EvalError.stack
+                let mut stack: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+                for (j, frame) in e.stack.iter().enumerate() {
+                    let mut fd: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+                    fd.insert(
+                        HashableValue::Str("label".into()),
+                        mk(string_val(&frame.label)),
+                    );
+                    fd.insert(
+                        HashableValue::Str("span".into()),
+                        mk_span(&frame.definition_span),
+                    );
+                    stack.insert(HashableValue::Int(j as i64), mk(Value::Dict(fd)));
+                }
+                w.insert(
+                    HashableValue::Str("call-stack".into()),
+                    mk(Value::Dict(stack)),
+                );
+                // macro-expand: {name, span} or {}
+                let macro_val = if let Some((name, span)) = &e.macro_expansion {
+                    let mut me: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+                    me.insert(HashableValue::Str("name".into()), mk(string_val(name)));
+                    me.insert(HashableValue::Str("span".into()), mk_span(span));
+                    Value::Dict(me)
+                } else {
+                    Value::Dict(IndexMap::new())
+                };
+                w.insert(HashableValue::Str("macro-expand".into()), mk(macro_val));
+                w.insert(
+                    HashableValue::Str("blame".into()),
+                    mk(Value::Dict(IndexMap::new())),
+                );
+                ok_val(Value::Dict(w), call_span)
             }
         }
     })
@@ -2320,36 +2386,14 @@ pub(crate) fn builtin_typecheck_doc(
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
-        let doc_arc = match doc_val {
-            Value::Document(d) => d,
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "builtin-typecheck-doc".to_string(),
-                    "Document",
-                    other.type_name(),
-                    call_span,
-                )
-                .into());
-            }
-        };
+        let doc_arc = require_document("builtin-typecheck-doc", doc_val, args[0].span.clone())?;
 
         // arg1: Value::TypeContext
         let tc_val = args[1]
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
-        let tc_arc = match tc_val {
-            Value::TypeContext(arc) => arc,
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "builtin-typecheck-doc".to_string(),
-                    "TypeContext",
-                    other.type_name(),
-                    call_span,
-                )
-                .into());
-            }
-        };
+        let tc_arc = require_type_context("builtin-typecheck-doc", tc_val, args[1].span.clone())?;
 
         // Extract TypeContext state
         let (mut state, mut type_map, parent_env) = {

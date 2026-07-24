@@ -46,6 +46,21 @@ impl std::fmt::Display for DotKey {
     }
 }
 
+/// Extract the declared class name from a class-name expression node.
+/// The type name is always the rightmost identifier: `File.Readable` → `"Readable"`,
+/// `Readable` → `"Readable"`. Consistent with tinct's rule that a type's name is its
+/// declaration key, not its access path.
+pub fn class_decl_name(node: &Arc<SurfaceNode>) -> String {
+    match &node.expr {
+        SurfaceExpression::VarRef { name, .. } => name.clone(),
+        SurfaceExpression::Field {
+            field: DotKey::Ident(name),
+            ..
+        } => name.clone(),
+        _ => format!("{}", node.expr),
+    }
+}
+
 /// Source span (start..end). Carries file path and line/column positions.
 /// Every span must carry its source file — a line/column number without a filename is meaningless.
 #[derive(Debug, Clone)]
@@ -433,7 +448,7 @@ impl fmt::Display for SurfaceDeclaration {
                 write!(f, "]")
             }
             SurfaceDeclaration::InstanceDecl { class_name, arms } => {
-                write!(f, "[instance {class_name}")?;
+                write!(f, "[instance {}", class_decl_name(class_name))?;
                 for (pattern, methods) in arms {
                     write!(f, " {}", pattern)?;
                     write!(f, ":")?;
@@ -913,7 +928,7 @@ pub enum SurfaceDeclaration {
         structural: String,
     },
     InstanceDecl {
-        class_name: String,
+        class_name: Arc<SurfaceNode>,
         arms: Vec<(Arc<SurfaceNode>, Vec<Spanned<SurfaceEntry>>)>,
     },
     SyntaxClass {
@@ -1295,8 +1310,7 @@ pub enum CoreExpr {
     },
 
     // No Pipe variant — the lowering pass rewrites Pipe to Call before evaluation.
-    // No Field/Slot variants — dot-access is desugared to Call(field-get/slot-get, [key, target])
-    // by the lowerer. See lower.rs and builtins_core.rs for FIELD_GET_ROOT_SLOT / SLOT_GET_ROOT_SLOT.
+    // No Field variant — dot-access is desugared to Call(builtin-get, [key, target]) by the lowerer.
     Sequential(Vec<Arc<Spanned<CoreExpr>>>),
     Dict(Vec<Spanned<CoreEntry>>),
     Call {

@@ -116,7 +116,78 @@ impl fmt::Debug for BuiltinDef {
     }
 }
 
-/// Execution frame for closure-converted variable lookup.
+/// Persistent append-only cons-list for LGM slot resolution in EvalFrame.
+///
+/// Each spine node holds the entries added at one dict boundary and a shared
+/// pointer to the previous level. Creating a new EvalFrame is O(1) Arc::clone;
+/// extending after a dict evaluates is O(|new entries|); get(slot) is O(depth)
+/// where depth ≤ number of dicts in the current document (≤ ~5 in practice).
+pub struct GroupSpine {
+    entries: std::sync::Arc<[std::sync::Arc<Thunk>]>,
+    offset: usize,
+    len: usize,
+    prev: Option<std::sync::Arc<GroupSpine>>,
+}
+
+impl std::fmt::Debug for GroupSpine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "GroupSpine(len={})", self.len)
+    }
+}
+
+impl GroupSpine {
+    pub fn empty() -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self {
+            entries: std::sync::Arc::from(vec![]),
+            offset: 0,
+            len: 0,
+            prev: None,
+        })
+    }
+
+    pub fn from_flat(entries: Vec<std::sync::Arc<Thunk>>) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self {
+            len: entries.len(),
+            entries: entries.into(),
+            offset: 0,
+            prev: None,
+        })
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn get(&self, slot: usize) -> Option<std::sync::Arc<Thunk>> {
+        if slot >= self.offset {
+            self.entries
+                .get(slot - self.offset)
+                .map(std::sync::Arc::clone)
+        } else {
+            self.prev.as_ref()?.get(slot)
+        }
+    }
+
+    pub fn extend(
+        self: &std::sync::Arc<Self>,
+        new_entries: Vec<std::sync::Arc<Thunk>>,
+    ) -> std::sync::Arc<Self> {
+        if new_entries.is_empty() {
+            return std::sync::Arc::clone(self);
+        }
+        let offset = self.len;
+        std::sync::Arc::new(Self {
+            len: offset + new_entries.len(),
+            entries: new_entries.into(),
+            offset,
+            prev: Some(std::sync::Arc::clone(self)),
+        })
+    }
+}
+
 /// Replaces ScopeArena-based scope chain traversal.
 ///
 /// - `closure_env[i]`: thunk for `VarAddr::ClosureCapture(i)` references (fn captures only)
@@ -130,16 +201,16 @@ impl fmt::Debug for BuiltinDef {
 /// (captures become ClosureCapture; document cross-dict refs become LGM with cumulative slots).
 #[derive(Debug, Clone)]
 pub struct EvalFrame {
-    pub closure_env: std::sync::Arc<Vec<std::sync::Arc<Thunk>>>,
-    pub group: std::sync::Arc<Vec<std::sync::Arc<Thunk>>>,
+    pub closure_env: std::sync::Arc<GroupSpine>,
+    pub group: std::sync::Arc<GroupSpine>,
     pub params: std::sync::Arc<Vec<std::sync::Arc<Thunk>>>,
 }
 
 impl EvalFrame {
     pub fn empty() -> std::sync::Arc<Self> {
         std::sync::Arc::new(Self {
-            closure_env: std::sync::Arc::new(vec![]),
-            group: std::sync::Arc::new(vec![]),
+            closure_env: GroupSpine::empty(),
+            group: GroupSpine::empty(),
             params: std::sync::Arc::new(vec![]),
         })
     }
@@ -149,8 +220,8 @@ impl EvalFrame {
         params: Vec<std::sync::Arc<Thunk>>,
     ) -> std::sync::Arc<Self> {
         std::sync::Arc::new(Self {
-            closure_env,
-            group: std::sync::Arc::new(vec![]),
+            closure_env: GroupSpine::from_flat(closure_env.iter().cloned().collect()),
+            group: GroupSpine::empty(),
             params: std::sync::Arc::new(params),
         })
     }
@@ -2561,5 +2632,98 @@ mod tests {
 
         let nan = HashableValue::Float(f64::NAN.to_bits());
         assert_eq!(nan.to_string(), "NaN");
+    }
+}
+
+#[cfg(test)]
+mod groupspine_tests {
+    use super::*;
+
+    fn make_thunk(n: i64) -> Arc<Thunk> {
+        Arc::new(Thunk::value(
+            Value::Int(n),
+            crate::rust_span!(),
+        ))
+    }
+
+    #[test]
+    fn test_empty_spine() {
+        let spine = GroupSpine::empty();
+        assert_eq!(spine.len(), 0);
+        assert!(spine.is_empty());
+        assert!(spine.get(0).is_none());
+    }
+
+    #[test]
+    fn test_from_flat() {
+        let t0 = make_thunk(10);
+        let t1 = make_thunk(20);
+        let spine = GroupSpine::from_flat(vec![Arc::clone(&t0), Arc::clone(&t1)]);
+        assert_eq!(spine.len(), 2);
+        assert!(!spine.is_empty());
+        // Verify identity: get returns the exact Arc that was inserted
+        assert!(Arc::ptr_eq(&spine.get(0).unwrap(), &t0));
+        assert!(Arc::ptr_eq(&spine.get(1).unwrap(), &t1));
+        assert!(spine.get(2).is_none());
+    }
+
+    #[test]
+    fn test_extend_single_level() {
+        let base = GroupSpine::empty();
+        let t0 = make_thunk(1);
+        let spine = base.extend(vec![Arc::clone(&t0)]);
+        assert_eq!(spine.len(), 1);
+        assert!(Arc::ptr_eq(&spine.get(0).unwrap(), &t0));
+        assert!(spine.get(1).is_none());
+    }
+
+    #[test]
+    fn test_extend_multi_level() {
+        let t0 = make_thunk(100);
+        let t1 = make_thunk(200);
+        let t2 = make_thunk(300);
+        let base = GroupSpine::from_flat(vec![Arc::clone(&t0)]);
+        let mid = base.extend(vec![Arc::clone(&t1)]);
+        let top = mid.extend(vec![Arc::clone(&t2)]);
+
+        assert_eq!(top.len(), 3);
+        // Verify each slot returns the correct thunk (not just any present thunk)
+        assert!(Arc::ptr_eq(&top.get(0).unwrap(), &t0)); // from base
+        assert!(Arc::ptr_eq(&top.get(1).unwrap(), &t1)); // from mid
+        assert!(Arc::ptr_eq(&top.get(2).unwrap(), &t2)); // from top
+        assert!(top.get(3).is_none());
+
+        // Earlier levels unaffected — structural sharing doesn't corrupt prior spines
+        assert_eq!(base.len(), 1);
+        assert!(Arc::ptr_eq(&base.get(0).unwrap(), &t0));
+        assert!(base.get(1).is_none());
+
+        assert_eq!(mid.len(), 2);
+        assert!(Arc::ptr_eq(&mid.get(0).unwrap(), &t0));
+        assert!(Arc::ptr_eq(&mid.get(1).unwrap(), &t1));
+        assert!(mid.get(2).is_none());
+    }
+
+    #[test]
+    fn test_extend_empty_returns_same_arc() {
+        let spine = GroupSpine::from_flat(vec![make_thunk(1)]);
+        let extended = spine.extend(vec![]);
+        // extend with empty returns Arc::clone of self
+        assert!(Arc::ptr_eq(&spine, &extended));
+    }
+
+    #[test]
+    fn test_boundary_get() {
+        let t = make_thunk(42);
+        let base = GroupSpine::from_flat(vec![Arc::clone(&t)]);
+        // Boundary: slot 0 present, slot 1 absent
+        assert!(Arc::ptr_eq(&base.get(0).unwrap(), &t));
+        assert!(base.get(1).is_none());
+        // After extend, new entry at slot 1 — old slot 0 still maps to t
+        let t2 = make_thunk(99);
+        let ext = base.extend(vec![Arc::clone(&t2)]);
+        assert!(Arc::ptr_eq(&ext.get(0).unwrap(), &t));
+        assert!(Arc::ptr_eq(&ext.get(1).unwrap(), &t2));
+        assert!(ext.get(2).is_none());
     }
 }

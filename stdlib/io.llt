@@ -6,7 +6,7 @@
 # cap: DirCap, path: String
 # Returns: [Ok seq] or [Error message]
 read-lines@[doc: "Read a file as a lazy sequence of lines"]: [fn@Dict [let cap@DirCap path@String]
-  [try [fn [let] [lines [open cap path "read"]]]]]
+  [try [fn [let] [lines [open cap path "read"]].lines]]]
 
 # Print a string followed by a newline to stdout.
 println@[doc: "Print a string followed by a newline to stdout"]: [fn@Null [let s@String]
@@ -63,6 +63,6 @@ has-cap?@[doc: "Check if a method key exists on a protocol dict handle."]: [fn@B
 # cap: DirCap, src: String source path, dst: String destination path
 # Reads the source file content and writes it to the destination (create/truncate).
 copy@[doc: "Copy a file from src to dst"]: [fn@Null [let cap@DirCap src@String dst@String]
-  [content: [read-all [open cap src "read"]]]
-  [write cap dst content]]
+  [read-result: [read-all [open cap src "read"]]]
+  [write cap dst read-result.content]]
 ]

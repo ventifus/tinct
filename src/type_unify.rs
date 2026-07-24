@@ -2256,6 +2256,22 @@ pub async fn unify(
             for var in &type_vars {
                 state.set_level(var.clone(), 0);
             }
+            // Warn when Unknown meets a concrete type (not TypeVar/Unknown/Error/Any).
+            // Unknown is consistent with all types but the consistency is a potential
+            // runtime type error — missing annotation causes undefined behavior.
+            if !matches!(
+                other,
+                Type::Unknown | Type::TypeVar(..) | Type::Error(_) | Type::Any
+            ) {
+                state.diagnostics.push(TypeDiagnostic {
+                    level: crate::error::DiagnosticLevel::Warn,
+                    kind: "unknown-type",
+                    message: "type unknown".to_string(),
+                    spans: vec![(span.clone(), String::new())],
+                    notes: vec![],
+                    help: vec![],
+                });
+            }
             Ok(())
         }
 

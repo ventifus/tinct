@@ -37,11 +37,10 @@ pub enum RowTail {
 /// Row representation for record types.
 ///
 /// `fields` uses `IndexMap` to preserve insertion order (source declaration order).
-/// Insertion order defines the canonical slot numbering used by `slot-get` for
-/// O(1) positional field access. Although row field order is semantically irrelevant at
-/// the type level (structural subtyping makes rows unordered), insertion order IS the
-/// canonical slot ordering that the type checker writes into `SlotAnnotation` fields on DotAccess nodes
-/// and the lowerer reads to emit `Call(slot-get, [Int(slot), target])` vs `Call(field-get, [Str(key), target])`.
+/// Although row field order is semantically irrelevant at the type level (structural
+/// subtyping makes rows unordered), IndexMap preserves source order for diagnostic
+/// messages and deterministic output. All field access goes through key-based lookup
+/// via `builtin-get`; insertion order is NOT used for any slot-indexed access.
 ///
 /// `PartialEq`, `Eq`, and `Hash` are order-independent (field set equality, not sequence
 /// equality) so that type equality is unaffected by the order fields were added to a row.

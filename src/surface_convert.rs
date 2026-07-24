@@ -11,8 +11,9 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 
 use crate::ast::{
-    Annotation, DotKey, Span, Spanned, SurfaceDeclaration, SurfaceDocument, SurfaceEntry,
-    SurfaceExpression, SurfaceItem, SurfaceNamedArg, SurfaceNode, SurfaceParam, SurfaceProgram,
+    class_decl_name, Annotation, DotKey, Span, Spanned, SurfaceDeclaration, SurfaceDocument,
+    SurfaceEntry, SurfaceExpression, SurfaceItem, SurfaceNamedArg, SurfaceNode, SurfaceParam,
+    SurfaceProgram,
 };
 use crate::error::EvalResult;
 use crate::rust_span;
@@ -2026,7 +2027,10 @@ fn surface_decl_to_thunk_id(
             variant_tag = "InstanceDecl";
             dict.insert(
                 HashableValue::Str("class".into()),
-                Arc::new(Thunk::value(string_val(class_name), span.clone())),
+                Arc::new(Thunk::value(
+                    string_val(&class_decl_name(class_name)),
+                    span.clone(),
+                )),
             );
             // arms: integer-keyed list of {pattern, methods} dicts
             let arms_dict: IndexMap<HashableValue, Arc<Thunk>> = arms

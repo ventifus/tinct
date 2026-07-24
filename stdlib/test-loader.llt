@@ -1030,9 +1030,9 @@
               [call [builtin-get "write" %stderr]
                 [builtin-string-concat "\nbootstrap error: llt.llt formatter failed to load\nCannot run corpus tests.\nCause: "
                   [builtin-string-concat
-                    [match [builtin-has-key? "error" _raw]
-                      0: "(unknown — try result has no error field)"
-                      ...: _raw.error]
+                    [match [builtin-has-key? "message" _raw]
+                      0: "(unknown — try result has no message field)"
+                      ...: _raw.message]
                     "\n"]] %stderr]]
         ...: 1]]
     [builtin-try [builtin-program-docs _llt-formatter-expanded]]]

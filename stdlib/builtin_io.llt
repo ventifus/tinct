@@ -9,7 +9,7 @@
   File: [type File]
 
   # ── Filesystem: open / read / write / close ────────────────────────────────
-  builtin-file-open:     [fn@File    [let cap@DirCap path@String mode@String] ...]
+  builtin-file-open:     [fn@File    [let cap@DirCap path@String modes@Dict mode@Integer flags@Integer] ...]
   builtin-file-read:     [fn@Bytes   [let f@File n@Integer] ...]
   builtin-file-write:    [fn@Integer [let f@File s@String] ...]
   builtin-file-flush:    [fn@Integer [let f@File] ...]

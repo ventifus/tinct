@@ -19,8 +19,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use crate::ast::{
-    node_id, Annotation, Span, Spanned, SurfaceDeclaration, SurfaceEntry, SurfaceExpression,
-    SurfaceMatchArm, SurfaceNamedArg, SurfaceNode, SurfaceParam, STANDARD_ANN_KEYS,
+    class_decl_name, node_id, Annotation, Span, Spanned, SurfaceDeclaration, SurfaceEntry,
+    SurfaceExpression, SurfaceMatchArm, SurfaceNamedArg, SurfaceNode, SurfaceParam,
+    STANDARD_ANN_KEYS,
 };
 use crate::coverage;
 use crate::env::Env;
@@ -686,7 +687,7 @@ async fn infer_step(
                 }
                 SurfaceDeclaration::InstanceDecl { class_name, arms } => {
                     Box::pin(super::infer_instance_decl_from_surface(
-                        class_name,
+                        &class_decl_name(class_name),
                         arms,
                         node.span.clone(),
                         env,
@@ -852,12 +853,12 @@ async fn apply_cont(
                                     level: DiagnosticLevel::Info,
                                     kind: "overbroad-annotation",
                                     message: format!(
-                                        "declared return type {} is broader than inferred {} — consider narrowing the annotation",
+                                        "return type declared as {}, inferred as {}",
                                         declared_ret, body_resolved
                                     ),
                                     spans: vec![(node_span.clone(), String::new())],
                                     notes: vec![],
-                help: vec![],
+                                    help: vec![],
                                 });
                             }
                         }
@@ -3898,7 +3899,7 @@ pub(crate) async fn run_typecheck_dict(
                                 None => continue,
                             };
                             let binding_name = crate::type_def::instance_binding_name(
-                                class_name,
+                                &class_decl_name(class_name),
                                 &method_name,
                                 &type_args,
                             );
@@ -4208,7 +4209,7 @@ pub(crate) async fn run_typecheck_dict(
                     }
                     SurfaceDeclaration::InstanceDecl { class_name, arms } => {
                         Box::pin(super::infer_instance_decl_from_surface(
-                            class_name,
+                            &class_decl_name(class_name),
                             arms,
                             entry.node.value.span.clone(),
                             &dict_env,

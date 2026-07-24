@@ -140,6 +140,8 @@ pub async fn typecheck_surface_program_annotation_table_with_env(
         // Collect all errors (type errors + advisory) without blocking propagation.
         errors.append(&mut doc_errors);
     }
+    // Include state-level diagnostics (e.g. unknown-type warnings from unification).
+    errors.append(&mut state.diagnostics);
 
     (errors, table, state.tycon_env)
 }
@@ -172,6 +174,7 @@ pub async fn typecheck_surface_program(
             true,
             std::collections::HashMap::new(),
             None,
+            None, // type_stage_scope_override
         )
         .await;
     // type_map is now populated during inference (enable_hover_map=true path).
@@ -201,7 +204,7 @@ pub async fn typecheck_surface_program(
 ///
 /// # Returns
 ///
-/// `(errors, type_map, doc_map, scheme_map, diagnostics, infer_state, final_env, annotation_table)`
+/// `(diagnostics, type_map, doc_map, scheme_map, infer_state, final_env, annotation_table)`
 ///
 /// `type_map` and `doc_map` are currently empty — all callers discard them. If a caller
 /// needs span-keyed types, use [`typecheck_surface_program`] instead.
@@ -212,6 +215,9 @@ pub async fn typecheck_surface_program_with_env(
     enable_hover_map: bool,
     seed_tycon_env: std::collections::HashMap<String, std::sync::Arc<crate::type_def::TyConDef>>,
     eval_ctx: Option<std::sync::Arc<crate::eval::EvalContext>>,
+    type_stage_scope_override: Option<
+        Vec<std::collections::HashMap<String, crate::type_infer::TypeStageEntry>>,
+    >,
 ) -> (
     Vec<TypeDiagnostic>,
     TypeMap,
@@ -229,11 +235,12 @@ pub async fn typecheck_surface_program_with_env(
     let mut env: Arc<RwLock<Env>> = Arc::clone(&child_env);
     let mut state = InferState::with_env(Arc::clone(&child_env));
     state.eval_ctx = eval_ctx;
-    // Seed type_stage_scope with Unknown → Type::Unknown so that `@Unknown` resolves
-    // through the scope chain. This function is called by typecheck_source (corpus tests,
-    // LSP diagnostics) which do not evaluate type-stage documents. The full production
-    // loader uses typecheck_surface_program_annotation_table_with_env instead.
-    {
+    // If caller provided a type_stage_scope, use it. Otherwise default to just Unknown.
+    // This function is called by typecheck_source (corpus tests, LSP diagnostics) which do
+    // not evaluate type-stage documents, and by imports.rs which does evaluate them.
+    if let Some(ts_scope) = type_stage_scope_override {
+        state.type_stage_scope = ts_scope;
+    } else {
         let mut seed = std::collections::HashMap::new();
         seed.insert(
             "Unknown".to_string(),

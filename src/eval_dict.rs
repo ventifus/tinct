@@ -494,9 +494,9 @@ pub(crate) async fn eval_dict_core(
     // in make-entry) can access function parameters and closures via the frame.
     if has_non_literal {
         // Build extended group: outer group (accumulated) + this dict's letrec slots.
-        let mut extended_group: Vec<Arc<Thunk>> = outer_frame.group.iter().cloned().collect();
-        extended_group.extend(letrec_slots.iter().cloned());
-        let group: std::sync::Arc<Vec<Arc<Thunk>>> = std::sync::Arc::new(extended_group);
+        let group: std::sync::Arc<crate::value::GroupSpine> = outer_frame
+            .group
+            .extend(letrec_slots.iter().cloned().collect());
 
         // closure_env: document-level dicts carry the outer group for fn captures;
         // fn-body dicts carry the fn's closure_env unchanged.

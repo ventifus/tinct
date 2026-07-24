@@ -251,7 +251,7 @@
       [fn [let acc name]
         [decl-path:  [builtin-string-concat "builtin_" [builtin-string-concat name ".llt"]]]
         [tc-result:  [builtin-try [call [fn []
-            [decl-handle:    [builtin-file-open %libdir decl-path "read"]]
+            [decl-handle:    [builtin-file-open %libdir decl-path ["read"] -1 -1]]
             [decl-bytes:     [read-file decl-handle [builtin-bytes]]]
             [parse-result:   [builtin-parse decl-bytes decl-path]]
             [desugared:      [builtin-desugar parse-result.program]]
@@ -329,7 +329,7 @@
   # Uses fundamental-tc (built from builtin_core.llt); it is building the context.
 
   include: [fn [let cap path extras@[default: []]]
-    [handle:        [builtin-file-open cap path "read"]]
+    [handle:        [builtin-file-open cap path ["read"] -1 -1]]
     [bytes:         [read-file handle [builtin-bytes]]]
     [parse-result:  [builtin-parse bytes path]]
     # Stop on parse errors. Emit first (data dependency via builtin-int-add), then raise.
@@ -573,7 +573,7 @@
 
   out-fmt:    [builtin-get "output" %args]
   out-path:   [builtin-string-concat "cli/out/" [builtin-string-concat out-fmt ".llt"]]
-  out-handle: [builtin-file-open %libdir out-path "read"]
+  out-handle: [builtin-file-open %libdir out-path ["read"] -1 -1]
   formatter:  [ProgramItem.File path: out-path  handle: out-handle]
 ]
 

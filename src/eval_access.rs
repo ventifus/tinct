@@ -79,7 +79,7 @@ mod tests {
     /// `build_core_env()` returns `Arc<RwLock<Env>>` with builtin names registered
     /// for the resolver. `EvalContext::new` pre-populates the FlatEnv root scope with
     /// the matching Value::Builtin thunks. Together they provide a consistent name→slot
-    /// mapping for tests that exercise field-get / slot-get builtins.
+    /// mapping for tests that exercise builtin-get (dot-access) and other builtins.
     fn core_env_and_ctx() -> (Arc<RwLock<crate::env::Env>>, Arc<EvalContext>) {
         let env = crate::builtins::build_core_env(); // Arc<RwLock<Env>>
         let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
@@ -88,7 +88,7 @@ mod tests {
     }
 
     /// Parse and evaluate a surface expression with the core env seeded into the
-    /// resolver so builtin names ($field-get, $slot-get, etc.) resolve correctly.
+    /// resolver so builtin names resolve correctly.
     async fn eval_str(
         src: &str,
         env: Arc<RwLock<crate::env::Env>>,
@@ -125,7 +125,7 @@ mod tests {
     /// `[d: [a: 1]  result: d.a]` — `result` accesses key `a` from sibling `d`
     /// via letrec scope. After evaluation, `result` must be Int(1).
     ///
-    /// This exercises the field-get builtin which is dispatched for all dot-access
+    /// This exercises the `builtin-get` path which is dispatched for all dot-access
     /// expressions in the evaluator.
     #[tokio::test]
     async fn test_dot_access_existing_key() {
@@ -189,8 +189,8 @@ mod tests {
 
     /// Integer-key dot access: `[d: ["x"]  result: d.0]` → String("x").
     ///
-    /// Auto-indexed list `["x"]` creates key 0 → "x". Dot access `.0` uses the
-    /// integer-key (slot-get) path in the evaluator. The result must be String("x").
+    /// Auto-indexed list `["x"]` creates key 0 → "x". Dot access `.0` desugars to
+    /// `builtin-get` with an integer key. The result must be String("x").
     #[tokio::test]
     async fn test_bracket_access() {
         let (env, ctx) = core_env_and_ctx();

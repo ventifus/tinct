@@ -271,6 +271,57 @@ pub(crate) fn require_string(name: &str, value: Value, def_span: Span) -> EvalRe
     }
 }
 
+///// Helper: require that a materialized value is an Integer.
+#[allow(dead_code)]
+pub(crate) fn require_integer(name: &str, value: Value, def_span: Span) -> EvalResult<i64> {
+    match value {
+        Value::Int(n) => Ok(n),
+        other => Err(EvalError::type_mismatch_ctx(
+            name.to_string(),
+            "Integer",
+            other.type_name(),
+            def_span,
+        )
+        .into()),
+    }
+}
+
+/// Helper: require that a materialized value is a Document.
+pub(crate) fn require_document(
+    name: &str,
+    value: Value,
+    def_span: Span,
+) -> EvalResult<std::sync::Arc<crate::ast::SurfaceDocument>> {
+    match value {
+        Value::Document(d) => Ok(d),
+        other => Err(EvalError::type_mismatch_ctx(
+            name.to_string(),
+            "Document",
+            other.type_name(),
+            def_span,
+        )
+        .into()),
+    }
+}
+
+/// Helper: require that a materialized value is a TypeContext.
+pub(crate) fn require_type_context(
+    name: &str,
+    value: Value,
+    def_span: Span,
+) -> EvalResult<std::sync::Arc<std::sync::Mutex<crate::eval::TypeContextData>>> {
+    match value {
+        Value::TypeContext(tc) => Ok(tc),
+        other => Err(EvalError::type_mismatch_ctx(
+            name.to_string(),
+            "TypeContext",
+            other.type_name(),
+            def_span,
+        )
+        .into()),
+    }
+}
+
 /// Helper: reject named arguments for multi-arg builtins that don't accept them.
 pub(crate) fn reject_named(
     name: &str,
@@ -2177,7 +2228,7 @@ mod tests {
 
     #[tokio::test]
     async fn try_catches_error_from_pending_builtin() {
-        // Errors from forcing a PendingBuiltin thunk are caught and returned as {error: ...}.
+        // Errors from forcing a PendingBuiltin thunk are caught and returned as {message: ...}.
         fn err_builtin(
             ctx: BuiltinArgs,
         ) -> Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
@@ -2207,9 +2258,9 @@ mod tests {
         match result {
             Value::Dict(map) => {
                 let err_thunk = map
-                    .get(&HashableValue::Str("error".into()))
+                    .get(&HashableValue::Str("message".into()))
                     .cloned()
-                    .expect("failure dict must have 'error' key");
+                    .expect("failure dict must have 'message' key");
                 let err_val = mat_id(err_thunk, &ctx).await;
                 let s = format!("{err_val}");
                 assert!(
@@ -2217,7 +2268,7 @@ mod tests {
                     "error value should contain 'builtin error', got: {s}"
                 );
             }
-            _ => panic!("expected Dict {{error: ...}}, got: {:?}", result),
+            _ => panic!("expected Dict {{message: ...}}, got: {:?}", result),
         }
     }
 

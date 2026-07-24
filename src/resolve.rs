@@ -29,8 +29,8 @@
 //! See doc/whatif/arena-patterns.md §Variable Resolution Pass Design for the full specification.
 
 use crate::ast::{
-    node_id, ResolutionTable, Spanned, SurfaceDeclaration, SurfaceDocument, SurfaceEntry,
-    SurfaceExpression, SurfaceItem, SurfaceNode, SurfaceProgram, VarAddr,
+    class_decl_name, node_id, ResolutionTable, Spanned, SurfaceDeclaration, SurfaceDocument,
+    SurfaceEntry, SurfaceExpression, SurfaceItem, SurfaceNode, SurfaceProgram, VarAddr,
 };
 use crate::error::{DiagnosticLevel, TypeDiagnostic};
 use std::sync::Arc;
@@ -2008,51 +2008,20 @@ fn surface_dict_static_keys(entries: &[Spanned<SurfaceEntry>]) -> Vec<String> {
         })
         .collect();
 
-    // Pass 2: Build the key list. ClassDecl method names come BEFORE the class
-    // outer name so the lowerer's slot layout matches (methods first, then class).
+    // Pass 2: Build the key list.
+    // ClassDecl is type-level only — push the outer class name, no method injection.
+    // InstanceDecl (named or anonymous) injects both plain method names (for call-site
+    // resolution) and mangled binding names (for dispatch), regardless of whether
+    // the instance has an outer key. Plain method names come first so the lowerer's
+    // slot layout matches.
     let mut keys = Vec::new();
+    let mut injected_method_names: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
     for entry in entries {
+        // Push outer key name if present (for all keyed entries including named instances).
         if let Some(key_node) = &entry.node.key {
-            // Check if this keyed entry is a ClassDecl.
-            if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
-                if let crate::ast::SurfaceDeclaration::ClassDecl { methods, .. } = decl.as_ref() {
-                    // Inject method names that are NOT explicitly defined elsewhere
-                    // in this dict. This makes `+`, `<`, etc. resolvable as bindings.
-                    for me in methods {
-                        let method_name = match me.node.key.as_ref() {
-                            Some(k) => match &k.expr {
-                                SurfaceExpression::StringLiteral { content, .. } => content.clone(),
-                                SurfaceExpression::VarRef { name, .. } => name.clone(),
-                                _ => continue,
-                            },
-                            None => continue,
-                        };
-                        if !explicit_keys.contains(&method_name) {
-                            keys.push(method_name);
-                        }
-                    }
-                    // Then push the class outer name itself.
-                    match &key_node.expr {
-                        SurfaceExpression::StringLiteral { content, .. } => {
-                            keys.push(content.clone());
-                        }
-                        SurfaceExpression::VarRef {
-                            name,
-                            escaped: false,
-                            ..
-                        } => {
-                            keys.push(name.clone());
-                        }
-                        _ => {}
-                    }
-                    continue;
-                }
-            }
-            // Non-ClassDecl keyed entry: push the key name (existing behavior).
             match &key_node.expr {
                 SurfaceExpression::StringLiteral { content, .. } => keys.push(content.clone()),
-                // Non-escaped VarRef (bare identifier) → static name for letrec scope.
-                // Escaped VarRef ($k:) is a computed key — not a static scope binding.
                 SurfaceExpression::VarRef {
                     name,
                     escaped: false,
@@ -2060,9 +2029,9 @@ fn surface_dict_static_keys(entries: &[Spanned<SurfaceEntry>]) -> Vec<String> {
                 } => keys.push(name.clone()),
                 _ => {}
             }
-        } else if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
-            // Anonymous entry (no outer key): check for InstanceDecl whose method
-            // bindings the lowerer will flatten into the enclosing dict.
+        }
+        // For any InstanceDecl (named or anonymous), also inject method names.
+        if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
             if let crate::ast::SurfaceDeclaration::InstanceDecl { class_name, arms } = decl.as_ref()
             {
                 for (pattern, method_entries) in arms {
@@ -2078,8 +2047,15 @@ fn surface_dict_static_keys(entries: &[Spanned<SurfaceEntry>]) -> Vec<String> {
                             },
                             None => continue,
                         };
+                        // Inject plain method name for call-site resolution (de-duplicated).
+                        if !explicit_keys.contains(&method_name)
+                            && injected_method_names.insert(method_name.clone())
+                        {
+                            keys.push(method_name.clone());
+                        }
+                        // Inject mangled binding name for dispatch.
                         keys.push(crate::type_def::instance_binding_name(
-                            class_name,
+                            &class_decl_name(class_name),
                             &method_name,
                             &type_args,
                         ));

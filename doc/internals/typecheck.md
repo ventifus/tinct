@@ -2,7 +2,7 @@
 
 This document is for Rust contributors working in `src/typecheck*.rs` and `src/type_*.rs`. Tinct developers: the type checker produces results written into inline OnceLocks on AST nodes — it does not block evaluation. Type errors are non-fatal; a program with type errors still evaluates, with failed-inference annotations falling back to `Type::Unknown` (accept-all) at runtime.
 
-The type checker walks the Surface AST after desugaring and resolution, performing Hindley–Milner type inference with row polymorphism. It writes its results into inline OnceLocks on AST nodes and into a `TypeAnnotationTable` returned to the caller. Type errors are returned as `Vec<TypeError>` — not panics — so evaluation can proceed even when type errors are present.
+The type checker walks the Surface AST after desugaring and resolution, performing Hindley–Milner type inference with row polymorphism. It writes its results into inline OnceLocks on AST nodes and into a `TypeAnnotationTable` returned to the caller. Type errors are returned as `Vec<TypeDiagnostic>` — not panics — so evaluation can proceed even when type errors are present.
 
 ---
 
@@ -46,10 +46,10 @@ Also written to `InferState.type_annotation_table` during inference, then draine
 ### `TypeMap`
 
 ```rust
-pub type TypeMap = HashMap<(usize, usize), Type>;  // (start_offset, end_offset) → Type
+pub type TypeMap = HashMap<(u32, u32, u32, u32), Type>;  // (start_line, start_col, end_line, end_col) → Type
 ```
 
-Span-keyed type map used by the LSP for hover information. Only populated when `enable_scheme_map = true` (the LSP path). Not used by the evaluator.
+Span-keyed type map used by the LSP for hover information. Only populated when `enable_hover_map = true` (the LSP path). Not used by the evaluator.
 
 ### `CallDispatch` OnceLock
 
@@ -70,10 +70,10 @@ This is the mechanism by which type-checker results flow into the evaluator for 
 ```rust
 pub async fn typecheck_surface_program_annotation_table(
     program: &SurfaceProgram,
-) -> (Vec<TypeError>, TypeAnnotationTable, TyConEnv)
+) -> (Vec<TypeDiagnostic>, TypeAnnotationTable, TyConEnv)
 ```
 
-Thin wrapper — delegates to `typecheck_surface_program_annotation_table_with_env` with an empty initial env, no eval context, and no seed tycon env. Used in contexts without a loader pipeline (tests, bootstrap).
+Thin wrapper — delegates to `typecheck_surface_program_annotation_table_with_env` with an empty initial env, no eval context, no seed tycon env, and a minimal type-stage scope pre-seeded with `Unknown → Type::Unknown`. Used in contexts without a loader pipeline (tests, bootstrap).
 
 ### `typecheck_surface_program_annotation_table_with_env`
 
@@ -83,17 +83,17 @@ pub async fn typecheck_surface_program_annotation_table_with_env(
     initial_env: Arc<RwLock<Env>>,
     eval_ctx: Option<Arc<EvalContext>>,
     seed_tycon_env: TyConEnv,
-    type_stage_map: Option<HashMap<String, TypeStageEntry>>,
-) -> (Vec<TypeError>, TypeAnnotationTable, TyConEnv)
+    type_stage_scope: Vec<HashMap<String, TypeStageEntry>>,
+) -> (Vec<TypeDiagnostic>, TypeAnnotationTable, TyConEnv)
 ```
 
 Production entry point used by the loader pipeline. Accepts:
 - `initial_env` — base type environment (class/instance/scheme bindings from prior type-checking passes)
 - `eval_ctx` — when present, allows `resolve_type_head` to look up type-stage names via scope-chain traversal and `normalize()` to evaluate `TypeStageApp` nodes
 - `seed_tycon_env` — accumulated type constructor definitions from prior documents (e.g., `DirCap`, `File` from `builtin_core.llt`)
-- `type_stage_map` — pre-computed `TypeStageEntry` map (`Resolved(Type)` for ground types, `Function(ThunkId)` for parameterized constructors); always seeded with `"Unknown" → Type::Unknown` so `@Unknown` resolves correctly regardless
+- `type_stage_scope` — pre-evaluated type-stage scope chain (`Vec<HashMap<String, TypeStageEntry>>`); each entry is a scope frame, Vec[0] = innermost. The caller supplies the complete chain; the function assigns it directly to `state.type_stage_scope`.
 
-Always seeds `type_stage_map` with `"Unknown" → Type::Unknown`, then extends with caller-supplied entries via `HashMap::extend` — caller entries override the seed on conflict (production type-stage map takes precedence).
+The caller supplies the complete type-stage scope chain as a pre-populated `Vec<HashMap<String, TypeStageEntry>>`. The function assigns this directly to `state.type_stage_scope` — no seeding or merging is performed inside this function.
 
 Note: creates a fresh `InferState::new()` (not seeded from `initial_env`). The `initial_env` is used only as the starting `env` variable passed to `process_document` for each document — it is NOT wired into `state.env`. Class/instance lookups during inference go through `state.env`, which starts as a fresh empty `Env`. This is distinct from `typecheck_surface_program_with_env`, which calls `InferState::with_env(child_env)`.
 
@@ -105,13 +105,16 @@ Runs `resolve::resolve_surface_program` before type-checking to populate `state.
 pub async fn typecheck_surface_program_with_env(
     program: &SurfaceProgram,
     parent_env: Arc<RwLock<Env>>,
-    enable_scheme_map: bool,
+    enable_hover_map: bool,
     seed_tycon_env: HashMap<String, Arc<TyConDef>>,
     eval_ctx: Option<Arc<EvalContext>>,
-) -> (Vec<TypeError>, TypeMap, DocMap, SchemeMap, Vec<TypeDiagnostic>, InferState, Arc<RwLock<Env>>, TypeAnnotationTable)
+    type_stage_scope_override: Option<Vec<HashMap<String, TypeStageEntry>>>,
+) -> (Vec<TypeDiagnostic>, TypeMap, DocMap, SchemeMap, InferState, Arc<RwLock<Env>>, TypeAnnotationTable)
 ```
 
-Extended entry point returning all intermediate state. Used by the loader pipeline's `builtin-typecheck-doc` path. The returned `TypeMap` and `DocMap` are empty unless `enable_scheme_map = true`.
+Extended entry point returning all intermediate state. Used by the loader pipeline's `builtin-typecheck-doc` path and the bootstrap type environment builder (`imports.rs`). The returned `TypeMap` and `DocMap` are empty unless `enable_hover_map = true`.
+
+The `type_stage_scope_override` parameter allows callers to provide a pre-evaluated type-stage scope (e.g., from evaluating `stage: "type"` documents). When `None`, defaults to a minimal scope containing only `Unknown → Type::Unknown`. The bootstrap path in `imports.rs` evaluates the type-stage section of `builtin_core.llt` and passes the result here so that `@Integer`, `@String`, `@Bytes`, etc. resolve correctly during typecheck.
 
 After type-checking all documents, calls `merge_env_schemes_into_env` to flatten the document-level Env frame chain back into the child Env so callers holding the returned Env can see all new bindings.
 
@@ -121,10 +124,10 @@ After type-checking all documents, calls `merge_env_schemes_into_env` to flatten
 pub async fn typecheck_surface_program(
     program: &SurfaceProgram,
     parent_env: Arc<RwLock<Env>>,
-) -> (Vec<TypeError>, TypeMap, DocMap, SchemeMap, Vec<TypeDiagnostic>)
+) -> (Vec<TypeDiagnostic>, TypeMap, DocMap, SchemeMap)
 ```
 
-LSP-compatible entry point. Delegates to `typecheck_surface_program_with_env` with `enable_scheme_map = true`. Populates the `TypeMap` (span-keyed, for hover) and `SchemeMap` (polymorphic type display). Not used by the normal eval pipeline.
+LSP-compatible entry point. Delegates to `typecheck_surface_program_with_env` with `enable_hover_map = true`. Populates the `TypeMap` (span-keyed, for hover) and `SchemeMap` (polymorphic type display). Not used by the normal eval pipeline.
 
 ---
 
@@ -177,7 +180,7 @@ pub(crate) async fn process_document(
     state: &mut InferState,
     table: &mut TypeAnnotationTable,
     type_map: &mut Option<&mut TypeMap>,
-) -> (Arc<RwLock<Env>>, Type, Vec<TypeError>)
+) -> (Arc<RwLock<Env>>, Type, Vec<TypeDiagnostic>)
 ```
 
 Type-checks a single `SurfaceDocument`. Processes all items (Decls and Exprs) in source order, extending the env incrementally.
@@ -222,7 +225,7 @@ Returns `(dict_type, schemes, errors)`:
 
 ## Type Error Model
 
-Type errors are `Vec<TypeError>` returned alongside results — not exceptions or panics. The type checker continues inference even after errors, producing partial results. The evaluator can run on a program with type errors; `TypeAssert` nodes whose type failed to infer use `Type::Unknown` (which accepts any value at runtime).
+Type errors are `Vec<TypeDiagnostic>` returned alongside results — not exceptions or panics. The type checker continues inference even after errors, producing partial results. The evaluator can run on a program with type errors; `TypeAssert` nodes whose type failed to infer use `Type::Unknown` (which accepts any value at runtime).
 
 `TypeDiagnostic` is a higher-level diagnostic (T010/T011/T012/T013 quality warnings) produced alongside type errors. These are informational and do not block evaluation. T013 (ambiguous constraint warnings) fire during constraint discharge when a TypeVar escapes generalization with unresolved type class constraints.
 
@@ -309,7 +312,7 @@ pub(crate) async fn run_typecheck(
     node: &Arc<SurfaceNode>,
     env: &Arc<RwLock<Env>>,
     state: &mut InferState,
-    errors: &mut Vec<TypeError>,
+    errors: &mut Vec<TypeDiagnostic>,
     type_map: &mut Option<&mut TypeMap>,
     stack: &mut Vec<TypeCheckCont>,
 ) -> Type
@@ -533,8 +536,7 @@ The type checker communicates results to the evaluator through three channels:
 | `do_infer_resolutions` | `HashMap<String, String>` | do-infer sentinel → resolved monad name |
 | `resolution_table` | `Option<Arc<ResolutionTable>>` | Pre-computed NodeId → (level, slot) for O(1) VarRef lookup |
 | `eval_ctx` | `Option<Arc<EvalContext>>` | EvalContext for type-stage scope-chain lookup |
-| `type_stage_map` | `Option<HashMap<String, TypeStageEntry>>` | Pre-computed type-stage entries |
-| `type_stage_scope_id` | `Option<u32>` | Scope-id of the type-stage scope chain |
+| `type_stage_scope` | `Vec<HashMap<String, TypeStageEntry>>` | Type-stage scope chain (Vec[0] = innermost). Populated by bootstrap or builtin-tc-update-type-stage-env |
 | `tycon_env` | `HashMap<String, Arc<TyConDef>>` | Type constructor definitions |
 | `type_annotation_table` | `TypeAnnotationTable` | Per-session TypeAssert NodeId → Type; drained by `process_document` |
 | `expects_resolved` | `HashMap<Span, Type>` | Resolved `--- expects:` contract types |
