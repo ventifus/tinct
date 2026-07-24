@@ -592,6 +592,18 @@ pub fn is_atom_subtype(
         // TyCon: nominal equality
         (Atom::TyCon(n1), Atom::TyCon(n2)) => n1 == n2,
 
+        // TyCon("Dict") vs open Record: TyCon("Dict") is the nominal representation of
+        // the structural dict type. Any Value::Dict satisfies any open record constraint,
+        // so TyCon("Dict") ≤ Record({}, Uniform{V}) for any V ≥ Any.
+        (Atom::TyCon(name), Atom::Record(r2)) if name == "Dict" => {
+            if r2.fields.is_empty() {
+                if let RowTail::Uniform { value: sup_v, .. } = &r2.tail {
+                    return Type::is_subtype_bas(&Type::Any, sup_v, tycon_env, sigma);
+                }
+            }
+            false
+        }
+
         // NominalVariant: tycon and ctor must match, fields are covariant
         (
             Atom::NominalVariant {
@@ -1137,7 +1149,10 @@ fn atoms_are_disjoint(a: &Atom, b: &Atom, tycon_env: Option<&TyConEnv>) -> bool 
         | (Atom::NominalVariant { .. }, Atom::Record(_)) => true,
         (Atom::Record(_), Atom::Literal(_)) | (Atom::Literal(_), Atom::Record(_)) => true,
         (Atom::Record(_), Atom::App(_, _)) | (Atom::App(_, _), Atom::Record(_)) => true,
-        (Atom::Record(_), Atom::TyCon(_)) | (Atom::TyCon(_), Atom::Record(_)) => true,
+        // Record vs TyCon: opaque TyCons (Handle, DirCap, etc.) are disjoint from Records.
+        // Exception: TyCon("Dict") is the nominal Dict type whose runtime representation IS
+        // Value::Dict — a structural dict. TyCon("Dict") and open Record types overlap.
+        (Atom::Record(_), Atom::TyCon(n)) | (Atom::TyCon(n), Atom::Record(_)) => n != "Dict",
         // Record vs SingleFieldRecord: not disjoint (Record could contain the field)
         (Atom::Record(_), Atom::SingleFieldRecord { .. })
         | (Atom::SingleFieldRecord { .. }, Atom::Record(_)) => false,
