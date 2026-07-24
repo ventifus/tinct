@@ -187,7 +187,6 @@
   # ── I/O ───────────────────────────────────────────────────────────────────
   builtin-narrow:        [fn@DirCap  [let cap@DirCap path@String] ...]
   builtin-list-dir:      [fn@Dict    [let cap@DirCap path@String] ...]
-  builtin-path-dirname:  [fn@String  [let path@String] ...]
   builtin-file-read:     [fn@Bytes   [let file@File n@Integer] ...]
   builtin-write-stdout:  [fn@[bind: [h] return: h] [let s@String h] ...]
   builtin-write-stderr:  [fn@[bind: [h] return: h] [let s@String h] ...]

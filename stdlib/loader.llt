@@ -88,7 +88,7 @@
 #   Dict:    builtin-reduce (Dict fold only — NOT Seq; Seq reduce is tinct),
 #            merge, builtin-get, builtin-keys, builtin-dict-length, builtin-build-dict
 #   Variant: builtin-tag-of (reads Variant tag string — Variant internals, not Dict)
-#   Path:    builtin-path-dirname (String → String; extracts parent dir from a file path)
+#   Path:    path-dirname (String → String; extracts parent dir from a file path, tinct-defined)
 #
 # Eliminated (reducible — derivable in tinct from the irreducibles above):
 #   builtin-bytes-empty?  → [match [= [builtin-dict-length x] 0] ...]
@@ -133,6 +133,20 @@
     [builtin-builder-finish
       [_copy [_copy [builtin-make-builder] a [builtin-dict-length a] 0]
              b [builtin-dict-length b] 0]]]
+
+  # path-dirname: extract the directory portion of a path string.
+  # Scans right-to-left for the last "/" and returns the prefix, or "." if none.
+  path-dirname: [fn [let path]
+    [find-slash: [fn [let i]
+      [match [builtin-int-gte i 0]
+        0: -1
+        ...: [match [builtin-eq-string [builtin-str-slice path i [builtin-int-add i 1]] "/"]
+               0: [find-slash [builtin-int-sub i 1]]
+               ...: i]]]]
+    [last-slash: [find-slash [builtin-int-sub [builtin-str-length path] 1]]]
+    [match [builtin-eq-int last-slash -1]
+      0: [builtin-str-slice path 0 last-slash]
+      ...: "."]]
 
   read-file: [fn [let f acc]
     [chunk: [builtin-file-read f 65536]]
@@ -492,7 +506,7 @@
     # %include-dir for this file's documents = the directory containing item.path,
     # derived by narrowing %cwd (the CLI-provided working directory cap) to the
     # parent directory component of the path. No ambient filesystem access.
-    [file-include-dir: [builtin-narrow %cwd [builtin-path-dirname item.path]]]
+    [file-include-dir: [builtin-narrow %cwd [path-dirname item.path]]]
     [bytes:        [read-file item.handle [builtin-bytes]]]
     [parse-result: [builtin-parse bytes item.path]]
     # Emit parse errors as a data dependency (no >> needed).

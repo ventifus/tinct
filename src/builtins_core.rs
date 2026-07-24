@@ -65,7 +65,7 @@ use crate::builtins_meta::{
 // I/O implementations — Core-46 only.
 use crate::builtins_dict::{builtin_concat, builtin_drop, builtin_take};
 use crate::builtins_io::{
-    builtin_file_open, builtin_file_read, builtin_list_dir, builtin_narrow, builtin_path_dirname,
+    builtin_file_open, builtin_file_read, builtin_list_dir, builtin_narrow,
     builtin_write_stderr, builtin_write_stdout,
 };
 // Async concurrency implementations — Core-46 only (channel, send).
@@ -436,13 +436,6 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             [Strictness::Seq, Strictness::Seq],
             2,
             ["cap", "path"]
-        ),
-        builtin!(
-            "builtin-path-dirname",
-            builtin_path_dirname,
-            [Strictness::Seq],
-            1,
-            ["path"]
         ),
         builtin!(
             "builtin-file-open",

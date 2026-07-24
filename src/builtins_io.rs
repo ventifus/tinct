@@ -2217,51 +2217,6 @@ pub(crate) fn builtin_read_link(
     })
 }
 
-/// `builtin-path-dirname`: Pure string operation — extract the directory portion of a path.
-///
-/// Takes 1 arg: String (file path). Returns String: the parent directory component.
-/// If the path has no directory component (bare filename), returns `"."`.
-///
-/// No filesystem access, no DirCap required. Use `[narrow cap [builtin-path-dirname path]]`
-/// to derive a DirCap for the file's parent directory from an already-granted cap.
-///
-/// # Example
-///
-/// ```llt
-/// [builtin-path-dirname "cli/out/llt.llt"]  # → "cli/out"
-/// [builtin-path-dirname "file.llt"]          # → "."
-/// ```
-pub(crate) fn builtin_path_dirname(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-            ..
-        } = ctx_arg;
-
-        let val = crate::builtins::expect_one_arg(
-            "builtin-path-dirname",
-            &args,
-            named.as_ref(),
-            &ctx,
-            call_span.clone(),
-        )?;
-
-        let path_str = require_string("builtin-path-dirname", val, Arc::clone(&args[0]).span.clone())?;
-
-        let parent = std::path::Path::new(&path_str)
-            .parent()
-            .and_then(|p| p.to_str())
-            .unwrap_or(".");
-        let result = if parent.is_empty() { "." } else { parent };
-
-        ok_val(string_val(result), call_span)
-    })
-}
 
 /// `builtin-file-open`: Open a file via a DirCap and return a raw `Value::File`.
 ///
