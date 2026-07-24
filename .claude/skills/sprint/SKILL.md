@@ -50,7 +50,9 @@ loop:
   2a. Implement all remaining tasks
   2a'. Skeptic verification — verify every completed_reason against actual code changes
   2b. Build gate: just fmt + just build + just test-lib — all must pass
-  2c. Sprint-reviewer: APPROVE → exit loop to Step 3
+  2c. Axiom-enforcer: APPROVE → next step
+                      REQUEST_CHANGES → fix-reviewer runs, delete review file, back to 2b
+  2d. Sprint-reviewer: APPROVE → exit loop to Step 3
                        REQUEST_CHANGES → fix-reviewer runs, delete review file, back to 2b
 ```
 
@@ -77,8 +79,15 @@ loop:
 - **If a failure is intractable** (multiple fix attempts fail, root cause unclear) → do NOT give up, do NOT apply a workaround. Dispatch the full specialist panel (computer-scientist, eval-engine, type-theorist, integration-verifier as appropriate) to research the root cause. Brief them: describe the failure, what you've already tried, and instruct them to determine the most justifiably correct solution and map a concrete path forward. Implement their recommended solution. Only proceed past the gate once it is genuinely green.
 - When all pass → proceed to 2c
 
-**2c — Sprint review:**
-- `mkdir -p .tmp` then dispatch `sprint-reviewer` with the sprint slug → writes `.tmp/sprint-review-{slug}.md`. In the sprint-reviewer brief, include the axioms verbatim and instruct it to **check each axiom explicitly by name** — not just flag general issues — and report pass/fail per axiom.
+**2c — Axiom-enforcer review:**
+- `mkdir -p .tmp` then dispatch `axiom-enforcer` with the sprint slug → writes `.tmp/axiom-enforcer-{slug}.md`.
+- **APPROVE** (zero findings) → proceed to 2d
+- **REQUEST_CHANGES** → append a summary of the findings to a `## Review Rounds` context note on the sprint (create it if absent; append each round's summary, don't overwrite), dispatch `fix-reviewer` (reads `.tmp/axiom-enforcer-{slug}.md`), delete the review file, then go back to **2b**
+- Axiom-enforcer is strictly FIX NOW — it creates no tracker items and accepts no deferrals. If it returns REQUEST_CHANGES, ALL findings must be fixed before re-running.
+- **Stuck**: if the `## Review Rounds` note shows the same finding unresolved across 3 consecutive rounds, escalate to the full specialist panel to research root cause. Implement their recommendation. Do not create a tracker item and move on.
+
+**2d — Sprint review:**
+- Dispatch `sprint-reviewer` with the sprint slug → writes `.tmp/sprint-review-{slug}.md`. Sprint-reviewer does not re-check axioms or anti-patterns — axiom-enforcer owns those. Brief it to focus on task completeness, code quality, testing, documentation, and security.
 - **APPROVE** → exit the inner loop, proceed to Step 3
 - **REQUEST_CHANGES** → append a summary of the findings to a `## Review Rounds` context note on the sprint (create it if absent; append each round's summary, don't overwrite), dispatch `fix-reviewer` (reads `.tmp/sprint-review-{slug}.md`), delete the review file, then go back to **2b** (not 2a — only new fixes are needed, not a full re-implementation)
 - **Stuck**: if the `## Review Rounds` note shows the same finding unresolved across 3 consecutive rounds, escalate to the full specialist panel to research root cause and determine the correct solution. Implement their recommendation. Only proceed past the gate once it is genuinely resolved — do not create a tracker item and move on.
@@ -99,7 +108,7 @@ Run `git diff HEAD --name-only` to determine which agents to dispatch:
 | **integration-verifier** | always |
 | **computer-scientist** | always |
 
-Brief each agent: read `.tmp/sprint-review-{slug}.md`, run `git diff HEAD`, assess the sprint, flag workarounds/special-cases. **Include the axioms from the Axioms section in every brief** — reviewers must check each axiom explicitly by name and report pass/fail for each. A solution that violates any axiom is a REQUEST_CHANGES, not a nit.
+Brief each agent: read `.tmp/sprint-review-{slug}.md`, use `mcp__toolbox__git_diff` to review the sprint changes, and assess from their domain perspective. **Include the axioms from the Axioms section in every brief** — axioms are the implementation contract and specialist agents must flag violations. A solution that violates any axiom is a REQUEST_CHANGES, not a nit.
 
 **Triage findings** from all agents before proceeding:
 - All findings are fix-now in this sprint. Pre-existing issues found during review are in-scope — if nobody takes ownership they never get fixed. Add to sprint context notes and implement before completing.
@@ -185,6 +194,7 @@ If every task only touches `.md` files, comments, mempalace, or non-code metadat
 - **Correctness, not performance**: performance is not a design concern. Write the provably correct implementation. Never add complexity to skip a check or avoid an allocation.
 - **Loader/prelude agnosticism**: users can replace the loader and prelude with their own stack. Language features must be agnostic to what is in the loader and prelude — a feature that only works with the default prelude is not a language feature.
 - **General case, not specific**: we build blocks, not solutions. Solve the general problem; do not implement special cases that happen to work for the current caller.
+- **Never suppress errors**: errors must be propagated, surfaced, and visible. Any form of error suppression is forbidden — `.ok()`, `.unwrap_or*`, `Err(_) => default`, `drop(result)`, converting errors to `None`/`[]`/`Ok(())`, logging and continuing. Propagate with `?` or return explicitly.
 
 When reviewing an agent's output, verify it against these axioms. If a solution adds a fast path, a special case, a hardcoded name, or a workaround — reject it and ask for the correct general solution.
 

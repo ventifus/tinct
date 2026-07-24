@@ -8,6 +8,7 @@ Axioms:
 - **Correctness, not performance**: performance is not a design concern. Write the provably correct implementation. Never add complexity to skip a check or avoid an allocation.
 - **Loader/prelude agnosticism**: users can replace the loader and prelude with their own stack. Language features must be agnostic to what is in the loader and prelude — a feature that only works with the default prelude is not a language feature.
 - **General case, not specific**: we build blocks, not solutions. Solve the general problem; do not implement special cases that happen to work for the current caller.
+- **Never suppress errors**: errors must be propagated, surfaced, and visible. Any form of error suppression is forbidden — `.ok()`, `.unwrap_or*`, `Err(_) => default`, `drop(result)`, converting errors to `None`/`[]`/`Ok(())`, logging and continuing. Propagate with `?` or return explicitly.
 
 Documentation:
 
