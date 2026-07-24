@@ -480,7 +480,7 @@ mod tests {
     use super::*;
 
     async fn test_ctx() -> Arc<EvalContext> {
-        crate::eval::EvalContext::new_empty(false)
+        crate::eval::EvalContext::new_empty()
     }
 
     #[tokio::test]

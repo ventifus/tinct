@@ -701,7 +701,7 @@ mod tests {
     }
 
     fn test_ctx() -> Arc<crate::eval::EvalContext> {
-        crate::eval::EvalContext::new_empty(false)
+        crate::eval::EvalContext::new_empty()
     }
 
     /// Drive an async builtin to completion in tests.

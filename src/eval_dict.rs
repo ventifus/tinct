@@ -604,8 +604,7 @@ mod tests {
     use crate::value::{HashableValue, Thunk, Value};
 
     fn test_ctx() -> Arc<EvalContext> {
-        let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
-        EvalContext::new(base_dir, false)
+        EvalContext::new()
     }
 
     /// Parse and evaluate a surface expression string using the resolver so

@@ -3928,12 +3928,12 @@ pub(crate) async fn eval_type_stage_expr(
     // Prefer state.eval_ctx (threaded from the loader pipeline) so type-stage evaluation
     // uses the same capabilities and root scope as the surrounding evaluation. This covers
     // the production path (builtin-typecheck-doc) and the bootstrap path (imports.rs).
-    // no_fs=true: type-stage evaluation is pure compute — no filesystem I/O occurs.
+    // new_empty(): type-stage evaluation is pure compute — no filesystem I/O occurs.
     let ctx: std::sync::Arc<crate::eval::EvalContext> =
         if let Some(ref eval_ctx) = state.eval_ctx {
             std::sync::Arc::clone(eval_ctx)
         } else {
-            crate::eval::EvalContext::new_empty(true)
+            crate::eval::EvalContext::new_empty()
         };
 
     // No resolution pass for synthetic type-stage nodes; resolution is inline on nodes

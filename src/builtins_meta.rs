@@ -4764,7 +4764,7 @@ mod tests {
     }
 
     fn test_ctx() -> Arc<crate::eval::EvalContext> {
-        crate::eval::EvalContext::new_empty(false)
+        crate::eval::EvalContext::new_empty()
     }
 
     fn no_named() -> Option<IndexMap<String, Arc<Thunk>>> {

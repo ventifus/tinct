@@ -1976,7 +1976,6 @@ async fn run_eval(
     // Create the base eval context (owns the ScopeArena used by all %programs thunks).
     let eval_ctx = {
         let mut ctx = EvalContext::new_with_options(
-            no_fs,
             require_integrity,
             env_allowed.clone(),
         );
@@ -2235,7 +2234,6 @@ async fn run_eval(
         tinct::run_loader_pipeline(
             &eval_ctx,
             &libdir_for_loader,
-            no_fs,
             init_source,
             init_path,
             injected_type_env,

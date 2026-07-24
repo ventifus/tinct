@@ -40,7 +40,7 @@ pub async fn format_source_tinct_with_dir(
     // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
     let formatter_program = desugar::desugar_program_full(&formatter_parsed.program);
 
-    let ctx = EvalContext::new_empty(false);
+    let ctx = EvalContext::new_empty();
 
     // Resolve the formatter program using the env-dict protocol.
     // "input-ast" is the formatter's own input variable name (not the loader's % convention).

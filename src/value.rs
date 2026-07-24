@@ -2134,7 +2134,7 @@ mod tests {
     use crate::test_util::test_span;
 
     fn test_ctx() -> Arc<crate::eval::EvalContext> {
-        crate::eval::EvalContext::new(false)
+        crate::eval::EvalContext::new()
     }
 
     #[test]

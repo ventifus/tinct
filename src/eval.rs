@@ -424,7 +424,6 @@ pub struct TypeContextData {
 /// Immutable session configuration shared across evaluation.
 #[derive(Debug)]
 pub struct EvalConfig {
-    pub no_fs: bool,
     /// When true, every `$include` call must supply an integrity hash.
     /// Hashless includes are rejected with `IncludeHashRequired`.
     pub require_integrity: bool,
@@ -575,8 +574,8 @@ pub struct EvalContext {
 }
 
 impl EvalContext {
-    pub fn new(no_fs: bool) -> Arc<Self> {
-        Self::new_with_options(no_fs, false, None)
+    pub fn new() -> Arc<Self> {
+        Self::new_with_options(false, None)
     }
 
     /// Build the root group (Arc<Vec<Arc<Thunk>>>) from all static builtin modules.
@@ -615,12 +614,11 @@ impl EvalContext {
     /// - Bootstrap contexts (run_loader_pipeline, where loader.llt is being evaluated)
     /// - Re-entrant macro expansion (depth > 0 in expand.rs)
     /// - Test helpers that create contexts without a prelude env
-    pub fn new_empty(no_fs: bool) -> Arc<Self> {
+    pub fn new_empty() -> Arc<Self> {
         let root_group = Self::build_root_group_builtins();
         let root_spine = crate::value::GroupSpine::from_flat(root_group.iter().cloned().collect());
         Arc::new(Self {
             config: Arc::new(EvalConfig {
-                no_fs,
                 require_integrity: false,
                 macro_injects_map: HashMap::new(),
                 source_file: None,
@@ -643,7 +641,6 @@ impl EvalContext {
     }
 
     pub fn new_with_options(
-        no_fs: bool,
         require_integrity: bool,
         env_allowed: Option<HashSet<String>>,
     ) -> Arc<Self> {
@@ -651,7 +648,6 @@ impl EvalContext {
         let root_spine = crate::value::GroupSpine::from_flat(root_group.iter().cloned().collect());
         Arc::new(Self {
             config: Arc::new(EvalConfig {
-                no_fs,
                 require_integrity,
                 macro_injects_map: HashMap::new(),
                 source_file: None,
@@ -2275,8 +2271,7 @@ mod tests {
     }
 
     fn test_ctx() -> Arc<EvalContext> {
-        let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
-        EvalContext::new(base_dir, false)
+        EvalContext::new()
     }
 
     /// Test helper for tests that need dot-access to work.
@@ -2284,8 +2279,7 @@ mod tests {
     /// to `builtin-get` (key-based lookup) and must be registered in the root env.
     fn core_env_and_ctx() -> (Arc<RwLock<crate::env::Env>>, Arc<EvalContext>) {
         let env = crate::builtins::build_core_env();
-        let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
-        let ctx = EvalContext::new(base_dir, false);
+        let ctx = EvalContext::new();
         (env, ctx)
     }
 
@@ -5343,28 +5337,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_eval_context_no_fs_flag() {
-        // EvalContext should preserve the no_fs flag
-        let ctx_with_fs = EvalContext::new(
-            crate::test_util::test_caps().root.try_clone().unwrap(),
-            false,
-        );
-        assert!(
-            !ctx_with_fs.config.no_fs,
-            "no_fs should be false when created with false"
-        );
-
-        let ctx_no_fs = EvalContext::new(
-            crate::test_util::test_caps().root.try_clone().unwrap(),
-            true,
-        );
-        assert!(
-            ctx_no_fs.config.no_fs,
-            "no_fs should be true when created with true"
-        );
-    }
-
-    #[tokio::test]
     async fn test_selective_materialization_unused_branch() {
         // Verify that accessing only one dict entry doesn't materialize unused entries.
         // $builtin-raise is in core_env and raises an error when forced; the "unused"
@@ -5776,33 +5748,6 @@ mod tests {
                 other
             ),
         }
-    }
-
-    // ── B-427: tail-recursive and context-inheritance tests ──────────────────
-
-    /// B-427: EvalContext.with_base_dir() inherits no_fs from the parent context.
-    ///
-    /// `with_base_dir()` creates a child context and must propagate `no_fs`.
-    #[tokio::test]
-    async fn test_eval_context_with_base_dir_inherits_no_fs() {
-        let base_dir1 = crate::test_util::test_caps().root.try_clone().unwrap();
-        let base_dir2 = crate::test_util::test_caps().root.try_clone().unwrap();
-
-        // Create a parent context with no_fs=true.
-        let ctx1 = EvalContext::new(
-            base_dir1, true, // no_fs = true
-        );
-        assert!(
-            ctx1.config.no_fs,
-            "parent context must have no_fs=true as configured"
-        );
-
-        // Child context inherits no_fs from parent via with_base_dir().
-        let ctx2 = ctx1.with_base_dir(base_dir2);
-        assert!(
-            ctx2.config.no_fs,
-            "with_base_dir() must inherit no_fs=true from parent; got no_fs=false"
-        );
     }
 
     // ── B-462/B-464: ground_type_of variadic flag ────────────────────────────

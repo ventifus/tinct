@@ -1008,8 +1008,7 @@ mod tests {
     use crate::value::{string_val, EvalFrame, Thunk, Value};
 
     fn test_ctx() -> Arc<EvalContext> {
-        let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
-        EvalContext::new(base_dir, false)
+        EvalContext::new()
     }
 
     async fn eval_and_materialize(

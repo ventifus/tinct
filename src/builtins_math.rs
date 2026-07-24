@@ -1702,7 +1702,7 @@ mod tests {
     }
 
     fn test_ctx() -> Arc<crate::eval::EvalContext> {
-        crate::eval::EvalContext::new_empty(false)
+        crate::eval::EvalContext::new_empty()
     }
 
     fn alloc(_ctx: &Arc<crate::eval::EvalContext>, val: Value) -> Arc<Thunk> {

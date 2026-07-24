@@ -169,14 +169,12 @@ pub use value::{
 /// - Build and inject all capability thunks into `env`:
 ///   `%programs`, `%args`, `%cwd`, `%libdir`, `%clock`, `%cap-fs`, etc.
 ///   Note: `%stdout` and `%stderr` are nominal type values defined by loader.llt Dict 2, not injected here.
-/// - Create `eval_ctx` via [`eval::EvalContext::new_empty`] with the correct options
-///   (`no_fs`, `require_integrity`, `env_allowed`, `profiling`, `libdir_dir`, etc.)
+/// - Create `eval_ctx` via [`eval::EvalContext::new_with_options`] with the correct options
+///   (`require_integrity`, `env_allowed`, `profiling`, `libdir_dir`, etc.)
 ///
 /// `libdir_dir` must be an open `cap_std::fs::Dir` for the stdlib directory. It is
 /// used as the base for macro expansion of the init program (which is embedded via
 /// `include_str!` by default, but its macros resolve paths against this dir).
-/// Provide it even when `no_fs=true` — the `no_fs` flag governs user program filesystem
-/// access, not the bootstrap infrastructure.
 ///
 /// `init_source` is the source text of the init program. `init_path` is the path used
 /// in error messages and source spans. Pass `include_str!("../stdlib/loader.llt")` and
@@ -187,7 +185,6 @@ pub use value::{
 pub async fn run_loader_pipeline(
     eval_ctx: &Arc<eval::EvalContext>,
     _libdir_dir: &cap_std::fs::Dir,
-    _no_fs: bool,
     init_source: &str,
     init_path: &str,
     injected_type_env: Option<Arc<std::sync::RwLock<crate::env::Env>>>,
@@ -1135,7 +1132,7 @@ mod tests {
     }
 
     async fn test_ctx() -> Arc<eval::EvalContext> {
-        eval::EvalContext::new_empty(false)
+        eval::EvalContext::new_empty()
     }
 
     #[test]

@@ -3428,8 +3428,7 @@ mod tests {
     }
 
     fn test_ctx() -> Arc<EvalContext> {
-        let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
-        EvalContext::new(base_dir, false)
+        EvalContext::new()
     }
 
     /// Async shadow of `materialize()` for test contexts.
@@ -4141,8 +4140,7 @@ mod cek_lifecycle_tests {
     use crate::test_util::test_span;
 
     fn test_ctx() -> Arc<EvalContext> {
-        let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
-        EvalContext::new(base_dir, false)
+        EvalContext::new()
     }
 
     /// Verify Cont::Memoize construction: all fields round-trip correctly.

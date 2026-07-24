@@ -87,7 +87,7 @@ async fn build_builtin_core_type_env_inner() -> Option<Arc<RwLock<Env>>> {
 
     // Create EvalContext for type-stage evaluation. No filesystem access needed —
     // type-stage eval only constructs TypeNode values in memory (no IO builtins).
-    let type_stage_eval_ctx = crate::eval::EvalContext::new_empty(true);
+    let type_stage_eval_ctx = crate::eval::EvalContext::new_empty();
 
     // Filter type-stage documents from the program.
     let ts_docs: Vec<_> = program

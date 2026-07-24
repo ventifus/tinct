@@ -2313,7 +2313,7 @@ mod tests {
     use super::*;
 
     fn test_ctx() -> Arc<crate::eval::EvalContext> {
-        crate::eval::EvalContext::new(false)
+        crate::eval::EvalContext::new()
     }
 
     /// Peel a `Value::Variant` to its payload dict.

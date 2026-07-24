@@ -82,8 +82,7 @@ mod tests {
     /// mapping for tests that exercise builtin-get (dot-access) and other builtins.
     fn core_env_and_ctx() -> (Arc<RwLock<crate::env::Env>>, Arc<EvalContext>) {
         let env = crate::builtins::build_core_env(); // Arc<RwLock<Env>>
-        let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
-        let ctx = EvalContext::new(base_dir, false);
+        let ctx = EvalContext::new();
         (env, ctx)
     }
 

@@ -1864,10 +1864,7 @@ async fn test_typecheck_with_types_returns_diagnostics() {
 async fn test_union_type_assert_success() {
     // value_matches_type: Int matches Union(Int, Str)
     let union = Type::normalize_union(vec![Type::Int, Type::Str]);
-    let ctx = crate::eval::EvalContext::new(
-        crate::test_util::test_caps().root.try_clone().unwrap(),
-        false,
-    );
+    let ctx = crate::eval::EvalContext::new();
     assert!(crate::eval::value_matches_type(
         &crate::value::Value::Int(42),
         &union,
@@ -1879,10 +1876,7 @@ async fn test_union_type_assert_success() {
 async fn test_union_type_assert_failure_float() {
     // value_matches_type: Float does NOT match Union(Int, Str)
     let union = Type::normalize_union(vec![Type::Int, Type::Str]);
-    let ctx = crate::eval::EvalContext::new(
-        crate::test_util::test_caps().root.try_clone().unwrap(),
-        false,
-    );
+    let ctx = crate::eval::EvalContext::new();
     assert!(!crate::eval::value_matches_type(
         &crate::value::Value::Float(1.0),
         &union,
