@@ -215,7 +215,7 @@
   # Checks that keys produced by each stage are consumed by the next.
   # Required named arg pipeline-input: String — the variable name to track (e.g. "%").
   # Returns Dict of diagnostic dicts (empty when no warnings).
-  builtin-lint-pipeline-docs: [fn@Dict [let docs@Dict] ...]
+  builtin-lint-pipeline-docs: [fn@Dict [let docs@Dict pipeline-input: p] ...]
   # program-docs: return auto-indexed dict of documents in a Program.
   builtin-program-docs:      [fn@Dict     [let prog@Program] ...]
   # doc-meta: evaluate a document's --- header with env dict, returning the result dict.

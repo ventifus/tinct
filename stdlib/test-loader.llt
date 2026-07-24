@@ -335,9 +335,9 @@
                typed-docs]]
              [all-diagnostics: [append-diags resolve-diagnostics tc-diagnostics]]
              all-diagnostics]]]
-         diagnostics:    [match [builtin-has-key? "ok" tc-result]
-             0: []
-             ...: [builtin-get "ok" tc-result]]
+         diagnostics:    [match tc-result
+             [case [let v] [ok: v] v]
+             ...: [make-entry 0 tc-result]]
          new-stderr:  [emit-diagnostics diagnostics acc.stderr]
          module-impl: [builtin-module name]]
         [impls:  [merge acc.impls module-impl]
@@ -444,21 +444,21 @@
                  [typed:     tc-result.doc]
                  [lowered:   [builtin-lower typed]]
                  [try-result: [builtin-try [call [fn [] [builtin-eval lowered doc-env]]]]]
-                 [match [builtin-has-key? "ok" try-result]
-                   0: [call [fn [let]
-                        [eval-stderr: [call [builtin-get "write" %stderr] [builtin-string-concat [format-diagnostic try-result] "\n"] new-stderr]]
-                        [merge acc [diagnostics: [append-diags acc.diagnostics [make-entry 0 try-result]]  stderr: eval-stderr]]]]
+                 [match try-result
+                   [case [let exports] [ok: exports]
+                     [call [fn [let]
+                       [doc-name: [get-or "" "name" meta]]
+                       # Build next-env: merge exports into current env, add %: last-result and
+                       # optional named doc entry so subsequent docs can reference this doc's output.
+                       [next-env: [merge doc-env
+                                    [merge [%: exports]
+                                      [match [builtin-eq-string doc-name ""]
+                                        0: [make-entry doc-name exports]
+                                        ...: []]]]]
+                       [merge acc [env: next-env  tc: acc.tc  last-result: exports  stderr: new-stderr]]]]]
                    ...: [call [fn [let]
-                        [exports:  [builtin-get "ok" try-result]]
-                        [doc-name: [get-or "" "name" meta]]
-                        # Build next-env: merge exports into current env, add %: last-result and
-                        # optional named doc entry so subsequent docs can reference this doc's output.
-                        [next-env: [merge doc-env
-                                     [merge [%: exports]
-                                       [match [builtin-eq-string doc-name ""]
-                                         0: [make-entry doc-name exports]
-                                         ...: []]]]]
-                        [merge acc [env: next-env  tc: acc.tc  last-result: exports  stderr: new-stderr]]]]]]]]]]]]]
+                        [eval-stderr: [call [builtin-get "write" %stderr] [builtin-string-concat [format-diagnostic try-result] "\n"] new-stderr]]
+                        [merge acc [diagnostics: [append-diags acc.diagnostics [make-entry 0 try-result]]  stderr: eval-stderr]]]]]]]]]]]]]
     # Split documents by stage: check meta.stage string
     [split: [reduce
       [fn [let acc doc]
@@ -631,14 +631,9 @@
                    [lowered: [builtin-lower typed]]
                    # Wrap builtin-eval in builtin-try to capture eval errors as diagnostics.
                    [try-result: [builtin-try [call [fn [] [builtin-eval lowered doc-env]]]]]
-                   [match [builtin-has-key? "ok" try-result]
-                     0: [call [fn [let]
-                          [eval-stderr: [call [builtin-get "write" %stderr]
-                                          [builtin-string-concat [format-diagnostic try-result] "\n"] new-stderr]]
-                          [merge st [diagnostics: [append-diags st.diagnostics [make-entry 0 try-result]]
-                                     stderr: eval-stderr]]]]
-                     ...: [call [fn [let]
-                          [exports: [builtin-get "ok" try-result]]
+                   [match try-result
+                     [case [let exports] [ok: exports]
+                       [call [fn [let]
                           # T-1507: Validate --- caps: declarations.
                           [caps-list: [get-or [] "caps" meta]]
                           [caps-validated: [reduce
@@ -664,7 +659,12 @@
                            # Accumulate per-document results so typecheck-docs can inject %
                            # with the correct value for each document's resolve pass (T-1741).
                            doc-results: [merge st.doc-results [make-entry st.doc-index validated-result]]]
-                           ]]]]]]]]]]
+                           ]]]
+                     ...: [call [fn [let]
+                          [eval-stderr: [call [builtin-get "write" %stderr]
+                                          [builtin-string-concat [format-diagnostic try-result] "\n"] new-stderr]]
+                          [merge st [diagnostics: [append-diags st.diagnostics [make-entry 0 try-result]]
+                                     stderr: eval-stderr]]]]]]]]]]]]
       [env:         base-env
        last-result: []
        tc:         fundamental-tc
@@ -1052,7 +1052,7 @@
                   0: acc
                   ...: [builtin-string-concat acc [builtin-string-concat [format-diagnostic d] "\n"]]]]
               "" _prelude-result.diagnostics]]]]
-      ...: [match [builtin-eq-int [builtin-dict-length %programs] 0]
+      ...: [match [null? %programs]
            0: %programs
            ...: [find-corpus-files
                  [builtin-narrow %cwd "tests/corpus"]
