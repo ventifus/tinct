@@ -188,7 +188,7 @@
   # Format a single diagnostic dict as a human-readable error line.
   format-diagnostic: [fn [let d]
     [s: d.span]
-    [file-part: [match [builtin-eq-int [builtin-dict-length s.file] 0]
+    [file-part: [match [builtin-eq-int [builtin-str-length s.file] 0]
       0: [builtin-string-concat s.file ":"]
       ...: "<unknown>:"]]
     [loc: [builtin-string-concat file-part [builtin-string-concat [builtin-int->string s.start-line] [builtin-string-concat ":" [builtin-int->string s.start-col]]]]]
@@ -207,7 +207,7 @@
       0: [reduce
             [fn [let acc ss]
               [sf: ss.span]
-              [ss-file: [match [builtin-eq-int [builtin-dict-length sf.file] 0]
+              [ss-file: [match [builtin-eq-int [builtin-str-length sf.file] 0]
                 0: [builtin-string-concat sf.file ":"]
                 ...: ""]]
               [ss-loc: [builtin-string-concat ss-file [builtin-string-concat [builtin-int->string sf.start-line] [builtin-string-concat ":" [builtin-int->string sf.start-col]]]]]
@@ -218,7 +218,7 @@
     [match stack-empty
       0: [reduce
             [fn [let acc frame]
-              [frame-file: [match [builtin-eq-int [builtin-dict-length frame.span.file] 0]
+              [frame-file: [match [builtin-eq-int [builtin-str-length frame.span.file] 0]
                 0: [builtin-string-concat frame.span.file ":"]
                 ...: ""]]
               [builtin-string-concat acc [builtin-string-concat "  in " [builtin-string-concat frame.label [builtin-string-concat " at " [builtin-string-concat frame-file [builtin-string-concat [builtin-int->string frame.span.start-line] [builtin-string-concat ":" [builtin-string-concat [builtin-int->string frame.span.start-col] "\n"]]]]]]]]]
