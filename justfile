@@ -87,10 +87,6 @@ test-lib:
     {{container}} run {{test_run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --lib -- --test-threads=1 --quiet
 
 
-# Run corpus tests and show output (tinct runner reports failures inline)
-test-corpus-summary:
-    -{{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo run --bin tinct -- --max-memory {{tinct_max_memory}} run --init stdlib/test-loader.llt $(find tests/corpus/eval -name '*.llt-eval' | sort)
-
 # Run CLI tests and show only failures + summary lines
 test-cli-summary:
     -{{container}} run {{run_flags}} -e RUSTFLAGS="-D warnings" {{rust_image}} sh -c "cargo test --test cli_tests 2>&1 | grep -E 'FAILED|test result:|failures:'"
