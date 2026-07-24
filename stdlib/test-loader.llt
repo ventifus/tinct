@@ -74,21 +74,25 @@
 
   # reduce and join defined here using core builtins only.
   # Dict 1 helpers need these but prelude is not yet loaded.
-  _reduce-loop: [fn@[bind: [a]  return: a] [let f acc@a xs@Dict i len]
-    [match [builtin-int-gte i len]
-      0: [_reduce-loop f [f acc [builtin-get i xs]] xs [builtin-int-add i 1] len]
-      ...: acc]]
-  reduce: [fn [let f init xs] [_reduce-loop f init xs 0 [builtin-dict-length xs]]]
+  reduce: [fn@[bind: [a b]  return: a] [let f@[Fn@a [a b]] init@a xs@Dict]
+    [n: [builtin-dict-length xs]]
+    [loop: [fn [let acc i]
+      [match [builtin-int-gte i n]
+        0: [loop [f acc [builtin-get i xs]] [builtin-int-add i 1]]
+        ...: acc]]]
+    [loop init 0]]
 
-  _join-loop: [fn [let sep acc xs i len]
-    [match [builtin-int-gte i len]
-      0: [_join-loop sep
-            [match [builtin-eq-int i 0]
-              0: [builtin-string-concat acc [builtin-string-concat sep [builtin-get i xs]]]
-              ...: [builtin-get 0 xs]]
-            xs [builtin-int-add i 1] len]
-      ...: acc]]
-  join: [fn [let sep xs] [_join-loop sep "" xs 0 [builtin-dict-length xs]]]
+  join: [fn [let sep xs]
+    [n: [builtin-dict-length xs]]
+    [loop: [fn [let acc i]
+      [match [builtin-int-gte i n]
+        0: [loop
+              [match [builtin-eq-int i 0]
+                0: [builtin-string-concat acc [builtin-string-concat sep [builtin-get i xs]]]
+                ...: [builtin-get 0 xs]]
+              [builtin-int-add i 1]]
+        ...: acc]]]
+    [loop "" 0]]
 
   # bool->int: Boolean.False→0, Boolean.True→1.
   bool->int: [fn@Integer [let b@Boolean] [match b Boolean.False: 0 Boolean.True: 1]]
@@ -127,14 +131,15 @@
   # env-to-name-set: build name-set Dict<String,1> from env for builtin-resolve.
   # builtin-resolve now takes a flat Dict<String,1> of all visible names (values ignored).
   # Replaces the old scope-to-frames walk — env is already a flat dict of all bindings.
-  _env-to-name-set-loop: [fn [let keys@Dict n i builder]
-    [match [builtin-eq-int i n]
-      0: [_env-to-name-set-loop keys n [builtin-int-add i 1]
-            [builtin-builder-set [builtin-get i keys] 1 builder]]
-      ...: [builtin-builder-finish builder]]]
   env-to-name-set: [fn [let env@Dict]
     [keys: [builtin-keys env]]
-    [_env-to-name-set-loop keys [builtin-dict-length keys] 0 [builtin-make-builder]]]
+    [n:    [builtin-dict-length keys]]
+    [loop: [fn [let i builder]
+      [match [builtin-eq-int i n]
+        0: [loop [builtin-int-add i 1]
+              [builtin-builder-set [builtin-get i keys] 1 builder]]
+        ...: [builtin-builder-finish builder]]]]
+    [loop 0 [builtin-make-builder]]]
 
   merge: [fn [let a b]
     [_copy: [fn [let builder d@Dict n i]
@@ -221,47 +226,42 @@
             d.call-stack]
       ...: with-secondary]]
 
-  # _emit-loop: writes each diagnostic to handle h, returns the updated handle.
-  # h threads through each write, cascading writes so the caller's consumer of the
-  # returned handle forces the entire emit chain.
-  _emit-loop: [fn [let diags@Dict i len h]
-    [match [builtin-int-gte i len]
-      0: [_emit-loop diags [builtin-int-add i 1] len
-            [call [builtin-get "write" %stderr] [format-diagnostic [builtin-get i diags]] h]]
-      ...: h]]
-
   # emit-diagnostics: write all diagnostics to h, return the updated stderr handle.
   # The returned handle is the genuine consumer — whoever accesses state.stderr next
   # forces this chain.
   emit-diagnostics: [fn [let diagnostics@Dict h]
-    [_emit-loop diagnostics 0 [builtin-dict-length diagnostics] h]]
-
-  # _count-errors-inner: count diagnostics with level "error"
-  _count-errors-inner: [fn [let diags@Dict n i acc]
-    [match [builtin-int-gte i n]
-      0: [match [builtin-eq-string [builtin-dict-nth diags i].level "error"]
-           0: [_count-errors-inner diags n [builtin-int-add i 1] acc]
-           ...: [_count-errors-inner diags n [builtin-int-add i 1] [builtin-int-add acc 1]]]
-      ...: acc]]
+    [n: [builtin-dict-length diagnostics]]
+    [loop: [fn [let i h]
+      [match [builtin-int-gte i n]
+        0: [loop [builtin-int-add i 1]
+              [call [builtin-get "write" %stderr] [format-diagnostic [builtin-get i diagnostics]] h]]
+        ...: h]]]
+    [loop 0 h]]
 
   count-errors: [fn [let diags@Dict]
-    [_count-errors-inner diags [builtin-dict-length diags] 0 0]]
+    [n: [builtin-dict-length diags]]
+    [loop: [fn [let i acc]
+      [match [builtin-int-gte i n]
+        0: [loop [builtin-int-add i 1]
+              [match [builtin-eq-string [builtin-dict-nth diags i].level "error"]
+                0: acc
+                ...: [builtin-int-add acc 1]]]
+        ...: acc]]]
+    [loop 0 0]]
 
   # append-one: append a single value to an integer-keyed accumulator dict.
   append-one: [fn [let acc v] [merge acc [[builtin-dict-length acc]: v]]]
 
-  # _append-diags-inner: append new-diags to acc, re-indexing from offset
-  _append-diags-inner: [fn [let acc@Dict new-diags@Dict n offset i]
-    [match [builtin-int-gte i n]
-      0: [_append-diags-inner
-           [merge acc [[builtin-int-add offset i]: [builtin-dict-nth new-diags i]]]
-           new-diags n offset [builtin-int-add i 1]]
-      ...: acc]]
-
   append-diags: [fn [let acc@Dict new-diags@Dict]
     [n:      [builtin-dict-length new-diags]]
     [offset: [builtin-dict-length acc]]
-    [_append-diags-inner acc new-diags n offset 0]]
+    [loop: [fn [let result i]
+      [match [builtin-int-gte i n]
+        0: [loop
+              [merge result [[builtin-int-add offset i]: [builtin-dict-nth new-diags i]]]
+              [builtin-int-add i 1]]
+        ...: result]]]
+    [loop acc 0]]
 
   # uses-scope: for each module name, parse+typecheck its declaration file and
   # accumulate a flat Dict of runtime builtin implementations.
@@ -288,7 +288,7 @@
              [decl-env:      seed-env]
              # Split docs by stage so type-stage docs are processed first.
              [split: [reduce
-               [fn [let acc doc]
+               [fn [let acc@[ts: Dict  rt: Dict] doc]
                  [meta:  [builtin-doc-meta doc decl-env]]
                  [stage: [get-or "runtime" "stage" meta]]
                  [match [builtin-eq-string stage "type"]
@@ -358,22 +358,22 @@
   # pragma-no-prelude?: true if the first document in a parsed state carries
   #   pragma: ["no-prelude"]
   # builtin-doc-meta is called with [] (empty env) so pragma values must be plain literals.
-  _has-no-prelude-pragma: [fn [let pragmas@Dict n i]
-    [match [builtin-int-gte i n]
-      0: [match [builtin-eq-string [get-or "" i pragmas] "no-prelude"]
-           0: [_has-no-prelude-pragma pragmas n [builtin-int-add i 1]]
-           ...: 1]  # found
-      ...: 0]]     # exhausted — not found
-
   pragma-no-prelude?: [fn [let state@Dict]
     [match [builtin-eq-int [count-errors state.diagnostics] 0]
       0: 0  # parse failed — treat as no pragma
       ...: [docs: state.parsed.documents]
          [match [builtin-eq-int [builtin-dict-length docs] 0]
            0: 0  # no documents
-           ...: [meta: [builtin-doc-meta [builtin-get 0 docs] []]]
+           ...: [meta:    [builtin-doc-meta [builtin-get 0 docs] []]]
               [pragmas: [get-or [] "pragma" meta]]
-              [_has-no-prelude-pragma pragmas [builtin-dict-length pragmas] 0]]]]
+              [n:       [builtin-dict-length pragmas]]
+              [find: [fn [let i]
+                [match [builtin-int-gte i n]
+                  0: [match [builtin-eq-string [get-or "" i pragmas] "no-prelude"]
+                       0: [find [builtin-int-add i 1]]
+                       ...: 1]
+                  ...: 0]]]
+              [find 0]]]]
 
   # ── Pipeline infrastructure ──────────────────────────────────────────────────
   # if-ok: pipeline combinator. Used as [prev-state | [if-ok f pre-args...]].
@@ -461,7 +461,7 @@
                         [merge acc [diagnostics: [append-diags acc.diagnostics [$try-result]]  stderr: eval-stderr]]]]]]]]]]]]]
     # Split documents by stage: check meta.stage string
     [split: [reduce
-      [fn [let acc doc]
+      [fn [let acc@[ts: Dict  rt: Dict] doc]
         [meta: [builtin-doc-meta doc seed-env]]
         [stage: [get-or "runtime" "stage" meta]]
         [match [builtin-eq-string stage "type"]
