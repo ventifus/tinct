@@ -2172,6 +2172,63 @@ async fn bas_cvar2_rewrite(
     Ok(())
 }
 
+/// Validate that two function types have compatible arity and variadic structure.
+///
+/// Returns `Ok(())` when both sides have the same fixed-param count, the same
+/// variadic/non-variadic status, and the same number of typed-variadic buckets.
+/// Returns a structured `Err` for each mismatch kind.
+///
+/// Called by both `unify()` and `constrain()` so the error messages are consistent
+/// regardless of which judgment is being applied.
+fn check_function_arity(
+    p1_len: usize,
+    p2_len: usize,
+    is_variadic_1: bool,
+    is_variadic_2: bool,
+    tv1_len: usize,
+    tv2_len: usize,
+    has_rest_1: bool,
+    has_rest_2: bool,
+    span: Span,
+) -> Result<(), TypeDiagnostic> {
+    if p1_len != p2_len {
+        return Err(TypeDiagnostic::error(
+            "type-error",
+            format!("arity mismatch: expected {} arguments, got {}", p1_len, p2_len),
+            span,
+        ));
+    }
+    if is_variadic_1 != is_variadic_2 {
+        return Err(TypeDiagnostic::error(
+            "type-error",
+            format!(
+                "variadic mismatch: {} vs {}",
+                if is_variadic_1 { "variadic" } else { "non-variadic" },
+                if is_variadic_2 { "variadic" } else { "non-variadic" }
+            ),
+            span,
+        ));
+    }
+    if tv1_len != tv2_len {
+        return Err(TypeDiagnostic::error(
+            "type-error",
+            format!(
+                "variadic bucket count mismatch: {} typed bucket(s) vs {} typed bucket(s)",
+                tv1_len, tv2_len
+            ),
+            span,
+        ));
+    }
+    if has_rest_1 != has_rest_2 {
+        return Err(TypeDiagnostic::error(
+            "type-error",
+            "variadic rest mismatch: one function has an untyped rest parameter, the other does not".to_string(),
+            span,
+        ));
+    }
+    Ok(())
+}
+
 pub async fn unify(
     a: &Type,
     b: &Type,
@@ -2538,102 +2595,32 @@ pub async fn unify(
                 return Box::pin(unify(r1, r2, state, constraints, span, depth + 1)).await;
             }
 
-            if p1.len() != p2.len() {
-                return Err(TypeDiagnostic::error(
-                    "type-error",
-                    format!(
-                        "arity mismatch: expected {} arguments, got {}",
-                        p1.len(),
-                        p2.len()
-                    ),
-                    span,
-                ));
-            }
             // Structural variadic check: both must be variadic or both non-variadic,
-            // and both must have the same number of typed variadic buckets.
+            // same number of typed variadic buckets, and matching rest presence.
             // The types within rest/typed_variadics are UNIFIED below, not compared by value —
             // equality comparison would reject valid letrec SCC unifications where the pre-bound
             // TypeVar (TypeVar_a) differs from the inferred TypeVar (TypeVar_c).
-            if is_variadic_1 != is_variadic_2 {
-                return Err(TypeDiagnostic::error(
-                    "type-error",
-                    format!(
-                        "variadic mismatch: {} vs {}",
-                        if is_variadic_1 {
-                            "variadic"
-                        } else {
-                            "non-variadic"
-                        },
-                        if is_variadic_2 {
-                            "variadic"
-                        } else {
-                            "non-variadic"
-                        }
-                    ),
-                    span,
-                ));
-            }
-            if tv1.len() != tv2.len() {
-                return Err(TypeDiagnostic::error(
-                    "type-error",
-                    format!(
-                        "variadic bucket count mismatch: {} typed bucket(s) vs {} typed bucket(s)",
-                        tv1.len(),
-                        tv2.len()
-                    ),
-                    span,
-                ));
-            }
+            check_function_arity(
+                p1.len(), p2.len(),
+                is_variadic_1, is_variadic_2,
+                tv1.len(), tv2.len(),
+                rest1.is_some(), rest2.is_some(),
+                span.clone(),
+            )?;
+
             // Robinson invariant: sub-terms are passed without explicit apply() because
             // every recursive unify() call re-applies the accumulated substitution at its
             // own entry (via apply_with_visited at the top of this function). Bindings
             // from earlier parameter unifications are therefore visible to later ones via
             // the shared `subst` -- this is correct Robinson (1965) unification.
             for ((_name_a, ty_a), (_name_b, ty_b)) in p1.iter().zip(p2.iter()) {
-                Box::pin(unify(
-                    ty_a,
-                    ty_b,
-                    state,
-                    constraints,
-                    span.clone(),
-                    depth + 1,
-                ))
-                .await?;
+                Box::pin(unify(ty_a, ty_b, state, constraints, span.clone(), depth + 1)).await?;
             }
-            // Unify typed variadic bucket types in declaration order.
             for ((_, ty_a), (_, ty_b)) in tv1.iter().zip(tv2.iter()) {
-                Box::pin(unify(
-                    ty_a,
-                    ty_b,
-                    state,
-                    constraints,
-                    span.clone(),
-                    depth + 1,
-                ))
-                .await?;
+                Box::pin(unify(ty_a, ty_b, state, constraints, span.clone(), depth + 1)).await?;
             }
-            // Unify rest types. Structural mismatch (one has rest, other doesn't) is an error —
-            // but this can only happen when is_variadic_1 == is_variadic_2 == true and
-            // tv1.len() == tv2.len() != 0 while one side has rest and the other doesn't.
-            match (rest1, rest2) {
-                (Some(r1b), Some(r2b)) => {
-                    Box::pin(unify(
-                        &r1b.1,
-                        &r2b.1,
-                        state,
-                        constraints,
-                        span.clone(),
-                        depth + 1,
-                    ))
-                    .await?;
-                }
-                (None, None) => {}
-                _ => {
-                    return Err(TypeDiagnostic::error("type-error",
-                        "variadic rest mismatch: one function has an untyped rest parameter, the other does not".to_string(),
-                        span,
-                    ));
-                }
+            if let (Some(r1b), Some(r2b)) = (rest1, rest2) {
+                Box::pin(unify(&r1b.1, &r2b.1, state, constraints, span.clone(), depth + 1)).await?;
             }
             Box::pin(unify(r1, r2, state, constraints, span, depth + 1)).await
         }
@@ -3505,16 +3492,9 @@ pub async fn constrain(
         // Pierce & Turner (2000) §6; Parreaux & Chau (2022) §3.2.1 C-FN:
         //   (S1→T1) ≤ (S2→T2)  iff  S2 ≤ S1 (params contravariant) ∧ T1 ≤ T2 (return covariant)
         //
-        // This arm fires BEFORE the ground-type BAS arm so that function types that contain
-        // TypeVars (e.g. `init@a` reducer patterns) correctly accumulate bounds rather than
-        // falling through to symmetric unify(), which would bind TypeVars immediately and lose
-        // directional information.
-        //
-        // "Any function" special case: a zero-param variadic function is the "any function" type.
-        // Mirrors the same check in unify() — an any-function is a subtype of any concrete-arity
-        // function. Only the return types are constrained (covariant).
-        //
-        // Arity / variadic mismatch: delegate to unify() for its structured error message.
+        // Fires before the ground-type BAS arm so TypeVar-containing function types accumulate
+        // bounds rather than binding immediately via unify()'s symmetric equality.
+        // Arity/variadic errors come from check_function_arity() — no delegation to unify().
         (
             Type::Function {
                 params: p1,
@@ -3536,7 +3516,7 @@ pub async fn constrain(
             let is_any_function_1 = p1.is_empty() && is_variadic_1;
             let is_any_function_2 = p2.is_empty() && is_variadic_2;
 
-            // Any-function ≤ any concrete-arity function: constrain return types (covariant).
+            // Any-function ≤ any concrete-arity: constrain return types only (covariant).
             if is_any_function_1 && !p2.is_empty() {
                 let (r1c, r2c) = ((**r1).clone(), (**r2).clone());
                 return Box::pin(constrain(&r1c, &r2c, state, constraints, span)).await;
@@ -3546,17 +3526,16 @@ pub async fn constrain(
                 return Box::pin(constrain(&r1c, &r2c, state, constraints, span)).await;
             }
 
-            // Structural mismatch: delegate to unify() for a structured error.
-            if p1.len() != p2.len() || is_variadic_1 != is_variadic_2 || tv1.len() != tv2.len() {
-                return Box::pin(unify(&sub, &sup, state, constraints, span, 0)).await;
-            }
-            // Rest mismatch: one has a rest param, the other does not.
-            let rest_mismatch = matches!((rest1, rest2), (Some(_), None) | (None, Some(_)));
-            if rest_mismatch {
-                return Box::pin(unify(&sub, &sup, state, constraints, span, 0)).await;
-            }
+            // Validate arity and variadic structure; propagate error directly if mismatched.
+            check_function_arity(
+                p1.len(), p2.len(),
+                is_variadic_1, is_variadic_2,
+                tv1.len(), tv2.len(),
+                rest1.is_some(), rest2.is_some(),
+                span.clone(),
+            )?;
 
-            // C-FN: clone param/return types to release match borrows before recursive constrain().
+            // Clone to release match borrows before recursive async constrain() calls.
             let p1c: Vec<_> = p1.iter().map(|(n, t)| (n.clone(), t.clone())).collect();
             let p2c: Vec<_> = p2.iter().map(|(n, t)| (n.clone(), t.clone())).collect();
             let tv1c: Vec<_> = tv1.iter().map(|(n, t)| (n.clone(), t.clone())).collect();
@@ -3566,19 +3545,19 @@ pub async fn constrain(
             let r1c = (**r1).clone();
             let r2c = (**r2).clone();
 
-            // Fixed params: contravariant — constrain(sup_param, sub_param).
-            for ((_n1, ty1), (_n2, ty2)) in p1c.iter().zip(p2c.iter()) {
+            // Fixed params: CONTRAVARIANT — constrain(sup_param, sub_param).
+            for ((_, ty1), (_, ty2)) in p1c.iter().zip(p2c.iter()) {
                 Box::pin(constrain(ty2, ty1, state, constraints, span.clone())).await?;
             }
-            // Typed variadics: contravariant.
+            // Typed variadics: CONTRAVARIANT.
             for ((_, ty1), (_, ty2)) in tv1c.iter().zip(tv2c.iter()) {
                 Box::pin(constrain(ty2, ty1, state, constraints, span.clone())).await?;
             }
-            // Rest param: contravariant.
+            // Rest param: CONTRAVARIANT.
             if let (Some(rb1), Some(rb2)) = (&rest1c, &rest2c) {
                 Box::pin(constrain(&rb2.1, &rb1.1, state, constraints, span.clone())).await?;
             }
-            // Return type: covariant — constrain(sub_ret, sup_ret).
+            // Return type: COVARIANT — constrain(sub_ret, sup_ret).
             return Box::pin(constrain(&r1c, &r2c, state, constraints, span)).await;
         }
 
